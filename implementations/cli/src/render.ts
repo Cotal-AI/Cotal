@@ -1,4 +1,5 @@
-import { oneLine, peerLabel, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
+import { oneLine, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
+import { consoleLabel } from "./console/label.js";
 import { brokerAddressForDisplay, localeIsUtf8, plainPunctuation, type ConnectRefusal, type Connection } from "@cotal-ai/workspace";
 import { credentialEnded } from "./lib/connect.js";
 import { MeshView, type FeedEntry } from "@cotal-ai/workspace/view";
@@ -23,7 +24,10 @@ export function agentColor(name: string): (s: string) => string {
   return fn;
 }
 
-const who = (ref: { name: string; role?: string }) => agentColor(ref.name)(peerLabel(ref));
+const who = (ref: { name: string; id?: string; role?: string }) => {
+  const label = consoleLabel(ref);
+  return agentColor(label)(label);
+};
 
 const ts = (epochMs: number) => c.dim(new Date(epochMs).toLocaleTimeString());
 

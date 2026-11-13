@@ -198,6 +198,13 @@ export async function channelMembers(values: Values, channel: string, presentati
   }, membersView);
 }
 
+/** The name a members row shows. A blank roster name is not a participant, so the row uses the id.
+ *  A member the roster has not named still says the name was not reported. */
+export function memberName(name: string | null, id: string): string {
+  if (name === null) return "name not reported";
+  return name.trim() ? name : id;
+}
+
 /** Whether the feed has a census, and which members it observed with which membership. */
 function census(result: Members | undefined): string {
   return JSON.stringify(result && [result.asOf !== null, result.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
@@ -210,7 +217,7 @@ function membersView(result: Members, following = false): Report {
       { kind: "fields", rows: [["Space", result.space], ["Feed observed", result.asOf === null ? "no successful poll reported" : new Date(result.asOf).toISOString()]] },
       result.members.length ? {
         kind: "table", columns: [{ key: "name", label: "Participant" }, { key: "state", label: "Observed membership" }, { key: "id", label: "Identity" }],
-        rows: result.members.map((member) => ({ name: member.name ?? "name not reported", state: member.live ? member.durable ? "live subscription · durable member" : "live subscription" : "durable member · live subscription not observed", id: member.id })),
+        rows: result.members.map((member) => ({ name: memberName(member.name, member.id), state: member.live ? member.durable ? "live subscription · durable member" : "live subscription" : "durable member · live subscription not observed", id: member.id })),
       } : { kind: "lines", lines: [result.asOf === null ? "Membership is not established. An empty feed does not prove there are no members." : "No members in this feed snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived observations, not access grants. This does not establish whether an agent is working or blocked.", tone: "hint" }] },
     ] },

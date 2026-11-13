@@ -23,6 +23,7 @@ export class PiEvents {
     private readonly mesh: MeshAgent,
     private readonly space: string,
     private readonly stopped: (error: Error, retryInMs: number | null) => void,
+    private readonly withholdPayloads = false,
   ) {}
 
   async start(sessionId: string, path: string | undefined, freshSession = false): Promise<void> {
@@ -138,6 +139,7 @@ export class PiEvents {
       const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
       const map = createPiMapper(sessionId, brackets?.run, brackets?.tools);
       return AguiEmitter.start({
+        withholdPayloads: this.withholdPayloads,
         endpoint: this.mesh.ep, wal, subjectFrontier,
         source: new PiSessionSource(path),
         map,

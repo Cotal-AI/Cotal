@@ -1,6 +1,8 @@
-import { Fragment } from "react";
-import { Box, Text } from "ink";
-import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { Fragment, useState } from "react";
+import { Box, Text, useInput } from "ink";
+import { ToolCalls } from "./ToolCalls.js";
+import { presenceText, type Presence, type CotalEndpoint } from "@cotal-ai/core";
+import { consoleLabel } from "../label.js";
 import { displayWidth } from "@cotal-ai/workspace";
 import type { FeedEntry } from "../mesh.js";
 import { activityAge, presenceFacts } from "../../ui.js";
@@ -48,7 +50,7 @@ function MessageDetail({ entry, width }: { entry: FeedEntry; width: number }) {
       </Field>
       <Field label="from">
         <Text>
-          <Text color={agentColor(entry.from.name)}>{peerLabel(entry.from)}</Text>
+          <Text color={agentColor(entry.from.name)}>{consoleLabel(entry.from)}</Text>
           <Text dimColor>{"  " + entry.from.id}</Text>
         </Text>
       </Field>
@@ -90,7 +92,7 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
   return (
     <Box flexDirection="column">
       <Field label="name">
-        <Text color={card.kind === "agent" ? agentColor(card.name) : undefined}>{card.name}</Text>
+        <Text color={card.kind === "agent" ? agentColor(card.name) : undefined}>{consoleLabel(card)}</Text>
       </Field>
       {card.role ? (
         <Field label="role">
@@ -138,7 +140,7 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
           </Field>
           {card.skills.map((sk, i) => (
             <Text key={i} wrap="truncate-end">
-              <Text>{" ".repeat(11) + (sk.name || sk.id)}</Text>
+              <Text>{" ".repeat(11) + (sk.name.trim() ? sk.name : sk.id)}</Text>
               {sk.description ? <Text dimColor>{"  " + sk.description}</Text> : null}
             </Text>
           ))}
@@ -186,14 +188,18 @@ export function Detail({
   width,
   height,
   managed,
+  ep,
 }: {
   target: DetailTarget;
+  ep?: CotalEndpoint;
   feed: FeedEntry[];
   width: number;
   height: number;
   /** id → managed-state, for the agent view's `runs` field (absent on unmanaged meshes). */
   managed?: Map<string, ManagedInfo>;
 }) {
+  const [tools, setTools] = useState(false);
+  useInput((input) => { if (input === "t") setTools((v) => !v); }, { isActive: ep !== undefined && target.kind === "agent" });
   const title = target.kind === "message" ? "message detail" : "agent detail";
   return (
     <Box
@@ -217,11 +223,12 @@ export function Detail({
           {target.kind === "message" ? (
             <MessageDetail entry={target.entry} width={width - 4} />
           ) : (
+            tools && ep && target.agent.card.owner && target.agent.card.actor ? <ToolCalls ep={ep} owner={target.agent.card.owner} actor={target.agent.card.actor} width={width - 4} height={height} /> :
             <AgentDetail agent={target.agent} feed={feed} width={width - 4} managed={managed?.get(target.agent.card.id)} />
           )}
         </Box>
         <Box marginTop={1}>
-          <Text dimColor>press any key to close</Text>
+          <Text dimColor>{target.kind === "agent" && ep ? "t toggles tool calls · Esc closes" : "press any key to close"}</Text>
         </Box>
       </Box>
     </Box>

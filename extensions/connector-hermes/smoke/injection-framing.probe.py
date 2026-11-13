@@ -41,6 +41,7 @@ class BasePlatformAdapter:
 class MessageEvent:
     def __init__(self, **kw):
         self.text = kw.get("text")
+        self.source = kw.get("source") if isinstance(kw.get("source"), dict) else {}
 
 
 class MessageType:
@@ -133,17 +134,29 @@ CASES = {
                    "historical": True, "text": "@hermes old request"},
     # The honest baseline: whatever the rule costs, it must not cost this.
     "honest": {"kind": "dm", "fromId": "m", "fromName": "Ada", "fromRole": "agent", "text": "just a normal message"},
+    # A name that is only whitespace is not a name. The id is the participant.
+    "blank_space": {"kind": "dm", "fromId": "local.blank", "fromName": " ", "text": "hello"},
+    "blank_newline": {"kind": "dm", "fromId": "local.blank", "fromName": "\n", "text": "hello"},
+    "blank_empty": {"kind": "dm", "fromId": "local.blank", "fromName": "", "text": "hello"},
+    "blank_role": {"kind": "dm", "fromId": "local.blank", "fromName": "  ", "fromRole": "worker", "text": "hello"},
+    # A leading space on a name that has other characters stays.
+    "spaced_name": {"kind": "dm", "fromId": "local.blank", "fromName": " ada", "text": "hello"},
 }
 
 
 async def main() -> None:
     cls = CotalAdapter if MODE == "subject" else RawConcat
     out = {}
+    chats = {}
     for name, msg in CASES.items():
         adapter = cls(PlatformConfig())
         await adapter._inject(msg)
-        out[name] = adapter.handled[-1].text
+        event = adapter.handled[-1]
+        out[name] = event.text
+        src = event.source if isinstance(getattr(event, "source", None), dict) else {}
+        chats[name] = {"chat_name": src.get("chat_name"), "user_name": src.get("user_name")}
     print("RESULT " + json.dumps(out))
+    print("CHAT " + json.dumps(chats))
 
 
 asyncio.run(main())

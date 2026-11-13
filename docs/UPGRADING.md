@@ -1,5 +1,41 @@
 # Upgrading a running deployment
 
+## Tool payload publication
+
+Upgrading starts publishing mapped tool inputs and results by default for Claude and Jcode seats
+with an event plane. Payload readers can now see local file content, command output and other
+tool content that was previously withheld. Review access before restarting seats. Authenticated
+spaces admit the owner, admins and holders of concrete foreign event-channel read grants to the
+separate payload rail. Chat wildcards do not grant that access. Open brokers provide no isolation.
+
+Pass `--no-event-payloads` at spawn, or set `eventPayloads: false` in the persona, to retain tool
+names, times and completion status without inputs or results. `--no-events` still disables the
+whole event plane where permitted. A registration may enforce
+`policy: { eventPayloads: "withheld" }`; a seat cannot weaken it. Registered Cotal tool payloads
+are excluded by identity. Other tools are not scanned for secret-shaped text.
+The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads`
+input. A revision-48 Manager's closed input schema rejects this field.
+
+Upgrade the broker setup and credentials with the clients: payloads use a separate `EVP_<space>`
+stream and broker rail. If a pre-upgrade space has no payload stream, the endpoint emits a
+`warning` event explaining that payloads are unavailable. Tool names, times and completion status
+continue on the public event channel without inputs or results. Upgrade the space's broker setup
+and credentials, then restart the seat to enable payload publication. Authorization, network and
+invalid stream configuration errors still fail startup rather than selecting this compatibility path.
+A previously frozen sibling publication refuses recovery while the payload rail is absent, even
+when its acknowledgement was recorded; restore the rail before restarting it.
+Ordinary-channel readers continue to see tool metadata only. WAL v4
+records sibling publication and its acknowledgement; older emitters refuse it. Older pending
+public frames migrate without invented payloads, and frozen public payload bodies still halt.
+Settle a pending sibling under its prior policy before enabling withholding. The live broker and
+stream limits produce explicit whole-value cut markers, not silent partial output.
+
+Other connectors carry safety controls, but their payload mappings and native acceptance, combined
+channel history and backup coverage remain deferred. The private consent path in
+[SPEC §13.19](../SPEC.md#1319-private-tool-results) remains separate, with unchanged activation
+requirements, for holders not admitted to the payload rail. See the
+[connector reference](claude-connector-reference.mdx#event-plane) for limits and recovery details.
+
 > **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Interface stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.mdx)
 
 [Interface stability](stability.md) says what the version numbers promise. This page says what to
@@ -32,6 +68,16 @@ recreate either stream. A new membership feed refuses missing storage and names 
 already-running feed logs the same repair and its view stays stale. Embedded platforms must invoke
 `reconcileSpaceMemoryBuckets` after their broker restart or wake before treating these views as
 ready; standing membership credentials cannot create streams.
+
+## Clients older than 0.163.0 with no read channels
+
+0.163.0 stopped creating the delivery durable for an agent with no read channels, and stopped
+permitting that agent to ask whether the durable exists. A client from before 0.163.0 still asks
+during start. The broker's refusal stopped the start.
+
+A host from this release permits that one info read, on the agent's own durable name. The durable
+is still absent, so the older client hears that and starts. It does not gain a fetch or ack grant,
+and it still cannot read a channel.
 
 ## Explicit space selections apply in every folder
 

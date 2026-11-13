@@ -1,5 +1,51 @@
 # cotal-ai
 
+## 0.164.1
+
+### Patch Changes
+
+- e13f910: Finish manual updates after stopping agents with explicit consent, and show when installation reconciliation is pending.
+  
+  Terminal updates list affected agents and ask once before stopping them. Scripts can use `cotal update --self --stop-agents`. Automatic updates continue to defer without stopping agents.
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+- Updated dependencies [85da7da]
+- Updated dependencies [653ca96]
+- Updated dependencies [e13f910]
+  - @cotal-ai/cli@0.164.1
+  - @cotal-ai/connector-core@0.164.1
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/delivery@0.164.1
+  - @cotal-ai/manager@0.164.1
+  - @cotal-ai/workspace@0.164.1
+  - @cotal-ai/auth@0.164.1
+  - @cotal-ai/registry@0.164.1
+  - @cotal-ai/runtime@0.164.1
+  - @cotal-ai/seat@0.164.1
+
+## 0.164.0
+
+### Patch Changes
+
+- bc02107: A desktop space that was refused, ended, disconnected, or otherwise failed names that state. It no longer says Starting, and the window and tray say Needs attention for it and for a space with a saved refusal. A space that was just turned on still says Starting.
+- Updated dependencies [471b464]
+- Updated dependencies [f1376f1]
+- Updated dependencies [f01f90a]
+- Updated dependencies [7d62677]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+- Updated dependencies [91c9136]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+  - @cotal-ai/connector-core@0.164.0
+  - @cotal-ai/auth@0.164.0
+  - @cotal-ai/cli@0.164.0
+  - @cotal-ai/manager@0.164.0
+  - @cotal-ai/delivery@0.164.0
+  - @cotal-ai/registry@0.164.0
+  - @cotal-ai/runtime@0.164.0
+  - @cotal-ai/seat@0.164.0
+
 ## 0.163.5
 
 ### Patch Changes

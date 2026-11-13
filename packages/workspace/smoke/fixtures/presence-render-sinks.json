@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1030,
+    "total": 1035,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
-    "command-ack": 10,
-    "non-render/control": 811
+    "command-ack": 13,
+    "non-render/control": 813
   },
   "renderers": [
     {
@@ -45,14 +45,14 @@
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
-      "anchor": "`\"${target}\" is ambiguous - ${candidates.length} peers share that name: ` +\n        candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join(\"; \") +\n        `. Re-send to the exact instance id.`",
+      "anchor": "`\"${target}\" is ambiguous - ${candidates.length} peers share that name: ` +\n        candidates.map((c) => `${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`).join(\"; \") +\n        `. Re-send to the exact instance id.`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
     {
       "path": "packages/core/src/resolve.ts",
       "kind": "derived-output",
-      "anchor": "`${c.name} (${c.id}, ${c.status})`",
+      "anchor": "`${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -115,7 +115,7 @@
     {
       "path": "extensions/connector-core/src/orientation.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(p.card)} (${honestStatus(p.status)})`",
+      "anchor": "`${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -216,7 +216,7 @@
     {
       "path": "extensions/connector-core/src/tool-specs.ts",
       "kind": "derived-output",
-      "anchor": "`  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`",
+      "anchor": "`  • ${c.name.trim() ? peerLabel(c) : c.id} (${c.status}) — id: ${c.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
@@ -489,7 +489,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`  ${cand.name} (${cand.status})  ${cand.id}`",
+      "anchor": "`  ${joinPeerLabel({ name: cand.name, id: cand.id })} (${cand.status})  ${cand.id}`",
       "class": "command-ack",
       "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
     },
@@ -538,14 +538,14 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "<Detail target={detail} feed={mesh.feed} width={size.cols} heigh",
+      "anchor": "ep={ep} target={detail} feed={mesh.feed} width={size.cols} heigh",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "il target={detail} feed={mesh.feed} width={size.cols} heigh",
+      "anchor": "p} target={detail} feed={mesh.feed} width={size.cols} heigh",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -2202,14 +2202,14 @@
     {
       "path": "implementations/web/client/src/lib/identity.ts",
       "kind": "status-token",
-      "anchor": " rows) if (r.status === \"offline\") out.set(r.id, slotOf(r",
+      "anchor": " rows) if (r.status === \"offline\") out.set(r.id, slotOf(b",
       "class": "non-render/control",
       "rationale": "Data shaping: only live rows probe for a free badge colour slot, offline rows keep their hashed slot; nothing is rendered from the status."
     },
     {
       "path": "implementations/web/client/src/lib/identity.ts",
       "kind": "status-token",
-      "anchor": " rows) if (r.status !== \"offline\") live.set(initials(r.na",
+      "anchor": " rows) if (r.status !== \"offline\") {\n    const one = init",
       "class": "non-render/control",
       "rationale": "Data shaping: only live rows clash on badge letters, so offline rows keep one letter; nothing is rendered from the status itself."
     },
@@ -3117,7 +3117,7 @@
     {
       "path": "implementations/web/client/src/ui/work/ToolLine.tsx",
       "kind": "derived-output",
-      "anchor": "return line;",
+      "anchor": "{state !== \"failed\" ? line : <FailedTip line={line} words={call.kind === \"command\" ? FAILED_COMMAND : FAILED_OTHER} />}",
       "class": "non-render/control",
       "rationale": "Not presence: `status` is the trace line's prop for the call's own state from its result marker; the line names a call, never the agent's status."
     },
@@ -3134,6 +3134,13 @@
       "anchor": "{line}",
       "class": "non-render/control",
       "rationale": "Not presence: the failed call's line and its tooltip; `line` carries the trace line's own `status` prop, set from the call's result marker, never the agent's status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/work/ToolPayloads.tsx",
+      "kind": "derived-output",
+      "anchor": "{([['Input', call.input], ['Result', call.result]] as const).map(([label, value]) =>\n    <details key={label} className=\"ox-payload\">\n      <summary>{label}{value === undefined ? ` · ${missing}` : \"\"}</summary>\n      <pre>{value === undefined ? (payloadRead?.reason ?? \"No payload received. It may be withheld or outside the retained window.\") : payloadText(value)}</pre>\n    </details>\n  )}",
+      "class": "non-render/control",
+      "rationale": "Not presence: payloadRead.status describes an API payload read refusal or failure. These details show tool inputs and results or an explicit read error, never the agent's presence status."
     },
     {
       "path": "implementations/web/client/src/ui/work/Turn.tsx",
@@ -3480,7 +3487,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "derived-output",
-      "anchor": "= <WorkList work={work} row={row} condition={condition} h",
+      "anchor": "ayloadRead} work={work} row={row} condition={condition} h",
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
@@ -3491,7 +3498,7 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentPage.tsx",
       "kind": "derived-output",
-      "anchor": "orkList work={work} row={row} condition={condition} h",
+      "anchor": "adRead} work={work} row={row} condition={condition} h",
       "class": "honest-text",
       "rationale": "The work list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports; the cited assertion reads the full footer.",
       "proof": {
@@ -3787,7 +3794,7 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
+      "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -3963,7 +3970,7 @@
     {
       "path": "implementations/cli/src/console/commands.ts",
       "kind": "derived-output",
-      "anchor": "`${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`",
+      "anchor": "`${consoleLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -5071,7 +5078,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",
-      "anchor": "`${item.name} · ${item.status}`",
+      "anchor": "`${psSeatLabel({ name: item.name, id: item.id })} · ${item.status}`",
       "class": "non-render/control",
       "rationale": "Attach picker label: the agent name with the manager-reported process state (row.status), not mesh presence or work progress."
     },
@@ -6240,7 +6247,7 @@
     {
       "path": "implementations/cli/src/watch-data.ts",
       "kind": "status-token",
-      "anchor": ".status === \"waiting\" ? \"waiting\" : \"hint\" }, activity: r",
+      "anchor": ".status === \"waiting\" ? \"waiting\" : \"hint\" }, activity: s",
       "class": "non-render/control",
       "rationale": "Watch roster table: \"waiting\" is the state cell's color tone name, not rendered text."
     },
@@ -6948,7 +6955,7 @@
     {
       "path": "implementations/tui/src/app.tsx",
       "kind": "derived-output",
-      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
+      "anchor": "{(pr) => (\n            <box flexShrink={0} marginBottom={1}>\n              <Show when={pr().status === \"waiting\"}>\n                <text fg={theme.text.feedback.warning.base}>{`◐ ${tuiName(pr().card.name, pr().card.id)} is waiting`}</text>\n                <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : \"It reported no question.\"}</text>\n              </Show>\n              <Show when={layout().kind === \"two\" && !composing()}>\n                <For each={overview(pr(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.muted} />}</For>\n              </Show>\n            </box>\n          )}",
       "class": "honest-text",
       "rationale": "App peer header: a waiting agent's own question, then the overview fields whose status names working progress as unknown.",
       "proof": {
@@ -7188,7 +7195,7 @@
     {
       "path": "implementations/tui/src/composer.tsx",
       "kind": "derived-output",
-      "anchor": "`answering ${peer.card.name}${ends()}`",
+      "anchor": "`answering ${tuiName(peer.card.name, peer.card.id)}${ends()}`",
       "class": "honest-text",
       "rationale": "App input box line: names the waiting agent the message answers; it makes no progress claim, and the agent's status shows only in the overview.",
       "proof": {
@@ -7514,6 +7521,34 @@
       "anchor": "legacyAgentCapRefusal(response.status, response.body)",
       "class": "non-render/control",
       "rationale": "App user identity provisioning: maps a legacy agent-cap HTTP refusal response into a typed CommandFailure; no presence rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "joinedAgentRows(result)",
+      "class": "non-render/control",
+      "rationale": "Spawn join receipt: the Agent, Identity and Manager rows of the launch result; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     }
   ]
 }

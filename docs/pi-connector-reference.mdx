@@ -64,7 +64,9 @@ unprotected.
 A batch carries up to 32 automatic messages in arrival order. When more are waiting, a role request
 takes a seat ahead of the channel posts that arrived before it, so it does not wait behind chatter
 for a later turn. DMs keep their place in arrival order. A post that mentions the seat counts as a
-channel post here, so it can wait for a later batch, and it still wakes the seat.
+channel post here, so it can wait for a later batch, and it still wakes the seat. That wake names
+the sender by id when the sender's name is missing or only whitespace. A name that contains
+anything else is kept, including a leading space.
 
 A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
 request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
@@ -110,6 +112,10 @@ A manifest agent declared `continuity: exact` is reopened with `pi --session <id
 fails when Pi no longer has that session instead of creating an empty one under the same id.
 
 ## Event plane
+
+The shared launch and emitter carry payload-withholding safety controls. This release does not
+qualify Pi payload mapping or native payload acceptance. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
 
 A managed Pi seat publishes AG-UI runs, completed assistant text messages, and tool start/end
 boundaries to `events.<owner>.<actor>`. The thread id is Pi's native session id. Pi's native

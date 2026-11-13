@@ -150,8 +150,8 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
   same("1.2 a failed command reads \"A command failed\" with the cross and a tooltip that names what is not published, and a failed edit's tooltip names the tool's input",
     { bash, edit: edit.words },
     {
-      bash: { lines: [["A command failed", "Bash · 1.8s", "error"]], cross: true, words: "The connector reports the call returned an error. It doesn't publish the error text or the command." },
-      edit: "The connector reports the call returned an error. It doesn't publish the error text or the tool's input.",
+      bash: { lines: [["A command failed", "Bash · 1.8s", "error"]], cross: true, words: "The connector reports the call returned an error. Open Input or Result for any received payload." },
+      edit: "The connector reports the call returned an error. Open Input or Result for any received payload.",
     });
 }
 {
@@ -171,7 +171,7 @@ const tipWords = () => text(document.querySelector("[role=tooltip]"));
   await m.run(() => button.click());
   same("1.4 a failed call's line is a button, so a tap or a click opens its tooltip and another closes it",
     [button.tagName, shut, tapped, tipWords()],
-    ["BUTTON", "", "The connector reports the call returned an error. It doesn't publish the error text or the command.", ""]);
+    ["BUTTON", "", "The connector reports the call returned an error. Open Input or Result for any received payload.", ""]);
   await m.unmount();
 }
 

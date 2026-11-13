@@ -9,7 +9,7 @@ type Binding = { proof: SmokeProof; sites: { path: string; anchors: string[] }[]
 const smokeProofs: Binding[] = [
   {
     proof: { path: "extensions/connector-core/smoke/orientation.smoke.ts", anchor: "assert.match(o.peers.summary, /bob\\/worker \\(working · progress unknown\\)/," },
-    sites: [{ path: "extensions/connector-core/src/orientation.ts", anchors: ['`${peerLabel(p.card)} (${honestStatus(p.status)})`', "honestStatus(p.status)"] }],
+    sites: [{ path: "extensions/connector-core/src/orientation.ts", anchors: ['`${peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) })} (${honestStatus(p.status)})`', "honestStatus(p.status)"] }],
   },
   {
     proof: { path: "extensions/connector-core/smoke/orientation.smoke.ts", anchor: "assert.match(text, /status: working · progress unknown · attention: open/," },
@@ -49,7 +49,7 @@ const smokeProofs: Binding[] = [
   },
   {
     proof: { path: "implementations/cli/smoke/console-status-row.smoke.ts", anchor: 'check("a working seat renders `mesh working · progress unknown`", working.includes("mesh working · progress unknown"), working);' },
-    sites: [{ path: "implementations/cli/src/console/commands.ts", anchors: ['`${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`'] }],
+    sites: [{ path: "implementations/cli/src/console/commands.ts", anchors: ['`${consoleLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`'] }],
   },
   {
     proof: { path: "implementations/cli/smoke/console-palette.smoke.tsx", anchor: 'assert.ok(row.includes("mesh working · progress unknown")' },
@@ -78,8 +78,8 @@ const smokeProofs: Binding[] = [
   {
     proof: { path: "implementations/web/smoke/session-view.smoke.ts", anchor: 'ok("2.10 every work-list branch renders the held work and its reported working footer"' },
     sites: [{ path: "implementations/web/client/src/ui/views/AgentPage.tsx", anchors: [
-      "= <WorkList work={work} row={row} condition={condition} h",
-      "orkList work={work} row={row} condition={condition} h",
+      "ayloadRead} work={work} row={row} condition={condition} h",
+      "adRead} work={work} row={row} condition={condition} h",
       "{steps.length > 0 && list}",
       "   </PlaneNote>\n        {list}\n      </div>\n    );\n  }",
       "{body}",

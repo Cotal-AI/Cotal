@@ -18,11 +18,12 @@ import { StatusBar } from "./ui/StatusBar.js";
 import { Help } from "./ui/Help.js";
 import { Search } from "./ui/Search.js";
 import { CommandPalette } from "./ui/CommandPalette.js";
-import { Confirm, type ConfirmTarget } from "./ui/Confirm.js";
+import { Confirm, shownKillName, type ConfirmTarget } from "./ui/Confirm.js";
 import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
+import { composeName, composePrompt } from "./compose-label.js";
 import { extensionNames } from "../ext-loader.js";
 import { spawnPersona } from "../lib/spawn-defaults.js";
 import { launchAgent } from "./launch.js";
@@ -300,7 +301,7 @@ export function App({
   const onFocus = useCallback((id: FocusId) => setFocusedId(id), []);
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
   const openMessage = useCallback((e: FeedEntry) => setDetail({ kind: "message", entry: e }), []);
-  const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name }), []);
+  const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name, id: p.card.id }), []);
   // Attach: open the seat's live terminal. Keyed by NAME (a managed seat need not be a roster peer,
   // same as `cotal attach --name`). A bad COTAL_DETACH_KEY is refused BEFORE suspending, as a
   // notice: the loop would only throw it after the takeover, with the screen already gone.
@@ -328,11 +329,9 @@ export function App({
   );
 
   const composeLabel = (c: ComposeTarget): string =>
-    c.kind === "channel"
-      ? "→ #" + c.channel
-      : c.kind === "dm"
-        ? "→ @" + c.toName
-        : "↩ " + c.entry.from.name + (c.entry.delivery === "multicast" && c.entry.channel ? " #" + c.entry.channel : "");
+    c.kind === "reply"
+      ? composePrompt({ kind: "reply", fromName: c.entry.from.name, fromId: c.entry.from.id, delivery: c.entry.delivery, channel: c.entry.channel })
+      : composePrompt(c);
 
   // First time the operator sends anything, put the operator on the roster: start the presence
   // peer (root.tsx's makeParticipant, the observer's own card), so agents see the operator and
@@ -422,8 +421,10 @@ export function App({
     const ok = (label: string) => () => setNotice(label);
     const fail = (e: unknown) => setNotice("send: " + (e as Error).message);
     // A DM to a peer the roster shows offline at send also says what happens to it.
-    const dmLabel = (lead: string, id: string, name: string) =>
-      ep.getRoster().find((p) => p.card.id === id)?.status === "offline" ? `${lead}${name}  ${offlineRecipientNotice(name)}` : lead + name;
+    const dmLabel = (lead: string, id: string, name: string) => {
+      const shown = composeName(name, id);
+      return ep.getRoster().find((p) => p.card.id === id)?.status === "offline" ? `${lead}${shown}  ${offlineRecipientNotice(shown)}` : lead + shown;
+    };
     void ensureParticipant().then((ready) => {
       if (!ready) return;
       if (c.kind === "channel")
@@ -435,7 +436,7 @@ export function App({
         const send = channel
           ? ep.multicast(text, { channel, replyTo: e.id, mentions: mentionsIn(text) })
           : ep.unicast(e.from.id, text, { replyTo: e.id });
-        void send.then(ok(channel ? "↩ " + e.from.name : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
+        void send.then(ok(channel ? "↩ " + composeName(e.from.name, e.from.id) : dmLabel("↩ ", e.from.id, e.from.name))).catch(fail);
       }
     }, fail); // a participant start that throws before its own catch must not drop the message silently
   };
@@ -474,9 +475,10 @@ export function App({
     setConfirm(null);
     if (c?.kind === "kill") {
       const graceful = !opts?.force;
-      setNotice(`${graceful ? "stopping" : "force-killing"} ${c.name}…`);
+      const shown = shownKillName(c.name, c.id);
+      setNotice(`${graceful ? "stopping" : "force-killing"} ${shown}…`);
       void ctl("stop", { name: c.name, graceful }).then((r) =>
-        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${c.name}` : `stop: ${r.error ?? "failed"}`),
+        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${shown}` : `stop: ${r.error ?? "failed"}`),
       );
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);
@@ -497,7 +499,10 @@ export function App({
   useInput(
     (input, key) => {
       if (helpOpen) return setHelpOpen(false);
-      if (detail) return setDetail(null);
+      if (detail) {
+        if (detail.kind === "agent" && !key.escape && !key.return) return;
+        return setDetail(null);
+      }
       if (search.active) return; // the Search line owns input while open
       if (input === "?") return setHelpOpen(true);
       if (input === "/") return setSearch((s) => ({ active: true, query: s.query }));
@@ -537,7 +542,7 @@ export function App({
   // terminal). App stays mounted, so the observer endpoint + MeshView survive in the background.
   if (attachTarget) return null;
   if (helpOpen) return <Help focusedId={focusedId} width={size.cols} height={size.rows} />;
-  if (detail) return <Detail target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
+  if (detail) return <Detail ep={ep} target={detail} feed={mesh.feed} width={size.cols} height={size.rows} managed={managed} />;
   if (confirm)
     return (
       <Confirm target={confirm} width={size.cols} height={size.rows} onConfirm={onConfirmed} onCancel={() => setConfirm(null)} />

@@ -17,7 +17,8 @@
  * provider is asked whether it answers; an unknown name or a missing host tool is refused before
  * anything is written, and a runtime left unnamed is never removed.
  *
- * On a terminal: Cloud is shown and cannot be chosen, every answer is shown before the save,
+ * On a terminal: Cloud can be chosen, a Cloud space registered here is set up in the project folder
+ * the terminal asks for, every answer is shown before the save,
  * Change asks again with the answers kept, Cancel saves nothing, and a missing project folder is
  * created only after the operator agrees. Installed runtimes and those whose host tool is found
  * start selected, and a selected runtime whose host tool is missing is reported and not installed.
@@ -46,7 +47,7 @@ process.env.COTAL_HOME = join(home, ".cotal");
 const xdg = join(home, ".config");
 process.env.XDG_CONFIG_HOME = xdg;
 mkdirSync(process.env.COTAL_HOME, { recursive: true });
-const { findMesh, findPreparedSpace, loadExtensionsManifest, loadMeshes, readPreferences, recordMesh, resolveMeshTarget, resolveOnPath } = await import("@cotal-ai/workspace");
+const { COTAL_CLOUD_IDP, findMesh, findPreparedSpace, loadExtensionsManifest, loadMeshes, readPreferences, recordMesh, resolveMeshTarget, resolveOnPath } = await import("@cotal-ai/workspace");
 const { loadAgentFile } = await import("@cotal-ai/core");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { check, finish } = createSuite();
@@ -505,13 +506,13 @@ if (process.platform !== "win32") {
     const dir = project("pty-cloud");
     const before = files();
     const t = terminal(dir);
-    check("a terminal is asked where the space runs, with Cloud pointing to cotal login", (await t.at(DESTINATION)) && /Cloud \(sign in with `cotal login`/.test(t.s.text()), t.s.text().slice(-600));
+    check("a terminal is asked where the space runs, with Cloud among the choices", (await t.at(DESTINATION)) && /○ Cloud/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
     t.write(DOWN);
     await wait(500);
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
-    check("Cloud cannot be chosen: moving past Self-hosted comes back to Local", /● Local/.test(frame.slice(frame.lastIndexOf("Local") - 4)), frame.slice(-400));
+    check("Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in", /● Cloud \(sign in to Cotal Cloud and choose your space\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
     t.write("\x03");
     check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
   }
@@ -580,6 +581,45 @@ if (process.platform !== "win32") {
     await t.answer(SAVE, ENTER);
     await t.answer(START_HOSTED, ENTER);
     check("and saving sets it up", (await t.exited()) && t.s.code === 0, { code: t.s.code, out: t.s.text().slice(-500) });
+  }
+  {
+    const custody = project("cloud-custody");
+    const creds = join(custody, ".cotal", "auth", "spaces", "cloud-team", "user-auth", "sentinel.creds");
+    mkdirSync(join(creds, ".."), { recursive: true });
+    writeFileSync(creds, "fixture-sentinel", { mode: 0o600 });
+    recordMesh({
+      space: "cloud-team", server: "nats://127.0.0.1:4997", root: custody, catalogRoot: custody,
+      mode: "user", origin: "catalog", catalogOwner: "cloud-fixture-account", catalogId: "cloud-space", catalogSlug: "cloud-team", catalogName: "Cloud team", catalogRole: "owner",
+      userAuth: { provider: "cotal", idp: { url: COTAL_CLOUD_IDP, issuer: "https://cloud.cotal.ai", audience: "cotal-mesh" }, endpoints: { url: "https://auth.example.test" }, remote: true, sentinelCredsPath: creds },
+      ts: new Date(0).toISOString(),
+    });
+    const dir = project("pty-cloud-space");
+    const t = terminal(dir);
+    await t.at(DESTINATION);
+    t.write(DOWN + DOWN);
+    await wait(500);
+    const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
+    check("with a Cloud space registered here the Cloud choice names the account's spaces", /● Cloud \(a space of your Cotal Cloud account\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
+    await t.answer(DESTINATION, ENTER);
+    check("Cloud with one space asks for the project folder next, without a sign-in or a space question",
+      (await t.at("Project folder (your agents work in it)")) && !/Which Cloud space\?|Approve sign-in/.test(t.s.text()), t.s.text().slice(-600));
+    await t.answer(PROJECT, ENTER);
+    await t.answer(APPLICATION, ENTER);
+    await t.answer(RUNTIMES, ENTER);
+    check("the review names Cloud, its space and the project folder",
+      (await t.at(SAVE)) && /destination\s+Cloud/.test(t.s.text()) && /space\s+cloud-team/.test(t.s.text()) && t.s.text().includes(`project      ${dir}`), t.s.text().slice(-700));
+    check("nothing is bound before the save", findMesh("cloud-team")?.root === custody);
+    await t.answer(SAVE, ENTER);
+    await t.answer(START_HOSTED, ENTER);
+    check("saving binds the Cloud space to the project and leaves its credentials where the sign-in put them",
+      (await t.exited()) && t.s.code === 0 && findMesh("cloud-team")?.root === dir && findMesh("cloud-team")?.catalogRoot === custody && existsSync(creds) && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, entry: findMesh("cloud-team"), out: t.s.text().slice(-700) });
+    const again = terminal(project("pty-cloud-elsewhere"));
+    await again.answer(DESTINATION, DOWN + DOWN + ENTER);
+    await again.answer(APPLICATION, ENTER);
+    await again.answer(RUNTIMES, ENTER);
+    check("a Cloud space bound to a project keeps it, unasked", (await again.at(SAVE)) && again.s.text().includes(`project      ${dir}`) && !again.s.text().includes(PROJECT), again.s.text().slice(-700));
+    await again.answer(SAVE, DOWN + DOWN + ENTER);
+    check("and Cancel there saves nothing", (await again.exited()) && again.s.code === 0 && findMesh("cloud-team")?.root === dir, { code: again.s.code, out: again.s.text().slice(-400) });
   }
   {
     const dir = project("pty-runtimes");

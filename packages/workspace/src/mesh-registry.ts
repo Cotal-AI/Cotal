@@ -46,7 +46,7 @@ export interface MeshEntry {
   userAuth?: UserAuthInfo;
   /** Closed space policy carried by a user-auth registration. Absent preserves the generic launch
    *  behavior; `events: "required"` forbids a connector session from joining without its event plane. */
-  policy?: { events: "required" };
+  policy?: { events?: "required"; eventPayloads?: "withheld" };
   /** The host the operator bound this mesh to, when they bound it somewhere reachable (`up --host`).
    *  It is the manager's attach/console BIND address, and it is recorded because it is a DECISION,
    *  not a derivable fact: a broker dial address is deliberately not treated as a manager bind

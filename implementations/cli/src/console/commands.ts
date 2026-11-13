@@ -4,7 +4,8 @@
 // they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
-import { mentionsIn, resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { mentionsIn, resolvePeer, AmbiguousPeerError, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { consoleLabel } from "./label.js";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { offlineRecipientNotice } from "@cotal-ai/workspace";
 import type { ManagerReply, ControlOp, ManagedRow, PsReply } from "@cotal-ai/workspace/control";
@@ -63,7 +64,7 @@ export const meshWord = (a: Pick<ManagedRow, "mesh">): string => a.mesh === "wor
  *  presence ({@link meshWord}), and they disagree in the common failure (running for days, offline
  *  on the mesh). */
 export function formatManagedRow(a: ManagedRow): string {
-  return `${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`;
+  return `${consoleLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${meshWord(a)} · up ${Math.round(a.uptimeMs / 60000)}m`;
 }
 
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:
@@ -80,7 +81,14 @@ function peerOf(snap: MeshSnapshot, name: string): Presence | undefined {
 
 /** One-line note for the transient status bar when a name matched several peers. */
 function ambiguityNote(e: AmbiguousPeerError): string {
-  return `"${e.target}" is ambiguous - dm by id: ${e.candidates.map((c) => `${c.name} ${c.id}`).join(", ")}`;
+  return `"${e.target}" is ambiguous - dm by id: ${e.candidates.map((c) => (c.name.trim() ? `${c.name} ${c.id}` : c.id)).join(", ")}`;
+}
+
+/** A name the console's ps list and spawn notice show. A missing or whitespace-only name is the id, then `fallback`. */
+export function consoleShownName(name: string | undefined, id?: string, fallback = ""): string {
+  if (typeof name === "string" && name.trim()) return name;
+  if (typeof id === "string" && id.trim()) return id;
+  return fallback;
 }
 
 export const COMMANDS: ConsoleCommand[] = [
@@ -173,7 +181,7 @@ export const COMMANDS: ConsoleCommand[] = [
         ...(r.silent.length ? [`${r.silent.length} manager instance(s) gave no answer: ${r.silent.join(", ")}`] : []),
       ];
       const partial = issues.length ? ` (${issues.join("; ")})` : "";
-      ctx.notify((r.rows.length ? "agents: " + r.rows.map((a) => a.name).join(", ") : "no managed agents") + partial);
+      ctx.notify((r.rows.length ? "agents: " + r.rows.map((a) => consoleShownName(a.name, a.id, a.id)).join(", ") : "no managed agents") + partial);
     },
   },
   {
@@ -191,7 +199,10 @@ export const COMMANDS: ConsoleCommand[] = [
       // watched and driven here, and the plane is the connector's own concern.
       const r = await ctx.control("start", identity ? { name: persona, identity, events: false } : { name: persona, events: false });
       if (!r.ok) return ctx.notify("spawn: " + why(r));
-      ctx.notify(`spawned ${(r.data as { name?: string })?.name ?? persona}`);
+      const spawned = (r.data ?? {}) as { name?: unknown; id?: unknown };
+      const spawnedName = typeof spawned.name === "string" ? spawned.name : undefined;
+      const spawnedId = typeof spawned.id === "string" ? spawned.id : undefined;
+      ctx.notify(`spawned ${consoleShownName(spawnedName, spawnedId, persona)}`);
     },
   },
   {

@@ -42,6 +42,13 @@ import {
 import { closeSession, runSlash } from "./controller.js";
 import { listChoices, refusedDm, type Choice } from "./picker.js";
 
+/** The line `--plain` prints when a display name becomes shared. A blank name is not one, so the line names the principals. */
+export function sharedNameNotice(name: string, ids: readonly string[]): string {
+  const who = ids.map((id) => oneLine(id)).join(", ");
+  if (!name.trim()) return `more than one principal has no display name: ${who}`;
+  return `more than one principal uses the name ${oneLine(name)}: ${who}`;
+}
+
 type Mode =
   | { readonly kind: "compose" }
   | { readonly kind: "confirm"; readonly to: Recipient; readonly text: string }
@@ -86,7 +93,7 @@ export async function runPlain(opts: {
     }
     // Lines already printed show a name alone, so a name that more than one principal now carries is
     // named once with its principals.
-    for (const [name, ids] of now) if (!shared.has(name)) print(`more than one principal uses the name ${oneLine(name)}: ${ids.map(oneLine).join(", ")}`);
+    for (const [name, ids] of now) if (!shared.has(name)) print(sharedNameNotice(name, ids));
     shared = now;
     printedEntries = total;
     if (unacked.length) session.surfaced(unacked.splice(0));

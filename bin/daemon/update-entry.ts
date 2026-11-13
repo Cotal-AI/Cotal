@@ -1,10 +1,11 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
-import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget, shellPath } from "@cotal-ai/workspace";
+import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
@@ -21,6 +22,7 @@ const composed: Command = { ...command, async run(args) {
   let preparedRestart = false;
   let absentRecoveryHost = false;
   let currentPackages = false;
+  let askedToStop = false;
   await update(args, { ...updateRuntime, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
@@ -98,6 +100,7 @@ const composed: Command = { ...command, async run(args) {
     const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return updateRuntime.reportRunningManager(flags);
+    const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
       // Keep the fresh, instance-pinned custody check below as the authority for update admission.
@@ -109,8 +112,32 @@ const composed: Command = { ...command, async run(args) {
       if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
       const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
       if (!currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
-        const names = status.stopImpact?.agents.map((agent) => agent.name);
-        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.instanceId} cannot preserve running agents on this computer during update${names?.length ? ` (${names.join(", ")})` : ""}; restarting it would end them`, { remedy: `save their work; stop each with \`cotal stop <name> --on ${manager.instanceId} --space ${shellPath(manager.space)}\`, then rerun the same update command. To list agents, use \`cotal ps --on ${manager.instanceId} --space ${shellPath(manager.space)}\` (requires admin scope)` });
+        const instanceId = manager.instanceId;
+        const inventory = await withIdpSessionDir(homeCotalDir(), async () => {
+          const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
+          const rows = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "ps", undefined, target.auth, "owner", 3000, { instanceId });
+          if (!rows.ok || !Array.isArray(rows.data)) throw new Error(rows.error ?? "hosted Manager agent inventory did not answer");
+          return rows.data as { name: string; id: string; lifecycleUid: string; activeAt?: number }[];
+        });
+        if (inventory.some(agent => !agent || typeof agent.name !== "string" || !agent.name || typeof agent.id !== "string" || !agent.id || typeof agent.lifecycleUid !== "string" || !agent.lifecycleUid)) throw new Error("hosted Manager returned an unfenced agent inventory; no stop authorized");
+        if (inventory.length !== status.agentCount) throw new Error("hosted Manager agent inventory changed during update preflight; retry the update");
+        const describe = inventory.map(agent => `${agent.name} (idle ${typeof agent.activeAt === "number" ? `${Math.max(0, Math.floor((Date.now() - agent.activeAt) / 60_000))} min` : "time unavailable"})`).join(", ");
+        blockedAgents.push({ space: manager.space, describe, async stop() {
+          await withIdpSessionDir(homeCotalDir(), async () => {
+            const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", instanceId, { onRefusal: "throw", readOnly: true });
+            const client = { versionSkew: (text: string) => text, roster: async () => [] };
+            const fresh = await askManager(client, manager.space, target.server, "ps", undefined, target.auth, "owner", 3000, { instanceId });
+            if (!fresh.ok || !Array.isArray(fresh.data)) throw new Error(fresh.error ?? "agent inventory did not answer before stop");
+            const current = fresh.data as typeof inventory;
+            if (current.length !== inventory.length || inventory.some(agent => !current.some(row => row.id === agent.id && row.lifecycleUid === agent.lifecycleUid && row.name === agent.name))) throw new Error("agent inventory changed after consent; no further stops authorized; retry the update");
+            for (const agent of inventory) {
+              const stopped = await askManager(client, manager.space, target.server, "stop", { name: agent.name }, target.auth, "owner", 20_000, { instanceId, expectedTarget: { id: agent.id, lifecycleUid: agent.lifecycleUid } });
+              if (!stopped.ok) throw new Error(stopped.error ?? `could not stop ${agent.name}`);
+            }
+            const empty = await askManager(client, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId });
+            if (!empty.ok || (empty.data as { agentCount?: number })?.agentCount !== 0) throw new Error("hosted Manager still has running agents; update deferred");
+          });
+        } });
       }
       if (currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
         const names = status.stopImpact?.agents.map(agent => agent.name);
@@ -138,6 +165,20 @@ const composed: Command = { ...command, async run(args) {
         if (active.some(manager => manager.space === entry.space)) continue;
         if (await updateRuntime.reportRunningManager({ ...flags, space: entry.space }) === "legacy") return "legacy";
       }
+    }
+    if (localVerdict === "legacy") return localVerdict;
+    if (blockedAgents.length) {
+      const summary = blockedAgents.map(row => `${row.space}: ${row.describe}`).join("; ");
+      let consent = flags["stop-agents"] === true && process.env.COTAL_AUTO_UPDATE !== "1";
+      if (!consent && !askedToStop && process.env.COTAL_AUTO_UPDATE !== "1" && !process.env.COTAL_UPDATE_PARENT && process.stdin.isTTY && process.stdout.isTTY) {
+        askedToStop = true;
+        console.log(`These agents cannot survive this update: ${summary}`);
+        const input = createInterface({ input: process.stdin, output: process.stdout });
+        try { consent = /^(y|yes)$/i.test((await input.question("Stop these agents and continue the update? [y/N] ")).trim()); }
+        finally { input.close(); }
+      }
+      if (!consent) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `cannot preserve running agents on this computer during update (${summary}); restarting would end them`, { remedy: "save their work, then run `cotal update --self --stop-agents` to stop them and finish the update" });
+      for (const row of blockedAgents) await row.stop();
     }
     return localVerdict;
   }) });

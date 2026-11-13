@@ -482,6 +482,7 @@ export interface AuthProvider extends Extension {
     scope: string[];
     allowSubscribe: string[];
     allowPublish: string[];
+    eventPayloads?: false;
     role?: string;
     /** The spawning principal (`<owner>.<actor>` dot-form) — the grant's audit link. */
     parent?: string;

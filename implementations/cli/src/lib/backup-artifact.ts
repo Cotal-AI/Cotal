@@ -20,6 +20,7 @@ import {
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import {
   hardenPrivate,
+  eventPayloadStream,
   type BackupStreamState,
   type PersistentConsumerCheckpoint,
   type SpaceBackupSelection,
@@ -29,7 +30,9 @@ import {
 import { CommandFailure, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
-export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v2" as const;
+export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v3" as const;
+/** The format before full backups held the event payload stream. */
+export const BACKUP_MANIFEST_FORMAT_V2 = "cotal-space-backup/v2" as const;
 /** The format before full backups held workflow runs. Such an artifact still restores; its full
  *  selection is the message, registry and authorization streams, and the run stores come back empty. */
 export const BACKUP_MANIFEST_FORMAT_V1 = "cotal-space-backup/v1" as const;
@@ -53,7 +56,7 @@ export interface BackupStreamRecord {
 }
 
 export interface BackupManifest {
-  format: typeof BACKUP_MANIFEST_FORMAT | typeof BACKUP_MANIFEST_FORMAT_V1;
+  format: typeof BACKUP_MANIFEST_FORMAT | typeof BACKUP_MANIFEST_FORMAT_V2 | typeof BACKUP_MANIFEST_FORMAT_V1;
   createdAt: string;
   space: string;
   selection: SpaceBackupSelection;
@@ -251,13 +254,16 @@ function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
 export function artifactStreams(manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode">): readonly string[] {
   const inventory = spaceBackupInventory(manifest.space);
   if (manifest.selection !== "full") return inventory.registry;
-  return manifest.format === BACKUP_MANIFEST_FORMAT_V1 || manifest.mode === "user" ? inventory.backedUp.filter((stream) => stream.class !== "workflow").map((stream) => stream.name) : inventory.full;
+  return inventory.backedUp.filter((stream) =>
+    (manifest.format === BACKUP_MANIFEST_FORMAT || stream.name !== eventPayloadStream(manifest.space)) &&
+    (!(manifest.format === BACKUP_MANIFEST_FORMAT_V1 || manifest.mode === "user") || stream.class !== "workflow"),
+  ).map((stream) => stream.name);
 }
 
 /** The manifest's shape, format, inventory and source identity. Messages name no manifest value. */
 function validManifest(value: BackupManifest): BackupManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("backup manifest is not a JSON object");
-  if (value.format !== BACKUP_MANIFEST_FORMAT && value.format !== BACKUP_MANIFEST_FORMAT_V1) throw new Error("backup manifest names an unsupported format");
+  if (value.format !== BACKUP_MANIFEST_FORMAT && value.format !== BACKUP_MANIFEST_FORMAT_V2 && value.format !== BACKUP_MANIFEST_FORMAT_V1) throw new Error("backup manifest names an unsupported format");
   if (!value.space || !["full", "registry"].includes(value.selection) || !["auth", "open", "user"].includes(value.mode))
     throw new Error("backup manifest has invalid space, selection, or mode");
   if (typeof value.space !== "string" || value.space.length > 200) throw new Error("backup manifest names an invalid space");

@@ -69,6 +69,7 @@ The receipt names the destination and message identifier without repeating the b
 role sends include the broker's stored sequence. Storage does not confirm delivery, acceptance
 or completion. A direct send to an agent the roster shows offline also warns on stderr:
 `<agent> is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named <agent> does not receive it.`
+A name that is only whitespace is not used. The warning then starts `This participant is offline.` and does not name a new session.
 An offline presence card can outlive a retired session's inbox. Opening another chat under the same
 name creates a new lifecycle and does not recover that message.
 `--json` lists it as the `RECIPIENT_OFFLINE` warning. Use `--json/-j` for the same receipt as one versioned envelope, `--plain` for a text report, or
@@ -256,13 +257,14 @@ shows them.
 `/reply` answers the latest direct message or role task the session received. It addresses the
 sender's principal and quotes the message id, with no name lookup. A sender shows by display name,
 and with its principal when another principal in the session carries the same name, ignoring case.
+A display name that is only whitespace is shown as the principal.
 `--plain` cannot relabel a line it already printed, so it prints one line naming those principals
 when a name becomes shared. A typed `@<name>` must name one principal among the present peers and
 the senders the session heard from. A name that more than one of them carries refuses and lists
 them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<actor>` goes to that
 principal whether or not it is present or was heard from, and is never matched against display
 names. A peer whose display name parses as a principal therefore cannot be reached by that name;
-`/reply` and its full principal still reach it. Typing the session's own principal refuses with
+`/reply` and its full principal still reach it. A roster or heard name that is missing or only whitespace is shown as the principal. Typing the session's own principal refuses with
 `USAGE_INVALID`, and so does its own name when no other participant carries it. A `--stdio` `dm` request resolves its `to` the same way.
 
 
@@ -478,7 +480,9 @@ defaults or the built-in policy. The inventory uses the same mark for replay and
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
-poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
+poll, not proof of current activity or access. A roster name that is only whitespace is shown as
+the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
+or null when the roster has none. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the

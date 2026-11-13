@@ -1283,9 +1283,12 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  47 = the inline `persona` on `spawn` and the `define-persona` input take `endpoints`, the endpoint
  *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it.
  *
- *  48 = `list-dir` lists bounded child directory names on the selected Manager's host. */
+ *  48 = `list-dir` lists bounded child directory names on the selected Manager's host.
+ *
+ *  49 = `spawn` takes `eventPayloads` to withhold tool arguments and results. The input schema
+ *  is closed, so a revision-48 contract rejects this field. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 48, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 49, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

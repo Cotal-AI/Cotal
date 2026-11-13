@@ -670,7 +670,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "check", "json", "plain", "space", "server", "creds", "on"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "stop-agents", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
   assert.throws(
@@ -1664,6 +1664,11 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(managerLabel(row("manager", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an unnamed one shows by <host>/<runtime>");
   assert.equal(managerLabel(row("manager", { host: "pc" }, "busy")), "pc", "without a runtime in its activity, by its host");
   assert.equal(managerLabel(row("manager", {}, "supervisor (orca)")), "orca", "without a host, as a manager started by a cotal before 0.100.0, by its runtime");
+  assert.equal(managerLabel(row(" ", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "a whitespace manager name is shown by <host>/<runtime>");
+  assert.equal(managerLabel(row("", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an empty manager name is shown by <host>/<runtime>");
+  assert.equal(managerLabel(row("\n", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "a newline manager name is shown by <host>/<runtime>");
+  assert.equal(managerLabel(row(" ada", { host: "pc" }, "supervisor (tmux)")), " ada", "a manager name with a leading space stays");
+  assert.equal(managerLabel(row(" ", {})), "u_own.manager_x", "a whitespace manager name with no host or runtime is the id");
   const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
   const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
   assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");

@@ -11,7 +11,7 @@
  * Run: pnpm smoke:ps-mesh-column
  */
 import assert from "node:assert/strict";
-import { meshCell, psSeatLabel } from "../src/commands/agents.js";
+import { attachChoiceLabel, joinedAgentRows, meshCell, psSeatLabel } from "../src/commands/agents.js";
 import { MANAGER_CONTRACTS } from "../../manager/src/manager-service-contract.js";
 let pass = 0, fail = 0;
 const check = (name: string, actual: { text: string }, expected: string): void => {
@@ -72,5 +72,16 @@ for (const name of [" ", "", "\n", " \n\t"]) {
 judge("a seat keeps its name", psSeatLabel({ name: "ada", id: "local.ada" }) === "ada");
 judge("a seat keeps its name and role", psSeatLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
 judge("a blank seat name with a role uses the id", psSeatLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
+judge("an attach choice uses the id when the name is blank", attachChoiceLabel({ name: " ", id: "local.blank", status: "idle" }) === "local.blank · idle");
+judge("an attach choice uses the id when the name is empty", attachChoiceLabel({ name: "", id: "local.blank", status: "idle" }) === "local.blank · idle");
+judge("an attach choice uses the id when the name is a newline", attachChoiceLabel({ name: "\n", id: "local.blank", status: "idle" }) === "local.blank · idle");
+judge("an attach choice keeps a name with a leading space", attachChoiceLabel({ name: " ada", id: "local.blank", status: "idle" }) === " ada · idle");
+judge("an attach choice keeps a name", attachChoiceLabel({ name: "ada", id: "local.ada", status: "idle" }) === "ada · idle");
+const joined = (name: string) => joinedAgentRows({ name, id: "local.blank", managerInstanceId: "mgr" });
+judge("a joined receipt uses the id when the name is blank", joined(" ")[0]?.[1] === "local.blank" && joined(" ")[1]?.[1] === "local.blank");
+judge("a joined receipt uses the id when the name is empty", joined("")[0]?.[1] === "local.blank");
+judge("a joined receipt uses the id when the name is a newline", joined("\n")[0]?.[1] === "local.blank");
+judge("a joined receipt keeps a name with a leading space", joined(" ada")[0]?.[1] === " ada");
+judge("a joined receipt keeps a name", joinedAgentRows({ name: "ada", id: "local.ada", managerInstanceId: "mgr" })[0]?.[1] === "ada");
 console.log(`\nps mesh column smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

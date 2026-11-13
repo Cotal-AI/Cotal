@@ -546,6 +546,10 @@ the flags it replaces:
 ] }
 ```
 
+An embedder may set the trusted `AuthServiceRuntimeOptions.eventPayloadsWithheld` option to `true`
+to deny tool-payload publication in auth-service credential grants. The generated discovery bundle
+advertises the restriction so newly registering clients receive it.
+
 An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
 and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.
 An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is
@@ -660,7 +664,8 @@ there, not proof that nothing was lost. Each plain candidate line prints `from=`
 principal parsed from the stored message subject, which the broker binds to the sender's
 credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
 The label is the sender's claim and can name another agent; control characters and brackets in it
-print as spaces.
+print as spaces. A name that is only whitespace is left out. When that card still has a role, the
+label uses the subject principal in its place. A card with neither a name nor a role adds no label.
 
 With `--json`, this spelling uses the [`cotal pending`](cli-messaging.mdx#pending) reader and
 returns one versioned receipt, with facts and candidate IDs in `result`. No plain candidate

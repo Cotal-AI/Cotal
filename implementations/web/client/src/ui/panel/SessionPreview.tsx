@@ -69,6 +69,7 @@ export function SessionPreview({ store, id }: { store: Store<DashboardState>; id
   const roster = useStore(store, (s) => s.roster);
   const self = useStore(store, (s) => s.operatorId);
   const frames = useStore(store, (s) => s.sessions[id]?.frames) ?? NO_FRAMES;
+  const payloadRead = useStore(store, (s) => s.sessions[id]?.payloadRead);
   const posts = useOwnMessages(store, id);
   const entry = roster.find((p) => p.card.id === id);
   const row = useMemo(() => (entry ? rosterRows([entry], { includeOffline: true })[0] : undefined), [entry]);
@@ -88,7 +89,7 @@ export function SessionPreview({ store, id }: { store: Store<DashboardState>; id
   return (
     <>
       <NowHead turn={turn} current={current} row={row} />
-      <WorkList work={{ items: [lastSteps(turn, PEEK_STEPS)], toolStatus: work.toolStatus }} row={row} compact condition={condition} nameOf={nameOf} />
+      <WorkList payloadRead={payloadRead} work={{ items: [lastSteps(turn, PEEK_STEPS)], toolStatus: work.toolStatus }} row={row} compact condition={condition} nameOf={nameOf} />
     </>
   );
 }

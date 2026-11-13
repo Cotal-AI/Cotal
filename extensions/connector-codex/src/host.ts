@@ -433,6 +433,7 @@ export async function runCodexHost(): Promise<void> {
         // instead of leaving an outer copy that keeps writing the same value.
         const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
         const em = await AguiEmitter.start<CodexRecord>({
+          withholdPayloads: config.eventPayloadsWithheld,
           endpoint: agent.ep,
           wal,
           subjectFrontier,
