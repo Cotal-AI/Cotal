@@ -954,7 +954,7 @@ export function eventsGrantFor(mode: "user" | "static" | "open"): (channel: stri
   if (mode === "user")
     return (channel, owner) => `cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' --allow-publish ''`;
   if (mode === "static")
-    return (channel) => `cotal mint watcher --profile agent --allow-subscribe '${channel}' --provision`;
+    return (channel) => `cotal auth mint watcher --profile agent --allow-subscribe '${channel}' --provision`;
   return () => undefined;
 }
 
