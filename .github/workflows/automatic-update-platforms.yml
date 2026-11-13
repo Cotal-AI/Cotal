@@ -1,0 +1,31 @@
+name: Automatic update platforms
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  baseline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TEST_REAL_SERVICE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Published 0.164.0 native baseline only
+        run: node scripts/automatic-update-platform-baseline.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: automatic-update-baseline-${{ matrix.os }}
+          path: ${{ runner.temp }}/automatic-update-baseline-evidence
+          if-no-files-found: error
