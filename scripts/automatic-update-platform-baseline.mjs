@@ -18,8 +18,7 @@ const evidence = join(process.env.RUNNER_TEMP, 'automatic-update-baseline-eviden
 mkdirSync(evidence, { mode: 0o700 });
 const root = realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP, 'cotal-baseline-')));
 const prefix = join(root, 'prefix'), home = join(root, 'private-home'), daemonHome = join(root, 'daemon');
-// Leave daemonHome absent. The shipped CLI creates it with its native private ACLs.
-// POSIX mode alone on a precreated Windows directory does not establish that boundary.
+// The native fixture root is hardened with the published helper after npm installation.
 for (const dir of [prefix, home]) mkdirSync(dir, { mode: 0o700 });
 for (const dir of ['config', 'cache', 'data', 'state', 'runtime', 'tmp']) mkdirSync(join(home, dir), { mode: 0o700 });
 const report = { platform: process.platform, version: '0.164.0', calls: [],
@@ -89,6 +88,16 @@ try { const s=u.status(); console.log(JSON.stringify({platform:process.platform,
   assert.equal(policy.status, 0, 'unchanged native-OS eligible:true policy probe failed');
   assert.equal(process.env.COTAL_TEST_NATIVE_ACCOUNT_HOME, '1',
     'BLOCKED: native service uses disposable runner account HOME; explicit coordinator approval required');
+  // Match daemon-install-real.smoke.mjs: harden the owned root before creating its
+  // daemon child, so Windows CREATOR OWNER grants are not inherited by that child.
+  // Resolve the helper from this published CLI's ESM dependency graph, not checkout deps.
+  const fixture = `const url=import.meta.resolve('@cotal-ai/core', ${JSON.stringify(pathToFileURL(cli).href)});
+const {mkSecretDir}=await import(url);
+mkSecretDir(${JSON.stringify(root)}); mkSecretDir(${JSON.stringify(daemonHome)});`;
+  const prepared = native(process.execPath,
+    ['--experimental-import-meta-resolve', '--input-type=module', '-e', fixture]);
+  save('fixture-preparation.json', { exit: prepared.status, stdout: prepared.stdout, stderr: prepared.stderr });
+  assert.equal(prepared.status, 0, 'published private-directory helper must prepare native fixture');
   if (process.platform === 'darwin') {
     const domain = native('/bin/launchctl', ['print', `gui/${process.getuid()}`]);
     save('gui-domain.json', { exit: domain.status });
