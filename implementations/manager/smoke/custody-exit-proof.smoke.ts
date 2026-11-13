@@ -195,7 +195,7 @@ try {
   const uid1 = (r1 as { data: { lifecycleUid: string } }).data.lifecycleUid;
 
   check("clean1 dm_local- durable exists before despawn", await consumerExists(DM, dmDurable(DEV_OWNER, id1, uid1)));
-  check("clean1 dlv_local- durable exists before despawn", await consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)));
+  check("channel-less clean1 has no dlv_local- durable before despawn", !await consumerExists(DLV, dlvDurable(DEV_OWNER, id1, uid1)));
   check("clean1 read-ACL row exists before despawn", await aclPresent(id1, uid1));
   check("clean1 creds file exists before despawn", existsSync(credsFile("clean1", uid1)));
 
@@ -216,7 +216,7 @@ try {
   const uid2 = (r2 as { data: { lifecycleUid: string } }).data.lifecycleUid;
 
   check("survivor1 dm_local- durable exists before despawn", await consumerExists(DM, dmDurable(DEV_OWNER, id2, uid2)));
-  check("survivor1 dlv_local- durable exists before despawn", await consumerExists(DLV, dlvDurable(DEV_OWNER, id2, uid2)));
+  check("channel-less survivor1 has no dlv_local- durable before despawn", !await consumerExists(DLV, dlvDurable(DEV_OWNER, id2, uid2)));
   check("survivor1 read-ACL row exists before despawn", await aclPresent(id2, uid2));
   check("survivor1 creds file exists before despawn", existsSync(credsFile("survivor1", uid2)));
 
