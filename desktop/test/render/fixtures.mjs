@@ -43,7 +43,7 @@ export function nativeStub(scenario) {
         if (state.accountAction === "signout-busy") await new Promise(() => {});
         if (state.accountAction === "signout-refusal") return fail("LOGOUT_FAILED", "The provider refused to revoke this sign-in. Try again.");
         state.signedIn = false;
-        return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, removedRegistrations: [] });
+        return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, removedRegistrations: [], skippedServices: [] });
       }
       if (request.op === "service-disconnect") {
         if (state.accountAction) {

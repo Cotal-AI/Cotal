@@ -50,7 +50,7 @@ export type LogoutChange =
 
 export type LogoutResult =
   | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
-  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[] };
+  | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[] };
 
 export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "logout"; readonly idp: string }
