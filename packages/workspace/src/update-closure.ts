@@ -41,6 +41,15 @@ export function waitForUpdateClosure(): boolean {
   }
 }
 
+/** The other process that is changing this installation now, for a read that reports it and does
+ *  not wait behind it. Undefined when nobody is, or when this process's own transaction is. */
+export function installationWriter(): { pid: number } | undefined {
+  const current = inspectLock(lockPath());
+  if (current.state !== "active") return undefined;
+  if (held || (String(current.owner.pid) === process.env[OWNER] && current.owner.nonce === process.env[NONCE])) return undefined;
+  return { pid: current.owner.pid };
+}
+
 /** Reserve the outer closure barrier before taking seed or extension writer locks. */
 export function claimUpdateClosureAccess(recover = false): () => void {
   const owner = process.env[OWNER];

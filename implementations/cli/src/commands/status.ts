@@ -57,6 +57,7 @@ import {
   withdrawOperationNote,
   hasUserAuthState,
   homeCotalDir,
+  installationWriter,
   cachedPreferences,
   loadLaunchPersonaFile,
   resolvePreference,
@@ -649,7 +650,13 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   } catch (e) {
     gaps.add("CONNECTORS_UNREADABLE", `the installed connectors could not be listed: ${(e as Error).message}`);
   }
-  if (connectors) {
+  // Loading a connector's provider waits for a command that is changing the installation. Status is
+  // a read: it reports that command and leaves the rows unread.
+  const writer = connectors ? installationWriter() : undefined;
+  if (writer) {
+    gaps.add("INSTALLATION_CHANGING", `another cotal command (pid ${writer.pid}) is changing this installation, so the application rows were not read`, { pid: writer.pid });
+    hints.push("run `cotal status` again when that command finishes");
+  } else if (connectors) {
     const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
     for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
   }
