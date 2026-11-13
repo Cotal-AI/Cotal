@@ -34,7 +34,7 @@ import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGra
 import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
 
-import { resolveNativeMigration, COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
+import { isDiscoveryName, resolveDiscoveryLogin, resolveNativeMigration, COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
@@ -118,6 +118,12 @@ function canChooseAccount(): boolean {
 
 function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): void {
   presentationOf(args.values);
+  if (args.positionals.length) {
+    if (mode !== "login" || args.positionals.length !== 1 || !isDiscoveryName(args.positionals[0]!))
+      throw new CommandFailure("refused", "USAGE_INVALID", "login accepts one canonical discovery hostname");
+    if (args.values.cloud || args.values.idp !== undefined || args.values["migrate-from"] !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "a discovery name cannot be combined with --cloud, --idp or --migrate-from");
+  }
   if (args.values["migrate-from"] !== undefined) {
     if (mode !== "login" || args.values.cloud || args.values.idp !== undefined)
       throw new CommandFailure("refused", "USAGE_INVALID", "--migrate-from cannot be combined with --cloud or --idp");
@@ -136,6 +142,21 @@ function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): v
 
 /** Choose a login provider without requesting a session. Logout retains its cached-account choices. */
 export async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
+  return (await chooseAccountChoice(args, mode))?.url;
+}
+
+/** Keep discovery pins with the selected provider until the session is proved. */
+export async function chooseAccountChoice(args: ParsedArgs, mode: "login" | "logout"): Promise<{ url: string; discoveryPins?: { url: string; issuer: string; audience: string } } | undefined> {
+  if (args.positionals.length) {
+    validateAccountArguments(args, mode);
+    const discoveryPins = await resolveDiscoveryLogin(args.positionals[0]!);
+    return { url: discoveryPins.url, discoveryPins };
+  }
+  const url = await chooseAccountUrl(args, mode);
+  return url === undefined ? undefined : { url };
+}
+
+async function chooseAccountUrl(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
   if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (mode === "login" && args.values.cloud === true) return COTAL_CLOUD_IDP;
   if (typeof args.values.idp === "string") return normalizeIdpUrl(mode === "login" ? cloudAuthUrl(args.values.idp) : args.values.idp);
@@ -218,10 +239,10 @@ async function runLogin(args: ParsedArgs): Promise<void> {
     await legibly(() => runNativeMigration(args, args.values["migrate-from"] as string));
     return;
   }
-  const idpArg = await chooseAccount(args, "login");
-  if (idpArg === undefined) { console.error("Sign-in cancelled. No provider session was requested."); return; }
+  const choice = await chooseAccountChoice(args, "login");
+  if (choice === undefined) { console.error("Sign-in cancelled. No provider session was requested."); return; }
   await legibly(async () => {
-    const idp = normalizeIdpUrl(idpArg);
+    const idp = normalizeIdpUrl(choice.url);
     // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
     // proof leaves no cache entry to fool requireIdpSession later. Every provider request runs
     // before that, so a provider that cannot be reached leaves nothing cached: a dependency
@@ -230,6 +251,7 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       dir: homeCotalDir(),
       idpUrl: idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
+      expectedPins: choice.discoveryPins && { idpUrl: choice.discoveryPins.url, issuer: choice.discoveryPins.issuer, audience: choice.discoveryPins.audience },
       onPrompt: (p) => {
         console.error(renderReport({ sections: [{ title: "Approve sign-in", blocks: [
           { kind: "fields", rows: [["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", `in ${Math.ceil(p.expiresInSec / 60)} minutes`]] },
@@ -651,7 +673,8 @@ const authCommands: Command[] = [
     group: "Identity",
     summary: "sign in to Cotal Cloud or another host with device approval",
     examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [--cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
+    usage: "cotal login [<name> | --cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
+    positionals: "[<name>]",
     prepareMeshTarget: false,
     outputs: ["plain"],
     validate: (args) => validateAccountArguments(args, "login"),

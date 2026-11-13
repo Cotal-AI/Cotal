@@ -62,6 +62,7 @@ export interface SetupOptions extends InstallOptions {
   readonly space: string;
   readonly idp?: string;
   readonly clientId?: string;
+  readonly discoveryPins?: { url: string; issuer: string; audience: string };
   /** Seconds to wait for the space owner's approval. 0 reports what it reached and stops. */
   readonly waitSeconds: number;
   /** Progress for a terminal, one line per step. */
@@ -227,7 +228,7 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
   const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
-  if (!signedIn) {
+  if (!signedIn || opts.discoveryPins) {
     if (opts.existingSignInOnly) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
     const signed = await loginFromCli(opts);
     if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
@@ -296,6 +297,7 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<R
   opts.report("sign-in: approve this machine on another device", { step: "sign-in", outcome: "running", detail: "approve this machine on another device" });
   const reply = await loginFromCli({
     paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, idp: opts.idp,
+    discoveryPins: opts.discoveryPins,
     ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
     onPrompt: opts.onPrompt,
   });
@@ -376,6 +378,14 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const steps: SetupStep[] = [];
   let discoveredSignIn = false;
   const unit = await ensureInstalled(opts, steps);
+  if (opts.discoveryPins) {
+    const listed = await exchangeDesktopRequest(opts, { op: "spaces" });
+    const provider = listed.ok && !("event" in listed) && "spaces" in listed.result
+      ? listed.result.spaces.find(entry => entry.space === opts.space)?.idp : undefined;
+    if (provider !== undefined && normalizeIdpUrl(provider) !== normalizeIdpUrl(opts.discoveryPins.url)) {
+      throw new CommandFailure("refused", "USAGE_INVALID", "--idp does not match the space's pinned sign-in provider; no sign-in was started and nothing was registered", { native: { code: "IDP_MISMATCH" } });
+    }
+  }
   if (!opts.noManager) {
     let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);

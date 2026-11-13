@@ -36,6 +36,11 @@ const noop = async (): Promise<void> => {};
   assert.deepEqual(parsed.positionals, []);
   assert.doesNotThrow(() => login.validate?.(parsed));
   assert.throws(() => parseCommandArgs(login, ["--migrate-from"]));
+  const discovery = parseCommandArgs(login, ["product.example", "--no-browser", "--plain"]);
+  assert.deepEqual(discovery.positionals, ["product.example"]);
+  assert.doesNotThrow(() => login.validate?.(discovery));
+  for (const flags of [["--cloud"], ["--idp", "https://provider.example/auth"], ["--migrate-from", "https://old.example/auth"]])
+    assert.throws(() => login.validate?.(parseCommandArgs(login, ["product.example", ...flags])), /cannot be combined/);
   for (const provider of registry.all("auth-provider")) {
     if (!providersBefore.has(provider.name)) registry.unregister("auth-provider", provider.name);
   }

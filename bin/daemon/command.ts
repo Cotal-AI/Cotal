@@ -26,8 +26,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
-import { openLoginBrowser, cloudAuthUrl } from "@cotal-ai/workspace";
-import { chooseAccount, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
+import { openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
+import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
@@ -48,7 +48,7 @@ export const daemonFlags = [
   plainFlag,
   { name: "cloud", type: "boolean", description: "sign in to Cotal Cloud" },
   { name: "no-browser", type: "boolean", description: "print approval instructions without opening a browser" },
-  { name: "idp", type: "string", value: "<auth base URL>", description: "the provider's auth base URL, e.g. <origin>/api/auth" },
+  { name: "idp", type: "string", value: "<auth URL or name>", description: "the provider's auth base URL or issuer-authorized discovery hostname" },
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
@@ -169,20 +169,25 @@ async function status(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
 
-/** Sign in through the running daemon. The daemon talks to the IdP and keeps the session; this
- *  process only shows the approval prompt and the result, and never sees a token. Ctrl-C or SIGTERM
- *  asks the daemon to cancel the attempt and waits for its answer. */
+/** Select the provider before approval or native setup effects. */
+async function daemonAccountChoice(args: ParsedArgs) {
+  if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
+  const idp = args.values.idp;
+  if (typeof idp === "string" && isDiscoveryName(idp)) {
+    const discoveryPins = await resolveDiscoveryLogin(idp);
+    return { url: discoveryPins.url, discoveryPins };
+  }
+  return chooseAccountChoice({ ...args, positionals: [] }, "login");
+}
+
+/** Sign in through the daemon, which retains the session. Cancellation waits for its answer. */
 async function login(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { idp?: string; "client-id"?: string };
-  if (values.idp !== undefined) {
-    try { normalizeIdpUrl(cloudAuthUrl(values.idp)); }
-    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
-  }
-  const chosen = await chooseAccount(args, "login");
+  const chosen = await daemonAccountChoice(args);
   if (chosen === undefined) return;
   let idp: string;
-  try { idp = normalizeIdpUrl(chosen); }
+  try { idp = normalizeIdpUrl(chosen.url); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
   recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
@@ -190,7 +195,7 @@ async function login(args: ParsedArgs): Promise<void> {
   let reply;
   try {
     reply = await loginFromCli({
-      paths, peerUid, peerPid, idp,
+      paths, peerUid, peerPid, idp, discoveryPins: chosen.discoveryPins,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve sign-in", blocks: [
@@ -380,12 +385,8 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
   if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
-  let idp: string | undefined;
-  if (args.values.cloud === true) idp = await chooseAccount(args, "login");
-  if (values.idp !== undefined) {
-    try { idp = normalizeIdpUrl(cloudAuthUrl(values.idp)); }
-    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
-  }
+  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
+  let idp = choice?.url;
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
@@ -396,7 +397,8 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
     let installed = true;
     try { planUninstall(paths, home); } catch { installed = false; }
     if (!installed) {
-      idp = await chooseAccount(args, "login");
+      choice = await daemonAccountChoice(args);
+      idp = choice?.url;
       if (idp === undefined) return;
       newSignIn = true;
     }
@@ -417,7 +419,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
       if (providers.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", `The daemon is signed in to several providers (${providers.join(", ")}); pass --idp <url> to choose one`);
       idp = providers[0]!;
     }
-    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, existingSignInOnly: !newSignIn,
+    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, discoveryPins: choice?.discoveryPins, existingSignInOnly: !newSignIn,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); openLoginBrowser(p.verificationUriComplete, args.values); },
     });
@@ -432,6 +434,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
     r = await runSetup({
       paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report, version: binVersion(), noManager: values["no-manager"] === true,
       ...(idp !== undefined ? { idp } : {}),
+      discoveryPins: choice?.discoveryPins,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve this machine", blocks: [
