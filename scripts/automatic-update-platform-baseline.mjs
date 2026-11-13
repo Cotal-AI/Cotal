@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -62,9 +62,12 @@ try {
     npm_config_cache: join(home, 'npm-cache') };
   let installed;
   if (process.platform === 'win32') {
-    assert(!/["%&|<>^\r\n]/.test(prefix), 'unsafe cmd prefix');
-    installed = native(process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe',
-      ['/d', '/s', '/c', `npm install -g --prefix "${prefix}" cotal-ai@0.164.0 --no-audit --no-fund`], env);
+    // setup-node's Windows distribution keeps npm beside node.exe. Execute its JS entry
+    // directly so cmd.exe cannot preserve shell quotes as literal prefix characters.
+    const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    assert(existsSync(npmCli), `setup-node npm CLI missing: ${npmCli}; no shell fallback`);
+    installed = native(process.execPath,
+      [npmCli, 'install', '-g', '--prefix', prefix, 'cotal-ai@0.164.0', '--no-audit', '--no-fund'], env);
   } else installed = native('npm', ['install', '-g', '--prefix', prefix, 'cotal-ai@0.164.0', '--no-audit', '--no-fund'], env);
   save('installation.json', { exit: installed.status, stdout: installed.stdout, stderr: installed.stderr });
   assert.equal(installed.status, 0, 'published npm installation failed');
