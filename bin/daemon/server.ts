@@ -413,6 +413,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
       }
       const started = login.start({
         idp: req.idp,
+        discoveryPins: req.discoveryPins,
         ...(req.clientId !== undefined ? { clientId: req.clientId } : {}),
         onPrompt: (attempt, prompt) => void write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, event: "login-prompt", attempt, prompt }),
         onResult: async (attempt, result) => {

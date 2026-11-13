@@ -960,6 +960,21 @@ holder asks again, so its ack wait can run out, and the broker then redelivers t
 
 ## 9. NATS + JetStream security and authorization
 
+**Login discovery names.** A provider's root `/.well-known/cotal-mesh` document MAY
+carry an optional top-level `discoveryNames` array of canonical lowercase DNS hostnames
+(without a scheme, port, path, IP literal or trailing dot). A client resolving a typed
+name MUST fetch its document over HTTPS without credentials or redirects, then fetch
+the root document at the declared `userAuth.idp.issuer` origin under the same rules.
+The documents MUST agree on `userAuth.idp.url`, `issuer` and `audience`. Unless the
+typed name is the issuer's own hostname, the issuer's own root MUST list it in
+`discoveryNames`. An unlisted name MUST be refused before requesting device approval,
+with both the typed name and issuer origin identified. The approved account MUST
+match the resolved issuer and audience before persistence. The name is discovery
+only: login storage and catalog account binding use the resolved IdP URL. This does
+not change endpoint origin checks or move existing registrations. The issuer and
+IdP URL MAY have different origins. Discovery clients MUST bound each response's
+elapsed time and decoded size. The reference client uses five seconds and 64 KiB.
+
 **On by default.** A space is provisioned with decentralized JWT auth. Open unauthenticated
 dev mode is available but out of scope for the security claims here. *(Informative
 operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx),

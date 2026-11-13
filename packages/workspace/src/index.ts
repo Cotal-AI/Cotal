@@ -44,6 +44,7 @@ export * from "./prepared-spaces.js";
 export * from "./join-target.js";
 export * from "./registration-policy.js";
 export * from "./native-migration.js";
+export * from "./discovery-login.js";
 export * from "./broker-policy.js";
 export * from "./idp-url.js";
 export * from "./broker-display.js";
