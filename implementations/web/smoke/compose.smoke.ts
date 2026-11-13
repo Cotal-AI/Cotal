@@ -169,7 +169,7 @@ const draftOf = (text: string, extra: Partial<Draft> = {}): Draft => ({ text, ou
     [sendCommand({ kind: "dm", to: "local.rv2" }), sendCommand({ kind: "msg", channel: "review" }), words(shellArg(hostile)), words(sendCommand({ kind: "dm", to: hostile }).slice("cotal send -t ".length, -' "<text>"'.length)),
       words(sendCommand({ kind: "msg", channel: "rev;iew" }).slice("cotal send -c ".length, -' "<text>"'.length))],
     ['cotal send -t local.rv2 "<text>"', 'cotal send -c review "<text>"', [hostile], [hostile], ["rev;iew"]]);
-  const sendSpec = { kind: "command", name: "send", summary: "send", flags: sendFlags, positionals: '"<message>"' } as Command;
+  const sendSpec: Command = { kind: "command", name: "send", summary: "send", flags: sendFlags, positionals: '"<message>"', run: async () => {} };
   const accepted = (command: string) => {
     const input = sendArguments(parseCommandArgs(sendSpec, words(command).slice(2)));
     return [input.mode, input.target, input.text];
