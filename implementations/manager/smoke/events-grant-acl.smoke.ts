@@ -534,7 +534,7 @@ try {
     // write it to. The operator reading this refusal is on the manager's mesh.
     check(
       "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
-      /cotal mint /.test(rf) && !/cotal actor grant/.test(rf),
+      /cotal auth mint /.test(rf) && !/cotal actor grant/.test(rf),
       rf.slice(0, 600),
     );
     const rc2 = JSON.stringify(await newManager().resumePreserved(build(false)));
@@ -564,7 +564,7 @@ try {
     // here green, which is the defect this section exists for, one field over. So the mint runs on
     // the channel the refusal PRINTED and the result is compared against the channel the manager
     // actually refused.
-    const named = /cotal mint <reader> --profile (\S+) --allow-subscribe (\S+)/.exec(remedyRefusal);
+    const named = /cotal auth mint <reader> --profile (\S+) --allow-subscribe (\S+)/.exec(remedyRefusal);
     check("the refusal prints a mint command, naming a profile and a channel", named !== null, remedyRefusal.slice(0, 400));
     // The mint cells run only on a parsed command. Without one, the cell above is already red, and
     // minting on a stand-in would throw, skip section 10 and leave the count guard to report it.
@@ -649,6 +649,7 @@ try {
       (r1.error ?? "").includes("nothing to grant on an open mesh") &&
         (r1.error ?? "").includes("connecting bare") &&
         !/cotal mint /.test(r1.error ?? "") &&
+        !/cotal auth mint /.test(r1.error ?? "") &&
         !/cotal actor grant/.test(r1.error ?? ""),
       r1,
     );
@@ -691,7 +692,7 @@ try {
       "the OPEN resume door prints the open-mesh arm too (#567)",
       /another agent's event channel/.test(r2) &&
         r2.includes("nothing to grant on an open mesh") &&
-        !/cotal mint |cotal actor grant/.test(r2),
+        !/cotal mint |cotal auth mint |cotal actor grant/.test(r2),
       r2.slice(0, 500),
     );
 
