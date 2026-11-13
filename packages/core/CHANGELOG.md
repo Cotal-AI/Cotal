@@ -1,5 +1,17 @@
 # @cotal-ai/core
 
+## 0.164.4
+
+### Patch Changes
+
+- e61e70d: `cotal channel remove --purge` removes a channel's saved entry when the chat stream is already gone. The receipt says 0 messages were purged instead of reporting the change as unconfirmed.
+- e61e70d: `channel remove` reports a no-op when the channel registry bucket is already gone. It no longer says the change may have been applied.
+- e61e70d: `cotal clean history` purges the streams that are still on the broker when another requested stream is already gone. A missing chat stream no longer leaves direct messages in place under `stream not found`.
+- e61e70d: `cotal history --dms` warns when the direct-message stream is not on the broker and reports a partial read. Channel history is still shown. A missing stream is no longer reported as a complete history with no direct messages.
+- d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
+  
+  The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+
 ## 0.164.3
 
 No changes in this release.
