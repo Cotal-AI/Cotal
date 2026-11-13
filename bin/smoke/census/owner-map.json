@@ -684,6 +684,7 @@
   "cli:login--client-id": "current:login --client-id",
   "cli:login--cloud": "current:login --cloud",
   "cli:login--idp": "current:login --idp",
+  "cli:login--migrate-from": "current:login --migrate-from",
   "cli:login--no-browser": "current:login --no-browser",
   "cli:login--plain": "current:login --plain",
   "cli:logout": "current:logout",

@@ -22,6 +22,25 @@ import { compareSemver } from "../src/seed/reconcile.js";
 
 const noop = async (): Promise<void> => {};
 
+// Login's migration option is a value flag on the registered command, not a positional.
+{
+  const providersBefore = new Set(registry.all("auth-provider").map(provider => provider.name));
+  await import("@cotal-ai/auth");
+  const login = registry.all<Command>("command").find(command => command.name === "login");
+  assert.ok(login);
+  assert.deepEqual(login.flags?.map(flag => `${flag.name}:${flag.type}`).sort(), [
+    "client-id:string", "cloud:boolean", "idp:string", "migrate-from:string", "no-browser:boolean", "plain:boolean",
+  ]);
+  const parsed = parseCommandArgs(login, ["--migrate-from", "https://old.example/api/auth", "--no-browser", "--plain"]);
+  assert.equal(parsed.values["migrate-from"], "https://old.example/api/auth");
+  assert.deepEqual(parsed.positionals, []);
+  assert.doesNotThrow(() => login.validate?.(parsed));
+  assert.throws(() => parseCommandArgs(login, ["--migrate-from"]));
+  for (const provider of registry.all("auth-provider")) {
+    if (!providersBefore.has(provider.name)) registry.unregister("auth-provider", provider.name);
+  }
+}
+
 function installed(pkg: string, version = "0.13.1", spec = pkg): InstalledExtension {
   return { pkg, version, spec, commands: [] };
 }
