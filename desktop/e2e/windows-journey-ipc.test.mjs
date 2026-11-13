@@ -30,6 +30,29 @@ for (const action of ['resume', 'cancel', 'disconnect']) {
   });
 }
 
+test('actual fixture emits bounded passive progress only with private split-journey IPC', async () => {
+  const moduleUrl = new URL('./windows-journey.mjs', import.meta.url).href;
+  const script = `
+    import { windowsJourneyProgress } from ${JSON.stringify(moduleUrl)};
+    windowsJourneyProgress({ phase: 'recovery-settled', status: 'start' });
+    windowsJourneyProgress({ phase: 'secret=value', status: 'start' });
+    windowsJourneyProgress({ phase: 'cleanup-driver-close', waitingOn: 'driver-stop', status: 'start' });
+    process.disconnect();
+  `;
+  for (const split of [false, true]) {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script, '--', ...(split ? ['--desktop-service-phase'] : [])], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    const records = [];
+    child.on('message', row => records.push(row));
+    const [code, signal] = await once(child, 'exit');
+    assert.equal(code, 0);
+    assert.equal(signal, null);
+    assert.deepEqual(records, split ? [
+      { kind: 'progress', phase: 'recovery-settled', status: 'start' },
+      { kind: 'progress', phase: 'cleanup-driver-close', waitingOn: 'driver-stop', status: 'start' },
+    ] : []);
+  }
+});
+
 test('private import-time CLI environment keeps real Windows shell known folders', () => {
   const original = { HOME: 'foreign-home', COTAL_HOME: 'foreign-cotal', USERPROFILE: 'native-profile', APPDATA: 'native-roaming', LOCALAPPDATA: 'native-local' };
   const env = privateChildEnv('/owned/controller', original);
