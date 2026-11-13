@@ -13,6 +13,42 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::sync::Semaphore;
 
+#[cfg(all(feature = "e2e", debug_assertions))]
+fn trace_native_request(request: &DesktopRequest, phase: &str, request_id: u64, elapsed_ms: u128, frame: Option<&Value>) {
+    use std::io::Write;
+    let Some(home) = crate::e2e_trace_home() else { return; };
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_guard) = LOCK.lock() else { return; };
+    let at_unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .expect("E2E clock after Unix epoch").as_millis();
+    // Metadata only, never successful results, prompts or credentials.
+    let row = serde_json::json!({ "atUnixMs": at_unix_ms,
+        "phase": phase, "requestId": request_id, "elapsedMs": elapsed_ms, "request": request,
+        "ok": frame.and_then(|value| value.get("ok")), "error": frame.and_then(|value| value.get("error")) });
+    if let (Ok(mut bytes), Ok(mut file)) = (serde_json::to_vec(&row),
+        std::fs::OpenOptions::new().create(true).append(true).open(home.join("native-errors.jsonl"))) {
+        bytes.push(b'\n');
+        let _ = file.write_all(&bytes);
+    }
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+struct NativeRequestTrace<'a> {
+    request: &'a DesktopRequest,
+    id: u64,
+    started: std::time::Instant,
+    terminal: bool,
+    phase: &'static str,
+}
+#[cfg(all(feature = "e2e", debug_assertions))]
+impl Drop for NativeRequestTrace<'_> {
+    fn drop(&mut self) {
+        if !self.terminal {
+            trace_native_request(self.request, self.phase, self.id, self.started.elapsed().as_millis(), None);
+        }
+    }
+}
+
 const MAX_FRAME: usize = 64 * 1024;
 struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
@@ -70,9 +106,20 @@ async fn daemon_request(
     let command = if let Some(home) = crate::e2e_trace_home() {
         let trace = home.join("windows-bridge-trace.mjs");
         if trace.is_file() {
-            command.env("NODE_OPTIONS", format!("--import={}", url::Url::from_file_path(trace).expect("absolute E2E trace path")))
+            command.env("COTAL_DESKTOP_E2E_TRACE_HOME", home.to_string_lossy().as_ref())
+                .env("NODE_OPTIONS", format!("--import={}", url::Url::from_file_path(trace).expect("absolute E2E trace path")))
         } else { command }
     } else { command };
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let (trace_id, trace_started) = {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        (NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), std::time::Instant::now())
+    };
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    trace_native_request(&request, "start", trace_id, 0, None);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let mut trace = NativeRequestTrace { request: &request, id: trace_id,
+        started: trace_started, terminal: false, phase: "error" };
     let (mut events, mut child) = command
         .spawn()
         .map_err(|_| "The packaged daemon client could not start.")?;
@@ -108,12 +155,9 @@ async fn daemon_request(
                         },
                         Some("result") if result.is_none() => {
                             #[cfg(all(feature = "e2e", debug_assertions))]
-                            if let Ok(path) = std::env::var("COTAL_DESKTOP_E2E_NATIVE_LOG") {
-                                use std::io::Write;
-                                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                                    // Error metadata only, never successful results, prompts or credentials.
-                                    let _ = writeln!(file, "{}", serde_json::json!({ "request": request, "ok": frame.get("ok"), "error": frame.get("error") }));
-                                }
+                            {
+                                trace_native_request(&request, "result", trace_id, trace_started.elapsed().as_millis(), Some(&frame));
+                                trace.terminal = true;
                             }
                             result = Some(frame)
                         },
@@ -136,6 +180,8 @@ async fn daemon_request(
         Err("The daemon client closed without an exit receipt.".into())
     }).await;
     let _ = child.kill();
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if answer.is_err() { trace.phase = "timeout"; }
     let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
     if matches!(operation, "status" | "setup") {
         let status = crate::presence::tray_status(&frame);

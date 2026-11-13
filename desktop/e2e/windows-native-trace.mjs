@@ -3,12 +3,16 @@ import workerThreads from "node:worker_threads";
 import { errorMonitor } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
 import { appendFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Debug-only native launcher wrapper. Record only fixed tool names, timing and outcomes.
 // Return the original spawnSync result without changing arguments, environment or control flow.
-const output = join(dirname(fileURLToPath(import.meta.url)), "native-tool-timings.jsonl");
+const traceHome = process.env.COTAL_DESKTOP_E2E_TRACE_HOME ?? dirname(fileURLToPath(import.meta.url));
+if (!isAbsolute(traceHome)) throw new Error("E2E trace home must be absolute");
+const output = join(traceHome, "native-tool-timings.jsonl");
+// Eagerly create the upload artifact before importing any native entry point.
+appendFileSync(output, "");
 // Keep this self-contained so the focused test exercises the injected implementation.
 function tapOwnedServiceWorker(threads, monitor, record, workerOutput) {
   function preload(output, constructedAt) {
