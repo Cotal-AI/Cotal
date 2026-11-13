@@ -666,6 +666,38 @@ try {
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
+
+  // The chat stream is gone and a direct message is still stored. clean history must purge it.
+  {
+    const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
+    const { jetstreamManager } = await import("@nats-io/jetstream");
+    const { chatStream, dmStream, idFromCreds } = await import("@cotal-ai/core");
+    const note = `clean-dm-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, note);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.delete(chatStream(space)); }
+    finally { await nc.close(); }
+    const cleared = await run(["clean", "history", "--force", "--dms"]);
+    const read = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    let dmLeft = -1;
+    try { dmLeft = (await (await jetstreamManager(read)).streams.info(dmStream(space))).state.messages; }
+    finally { await read.close(); }
+    check("clean history purges direct messages when the chat stream is already gone",
+      cleared.status === 0 && cleared.stdout.includes("cleared 0 channel messages") && /1 DM message/.test(cleared.stdout) && dmLeft === 0,
+      { cleared: shown(cleared), dmLeft });
+  }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});
   await provisioner?.stop().catch(() => {});

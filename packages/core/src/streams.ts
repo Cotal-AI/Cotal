@@ -1077,9 +1077,18 @@ export async function clearSpaceHistory(opts: {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
-    const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
+    // A missing stream holds no retained messages. Keep going so a later stream is still purged.
+    const purgedOrZero = async (name: string): Promise<number> => {
+      try {
+        return (await jsm.streams.purge(name)).purged;
+      } catch (error) {
+        if (!isStreamNotFound(error)) throw error;
+        return 0;
+      }
+    };
+    const chat = await purgedOrZero(chatStream(opts.space));
     if (!opts.includeDms) return { chat };
-    const dm = (await jsm.streams.purge(dmStream(opts.space))).purged;
+    const dm = await purgedOrZero(dmStream(opts.space));
     return { chat, dm };
   } finally {
     await drainAndClose(nc);
