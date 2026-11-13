@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { spaceFromKey } from "./auth-paths.js";
 import { homedir } from "node:os";
 import { loginRecoveryCommand } from "./cloud-login.js";
+import { privateGroupWriteGap, shellPath } from "./protected-records.js";
 import { userCotalDir } from "./cotal-home.js";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -15,15 +16,29 @@ export interface ServiceLoginStore {
 export interface SkippedServiceLoginStore {
   readonly service?: string;
   readonly reason: "local-overrides" | "unproven";
+  /** A mode change or package that would let discovery prove this directory. */
+  readonly remedy?: string;
 }
 export interface ServiceLoginStoresReport {
   readonly stores: ServiceLoginStore[];
   readonly skipped: SkippedServiceLoginStore[];
 }
 class LocalOverrides extends Error {}
+class ServiceDiscoveryRefusal extends Error {
+  readonly remedy?: string;
+  constructor(remedy?: string) {
+    super("Manager service sign-in discovery refused an ambiguous or unprotected unit/store; use an explicit protected COTAL_HOME after inspecting the service configuration");
+    this.name = "ServiceDiscoveryRefusal";
+    this.remedy = remedy;
+  }
+}
 const proofs = new WeakMap<ServiceLoginStore, () => void>();
 const cap = 128 * 1024;
-function refuse(): never { throw new Error("Manager service sign-in discovery refused an ambiguous or unprotected unit/store; use an explicit protected COTAL_HOME after inspecting the service configuration"); }
+function refuse(remedy?: string): never { throw new ServiceDiscoveryRefusal(remedy); }
+function unproven(error: unknown, service?: string): SkippedServiceLoginStore {
+  const remedy = error instanceof ServiceDiscoveryRefusal ? error.remedy : undefined;
+  return { ...(service ? { service } : {}), reason: "unproven", ...(remedy ? { remedy } : {}) };
+}
 
 // Walk physical components through pinned directory descriptors. Only root-owned ancestors
 // (including the sticky temporary root used by isolated tests) may belong to another uid.
@@ -35,14 +50,28 @@ function physical<T>(path: string, directory: boolean, use: (fd: number) => T, c
     let fd = openSync("/", constants.O_RDONLY | constants.O_DIRECTORY);
     fds.push(fd);
     const parts = path.split("/").filter(Boolean);
+    let walked = "";
     for (const [i, part] of parts.entries()) {
       const last = i === parts.length - 1;
+      walked += `/${part}`;
       fd = openSync(`/proc/self/fd/${fd}/${part}`, constants.O_RDONLY | constants.O_NOFOLLOW | (last && !directory ? constants.O_NONBLOCK : constants.O_DIRECTORY));
       fds.push(fd);
       const st = fstatSync(fd);
       if ((!last || directory) ? !st.isDirectory() : !st.isFile()) refuse();
       if (last ? st.uid !== uid : st.uid !== uid && st.uid !== 0) refuse();
-      if (!(candidate && last && !directory) && (st.mode & 0o022) !== 0 && !(st.uid === 0 && st.isDirectory() && (st.mode & 0o1000))) refuse();
+      // A caller-owned directory that is group-writable only by that user's private group, with no
+      // extended ACL, is the same proof the config root uses. World write stays refused. A missing
+      // ACL inspection names the mode change or the acl package instead of a bare skip.
+      const stickyRoot = st.uid === 0 && st.isDirectory() && (st.mode & 0o1000) !== 0;
+      if (!(candidate && last && !directory) && !stickyRoot) {
+        if ((st.mode & 0o002) !== 0) refuse();
+        if ((st.mode & 0o020) !== 0) {
+          if (st.uid !== uid) refuse();
+          const gap = privateGroupWriteGap(walked, st.gid);
+          if (gap?.includes("getfacl")) refuse(`chmod g-w ${shellPath(walked)}, or install acl`);
+          if (gap) refuse();
+        }
+      }
     }
     return use(fd);
   } finally { for (const fd of fds.reverse()) closeSync(fd); }
@@ -157,9 +186,9 @@ export function serviceLoginStoresReport(): ServiceLoginStoresReport {
       if (entries.length > 1024) refuse();
       candidates.push({ root, entries });
     }
-  } catch {
+  } catch (error) {
     // An unreadable search root could conceal an override of any candidate.
-    return { stores: [], skipped: [{ reason: "unproven" }] };
+    return { stores: [], skipped: [unproven(error)] };
   }
   for (const { root, entries } of candidates) {
     for (const service of entries.sort()) {
@@ -175,7 +204,7 @@ export function serviceLoginStoresReport(): ServiceLoginStoresReport {
         const store = inspect(join(root, service), service, roots);
         if (store) stores.push(store);
       } catch (error) {
-        skipped.push({ service, reason: error instanceof LocalOverrides ? "local-overrides" : "unproven" });
+        skipped.push(error instanceof LocalOverrides ? { service, reason: "local-overrides" } : unproven(error, service));
       }
     }
   }

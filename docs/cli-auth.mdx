@@ -225,6 +225,8 @@ for Manager user services whose protected unit names their sign-in store and who
 existing session names the same provider and account. Login lists the services it refreshed.
 It never changes a store for another account or provider. A service with local overrides
 or an unprovable store is skipped, without writing credentials to a guessed path.
+A directory you own that is group-writable only by your private group, with no extended ACL, is proved.
+When that proof needs `getfacl` and it is not installed, the skip names `chmod g-w` on that directory or installing `acl`.
 Account sign-in still completes, including space discovery and selection. The report
 lists skipped services and prints `journalctl --user -u <unit>` to find their sign-in
 command when the store cannot be proved. Skipped services do not change the command's successful exit status.

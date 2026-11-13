@@ -324,6 +324,20 @@ const systemAccounts: AccountDatabase = {
 };
 const systemAcl = (path: string) => boundedRead("getfacl", "getfacl", ["--skip-base", "--absolute-names", "--", path]);
 
+/** Why group write on a caller-owned entry is not a proven user private group with no extended ACL.
+ *  Undefined when it is. World write and another owner's group write stay the caller's decision. */
+export function privateGroupWriteGap(path: string, gid: number): string | undefined {
+  const policy = systemPolicy();
+  const group = policy.privateGroupGap(gid);
+  if (group) return group;
+  try {
+    const acl = policy.extendedAcl(path);
+    return acl === "" ? undefined : "it has an extended ACL";
+  } catch (error) {
+    return `the private-group proof is unavailable: ${(error as Error).message}`;
+  }
+}
+
 let processPolicy: ProtectedPathPolicy | undefined;
 const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathPolicy(systemAccounts, systemAcl, process.getuid!());
 

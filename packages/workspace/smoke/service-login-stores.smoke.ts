@@ -72,6 +72,35 @@ if (process.platform === "linux") {
     assert.deepEqual(duplicate.stores.map(s => s.unitPath), [unit]);
     assert.deepEqual(duplicate.skipped, [{ service: siblingName, reason: "unproven" }]);
     assert.throws(serviceLoginStores);
+    rmSync(sibling, { force: true });
+    rmSync(join(customUnits, siblingName), { force: true });
+    const config = join(process.env.HOME, ".config");
+    chmodSync(config, 0o775);
+    const grouped = serviceLoginStoresReport();
+    assert.equal(grouped.stores.length, 0);
+    assert.equal(grouped.skipped.length, 1);
+    assert.equal(grouped.skipped[0]?.reason, "unproven");
+    assert.equal(grouped.skipped[0]?.remedy, `chmod g-w ${config}, or install acl`);
+    chmodSync(config, 0o777);
+    const world = serviceLoginStoresReport();
+    assert.equal(world.stores.length, 0);
+    assert.equal(world.skipped[0]?.remedy, undefined);
+    chmodSync(config, 0o775);
+    const bin = join(root, "bin");
+    mkdirSync(bin, { mode: 0o700 });
+    writeFileSync(join(bin, "getfacl"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath ?? ""}`;
+    try {
+      const proved = serviceLoginStoresReport();
+      assert.equal(proved.stores.length, 1);
+      assert.equal(proved.skipped.length, 0);
+      assert.equal(proved.stores[0]?.unitPath, unit);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
+    chmodSync(config, 0o700);
     console.log("PASS tolerant discovery: mixed units, template overrides, proven recovery and duplicate invalidation");
     console.log("PASS service login discovery: legacy product unit, custom unit excluded, source/store pins, physical paths and parser refusals");
   } finally {
