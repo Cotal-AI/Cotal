@@ -10,12 +10,15 @@ let held: HeldLock | undefined;
 let references = 0;
 const lockPath = () => join(homeCotalDir(), ".update-closure.lock");
 
-/** Wait without acquiring on read-only boot gates. */
+/** Wait without acquiring on read-only boot gates. A wait on another command's installation change
+ *  says so after one second, so a command that prints nothing yet is not mistaken for a hang. */
 export function waitForUpdateClosure(): boolean {
   let waitedForUpdate = false;
-  const deadline = Date.now() + 300_000;
+  const started = Date.now();
+  const deadline = started + 300_000;
   let updateDeadline: number | undefined;
   let announced = false;
+  let announcedWriter = false;
   for (;;) {
     const current = inspectLock(lockPath());
     const record = readUpdateRecovery();
@@ -29,6 +32,9 @@ export function waitForUpdateClosure(): boolean {
       waitedForUpdate = true;
       updateDeadline ??= Date.now() + 120_000;
       if (!announced) { console.error("waiting for a Cotal update to finish"); announced = true; }
+    } else if (!announcedWriter && Date.now() - started >= 1_000) {
+      console.error(`waiting for another cotal command (pid ${current.owner.pid}) to finish changing this installation`);
+      announcedWriter = true;
     }
     if (Date.now() >= (updating ? updateDeadline! : deadline)) throw new Error(updating ? "Cotal update did not finish within 120 seconds; retry once it finishes" : `closure writer pid ${current.owner.pid} did not finish within 300 seconds`);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);

@@ -969,6 +969,7 @@
     "smoke:update-remote-custody": "tsx implementations/cli/smoke/update-remote-custody.smoke.ts",
     "smoke:update-refusal": "tsx implementations/cli/smoke/update-refusal.smoke.ts",
     "smoke:update-custody": "tsx packages/workspace/smoke/update-custody.smoke.ts",
+    "smoke:update-closure-wait": "tsx packages/workspace/smoke/update-closure-wait.smoke.ts",
     "smoke:update-concurrency": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/update-concurrency.smoke.ts",
     "smoke:npm-umask": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/npm-umask.smoke.ts",
     "smoke:join-creds": "tsx implementations/cli/smoke/join-creds-pairing.smoke.ts",
