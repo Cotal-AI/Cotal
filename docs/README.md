@@ -190,6 +190,7 @@ Task dispatch:
 
 | Page | Covers |
 |---|---|
+| [Run the upgrade matrix](upgrade-matrix.md) | Published native upgrade cells and packed candidate qualification. |
 | [Roadmap](roadmap.md) | Cotal is pre-1.0, and the v0.x wire contract can still change under the change process. This page lists what is not built yet and where each area is headed. Nothing here is shipped behavior unless a linked page says so. The spec is the shipped contract. |
 | [Publishing a release](release.md) | Cotal releases with pnpm, Changesets, and one GitHub Actions workflow, changesets.yml. The fixed group in .changeset/config.json versions the public packages together. Examples are private and never publish. |
 | [Interface stability](stability.md) | Cotal's packages are pre-1.0 and publish in lockstep. Pin the versions you embed, and read Upgrading before you change them. Three version numbers mark three separate compatibility boundaries: the package version, the wire revision, and the contract revision that a service advertises in discovery. |

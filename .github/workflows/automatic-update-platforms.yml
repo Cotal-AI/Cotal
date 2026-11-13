@@ -1,5 +1,9 @@
 name: Upgrade matrix
 on:
+  release:
+    types: [published]
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
   push:
     branches: [test/upgrade-matrix]
@@ -9,6 +13,53 @@ on:
 permissions:
   contents: read
 jobs:
+  priority:
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+        source: ['0.163.5', '0.164.0']
+        include:
+          - os: ubuntu-24.04
+            source: latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Prepare disposable Linux user manager
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Prioritized published upgrade cells
+        shell: bash
+        run: |
+          failed=0
+          node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state stale-extensions --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state concurrent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state agent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          if [ '${{ runner.os }}' != Windows ]; then
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state stale-extensions --method installer --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state daemon --method scheduler --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          else
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state daemon --method scheduler --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          fi
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: priority-${{ matrix.os }}-${{ matrix.source }}
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
   workspace-native:
     uses: ./.github/workflows/workspace-native.yml
     with:
@@ -143,6 +194,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   published:
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       max-parallel: 12
@@ -186,6 +238,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   native:
+    if: github.event_name != 'push'
     strategy:
       fail-fast: false
       max-parallel: 6

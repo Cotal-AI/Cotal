@@ -1,4 +1,37 @@
 import assert from 'node:assert/strict';
+import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { create } from 'tar';
+
+test('candidate overlay serves packed closure, stock metadata and read-only policy', async () => {
+  const parent = '/var/tmp/upgrade-matrix';
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const root = mkdtempSync(join(parent, 'registry-test-'));
+  const names = JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat();
+  const packages = [];
+  for (const [i, name] of names.entries()) {
+    const dir = join(root, String(i));
+    mkdirSync(join(dir, 'package'), { recursive: true });
+    writeFileSync(join(dir, 'package/package.json'), JSON.stringify({ name, version: '0.999.0', type: 'module' }));
+    const archive = `${i}.tgz`;
+    await create({ cwd: dir, file: join(root, archive), gzip: true }, ['package']);
+    packages.push({ name, version: '0.999.0', archive, sha256: createHash('sha256').update(readFileSync(join(root, archive))).digest('hex') });
+  }
+  writeFileSync(join(root, 'manifest.json'), JSON.stringify({ source: 'a'.repeat(40), packages }));
+  const overlay = await candidateRegistry(root, 'B', 'https://registry.npmjs.org/');
+  try {
+    const metadata = await (await fetch(`${overlay.url}/cotal-ai`)).json();
+    assert.equal(metadata['dist-tags'].latest, '0.999.0');
+    assert.equal(metadata.versions['0.999.0'].version, '0.999.0');
+    const target = await (await fetch(`${overlay.url}/cotal-ai/0.999.0`)).json();
+    const archive = Buffer.from(await (await fetch(target.dist.tarball)).arrayBuffer());
+    assert.equal(createHash('sha256').update(archive).digest('hex'), packages.find(pkg => pkg.name === 'cotal-ai').sha256);
+    assert.equal((await fetch(`${overlay.url}/cotal-ai`, { method: 'PUT', body: '{}' })).status, 405);
+  } finally { await overlay.close(); }
+});
+
 import { test } from 'node:test';
 import { exclusion, requiresManualStep, sources, states, methods } from './automatic-update-platform-baseline.mjs';
 

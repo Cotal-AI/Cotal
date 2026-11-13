@@ -59,7 +59,7 @@ export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   assert(sources.includes(source) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const id = `${process.platform}-${source}-${layout}-${state}-${method}`;
+  const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}`;
   const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString() };
   const omit = exclusion({ layout, method, state });
   if (omit) {
@@ -77,7 +77,9 @@ export async function matrixCell(options) {
   for (const dir of [home, project, prefix]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, '.cotal'), { mode: 0o700 });
   const env = { ...cleanEnvironment(), HOME: home, USERPROFILE: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache') };
-  if (!(hosted && state === 'daemon')) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
+  if (!(hosted && state === 'daemon')) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
+  if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
+  for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
   const cotalHome = env.COTAL_HOME ?? (process.platform === 'win32' ? join(env.LOCALAPPDATA, 'Cotal') : join(home, '.cotal'));
   const config = env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'cotal') : process.platform === 'win32' ? join(env.APPDATA, 'Cotal') : join(home, '.config/cotal');
   const modules = join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules');
@@ -125,6 +127,9 @@ export async function matrixCell(options) {
     if (options.candidate) {
       overlay = await candidateRegistry(resolve(options.candidate), options.direction ?? 'B', report.registry);
       report.candidate = overlay.identity;
+      const numeric = value => value.split('.').map(Number);
+      const compare = (a, b) => { const left = numeric(a), right = numeric(b); for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i]; return 0; };
+      assert((options.direction ?? 'B') === 'B' ? compare(overlay.identity.version, report.source) > 0 : compare(report.target, overlay.identity.version) > 0, 'candidate ordering must permit a real version-changing stock update');
       env.npm_config_registry = overlay.url;
       if ((options.direction ?? 'B') === 'B') report.target = overlay.identity.version;
       else report.source = overlay.identity.version;
@@ -134,12 +139,17 @@ export async function matrixCell(options) {
     ok(layout === 'installer' ? await installer(report.source) : await npmCall('install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
+    if (process.platform === 'win32') {
+      const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
+      const prepare = `const {mkSecretDir}=await import(${JSON.stringify(core)});for(const dir of ${JSON.stringify([root, home, project])})mkSecretDir(dir);`;
+      ok(await call('harden native fixture directories', process.execPath, ['--input-type=module', '-e', prepare]), 'published private-directory preparation');
+    }
     if (state === 'daemon' && report.source === '0.155.0') {
       report.result = 'unsupported';
       report.refusal = "Published 0.155.0 has no automatic-update settings (--auto is unknown), so this state cannot be constructed through its CLI.";
       return report;
     }
-    if (['configured', 'daemon', 'agent', 'concurrent'].includes(state)) {
+    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state)) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
     }
@@ -175,7 +185,7 @@ export async function matrixCell(options) {
         ok(await cotal('prepare local stand-in space', ['setup', '--destination', 'local', '--harness', 'upgrade-standin', '--project', project, '--space', 'upgrade-proof', '--no-input', '--configure-only']), 'local setup');
         stackStarted = true;
         ok(await cotal('start local space', ['up', '--detach', '--space', 'upgrade-proof']), 'local stack');
-        ok(await cotal('spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--space', 'upgrade-proof']), 'stand-in spawn');
+        ok(await cotal('spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', 'upgrade-proof']), 'stand-in spawn');
         report.agentBefore = ok(await cotal('confirm native stand-in seat', ['ps', '--space', 'upgrade-proof', '--json']), 'stand-in ps').stdout;
       } else {
         env.MATRIX_HOLD = '1';
@@ -207,11 +217,21 @@ export async function matrixCell(options) {
         await delay(1000);
       }
       assert(report.daemonBefore, 'native daemon ready before update');
+      if (method === 'scheduler' && process.platform === 'linux') {
+        // Native custody observation runs asynchronously after the socket first becomes ready.
+        for (let i = 0; i < 90 && !report.daemonBefore.update?.automatic; i++) {
+          await delay(1000);
+          const status = await cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json']);
+          if (status.exit === 0) report.daemonBefore = JSON.parse(status.stdout).result;
+        }
+      }
     }
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
     report.targetBeforeAction = report.target;
+    report.versionChanging = report.source !== report.target;
     if (!options.candidate) {
       report.target = JSON.parse(ok(await npmCall('resolve public latest immediately before action', ['view', 'cotal-ai@latest', 'version', '--json']), 'latest before action').stdout);
+      report.versionChanging = report.source !== report.target;
     }
     let update;
     if (method === 'self') update = await cotal('upgrade under test', ['update', '--self']);
@@ -284,7 +304,7 @@ export async function matrixCell(options) {
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
     }
-    if (overlay && !uncertain) await overlay.close();
+    if (overlay) await overlay.close();
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     report.root = root;
     report.finishedAt = new Date().toISOString();
