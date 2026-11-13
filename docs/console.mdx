@@ -135,6 +135,7 @@ User authentication redeems the session through the identity plane's session-bea
 
 On an open mesh, your first send registers the operator in presence.
 This applies to `dm`, `call`, `ask`, `msg`, or a composed message, and requires `canWrite`.
+A composed message to a participant whose name is only whitespace names that participant by id.
 A watch-only session stays invisible.
 
 The console starts a presence-only endpoint with the observer's id, name, and `operator` role.
