@@ -501,6 +501,7 @@ export async function runJcodeHost(): Promise<void> {
           mapper = createJcodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId: resumeBrackets?.run, resumeTools: resumeBrackets?.tools });
           return AguiEmitter.start<PositionedJcodeJournalRecord>({
             endpoint: agent.ep,
+            withholdPayloads: config.eventPayloadsWithheld,
             wal,
             subjectFrontier,
             source: positionedJcodeJournalSource(new JcodeJournalSource(journalPath)),

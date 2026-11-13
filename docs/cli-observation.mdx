@@ -51,6 +51,14 @@ preview that leaves any of its text out ends with `…`. Closing a detail return
 message and scroll position it showed, and the roster to the seat it had selected, or to that row if
 the seat has left.
 
+In an agent detail, `t` toggles the tool-call panel. Payloads start collapsed; `p` toggles their
+display. Use ↑/↓ or `j`/`k` to scroll and Esc to close the panel. The console reads payload live
+traffic and history only for the selected concrete principal. A denied history read shows a
+payload-unavailable diagnostic rather than claiming the tool returned no output. A cut payload
+shows its `originalBytes` and `sha256` marker so the display does not imply a complete value.
+Payload admission and withholding follow the
+[connector rules](claude-connector-reference.mdx#event-plane).
+
 
 
 ## Web dashboard [#web-dashboard]

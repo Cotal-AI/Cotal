@@ -1,3 +1,4 @@
+import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
 import { EventEmitter } from "node:events";
 import { drainAndClose } from "./connection-cleanup.js";
@@ -2757,6 +2758,52 @@ export class CotalEndpoint extends EventEmitter {
     return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
+  /** Publish a payload frame on this principal's forge-locked sibling event rail. */
+  async publishEventPayload(opts: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    assertIdToken(opts.id, "publish id");
+    if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
+      throw new Error("payload expectation must be a non-negative safe integer");
+    if (!opts.parts.length) throw new Error("payload frame requires parts");
+    const message = this.casEnvelope({ ...opts, channel: `events.${this.owner}.${this.actor}` });
+    assertPartsSerializable(message.parts);
+    const ack = await this.js.publish(eventPayloadSubject(this.space, this.owner, this.actor), JSON.stringify(message),
+      { msgID: opts.id, expect: { lastSubjectSequence: opts.expectedLastSubjectSeq } });
+    return { ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+  }
+
+  /** Read payload history through a single native-filtered consumer, never through CHAT. */
+  async eventPayloadHistory(owner: string, actor: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
+    return (await this.streamHistory(eventPayloadStream(this.space),
+      [eventPayloadSubject(this.space, assertValidOwnerToken(owner), assertValidOwnerToken(actor))], opts?.limit ?? 100, undefined, opts?.signal))
+      .map(row => row.msg);
+  }
+
+  /** Verify the sibling stream and learn its actual message ceiling. A pre-upgrade space without
+   *  the stream or its info-read permission returns null and emits a warning. Other authorization,
+   *  transport and config errors throw. */
+  async eventPayloadLimit(): Promise<number | null> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    const stream = eventPayloadStream(this.space);
+    const info = await this.jsm.streams.info(stream).catch((err: unknown) => {
+      const denial = err instanceof PermissionViolationError ? err
+        : (err as { cause?: unknown } | null)?.cause;
+      const infoDenied = denial instanceof PermissionViolationError && denial.operation === "publish"
+        && denial.subject === `$JS.API.STREAM.INFO.${stream}`;
+      if (!infoDenied && !isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
+      const reason = infoDenied ? `missing publish permission on $JS.API.STREAM.INFO.${stream}` : `stream ${stream} is absent`;
+      this.emitRecoverable(new Error(
+        `event payloads unavailable: ${reason}; publishing tool names and times only. Upgrade the space's broker setup and credentials to enable payloads`,
+      ));
+      return null;
+    });
+    if (info === null) return null;
+    const { config } = info;
+    if (config.num_replicas !== 1) throw new Error("event payload stream requires one replica for serialized appends");
+    const limits = [this.maxPayload, config.max_msg_size, config.max_bytes].filter((n): n is number => typeof n === "number" && n > 0);
+    return Math.min(...limits);
+  }
+
   /** Unicast: direct message to one specific instance. */
   async unicast(
     instanceId: string,
@@ -2880,7 +2927,7 @@ export class CotalEndpoint extends EventEmitter {
           decoded = undefined;
         }
         const parsed = parseSubject(m.subject);
-        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
           if (!isFromSubjectSender(decoded, parsed)) continue;
           decoded = authenticatedMessage(decoded, parsed);
         }
@@ -4807,6 +4854,11 @@ export class CotalEndpoint extends EventEmitter {
    *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
    *  until such a consumer would have expired. */
   private async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
+    // A single filter must ride the filter-bearing API subject so scoped read grants apply.
+    if (config.filter_subjects?.length === 1) {
+      const { filter_subjects, ...rest } = config;
+      config = { ...rest, filter_subject: filter_subjects[0] };
+    }
     const pool = reader.pool;
     for (;;) {
       // A reconnect under the auth callout moved this connection to new reader names, and its
@@ -8726,7 +8778,7 @@ function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
  *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
  *  row type already verified stays verified (#1413). */
 function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
-  if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
+  if (parsed.kind === "chat" || parsed.kind === "evp") return authenticatedChannelMessage(msg, parsed.rest);
   if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
   if (parsed.kind === "svc") return authenticatedAnycastMessage(msg, parsed.rest);
   return msg;

@@ -130,6 +130,8 @@ export interface LaunchOpts {
    *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
    *  path never armed. */
   events?: boolean;
+  /** Publish tool inputs/results on the sibling rail. False retains names/times only. Defaults to true. */
+  eventPayloads?: boolean;
   /** The selected registration requires this session's structured event plane. A launcher sets this
    *  from trusted registration material; connectors carry it into launch material for session-side
    *  enforcement as well as arming the emitter. */

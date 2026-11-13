@@ -78,8 +78,8 @@ const smokeProofs: Binding[] = [
   {
     proof: { path: "implementations/web/smoke/session-view.smoke.ts", anchor: 'ok("2.10 every work-list branch renders the held work and its reported working footer"' },
     sites: [{ path: "implementations/web/client/src/ui/views/AgentPage.tsx", anchors: [
-      "= <WorkList work={work} row={row} condition={condition} h",
-      "orkList work={work} row={row} condition={condition} h",
+      "ayloadRead} work={work} row={row} condition={condition} h",
+      "adRead} work={work} row={row} condition={condition} h",
       "{steps.length > 0 && list}",
       "   </PlaneNote>\n        {list}\n      </div>\n    );\n  }",
       "{body}",

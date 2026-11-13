@@ -543,6 +543,8 @@ export interface ManagerOptions {
   onServiceIdentity?: (identity: ManagerServiceIdentity) => void | Promise<void>;
   /** The selected registration requires every launched connector session to publish events. */
   eventsRequired?: boolean;
+  /** Trusted registration policy withholds tool payloads for every seat. */
+  eventPayloadsWithheld?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** The broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -884,6 +886,7 @@ export interface ManagerResumeAgent {
     capabilities?: string[];
     endpoints?: PersonaEndpoint[];
     events: boolean;
+    eventPayloads?: boolean;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -1010,6 +1013,7 @@ export interface StartAgentOpts {
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
+  eventPayloads?: boolean;
   /** #373: set by `opStart` when a non-owner, non-admin caller omitted `events` and the plane was served
    *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
   eventsNotice?: string;
@@ -1088,6 +1092,7 @@ interface ManagedLaunch {
   /** The persona's endpoint commands, as minted. Renewal re-mints their rows. */
   endpoints?: PersonaEndpoint[];
   events: boolean;
+  eventPayloads?: boolean;
   shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
@@ -1197,6 +1202,7 @@ function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
  *  hosted arm. */
 interface ProvisionUserAgentOpts {
+  eventPayloads?: boolean;
   spawner?: string;
   specOwner?: string;
   subscribe?: string[];
@@ -1647,6 +1653,7 @@ export class Manager {
   private readonly name: string;
   private readonly workspaceRoot: string;
   private readonly eventsRequired: boolean;
+  private readonly eventPayloadsWithheld: boolean;
   /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The operator-set per-owner seat ceiling (see {@link ManagerOptions.seatCap}). */
@@ -2057,6 +2064,7 @@ export class Manager {
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.onServiceIdentity = opts.onServiceIdentity;
     this.eventsRequired = opts.eventsRequired === true;
+    this.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
     this.maxSessions = opts.maxSessions;
     this.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
     this.remoteAuthority = opts.remoteAuthority;
@@ -3726,6 +3734,7 @@ export class Manager {
         capabilities: a.launch.capabilities,
         ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
+        eventPayloads: a.launch.eventPayloads,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         ...(this.forkProvenance(a) ? { resumed: this.forkProvenance(a) } : {}),
@@ -3930,6 +3939,7 @@ export class Manager {
         allowPublish: launch.allowPublish,
         capabilities: launch.capabilities,
         events: launch.events,
+        eventPayloads: launch.eventPayloads,
         shareTools: launch.shareTools,
         forkSource: launch.forkSource,
         sessionId: launch.sessionId,
@@ -5327,6 +5337,7 @@ export class Manager {
         scope,
         allowSubscribe: opts.allowSubscribe,
         allowPublish: opts.allowPublish ?? [],
+        ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
         role: opts.role,
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
@@ -5425,6 +5436,7 @@ export class Manager {
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
         allowSubscribe: opts.allowSubscribe,
         ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+        ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       },
       ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
     };
@@ -6618,6 +6630,8 @@ export class Manager {
     // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
     // omitting it. The gate is on the DECISION, and it runs before connector resolution and
     // before `startAgent` (which mints credentials), so a refusal provisions nothing.
+    if (args.eventPayloads !== undefined && typeof args.eventPayloads !== "boolean")
+      return Promise.resolve({ ok: false, error: "eventPayloads must be a boolean" });
     const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
     let eventsNotice: string | undefined;
     let events: boolean | undefined = requestedEvents;
@@ -6664,6 +6678,7 @@ export class Manager {
         resumeClaim: args.resumeClaim as string | undefined,
         resumeAgent: args.resumeAgent as string | undefined,
         events,
+        eventPayloads: args.eventPayloads as boolean | undefined,
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
@@ -6835,7 +6850,7 @@ export class Manager {
     agent: string,
     shareTools: readonly string[] | undefined,
     harness: { binaries?: Readonly<Record<string, string>> },
-  ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "mcpServersExclusive" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "workspaceRoot"> {
+  ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "mcpServersExclusive" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "eventPayloads" | "workspaceRoot"> {
     return {
       space: this.space,
       servers: this.servers,
@@ -6849,6 +6864,7 @@ export class Manager {
       envAllow: spawnEnvAllow(cotalConfig),
       resolvedBinaries: harness.binaries,
       eventsRequired: this.eventsRequired,
+      ...(this.eventPayloadsWithheld ? { eventPayloads: false } : {}),
       // So a connector that keeps per-agent local state can root it at the workspace, not the
       // (possibly per-agent) launch cwd.
       workspaceRoot: this.workspaceRoot,
@@ -7579,6 +7595,9 @@ export class Manager {
     // The AG-UI event plane is on unless the launch explicitly opted out. A connector that cannot
     // emit one is refused further down, before anything is minted.
     const events = this.eventsRequired || opts.events !== false;
+    if (this.eventPayloadsWithheld && opts.eventPayloads === true)
+      return { ok: false, error: "space policy withholds event payloads" };
+    const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
     // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
     // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
@@ -7913,6 +7932,7 @@ export class Manager {
       let enrolled: ProvisionedUserAgent["enrolled"];
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
+          eventPayloads,
           spawner,
           specOwner: opts.owner,
           subscribe,
@@ -7993,6 +8013,7 @@ export class Manager {
         const creds = await this.withIssuer((i) =>
           this.withProvisioner((prov) =>
             provisionAgent(prov, this.auth!, identity, {
+              eventPayloads,
               subscribe,
               allowSubscribe,
               allowPublish,
@@ -8078,6 +8099,7 @@ export class Manager {
         // file that may have changed since.
         endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
+        eventPayloads,
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -8090,7 +8112,7 @@ export class Manager {
           throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
         handle = runtime.spawnDelegated(
-          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },
+          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
       } else {
@@ -8155,6 +8177,7 @@ export class Manager {
           capabilities,
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
+          eventPayloads,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
@@ -8854,6 +8877,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
+          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
@@ -8939,6 +8963,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
+          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
           ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
@@ -12133,6 +12158,7 @@ export class Manager {
         capabilities: entry.launch.capabilities,
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
+        eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
         ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
@@ -12574,6 +12600,7 @@ export class Manager {
     const issued = a.issued;
     const creds = await this.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
+        eventPayloads: this.eventPayloadsWithheld ? false : a.launch.eventPayloads,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         role: a.role,

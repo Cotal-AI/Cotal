@@ -45,7 +45,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "node scripts/build-native.mjs && tsc -p tsconfig.json",
     "build:native": "node scripts/build-native.mjs",
-    "test": "tsx smoke/preflight.smoke.ts && tsx smoke/maintenance.smoke.ts && tsx smoke/manager-shutdown.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/chat-user-session.smoke.ts && tsx smoke/chat-compose.smoke.ts && tsx smoke/chat-name.smoke.ts && tsx smoke/chat-remembered.smoke.ts",
+    "test": "tsx smoke/managed-payload-request.smoke.ts && tsx smoke/preflight.smoke.ts && tsx smoke/maintenance.smoke.ts && tsx smoke/manager-shutdown.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/chat-user-session.smoke.ts && tsx smoke/chat-compose.smoke.ts && tsx smoke/chat-name.smoke.ts && tsx smoke/chat-remembered.smoke.ts",
     "prepack": "node scripts/assert-shipped-natives.mjs",
     "prepublishOnly": "node scripts/assert-shipped-natives.mjs && pnpm run build"
   },

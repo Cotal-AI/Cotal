@@ -19,7 +19,7 @@ Source references are to `c28c9ab16532d72f5b53521b808e8a0a93dddb2e`. Line number
 ## 1. Purpose
 
 A person who owns a managed agent wants to read the result of one of that agent's tool calls
-without broadening who can see it. Today the event plane withholds `TOOL_CALL_ARGS` and
+without broadening who can see it. The ordinary event channel withholds `TOOL_CALL_ARGS` and
 `TOOL_CALL_RESULT` from `events.<owner>.<actor>` (`extensions/connector-core/src/agui.ts`, the
 `TOOL_CALL_RESULT` handling near line 377 and the egress check in `agui-emitter.ts`). That
 withholding stays unchanged. This proposal adds one narrow read path: a verified human consents, a

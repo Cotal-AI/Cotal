@@ -109,7 +109,10 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("directory navigation advances the manager cluster revision and retains the existing commands", shipped.revision === 48 && service.commands.has("list-dir") && service.commands.has("turn-unconfirmed") && service.commands.has("turn-participate") && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  check("tool payload control advances the manager cluster revision and retains the existing commands", shipped.revision === 49 && service.commands.has("list-dir") && service.commands.has("turn-unconfirmed") && service.commands.has("turn-participate") && service.commands.has("remove-persona") && service.commands.has("vitals") && service.commands.has("run-cancel") && service.commands.has("run-start-keyed") && service.commands.has("run-submission-status") && service.commands.has("chat-session-open") && service.commands.has("chat-session-retire") && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  const spawnInput = service.commands.get("spawn")!.contract.input;
+  check("resolved spawn contract accepts both payload policies and omission", [undefined, true, false].every((eventPayloads) => spawnInput.validate({ name: "payload-probe", ...(eventPayloads === undefined ? {} : { eventPayloads }) })));
+  check("resolved spawn contract refuses a nonboolean payload policy", !spawnInput.validate({ name: "payload-probe", eventPayloads: "false" }));
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const personaInput = service.commands.get("define-persona")!.contract.input;
   for (const field of ["model", "role", "agent"] as const) {
@@ -329,7 +332,7 @@ try {
   }
 }
 
-const EXPECTED = 42;
+const EXPECTED = 44;
 check("every declared manager service invoke cell ran", pass + fail === EXPECTED, { ran: pass + fail, expected: EXPECTED });
 console.log(`\n${fail === 0 ? "MANAGER SERVICE INVOKE SMOKE OK ✅" : "MANAGER SERVICE INVOKE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 emitSentinel({ passed: pass, failed: fail });

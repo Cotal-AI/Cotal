@@ -40,6 +40,9 @@ import type { SubjectFrontier } from "./subject-frontier.js";
  * generation 0; from v3 on the field is REQUIRED, because "absent" and "zero" would otherwise be
  * the same value and stripping the field would disable the guard silently.
  *
+ * **v4 adds a frozen sibling payload publication and its durable ack.** Older pending public
+ * frames migrate without payloads. Older builds refuse v4 rather than ignoring sibling work.
+ *
  * **THE MIGRATION IS FORWARD-ONLY, AND THAT MAKES THE STATE OUTLIVE A CODE ROLLBACK.** Once a
  * process writes v2, reverting the code does NOT revert the state: the older build refuses the
  * document it now finds. That is the right trade — fail-loud beats silently reading a schema you do
@@ -48,7 +51,7 @@ import type { SubjectFrontier } from "./subject-frontier.js";
  * the refusal below distinguishes NEWER-than-this-code from unknown, and says which migration.
  * There is deliberately no downgrade path: a lossy downgrade is worse than a halt.
  */
-export const EVENT_WAL_VERSION = 3;
+export const EVENT_WAL_VERSION = 4;
 
 export interface WalFrontier {
   /** The `seq` of the last frame FOLDED into the frontier. 0 before the first frame lands. */
@@ -59,7 +62,17 @@ export interface WalFrontier {
   sourceCursor: string | undefined;
 }
 
+export interface WalPayload {
+  id: string;
+  E: number;
+  body: Part[];
+  ackSeq?: number;
+}
+
 export interface WalPending {
+  /** v4 freezes the sibling publication before either rail can advance. */
+  payload?: WalPayload;
+  payloadCalls?: Record<string, boolean>;
   state: "sent_unacked" | "acked";
   /** Frozen at transition 1 and NEVER re-minted — a retry must carry the same id. */
   id: string;
@@ -94,6 +107,7 @@ export interface WalPending {
 }
 
 export interface WalDoc {
+  payloadCalls?: Record<string, boolean>;
   v: number;
   /**
    * How many durable replaces this document has been through (v3).
@@ -308,6 +322,14 @@ function parseBrackets(path: string, field: string, v: unknown, nullable: boolea
   return { run: b.run, text: b.text as string[], reasoning: b.reasoning as string[], tools: b.tools as string[] };
 }
 
+function parsePayloadCalls(path: string, value: unknown): Record<string, boolean> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 4096 ||
+      Object.entries(value).some(([id, allowed]) => !id || typeof allowed !== "boolean"))
+    throw new WalCorruptError(path, "payloadCalls is a bounded boolean record", "invalid call classification");
+  return { ...value } as Record<string, boolean>;
+}
+
 function parseDoc(path: string, raw: string, space: string, threadId: string, principal: string): WalDoc {
   let d: unknown;
   try {
@@ -441,6 +463,14 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
           `Let the older build settle this frame first, then start the newer one.`,
       );
     (p as { brackets?: unknown }).brackets = parseBrackets(path, "pending.brackets", (p as { brackets?: unknown }).brackets, false);
+    if (p.payload !== undefined) {
+      const payload = p.payload;
+      if (doc.v < 4 || !payload || typeof payload !== "object" || !Array.isArray(payload.body) || payload.body.length === 0 ||
+          !isSafeNonNegInt(payload.E) || (payload.ackSeq !== undefined && (!isSafeNonNegInt(payload.ackSeq) || payload.ackSeq <= payload.E)))
+        throw new WalCorruptError(path, "pending payload is a v4 frozen publication", JSON.stringify(payload));
+      assertIdToken(payload.id, "event WAL payload id");
+    }
+    p.payloadCalls = parsePayloadCalls(path, p.payloadCalls);
     pending = p as WalPending;
     assertPendingVintage(path, pending, f as WalFrontier);
   }
@@ -461,6 +491,7 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
     principal,
     frontier: f as WalFrontier,
     pending,
+    payloadCalls: parsePayloadCalls(path, doc.payloadCalls),
     brackets,
   };
 }
@@ -497,7 +528,11 @@ export class EventWal {
     private doc: WalDoc,
   ) {}
 
+  get payloadCalls(): Record<string, boolean> { return { ...(this.doc.pending?.payloadCalls ?? this.doc.payloadCalls ?? {}) }; }
   get epoch(): string { return this.doc.epoch; }
+  /** The validated space this log belongs to. */
+  get space(): string { return this.doc.space; }
+
   /** The principal this WAL was loaded FOR — exposed so a consumer can prove it is holding its own.
    *  `open()` already refuses a document whose stored principal disagrees, but that check protects
    *  the FILE, not the caller: an emitter handed the wrong WAL object entirely would sail past it. */
@@ -634,6 +669,8 @@ export class EventWal {
 
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
   async beginSend(frame: {
+    payloadCalls?: Record<string, boolean>;
+    payload?: WalPayload;
     id: string;
     E: number;
     seq: number;
@@ -658,18 +695,35 @@ export class EventWal {
     // guard and as `multicastExpecting`: non-empty array.
     if (!Array.isArray(frame.body) || frame.body.length === 0)
       throw new Error(`event WAL ${this.path}: a frame body must be a non-empty array of parts`);
+    parsePayloadCalls(this.path, frame.payloadCalls);
+    if (frame.payload) {
+      assertIdToken(frame.payload.id, "event WAL payload id");
+      if (!isSafeNonNegInt(frame.payload.E) || !Array.isArray(frame.payload.body) || frame.payload.body.length === 0 || frame.payload.ackSeq !== undefined)
+        throw new Error("event WAL payload must be an unacknowledged frozen publication");
+    }
     await this.write({ ...this.doc, pending: { state: "sent_unacked", ...frame } });
     });
   }
 
-  /**
-   * Transition 2 — a NON-duplicate ack becomes durable before the frontier moves.
+  /** Persist a sibling ack before the public frame can consume the source position. */
+  async recordPayloadAck(ackSeq: number): Promise<void> {
+    return this.serialize(async () => {
+      const p = this.doc.pending;
+      if (!p?.payload || p.state !== "sent_unacked" || p.payload.ackSeq !== undefined)
+        throw new Error("event WAL has no unacknowledged sibling payload");
+      if (!isSafeNonNegInt(ackSeq) || ackSeq <= p.payload.E) throw new Error("payload ack must advance its frozen expectation");
+      await this.write({ ...this.doc, pending: { ...p, payload: { ...p.payload, ackSeq } } });
+    });
+  }
+
+  /** Transition 2 — a NON-duplicate ack becomes durable before the frontier moves.
    * A duplicate ack must never reach here; the caller fails loud on one.
    */
   async recordAck(ackSeq: number): Promise<void> {
     return this.serialize(async () => {
     const p = this.doc.pending;
     if (!p || p.state !== "sent_unacked") throw new Error(`event WAL ${this.path}: no sent_unacked frame to ack`);
+    if (p.payload && p.payload.ackSeq === undefined) throw new Error("event WAL cannot acknowledge public frame before sibling payload");
     // VALIDATE BEFORE THE DURABLE WRITE. An accepted `recordAck(-1)` would let `fold()` persist
     // `frontier.lastSubjectSeq = -1`, and the NEXT open would refuse the file — a single bad ack
     // durably bricking the WAL while every call reported success. Fail-closed has to happen before
@@ -731,6 +785,7 @@ export class EventWal {
       // The frame's frozen state becomes the document's, so `brackets` always describes exactly the
       // events that are PUBLISHED AND FOLDED — never a batch that was validated and not yet sent.
       brackets: p.brackets,
+      payloadCalls: p.payloadCalls ?? this.doc.payloadCalls,
     });
     });
   }
