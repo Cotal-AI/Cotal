@@ -903,6 +903,13 @@ export function sendResult(channel: string, mentions: readonly string[], receipt
   return `Posted to ${at}, a new channel${mentions.length ? `, and mentioned ${named}` : ""}.${hint} ${later}`;
 }
 
+/** The name a spawn result shows. A missing or whitespace-only name is the seat's id. */
+export function shownSpawnName(name: string, id: string | undefined, role?: string): string {
+  if (name.trim()) return peerLabel({ name, role });
+  const ident = id !== undefined && id.trim() ? id : "(unnamed)";
+  return role !== undefined && role.trim() ? peerLabel({ name: ident, role }) : ident;
+}
+
 /** The `cotal_spawn` line for a seat the manager reports started: who it is, where it is and the next
  *  move. It names only the `join` channels the caller passed. The reply carries no channel list, and
  *  a persona the caller does not own may list channels the caller cannot read, so without `join` it
@@ -1894,7 +1901,8 @@ export function cotalToolSpecs(
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
-          const who = peerLabel({ name: actual, role });
+          const seatId = typeof d?.id === "string" ? d.id : d?.actor;
+          const who = shownSpawnName(actual, seatId, role);
           // Make the rename unmissable: a colliding caller must see it asked for `name` but got
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
@@ -1918,7 +1926,7 @@ export function cotalToolSpecs(
             };
           }
           if (pending)
-            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
+            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${shownSpawnName(actual, seatId)}, and cotal_despawn it if it never joins.`);
           // A once spawn names its task, so the spawner can read how it ended.
           const task = d?.once
             ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`

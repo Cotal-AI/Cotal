@@ -299,6 +299,7 @@
     "smoke:gateway": "tsx extensions/connector-core/smoke/gateway.smoke.ts",
     "smoke:discovery-addressing": "tsx extensions/connector-core/smoke/discovery-addressing.smoke.ts",
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
+    "smoke:spawn-blank-name": "tsx extensions/connector-core/smoke/spawn-blank-name.smoke.ts",
     "smoke:broker-redelivery-framing": "tsx extensions/connector-core/smoke/broker-redelivery-framing.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
     "smoke:control-rebind": "tsx extensions/connector-core/smoke/control-rebind.smoke.ts",
