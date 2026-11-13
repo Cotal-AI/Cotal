@@ -1,16 +1,21 @@
 /**
  * Claude Desktop runs a local MCP server in chat from its own config file, `claude_desktop_config.json`
  * (Settings > Developer > Edit Config, read when Desktop starts). A plugin's local server does not run
- * in chat. Setup writes one `cotal` entry there, which runs the materialized plugin's server with
- * `--desktop`, and keeps every other key of the file as it was.
+ * in chat. Setup writes one `cotal-desktop` entry there, which runs the materialized plugin's server
+ * with `--desktop`, and keeps every other key of the file as it was. An older entry of ours named
+ * `cotal` is renamed, because that name is the Claude Code plugin's server and Desktop Code would
+ * run the chat server in its place.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** The server's name in Desktop's config. */
-export const DESKTOP_SERVER = "cotal";
+/** The server's name in Desktop's config. Not `cotal`: that name is the Claude Code plugin's server. */
+export const DESKTOP_SERVER = "cotal-desktop";
+
+/** The name setup used before the Desktop server had one of its own. */
+const LEGACY_DESKTOP_SERVER = "cotal";
 
 /** Where Claude Desktop keeps its config, as the MCP docs give it, or `undefined` on a platform whose
  *  location they do not give. */
@@ -45,9 +50,23 @@ function readConfig(path: string): Config {
   return parsed as Config;
 }
 
-/** The `cotal` entry in the config at `path`, if it has one. */
+/** Whether an entry is the Desktop chat server setup wrote, which is the one a rename may move. */
+function ours(entry: unknown): boolean {
+  const args = (entry as { args?: unknown } | undefined)?.args;
+  return Array.isArray(args) && args.includes("--desktop");
+}
+
+/** The Desktop chat server in the config at `path`: the current name, or an older entry of ours still
+ *  stored under `cotal`. */
 export function readDesktopEntry(path: string): unknown {
-  return readConfig(path).mcpServers?.[DESKTOP_SERVER];
+  const servers = readConfig(path).mcpServers;
+  return servers?.[DESKTOP_SERVER] ?? (ours(servers?.[LEGACY_DESKTOP_SERVER]) ? servers?.[LEGACY_DESKTOP_SERVER] : undefined);
+}
+
+/** Whether Desktop's config has a server named `cotal`. That is also the Claude Code plugin's server
+ *  name, so a Code session in Desktop runs this one instead of the plugin. */
+export function desktopNameClash(path: string): boolean {
+  return readConfig(path).mcpServers?.[LEGACY_DESKTOP_SERVER] !== undefined;
 }
 
 /** Whether Claude Desktop is running, on macOS. Desktop reads its config once, when it starts, and
@@ -62,16 +81,21 @@ export function desktopRunning(platform: NodeJS.Platform = process.platform): bo
   return ps.stdout.split("\n").some((line) => line.endsWith("/Claude.app/Contents/MacOS/Claude"));
 }
 
-/** Write `entry` as the `cotal` server in the config at `path`. Returns what changed, or that nothing
- *  was written because Claude Desktop is running. */
+/** Write `entry` as the `cotal-desktop` server in the config at `path`. An older entry of ours named
+ *  `cotal` moves with it. Returns what changed, or that nothing was written because Claude Desktop
+ *  is running. */
 export function writeDesktopEntry(path: string, entry: DesktopEntry, running: () => boolean = desktopRunning): "added" | "updated" | "current" | "not added" | "not updated" {
   const config = readConfig(path);
-  const before = config.mcpServers?.[DESKTOP_SERVER];
-  if (JSON.stringify(before) === JSON.stringify(entry)) return "current";
-  if (running()) return before === undefined ? "not added" : "not updated";
-  config.mcpServers = { ...config.mcpServers, [DESKTOP_SERVER]: entry };
+  const servers = { ...config.mcpServers };
+  const before = servers[DESKTOP_SERVER];
+  const legacyOurs = ours(servers[LEGACY_DESKTOP_SERVER]);
+  if (legacyOurs) delete servers[LEGACY_DESKTOP_SERVER];
+  servers[DESKTOP_SERVER] = entry;
+  if (JSON.stringify(config.mcpServers ?? {}) === JSON.stringify(servers)) return "current";
+  if (running()) return before === undefined && !legacyOurs ? "not added" : "not updated";
+  config.mcpServers = servers;
   const tmp = `${path}.cotal-${process.pid}`;
   writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: existsSync(path) ? statSync(path).mode & 0o777 : 0o600 });
   renameSync(tmp, path);
-  return before === undefined ? "added" : "updated";
+  return before === undefined && !legacyOurs ? "added" : "updated";
 }

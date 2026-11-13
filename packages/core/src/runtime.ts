@@ -227,6 +227,7 @@ export interface DelegatedSeatLaunch {
   readonly prompt?: string;
   readonly launchOptions?: Readonly<Record<string, string>>;
   readonly events?: boolean;
+  readonly eventPayloads?: boolean;
 }
 
 /** The argv (after the `cotal` binary in the child's image) and the environment a runtime runs
@@ -249,6 +250,7 @@ export function delegatedSeatCommand(
   if (launch.prompt !== undefined) args.push("--prompt", launch.prompt);
   for (const [k, v] of Object.entries(launch.launchOptions ?? {})) args.push("--opt", `${k}=${v}`);
   if (launch.events !== undefined) args.push(launch.events ? "--events" : "--no-events");
+  if (launch.eventPayloads === false) args.push("--no-event-payloads");
   return { args, env: { [MANAGED_HANDOFF_FILE_ENV]: files.handoff, COTAL_MANAGER_INSTANCE: managerInstanceId } };
 }
 

@@ -1,13 +1,14 @@
 /**
- * Cotal's entry in Claude Desktop's `claude_desktop_config.json`: setup adds one `cotal` server and
- * keeps every other key of the file, never rewrites a file it cannot read, and writes nothing while
- * Desktop runs on macOS. A `ps` on PATH prints a macOS process listing for that check.
+ * Cotal's entry in Claude Desktop's `claude_desktop_config.json`: setup adds one `cotal-desktop`
+ * server and keeps every other key of the file, never rewrites a file it cannot read, and writes
+ * nothing while Desktop runs on macOS. An older entry of ours named `cotal` is renamed. A `ps` on
+ * PATH prints a macOS process listing for that check.
  */
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { desktopConfigPath, desktopRunning, readDesktopEntry, writeDesktopEntry } from "../src/desktop-config.js";
+import { desktopConfigPath, desktopNameClash, desktopRunning, readDesktopEntry, writeDesktopEntry } from "../src/desktop-config.js";
 
 const dir = mkdtempSync(join(tmpdir(), "cotal-desktop-config-"));
 const path = join(dir, "claude_desktop_config.json");
@@ -44,7 +45,8 @@ try {
   });
   ok("no config yet: the entry is added in a file only its owner reads", () => {
     assert.equal(writeDesktopEntry(path, entry), "added");
-    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { mcpServers: { cotal: entry } });
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { mcpServers: { "cotal-desktop": entry } });
+    assert.equal(desktopNameClash(path), false);
     assert.equal(statSync(path).mode & 0o777, 0o600);
   });
   ok("the same entry again writes nothing", () => {
@@ -55,12 +57,22 @@ try {
   const theirs = { globalShortcut: "Alt+Space", mcpServers: { filesystem: { command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me"] }, cotal: { command: "old" } } };
   rmSync(path);
   writeFileSync(path, JSON.stringify(theirs), { mode: 0o644 });
-  ok("an older cotal entry is replaced and every other key and server is kept, with the file's mode", () => {
-    assert.equal(writeDesktopEntry(path, entry), "updated");
+  ok("a server someone else named cotal is kept, and the Desktop server is added beside it", () => {
+    assert.equal(writeDesktopEntry(path, entry), "added");
     const now = JSON.parse(readFileSync(path, "utf8"));
-    assert.deepEqual(now, { ...theirs, mcpServers: { ...theirs.mcpServers, cotal: entry } });
+    assert.deepEqual(now, { ...theirs, mcpServers: { ...theirs.mcpServers, "cotal-desktop": entry } });
     assert.equal(statSync(path).mode & 0o777, 0o644);
     assert.deepEqual(readDesktopEntry(path), entry);
+    assert.equal(desktopNameClash(path), true);
+  });
+  ok("an older Desktop entry named cotal is renamed and is not left beside the new one", () => {
+    writeFileSync(path, JSON.stringify({ mcpServers: { filesystem: theirs.mcpServers.filesystem, cotal: entry } }));
+    assert.equal(writeDesktopEntry(path, entry), "updated");
+    const now = JSON.parse(readFileSync(path, "utf8")) as { mcpServers: Record<string, unknown> };
+    assert.equal(now.mcpServers.cotal, undefined);
+    assert.deepEqual(now.mcpServers["cotal-desktop"], entry);
+    assert.deepEqual(now.mcpServers.filesystem, theirs.mcpServers.filesystem);
+    assert.equal(desktopNameClash(path), false);
   });
   ok("a config that is not valid JSON is refused and left as it was", () => {
     writeFileSync(path, "{ not json");
@@ -105,14 +117,20 @@ try {
     assert.equal(existsSync(path), false);
     assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".cotal-")), []);
   });
-  ok("while Desktop runs an older entry is not updated and the file is left as it was", () => {
-    const text = JSON.stringify(theirs);
+  ok("while Desktop runs an older entry of ours is not renamed and the file is left as it was", () => {
+    const text = JSON.stringify({ mcpServers: { cotal: entry } });
     writeFileSync(path, text);
     assert.equal(writeDesktopEntry(path, entry, () => true), "not updated");
     assert.equal(readFileSync(path, "utf8"), text);
   });
+  ok("while Desktop runs a server someone else named cotal is left alone and nothing is added", () => {
+    const text = JSON.stringify(theirs);
+    writeFileSync(path, text);
+    assert.equal(writeDesktopEntry(path, entry, () => true), "not added");
+    assert.equal(readFileSync(path, "utf8"), text);
+  });
   ok("a current entry needs no write, so it is reported current while Desktop runs", () => {
-    writeFileSync(path, JSON.stringify({ mcpServers: { cotal: entry } }));
+    writeFileSync(path, JSON.stringify({ mcpServers: { "cotal-desktop": entry } }));
     let asked = 0;
     assert.equal(writeDesktopEntry(path, entry, () => ++asked > 0), "current");
     assert.equal(asked, 0);

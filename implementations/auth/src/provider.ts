@@ -700,7 +700,7 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid, fresh, custody }) {
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, eventPayloads, role, parent, label, lifecycleUid, fresh, custody }) {
     // Async work first: the callout material is loaded before the transaction, never inside it.
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
@@ -720,6 +720,7 @@ export const cotalAuthProvider: AuthProvider = {
         scope,
         allowSubscribe,
         allowPublish,
+        ...(eventPayloads === false ? { eventPayloads } : {}),
         ...(role ? { role } : {}),
         ...(parent ? { parent } : {}),
         ...(label ? { label } : {}),

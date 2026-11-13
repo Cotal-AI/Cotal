@@ -32,6 +32,7 @@ export interface ManagedLaunchRequest {
   allowPublish?: string[];
   /** Whether the agent publishes an event plane. Absent leaves it to the manager and the space's policy. */
   events?: boolean;
+  eventPayloads?: boolean;
   runtime?: string;
 }
 
@@ -62,6 +63,7 @@ export function requestManagedLaunch<R>(request: ManagedLaunchRequest, start: Ma
     allowSubscribe: request.allowSubscribe,
     allowPublish: request.allowPublish,
     events: request.events,
+    eventPayloads: request.eventPayloads,
     ...(request.runtime !== undefined ? { runtime: request.runtime } : {}),
   });
 }

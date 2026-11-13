@@ -77,6 +77,8 @@ export interface AgentDef {
    *  OpenCode config); a connector with no option surface fails loud. `--opt k=v` on the CLI, a
    *  manifest `launchOptions:`, or a nested `launchOptions:` block here all feed the same bag. */
   launchOptions?: Record<string, unknown>;
+  /** Publish tool arguments and results unless false or withheld by space policy. */
+  eventPayloads?: boolean;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
    *  cred's publish allow-list). `spawn` grants the manager's `spawnCallerCapabilities` ep rows
    *  and `run` the `runCallerCapabilities` rows (the run commands plus the spawn set). Default-deny
@@ -129,7 +131,7 @@ export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
 /** Frontmatter keys {@link AgentDef} models. The parser keeps them out of `meta`, and the writer
  *  refuses a `meta` entry that names one, so a hint can never overwrite a field the file models. */
-const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "endpoints", "owner"]);
+const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "eventPayloads", "capabilities", "endpoints", "owner"]);
 
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
@@ -251,6 +253,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
   // Opaque connector-specific launch options — a mapping core never interprets (each connector
   // reads its own keys). A scalar/sequence here is a config error (it must be `key: value` pairs).
+  if (fm.eventPayloads !== undefined && typeof fm.eventPayloads !== "boolean")
+    throw new Error(`agent file ${path}: "eventPayloads" must be a boolean`);
   const launchOptionsRaw = fm["launchOptions"];
   let launchOptions: Record<string, unknown> | undefined;
   if (launchOptionsRaw !== undefined && launchOptionsRaw !== null) {
@@ -279,6 +283,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     model,
     variant,
     launchOptions,
+    eventPayloads: fm.eventPayloads as boolean | undefined,
     capabilities: list("capabilities"),
     endpoints: parsePersonaEndpoints(fm["endpoints"], `agent file ${path}`),
     owner: str("owner"),
@@ -318,6 +323,10 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   // all quoting/escaping (a value with a `:`/`#`/`[`/quote round-trips safely, which the old
   // hand-rolled writer had to special-case). `lineWidth: 0` keeps scalars on one line (no folding).
   const fm: Record<string, unknown> = { name: def.name };
+  if (def.eventPayloads !== undefined) {
+    if (typeof def.eventPayloads !== "boolean") throw new Error('saveAgentFile: "eventPayloads" must be a boolean');
+    fm.eventPayloads = def.eventPayloads;
+  }
   if (def.role) fm.role = def.role;
   if (def.kind) fm.kind = def.kind;
   if (def.description) fm.description = def.description;

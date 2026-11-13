@@ -78,7 +78,7 @@ try {
     const saved = brackets.snapshot();
     const restored = createJcodeMapper({ threadId: "restart", mintRunId: () => "unexpected", resumeRunId: saved.run, resumeTools: saved.tools });
     const events = unitOf(restored.map({ cursor: "after", record: { append_messages: [result] } }))!.events;
-    assert.deepEqual(events.map(e => e.type), ["TOOL_CALL_END"]);
+    assert.deepEqual(events.map(e => e.type), ["TOOL_CALL_END", "TOOL_CALL_RESULT", "CUSTOM"]);
     for (const e of events) brackets.accept(e);
     assert.deepEqual(brackets.snapshot().tools, []);
   });

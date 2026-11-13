@@ -58,6 +58,7 @@ const flagToOpKey: Record<string, string> = {
   "allow-subscribe": "allowSubscribe",
   "allow-publish": "allowPublish",
   "no-events": "events",
+  "no-event-payloads": "eventPayloads",
 };
 
 // 1 — spawn parses the whole shared grammar.

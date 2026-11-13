@@ -2177,6 +2177,28 @@ These schemas describe the HTTP request and response wrappers. The downloadable 
         "more": {
           "type": "boolean",
           "description": "Whether older frames exist beyond this page."
+        },
+        "payloadRead": {
+          "type": "object",
+          "description": "A payload-only read failure. Metadata frames remain available.",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "timeout",
+                "refused",
+                "failed"
+              ]
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [

@@ -10,6 +10,7 @@ import { endpointAuthorityStoreDefinitions, endpointPlaneStreamNames, recordsKvS
 import { recordsBucket } from "./endpoint-records.js";
 import { admissionBucket, admissionStoreDefinition } from "./run-admission.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
+import { eventPayloadStream } from "./event-payloads.js";
 import {
   aclBucket,
   anycastBucket,
@@ -72,6 +73,7 @@ export function spaceBackupInventory(space: string): SpaceBackupInventory {
   const backedUp: SpaceBackupStream[] = [
     { name: registry, class: "registry" },
     { name: chatStream(space), class: "messages" },
+    { name: eventPayloadStream(space), class: "messages" },
     { name: dmStream(space), class: "messages" },
     { name: taskStream(space), class: "messages" },
     { name: inboxStream(space), class: "messages" },
@@ -345,6 +347,8 @@ export function canonicalBackupStreamConfig(
   const target = historyLimitStreamOf(space, stream);
   const limits = target && { max_age: nanos((limit ?? historyLimitDefault(target)).maxAgeMs), max_msgs_per_subject: (limit ?? historyLimitDefault(target)).perSubject };
   if (target === "chat") return { ...baseConfig(stream, [`${p}.chat.>`]), ...limits, allow_direct: true };
+  if (stream === eventPayloadStream(space))
+    return { ...baseConfig(stream, [`${p}.evp.>`]), max_msgs_per_subject: CHAT_HISTORY_DEFAULT.perSubject, allow_direct: true };
   if (target === "dm") return { ...baseConfig(stream, [`${p}.inst.>`]), ...limits };
   if (stream === taskStream(space)) {
     return { ...baseConfig(stream, [`${p}.svc.>`]), retention: RetentionPolicy.Workqueue };

@@ -503,12 +503,12 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     textOf(step?.querySelector('[data-slot="trace-title"]')) === "Running a command"
       && /^Bash · \d+s$/.test(textOf(step?.querySelector('[data-slot="trace-description"]')))
       && step?.querySelector('[data-slot="spinner"]') !== null
-      && step?.parentElement?.previousElementSibling?.classList.contains("v3-aact")
+      && step?.closest(".ox-now-w")?.previousElementSibling?.classList.contains("v3-aact")
       && textOf(link) === "View work" && link?.getAttribute("href") === formatRoute({ view: "agent", id: "local.dav", tab: "work" })
       && row.querySelector("a") === null && JSON.stringify(c.held()) === JSON.stringify(["local.dav"]),
     { step: step?.outerHTML, held: c.held() });
   ok("11.4b the step is hidden from assistive tech, so no live region sits inside the row's button and the button's name holds still",
-    step !== null && step.parentElement?.getAttribute("aria-hidden") === "true" && [...row.querySelectorAll('[role="status"]')].every((e) => e.closest('[aria-hidden="true"]') !== null));
+    step !== null && step.closest(".ox-now-w")?.getAttribute("aria-hidden") === "true" && [...row.querySelectorAll('[role="status"]')].every((e) => e.closest('[aria-hidden="true"]') !== null));
   ok("11.5 the activity line above it is presence's own text and never shimmers",
     textOf(row.querySelector(".v3-aact")) === "Editing packages/core/src/presence.ts" && row.querySelector(".v3-aact.ox-shimmer, .v3-aact .ox-shimmer") === null);
   await live.unmount();

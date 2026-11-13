@@ -14,6 +14,7 @@
  * Every credential kind is classified in {@link CREDENTIAL_LIFETIMES}: its lifetime class, default
  * expiry and renewal owner.
  */
+import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
@@ -651,6 +652,8 @@ export interface IssuedBinding {
 
 /** Options shaping a minted user's permissions. */
 export interface MintOpts {
+  /** Trusted issuance restriction: exclude the tool-payload publish rail when false. */
+  eventPayloads?: boolean;
   /** The owner+actor principal to mint for. Omitted ⇒ the no-login dev default (owner `"local"`, actor
    *  = the connection id) via {@link principalOf}. User mode supplies the derived owner + ledger actor. */
   principal?: { owner: string; actor: string };
@@ -1499,6 +1502,7 @@ export function permissionsFor(
     // exported builder, so a direct signer/callout can't obtain unfenced serve rows (SPEC 13.1/13.9).
     throw new Error("permissionsFor: endpoint-serve rows are emitted only by mintCreds behind the §13.1 issuance fence; call mintCreds");
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
+  const PAYLOAD = eventPayloadStream(space);
   const KV = `KV_${presenceBucket(space)}`;
   const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
   const MEMKV = `KV_${membershipBucket(space)}`; // derived graph membership feed (read-only — dashboard)
@@ -1521,10 +1525,12 @@ export function permissionsFor(
     //     deliberately excluded. DMs are plaintext + ACL-gated, so mint this only for a
     //     trusted audit dashboard. CONSUMER.CREATE on DM_<space> is the DM-confidentiality
     //     surface — granted here ONLY for this elevated read-only profile, never to agents.
-    const sub =
-      profile === "admin"
+    const sub = [
+      ...eventPayloadReadSubjects(space, pr.owner, [], profile === "admin"),
+      ...(profile === "admin"
         ? [`${spacePrefix(space)}.chat.>`, `${spacePrefix(space)}.inst.>`, `${spacePrefix(space)}.svc.>`, inbox]
-        : [`${spacePrefix(space)}.chat.>`, inbox];
+        : [`${spacePrefix(space)}.chat.>`, inbox]),
+    ];
     // History readers (channelHistory, multiChannelHistory, dmHistory) are named consumers keyed on
     // this connection's reader id (see MintPrincipal.readerId). The profile may delete exactly those
     // names and no other consumer (#4123): each read deletes its readers when it ends, so polling no
@@ -1533,6 +1539,14 @@ export function permissionsFor(
     const readerDeletes = (stream: string) =>
       Array.from({ length: HISTORY_READERS }, (_, i) => `$JS.API.CONSUMER.DELETE.${stream}.${historyReaderConsumer(readerId, i)}`);
     const allow = [
+      `$JS.API.STREAM.INFO.${PAYLOAD}`,
+      ...eventPayloadReadSubjects(space, pr.owner, [], profile === "admin").flatMap(subject =>
+        Array.from({ length: HISTORY_READERS }, (_, i) => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${historyReaderConsumer(readerId, i)}.${subject}`)),
+      ...Array.from({ length: HISTORY_READERS }, (_, i) => [
+        `$JS.API.CONSUMER.INFO.${PAYLOAD}.${historyReaderConsumer(readerId, i)}`,
+        `$JS.API.CONSUMER.MSG.NEXT.${PAYLOAD}.${historyReaderConsumer(readerId, i)}`,
+      ]).flat(),
+      ...readerDeletes(PAYLOAD),
       "$JS.API.INFO",
       `$JS.API.STREAM.INFO.${CHAT}`,
       `$JS.API.STREAM.INFO.${KV}`,
@@ -1836,6 +1850,15 @@ export function permissionsFor(
   // so an open ACL needs no enumeration. This sub.allow grant IS the live read path — there is no
   // per-instance chat durable; the durable backstop is Plane-3 (delivery-daemon fan-out → per-member DELIVER).
   const subChat = allowSubscribe.map((ch) => chatSubject(space, "*", "*", ch));
+  const payloadReads = eventPayloadReadSubjects(space, pr.owner, allowSubscribe);
+  if (opts.eventPayloads !== false) pubAllow.push(eventPayloadSubject(space, pr.owner, pr.actor));
+  pubAllow.push(
+    `$JS.API.STREAM.INFO.${PAYLOAD}`,
+    ...payloadReads.map(subject => `$JS.API.CONSUMER.CREATE.${PAYLOAD}.${chatHistD}.${subject}`),
+    `$JS.API.CONSUMER.INFO.${PAYLOAD}.${chatHistD}`,
+    `$JS.API.CONSUMER.MSG.NEXT.${PAYLOAD}.${chatHistD}`,
+    `$JS.API.CONSUMER.DELETE.${PAYLOAD}.${chatHistD}`,
+  );
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
@@ -1849,7 +1872,7 @@ export function permissionsFor(
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail.
   // A take's reply rides the take's own request subtree, like the delivery control replies.
   const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...epSub] } };
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...payloadReads, ...epSub] } };
 }
 
 /** The reads a spawn-scoped manager-caller view carries on its one pinned instance. A launch uses
@@ -2613,7 +2636,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // object-store client reads by creating an ephemeral PUSH consumer with a caller-chosen
   // `deliver_subject`, so a CONSUMER.CREATE here would be an exporter of every artifact in the space.
   const OBJ = objectStoreStream(artifactBucket(space));
-  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
+  const streamSetup = [CHAT, DM, TASK, INBOX, DLV, eventPayloadStream(space), OBJ, ...endpointPlaneStreamNames(space), ...buckets].flatMap((s) => [
     `$JS.API.STREAM.CREATE.${s}`,
     `$JS.API.STREAM.INFO.${s}`,
   ]);

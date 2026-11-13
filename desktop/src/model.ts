@@ -21,12 +21,49 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
+/** States a space passes through without anyone acting. A space that was just turned on reports `not-requested` while its Manager boots. */
+const PASSING_SPACE_STATE: Record<string, string> = {
+  "not-requested": "Starting",
+  connecting: "Starting",
+  starting: "Starting",
+  restarting: "Starting",
+  stopping: "Stopping",
+};
+/** States a space stays in until someone acts. */
+const SETTLED_SPACE_STATE: Record<string, string> = {
+  refused: "Refused",
+  ended: "Ended by the space",
+  conflict: "Registration conflict",
+  "credential-expired": "Credential expired",
+  "credential-not-yet-valid": "Credential not yet valid",
+  disconnected: "Disconnected",
+  unavailable: "Unreachable",
+  "local-state-error": "Local records unusable",
+  "account-mismatch": "Account mismatch",
+  "not-signed-in": "Not signed in",
+  "not-registered": "Not registered on this computer",
+  unsupported: "Unsupported by this space",
+  stopped: "Stopped",
+};
+const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this computer"];
+/** Whether this app has decided what to show for a state the daemon reports. */
+export function spaceStateKnown(observed: string): boolean {
+  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
+}
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
-  return "Starting";
+  return SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
+}
+export type ComputerSummary = "connected" | "attention" | "starting" | "idle";
+/** One answer for the window title and the tray, so the two cannot disagree. */
+export function computerSummary(rows: readonly ComputerSpace[], anyConnected: boolean): ComputerSummary {
+  if (anyConnected) return "connected";
+  if (rows.some(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed))) return "attention";
+  if (rows.some(row => row.desired && row.observed !== "removed on this computer")) return "starting";
+  return "idle";
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");

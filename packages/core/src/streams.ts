@@ -1,4 +1,5 @@
 import { drainAndClose } from "./connection-cleanup.js";
+import { eventPayloadStream } from "./event-payloads.js";
 import {
   jetstream,
   jetstreamManager,
@@ -246,8 +247,11 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
 
 /** Native message-stream creation fields shared by bootstrap and schema planning. */
 export function spaceMessageStreamConfigs(space: string) {
-  return [chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)]
-    .map((stream) => canonicalBackupStreamConfig(space, stream));
+  return [
+    ...[chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)]
+      .map((stream) => canonicalBackupStreamConfig(space, stream)),
+    { ...canonicalBackupStreamConfig(space, chatStream(space)), name: eventPayloadStream(space), subjects: [`${spacePrefix(space)}.evp.>`] },
+  ];
 }
 
 /** Native durable registry-stream creation fields. The backup inventory stays independent. */
@@ -344,7 +348,7 @@ export async function createSpaceStreams(
     // The history limit of CHAT, INBOX, DLV and DM is the operator's (`cotal history limit`), so an
     // existing one of them is left as it is: an add over a different limit would refuse, and this
     // also runs on every open-mode connect. `setupSpaceStreams` checks their other settings.
-    if (historyLimitStreamOf(space, definition.name)) {
+    if (historyLimitStreamOf(space, definition.name) || definition.name === eventPayloadStream(space)) {
       try {
         await jsm.streams.info(definition.name);
         continue;
