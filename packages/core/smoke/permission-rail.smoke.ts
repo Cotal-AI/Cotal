@@ -12,7 +12,8 @@
  *    record of its key. An agent's watch is refused.
  *  - An answer reaches the one process its record names, with the sender the broker vouches for, and
  *    every holder reply maps to its outcome. A holder that does not hold a prompt stays silent. A
- *    closed holder reads `gone`, and a wait shorter than the answer timeout is refused.
+ *    closed holder reads `gone`, even while another process of the agent serves, and a wait
+ *    shorter than the answer timeout is refused.
  *  - An open mesh holds nothing.
  *
  * Run: pnpm smoke:permission-rail   (needs nats-server on PATH)
@@ -208,7 +209,6 @@ try {
     port2.holder.runtimeId !== port.holder.runtimeId && toFirst.kind === "accepted" && toSecond.kind === "accepted"
       && theirs.length === 1 && theirs[0]!.id === second && answers.at(-1)?.id === id,
     { toFirst, toSecond, theirs: theirs.length, runtimes: [port.holder.runtimeId, port2.holder.runtimeId] });
-  port2.close();
 
   const shortWait = await web.ep.answerPermission(target, { decision: "approve" }, PERMISSION_ANSWER_TIMEOUT_MS - 1).then(() => "sent", (e: Error) => e.message);
   check("a wait shorter than the answer timeout is refused", /shorter than/.test(shortWait), shortWait);
@@ -222,10 +222,13 @@ try {
   check(`a sibling agent, a teammate and the agent itself are refused by the broker (${refused.filter((o) => o.kind === "refused").length} of 3)`,
     refused.every((o) => o.kind === "refused" && o.reason === "not-permitted") && answers.length === before, refused);
 
+  // The successor still serves its own runtime, so an answer to the closed holder reaches no process.
   port.close();
   await wait(100);
   const gone = await web.ep.answerPermission({ agent, id: second, holder: port.holder }, { decision: "approve" });
-  check("a closed holder reads gone", gone.kind === "gone" && answers.length === before, gone);
+  check("a closed holder reads gone, while another process of the same agent still serves",
+    gone.kind === "gone" && answers.length === before && theirs.length === 1, { gone, theirs: theirs.length });
+  port2.close();
   check("...and the store holds the two records, each in the last state written",
     second0.kind === "written" && watch.records().length === 2, shown());
 } finally {
