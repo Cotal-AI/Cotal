@@ -226,8 +226,8 @@ existing session names the same provider and account. Login lists the services i
 It never changes a store for another account or provider. A service with local overrides
 or an unprovable store is skipped, without writing credentials to a guessed path.
 Account sign-in still completes, including space discovery and selection. The report
-lists skipped services and points to their own log for the sign-in command when the store
-cannot be proved. Skipped services do not change the command's successful exit status.
+lists skipped services and prints `journalctl --user -u <unit>` to find their sign-in
+command when the store cannot be proved. Skipped services do not change the command's successful exit status.
 Logout also clears the local account login even when a service must be skipped.
 Hand-made units are not updated automatically;
 their refusal names the selected sign-in store and a command such as

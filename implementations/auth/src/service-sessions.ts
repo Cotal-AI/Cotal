@@ -20,7 +20,7 @@ function skippedWarning(store: SkippedServiceLoginStore, clear: boolean, uncerta
   const name = store.service ? `Manager service ${store.service}` : "Manager services in an unproved user-service directory";
   const reason = store.reason === "local-overrides" ? "its unit has local overrides" : "its unit or private sign-in store could not be proved safe";
   const outcome = uncertain ? `${clear ? "sign-in cleanup" : "sign-in refresh"} could not be confirmed` : clear ? "this sign-out did not clear its sign-in" : "this sign-in did not reach it";
-  return `Skipped ${name}: ${outcome} because ${reason}. Read ${store.service ? "the service's own log" : "the affected services' own logs"} for the sign-in command printed for its private store.`;
+  return `Skipped ${name}: ${outcome} because ${reason}. Read ${store.service ? `the service's own log with \`journalctl --user -u ${store.service}\`` : "the affected services' own logs"} for the sign-in command printed for its private store.`;
 }
 
 function visitServiceSessions(directory: string, idpUrl: string, session: IdpSession, clear: boolean, skipped?: string[]): string[] {
