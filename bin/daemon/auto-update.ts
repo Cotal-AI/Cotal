@@ -57,7 +57,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (process.platform === "darwin") {
       try {
         const result = readLaunchUpdateResult();
-        if (result && processBirth(result.pid) === result.start) { launchdPending = !result.done; return; }
+        if (result && processBirth(result.pid) === result.start) { launchdPending = true; return; }
         launchdPending = false;
         cleanLaunchUpdate();
         state = JSON.parse(readFileSync(file, "utf8")) as Attempt;
@@ -118,7 +118,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     busy = tick().catch(error => { host.report(`automatic update: ${String(error)}`); }).finally(() => { busy = undefined; });
   }, 30_000);
   timer.unref();
-  return { status, async check() { await checkForUpdate(); return status(); }, updating: () => child !== undefined || launchdPending && (() => { const result = readLaunchUpdateResult(); return !result || !result.done && processBirth(result.pid) === result.start; })(), async close() {
+  return { status, async check() { await checkForUpdate(); return status(); }, updating: () => child !== undefined || launchdPending, async close() {
     closed = true; clearInterval(timer);
     if (child) {
       child.stdout?.destroy(); child.stderr?.destroy(); child.unref();
