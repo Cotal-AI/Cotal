@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel } from "../src/model.ts";
+import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind } from "../src/model.ts";
 
 test("a blank space label is the space id and a label with a character stays", () => {
   assert.equal(shownSpaceLabel(" ", "team"), "team");
@@ -9,6 +9,12 @@ test("a blank space label is the space id and a label with a character stays", (
   assert.equal(shownSpaceLabel(undefined, "team"), "team");
   assert.equal(shownSpaceLabel(" ada", "team"), " ada");
   assert.equal(shownSpaceLabel("My team", "team"), "My team");
+  assert.equal(shownSpaceKind(" "), "Space");
+  assert.equal(shownSpaceKind(""), "Space");
+  assert.equal(shownSpaceKind("\n"), "Space");
+  assert.equal(shownSpaceKind(undefined), "Space");
+  assert.equal(shownSpaceKind(" ada"), " ada");
+  assert.equal(shownSpaceKind("team"), "team");
 });
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
