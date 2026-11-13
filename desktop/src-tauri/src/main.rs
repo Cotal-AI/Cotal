@@ -32,9 +32,9 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     let mut command = Command::new(node);
     command.arg("--max-semi-space-size=1");
     #[cfg(all(feature = "e2e", debug_assertions))]
-    let trace_home = args.windows(2).find(|pair| pair[0] == "--daemon-home")
-        .map(|pair| std::path::PathBuf::from(&pair[1]))
-        .or_else(cotal_desktop::e2e_trace_home);
+    let trace_home = cotal_desktop::e2e_trace_home().or_else(|| args.windows(2)
+        .find(|pair| pair[0] == "--daemon-home")
+        .map(|pair| std::path::PathBuf::from(&pair[1])));
     #[cfg(all(feature = "e2e", debug_assertions))]
     if let Some(home) = &trace_home {
         let trace = home.join("windows-native-trace.mjs");
@@ -52,6 +52,7 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
         .stderr(Stdio::null());
     #[cfg(all(feature = "e2e", debug_assertions))]
     if let Some(home) = &trace_home {
+        command.env("COTAL_DESKTOP_E2E_TRACE_HOME", home);
         let path = home.join("native-launcher-stderr.log");
         command.stderr(Stdio::from(std::fs::File::create(path)?));
     }

@@ -2,7 +2,7 @@ import fs, { appendFileSync } from "node:fs";
 import childProcess from "node:child_process";
 import { installWindowsInstallToolTrace } from "./windows-install-tool-trace.mjs";
 import { syncBuiltinESMExports } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Loaded only by the debug E2E native shell. Observe the actual bridge, not its
@@ -11,7 +11,10 @@ if (process.argv[2] === "daemon" && process.argv[3] === "desktop") {
   // Native debug shell sets only this loader flag. Do not propagate it into spawned services.
   delete process.env.NODE_OPTIONS;
   await import("./windows-peer-trace.mjs");
-  const output = join(dirname(fileURLToPath(import.meta.url)), "windows-bridge-progress.jsonl");
+  const traceHome = process.env.COTAL_DESKTOP_E2E_TRACE_HOME ?? dirname(fileURLToPath(import.meta.url));
+  if (!isAbsolute(traceHome)) throw new Error("E2E trace home must be absolute");
+  appendFileSync(join(traceHome, "native-tool-timings.jsonl"), "");
+  const output = join(traceHome, "windows-bridge-progress.jsonl");
   const record = data => appendFileSync(output, JSON.stringify({ at: new Date().toISOString(),
     monotonicMs: performance.now(), pid: process.pid, parentPid: process.ppid, ...data }) + "\n");
   installWindowsInstallToolTrace({ childProcess, record });
