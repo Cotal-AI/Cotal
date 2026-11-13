@@ -1169,6 +1169,7 @@
   "cli:update--self": "current:update --self",
   "cli:update--server": "current:update",
   "cli:update--space": "current:update",
+  "cli:update--stop-agents": "current:update --self",
   "cli:use": "current:use",
   "cli:use--clear": "current:use --clear",
   "cli:use--json": "current:use --json",

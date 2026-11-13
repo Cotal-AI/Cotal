@@ -670,7 +670,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "check", "json", "plain", "space", "server", "creds", "on"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "stop-agents", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
   assert.throws(
