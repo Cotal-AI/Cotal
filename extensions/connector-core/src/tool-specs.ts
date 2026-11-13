@@ -759,9 +759,9 @@ const NAMED_AHEAD = 3;
 /** Say that recall items were withheld because this session will not take responsibility for
  *  remembering them, and name who sent them, so a peer spending that bound is visible rather than
  *  silent. Not a drop: nothing was cleared and the stream still holds them. */
-function aheadNote(items: readonly InboxItem[]): string {
+export function aheadNote(items: readonly InboxItem[]): string {
   if (!items.length) return "";
-  const senders = [...new Set(items.map((i) => attributionSafe(i.fromName).slice(0, 40)))];
+  const senders = [...new Set(items.map((i) => attributionSafe((i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : "(unnamed)")).slice(0, 40)))];
   const named = senders.slice(0, NAMED_AHEAD).join(", ");
   const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
   const one = items.length === 1;
