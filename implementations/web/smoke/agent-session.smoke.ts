@@ -255,7 +255,7 @@ console.log("5. eventsGrantFor");
       === "cotal actor grant <reader> --owner acme --scope '' --allow-subscribe 'events.acme.bot' --allow-publish ''");
   ok("5.2 a static mesh mints a watcher on the agent profile for this channel",
     eventsGrantFor("static")("events.acme.bot", "acme")
-      === "cotal mint watcher --profile agent --allow-subscribe 'events.acme.bot' --provision");
+      === "cotal auth mint watcher --profile agent --allow-subscribe 'events.acme.bot' --provision");
   ok("5.3 an open mesh has no grant to give", eventsGrantFor("open")("events.acme.bot", "acme") === undefined);
 }
 

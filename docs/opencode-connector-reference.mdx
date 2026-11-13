@@ -188,6 +188,10 @@ down, and the reason is kept on the connection status. Reuse the previous state 
 new principal to publish again. The check reads retained counts, not transcript contents, and does not
 change the append expectation or discard local logs.
 
+When OpenCode exits before its session is ready, the launcher's final line names the exit code and
+repeats the connector's last message. A host that reports only the last line of a failed launch,
+as the Manager does, then reports the reason and not a generic exit.
+
 The managed session is created and announced only after the mesh join completes. Its event boundary
 is captured at adopt, before any prompt is admitted.
 

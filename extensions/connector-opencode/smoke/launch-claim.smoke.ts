@@ -39,6 +39,7 @@ case "$1" in
   serve)
     echo "first-run dependency preparation"
     if [ "$STUB_FAIL" = 1 ]; then echo "dependency install refused" >&2; exit 7; fi
+    if [ -n "$STUB_REFUSE" ]; then echo "[cotal-connector] plugin loaded" >&2; echo "[cotal-connector] $STUB_REFUSE" >&2; exit 1; fi
     if [ -n "$STUB_DELAY" ]; then trap 'kill $! 2>/dev/null; exit 0' TERM; sleep "$STUB_DELAY" & wait; fi
     echo "[cotal-session] stub-session"; trap 'kill $! 2>/dev/null; exit 0' TERM; sleep 600 & wait ;;
   *) exit 2 ;;
@@ -91,6 +92,16 @@ try {
     expect(log.includes("first-run dependency preparation") && log.includes("dependency install refused"), { log });
     expect((statSync(join(agentHome, logs[0])).mode & 0o777) === 0o600, { mode: statSync(join(agentHome, logs[0])).mode });
     expect(failedBoot.out().includes("Check the retained boot log for setup errors, then launch again."), { out: failedBoot.out() });
+  });
+
+  await check("a boot the plugin refused ends on the plugin's own reason", async () => {
+    // The plugin logs why it will not start and exits 1 (a fresh state root under a principal with
+    // retained events, #6464). A host reads the launcher's final row as the cause (#6611).
+    const reason = "Cannot start events for owner.probe: the broker retains events for this principal. Reuse the previous state root or launch with a new principal.";
+    const refused = launch({ STUB_REFUSE: reason });
+    const code = await refused.exited;
+    const last = refused.out().split("\n").filter((line) => line.trim()).at(-1) ?? "";
+    expect(code === 1 && last === `[cotal-connector] OpenCode exited before its Cotal session was ready (code 1). Last connector message: ${reason}`, { code, last });
   });
 
   await check("a first run exceeding the old 60-second abort still announces its session", async () => {
@@ -158,4 +169,4 @@ try {
 
 console.log(`\nopencode-launch-claim.smoke: ${passed} passed, ${failed} failed`);
 emitSentinel({ passed, failed });
-if (failed > 0 || passed !== 6) process.exitCode = 1;
+if (failed > 0 || passed !== 7) process.exitCode = 1;

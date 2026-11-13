@@ -26,6 +26,7 @@ import { once } from "node:events";
 import { randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { acquireLock } from "@cotal-ai/core/advisory-lock";
 import { openPrivateAppend } from "@cotal-ai/core/secret-fs";
 import { OPENCODE_BOOT_TIMEOUT_MS } from "./startup.js";
@@ -250,25 +251,40 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   let sessionId: string | undefined;
   let attached = false;
   let onSession: ((id: string) => void) | undefined;
-  const scan = (d: Buffer): void => {
-    if (!attached) bootOutput(d);
-    if (!sessionId) {
-      const m = d.toString().match(/\[cotal-session\] (\S+)/);
-      if (m) {
-        sessionId = m[1];
-        onSession?.(sessionId);
+  // The plugin's last line before the handshake. A host shows only the launcher's final row as the
+  // cause of a failed launch (the Manager's `last output`), so the exit line below repeats it.
+  let connectorLine: string | undefined;
+  const scanner = (): ((d: Buffer) => void) => {
+    const decoder = new StringDecoder("utf8");
+    let partial = "";
+    return (d) => {
+      if (!attached) bootOutput(d);
+      if (sessionId) return;
+      const lines = (partial + decoder.write(d)).split("\n");
+      partial = lines.pop() ?? "";
+      for (const line of lines) {
+        const session = /\[cotal-session\] (\S+)/.exec(line);
+        if (session) {
+          sessionId = session[1];
+          connectorLine = undefined;
+          onSession?.(sessionId);
+          return;
+        }
+        const message = /^\[cotal-connector\] (.+)$/.exec(line.trimEnd());
+        if (message) connectorLine = message[1];
       }
-    }
+    };
   };
-  serve.stdout?.on("data", scan);
-  serve.stderr?.on("data", scan);
+  serve.stdout?.on("data", scanner());
+  serve.stderr?.on("data", scanner());
   // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
   // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
   let bootFailed = false;
   serve.on("close", (code, signal) => {
     if (!attached) {
       if (!bootFailed && !stopping) bootOutput(
-        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). Check the retained boot log for setup errors, then launch again.\n`,
+        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). ` +
+          (connectorLine ? `Last connector message: ${connectorLine}\n` : "Check the retained boot log for setup errors, then launch again.\n"),
       );
       process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
     }

@@ -30,6 +30,7 @@ export async function signOutIdpSession({ dir, idp, local }: {
       const current = loadIdpSession(dir, idp);
       if (current && current.token !== session!.token) return;
       deleteIdpSession(dir, idp);
+      localCleared = true;
       if (session!.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session!.sub));
     });
     localCleared = true;

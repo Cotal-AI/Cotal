@@ -2306,9 +2306,9 @@ export class Manager {
         );
       case "static":
         return (
-          `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
+          `\`cotal auth mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
           `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +
-          `one: \`mint\` reads --allow-subscribe only for that profile, so an observer mint is ` +
+          `one: \`auth mint\` reads --allow-subscribe only for that profile, so an observer mint is ` +
           `refused outright and writes no creds file.`
         );
       case "open":
