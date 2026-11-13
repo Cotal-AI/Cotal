@@ -3,11 +3,20 @@ import type { RosterEntry } from "../api/types.js";
 
 export type NameIndex = Map<string, string>;
 
+/** A roster name that can be shown. A blank name is not one: it prints as nothing, or as a line break. */
+export function visibleName(name: string | undefined): string | undefined {
+  return typeof name === "string" && name.trim() ? name : undefined;
+}
+
 /** Source: live roster cards ONLY. A message payload's `from.name` is sender-chosen display text,
- *  not identity (#1399): writing it here would let one peer relabel another. */
+ *  not identity (#1399): writing it here would let one peer relabel another. A blank card name is
+ *  left out, so a resolved name falls back to the id. */
 export function nameIndex(roster: RosterEntry[]): NameIndex {
   const idName: NameIndex = new Map();
-  for (const p of roster) if (p.card?.id) idName.set(p.card.id, p.card.name);
+  for (const p of roster) {
+    const name = visibleName(p.card?.name);
+    if (p.card?.id && name) idName.set(p.card.id, name);
+  }
   return idName;
 }
 
@@ -23,7 +32,7 @@ export function displayNameOf(x: string | { id?: string } | undefined, idx: Name
   if (selfId && (typeof x === "object" ? x.id : x) === selfId && !idx.has(selfId)) return OPERATOR_YOU;
   if (typeof x === "object") return displayNameOf(x.id, idx);
   const known = idx.get(x);
-  if (known !== undefined) return known;
+  if (visibleName(known)) return known!;
   // Principal ids are exactly two NATS-safe tokens, owner.actor. Keep the opaque owner for
   // namespace disambiguation, but require a long actor so ordinary dotted display names survive.
   const principal = /^([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)$/.exec(x);
