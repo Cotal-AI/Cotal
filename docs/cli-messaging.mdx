@@ -262,7 +262,7 @@ the senders the session heard from. A name that more than one of them carries re
 them, so type `@<owner>.<actor>` instead. A target that parses as `<owner>.<actor>` goes to that
 principal whether or not it is present or was heard from, and is never matched against display
 names. A peer whose display name parses as a principal therefore cannot be reached by that name;
-`/reply` and its full principal still reach it. Typing the session's own principal refuses with
+`/reply` and its full principal still reach it. A roster or heard name that is missing or only whitespace is shown as the principal. Typing the session's own principal refuses with
 `USAGE_INVALID`, and so does its own name when no other participant carries it. A `--stdio` `dm` request resolves its `to` the same way.
 
 
