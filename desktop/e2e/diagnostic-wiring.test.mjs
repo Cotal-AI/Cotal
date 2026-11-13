@@ -60,7 +60,9 @@ test("Windows installed-service snapshots bracket setup and preserve failed unin
   assert.match(source, /plan: await observe\("uninstall", "--dry-run"\)/);
   assert.match(source, /bundledPlan: await bundledPlan\(\)/);
   assert.match(source, /runtime\/dist\/cotal\.js"\), "daemon", "uninstall", "--dry-run", "--json"/);
-  assert.match(source, /"windows-install-tool-trace\.mjs"\]\) copyFileSync/);
+  assert.match(source, /"windows-install-tool-trace\.mjs"\]\) \{/);
+  assert.match(source, /copyFileSync\(join\(repo, "desktop\/e2e", file\), join\(daemonHome, file\)\)/);
+  assert.match(source, /copyFileSync\(join\(repo, "desktop\/e2e", file\), join\(output, file\)\)/);
   assert.match(bridge, /installWindowsInstallToolTrace\(\{ childProcess, record \}\)/);
 });
 

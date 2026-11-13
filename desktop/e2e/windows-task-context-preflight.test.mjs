@@ -27,7 +27,8 @@ test("task identity refuses every foreign field and unknown instance counts", ()
 test("receipt guard and cleanup precede the unchanged native scenario", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/desktop.yml", import.meta.url), "utf8");
   assert.ok(workflow.indexOf("windows-task-context-preflight.mjs measure") > workflow.indexOf("windows-task-stage-preflight.mjs cleanup"));
-  assert.ok(workflow.indexOf("windows-task-context-preflight.mjs cleanup") < workflow.indexOf("Windows service installation and disabled-task recovery"));
+  const scenario = workflow.indexOf("Windows recovery cell 1 before an app poll sees the disabled service");
+  assert.ok(scenario > 0 && workflow.indexOf("windows-task-context-preflight.mjs cleanup") < scenario);
   assert.ok(workflow.includes("desktop-windows-task-context"));
   const preflight = readFileSync(new URL("./windows-task-context-preflight.mjs", import.meta.url), "utf8");
   assert.ok(preflight.indexOf("validateOwner(owner);\n  assert.equal(inspect(owner).instances, 0") < preflight.indexOf('["/Run", "/TN", unit]'));
