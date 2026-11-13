@@ -1257,6 +1257,33 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- only the selected latest's structured npm ETARGET is a release deferral -------------------
+for (const [code, summary, deferred] of [
+  ["ETARGET", "No matching version found for cotal-ai@0.13.2.", true],
+  ["ETARGET", "No matching version found for cotal-ai@0.13.1.", false],
+  ["ETARGET", "No matching version found for @cotal-ai/core@0.13.2.", false],
+  ["ETARGET", "No matching version found for cotal-ai@^0.13.2.", false],
+  ["EACCES", "No matching version found for cotal-ai@0.13.2.", false],
+  ["ETARGET", "No matching version found for cotal-ai@0.13.20.", false],
+] as const) {
+  const fixture = updateRuntime({
+    npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    spawn: () => ({ status: 1 }),
+  });
+  let installs = 0;
+  fixture.rt.spawnGlobal = async (_root, operation, _file, args, _env, inherit) => {
+    fixture.events.push(`global:${operation}`);
+    if (operation === "reconcile") return { status: args[0].includes("/cotal-ai/") && !fixture.events.includes("rollback-install") ? 1 : 0, stdout: "", stderr: "" };
+    if (installs++ > 0) { fixture.events.push("rollback-install"); return { status: 0, stdout: "", stderr: "" }; }
+    assert.ok(args.includes("--json"));
+    assert.equal(inherit, false, "npm's structured result must be captured");
+    return { status: 1, stdout: JSON.stringify({ error: { code, summary } }), stderr: "" };
+  };
+  assert.equal(await executeUpdate(true, fixture.rt), deferred ? 0 : 1, `${code}: ${summary}`);
+  assert.equal(fixture.events.some(event => event.includes("release is still arriving")), deferred);
+  assert.equal(fixture.events.some(event => event === "global:reconcile"), !deferred, "only a real install failure enters repair");
+}
+
 // --- --self: exact checked artifact, alternate global root, verified child, status propagation ----
 {
   const successful = updateRuntime({

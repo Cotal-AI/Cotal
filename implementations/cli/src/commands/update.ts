@@ -980,16 +980,27 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
   recordUpdateReplacement(targetVersion);
   writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path });
-  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`]);
+  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json"]);
   const installed = await rt.spawnGlobal(
     root,
     "install",
     npmInstall.file,
     npmInstall.args,
     rt.env,
-    true,
+    false,
     npmInstall.windowsVerbatimArguments,
   );
+  if (latestNotAvailable(installed, targetVersion)) {
+    // npm resolves the requested version before reifying the global tree. This refusal
+    // did not replace packages, so neither rollback nor a failed-attempt charge applies.
+    snapshot.discard();
+    clearUpdateRecovery();
+    const reason = `cotal-ai@${targetVersion} is not available yet. The release is still arriving; the next update check will try it again. No packages were replaced.`;
+    recordUpdateDeferral(targetVersion, reason, true, true);
+    rt.out(reason);
+    return interrupted;
+  }
+  if (installed.stderr) rt.stderr(installed.stderr);
   if (installed.status !== 0) {
     rt.err(c.red(`✗ global cotal-ai@${targetVersion} install failed: ${failure(installed)}`));
     return await repairReplacement(`global install failed: ${failure(installed)}`);
@@ -1247,6 +1258,15 @@ async function runGlobalProcess(
   } finally {
     if (!published && !preservePending) mutation.clear();
   }
+}
+
+/** npm --json supplies the code, but its summary is the only field naming the missing spec. */
+function latestNotAvailable(result: CommandResult, version: string): boolean {
+  if (result.status === 0 || result.status === null || result.error) return false;
+  try {
+    const error = (JSON.parse(result.stdout) as { error?: { code?: unknown; summary?: unknown } }).error;
+    return error?.code === "ETARGET" && error.summary === `No matching version found for cotal-ai@${version}.`;
+  } catch { return false; }
 }
 
 function failure(result: CommandResult): string {
