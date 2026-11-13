@@ -1900,21 +1900,20 @@ export function cotalToolSpecs(
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
           const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : "";
           // The seat launched and only its pin read failed: a partial outcome naming the seat, so the
-          // caller reads the pin where the manager keeps it instead of spawning a second seat.
+          // caller knows it is running instead of spawning a second seat.
           if (d?.pinAudit) {
             const { requested, error, unreported } = d.pinAudit;
             const id = d.id ?? d.actor;
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
-            const next = `cotal ps --on ${manager}`;
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
             const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""}): ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
-              `Do not spawn it again: a retry starts a second agent. Next: \`${next}\` shows the seat and the model its manager recorded.`;
+              `Do not spawn it again: a retry starts a second agent.`;
             return {
               text: message,
               structured: {
                 status: "partial", name: actual, id, manager, ...(mode ? { runtime: mode } : {}), joined: !pending,
-                model: { requested, audited: false, reported: !unreported, error }, next, message,
+                model: { requested, audited: false, reported: !unreported, error }, message,
               },
             };
           }
