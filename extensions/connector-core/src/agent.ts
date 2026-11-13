@@ -2976,7 +2976,7 @@ export class MeshAgent extends EventEmitter {
     const answer = instanceId === undefined ? undefined : await this.managerInvoke("status", undefined, { instanceId }).catch(() => undefined);
     const reported = answer?.ok === true && answer.instanceId === instanceId ? (answer.data as { version?: unknown } | undefined)?.version : undefined;
     const manager = typeof reported === "string" && /^\d+\.\d+\.\d+/.test(reported) ? reported : undefined;
-    const updateManager = `on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or call again without "${key}"`;
+    const updateManager = `on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "${key}", call again without it`;
     if (manager === undefined) return `${head}, so the manager most likely runs an older Cotal: ${updateManager}`;
     const order = compareRelease(DOCS_VERSION, manager);
     if (order > 0) return `${head}. The manager runs Cotal ${manager}, the older side: ${updateManager}`;

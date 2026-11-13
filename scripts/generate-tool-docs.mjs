@@ -231,7 +231,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "A manager on another Cotal release can refuse an argument its contract does not declare. A manager-op tool then names the argument and this connector's version, and asks the bound manager for its version. When the manager is older, it names `cotal update --self` on the manager's host and then `cotal manager restart`, or calling again without that argument. When this connector is older, it names `cotal update --self` here and a new session. A request no manager was bound for is treated as an older manager.",
+  "A manager on another Cotal release can refuse an argument its contract does not declare. A manager-op tool then names the argument and this connector's version, and asks the bound manager for its version. When the manager is older, it names `cotal update --self` on the manager's host and then `cotal manager restart`, or, for an argument you set, calling again without it. When this connector is older, it names `cotal update --self` here and a new session. A request no manager was bound for is treated as an older manager.",
 );
 lines.push("");
 lines.push("| Tool | Does | Side-effect |");

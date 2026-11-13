@@ -341,14 +341,14 @@ for (const [label, config, expected] of [
   const head = `bad-request: args do not validate against the input schema: / must NOT have additional properties: "endpoints". The manager's purge does not take "endpoints", which this connector at Cotal ${DOCS_VERSION} sends`;
   const older = await renderSkew(true, "0.1.0");
   check("an older bound manager is named as the side to update, with the command and the way around it",
-    older.text === `${head}. The manager runs Cotal 0.1.0, the older side: on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or call again without "endpoints"`
+    older.text === `${head}. The manager runs Cotal 0.1.0, the older side: on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "endpoints", call again without it`
       && older.calls.join(",") === "purge,status", older);
   const newer = await renderSkew(true, "999.0.0");
   check("a newer bound manager makes this connector the side to update",
     newer.text === `${head}. The manager runs Cotal 999.0.0, so this connector is the older side: run \`cotal update --self\` here and start a new session`, newer);
   const unbound = await renderSkew(false, "0.1.0");
   check("an unbound refusal asks no manager and still names the key and the update",
-    unbound.text === `${head}, so the manager most likely runs an older Cotal: on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or call again without "endpoints"`
+    unbound.text === `${head}, so the manager most likely runs an older Cotal: on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "endpoints", call again without it`
       && unbound.calls.join(",") === "purge", unbound);
 }
 
