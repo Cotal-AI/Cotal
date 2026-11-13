@@ -125,8 +125,13 @@ export function requireResult(frame: Frame): Record<string, unknown> {
 
 /** A dashboard link can prefill public onboarding coordinates, never authenticate or connect. */
 export function onboardingLink(value: string): { idp: string; space?: string } {
-  const u = new URL(value);
-  if (u.protocol !== "cotal:" || u.hostname !== "connect" || !["", "/"].includes(u.pathname) || u.username || u.password || u.port || u.hash) throw new Error("Unsupported Cotal onboarding link.");
+  // Validate before a special-scheme parser can normalize authority, ports or paths.
+  // Some WebViews treat custom schemes as opaque paths, so never parse cotal: itself.
+  const prefix = /^cotal:\/\//i.exec(value);
+  const remainder = prefix ? value.slice(prefix[0].length) : "";
+  const route = remainder.split(/[?#]/, 1)[0];
+  if (!prefix || !["connect", "connect/"].includes(route) || value.includes("#") || /[\u0000-\u0020\u007f]/.test(value)) throw new Error("Unsupported Cotal onboarding link.");
+  const u = new URL(`https://${remainder}`);
   const keys = [...u.searchParams.keys()];
   if (keys.some((key) => key !== "idp" && key !== "space") || new Set(keys).size !== keys.length) throw new Error("The onboarding link contains unsupported fields.");
   const idp = approvalUrl(u.searchParams.get("idp"));
