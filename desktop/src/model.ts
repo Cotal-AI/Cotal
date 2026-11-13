@@ -123,16 +123,21 @@ export function requireResult(frame: Frame): Record<string, unknown> {
   return frame.result;
 }
 
-/** A dashboard link can prefill public onboarding coordinates, never authenticate or connect. */
+/** A dashboard link can prefill public onboarding coordinates, never authenticate or connect.
+ *  The text is parsed here. `URL` is not used for this scheme: WebView2 leaves `hostname` empty
+ *  and does not put `connect` in a path this check can accept, so the same link was refused there. */
 export function onboardingLink(value: string): { idp: string; space?: string } {
-  const u = new URL(value);
-  if (u.protocol !== "cotal:" || u.hostname !== "connect" || !["", "/"].includes(u.pathname) || u.username || u.password || u.port || u.hash) throw new Error("Unsupported Cotal onboarding link.");
-  const keys = [...u.searchParams.keys()];
+  const match = /^cotal:\/\/([^/?#]*)([^?#]*)(?:\?([^#]*))?$/i.exec(value);
+  const authority = match?.[1] ?? "";
+  const path = match?.[2] ?? "";
+  if (!match || value.includes("#") || authority.includes("@") || authority.includes(":") || authority.toLowerCase() !== "connect" || (path !== "" && path !== "/")) throw new Error("Unsupported Cotal onboarding link.");
+  const params = new URLSearchParams(match[3] ?? "");
+  const keys = [...params.keys()];
   if (keys.some((key) => key !== "idp" && key !== "space") || new Set(keys).size !== keys.length) throw new Error("The onboarding link contains unsupported fields.");
-  const idp = approvalUrl(u.searchParams.get("idp"));
+  const idp = approvalUrl(params.get("idp"));
   const provider = new URL(idp);
   if (provider.search || provider.hash) throw new Error("A provider cannot contain a query or fragment.");
-  const space = u.searchParams.get("space");
+  const space = params.get("space");
   if (space !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(space)) throw new Error("Invalid onboarding space.");
   return { idp, ...(space ? { space } : {}) };
 }

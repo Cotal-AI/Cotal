@@ -42,7 +42,8 @@ test("a prompt, malformed version or refusal is never a successful operation", (
 
 test("dashboard links prefill only public coordinates and reject secrets or duplicate keys", () => {
   assert.deepEqual(onboardingLink("cotal://connect?idp=https%3A%2F%2Fexample.com%2Fauth&space=team"), { idp: "https://example.com/auth", space: "team" });
-  for (const value of ["cotal://connect?idp=https://example.com/auth&token=secret", "cotal://connect?idp=https://example.com&idp=https://other.example", "cotal://exec?idp=https://example.com", "cotal://connect?idp=file:///tmp/auth", "cotal://connect?idp=https://example.com&space=bad%20space"]) assert.throws(() => onboardingLink(value));
+  assert.deepEqual(onboardingLink("cotal://connect/?idp=https://example.com/auth"), { idp: "https://example.com/auth" });
+  for (const value of ["cotal://connect?idp=https://example.com/auth&token=secret", "cotal://connect?idp=https://example.com&idp=https://other.example", "cotal://exec?idp=https://example.com", "cotal://connect?idp=file:///tmp/auth", "cotal://connect?idp=https://example.com&space=bad%20space", "cotal://connect:443?idp=https://example.com", "cotal://user@connect?idp=https://example.com", "cotal://connect/extra?idp=https://example.com", "cotal://connect?idp=https://example.com#frag"]) assert.throws(() => onboardingLink(value));
 });
 
 test("expired credentials and pending approval refusals map to their recovery actions", () => {
