@@ -264,6 +264,9 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
   // The registry's reads: the evidence store stream-wide, so never a peer's.
   "registry-reader",
+  // The operator/embedding host holds this one-shot credential only for a stopped-space
+  // derived-store conversion. Its exact stream DELETE authority never belongs to a peer.
+  "membership-store-recreate",
   // Manager-only infrastructure duties, like remote-manager. This classification is not
   // an isolation proof; host admission and the child UID boundary remain separate requirements.
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
