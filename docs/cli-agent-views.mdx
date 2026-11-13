@@ -134,7 +134,7 @@ The selected principal and lifecycle stay pinned through the read.
 On a user-auth space it keeps the authorized manager census. An explicit `--server` and
 unregistered `--space` retain the raw open-broker connection, with or without `--on`.
 JSON has `identity`, `execution`, `mesh` and `activity` fields; missing optional observations
-are null with source annotations.
+are null with source annotations. The Identity Agent field shows the id when the name is missing or only whitespace. JSON `identity.name` stays the name the manager returned.
 `--on <manager-instance>` restricts the read and never redirects to a different owner.
 It takes no `--all` or `--components`.
 `cotal status manager` keeps its manager diagnostic census. When a manager answers but runs

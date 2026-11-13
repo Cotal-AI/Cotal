@@ -138,12 +138,12 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "Cloud can be chosen on a terminal",
+      "name": "Cloud cannot be chosen on a terminal",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "{ value: \"cloud\", label: \"Cloud\", hint: \"sign in with `cotal login`, then choose Self-hosted\", disabled: true }",
-      "replace": "{ value: \"cloud\", label: \"Cloud\", hint: \"sign in with `cotal login`, then choose Self-hosted\", disabled: false }",
-      "expectRed": "Cloud cannot be chosen: moving past Self-hosted comes back to Local",
-      "cell": "Cloud cannot be chosen: moving past Self-hosted comes back to Local",
+      "find": "{ value: \"cloud\", label: \"Cloud\", hint: cloudSpaces()",
+      "replace": "{ value: \"cloud\", label: \"Cloud\", disabled: true, hint: cloudSpaces()",
+      "expectRed": "Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in",
+      "cell": "Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {

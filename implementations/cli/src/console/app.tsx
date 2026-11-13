@@ -18,7 +18,7 @@ import { StatusBar } from "./ui/StatusBar.js";
 import { Help } from "./ui/Help.js";
 import { Search } from "./ui/Search.js";
 import { CommandPalette } from "./ui/CommandPalette.js";
-import { Confirm, type ConfirmTarget } from "./ui/Confirm.js";
+import { Confirm, shownKillName, type ConfirmTarget } from "./ui/Confirm.js";
 import { Prompt } from "./ui/Prompt.js";
 import { Detail, type DetailTarget } from "./ui/Detail.js";
 import { runCommand, type CommandCtx } from "./commands.js";
@@ -301,7 +301,7 @@ export function App({
   const onFocus = useCallback((id: FocusId) => setFocusedId(id), []);
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
   const openMessage = useCallback((e: FeedEntry) => setDetail({ kind: "message", entry: e }), []);
-  const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name }), []);
+  const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name, id: p.card.id }), []);
   // Attach: open the seat's live terminal. Keyed by NAME (a managed seat need not be a roster peer,
   // same as `cotal attach --name`). A bad COTAL_DETACH_KEY is refused BEFORE suspending, as a
   // notice: the loop would only throw it after the takeover, with the screen already gone.
@@ -475,9 +475,10 @@ export function App({
     setConfirm(null);
     if (c?.kind === "kill") {
       const graceful = !opts?.force;
-      setNotice(`${graceful ? "stopping" : "force-killing"} ${c.name}…`);
+      const shown = shownKillName(c.name, c.id);
+      setNotice(`${graceful ? "stopping" : "force-killing"} ${shown}…`);
       void ctl("stop", { name: c.name, graceful }).then((r) =>
-        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${c.name}` : `stop: ${r.error ?? "failed"}`),
+        setNotice(r.ok ? `${graceful ? "stopped" : "force-killed"} ${shown}` : `stop: ${r.error ?? "failed"}`),
       );
     } else if (c?.kind === "purge") {
       setNotice(`purging ${c.space}…`);

@@ -568,7 +568,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         for (const l of live.values()) {
           if (!l.child) continue;
           const seats = await generationCall(l.child, randomUUID(), "inspect");
-          if (seats !== undefined && seats > 0) throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s)`, command(`stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then run \`cotal daemon setup --space ${l.view.space}\``));
+          if (seats !== undefined && seats > 0) {
+            const agents = await readHostedAgents(l.child);
+            throw new HostedManagerRefusal("SEATS_ACTIVE", `hosted Manager for ${l.view.space} holds ${seats} active seat(s): ${agents.map(agent => agent.name).join(", ")}`, command(`stop the seats through Manager ${l.view.instanceId} in space ${l.view.space}, then run \`cotal daemon setup --space ${l.view.space}\``));
+          }
         }
         const readinessDeadline = Date.now() + 15_000;
         for (const l of live.values()) {

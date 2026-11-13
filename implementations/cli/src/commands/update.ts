@@ -28,6 +28,7 @@ import {
   targetFlags,
   resolveControlTarget,
 } from "@cotal-ai/workspace";
+import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -56,7 +57,7 @@ import {
   type MeshTargetErrorDetails,
 } from "@cotal-ai/workspace";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
-import { legacyManagerReport, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
+import { legacyManagerReport, legacySeatLabel, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
@@ -72,6 +73,7 @@ export const updateFlags: readonly FlagSpec[] = [
   { name: "auto", type: "boolean", description: "show automatic updates, or set them with --auto off|on" },
   { name: "notify", type: "boolean", description: "show update notices, or set them with --notify off|on" },
   { name: "self", type: "boolean", description: "install the validated latest cotal-ai globally, then reconcile through it" },
+  { name: "stop-agents", type: "boolean", description: "stop agents this computer cannot preserve, then continue the update" },
   { name: "check", type: "boolean", description: "read version availability and the recorded extension inventory; install and restart nothing" },
   jsonFlag, plainFlag,
   ...targetFlags,
@@ -271,6 +273,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
 /** Check mode is installation metadata only; target and mutation inputs are never ignored. */
 export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
+  if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires cotal update --self");
   if (args.values.auto || args.values.notify) {
     if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.json || args.values.plain || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
       throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");
@@ -300,11 +303,14 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
   const latest = latestVersion(rt);
   if (!latest.ok) warnings.push({ code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
-  const result = { kind: "update-check", current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
+  const pending = readUpdatePending(current);
+  if (pending.kind === "unreadable") warnings.push({ code: "RECONCILIATION_UNREADABLE", target: null, message: `Reconciliation state could not be read: ${pending.error}` });
+  const result = { kind: "update-check", reconciliation: pending, current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
   writeResult(presentationOf(args.values), {
     command: "update", target: null, result, warnings,
     ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
   }, (r) => ({ sections: [
+    ...(pending.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [pending.instruction] }] }]),
     { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },
     { title: "Recorded extensions", blocks: [r.extensions === null ? { kind: "lines", lines: [{ text: "Inventory unavailable. No repair was attempted.", tone: "waiting" }] } : r.extensions.length ? { kind: "table", columns: [{ key: "package", label: "Package" }, { key: "version", label: "Recorded version" }, { key: "state", label: "Generation" }], rows: r.extensions.map((entry) => ({ package: entry.package, version: entry.version, state: !entry.firstParty ? { text: "third party", tone: "hint" } : entry.matchesCli ? { text: "matches running CLI", tone: "ok" } : { text: "differs from running CLI", tone: "waiting" } })) } : { kind: "lines", lines: ["No extensions in the recorded inventory."] }, { kind: "lines", lines: [{ text: "Version records only. Package contents, signatures and running processes were not checked. No installation was reconciled or restarted.", tone: "hint" }] }] },
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal update", description: "Reconcile the current generation through the existing guarded updater" }, ...(r.updateAvailable ? [{ command: "cotal update --self", description: rt.checkout() ? "Install the verified latest CLI as a separate global copy and reconcile through it; this checkout does not change" : "Install the verified latest CLI and reconcile its generation" }] : []), { command: "cotal status", description: "Inspect this machine and its selected space" }] }] },
@@ -728,7 +734,11 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   const report = await legacyManagerReport(
     (status.data ?? {}) as { custody?: unknown },
     Array.isArray(seats.data)
-      ? seats.data.map((seat) => ({ name: String((seat as { name?: unknown }).name ?? ""), agent: String((seat as { agent?: unknown }).agent ?? "") }))
+      ? seats.data.map((seat) => {
+          const row = seat as { name?: unknown; agent?: unknown; id?: unknown };
+          const id = typeof row.id === "string" && row.id.trim() ? row.id : undefined;
+          return { name: typeof row.name === "string" ? row.name : "", agent: typeof row.agent === "string" ? row.agent : "", ...(id ? { id } : {}) };
+        })
       : [],
   );
   if (!report) return "none";
@@ -749,7 +759,7 @@ export function printLegacyReport(
   out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
   out(`  Manager ${manager ?? "(instance unavailable)"} in space ${JSON.stringify(space)}: ${report.seats.length} seats`);
   for (const seat of report.seats)
-    out(c.dim(`  ${seat.name}: ${seat.continuity}`));
+    out(c.dim(`  ${legacySeatLabel(seat)}: ${seat.continuity}`));
   out("  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.");
   out("  Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.");
 }

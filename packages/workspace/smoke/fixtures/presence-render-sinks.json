@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1031,
+    "total": 1035,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
-    "command-ack": 10,
-    "non-render/control": 812
+    "command-ack": 13,
+    "non-render/control": 813
   },
   "renderers": [
     {
@@ -3794,7 +3794,7 @@
     {
       "path": "implementations/cli/src/commands/down.ts",
       "kind": "derived-output",
-      "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
+      "anchor": "`cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(\", \")} (manager lease holder: ${observed.managerId}); nothing was preserved`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -5078,7 +5078,7 @@
     {
       "path": "implementations/cli/src/commands/agents.ts",
       "kind": "derived-output",
-      "anchor": "`${item.name} · ${item.status}`",
+      "anchor": "`${psSeatLabel({ name: item.name, id: item.id })} · ${item.status}`",
       "class": "non-render/control",
       "rationale": "Attach picker label: the agent name with the manager-reported process state (row.status), not mesh presence or work progress."
     },
@@ -7521,6 +7521,34 @@
       "anchor": "legacyAgentCapRefusal(response.status, response.body)",
       "class": "non-render/control",
       "rationale": "App user identity provisioning: maps a legacy agent-cap HTTP refusal response into a typed CommandFailure; no presence rendering."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "extensions/connector-core/src/tool-specs.ts",
+      "kind": "derived-output",
+      "anchor": "`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`",
+      "class": "command-ack",
+      "rationale": "Command result or ambiguity guidance reports the status involved in that operation, not observed work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/spawn.ts",
+      "kind": "derived-output",
+      "anchor": "joinedAgentRows(result)",
+      "class": "non-render/control",
+      "rationale": "Spawn join receipt: the Agent, Identity and Manager rows of the launch result; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
     }
   ]
 }
