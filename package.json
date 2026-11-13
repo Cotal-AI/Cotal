@@ -778,6 +778,7 @@
     "smoke:manager-reconcile-startup": "tsx implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
     "smoke:manager-reconcile-redrive": "tsx implementations/manager/smoke/manager-reconcile-redrive.smoke.ts",
     "smoke:manager-name-claim": "tsx implementations/manager/smoke/manager-name-claim.smoke.ts",
+    "smoke:cross-root-transcript-name": "tsx implementations/manager/smoke/cross-root-transcript-name.smoke.ts",
     "smoke:manager-on-route": "tsx implementations/manager/smoke/manager-on-route.smoke.ts",
     "smoke:manager-scatter": "tsx implementations/manager/smoke/manager-scatter.smoke.ts",
     "smoke:manager-multi-live": "tsx implementations/manager/smoke/manager-multi-live.smoke.ts",
