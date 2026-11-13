@@ -1139,9 +1139,11 @@ The broker holds every pull to those limits, but it does not confine the reply s
   receiver classifies it as a message, a DM or an answer, and it discloses only what that principal
   may already read.
 - A pull that sets no wait outlives its reader's connection and credential while another principal
-  listens on its reply subject. It moves at most 4 more records, and ends at its fourth record, at
-  the owner's next open of that reader, or when the reader is deleted. A create grant had no such
-  bound: one create could leave a durable push consumer exporting every later prompt.
+  listens on its reply subject. It moves at most 4 more records, and ends at its fourth record, when
+  its own lifecycle opens that reader again, or when the reader is deleted. Nothing deletes a reader
+  when its lifecycle ends, and an ended lifecycle never reopens it, so those records can arrive long
+  after the credential is revoked. A create grant had no such bound: one create could leave a
+  durable push consumer exporting every later prompt.
 
 **Grants.** An agent subscribes to the serve filter of every runtime of its own agent and publishes
 only beneath its `.reply.` leaf, a row that cannot express a request, so no agent can answer its own
