@@ -12,6 +12,7 @@ import { renderReport } from "@cotal-ai/workspace";
 import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
+import { memberName } from "../src/commands/channel-members.js";
 import {
   chatSubject,
   unicastSubject,
@@ -125,6 +126,12 @@ const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "
 check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
 const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
 check("an empty roster names its participant scope", emptyRoster.includes("No participants in this observer snapshot."));
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const shown = memberName(name, "local.blank");
+  check(`channel members shows the id for a roster name ${JSON.stringify(name)}`, shown === "local.blank" && !shown.includes("\n"));
+}
+check("channel members keeps a real roster name", memberName("ada", "local.ada") === "ada");
+check("channel members says a missing roster name was not reported", memberName(null, "local.blank") === "name not reported");
 const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
 check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
 {

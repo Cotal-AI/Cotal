@@ -478,7 +478,9 @@ defaults or the built-in policy. The inventory uses the same mark for replay and
 Explicit settings are unmarked even when they equal the defaults. In `channel defaults`, the
 mark identifies values supplied by the built-in policy.
 `members` reads the broker-derived membership feed. Its timestamp is the last successful feed
-poll, not proof of current activity or access. With `--follow --json`, it emits membership NDJSON
+poll, not proof of current activity or access. A roster name that is only whitespace is shown as
+the id. A member the roster has not named says `name not reported`. JSON keeps the roster name,
+or null when the roster has none. With `--follow --json`, it emits membership NDJSON
 records. A missing feed remains unknown rather than an empty confirmed census. Without `--follow`, a
 census with no member for a name that has no saved entry and no retained messages is refused with
 `TARGET_NOT_FOUND`, listing the registered channels, or naming the registered spelling when only the
