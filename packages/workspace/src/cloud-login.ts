@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 
 /** Hosted deployment auth base. Custom providers retain their own auth URLs. */
-export const COTAL_CLOUD_IDP = "https://cloud.cotal.ai/api/auth";
+export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
 
 /** The Cloud origin is an explicit alias, never a discovery or retry rule for other hosts. */
 export function cloudAuthUrl(url: string): string {
-  return url === "https://cloud.cotal.ai" || url === "https://cloud.cotal.ai/" ? COTAL_CLOUD_IDP : url;
+  if (url === "https://cloud.cotal.ai" || url === "https://cloud.cotal.ai/") return "https://cloud.cotal.ai/api/auth";
+  return url === "https://cotal.cloud" || url === "https://cotal.cloud/" ? COTAL_CLOUD_IDP : url;
 }
 
 /** The recovery command for a refused sign-in, without deployment details for Cloud. */

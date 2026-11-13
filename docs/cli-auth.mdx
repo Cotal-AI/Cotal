@@ -14,9 +14,26 @@ or a pipe. Use `cotal login --cloud` to select Cloud explicitly. Approve the pri
 A supported desktop session opens the link in your browser. Use `--no-browser` to open it
 elsewhere. Piped output does not open a browser.
 
-For another host, use `cotal login --idp <auth base URL>`. The Cotal Cloud origin
-`https://cloud.cotal.ai` is an explicit alias for `https://cloud.cotal.ai/api/auth`.
-Other provider URLs are used as written, without trying alternate auth paths.
+For another host, use `cotal login --idp <auth base URL>`. Fresh Cloud sign-ins use
+`https://cotal.cloud/api/auth`. The origins `https://cotal.cloud` and
+`https://cloud.cotal.ai` select their own `/api/auth` paths. Other provider URLs are
+used as written, without trying alternate auth paths.
+
+An upgrade leaves existing Cloud registrations on their saved address. To move a
+registered account deliberately, run:
+
+```bash
+cotal login --migrate-from https://cloud.cotal.ai/api/auth
+```
+
+The old issuer's root discovery document must endorse the new HTTPS origin with
+`nativeMigration: { version: 1, origin: "https://cotal.cloud" }`. The client reads
+complete pins from the new root and requests fresh device approval there. It checks
+the same issuer, subject, audience and catalog space identities before saving the
+new login and replacing registrations. It does not send the old bearer to the new
+origin. Existing service sessions and native retirement or renewal records remain
+on their saved authority. Cancellation or failed identity checks do not replace
+registrations. Session and registry persistence are separate writes.
 
 Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
 
