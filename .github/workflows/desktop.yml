@@ -439,7 +439,7 @@ jobs:
           if (Test-Path -LiteralPath 'desktop/src-tauri/target/debug/desktop-e2e.json') {
             throw 'Windows diagnostic context remains owned; real journeys will not overwrite it.'
           }
-      - name: Windows recovery cell 1 before an app poll sees the disabled service
+      - name: Windows restart recovery cell 1 reconnects without input
         id: windows-before-start
         if: runner.os == 'Windows'
         timeout-minutes: 12
@@ -453,7 +453,7 @@ jobs:
         timeout-minutes: 12
         shell: pwsh
         run: node desktop/e2e/windows-journey.mjs resume "${{ runner.temp }}/desktop-windows-before" "${{ runner.temp }}/desktop-e2e/before-poll" before-poll
-      - name: Windows recovery cell 2 after the app shows the stopped service
+      - name: Windows stopped-service cell 2 reconnects through Start service
         id: windows-after-start
         if: runner.os == 'Windows' && steps.windows-before-finish.outcome == 'success'
         timeout-minutes: 12
@@ -462,21 +462,30 @@ jobs:
           COTAL_DAEMON_SMOKE_TMP: ${{ runner.temp }}
         run: node desktop/e2e/windows-journey.mjs start "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
       - name: Finish cell 2 through its original cleanup owner
+        id: windows-after-finish
         if: runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'
         timeout-minutes: 12
         shell: pwsh
         run: node desktop/e2e/windows-journey.mjs resume "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
+      - name: Windows connected account Ready, Settings and login-command lifecycle
+        if: runner.os == 'Windows' && steps.windows-after-finish.outcome == 'success'
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          COTAL_DAEMON_SMOKE_TMP: ${{ runner.temp }}
+        run: node desktop/e2e/windows-journey.mjs account "${{ runner.temp }}/desktop-windows-account" "${{ runner.temp }}/desktop-account-e2e" account-only
       - name: Cancel an unfinished Windows journey through its fixture owner
         if: always() && runner.os == 'Windows'
         timeout-minutes: 2
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($cell in @('before-poll', 'after-poll')) {
-            $name = if ($cell -eq 'before-poll') { 'before' } else { 'after' }
+          foreach ($cell in @('before-poll', 'after-poll', 'account-only')) {
+            $name = if ($cell -eq 'before-poll') { 'before' } elseif ($cell -eq 'after-poll') { 'after' } else { 'account' }
             $directory = Join-Path $env:RUNNER_TEMP "desktop-windows-$name"
+            $output = if ($cell -eq 'account-only') { "${{ runner.temp }}/desktop-account-e2e" } else { "${{ runner.temp }}/desktop-e2e/$cell" }
             if (Test-Path -LiteralPath (Join-Path $directory 'controller.json')) {
-              node desktop/e2e/windows-journey.mjs cancel $directory "${{ runner.temp }}/desktop-e2e/$cell" $cell
+              node desktop/e2e/windows-journey.mjs cancel $directory $output $cell
               if ($LASTEXITCODE -ne 0) { $failed = $true }
             }
           }
