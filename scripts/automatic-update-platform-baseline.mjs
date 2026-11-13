@@ -16,6 +16,7 @@ export const methods = ['self', 'scheduler', 'installer'];
 const hosted = process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output);
+export const cliReportsVersion = (output, target) => output.trim().split(/\r?\n/, 1)[0] === `cotal-ai ${target}`;
 export const selectedTargets = output => [...new Set([...output.matchAll(/(?:installing cotal-ai@|(?:repaired and )?updated to |updating to )(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gi)].map(match => match[1]))];
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
@@ -301,7 +302,7 @@ export async function matrixCell(options) {
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     check('every recorded extension is at target', extensions.every(entry => entry.version === report.target), extensions.map(({ pkg, version }) => ({ pkg, version })));
     const version = await cotal('selected CLI version assertion', ['--version']);
-    check('selected CLI reports target', version.exit === 0 && version.stdout.trim() === `cotal-ai ${report.target}`, version);
+    check('selected CLI reports target', version.exit === 0 && cliReportsVersion(version.stdout, report.target), version);
     check('recorded extension package versions match target', extensions.every(entry => {
       const path = join(config, 'extensions/node_modules', entry.pkg, 'package.json');
       return existsSync(path) && json(path).version === report.target;

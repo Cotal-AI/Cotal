@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import { candidateRegistry, bootstrapVersion, selectedTargets } from './automatic-update-platform-baseline.mjs';
+import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion } from './automatic-update-platform-baseline.mjs';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
+
+test('configured version inventory preserves the selected CLI header', () => {
+  assert(cliReportsVersion('cotal-ai 0.164.1\n  tmux 0.164.1\n', '0.164.1'));
+  assert(!cliReportsVersion('cotal-ai 0.162.0\n  tmux 0.164.1\n', '0.164.1'));
+});
 
 test('selected target ignores prior and restored versions in real propagation failure text', () => {
   assert.deepEqual(selectedTargets("cotal-ai@0.163.5 installed\ninstalling cotal-ai@0.164.1 into npm's global installation\nRestoring verified cotal-ai@0.163.5 through the global updater."), ['0.164.1']);
