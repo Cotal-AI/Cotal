@@ -20,6 +20,8 @@
  */
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -27,6 +29,8 @@ import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
   createSpaceAuth,
+  dmStream,
+  idFromCreds,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -665,6 +669,40 @@ try {
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
+  }
+
+  // The direct-message stream is gone. Channel history is still there. --dms must not report a
+  // complete read that simply omits the direct messages.
+  {
+    const keptNote = `dm-stream-${randomUUID().slice(0, 8)}`;
+    await alice.multicast("channel stays", { channel: "general" });
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, keptNote);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try {
+      await (await jetstreamManager(nc)).streams.delete(dmStream(space));
+    } finally {
+      await nc.close();
+    }
+    const kept = await run(["history", "--dms", "--json"]);
+    const items = kept.envelope?.result?.items ?? [];
+    check(
+      "history --dms is partial when only the direct-message stream is gone, and channel history remains",
+      kept.status === 4 && kept.envelope?.outcome === "partial" && kept.envelope.warnings.some((w) => w.code === "DM_STREAM_ABSENT") && items.some((i) => i.text === "channel stays" && i.channel === "general") && !items.some((i) => i.text === keptNote),
+      shown(kept),
+    );
+    const general = await run(["history", "general", "--json"]);
+    check(
+      "channel history stays complete when only the direct-message stream is gone",
+      general.status === 0 && general.envelope?.completeness === "complete" && (general.envelope?.result?.items ?? []).some((i) => i.text === "channel stays"),
+      shown(general),
+    );
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});

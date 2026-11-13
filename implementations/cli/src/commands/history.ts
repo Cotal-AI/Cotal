@@ -397,6 +397,13 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       const merged = [...read, ...dms].sort((a, b) => a.ts.localeCompare(b.ts));
       if (dms.length === req.limit || merged.length > req.limit) olderRetained = true;
       read = merged.slice(-req.limit);
+      // An absent stream reads as no messages. That is a missing read, not an empty history.
+      try {
+        if (!(await ep.dmStreamPresent()))
+          warnings.push({ code: "DM_STREAM_ABSENT", target: req.target, message: `the direct-message stream of ${conn.space} is not on its broker, so direct messages are not shown` });
+      } catch (e) {
+        warnings.push({ code: "DM_STREAM_UNREAD", target: req.target, message: `the direct-message stream could not be read, so whether it is present is unknown: ${(e as Error).message}` });
+      }
     }
   } else {
     // Use this connection's broker-confined channel grant, not the delivery ACL mirror that human

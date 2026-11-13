@@ -3919,6 +3919,19 @@ export class CotalEndpoint extends EventEmitter {
     };
   }
 
+  /** Whether this space's direct-message stream is on its broker. A missing stream is false.
+   *  Any other failure, including a permission denial, is raised. */
+  async dmStreamPresent(): Promise<boolean> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    try {
+      await (await jetstreamManager(this.nc)).streams.info(dmStream(this.space));
+      return true;
+    } catch (e) {
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+      return false;
+    }
+  }
+
   /** One coherent channel model for dashboards: every channel that has messages OR a registry
    *  entry (configured-but-empty), each tagged with its {@link ChannelConfig}. Works even on
    *  observer endpoints (no consumers needed). */
