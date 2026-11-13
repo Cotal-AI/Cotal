@@ -170,6 +170,7 @@ try {
   // independent logout defect even when login aborts before its complete report.
   const mixedFailures: string[] = [];
   const check = (ok: boolean, message: string) => { if (!ok) mixedFailures.push(message); };
+  check(receipt.includes(`journalctl --user -u ${skippedService}`), "login names the skipped service's log command");
   check(mixedLoginExit === 0, "mixed-unit login exits successfully");
   check(requireIdpSession(serviceHome, base).token === requireIdpSession(operatorStore, base).token, "proven sibling received approved session despite skipped unit");
   check(readFileSync(join(skippedHome, "idp-sessions.json"), "utf8") === skippedBefore, "skipped service store remains byte-for-byte unchanged after login");
@@ -189,6 +190,7 @@ try {
     const deadline = setTimeout(() => child.kill("SIGTERM"), 30_000);
     try {
       const code = await new Promise<number | null>((r, reject) => { child.once("error", reject); child.once("exit", r); });
+      check(output.includes(`journalctl --user -u ${skippedService}`), "logout names the skipped service's log command");
       check(code === 0, "mixed-unit logout exits successfully");
       check(!loadIdpSession(operatorStore, base), "real logout clears source operator session despite skipped unit");
       check(!loadIdpSession(serviceHome, base), "real logout clears proven shared service session");
