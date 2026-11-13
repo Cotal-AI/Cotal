@@ -220,6 +220,27 @@ try {
     check("peek shows a current mention that an older direct message would otherwise fill the window past", peeked.includes("PLEASE-READ-THIS-MENTION") && agent.inboxCount() === 4, { chars: peeked.length, inbox: agent.inboxCount() });
     const cleared = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a clearing read still delivers the direct message ahead of that mention", cleared.includes("old-dm-0") && !cleared.includes("PLEASE-READ-THIS-MENTION"), { chars: cleared.length });
+    check("...and its held note says a mention of you is waiting", cleared.includes("3 more messages held (2 direct, 1 mentioning you)."), cleared.slice(-260));
+  }
+
+  // A window filled by older channel posts does not hide a current mention from the clearing read
+  // that follows its wake.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    const post = "p".repeat(1_500);
+    for (let n = 0; n < 60; n++) agent.ep.emit("message", {
+      id: `old-post-${n}`, ts: 10_000 + n, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general",
+      parts: [{ kind: "text", text: `${post} old-post-${n}` }],
+    }, noop(), { historical: false, kind: "channel" });
+    agent.ep.emit("message", {
+      id: "mention-after-posts", ts: 60_000, space: cfg.space, from: { id: "lead", name: "Lead" }, channel: "general", mentions: ["otto"],
+      parts: [{ kind: "text", text: "MISSION-AFTER-POSTS " + "y".repeat(3_000) }],
+    }, noop(), { historical: false, kind: "channel" });
+    const cleared = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a clearing read shows a current mention ahead of the older channel posts that fill its window",
+      cleared.includes("MISSION-AFTER-POSTS") && /old-post-0\b/.test(cleared) && !/old-post-59\b/.test(cleared) && !agent.peekInbox().some((i) => i.id === "mention-after-posts"),
+      { chars: cleared.length, inbox: agent.inboxCount() });
   }
 
   // An older direct message that fills the window must not hide a newer one on a peek.
