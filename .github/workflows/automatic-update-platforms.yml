@@ -291,7 +291,7 @@ jobs:
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Candidate native daemon, synthetic registry and real supervisor
         shell: bash
-        run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate" --direction '${{ matrix.direction }}' --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state daemon --method '${{ matrix.method }}' --output "$RUNNER_TEMP/upgrade-evidence"
+        run: node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidate" --direction '${{ matrix.direction }}' --candidate-installer "$RUNNER_TEMP/candidate/installer.sh" --source '${{ matrix.source }}' --layout '${{ matrix.layout }}' --state daemon --method '${{ matrix.method }}' --output "$RUNNER_TEMP/upgrade-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
