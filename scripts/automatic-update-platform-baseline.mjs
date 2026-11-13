@@ -12,13 +12,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 assert(process.env.COTAL_TEST_REAL_SERVICE === '1' && process.env.GITHUB_ACTIONS === 'true'
   && process.env.RUNNER_ENVIRONMENT === 'github-hosted' && process.env.RUNNER_TEMP
   && ['darwin', 'win32'].includes(process.platform), 'requires opted-in disposable native GitHub runner');
-assert.deepEqual(Object.keys(process.env).filter(key => key.startsWith('COTAL_') && key !== 'COTAL_TEST_REAL_SERVICE'), [],
+assert.deepEqual(Object.keys(process.env).filter(key => key.startsWith('COTAL_') && !['COTAL_TEST_REAL_SERVICE', 'COTAL_TEST_NATIVE_ACCOUNT_HOME'].includes(key)), [],
   'baseline requires unset inherited COTAL configuration');
 const evidence = join(process.env.RUNNER_TEMP, 'automatic-update-baseline-evidence');
 mkdirSync(evidence, { mode: 0o700 });
 const root = realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP, 'cotal-baseline-')));
 const prefix = join(root, 'prefix'), home = join(root, 'private-home'), daemonHome = join(root, 'daemon');
 for (const dir of [prefix, home, daemonHome]) mkdirSync(dir, { mode: 0o700 });
+for (const dir of ['config', 'cache', 'data', 'state', 'runtime', 'tmp']) mkdirSync(join(home, dir), { mode: 0o700 });
 const report = { platform: process.platform, version: '0.164.0', calls: [],
   scope: 'explicit daemon-home native baseline plus separate eligible:true native-OS policy probe; no transition',
   serviceEnvironment: 'native account environment, not private CLI HOME', cleanup: 'not-needed' };
@@ -57,6 +58,7 @@ try {
   const env = { ...process.env, HOME: home, USERPROFILE: home, COTAL_HOME: join(home, '.cotal'),
     XDG_CONFIG_HOME: join(home, 'config'), XDG_CACHE_HOME: join(home, 'cache'),
     XDG_DATA_HOME: join(home, 'data'), XDG_STATE_HOME: join(home, 'state'),
+    XDG_RUNTIME_DIR: join(home, 'runtime'), TMPDIR: join(home, 'tmp'), TMP: join(home, 'tmp'), TEMP: join(home, 'tmp'),
     npm_config_cache: join(home, 'npm-cache') };
   let installed;
   if (process.platform === 'win32') {
@@ -80,6 +82,8 @@ try { const s=u.status(); console.log(JSON.stringify({platform:process.platform,
   const policy = native(process.execPath, ['--input-type=module', '-e', probe], env);
   save('policy-probe.json', { exit: policy.status, stdout: policy.stdout, stderr: policy.stderr });
   assert.equal(policy.status, 0, 'unchanged native-OS eligible:true policy probe failed');
+  assert.equal(process.env.COTAL_TEST_NATIVE_ACCOUNT_HOME, '1',
+    'BLOCKED: native service uses disposable runner account HOME; explicit coordinator approval required');
   if (process.platform === 'darwin') {
     const domain = native('/bin/launchctl', ['print', `gui/${process.getuid()}`]);
     save('gui-domain.json', { exit: domain.status });
