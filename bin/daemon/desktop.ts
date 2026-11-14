@@ -4,7 +4,7 @@ import { defaultComputerName } from "./computer-name.js";
 import { computerName } from "./name-validation.js";
 import { arch, platform, release, totalmem } from "node:os";
 import type { Readable, Writable } from "node:stream";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
@@ -14,6 +14,7 @@ import { runSetup } from "./setup.js";
 import { desktopApplicationPath } from "./desktop-path.js";
 
 export type DesktopRequest =
+  | { readonly op: "update-policy"; readonly auto?: boolean }
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
   | { readonly op: "update-release"; readonly version: string }
@@ -32,8 +33,12 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
   const o = value as Record<string, unknown>;
   const simple = ["about", "status", "install", "update-check"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
-  const fields = o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
+  const fields = o.op === "update-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
+  if (o.op === "update-policy") {
+    if (o.auto !== undefined && typeof o.auto !== "boolean") throw new Error("invalid update preference");
+    return { op: "update-policy", ...(o.auto !== undefined ? { auto: o.auto } : {}) };
+  }
   if (o.op === "update-release") {
     if (typeof o.version !== "string" || !/^\d+\.\d+\.\d+$/.test(o.version)) throw new Error("invalid release version");
     return { op: "update-release", version: o.version };
@@ -99,6 +104,11 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     return;
   }
   try {
+    if (req.op === "update-policy") {
+      const settings = req.auto === undefined ? readUpdateSettings() : setUpdateSetting("auto", req.auto);
+      emit({ v: 1, event: "result", ok: true, result: settings });
+      return;
+    }
     if (req.op === "about") {
       emit({ v: 1, event: "result", ok: true, result: { version: opts.version, machine: defaultComputerName(), platform: platform(), arch: arch(), release: release(), memoryBytes: totalmem() } });
       return;

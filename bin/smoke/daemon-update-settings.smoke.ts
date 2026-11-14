@@ -2,14 +2,15 @@ import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { Readable, Writable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readUpdateSettings } from "@cotal-ai/workspace";
 import { serveDaemon } from "../daemon/server.js";
 import { daemonPathsFor } from "../daemon/endpoint.js";
 import { parseRequest } from "../daemon/protocol.js";
-import { parseDesktopRequest } from "../daemon/desktop.js";
+import { parseDesktopRequest, runDesktopBridge } from "../daemon/desktop.js";
 import { updateViaDaemon } from "../daemon/client.js";
 import { automaticUpdates } from "../daemon/auto-update.js";
 
@@ -23,6 +24,24 @@ const paths = daemonPathsFor(process.env.COTAL_HOME!, { XDG_RUNTIME_DIR: runtime
 const daemon = await serveDaemon({ paths, sessionDir: process.env.COTAL_HOME!, version: "0.160.5", updateStatus: updates.status, updateCheck: updates.check });
 const check = (value: unknown, label: string) => { assert.ok(value, label); console.log(`ok ${label}`); };
 try {
+  const desktopPolicy = async (auto?: boolean) => {
+    let output = "";
+    await runDesktopBridge({ version: "0.160.5", resolveTarget: () => { throw new Error("policy must not resolve a daemon"); },
+      input: Readable.from([`${JSON.stringify({ op: "update-policy", ...(auto === undefined ? {} : { auto }) })}\n`]),
+      output: new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done(); } }),
+    });
+    return JSON.parse(output);
+  };
+  const initial = await desktopPolicy();
+  check(initial.ok && initial.result.auto === true, "desktop preference reads the actual default-on setting before daemon resolution");
+  for (const enabled of [false, true]) {
+    const result = await desktopPolicy(enabled);
+    const file = join(process.env.COTAL_HOME!, "update-settings.json");
+    check(result.ok && result.result.auto === enabled && readUpdateSettings().auto === enabled, `desktop auto ${enabled} uses the CLI settings reader`);
+    check(JSON.parse(readFileSync(file, "utf8")).auto === enabled && (statSync(file).mode & 0o777) === 0o600, "desktop writes the protected shared preference file");
+  }
+  for (const auto of ["on", 1, null, [], {}]) assert.throws(() => parseDesktopRequest({ op: "update-policy", auto }));
+  assert.throws(() => parseDesktopRequest({ op: "update-policy", path: "/foreign" }));
   for (const key of ["auto", "notify"] as const) for (const enabled of [false, true]) {
     const result = await updateViaDaemon({ paths }, { op: "update-settings", [key]: enabled });
     check(readUpdateSettings()[key] === enabled, `${key} ${enabled} persisted through real daemon endpoint`);

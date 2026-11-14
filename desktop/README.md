@@ -56,9 +56,13 @@ Open **Settings** in the window or **Settings…** from the tray or menu bar aft
 
 ## Updates
 
-A newer desktop version appears in a gold notice and in the tray menu after setup. **Later** hides that version until another version is available. Opening the installer checks that version's GitHub release assets for this platform and architecture. If no matching installer exists, Cotal opens the release page and explains why. Installer feedback appears in Settings under Updates and is announced to assistive technology. Install the downloaded version and reopen Cotal. The app does not replace itself, and no automatic-update feed is configured.
+A newer desktop version appears in a gold notice and in the tray menu after setup. **Later** hides that version until another version is available. **Install updates automatically** is on by default and uses the same saved preference as `cotal update --auto on|off`, independent of whether the background service can update itself. Turning it off reports availability without downloading or installing an update.
 
-**Check now** runs the background service's existing update check. Its registry cache lasts a day after success and an hour after an attempt, so this does not promise a fresh network request. Desktop installations offer **Notify me about updates**, because their app and bundled service update through the platform installer. Linux npm installations can offer **Install updates automatically** for the background service. These preferences are the same ones used by `cotal update --auto` and `cotal update --notify`.
+Builds without an updater public key cannot accept an automatic update. Settings explains that limit and keeps the platform installer link. Opening the installer checks that version's GitHub release assets for this platform and architecture. If no matching installer exists, Cotal opens the release page and explains why. Install the downloaded version and reopen Cotal.
+
+When a build has an updater key, desktop availability comes from its HTTPS release manifest. Downloads are verified against that key before they are marked ready. A missing manifest during release publication keeps the last good answer and shows only in Settings that the newest release is still being prepared. It does not add an error or a new version notice to the main view. Checks keep the daily rhythm. **Check now** can return cached results.
+
+This release prepares and verifies desktop updates but does not apply them. A verified download waits rather than replacing a running app or service. There is no automatic rollback. Linux deb/rpm builds require the matching platform installer because package installation needs administrator rights. The app does not update a command line installed separately through npm or the shell installer.
 
 ## Develop
 

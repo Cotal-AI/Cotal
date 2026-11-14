@@ -14,6 +14,8 @@ export function nativeStub(scenario) {
     transformCallback(fn) { callbacks.set(++next, fn); return next; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(command, args) {
+      if (command === "app_update_check") return state.appUpdate ?? { phase: "unconfigured" };
+      if (command === "app_update_download") { state.appDownloads = (state.appDownloads ?? 0) + 1; return state.appUpdate = { phase: "ready", version: state.appUpdate.version }; }
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
@@ -27,6 +29,7 @@ export function nativeStub(scenario) {
         if (state.loading) await new Promise(() => {});
         return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
+      if (request.op === "update-policy") { if (request.auto !== undefined) state.autoUpdates = request.auto; return ok({ auto: state.autoUpdates !== false }); }
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
@@ -107,6 +110,25 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  ...["checking", "current", "downloading", "ready", "preparing", "unconfigured", "failed", "off"].map(phase => ({
+    name: `app-updater-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, autoUpdates: phase !== "off", update,
+      appUpdate: { phase: phase === "off" ? "available" : phase, ...(phase === "preparing" || phase === "unconfigured" || phase === "current" || phase === "checking" ? {} : { version: "0.161.0" }), downloaded: 25, total: 100, ...(phase === "failed" ? { reason: "Signature verification failed" } : {}) } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#settings-update-summary").getAttribute("data-update-state"), phase === "off" ? "available" : phase);
+      assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically");
+      assert.equal(await page.locator("#update-preference").isChecked(), phase !== "off");
+      if (phase === "off") { assert.match(await page.locator("#settings-update-summary").textContent(), /Automatic updates are off/); assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0); }
+      if (phase === "preparing") {
+        assert.equal(await page.locator("#settings-update-summary").textContent(), "The newest release is still being prepared.");
+        assert.equal(await page.evaluate(() => window.__renderState.trayUpdate ?? null), null);
+        assert.equal(await page.locator("#settings-download-row").isVisible(), false);
+      }
+      if (phase === "unconfigured") assert.match(await page.locator("#settings-update-summary").textContent(), /cannot update itself/);
+      if (phase === "failed") assert.match(await page.locator("#settings-update-summary").textContent(), /Signature verification failed/);
+    },
+  })),
   { name: "connected-short-spaces-padding", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } } },
   { name: "connected-short-spaces-6", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } }, expect: async page => {
     const inline = await page.locator('[data-testid="connected-space-row"] > span').evaluateAll(copies => copies.every(copy => {

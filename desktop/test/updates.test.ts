@@ -28,8 +28,8 @@ test("update summary covers available current unchecked and failed", () => {
 });
 test("each platform explains the control that can actually work", () => {
   for (const platform of ["darwin", "win32", "linux"]) {
-    assert.equal(updatePolicy("desktop", platform).label, "Notify me about updates");
-    assert.match(updatePolicy("desktop", platform).description, /Installing it updates the app/);
+    assert.equal(updatePolicy("desktop", platform).label, "Install updates automatically");
+    assert.match(updatePolicy("desktop", platform).description, /downloads verified desktop updates/);
   }
   assert.equal(updatePolicy("npm", "linux").label, "Install updates automatically");
   for (const platform of ["darwin", "win32"]) assert.equal(updatePolicy("npm", platform).label, "Notify me about updates");

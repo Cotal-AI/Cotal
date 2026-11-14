@@ -45,12 +45,14 @@ test("launch readiness, application retry and polling follow the selected space"
       if (cmd === "plugin:deep-link|get_current") return ["cotal://connect?idp=https://example.com/auth&space=sp_first"];
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (cmd === "set_connection_state") return;
+      if (cmd === "app_update_check") return { phase: "unconfigured" };
       if (cmd === "open_browser") { browserUrls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request");
       const req = args.request!;
       calls.push(req);
       let result: Record<string, unknown>;
       switch (req.op) {
+        case "update-policy": result = { auto: req.auto ?? true }; break;
         case "about": result = { machine: "test", version: "test", platform: "linux", arch: "x64", memoryBytes: 0 }; break;
         case "status": result = { state: "ready", version: daemonVersion, managers: [...managers.values()] }; break;
         case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, catalogId: `sp_${space}`, mode: "user", idp: "https://example.com/auth" })) }; break;
