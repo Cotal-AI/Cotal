@@ -29,7 +29,7 @@ function checkedRecord(): Promotion | undefined {
   const config = resolve(globalConfigDir());
   if (record.v !== 1 || !record.stageIdentity || resolve(record.root) !== join(config, "extensions") ||
       dirname(record.stage) !== config || !record.stage.startsWith(join(config, ".extensions.stage-")) ||
-      dirname(record.old) !== config || !record.old.startsWith(join(config, ".extensions.previous-"))) throw new Error("invalid extension promotion journal");
+      dirname(record.old) !== config || !record.old.startsWith(join(config, ".extensions.rollback-"))) throw new Error("invalid extension promotion journal");
   return record;
 }
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
@@ -58,7 +58,10 @@ function finish(record: Promotion): void {
   // After promotion the journal can only name a complete verified new prefix. Old bytes remain
   // available until that rename is observable, including if the process exits between these calls.
   rmSync(journalPath());
-  if (existsSync(record.old)) rmSync(record.old, { recursive: true, force: true });
+  if (existsSync(record.old)) {
+    try { rmSync(record.old, { recursive: true, force: true }); }
+    catch (error) { console.error(`! could not remove the previous copy of the extensions at ${record.old} (${error instanceof Error ? error.message : String(error)}); remove it by hand`); }
+  }
 }
 export interface ExtensionStage {
   readonly config: string;
@@ -82,7 +85,7 @@ export function stageExtensions(): ExtensionStage {
   return {
     config: stageConfig, prefix,
     promote() {
-      const old = join(config, `.extensions.previous-${randomBytes(8).toString("hex")}`);
+      const old = join(config, `.extensions.rollback-${randomBytes(8).toString("hex")}`);
       // Move the verified prefix out of the stage's config wrapper before the journal. This is
       // still invisible to readers. Only the final pair of whole-directory renames touches live.
       const ready = `${stage}.ready`;
