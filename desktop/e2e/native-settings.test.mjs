@@ -61,6 +61,18 @@ test("Mac login observation reacquires the exact checkbox after native input", (
   assert.match(mac, /unsupported autostart AXValue/);
 });
 
+test("Mac disable-login waits for the existing bounded owned Settings controls before reading or toggling", () => {
+  const login = mac.split('case "disable-login":')[1].split('default:')[0];
+  assert.ok(login.includes('_ = settingsControls()'));
+  assert.ok(login.indexOf('_ = settingsControls()') < login.indexOf('let initial = loginCheckboxState()'));
+  assert.equal((login.match(/_ = settingsControls\(\)/g) ?? []).length, 1);
+  assert.equal((login.match(/press\(initial.element\)/g) ?? []).length, 1);
+  const settings = mac.split('func settingsControls()')[1].split('func loginCheckboxState()')[0];
+  assert.match(settings, /Date\(\).addingTimeInterval\(5\)/);
+  assert.match(settings, /zeroMatchReceipt\(missing, lastTree\)/);
+  assert.doesNotMatch(settings, /press\(/);
+});
+
 test("Mac observation changes preserve strict window and native input ownership", () => {
   const settings = mac.split('case "settings-back":')[1].split('case "settings", "quit":')[0];
   const login = mac.split('case "disable-login":')[1].split('default:')[0];

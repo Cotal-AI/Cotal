@@ -514,6 +514,7 @@ case "disable-login":
         return arguments == [executable.path, "--background"]
     }
     guard sources.count <= 1 else { fail("ambiguous owned app login entry") }
+    _ = settingsControls()
     let initial = loginCheckboxState()
     loginReceipt("before-single-toggle", loginDiagnosticContext ?? [:])
     if initial.value == 1 { press(initial.element) }
