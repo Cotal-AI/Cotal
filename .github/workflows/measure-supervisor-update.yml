@@ -77,8 +77,12 @@ jobs:
         with:
           ref: ${{ env.PRODUCT_SHA }}
           path: product
-          fetch-depth: 0
           persist-credentials: false
+      - name: Fetch exact native builder source for receipt comparison
+        working-directory: product
+        run: |
+          git fetch origin "$NATIVE_BUILD_SHA"
+          git cat-file -e "$NATIVE_BUILD_SHA:packages/workspace/native/win32-process.c"
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
