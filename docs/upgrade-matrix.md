@@ -56,7 +56,9 @@ product coordinates:
 | Linux host update with a foreign-UID container's bare `cotal supervise` |1|
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
-route. It must complete the update. Its test-only launcher retains the child's full stdout, stderr and
+route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector
+launch contract. The participant stack includes the real delivery-admin endpoint for retirement.
+It must complete the update. Its test-only launcher retains the child's full stdout, stderr and
 exit result, plus the Manager's launch request and owned log, before cleanup. Missing or unreadable
 diagnostics are recorded explicitly. Console bearer tokens and JWTs are redacted in uploaded logs.
 Launch failure remains a failed cell, not a consent result.

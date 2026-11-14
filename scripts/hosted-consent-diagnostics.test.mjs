@@ -52,7 +52,12 @@ test('generated hosted connector records the actual Manager launch without envir
   const generated = new Function('core', 'ready', 'release', 'launchRecord', 'launchedSeat', `return ${expression}`)(core, ready, release, launchRecord, launchedSeat);
   const file = join(root, 'index.mjs'); writeFileSync(file, generated); await import(new URL(`file://${file}`));
   const { registry } = await import(core); const connector = registry.resolve('connector', 'upgrade-standin');
-  const launch = connector.buildLaunch({ name: 'upgrade_proof_worker', id: 'u_owner.upgrade_proof_worker', lifecycleUid: 'lifecycle', space: 'test_space', servers: ['nats://localhost:4222'], creds: '/private/credential' });
+  const opts = { name: 'upgrade_proof_worker', lifecycleUid: 'lifecycle', space: 'test_space', servers: 'nats://localhost:4222', userAuth: { owner: 'u_owner', actor: 'upgrade_proof_worker', sentinelCredsPath: '/private/sentinel.creds', bearerCmd: [process.execPath, '/private/bearer.mjs'] } };
+  const launch = connector.buildLaunch(opts);
+  assert.equal(launch.env.COTAL_SENTINEL_CREDS, opts.userAuth.sentinelCredsPath);
+  assert.deepEqual(JSON.parse(launch.env.COTAL_BEARER_CMD), opts.userAuth.bearerCmd);
+  assert.equal(launch.env.COTAL_OWNER, opts.userAuth.owner); assert.equal(launch.env.COTAL_ACTOR, opts.userAuth.actor);
+  assert.equal(launch.env.COTAL_CREDS, undefined); assert.equal(launch.env.COTAL_ID, undefined);
   assert.deepEqual(launch.args, [launcher]);
   const record = JSON.parse(readFileSync(paths.launch)); assert.equal(record.name, 'upgrade_proof_worker'); assert.equal(record.managerPid, process.pid); assert(!JSON.stringify(record).includes('/private/credential'));
 });
