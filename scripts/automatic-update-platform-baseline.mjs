@@ -16,7 +16,8 @@ import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-cons
 import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
-import { candidateSourceIdentity, hostedManagerRestored, intermediateWholeMachine } from './candidate-next-evidence.mjs';
+import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter, intermediateWholeMachine } from './candidate-next-evidence.mjs';
+export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
@@ -106,6 +107,23 @@ export function runDiagnosticCommand(file, argv, { cwd, env, timeoutMs = 10000, 
     child.once('error', error => finish({ exit: null, signal: null, error: error.message }));
     child.once('close', (exit, signal) => finish({ exit, signal }));
   });
+}
+
+/** A rate-limited status question is not a negative Manager observation. */
+export async function observeHostedManager({space, timeoutMs, observations, read, now = Date.now, sleep = delay}) {
+  const startedAt = now(), deadline = startedAt + timeoutMs;
+  for (;;) {
+    const status = await read(deadline - now(), observations.length);
+    const observation = {status, observedAt: now()};
+    observations.push(observation);
+    const retryAfterMs = hostedManagerRetryAfter(status, space);
+    observation.retryAfterMs = retryAfterMs;
+    assert(now() < deadline, 'hosted Manager observation exceeded its original deadline');
+    if (retryAfterMs === 0) return {status, observations, startedAt, deadline};
+    const nextAt = observation.observedAt + retryAfterMs;
+    assert(nextAt < deadline, 'rate-limit retry would exceed the original observation deadline');
+    while (now() < nextAt) await sleep(Math.max(1, nextAt - now()));
+  }
 }
 
 /** Only the explicitly recorded local test fixture may retain its original generation. */
@@ -420,21 +438,29 @@ export async function matrixCell(options) {
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
   const cotal = (label, argv, timeout) => layout === 'installer' ? call(label, launcher, argv, timeout) : call(label, process.execPath, [cli, ...argv], timeout);
-  const daemon = (label, argv) => desktopRuntime
-    ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv])
-    : cotal(label, argv);
+  const daemon = (label, argv, timeout) => desktopRuntime
+    ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv], timeout)
+    : cotal(label, argv, timeout);
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
   async function captureHostedManager(stage, target) {
     const space = report.managerHost.space;
-    const status = await daemon(`${stage} hosted Manager status`, ['daemon', 'status', '--space', space, '--json']);
-    const managers = status.exit === 0 ? JSON.parse(status.stdout).result.managers?.filter(row => row.space === space) : [];
-    assert(managers?.length === 1 && managers[0].state === 'answering' && managers[0].instanceId, 'hosted Manager must answer without repair before continuing');
+    const observations = [];
+    report.managerHost.observations ??= {};
+    report.managerHost.observations[stage] = observations;
+    const timeoutMs = callTimeout(`${stage} hosted Manager status`);
+    const observed = await observeHostedManager({space, timeoutMs, observations,
+      read: async (remaining, attempt) => {
+        const status = await daemon(`${stage} hosted Manager status${attempt ? ` retry ${attempt}` : ''}`, ['daemon', 'status', '--space', space, '--json'], remaining);
+        return status;
+      }});
+    const status = observed.status;
+    const managers = JSON.parse(status.stdout).result.managers.filter(row => row.space === space);
     const seats = await cotal(`${stage} hosted Manager seats`, ['ps', '--on', managers[0].instanceId, '--space', space, '--json']);
-    const bytes = Buffer.from(JSON.stringify({status, seats}));
+    const bytes = Buffer.from(JSON.stringify({status, seats, observations}));
     const commands = {artifact: `${id}-${stage.replaceAll(' ', '-')}-hosted-manager.txt`, bytes: bytes.length, sha256: digest(bytes)};
     writeFileSync(join(output, commands.artifact), bytes, {flag: 'wx', mode: 0o600});
-    const evidence = {space, status, seats, commands};
+    const evidence = {space, status, seats, commands, observations, timeoutMs, observationWindow: {startedAt: observed.startedAt, deadline: observed.deadline}};
     const verified = hostedManagerRestored({evidence, output, target, calls: report.calls, stage});
     assert(verified.passed, 'hosted Manager must be restored with consented seats ended');
     return evidence;

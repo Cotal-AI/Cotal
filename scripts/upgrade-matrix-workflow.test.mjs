@@ -290,6 +290,45 @@ test('actual summary accepts hosted consent source chain only with both restored
     assert.equal(census.knownRefusals.length, 0);
   }
 });
+test('actual hosted summary regrades every rate-limited observation and the original deadline', () => {
+  function retryEvidence(data, directory) {
+    hostedChainEvidence(data, directory);
+    const evidence = data.report.nextHop.intermediate.hostedManager;
+    const original = data.report.calls.find(call => call.label === 'between hops hosted Manager status');
+    const retry = {...original, label: 'between hops hosted Manager status retry 1'};
+    const body = JSON.parse(original.stdout);
+    body.result.managers[0].state = 'starting';
+    body.result.managers[0].reason = '✗ actor cli of owner u_qdvahusrmtf2a7iyw3oyzwk45q is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors';
+    const refusal = {exit: 0, signal: null, timeout: false, stderr: '', stdout: JSON.stringify(body)};
+    Object.assign(original, refusal, {startedAt: '2026-11-14T11:00:00.000Z', finishedAt: '2026-11-14T11:00:00.000Z'});
+    retry.startedAt = retry.finishedAt = '2026-11-14T11:00:01.000Z';
+    const seatsCall = data.report.calls.find(call => call.label === 'between hops hosted Manager seats');
+    seatsCall.startedAt = seatsCall.finishedAt = '2026-11-14T11:00:01.000Z';
+    const second = data.report.calls.find(call => call.label === 'candidate second hop under test');
+    second.startedAt = second.finishedAt = '2026-11-14T11:00:02.000Z';
+    data.report.calls.splice(data.report.calls.indexOf(original) + 1, 0, retry);
+    evidence.timeoutMs = 180000;
+    evidence.observationWindow = {startedAt: Date.parse(original.startedAt), deadline: Date.parse(original.startedAt) + 180000};
+    evidence.observations = [{status: refusal, observedAt: Date.parse(original.finishedAt), retryAfterMs: 1000}, {status: evidence.status, observedAt: Date.parse(retry.finishedAt), retryAfterMs: 0}];
+    const bytes = Buffer.from(JSON.stringify({status: evidence.status, seats: evidence.seats, observations: evidence.observations}));
+    writeFileSync(join(directory, evidence.commands.artifact), bytes, {mode: 0o600});
+    evidence.commands.bytes = bytes.length;
+    evidence.commands.sha256 = createHash('sha256').update(bytes).digest('hex');
+  }
+  const options = {scenario: 'agent-stop-consent', sourceVersion: '0.164.10', targetVersion: '0.164.11'};
+  const good = fixture(retryEvidence, options);
+  assert.equal(good.exit, 0, good.stderr);
+  for (const change of [
+    d => { d.report.nextHop.intermediate.hostedManager.timeoutMs = 180001; },
+    d => { d.report.calls.find(c => c.label.endsWith('status retry 1')).startedAt = '2026-11-14T11:00:00.999Z'; },
+    d => { d.report.nextHop.intermediate.hostedManager.observations.shift(); },
+    d => { d.report.calls.find(c => c.label === 'between hops hosted Manager status').stdout = '{}'; },
+  ]) {
+    const result = fixture((data, directory) => { retryEvidence(data, directory); change(data); }, options);
+    assert.notEqual(result.exit, 0);
+  }
+});
+
 test('actual hosted consent summary rejects absent, wrong, stale or unbound Manager evidence', () => {
   for (const change of [
     d => { delete d.report.agentBefore; },

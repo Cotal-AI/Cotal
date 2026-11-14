@@ -41,7 +41,7 @@ function measuredFixture(row) {
   }};
 }
 for (const row of source16410Refusals) {
-  test(`generated measured structure matches ${row.platform}/${row.layout}`, () => {
+  test(`generated measured structure matches ${row.platform}/${row.layout}: ${row.name}`, () => {
     const value = measuredFixture(row);
     assert.deepEqual(matchSource16410Refusal(value), {name: row.name, issue: 'https://github.com/Cotal-AI/Cotal/issues/6842', passed: true, rawExit: row.exit, rawSignal: row.signal, rawTimeout: row.timeout});
     for (const change of [
@@ -72,4 +72,28 @@ for (const row of source16410Refusals) {
 }
 test('duplicate injected contracts fail closed', () => {
   assert.throws(() => matchSource16410Refusal(input(), [contract, {...contract}]), /duplicated/);
+});
+
+test('Darwin lifecycle alternative is exact and duplicate outcomes fail closed', () => {
+  const linuxRow = source16410Refusals.find(row => row.platform === 'linux' && row.layout === 'npm');
+  const value = {...measuredFixture(linuxRow), platform: 'darwin'};
+  assert.equal(matchSource16410Refusal(value).name, 'source-0.164.10-darwin-postlude-lifecycle-blocked');
+  assert.equal(matchSource16410Refusal({...value, layout: 'installer'}).name, 'source-0.164.10-darwin-postlude-lifecycle-blocked');
+  for (const change of [
+    v => { v.layout = 'standalone'; },
+    v => { v.platform = 'win32'; },
+    v => { v.sourceVersion = '0.164.11'; },
+    v => { v.update.exit = 3; },
+    v => { v.update.signal = 'SIGTERM'; },
+    v => { v.update.timeout = true; },
+    v => { v.update.stderr = v.update.stderr.replace('LIFECYCLE_BLOCKED', 'OPERATION_UNKNOWN'); },
+    v => { v.update.stderr += 'extra'; },
+    v => { v.update.stderr = 'Request refused\n' + v.update.stderr; },
+    v => { v.update.stdout = v.update.stdout.replace('✓ cotal-ai@1.2.3 installed globally and reconciled\n', ''); },
+  ]) {
+    const changed = structuredClone(value); change(changed);
+    assert.throws(() => matchSource16410Refusal(changed));
+  }
+  const row = {...linuxRow, platform: 'darwin'};
+  assert.throws(() => matchSource16410Refusal(value, [row, {...row}]), /duplicated/);
 });

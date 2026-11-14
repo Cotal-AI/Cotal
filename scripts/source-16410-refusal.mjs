@@ -7,6 +7,8 @@ const windows = 'Outcome unconfirmed\n  Windows daemon restart failed during wai
 export const source16410Refusals = Object.freeze([
   ...['npm','installer'].map(layout => Object.freeze({name:'source-0.164.10-linux-postlude-lifecycle-blocked',platform:'linux',layout,exit:2,signal:null,timeout:false,trailer:linux})),
   ...['npm','installer'].map(layout => Object.freeze({name:'source-0.164.10-darwin-postlude-command-deadline',platform:'darwin',layout,exit:null,signal:'SIGTERM',timeout:true,deadlineMs:180000,trailer:null})),
+  // Also measured in the paired Darwin original at Ainstalled (exit 2, no signal or timeout).
+  ...['npm','installer'].map(layout => Object.freeze({name:'source-0.164.10-darwin-postlude-lifecycle-blocked',platform:'darwin',layout,exit:2,signal:null,timeout:false,trailer:linux})),
   Object.freeze({name:'source-0.164.10-win32-postlude-operation-unknown',platform:'win32',layout:'npm',exit:3,signal:null,timeout:false,trailer:windows}),
 ]);
 const normalize = text => text.replaceAll('\r\n','\n');
@@ -14,7 +16,9 @@ const normalize = text => text.replaceAll('\r\n','\n');
 /** Match the measured terminal failure, never variable reconciliation progress as a wildcard error. */
 export function matchSource16410Refusal({platform, layout, sourceVersion, targetVersion, update}, contracts = source16410Refusals) {
   assert.equal(sourceVersion, '0.164.10');
-  const matches = contracts.filter(row => row.platform === platform && row.layout === layout);
+  const matches = contracts.filter(row => row.platform === platform && row.layout === layout
+    && row.exit === update.exit && (row.signal ?? null) === update.signal
+    && (row.timeout ?? false) === update.timeout);
   assert.equal(matches.length, 1, 'measured source-0.164.10 refusal contract missing or duplicated');
   const contract = matches[0];
   assert.equal(update.exit, contract.exit);

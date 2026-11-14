@@ -75,14 +75,18 @@ A target daemon that answers while its updater exits non-zero or times out is no
 
 Source0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
-and match only the measured platform-specific contract. Before cleanup they must independently prove
-that the installed target and daemon agree, recovery is clear, updates are not paused and the
+and match only the measured platform-specific contract. On macOS, that contract records either
+the measured exit2 `LIFECYCLE_BLOCKED` trailer after target reconciliation or the measured180s
+SIGTERM timeout. Before cleanup they must independently prove that the installed target and daemon
+agree, recovery is clear, updates are not paused and the
 generation fence is clear. The same machine must then complete a second manual update to the
 synthetic next version without a repair, restart or reinstallation between hops. Three pinned npm
 chains retain this source after a newer predecessor becomes the default. Unknown refusal text or a
 blocked second hop fails.
 The consent chain also binds public daemon status and seat inventory to its prepared space and
-answering Manager before and after the second hop. Both captures require the consented seats to
+answering Manager before and after the second hop. A status question refused by the measured CLI
+actor connection limit is retried after its stated delay within the same180s observation bound.
+Every question is retained. Other STARTING reasons fail. Both captures require the consented seats to
 have ended. The second hop must restore the Manager without setup or repair between hops.
 The explicitly owned local connector fixture keeps its recorded version, local path and immutable
 package and launcher bytes. Every first-party recorded extension must reach the target version.

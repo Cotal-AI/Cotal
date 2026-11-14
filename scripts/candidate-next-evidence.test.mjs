@@ -31,6 +31,119 @@ function hostedCapture(output, stage, at, change = () => {}) {
   return {evidence, calls, output, target: '1.2.3', stage, after: at, before: at};
 }
 
+function archiveHostedObservations(f) {
+  const {evidence, output} = f;
+  const bytes = Buffer.from(JSON.stringify({status: evidence.status, seats: evidence.seats,
+    ...(evidence.observations ? {observations: evidence.observations} : {})}));
+  writeFileSync(join(output, evidence.commands.artifact), bytes, {mode: 0o600});
+  evidence.commands.bytes = bytes.length;
+  evidence.commands.sha256 = hash(bytes);
+}
+
+function hostedObservations(attempts = 2, {
+  output = realpathSync(mkdtempSync(join(tmpdir(), 'hosted-observations-'))),
+  start = Date.parse('2026-11-14T18:00:00.000Z'),
+} = {}) {
+  const iso = offset => new Date(start + offset).toISOString();
+  const f = hostedCapture(output, 'between hops', iso(0));
+  const statusCall = f.calls[0], seatsCall = f.calls[1];
+  f.evidence.timeoutMs = 180000;
+  f.evidence.observationWindow = {startedAt: start, deadline: start + 180000};
+  f.evidence.observations = Array.from({length: attempts}, (_, index) => {
+    const status = structuredClone(f.evidence.status);
+    const retryAfterMs = index === attempts - 1 ? 0 : 1000;
+    if (retryAfterMs) {
+      const body = JSON.parse(status.stdout);
+      body.result.managers[0].state = 'starting';
+      body.result.managers[0].reason = '✗ actor cli of owner u_qdvahusrmtf2a7iyw3oyzwk45q is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors';
+      status.stdout = JSON.stringify(body);
+    }
+    return {status, observedAt: start + index * 1100 + 100, retryAfterMs};
+  });
+  f.calls = f.evidence.observations.map((observation, index) => ({...statusCall, ...observation.status,
+    label: `${f.stage} hosted Manager status${index ? ` retry ${index}` : ''}`,
+    startedAt: iso(index * 1100), finishedAt: iso(index * 1100 + 100)}));
+  const end = attempts * 1100;
+  f.calls.push({...seatsCall, startedAt: iso(end), finishedAt: iso(end + 100)});
+  f.before = iso(end + 100);
+  archiveHostedObservations(f);
+  return f;
+}
+
+test('hosted observations accept archived single answer and two attempts with the stated 1s delay', () => {
+  for (const attempts of [1, 2]) {
+    const f = hostedObservations(attempts);
+    const before = JSON.stringify(f);
+    assert.deepEqual(hostedManagerRestored(f), {passed: true, space: 'proof-space', instanceId: 'current-manager'});
+    assert.equal(JSON.stringify(f), before);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.output, f.evidence.commands.artifact))), {
+      status: f.evidence.status, seats: f.evidence.seats, observations: f.evidence.observations,
+    });
+  }
+});
+
+test('hosted observations reject a changed STARTING reason even when archive and actual call agree', () => {
+  for (const reason of ['unreachable', 'actor manager of owner proof_owner is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors', undefined]) {
+    const f = hostedObservations();
+    const status = f.evidence.observations[0].status;
+    const body = JSON.parse(status.stdout);
+    body.result.managers[0].reason = reason;
+    status.stdout = f.calls[0].stdout = JSON.stringify(body);
+    archiveHostedObservations(f);
+    assert.throws(() => hostedManagerRestored(f), /unmeasured hosted Manager STARTING reason/);
+  }
+});
+
+test('hosted observations require the complete archive and bind every actual status call', () => {
+  const cases = [
+    ['missing observations', f => { delete f.evidence.observations; }],
+    ['missing first refusal', f => { f.evidence.observations.shift(); }],
+    ['missing actual call', f => { f.calls.shift(); }],
+    ['additional actual call', f => { f.calls.splice(1, 0, structuredClone(f.calls[0])); }],
+    ['changed actual reply', f => { f.calls[0].stderr = 'unbound'; }],
+    ['changed actual argv', f => { f.calls[0].argv[4] = 'other-space'; }],
+    ['missing retry index', f => { f.calls[1].label = `${f.stage} hosted Manager status retry 2`; }],
+    ['false stated delay', f => { f.evidence.observations[0].retryAfterMs = 1; }],
+    ['final status differs', f => { f.evidence.status.stderr = 'unbound'; }],
+  ];
+  for (const [name, change] of cases) {
+    const f = hostedObservations();
+    change(f);
+    archiveHostedObservations(f);
+    assert.throws(() => hostedManagerRestored(f), assert.AssertionError, name);
+  }
+  const f = hostedObservations();
+  f.evidence.observations[0].observedAt++;
+  assert.throws(() => hostedManagerRestored(f), assert.AssertionError, 'archive must retain observation timestamps');
+});
+
+test('hosted observations reject early retry, widened deadlines and invalid call or observation timestamps', () => {
+  const cases = [
+    ['early retry', f => { f.calls[1].startedAt = new Date(f.evidence.observations[0].observedAt + 999).toISOString(); }],
+    ['widened timeout', f => { f.evidence.timeoutMs++; f.evidence.observationWindow.deadline++; }],
+    ['widened deadline', f => { f.evidence.observationWindow.deadline++; }],
+    ['at deadline', f => { f.evidence.observations[1].observedAt = f.evidence.observationWindow.deadline; }],
+    ['observation before call finished', f => { f.evidence.observations[0].observedAt--; }],
+    ['call before window', f => { f.calls[0].startedAt = new Date(f.evidence.observationWindow.startedAt - 1).toISOString(); }],
+    ['reversed first call', f => { f.calls[0].finishedAt = new Date(f.evidence.observationWindow.startedAt - 1).toISOString(); }],
+    ['invalid first call time', f => { f.calls[0].startedAt = 'invalid'; }],
+    ['final call after before', f => { f.before = f.calls[1].startedAt; }],
+    ['seats before after', f => { f.calls.at(-1).startedAt = new Date(Date.parse(f.after) - 1).toISOString(); }],
+  ];
+  for (const [name, change] of cases) {
+    const f = hostedObservations();
+    change(f);
+    archiveHostedObservations(f);
+    assert.throws(() => hostedManagerRestored(f), assert.AssertionError, name);
+  }
+});
+
+test('hosted observations bind the initial refusal to the same after-update time boundary', () => {
+  const f = hostedObservations();
+  f.after = new Date(f.evidence.observationWindow.startedAt + 1).toISOString();
+  assert.throws(() => hostedManagerRestored(f), /predates.*update/);
+});
+
 test('hosted Manager helper reopens replies and rejects missing, stale, relabeled and altered receipts', () => {
   const output = realpathSync(mkdtempSync(join(tmpdir(), 'hosted-evidence-')));
   const f = hostedCapture(output, 'between hops', '2026-11-14T18:00:00.000Z');
@@ -197,6 +310,26 @@ test('hosted consent chain requires both timed Manager stages and exact first-ho
     daemonDiagnostics: {'between-hops': f.diagnostics, 'after-update': f.diagnostics}};
   const args = {report, cell: {scenario: 'agent-stop-consent', sourceSHA: pair.source, platform: 'linux', channel: 'npm'}, output: f.output, sourceManifestSha256: pair.sourceManifestSha256, targetManifestSha256: pair.targetManifestSha256};
   assert.deepEqual(verifyCandidateNextEvidence(args), {sourceIdentity: true, firstRefusal: true, intermediateWhole: true, nextHopSuccess: true, hostedManagerRestored: true});
+  const retryMiddle = hostedObservations(2, {output: f.output, start: Date.parse(at)});
+  const retryReport = structuredClone(report);
+  retryReport.nextHop.intermediate.hostedManager = retryMiddle.evidence;
+  retryReport.calls.splice(4, 2, ...retryMiddle.calls);
+  for (const call of retryReport.calls.slice(7)) {
+    call.startedAt = retryMiddle.before;
+    call.finishedAt = retryMiddle.before;
+  }
+  assert.deepEqual(verifyCandidateNextEvidence({...args, report: retryReport}), {sourceIdentity: true, firstRefusal: true, intermediateWhole: true, nextHopSuccess: true, hostedManagerRestored: true});
+  for (const change of [
+    v => { v.calls.splice(5, 0, {label: 'repair installation', argv: ['cli', 'daemon', 'setup']}); },
+    v => { v.calls.splice(5, 0, {label: 'unarchived status', argv: ['cli', 'daemon', 'status', '--space', 'proof-space', '--json']}); },
+    v => { v.calls.splice(5, 1); },
+    v => { v.calls.push(structuredClone(v.calls[4])); },
+    v => { v.calls[4].startedAt = new Date(Date.parse(at) - 1).toISOString(); },
+  ]) {
+    const value = structuredClone(retryReport);
+    change(value);
+    assert.throws(() => verifyCandidateNextEvidence({...args, report: value}));
+  }
   for (const change of [
     v => { v.calls[1].argv.pop(); },
     v => { v.calls[1].argv[0] = 'other-installed-entry'; },

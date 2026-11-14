@@ -41,6 +41,21 @@ export function candidateSourceIdentity({pkg, cli, identity, argv}) {
     loadedCli:{path:realpathSync(loadedEntry),member,sha256:hash(readFileSync(loadedEntry)),packageSha256:hash(loadedMetadata),name:info.name,version:info.version}};
 }
 
+/** Return only the retry delay carried by the measured CLI actor rate refusal. */
+export function hostedManagerRetryAfter(status, space) {
+  assert(status?.exit === 0 && status.signal === null && status.timeout === false, 'hosted Manager status command must complete');
+  const managers = JSON.parse(status.stdout).result.managers?.filter(row => row.space === space);
+  assert(managers?.length === 1 && managers[0].instanceId, 'hosted Manager identity missing');
+  const manager = managers[0];
+  if (manager.state === 'answering') return 0;
+  assert.equal(manager.state, 'starting', 'hosted Manager must answer without repair before continuing');
+  const match = /^(?:✗ )?actor cli of owner [a-z0-9_]+ is over its limit of 60 connects a minute - retry in ([1-9][0-9]*)s - only actor "cli" is limited, not the account's other actors$/.exec(manager.reason ?? '');
+  assert(match, 'unmeasured hosted Manager STARTING reason');
+  const milliseconds = Number(match[1]) * 1000;
+  assert(Number.isSafeInteger(milliseconds), 'invalid rate-limit retry delay');
+  return milliseconds;
+}
+
 /** Reopen the hosted Manager's read-only public replies and bind them to the actual calls. */
 export function hostedManagerRestored({evidence, output, target, calls, stage, after, before}) {
   assert(evidence && /^[A-Za-z0-9_-]{1,64}$/.test(evidence.space), 'hosted Manager space missing');
@@ -53,17 +68,43 @@ export function hostedManagerRestored({evidence, output, target, calls, stage, a
     if (process.getuid) assert(stat.uid === process.getuid() && (stat.mode & 0o022) === 0);
     const bytes = readFileSync(fd);
     assert.equal(hash(bytes), commands.sha256);
-    assert.deepEqual(JSON.parse(bytes), {status, seats});
+    assert.deepEqual(JSON.parse(bytes), {status, seats, ...(evidence.observations ? {observations: evidence.observations} : {})});
   } finally { closeSync(fd); }
   const daemon = status?.exit === 0 ? JSON.parse(status.stdout).result : undefined;
   const managers = daemon?.managers?.filter(row => row.space === space) ?? [];
   const manager = managers.length === 1 ? managers[0] : undefined;
   const inventory = seats?.exit === 0 ? JSON.parse(seats.stdout).result : undefined;
+  const statusCalls = calls?.filter(call => call.label === `${stage} hosted Manager status` || new RegExp(`^${stage} hosted Manager status retry [1-9][0-9]*$`).test(call.label));
+  assert(statusCalls?.length > 0, 'actual hosted Manager status missing');
+  if (evidence.observations) {
+    assert.equal(evidence.timeoutMs, 180000, 'hosted status observation bound changed');
+    const window = evidence.observationWindow;
+    assert(Number.isFinite(window?.startedAt) && window.deadline === window.startedAt + evidence.timeoutMs);
+    assert.equal(statusCalls.length, evidence.observations.length, 'every rate-limited question must be retained');
+    assert(Date.parse(statusCalls[0].startedAt) >= window.startedAt && Date.parse(statusCalls[0].startedAt) < window.deadline);
+    let previous;
+    for (let index = 0; index < statusCalls.length; index++) {
+      const call = statusCalls[index], observation = evidence.observations[index];
+      assert.equal(call.label, `${stage} hosted Manager status${index ? ` retry ${index}` : ''}`);
+      for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(call[key], observation.status[key]);
+      assert.deepEqual(call.argv.slice(-5), ['daemon', 'status', '--space', space, '--json']);
+      const wait = hostedManagerRetryAfter(observation.status, space);
+      assert.equal(observation.retryAfterMs, wait);
+      assert(Number.isFinite(observation.observedAt) && observation.observedAt >= Date.parse(call.finishedAt) && observation.observedAt < window.deadline);
+      assert(Date.parse(call.startedAt) >= window.startedAt && Date.parse(call.finishedAt) >= Date.parse(call.startedAt));
+      if (after !== undefined) assert(Date.parse(call.startedAt) >= Date.parse(after), 'rate-limited observation predates update');
+      if (before !== undefined) assert(Date.parse(call.finishedAt) <= Date.parse(before), 'rate-limited observation follows next update');
+      if (previous) assert(Date.parse(call.startedAt) >= previous.observedAt + previous.retryAfterMs, 'rate-limited status retried before retry-after');
+      assert.equal(wait === 0, index === statusCalls.length - 1, 'only the final Manager observation may answer');
+      previous = observation;
+    }
+    assert.deepEqual(status, evidence.observations.at(-1).status);
+  } else assert.equal(statusCalls.length, 1, 'unarchived hosted status retries');
   for (const [suffix, result, argv] of [
     ['status', status, ['daemon', 'status', '--space', space, '--json']],
     ['seats', seats, ['ps', '--on', manager?.instanceId, '--space', space, '--json']],
   ]) {
-    const matching = calls?.filter(call => call.label === `${stage} hosted Manager ${suffix}`);
+    const matching = suffix === 'status' ? [statusCalls.at(-1)] : calls?.filter(call => call.label === `${stage} hosted Manager ${suffix}`);
     assert.equal(matching?.length, 1, 'actual hosted Manager command missing or duplicated');
     const call = matching[0];
     assert(Number.isFinite(Date.parse(call.startedAt)) && Date.parse(call.finishedAt) >= Date.parse(call.startedAt), 'hosted Manager command time bounds missing or reversed');
@@ -189,7 +230,9 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     assert(inventory?.kind === 'seats' && inventory.items?.length === 1 && inventory.items[0].name === 'upgrade_proof_worker', 'positive pre-update hosted seat proof missing');
     assert(inventory.managers?.length === 1 && inventory.managers[0].instanceId === report.managerHost.instanceId && inventory.managers[0].state === 'answered');
     const between = report.calls.slice(report.calls.indexOf(first) + 1, report.calls.indexOf(command));
-    assert.deepEqual(between.map(row => row.label), ['between hops public daemon status', 'between hops public update check', 'between hops hosted Manager status', 'between hops hosted Manager seats'], 'only read-only whole-state observations may occur between hosted hops');
+    const middleLabels = ['between hops public daemon status', 'between hops public update check',
+      ...report.calls.filter(row => row.label === 'between hops hosted Manager status' || /^between hops hosted Manager status retry [1-9][0-9]*$/.test(row.label)).map(row => row.label), 'between hops hosted Manager seats'];
+    assert.deepEqual(between.map(row => row.label), middleLabels, 'only read-only whole-state observations may occur between hosted hops');
     assert(Date.parse(initial.finishedAt) <= Date.parse(first.startedAt), 'initial hosted seat observation follows the first update');
     assert(Date.parse(first.startedAt) <= Date.parse(first.finishedAt) && Date.parse(command.startedAt) <= Date.parse(command.finishedAt), 'hosted update time bounds missing or reversed');
     let previous = first.finishedAt;

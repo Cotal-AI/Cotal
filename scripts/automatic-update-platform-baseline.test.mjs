@@ -55,6 +55,24 @@ test('owned fixture invariant uses real immutable file bytes and the driver reco
   assert(driver.includes("check('recorded extension package versions match target', versions.installed"));
 });
 
+test('hosted Manager observation retries only the explicit rate refusal within its original bound', async () => {
+  let now = 0, reads = 0;
+  const reply = state => ({exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {managers: [{space: 'space', instanceId: 'manager', state, reason: '✗ actor cli of owner u_qdvahusrmtf2a7iyw3oyzwk45q is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors'}]}})});
+  const observations = [];
+  const result = await baseline.observeHostedManager({space: 'space', timeoutMs: 3000, observations, now: () => now, sleep: async ms => { now += ms; }, read: async () => { reads++; return reply(reads === 1 ? 'starting' : 'answering'); }});
+  assert.equal(result.status.exit, 0); assert.equal(reads, 2); assert.equal(now, 1000); assert.equal(observations.length, 2);
+  for (const reason of ['not answering', 'actor other is over its limit of 60 connects a minute - retry in 1s', 'actor cli of owner u_owner is over its limit of 60 connects a minute - retry in 0s']) {
+    const value = reply('starting'); const body = JSON.parse(value.stdout); body.result.managers[0].reason = reason; value.stdout = JSON.stringify(body);
+    const rejected = [];
+    await assert.rejects(baseline.observeHostedManager({space: 'space', timeoutMs: 3000, observations: rejected, now: () => 0, sleep: async () => {}, read: async () => value}));
+    assert.equal(rejected.length, 1);
+    assert.deepEqual(rejected[0].status, value);
+  }
+  now = 0; reads = 0;
+  await assert.rejects(baseline.observeHostedManager({space: 'space', timeoutMs: 1000, observations: [], now: () => now, sleep: async ms => { now += ms; }, read: async () => { reads++; return reply('starting'); }}));
+  assert.equal(reads, 1); assert.equal(now, 0);
+});
+
 test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
   const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
   assert.equal(baseline.candidateNextOptions(options,true),'candidate');
