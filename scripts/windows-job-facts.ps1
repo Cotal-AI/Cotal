@@ -37,6 +37,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-job-facts.mjs') -Destination $worker
     & (Join-Path $framework 'csc.exe') /nologo /target:exe /platform:x64 "/reference:$(Join-Path $framework 'System.Web.Extensions.dll')" "/reference:$(Join-Path $framework 'System.Management.dll')" "/out:$helper" $source 2>&1 | Out-File (Join-Path $directory 'compile.log')
     if ($LASTEXITCODE -ne 0) { throw 'Framework csc failed' }
+    & $helper load-control $directory 2>&1 | Out-File (Join-Path $directory 'load-sharing-control.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Native setup JSON sharing control failed' }
     Add-Type @'
 using System;
 using System.Runtime.InteropServices;

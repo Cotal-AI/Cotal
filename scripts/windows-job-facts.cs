@@ -33,7 +33,20 @@ public static class WindowsJobFacts {
  static long Tick() { return Stopwatch.GetTimestamp(); }
  static string Q(string s) { if(s.Contains("\"") || s.EndsWith("\\")) throw new Exception("Unsafe argument"); return "\""+s+"\""; }
  static void Save(string dir,string name,object value) { string p=Path.Combine(dir,name); File.WriteAllText(p+".tmp",J.Serialize(value),new UTF8Encoding(false)); File.Move(p+".tmp",p); }
- static Dictionary<string,object> Load(string d,string n) { return J.Deserialize<Dictionary<string,object>>(File.ReadAllText(Path.Combine(d,n))); }
+ static Dictionary<string,object> Load(string d,string n) {
+  // Node publishes a closed temp file by rename. Permit its transient delete/write access,
+  // rather than failing setup when a rename-associated handle overlaps this read.
+  using(var stream=new FileStream(Path.Combine(d,n),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete))
+  using(var reader=new StreamReader(stream,Encoding.UTF8,true)) return J.Deserialize<Dictionary<string,object>>(reader.ReadToEnd());
+ }
+ static void LoadControl(string dir) {
+  string name="load-sharing-control.json";
+  using(var writer=new FileStream(Path.Combine(dir,name),FileMode.CreateNew,FileAccess.ReadWrite,FileShare.ReadWrite|FileShare.Delete)) {
+   byte[] bytes=Encoding.UTF8.GetBytes("{\"control\":true}"); writer.Write(bytes,0,bytes.Length); writer.Flush();
+   var result=Load(dir,name); if(!(bool)result["control"])throw new Exception("Native shared-handle read control failed");
+   Save(dir,"load-sharing-result.json",new {pass=true,writerHeldDuringRead=true,retry=false});
+  }
+ }
  static IntPtr Pin(Dictionary<string,object> id,bool kill) {
   IntPtr h=OpenProcess(0x100000|0x1000|(kill?1u:0u),false,Convert.ToInt32(id["pid"]));
   if(h==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(),"OpenProcess exact identity");
@@ -191,5 +204,5 @@ public static class WindowsJobFacts {
   finally { if(runner!=IntPtr.Zero)CloseHandle(runner);foreach(IntPtr handle in pinned)CloseHandle(handle); report["custody"]="No failure cleanup kills. Retained ambiguous or live custody belongs to disposable-host teardown."; Save(dir,"observation.json",report); }
   if(failed) Environment.ExitCode=1;
  }
- public static int Main(string[] a) { try { if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="census")Census(a[1]); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }
+ public static int Main(string[] a) { try { if(a[0]=="load-control")LoadControl(a[1]); else if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="census")Census(a[1]); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }
 }

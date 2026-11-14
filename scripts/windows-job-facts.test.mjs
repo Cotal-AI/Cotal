@@ -53,6 +53,15 @@ test('diagnostic branch and marker admit only the existing Windows job', () => {
   assert.ok(job.includes('runs-on: windows-2022'));
   assert.ok(job.includes('node --test scripts/windows-job-facts.test.mjs'));
 });
+test('native setup reads allow rename-associated handles without a retry delay', () => {
+  const body = cs.slice(cs.indexOf('static Dictionary<string,object> Load('), cs.indexOf('static IntPtr Pin('));
+  assert.ok(body.includes('FileShare.ReadWrite|FileShare.Delete'));
+  assert.ok(body.includes('reader.ReadToEnd()'));
+  assert.ok(body.includes('writerHeldDuringRead=true,retry=false'));
+  assert.doesNotMatch(body, /File\.ReadAllText|Thread\.Sleep|Thread\.Yield/);
+  assert.ok(ps.includes('& $helper load-control $directory'));
+  assert.ok(js.includes('renameSync(p + \'.tmp\', p)'));
+});
 test('worker JavaScript parses', () => { const r = spawnSync(process.execPath, ['--check', fileURLToPath(new URL('./windows-job-facts.mjs', import.meta.url))]); assert.equal(r.status, 0, String(r.stderr)); });
 test('only shipped launcher and gate APIs, one launch per runner', () => {
   assert.equal((js.match(/native\.launch\(/g) || []).length, 1);
