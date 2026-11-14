@@ -54,6 +54,7 @@ jobs:
           node scripts/windows-auto-bundle-driver.mjs "$RUNNER_TEMP/windows-packed/bin/driver.mjs"
           mkdir -p "$RUNNER_TEMP/windows-packed/.changeset"
           cp .changeset/config.json "$RUNNER_TEMP/windows-packed/.changeset/config.json"
+          cp scripts/windows-manual-installed-native.mjs "$RUNNER_TEMP/windows-packed/installed-native-smoke.mjs"
           node "$RUNNER_TEMP/windows-packed/bin/driver.mjs" --verify-packed "$RUNNER_TEMP/windows-packed"
           git rev-parse HEAD > "$RUNNER_TEMP/windows-packed/head.txt"
       - uses: actions/upload-artifact@v4

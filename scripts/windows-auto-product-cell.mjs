@@ -97,6 +97,7 @@ export async function run(){
   const firstParty=extensions.filter(x=>x.pkg.startsWith('@cotal-ai/'));report.expectedExtensions=expected;save('report.json',report);
   assert.deepEqual(firstParty.map(x=>x.pkg).sort(),expected);for(const x of firstParty)assert.equal(x.version,versionA);
   const recovery=join(cotalHome,'update-recovery.json');assert(!existsSync(recovery)||json(recovery)===null,'manual update must clear recovery state');
+  report.nativeSmoke=ok(await call('installed retained process and legacy owner smoke',process.execPath,[join(output,'installed-native-smoke.mjs'),workspaceEntry]));
   ok(await cli('public status after acceptance',['status']));report.pass=true;
  }catch(error){report.pass=false;report.error=String(error.stack??error);captureGeneration('failure before native service cleanup');throw error;}
  finally{
