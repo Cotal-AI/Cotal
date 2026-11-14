@@ -609,7 +609,22 @@ if (process.platform !== "win32") {
       /^ {2}Extensions: +aa v/m.test(wide.stdout) && /Broker executable/.test(wide.stdout) && /Dashboard/.test(wide.stdout), shown(wide));
   const all = run(["status", "--space", "nosuch", "--plain", "--all"], onPath);
   check("--all reports the same rows in full", /^ {2}aa: +available on PATH$/m.test(all.stdout) && /Broker executable/.test(all.stdout), shown(all));
-  // A pin an upgrade did not carry is the one thing named, against the version the rest share.
+  // First-party pins follow the CLI release, even when every extension shares an old version.
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    { pkg: "@cotal-ai/tmux", version: "0.155.0", spec: "@cotal-ai/tmux@0.155.0", provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
+  ] }));
+  const stale = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("status names first-party skew and the whole-installation remedy",
+    stale.status === 0 && /extension version skew: @cotal-ai\/tmux is 0\.155\.0/.test(stale.stderr) && stale.stdout.includes(`\`${displayCmd()} update --self\``), shown(stale));
+  const staleJson = run(["status", "--space", "nosuch", "--json"], onPath);
+  check("skew is a structured warning, not an unreadable report",
+    staleJson.status === 0 && staleJson.stdout.includes('"EXTENSION_VERSION_SKEW"') && staleJson.stdout.includes('"completeness":"complete"'), shown(staleJson));
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    { pkg: "@cotal-ai/tmux", version: VERSION, spec: `@cotal-ai/tmux@${VERSION}`, provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
+  ] }));
+  const current = run(["status", "--space", "nosuch", "--json"], onPath);
+  check("matching first-party versions do not warn", current.status === 0 && !current.stdout.includes("EXTENSION_VERSION_SKEW"), shown(current));
+  // A third-party pin need not match the CLI release.
   writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
     connector("aa", ["aa-bin"]),
     { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },

@@ -90,6 +90,7 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+`cotal status` warns when a first-party extension's recorded version differs from the CLI and names `cotal update --self` as the reconciliation command.
 It checks running-manager continuity before installation repair.
 Remote credential exchanges that time out or return HTTP 5xx retry for up to 120 seconds during
 that check. Credential denials and other HTTP 4xx responses still fail without retry.
