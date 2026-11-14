@@ -89,13 +89,18 @@ function parse(raw: string): LockRecord | undefined {
   return { v: 1, pid: r.pid, ...start, startedAt: r.startedAt, socket: { path: s.path, dev: s.dev, ino: s.ino } };
 }
 
+/** One original record read. Only zero bytes establish an empty lifetime record. */
+export function observeLifetimeRecord(path: string): { readonly empty: boolean; readonly record?: LockRecord } {
+  try {
+    const raw = readFileSync(path, "utf8");
+    return raw.length === 0 ? { empty: true } : { empty: false, record: parse(raw) };
+  } catch { return { empty: false }; }
+}
+
 /** The record at `path`, for a client deciding whether the process answering a socket is its
  *  holder. Undefined when there is none, when it is unreadable, or when it is not one of ours. */
 export function readLifetimeRecord(path: string): LockRecord | undefined {
-  try {
-    const raw = readFileSync(path, "utf8");
-    return raw.trim() ? parse(raw) : undefined;
-  } catch { return undefined; }
+  return observeLifetimeRecord(path).record;
 }
 
 /** Exclude new starters during uninstall without writing or clearing the holder's record. */

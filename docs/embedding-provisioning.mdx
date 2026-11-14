@@ -226,7 +226,9 @@ low-level operator primitives. Handle them as account-authority material:
 - Never log signer material or export it into env. Do not co-locate signer access with an untrusted
   connector/runtime process at the same OS uid (file permissions do not contain a same-uid reader;
   see the manager's isolation note). Segregate per tenant; rotate on compromise
-  (`rotateDataAccountSigningKey`).
+  (`rotateDataAccountSigningKey`). A rotation replaces the account's signing keys and keeps the rest of
+  its claim, so the account's connection and leaf-node limits and its revocations still hold after it.
+  It ends users a signing key issued, not users the account's own identity key signed.
 
 ## Hosted composition gaps [#hosted-composition-gaps]
 
