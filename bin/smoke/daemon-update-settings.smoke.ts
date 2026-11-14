@@ -2,11 +2,11 @@ import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-import { mkdtempSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readUpdateSettings } from "@cotal-ai/workspace";
+import { readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { serveDaemon } from "../daemon/server.js";
 import { daemonPathsFor } from "../daemon/endpoint.js";
 import { parseRequest } from "../daemon/protocol.js";
@@ -42,6 +42,22 @@ try {
   }
   for (const auto of ["on", 1, null, [], {}]) assert.throws(() => parseDesktopRequest({ op: "update-policy", auto }));
   assert.throws(() => parseDesktopRequest({ op: "update-policy", path: "/foreign" }));
+  setUpdateSetting("notify", false);
+  for (const enabled of [false, true]) {
+    const result = await desktopPolicy(enabled);
+    check(result.ok && result.result.auto === enabled && result.result.notify === false, "desktop auto preference preserves independent notification choice");
+  }
+  const preferenceFile = join(process.env.COTAL_HOME!, "update-settings.json");
+  const savedPreference = readFileSync(preferenceFile);
+  const malformedPreference = '{"v":1,"auto":"off","notify":false}';
+  writeFileSync(preferenceFile, malformedPreference, { mode: 0o600 });
+  try {
+    for (const enabled of [undefined, true]) {
+      const result = await desktopPolicy(enabled);
+      check(!result.ok && result.error.code === "OPERATION_FAILED", "unreadable desktop policy refuses without assuming default-on");
+      check(readFileSync(preferenceFile, "utf8") === malformedPreference, "refused preference request does not overwrite malformed state");
+    }
+  } finally { writeFileSync(preferenceFile, savedPreference, { mode: 0o600 }); }
   for (const key of ["auto", "notify"] as const) for (const enabled of [false, true]) {
     const result = await updateViaDaemon({ paths }, { op: "update-settings", [key]: enabled });
     check(readUpdateSettings()[key] === enabled, `${key} ${enabled} persisted through real daemon endpoint`);
