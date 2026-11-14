@@ -6,7 +6,7 @@ import { isNpx } from "./self-exec.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
-export { cliVersion } from "../seed/paths.js";
+export { cliVersion, installedCliVersion } from "../seed/paths.js";
 
 export interface CliProvenance {
   kind: "source" | "installed" | "npx";
