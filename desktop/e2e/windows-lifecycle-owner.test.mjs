@@ -101,3 +101,15 @@ test('tray overflow records the matched native controls before refusing an ambig
   assert.match(tray, /@\('Show hidden icons', 'Show Hidden Icons'\)/);
   assert.doesNotMatch(tray, /Notification Chevron/);
 });
+
+test('tray diagnostics distinguish absent native surfaces from empty UI Automation descendants', () => {
+  const surfaces = helper.slice(helper.indexOf('function Explorer-Surfaces'), helper.indexOf('function Find-TrayIcon'));
+  assert.match(surfaces, /explorerSurfaces = @\(\$trayWindows \| ForEach-Object/);
+  for (const field of ['className = $_.className', 'hwnd = $_.hwnd', 'visible = $_.visible', 'pid = $_.pid']) assert.ok(surfaces.includes(field), field);
+  assert.match(surfaces, /\$windows = @\(\$trayWindows \| Where-Object \{ \$_.visible \}\)/);
+  assert.match(surfaces, /function Explorer-Children/);
+  for (const field of ['className = $surface.Current.ClassName', 'hwnd = $surface.Current.NativeWindowHandle', 'pid = $surface.Current.ProcessId', 'descendantCount = $null']) assert.ok(surfaces.includes(field), field);
+  assert.ok(surfaces.indexOf('$diagnostics.Add($row)') < surfaces.indexOf('$elements = @(Children $surface)'));
+  assert.match(surfaces, /\$row\['descendantCount'\] = \$elements.Count/);
+  assert.equal((helper.match(/foreach \(\$element in \(Explorer-Children \$surface\)\)/g) ?? []).length, 2);
+});
