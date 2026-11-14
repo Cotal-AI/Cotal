@@ -110,11 +110,11 @@ phase uses public npm and `https://get.cotal.ai` itself, with no script override
 resolutions must match the frozen target. If a newer release supersedes it, the cell fails rather
 than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
-budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
-builders need two waves and22 product cells need eight waves at that limit. Per-job timeouts imply a
-much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
-timestamps so release owners can use measured durations instead of these estimates.
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all22 required
+product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
+or Windows. GitHub runner availability still controls when a job starts. The six native builders
+retain their separate concurrency limit. Artifact timestamps record actual durations; neither the
+workflow limit nor the per-job timeout is a publication-time guarantee.
 
 ## Exclusions
 
