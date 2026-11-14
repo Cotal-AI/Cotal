@@ -15,11 +15,16 @@ Only a same-repository `changeset-release/main` version PR runs the packed-head 
 PRs record a non-applicable result without running product cells. Head code receives read-only
 permissions and no publisher credentials.
 
-After each successful npm publication, Changesets writes an `upgrade-publication` receipt after
-promotion. A separate `workflow_run` consumes that receipt even if a later release-note or
-installation job makes the Changesets run red. It binds the receipt to the repository, main SHA,
-run and exact version, then runs the published phase. GitHub Release creation is not the trigger.
-A release announced later or a failure cutting release notes cannot quietly omit the matrix.
+After npm promotion, Changesets attempts to record and upload an `upgrade-publication` receipt.
+Both steps tolerate failure, so they cannot fail an existing publication or skip downstream work.
+A separate `workflow_run` consumes the receipt even if a later release-note or installation job
+makes the Changesets run red. It binds the receipt to the repository, main SHA, run and exact
+version, then runs the published phase. GitHub Release creation is not the trigger. A missing
+receipt is reported as publication not confirmed, so no published-phase run starts. The publish
+job does not retry receipt recording or upload.
+
+The matrix is advisory, not a required check or a merge gate. Maintainers review a version PR's
+result when available; a harness fault does not hold a release.
 
 `workflow_dispatch` takes `phase`, `source_sha`, `target_version` and `profile`. Use an immutable
 40-character SHA whose package version matches the target. `bounded` is the supported profile.

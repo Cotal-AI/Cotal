@@ -58,6 +58,33 @@ test('actual workflow census refuses changed coordinate metadata', () => assert.
 test('actual workflow census refuses missing manual/recovery/status requirements', () => {
   for (const name of ['no manual step or refusal', 'no paused recovery record', 'cotal status exits zero']) assert.notEqual(fixture(d => { d.report.assertions = d.report.assertions.filter(a => a.name !== name); }).exit, 0);
 });
+test('actual publication selector reports a missing receipt without starting the published phase', async () => {
+  const script = workflow.jobs.select.steps.find(s => s.id === 'plan').with.script;
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  for (const artifacts of [[], [{ name: 'upgrade-publication', expired: true }]]) {
+    const outputs = {}, saved = {}, messages = [];
+    const repository = { full_name: 'Cotal-AI/Cotal' };
+    const run = { id: 42, name: 'Changesets', status: 'completed', head_branch: 'main', head_sha: 'a'.repeat(40), head_repository: repository, path: '.github/workflows/changesets.yml' };
+    const jobsAPI = () => {}, artifactsAPI = () => {};
+    const fakeRequire = name => {
+      if (name === 'node:assert/strict') return assert;
+      if (name === 'node:url') return { pathToFileURL: value => new URL(`file://${value}`) };
+      if (name === 'node:fs') return { mkdirSync() {}, writeFileSync(path, bytes) { saved[path] = JSON.parse(bytes); } };
+      assert.equal(name, 'node:child_process');
+      return { execFileSync() { assert.fail('missing receipt must not download or inspect a publication'); } };
+    };
+    const summary = { addHeading() { return this; }, addRaw(message) { messages.push(message); return this; }, async write() {} };
+    await new AsyncFunction('require', 'context', 'github', 'process', 'core', script)(fakeRequire,
+      { eventName: 'workflow_run', repo: { owner: 'Cotal-AI', repo: 'Cotal' }, payload: { action: 'completed', repository, workflow_run: run } },
+      { rest: { actions: { getWorkflowRun: async () => ({ data: run }), listJobsForWorkflowRun: jobsAPI, listWorkflowRunArtifacts: artifactsAPI } }, paginate: async method => method === jobsAPI ? [{ name: 'publish', conclusion: 'success' }] : (assert.equal(method, artifactsAPI), artifacts) },
+      { env: { GITHUB_WORKSPACE: new URL('..', import.meta.url).pathname.replace(/\/$/, ''), RUNNER_TEMP: '/fixture' } },
+      { setOutput(key, value) { outputs[key] = value; }, summary });
+    assert.equal(outputs.applicable, 'false');
+    assert.equal(outputs.matrix, '{"include":[]}');
+    assert.equal(saved['/fixture/upgrade-plan/plan.json'].status, 'skipped');
+    assert(messages.some(message => message.includes('publication not confirmed by validated API evidence')));
+  }
+});
 test('publisher receipt is written after successful promotion and is independent of GitHub Release creation', () => {
   const publisher = parse(readFileSync(new URL('../.github/workflows/changesets.yml', import.meta.url), 'utf8'));
   const steps = publisher.jobs.publish.steps;
@@ -65,7 +92,13 @@ test('publisher receipt is written after successful promotion and is independent
   const receipt = steps.findIndex(s => s.name === 'Record the published upgrade target');
   assert(receipt > promotion);
   assert.equal(steps[receipt].if, "steps.publish.outputs.published == 'true'");
+  assert.equal(steps[receipt]['continue-on-error'], true, 'receipt recording must not fail an already-promoted publication');
   assert(steps[receipt].run.includes('sourceSHA: process.env.GITHUB_SHA'));
   assert(steps[receipt].run.includes('published: true, promoted: true'));
-  assert.equal(steps.find(s => s.with?.name === 'upgrade-publication').if, "steps.publish.outputs.published == 'true'");
+  const upload = steps.find(s => s.with?.name === 'upgrade-publication');
+  assert.equal(upload.if, "steps.publish.outputs.published == 'true'");
+  assert.equal(upload['continue-on-error'], true, 'receipt upload must not fail publication or skip downstream jobs');
+  assert.equal(upload.with['if-no-files-found'], 'error', 'missing receipt stays visible as a tolerated step failure');
+  assert.deepEqual(publisher.jobs['verify-install'].needs, 'publish');
+  assert.equal(publisher.jobs['verify-install'].if, "needs.publish.outputs.published == 'true'");
 });

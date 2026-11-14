@@ -361,6 +361,7 @@ jobs:
           done < "$RUNNER_TEMP/promote-specs.txt"
 
       - name: Record the published upgrade target
+        continue-on-error: true
         if: steps.publish.outputs.published == 'true'
         env:
           PUBLICATION_RECEIPT: ${{ runner.temp }}/upgrade-publication
@@ -375,6 +376,7 @@ jobs:
           }) + '\n');
           NODE
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: steps.publish.outputs.published == 'true'
         with:
           name: upgrade-publication
