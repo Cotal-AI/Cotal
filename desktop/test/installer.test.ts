@@ -29,7 +29,7 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.ok(task.indexOf("Write-SetupStep 'start'") < task.indexOf("$ErrorActionPreference = 'Stop'"));
   assert.ok(task.indexOf("Write-SetupStep 'scheduler-connect'") < task.indexOf('$scheduler.Connect()'));
   assert.ok(task.indexOf("Write-SetupStep 'module-management'") < task.indexOf('  Import-Module'));
-  assert.match(hooks, /TIMEOUT=40000[^\n]*-Action recover/);
+  assert.match(hooks, /TIMEOUT=120000[^\n]*-Action recover/);
   assert.match(hooks, /Function CotalSetupMessage\n  ClearErrors\n  FileOpen/);
   assert.match(task, /parent \$\(\$row\.ParentProcessId\), created \$created/);
   assert.match(hooks, /MB_RETRYCANCEL/);
