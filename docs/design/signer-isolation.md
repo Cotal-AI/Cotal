@@ -767,7 +767,7 @@ retired on the ledger and kicked. A stolen **seed** is §4.2.
 
 ### 4.2 Rotating the data-account signing key
 
-`rotateDataAccountSigningKey` (`provision.ts`) requires `auth.operator.seed` and
+`rotateDataAccountSigningKey` (`account-claims.ts`) requires `auth.operator.seed` and
 `auth.account.seed`. A stripped signer cannot rotate (`throw` in that function). The user-JWT
 signer must not gain those seeds.
 
