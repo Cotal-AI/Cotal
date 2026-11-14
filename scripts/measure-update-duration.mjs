@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, writeFile
 import { dirname, join, resolve } from 'node:path';
 import { prependPath } from './update-duration-environment.mjs';
 import { captureRecords } from './update-duration-records.mjs';
+import { createServer } from 'node:http';
+import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 import { pathToFileURL } from 'node:url';
 
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'measurement requires GitHub Actions');
@@ -31,6 +33,7 @@ const npmCli = join(dirname(process.execPath), process.platform === 'win32' ? 'n
 assert(existsSync(npmCli), `npm entry missing: ${npmCli}`);
 const pkg = join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules/cotal-ai');
 const cli = join(pkg, 'dist/cotal.js');
+const observerPath = resolve(process.env.UPDATE_OBSERVER ?? 'scripts/update-duration-observer.cjs');
 const report = { source: '0.164.7', target: '0.164.8', sample: process.env.SAMPLE, mode: process.env.MODE, platform: process.platform, runner: process.env.RUNNER_OS, run: process.env.GITHUB_RUN_ID, head: process.env.GITHUB_SHA, calls: [] };
 const save = () => writeFileSync(join(evidence, 'report.json'), JSON.stringify(report, null, 2));
 async function call(label, argv, observed = false) {
@@ -39,7 +42,7 @@ async function call(label, argv, observed = false) {
   const startedAt = Date.now();
   console.log(`${new Date(startedAt).toISOString()} start ${label}`);
   const childEnv = { ...env };
-  if (observed) Object.assign(childEnv, { UPDATE_TIMING_DIR: trace, NODE_OPTIONS: `--require=${JSON.stringify(resolve('scripts/update-duration-observer.cjs'))}` });
+  if (observed) Object.assign(childEnv, { UPDATE_TIMING_DIR: trace, NODE_OPTIONS: `--require=${JSON.stringify(observerPath)}` });
   const result = await new Promise((done, reject) => {
     const child = spawn(process.execPath, argv, { cwd: project, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '', stderr = '';
@@ -57,7 +60,35 @@ async function call(label, argv, observed = false) {
   assert.equal(result.signal, null);
   return result;
 }
+let overlays = [], proxy, activeRegistry;
 try {
+  if (process.env.PACKED_INPUTS) {
+    const packed = resolve(process.env.PACKED_INPUTS);
+    for (const name of ['source', 'target']) overlays.push(await candidateRegistry(join(packed, name), 'B', 'https://registry.npmjs.org'));
+    activeRegistry = overlays[0];
+    proxy = createServer(async (request, response) => {
+      try {
+        const selected = request.url.endsWith('/0.164.7') ? overlays[0] : activeRegistry;
+        const url = selected.url + request.url;
+        const upstream = await fetch(url, { signal: AbortSignal.timeout(60000) });
+        const contentType = upstream.headers.get('content-type') ?? 'application/json';
+        if (contentType.includes('json') && upstream.ok) {
+          const metadata = await upstream.json();
+          if (metadata.versions) {
+            const source = await (await fetch(overlays[0].url + request.url, { signal: AbortSignal.timeout(60000) })).json();
+            if (source.versions?.['0.164.7']) metadata.versions['0.164.7'] = source.versions['0.164.7'];
+          }
+          response.writeHead(upstream.status, { 'content-type': contentType }).end(JSON.stringify(metadata));
+        } else {
+          response.writeHead(upstream.status, { 'content-type': contentType });
+          response.end(Buffer.from(await upstream.arrayBuffer()));
+        }
+      } catch (error) { response.writeHead(502).end(String(error)); }
+    });
+    await new Promise(done => proxy.listen(0, '127.0.0.1', done));
+    env.npm_config_registry = `http://127.0.0.1:${proxy.address().port}`;
+    report.packed = { kind: 'fixed source and target packed with release guards', source: overlays[0].identity, target: overlays[1].identity };
+  }
   await call('install published source', [npmCli, 'install', '-g', 'cotal-ai@0.164.7', '--no-audit', '--no-fund']);
   if (process.platform === 'win32') {
     const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
@@ -66,6 +97,7 @@ try {
   await call('seed all built-in connectors', [cli, 'ext', 'seed']);
   await call('add runtime extension', [cli, 'ext', 'add', '@cotal-ai/tmux@0.164.7']);
   report.before = JSON.parse((await call('record source extensions', [cli, 'ext', 'list', '--json'])).stdout);
+  if (overlays.length) activeRegistry = overlays[1];
   const latest = JSON.parse((await call('assert unchanged published target', [npmCli, 'view', 'cotal-ai@latest', 'version', '--json'])).stdout);
   assert.equal(latest, report.target, 'latest drifted, refuse another target');
   await call('update under test', [cli, 'update', '--self'], process.env.MODE === 'passive');
@@ -83,7 +115,9 @@ try {
 } catch (error) {
   report.result = 'failed'; report.error = error.stack; process.exitCode = 1;
 } finally {
-  report.observerSha256 = createHash('sha256').update(readFileSync('scripts/update-duration-observer.cjs')).digest('hex');
+  if (proxy) await new Promise(done => proxy.close(done));
+  for (const overlay of overlays) await overlay.close();
+  report.observerSha256 = createHash('sha256').update(readFileSync(observerPath)).digest('hex');
   save();
   const events = readdirSync(trace).flatMap(name => readFileSync(join(trace, name), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)));
   const starts = new Map(events.filter(e => e.kind === 'child-start').map(e => [e.id, e]));

@@ -680,6 +680,8 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
   // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
   const [bin, ...argv] = selfArgv();
+  const started = Date.now();
+  console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
   writeCursor({ nonce, package: name, phase: "copy" });
   const storePath = stageSeedPayload(generation, name, { force });
   writeCursor({ nonce, package: name, phase: "add" });
@@ -694,6 +696,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
   if (r.status !== 0) throw new SeedChildFailure(`failed to seed connector "${name}" from ${storePath}`, childFailure(r).split("\n"));
+  console.error(`Update step connector:${name} completed in ${Date.now() - started} ms`);
 }
 
 /** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress
