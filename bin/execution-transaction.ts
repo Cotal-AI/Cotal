@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { executionBinding, executionDescriptorPath, executionRecord, executionSha256, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
+import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionRecord, executionSha256, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
 import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
   v: 1;
   installed: string;
+  launchEntry?: string;
   previous: { manifest: string; bootstrap: string; descriptor: ExecutionDescriptor | null };
   target: RetainedExecutionGeneration;
 }
@@ -36,12 +37,12 @@ function atomicFile(path: string, bytes: string | Buffer, mode: number): void {
 }
 
 /** Persist immutable rollback bytes only after all pure-read target checks have accepted. */
-export function journalExecutionTransaction(installed: string, target: RetainedExecutionGeneration): string {
+export function journalExecutionTransaction(installed: string, target: RetainedExecutionGeneration, launchEntry?: string): string {
   assertExecutionDestination(installed);
   const store = executionStore(installed);
   const directory = mkdtempSync(join(store, ".transaction-"));
   const transaction: ExecutionTransaction = {
-    v: 1, installed,
+    v: 1, installed, launchEntry,
     previous: {
       manifest: readFileSync(join(installed, "package.json"), "utf8"),
       bootstrap: readFileSync(join(installed, "dist/cotal.js"), "utf8"),
@@ -76,7 +77,7 @@ export function publishExecutionTransaction(installed: string, path: string, res
   if (meta.name !== "cotal-ai" || typeof meta.version !== "string") throw new Error("invalid execution publication manifest");
   const finalBinding: ExecutionBinding = { name: "cotal-ai", version: meta.version, bootstrapSha256: executionSha256(bootstrap) };
   const descriptor: ExecutionDescriptor | null = restore ? record.previous.descriptor : {
-    v: 1, binding: finalBinding, generation: { id: record.target.id, version: record.target.version, inventorySha256: record.target.inventorySha256 },
+    v: 1, binding: finalBinding, ...(record.launchEntry ? { launch: executionLaunchBinding(installed, record.launchEntry) } : {}), generation: { id: record.target.id, version: record.target.version, inventorySha256: record.target.inventorySha256 },
   };
   if (descriptor) {
     const transitional: ExecutionDescriptor = { ...descriptor, binding: current, bindings: [

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 export interface ExecutionIdentity {
   readonly logicalEntry: string;
   readonly loadedEntry: string;
+  readonly launchEntry?: string;
 }
 
 /** Process-local identity supplied by the built-ins bootstrap, never inherited from the environment. */
@@ -26,6 +27,7 @@ export function executionIdentity(): ExecutionIdentity | undefined {
     if (isAbsolute(rel) || parts.length !== 2 || !/^[a-f0-9]{32}$/.test(parts[0]!) || parts[1] !== "cotal-ai")
       throw new Error("loaded execution identity is outside the owning generation store");
   }
+  if (record.launchEntry !== undefined && (!isAbsolute(record.launchEntry) || realpathSync(record.launchEntry) !== record.logicalEntry)) throw new Error("execution launch route differs from logical entry");
   return record;
 }
 

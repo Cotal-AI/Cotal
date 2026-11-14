@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
-import { executionBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
+import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
 
 const repo = join(import.meta.dirname, "../..");
@@ -85,6 +85,17 @@ try {
   check("real built entry selects and executes the retained program", () => {
     const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "retained generation selected");
     assert.equal(selectExecutionProgram(root).root, generation.root);
+  });
+  check("a retired package-manager launch route cannot reactivate a cached generation", () => {
+    const route = join(scratch, "global-route"); symlinkSync(root, route);
+    const entry = join(route, "dist/cotal.js");
+    writeExecutionDescriptor(root, { ...descriptor, launch: executionLaunchBinding(root, entry) });
+    assert.equal(selectExecutionProgram(root).root, generation.root);
+    rmSync(route);
+    assert.equal(selectExecutionProgram(root).root, root, "removed launch route invalidates the external selection without deleting retained files");
+    symlinkSync(root, route);
+    assert.equal(selectExecutionProgram(root).root, root, "recreated route has a different incarnation even when its target is the same");
+    rmSync(route); writeExecutionDescriptor(root, descriptor);
   });
   check("a bootstrap bound to a different artifact runs the installed tree without writing", () => {
     const stale = { ...descriptor, binding: { ...descriptor.binding, bootstrapSha256: "0".repeat(64) } };

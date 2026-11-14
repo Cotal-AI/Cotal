@@ -13,6 +13,7 @@ export interface ExecutionDescriptor {
   v: 1;
   binding: ExecutionBinding;
   bindings?: ExecutionBinding[];
+  launch?: { entry: string; path: string; dev: string; ino: string; birth: string; ctime: string };
   generation: { id: string; version: string; inventorySha256: string };
 }
 export interface ExecutionInventoryEntry { path: string; sha256?: string; link?: string }
@@ -86,6 +87,17 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
   return rows;
 }
 
+export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
+  const logical = resolve(entry), physical = realpathSync(logical);
+  if (physical !== join(realpathSync(root), "dist", "cotal.js")) throw new Error("execution launch route does not resolve to this bootstrap");
+  let path = join(realpathSync(root), "package.json");
+  for (let current = dirname(logical); current !== dirname(current); current = dirname(current)) {
+    if (lstatSync(current).isSymbolicLink()) { path = current; break; }
+  }
+  const info = lstatSync(path, { bigint: true });
+  return { entry: logical, path, dev: String(info.dev), ino: String(info.ino), birth: String(info.birthtimeNs), ctime: String(info.ctimeNs) };
+}
+
 export function executionDescriptorPath(root: string): string {
   return join(executionStore(root), `.active-${executionSha256(realpathSync(root))}.json`);
 }
@@ -101,6 +113,13 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
   const descriptor = object(value), binding = object(descriptor.binding), current = executionBinding(installed);
   if (typeof binding.name !== "string" || typeof binding.version !== "string" || !binding.version ||
       typeof binding.bootstrapSha256 !== "string" || !HASH.test(binding.bootstrapSha256)) throw new Error("invalid execution artifact binding");
+  if (descriptor.launch !== undefined) {
+    const launch = object(descriptor.launch);
+    if (!["entry", "path", "dev", "ino", "birth", "ctime"].every(key => typeof launch[key] === "string") || !isAbsolute(launch.entry as string) || !isAbsolute(launch.path as string))
+      throw new Error("invalid execution launch binding");
+    try { if (JSON.stringify(executionLaunchBinding(installed, launch.entry as string)) !== JSON.stringify(launch)) return initial(); }
+    catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return initial(); throw error; }
+  }
   const matches = (candidate: Record<string, unknown>): boolean => candidate.name === current.name && candidate.version === current.version && candidate.bootstrapSha256 === current.bootstrapSha256;
   if (descriptor.bindings !== undefined && (!Array.isArray(descriptor.bindings) || descriptor.bindings.length > 4 ||
       descriptor.bindings.some(value => { const item = object(value); return item.name !== "cotal-ai" || typeof item.version !== "string" || !item.version || typeof item.bootstrapSha256 !== "string" || !HASH.test(item.bootstrapSha256); })))
@@ -138,7 +157,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   }
   if (selected) {
     if (!import.meta.url.endsWith(".ts")) Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
-      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), loadedEntry: join(selected.root, "dist", "cotal.js") }),
+      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), launchEntry: resolve(process.argv[1]), loadedEntry: join(selected.root, "dist", "cotal.js") }),
       configurable: false, writable: false,
     });
     if (selected.retained) process.argv[1] = join(selected.root, "dist", "cotal.js");

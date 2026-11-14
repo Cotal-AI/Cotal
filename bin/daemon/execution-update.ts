@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
-import { logicalExecutionEntry, cmdSpawnSpec } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, executionIdentity, cmdSpawnSpec } from "@cotal-ai/workspace";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration } from "../execution-transaction.js";
 import { executionInventory, executionSha256 } from "../cotal.js";
@@ -44,7 +44,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   let accepted = false;
   const getJournal = () => {
     if (!accepted) throw new Error("execution journal requested before target checks accepted");
-    return journal ??= journalExecutionTransaction(installed, generation);
+    return journal ??= journalExecutionTransaction(installed, generation, executionIdentity()?.launchEntry ?? logicalExecutionEntry());
   };
   return {
     entry: join(installed, "dist/cotal.js"),
