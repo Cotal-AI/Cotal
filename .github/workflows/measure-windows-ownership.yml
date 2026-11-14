@@ -1,0 +1,73 @@
+name: Measure Windows ownership
+
+on:
+  push:
+    branches: [measure/win-ownership-check]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    env:
+      DO_NOT_TRACK: "1"
+      COTAL_TELEMETRY: "off"
+      COTAL_SKIP_CONNECTOR_SEED: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.21.0
+      - name: Record runner and source identity
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force timing | Out-Null
+          git rev-parse HEAD | Out-File timing/head.txt
+          git log -1 --format=%P | Out-File timing/parents.txt
+          node --version | Out-File timing/node.txt
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber | ConvertTo-Json | Out-File timing/windows.json
+      - name: Install published baseline
+        shell: pwsh
+        run: |
+          npm i -g cotal-ai@0.164.6
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $Root = Join-Path ((npm root -g).Trim()) 'cotal-ai'
+          node scripts/measure-windows-ownership.mjs run "$Root" "$env:GITHUB_WORKSPACE\timing" published
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Windows native bindings
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - name: Install and build unchanged source
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile --prefer-offline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --workspace-concurrency 3 --filter "cotal-ai..." build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Measure unchanged source
+        shell: pwsh
+        run: |
+          node scripts/measure-windows-ownership.mjs run "$env:GITHUB_WORKSPACE\bin" "$env:GITHUB_WORKSPACE\timing" unchanged
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ownership-timings
+          path: timing
+          if-no-files-found: error
