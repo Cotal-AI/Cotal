@@ -10,10 +10,74 @@ import {execFile} from 'node:child_process';
 import {captureDaemonDiagnostics} from './daemon-cell-diagnostics.mjs';
 import {evaluateManualDaemonState} from './daemon-manual-acceptance.mjs';
 import {matchSource16410Refusal, source16410Refusals} from './source-16410-refusal.mjs';
-import {candidateSourceIdentity, intermediateWholeMachine, verifyCandidateNextEvidence} from './candidate-next-evidence.mjs';
+import {candidateSourceIdentity, hostedManagerRestored, intermediateWholeMachine, verifyCandidateNextEvidence} from './candidate-next-evidence.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const write = (path, value) => writeFileSync(path, JSON.stringify(value), {mode: 0o600});
+
+function hostedCapture(output, stage, at, change = () => {}) {
+  const evidence = {space: 'proof-space',
+    status: {exit: 0, signal: null, timeout: false, stderr: '', stdout: JSON.stringify({result: {state: 'ready', version: '1.2.3', managers: [{space: 'proof-space', state: 'answering', instanceId: 'current-manager'}]}})},
+    seats: {exit: 0, signal: null, timeout: false, stderr: '', stdout: JSON.stringify({result: {kind: 'seats', items: [], managers: [{instanceId: 'current-manager', state: 'answered'}]}})}};
+  change(evidence);
+  const bytes = Buffer.from(JSON.stringify({status: evidence.status, seats: evidence.seats}));
+  const artifact = `${stage.replaceAll(' ', '-')}-${Math.random().toString(16).slice(2)}.txt`;
+  writeFileSync(join(output, artifact), bytes, {mode: 0o600, flag: 'wx'});
+  evidence.commands = {artifact, bytes: bytes.length, sha256: hash(bytes)};
+  const calls = [
+    {label: `${stage} hosted Manager status`, argv: ['cli', 'daemon', 'status', '--space', evidence.space, '--json'], ...evidence.status},
+    {label: `${stage} hosted Manager seats`, argv: ['cli', 'ps', '--on', 'current-manager', '--space', evidence.space, '--json'], ...evidence.seats},
+  ].map(call => ({...call, startedAt: at, finishedAt: at}));
+  return {evidence, calls, output, target: '1.2.3', stage, after: at, before: at};
+}
+
+test('hosted Manager helper reopens replies and rejects missing, stale, relabeled and altered receipts', () => {
+  const output = realpathSync(mkdtempSync(join(tmpdir(), 'hosted-evidence-')));
+  const f = hostedCapture(output, 'between hops', '2026-11-14T18:00:00.000Z');
+  assert.deepEqual(hostedManagerRestored(f), {passed: true, space: 'proof-space', instanceId: 'current-manager'});
+  for (const change of [
+    v => { delete v.evidence; },
+    v => { delete v.evidence.commands; },
+    v => { v.evidence.commands.artifact = 'missing.txt'; },
+    v => { v.evidence.commands.sha256 = '0'.repeat(64); },
+    v => { v.evidence.status.stdout = '{}'; },
+    v => { v.calls.pop(); },
+    v => { v.calls.push(structuredClone(v.calls[0])); },
+    v => { v.calls[0].label = 'after update hosted Manager status'; },
+    v => { v.calls[0].argv[2] = 'setup'; },
+    v => { v.calls[1].argv[3] = 'old-manager'; },
+    v => { v.calls[0].stdout = '{}'; },
+    v => { v.calls[0].startedAt = '2026-11-14T17:59:59.000Z'; },
+    v => { v.calls[1].finishedAt = '2026-11-14T18:00:01.000Z'; },
+  ]) {
+    const value = structuredClone(f); change(value);
+    assert.throws(() => hostedManagerRestored(value));
+  }
+});
+
+test('hosted Manager helper rejects unknown outcomes, unready Managers and false empty-seat evidence', () => {
+  const output = realpathSync(mkdtempSync(join(tmpdir(), 'hosted-state-')));
+  for (const change of [
+    e => { e.status.exit = 2; },
+    e => { e.status.signal = 'SIGTERM'; },
+    e => { e.seats.timeout = true; },
+    e => { e.seats.exit = null; },
+    e => { e.status.stdout = e.status.stdout.replace('ready', 'stopped'); },
+    e => { e.status.stdout = e.status.stdout.replace('1.2.3', '1.2.2'); },
+    e => { e.status.stdout = e.status.stdout.replace('answering', 'starting'); },
+    e => { const v = JSON.parse(e.status.stdout); v.result.managers = []; e.status.stdout = JSON.stringify(v); },
+    e => { const v = JSON.parse(e.status.stdout); v.result.managers.push(v.result.managers[0]); e.status.stdout = JSON.stringify(v); },
+    e => { const v = JSON.parse(e.seats.stdout); v.result.items = [{name: 'upgrade_proof_worker'}]; e.seats.stdout = JSON.stringify(v); },
+    e => { e.seats.stdout = e.seats.stdout.replace('answered', 'unreachable'); },
+    e => { e.seats.stdout = e.seats.stdout.replace('current-manager', 'old-manager'); },
+    e => { const v = JSON.parse(e.seats.stdout); delete v.result.items; e.seats.stdout = JSON.stringify(v); },
+  ]) {
+    const value = hostedCapture(output, 'between hops', '2026-11-14T18:00:00.000Z', change);
+    let passed = false;
+    try { passed = hostedManagerRestored(value).passed; } catch (error) { assert(error instanceof assert.AssertionError); }
+    assert.equal(passed, false);
+  }
+});
 function installed() {
   const pkg = mkdtempSync(join(tmpdir(), 'candidate-source-'));
   mkdirSync(join(pkg, 'dist'), {mode: 0o700});
@@ -52,10 +116,11 @@ test('candidate source binds real installed package, entry, version and argv wit
 // No native service or published archive acceptance is claimed by this fixture.
 async function capture(t, {recovery, stage = 'between-hops'} = {}) {
   assert.equal(process.platform, 'linux');
-  const home = mkdtempSync(join(tmpdir(), 'candidate-state-'));
+  const temporaryHome = mkdtempSync(join(tmpdir(), 'candidate-state-'));
+  const home = realpathSync(temporaryHome);
   const dirs = Object.fromEntries(['output', 'cotalHome', 'daemonHome', 'config', 'pkg', 'globalRoot', 'tmp'].map(key => [key, join(home, key)]));
   for (const dir of Object.values(dirs)) mkdirSync(dir, {mode: 0o700});
-  const socketPath = join(home, 'daemon.sock');
+  const socketPath = join(temporaryHome, 'daemon.sock');
   const server = createServer(peer => peer.destroy());
   server.listen(socketPath); await once(server, 'listening');
   t.after(() => new Promise(resolve => server.close(resolve)));
@@ -63,7 +128,7 @@ async function capture(t, {recovery, stage = 'between-hops'} = {}) {
   const stat = readFileSync(`/proc/${process.pid}/stat`, 'utf8');
   const start = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19];
   write(join(dirs.pkg, 'package.json'), {name: 'cotal-ai', version: '1.2.3'});
-  write(join(dirs.daemonHome, 'daemon.lock'), {pid: process.pid, start, socket: {path: socketPath, dev: socket.dev, ino: socket.ino}});
+  write(join(dirs.daemonHome, 'daemon.lock'), {pid: process.pid, start, socket: {path: join(home, 'daemon.sock'), dev: socket.dev, ino: socket.ino}});
   if (recovery !== undefined) write(join(dirs.cotalHome, 'update-recovery.json'), recovery);
   const run = (stdout, bounds) => new Promise(resolve => {
     execFile(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(stdout)})`], {cwd: home, env: {PATH: '/usr/bin:/bin', HOME: home, COTAL_HOME: dirs.cotalHome, XDG_CONFIG_HOME: dirs.config, TMPDIR: dirs.tmp}, timeout: bounds.timeoutMs, maxBuffer: bounds.maxBuffer, encoding: 'utf8'}, (error, stdout, stderr) => resolve({exit: error ? error.code : 0, stdout, stderr}));
@@ -97,6 +162,103 @@ test('intermediate capture requires ready A, no pause, clear fence and successfu
 });
 test('intermediate capture fails closed on real archived unresolved recovery', async t => {
   assert.equal(intermediateWholeMachine(await capture(t, {recovery: {phase: 'paused'}})).passed, false);
+});
+test('hosted consent chain requires both timed Manager stages and exact first-hop consent', async t => {
+  const f = await capture(t, {stage: 'after-update'}), source = installed();
+  const at = f.diagnostics.capturedAt;
+  const pair = {...source.identity, source: 'synthetic-sha', sourceManifestSha256: 'source-manifest', targetManifestSha256: 'target-manifest', targetVersion: '1.2.3'};
+  const contract = source16410Refusals.find(row => row.platform === 'linux' && row.layout === 'npm');
+  const firstUpdate = {exit: 2, signal: null, timeout: false,
+    stdout: 'this 0.164.10 process remains loaded until the verified global copy takes over\n'
+      + 'machine daemon: waiting up to 120s for Cotal 1.2.3 and its hosted Managers before the continuity check\n'
+      + '✓ cotal-ai@1.2.3 installed globally and reconciled\n', stderr: contract.trailer};
+  const secondUpdate = {exit: 0, signal: null, timeout: false, stdout: '', stderr: ''};
+  const middle = hostedCapture(f.output, 'between hops', at);
+  const last = hostedCapture(f.output, 'after update', at);
+  const bytes = Buffer.from(JSON.stringify({status: f.status, updateCheck: f.updateCheck}));
+  const commands = {artifact: 'hosted-between-hop-commands.txt', bytes: bytes.length, sha256: hash(bytes)};
+  writeFileSync(join(f.output, commands.artifact), bytes, {mode: 0o600});
+  const agentBefore = JSON.stringify({result: {kind: 'seats', items: [{name: 'upgrade_proof_worker'}], managers: [{instanceId: 'initial-manager', state: 'answered'}]}});
+  const report = {candidateNext: pair, candidateSourceInvocation: candidateSourceIdentity(source), source: '0.164.10', target: '1.2.3', agentHost: 'daemon', agentBefore,
+    participant: {space: 'proof-space'}, managerHost: {mode: 'daemon-hosted', space: 'proof-space', instanceId: 'initial-manager'},
+    calls: [
+      {label: 'confirm daemon-hosted seat', argv: [source.cli, 'ps', '--on', 'initial-manager', '--space', 'proof-space', '--json'], exit: 0, signal: null, timeout: false, stdout: agentBefore, stderr: '', startedAt: at, finishedAt: at},
+      {label: 'upgrade under test', argv: [source.cli, 'update', '--self', '--stop-agents'], ...firstUpdate, startedAt: at, finishedAt: at},
+      {label: 'between hops public daemon status', argv: [source.cli, 'daemon', 'status', '--json'], ...f.status, startedAt: at, finishedAt: at},
+      {label: 'between hops public update check', argv: [source.cli, 'update', '--check'], ...f.updateCheck, startedAt: at, finishedAt: at},
+      ...middle.calls,
+      {label: 'candidate second hop under test', argv: source.argv, ...secondUpdate, startedAt: at, finishedAt: at},
+      ...last.calls,
+    ],
+    nextHop: {mode: 'source-0.164.10', finalTargetVersion: '1.2.3',
+      firstHop: {update: firstUpdate, refusal: matchSource16410Refusal({platform: 'linux', layout: 'npm', sourceVersion: '0.164.10', targetVersion: '1.2.3', update: firstUpdate})},
+      intermediate: {status: f.status, updateCheck: f.updateCheck, commands, hostedManager: middle.evidence},
+      secondHop: {update: secondUpdate, hostedManager: last.evidence}},
+    daemonDiagnostics: {'between-hops': f.diagnostics, 'after-update': f.diagnostics}};
+  const args = {report, cell: {scenario: 'agent-stop-consent', sourceSHA: pair.source, platform: 'linux', channel: 'npm'}, output: f.output, sourceManifestSha256: pair.sourceManifestSha256, targetManifestSha256: pair.targetManifestSha256};
+  assert.deepEqual(verifyCandidateNextEvidence(args), {sourceIdentity: true, firstRefusal: true, intermediateWhole: true, nextHopSuccess: true, hostedManagerRestored: true});
+  for (const change of [
+    v => { v.calls[1].argv.pop(); },
+    v => { v.calls[1].argv[0] = 'other-installed-entry'; },
+    v => { v.calls.shift(); },
+    v => { v.calls.push(structuredClone(v.calls[0])); },
+    v => { v.calls[0].exit = 1; },
+    v => { v.calls[0].signal = 'SIGTERM'; },
+    v => { v.calls[0].timeout = true; },
+    v => { v.agentBefore = '{}'; },
+    v => { v.calls[0].argv[3] = 'other-manager'; },
+    v => { v.calls[0].finishedAt = '2099-01-01T00:00:00.000Z'; },
+    v => { v.calls.splice(3, 0, {label: 'repair installation', argv: ['cli', 'daemon', 'setup']}); },
+    v => { v.calls.splice(2, 1); },
+    v => { delete v.calls[1].startedAt; },
+    v => { v.calls[1].startedAt = '2099-01-01T00:00:00.000Z'; },
+    v => { delete v.calls[6].finishedAt; },
+    v => { v.calls[6].finishedAt = '2000-01-01T00:00:00.000Z'; },
+    v => { v.calls[2].startedAt = '2000-01-01T00:00:00.000Z'; },
+    v => { v.calls[3].finishedAt = '2000-01-01T00:00:00.000Z'; },
+    v => { v.calls[3].finishedAt = '2099-01-01T00:00:00.000Z'; },
+    v => { v.calls[2].argv = [source.cli, 'daemon', 'setup', '--json']; },
+    v => { v.calls[3].argv = [source.cli, 'update', '--self']; },
+    v => { v.calls[2].stdout = '{}'; },
+    v => { v.calls[3].stderr = 'different receipt'; },
+    v => { v.calls[3].exit = 1; },
+    v => { [v.calls[2], v.calls[3]] = [v.calls[3], v.calls[2]]; },
+    ...[
+      inventory => { inventory.items = []; },
+      inventory => { inventory.items.push({name: 'other-worker'}); },
+      inventory => { inventory.items[0].name = 'other-worker'; },
+      inventory => { inventory.managers[0].state = 'unreachable'; },
+      inventory => { inventory.managers[0].instanceId = 'foreign-manager'; },
+    ].map(change => v => {
+      const inventory = JSON.parse(v.agentBefore); change(inventory.result);
+      v.agentBefore = JSON.stringify(inventory); v.calls[0].stdout = v.agentBefore;
+    }),
+    v => { v.agentHost = 'standalone'; },
+    v => { v.participant.space = 'other-space'; },
+    v => { delete v.nextHop.intermediate.hostedManager; },
+    v => { delete v.nextHop.secondHop.hostedManager; },
+    v => { v.nextHop.secondHop.hostedManager.commands.sha256 = '0'.repeat(64); },
+    v => { v.calls[4].label = 'relabeled'; },
+    v => { v.calls[4].startedAt = '2000-01-01T00:00:00.000Z'; },
+    v => { v.calls.at(-1).startedAt = '2000-01-01T00:00:00.000Z'; },
+  ]) {
+    const value = structuredClone(report); change(value);
+    assert.throws(() => verifyCandidateNextEvidence({...args, report: value}));
+  }
+  for (const stage of ['intermediate', 'secondHop']) {
+    const value = structuredClone(report);
+    const replacement = hostedCapture(f.output, stage === 'intermediate' ? 'between hops' : 'after update', at, evidence => {
+      const inventory = JSON.parse(evidence.seats.stdout);
+      inventory.result.items = [{name: 'upgrade_proof_worker'}];
+      evidence.seats.stdout = JSON.stringify(inventory);
+    });
+    value.nextHop[stage].hostedManager = replacement.evidence;
+    value.calls = value.calls.map(call => replacement.calls.find(other => other.label === call.label) ?? call);
+    const result = verifyCandidateNextEvidence({...args, report: value});
+    assert.equal(result.hostedManagerRestored, false);
+    assert.equal(result.nextHopSuccess, false);
+    assert.equal(result.intermediateWhole, stage !== 'intermediate');
+  }
 });
 test('candidate evidence binds captured artifacts, public command receipts and default measured refusal', async t => {
   const f = await capture(t, {stage: 'after-update'}), source = installed();

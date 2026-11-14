@@ -16,7 +16,7 @@ import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-cons
 import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
-import { candidateSourceIdentity, intermediateWholeMachine } from './candidate-next-evidence.mjs';
+import { candidateSourceIdentity, hostedManagerRestored, intermediateWholeMachine } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
@@ -24,7 +24,10 @@ export function candidateNextOptions(options, disposable = hosted) {
   const mode = options['next-hop-source'];
   assert(['candidate', '0.164.10'].includes(mode), 'candidate next source must be explicit');
   assert(['candidate','published'].includes(options['next-hop-phase']), 'candidate next phase must be explicit');
-  assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && options.state === 'daemon' && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
+  const hostedConsent = mode === '0.164.10' && options.state === 'agent' && options.layout === 'npm'
+    && options['daemon-hosted-manager'] === 'true' && options['stop-agents'] === 'true'
+    && daemonHostedManagerOptions(options, {hosted: disposable});
+  assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && (options.state === 'daemon' || hostedConsent) && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
   if (mode === 'candidate') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
   if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
@@ -396,6 +399,20 @@ export async function matrixCell(options) {
     : cotal(label, argv);
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
+  async function captureHostedManager(stage, target) {
+    const space = report.managerHost.space;
+    const status = await daemon(`${stage} hosted Manager status`, ['daemon', 'status', '--space', space, '--json']);
+    const managers = status.exit === 0 ? JSON.parse(status.stdout).result.managers?.filter(row => row.space === space) : [];
+    assert(managers?.length === 1 && managers[0].state === 'answering' && managers[0].instanceId, 'hosted Manager must answer without repair before continuing');
+    const seats = await cotal(`${stage} hosted Manager seats`, ['ps', '--on', managers[0].instanceId, '--space', space, '--json']);
+    const bytes = Buffer.from(JSON.stringify({status, seats}));
+    const commands = {artifact: `${id}-${stage.replaceAll(' ', '-')}-hosted-manager.txt`, bytes: bytes.length, sha256: digest(bytes)};
+    writeFileSync(join(output, commands.artifact), bytes, {flag: 'wx', mode: 0o600});
+    const evidence = {space, status, seats, commands};
+    const verified = hostedManagerRestored({evidence, output, target, calls: report.calls, stage});
+    assert(verified.passed, 'hosted Manager must be restored with consented seats ended');
+    return evidence;
+  }
   async function installer(version, candidateTarget = false) {
     let script, label = 'public installer';
     if (publishedInstaller && (candidateTarget || options['installer-setup'] === 'true')) {
@@ -584,6 +601,9 @@ export async function matrixCell(options) {
         report.managerHost.launchObservation = await cotal('record daemon-hosted Manager launch inventory', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']);
         ok(report.managerHost.spawn, 'hosted spawn');
         report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;
+        const beforeSeats = JSON.parse(report.agentBefore).result;
+        assert(beforeSeats.kind === 'seats' && beforeSeats.items?.length === 1 && beforeSeats.items[0].name === 'upgrade_proof_worker'
+          && beforeSeats.managers?.length === 1 && beforeSeats.managers[0].instanceId === setup.manager.instanceId && beforeSeats.managers[0].state === 'answered', 'hosted consent requires one real answering seat before the update');
       } else if (state === 'agent') {
         report.managerHost = { mode: 'standalone', space: 'upgrade-proof' };
         ok(await cotal('register native stand-in connector', ['ext', 'add', fixture]), 'stand-in registration');
@@ -696,6 +716,7 @@ export async function matrixCell(options) {
         const commands = {artifact:`${id}-between-hop-commands.txt`,bytes:commandBytes.length,sha256:digest(commandBytes)};
         writeFileSync(join(output,commands.artifact),commandBytes,{flag:'wx',mode:0o600});
         report.nextHop.intermediate = intermediateWholeMachine({ diagnostics: report.daemonDiagnostics['between-hops'], output, target: report.candidateNext.sourceVersion, platform: process.platform, status, updateCheck, commands });
+        if (daemonHostedManager) report.nextHop.intermediate.hostedManager = await captureHostedManager('between hops', report.candidateNext.sourceVersion);
         report.nextHop.firstHop.refusal = matchSource16410Refusal({ platform: process.platform, layout, sourceVersion: report.source, targetVersion: report.candidateNext.sourceVersion, update: report.nextHop.firstHop.update });
         check('source 0.164.10 matches measured postlude refusal', true, report.nextHop.firstHop.refusal);
         check('source 0.164.10 refusal leaves a whole machine', report.nextHop.intermediate.passed, report.nextHop.intermediate);
@@ -888,6 +909,10 @@ export async function matrixCell(options) {
       report.managerHost.instanceAfter = current.instanceId;
       const seats = await cotal('confirm consent stopped daemon-hosted seats', ['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']);
       report.managerHost.after = seats;
+      if (nextHopMode && daemonHostedManager) {
+        report.nextHop.secondHop.hostedManager = await captureHostedManager('after update', report.candidateNext.targetVersion);
+        check('hosted Manager restored after both update hops', true, {intermediate: report.nextHop.intermediate.hostedManager, final: report.nextHop.secondHop.hostedManager});
+      }
       check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade_proof_worker'), seats);
     }
     if (installedService) {
@@ -947,7 +972,7 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
-    if (installedService && state === 'daemon' && method === 'self' && !desktopRuntime) {
+    if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime) {
       report.manualServiceFinalState = evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output, target: report.target, platform: process.platform });
       check('independent manual service final state', report.manualServiceFinalState.passed, report.manualServiceFinalState);
       if (!report.manualServiceFinalState.passed) report.result = 'failed';

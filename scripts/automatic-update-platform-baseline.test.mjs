@@ -14,6 +14,31 @@ test('candidate-owned next hop admission requires explicit paired hosted manual 
   assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
 });
 
+function hostedChainOptions() {
+  return { candidate: '/A', 'candidate-next': '/B', 'next-hop-source': '0.164.10', 'next-hop-phase': 'candidate', source: '0.164.10', layout: 'npm', state: 'agent', method: 'self', 'daemon-hosted-manager': 'true', 'stop-agents': 'true', prepare() {} };
+}
+
+test('source 0.164.10 admits explicitly authorized disposable Linux npm hosted consent chain', { skip: process.platform !== 'linux' }, () => {
+  for (const phase of ['candidate', 'published']) {
+    assert.equal(baseline.candidateNextOptions({ ...hostedChainOptions(), 'next-hop-phase': phase }, true), 'source-0.164.10');
+  }
+});
+
+test('hosted consent next hop rejects every missing authorization and unsupported agent layout', () => {
+  const options = hostedChainOptions();
+  for (const change of [
+    { 'next-hop-source': 'candidate' }, { source: '0.164.11' },
+    { 'daemon-hosted-manager': undefined }, { 'daemon-hosted-manager': 'false' },
+    { 'stop-agents': undefined }, { 'stop-agents': 'false' },
+    { prepare: undefined }, { prepare: true }, { layout: 'installer' },
+    { method: 'scheduler' }, { candidate: undefined }, { 'next-hop-phase': undefined },
+  ]) assert.throws(() => baseline.candidateNextOptions({ ...options, ...change }, true), JSON.stringify(change));
+  assert.throws(() => baseline.candidateNextOptions(options, false));
+  for (const platform of ['darwin', 'win32']) {
+    assert.throws(() => baseline.daemonHostedManagerOptions(options, { hosted: true, platform }));
+  }
+});
+
 test('next-hop driver captures refused source state before any second hop or cleanup', () => {
   const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
   const between=source.indexOf("await captureServiceEvidence('between-hops')");

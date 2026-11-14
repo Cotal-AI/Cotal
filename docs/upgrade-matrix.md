@@ -74,12 +74,16 @@ hashes, both archive receipts, actual command and native before/after state are 
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
 
 Source0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
-Its five manual-service layouts preserve the first hop's raw refusal and match only the measured
-platform-specific contract. Before cleanup they must independently prove that the installed target
-and daemon agree, recovery is clear, updates are not paused and the generation fence is clear. The
-same machine must then complete a second manual update to the synthetic next version without a
-repair, restart or reinstallation between hops. Three pinned npm chains retain this source after a
-newer predecessor becomes the default. Unknown refusal text or a blocked second hop fails.
+Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
+and match only the measured platform-specific contract. Before cleanup they must independently prove
+that the installed target and daemon agree, recovery is clear, updates are not paused and the
+generation fence is clear. The same machine must then complete a second manual update to the
+synthetic next version without a repair, restart or reinstallation between hops. Three pinned npm
+chains retain this source after a newer predecessor becomes the default. Unknown refusal text or a
+blocked second hop fails.
+The consent chain also binds public daemon status and seat inventory to its prepared space and
+answering Manager before and after the second hop. Both captures require the consented seats to
+have ended. The second hop must restore the Manager without setup or repair between hops.
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
 route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector

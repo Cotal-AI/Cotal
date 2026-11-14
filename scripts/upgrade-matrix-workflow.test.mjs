@@ -246,6 +246,71 @@ function chainEvidence(data, directory) {
   Object.assign(data.report.calls.find(call => call.label === 'upgrade under test'), first, { finishedAt: '2026-11-14T10:59:59.000Z' });
   data.report.calls.push({ label: 'candidate second hop under test', startedAt: '2026-11-14T11:00:01.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], exit: 0, signal: null, timeout: false });
 }
+function hostedChainEvidence(data, directory) {
+  chainEvidence(data, directory);
+  const {report, cell} = data;
+  const space = 'prepared-hosted-space';
+  report.state = 'agent'; report.agentHost = 'daemon';
+  report.managerHost = {mode: 'daemon-hosted', space, instanceId: 'initial-manager'};
+  report.agentBefore = JSON.stringify({result: {kind: 'seats', items: [{name: 'upgrade_proof_worker'}], managers: [{instanceId: 'initial-manager', state: 'answered'}]}});
+  report.participant = {space, remote: true, localManagerStarted: false};
+  report.cleanup = 'receipt-guarded native removal confirmed';
+  const first = report.calls.find(call => call.label === 'upgrade under test');
+  first.argv = ['/owned/dist/cotal.js', 'update', '--self', '--stop-agents'];
+  first.startedAt = '2026-11-14T10:59:58.000Z';
+  report.calls.unshift({label: 'confirm daemon-hosted seat', argv: ['cli', 'ps', '--on', 'initial-manager', '--space', space, '--json'], startedAt: '2026-11-14T10:59:57.000Z', finishedAt: '2026-11-14T10:59:57.000Z', exit: 0, signal: null, timeout: false, stdout: report.agentBefore});
+  report.calls.find(call => call.label === 'candidate second hop under test').finishedAt = '2026-11-14T11:00:02.000Z';
+  report.calls.splice(report.calls.indexOf(first) + 1, 0,
+    {label: 'between hops public daemon status', argv: ['cli', 'daemon', 'status', '--json'], startedAt: '2026-11-14T11:00:00.000Z', finishedAt: '2026-11-14T11:00:00.000Z', ...report.nextHop.intermediate.status},
+    {label: 'between hops public update check', argv: ['cli', 'update', '--check'], startedAt: '2026-11-14T11:00:00.000Z', finishedAt: '2026-11-14T11:00:00.000Z', ...report.nextHop.intermediate.updateCheck});
+  for (const [stage, version, time, hop] of [
+    ['between hops', cell.targetVersion, '2026-11-14T11:00:00.000Z', report.nextHop.intermediate],
+    ['after update', cell.finalTargetVersion, '2026-11-14T11:00:03.000Z', report.nextHop.secondHop],
+  ]) {
+    const instanceId = stage === 'between hops' ? 'manager-A' : 'manager-B';
+    const status = {exit: 0, signal: null, timeout: false, stderr: '', stdout: JSON.stringify({result: {state: 'ready', version, managers: [{space, state: 'answering', instanceId}]}})};
+    const seats = {exit: 0, signal: null, timeout: false, stderr: '', stdout: JSON.stringify({result: {kind: 'seats', items: [], managers: [{instanceId, state: 'answered'}]}})};
+    const bytes = Buffer.from(JSON.stringify({status, seats}));
+    const artifact = stage.replaceAll(' ', '-') + '-manager.txt';
+    writeFileSync(join(directory, artifact), bytes, {mode: 0o600});
+    hop.hostedManager = {space, status, seats, commands: {artifact, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex')}};
+    const commands = [{label: `${stage} hosted Manager status`, argv: ['cli', 'daemon', 'status', '--space', space, '--json'], startedAt: time, finishedAt: time, ...status},
+      {label: `${stage} hosted Manager seats`, argv: ['cli', 'ps', '--on', instanceId, '--space', space, '--json'], startedAt: time, finishedAt: time, ...seats}];
+    if (stage === 'between hops') report.calls.splice(report.calls.findIndex(call => call.label === 'candidate second hop under test'), 0, ...commands);
+    else report.calls.push(...commands);
+  }
+  report.assertions.push({name: 'hosted Manager restored after both update hops', passed: true}, {name: 'daemon-hosted consent ends owned seat', passed: true}, {name: 'owned daemon-hosted Manager stop succeeds', passed: true});
+}
+test('actual summary accepts hosted consent source chain only with both restored Manager captures', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(hostedChainEvidence, {scenario: 'agent-stop-consent', sourceVersion: '0.164.10', targetVersion: '0.164.11', phase});
+    assert.equal(result.exit, 0, result.stderr);
+    const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
+    assert.equal(census.passed.length, 1);
+    assert.equal(census.knownRefusals.length, 0);
+  }
+});
+test('actual hosted consent summary rejects absent, wrong, stale or unbound Manager evidence', () => {
+  for (const change of [
+    d => { delete d.report.agentBefore; },
+    d => { d.report.calls.splice(d.report.calls.findIndex(c => c.label === 'candidate second hop under test'), 0, {label: 'repair installation', argv: ['cli', 'daemon', 'setup'], exit: 0}); },
+    d => { d.report.calls.find(c => c.label === 'upgrade under test').argv[0] = '/other/dist/cotal.js'; },
+    d => { delete d.report.nextHop.intermediate.hostedManager; },
+    d => { delete d.report.nextHop.secondHop.hostedManager; },
+    d => { d.report.participant.space = 'other-space'; },
+    d => { d.report.nextHop.intermediate.hostedManager.commands.sha256 = '0'.repeat(64); },
+    d => { d.report.nextHop.secondHop.hostedManager = structuredClone(d.report.nextHop.intermediate.hostedManager); },
+    d => { d.report.calls.find(c => c.label === 'between hops hosted Manager status').startedAt = '2026-11-14T10:00:00.000Z'; },
+    d => { d.report.calls.find(c => c.label === 'after update hosted Manager seats').stdout = '{}'; },
+    d => { d.report.calls.find(c => c.label === 'upgrade under test').argv.pop(); },
+    d => { d.report.nextHop.secondHop.update.exit = 2; d.report.calls.find(c => c.label === 'candidate second hop under test').exit = 2; },
+    d => { d.report.assertions = d.report.assertions.filter(a => a.name !== 'daemon-hosted consent ends owned seat'); },
+  ]) {
+    const result = fixture((data, directory) => { hostedChainEvidence(data, directory); change(data); }, {scenario: 'agent-stop-consent', sourceVersion: '0.164.10', targetVersion: '0.164.11'});
+    assert.notEqual(result.exit, 0);
+  }
+});
+
 test('actual summary counts complete source chain as genuine without waiving the raw first-hop refusal', () => {
   for (const phase of ['candidate', 'published']) {
     const result = fixture(chainEvidence, { scenario: 'source-0.164.10-daemon-self-chain', phase });

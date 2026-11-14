@@ -646,7 +646,7 @@ jobs:
               assert(!report.cleanupFailure && !report.error, 'cleanup or harness error cannot be a known refusal');
               assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before grading');
               const ok = name => report.assertions.some(a => a.name === name && a.passed === true);
-              const manualFinalState = ['daemon-self', 'candidate-next-daemon-self', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario)
+              const manualFinalState = (['daemon-self', 'candidate-next-daemon-self', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario) || paired && cell.scenario === 'agent-stop-consent')
                 ? evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output: directory, target: finalTarget, platform: cell.platform })
                 : undefined;
               let pairedEvidence;
@@ -697,7 +697,10 @@ jobs:
                 'independent-final-state': manualFinalState?.passed === true && ok('independent manual service final state'),
                 'native-scheduler': ok('scheduler completed within observation deadline') && ok('daemon scheduler performed a replacement or reported up to date'),
                 'daemon-restart': ok('native daemon remains active at its expected generation') && (cell.platform !== 'darwin' || ok('launchd transition observed exactly one daemon restart')),
-                'stop-consent': report.calls.some(call => Array.isArray(call.argv) && call.argv.includes('--stop-agents') && call.exit === 0),
+                'hosted-manager-restored': pairedEvidence?.hostedManagerRestored === true && ok('hosted Manager restored after both update hops'),
+                'stop-consent': paired && cell.scenario === 'agent-stop-consent'
+                  ? pairedEvidence?.firstRefusal === true && pairedEvidence?.hostedManagerRestored === true && ok('daemon-hosted consent ends owned seat')
+                  : report.calls.some(call => Array.isArray(call.argv) && call.argv.includes('--stop-agents') && call.exit === 0),
                 'owned-stack-cleanup': (cell.scenario === 'agent-stop-consent' ? ok('owned daemon-hosted Manager stop succeeds') && report.cleanup === 'receipt-guarded native removal confirmed' : ok('owned local stack cleanup succeeds')) && (cell.scenario !== 'container-manager' || ok('foreign container cleanup succeeds')),
               };
               if (['agent-stop-consent', 'standalone-stop-consent', 'container-manager'].includes(cell.scenario)) assert(assertions['owned-stack-cleanup'], 'owned cleanup must succeed before grading');

@@ -141,7 +141,7 @@ test("both phases retain 28 required cells with permanently pinned chains and co
     assert.equal(ordinary.length, 22);
     const self = ordinary.filter(c => c.scenario === "daemon-self");
     assert.equal(self.length, 5);
-    for (const cell of ordinary) assert.equal(cell.chain === true, sourceVersion === "0.164.10" && cell.scenario === "daemon-self");
+    for (const cell of ordinary) assert.equal(cell.chain === true, sourceVersion === "0.164.10" && (cell.scenario === "daemon-self" || cell.id === "linux-npm-agent-stop-consent"));
     const pinned = plan.cells.filter(c => chainIDs.includes(c.id));
     assert.equal(pinned.length, 3);
     for (const cell of pinned) {
@@ -154,7 +154,7 @@ test("both phases retain 28 required cells with permanently pinned chains and co
       assert.equal(cell.targetSourceSHA, sourceSHA);
       assert.equal(cell.targetVersion, "0.164.12");
       assert.equal(cell.finalTargetVersion, "0.164.1012");
-      for (const assertion of ["exact-source-refusal", "intermediate-whole-machine", "next-hop-success", "native-service-manual", "independent-final-state"]) {
+      for (const assertion of ["exact-source-refusal", "intermediate-whole-machine", "next-hop-success", "independent-final-state", ...(cell.id === "linux-npm-agent-stop-consent" ? [] : ["native-service-manual"])]) {
         assert.ok(cell.requiredAssertions.includes(assertion));
         const results = goodResults(plan.cells);
         delete results.find(r => r.id === cell.id).assertions[assertion];
@@ -173,6 +173,30 @@ test("both phases retain 28 required cells with permanently pinned chains and co
       assert.equal(cell.targetSourceSHA, sourceSHA);
     }
     assert.equal(verifyResults(plan.cells, goodResults(plan.cells)).upgradeAcceptance, true);
+  }
+});
+
+test("source 0.164.10 hosted consent chains require restored Manager and all existing chain evidence", () => {
+  for (const phase of ["candidate", "published"]) {
+    const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase, sourceSHA, targetVersion: "0.164.12" } }, { sourceVersion: "0.164.10" });
+    assert.equal(plan.matrix.include.length, 28);
+    assert.deepEqual(plan.expectedIDs, candidateIDs);
+    const cell = plan.cells.find(c => c.id === "linux-npm-agent-stop-consent");
+    assert.equal(cell.platform, "linux");
+    assert.equal(cell.channel, "npm");
+    assert.equal(cell.sourceVersion, "0.164.10");
+    assert.equal(cell.chain, true);
+    assert.equal(cell.targetVersion, "0.164.12");
+    assert.equal(cell.finalTargetVersion, "0.164.1012");
+    for (const assertion of ["hosted-manager-restored", "exact-source-refusal", "intermediate-whole-machine", "next-hop-success", "independent-final-state"]) {
+      assert.ok(cell.requiredAssertions.includes(assertion), assertion);
+      const results = goodResults(plan.cells);
+      delete results.find(r => r.id === cell.id).assertions[assertion];
+      assert.equal(verifyResults(plan.cells, results).acceptance, false, assertion);
+    }
+    const standalone = plan.cells.find(c => c.id === "linux-npm-standalone-stop-consent");
+    assert.notEqual(standalone.chain, true);
+    assert.equal(standalone.finalTargetVersion, undefined);
   }
 });
 

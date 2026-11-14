@@ -147,12 +147,13 @@ export function boundedCells(plan) {
   {
     const targetVersion = syntheticNextVersion(plan.targetVersion);
     const chainAssertions = ["exact-source-refusal", "intermediate-whole-machine", "next-hop-success"];
-    for (const cell of cells.filter(cell => cell.scenario === "daemon-self" && cell.sourceVersion === "0.164.10")) {
+    for (const cell of cells.filter(cell => ['daemon-self', 'agent-stop-consent'].includes(cell.scenario) && cell.sourceVersion === '0.164.10')) {
       cell.chain = true;
       cell.finalTargetVersion = targetVersion;
       cell.targetSourceSHA = plan.sourceSHA;
       cell.syntheticVersionRule = "candidate.patch+1000";
       cell.requiredAssertions.push(...chainAssertions);
+      if (cell.scenario === 'agent-stop-consent') cell.requiredAssertions.push('independent-final-state', 'hosted-manager-restored');
     }
     for (const platform of platforms) add(platform, "npm", "candidate-next-daemon-self", null, {
       sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A", targetVersion,
