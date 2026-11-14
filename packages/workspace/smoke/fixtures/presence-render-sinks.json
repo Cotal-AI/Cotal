@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1035,
+    "total": 1067,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 813
+    "non-render/control": 845
   },
   "renderers": [
     {
@@ -7549,6 +7549,230 @@
       "anchor": "joinedAgentRows(result)",
       "class": "non-render/control",
       "rationale": "Spawn join receipt: the Agent, Identity and Manager rows of the launch result; the spawn reply is tainted only through the local `mesh` registry target, no peer presence is rendered."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "lected.status !== 0 || !isAbsolute(root) || /[\\r\\n]/.test(root))",
+      "class": "non-render/control",
+      "rationale": "Recovery validates the npm root path using a child process exit status, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "|| !isAbsolute(root) || /[\\r\\n]/.test(root)) throw new Error(\"canno",
+      "class": "non-render/control",
+      "rationale": "Recovery rejects malformed npm root output before installation; this regular expression handles paths, not presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "  const releaseGlobal = rt.claimGlobalUpdate(root);\n      try {\n        if",
+      "class": "non-render/control",
+      "rationale": "Recovery claims installation mutation custody for a validated npm root, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "          const entry = rt.verifyGlobalEntry(root, version);\n          if (realpath",
+      "class": "non-render/control",
+      "rationale": "Paused recovery verifies the installed package entry and version before executing it, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "version);\n          if (realpathSync(entry) !== realpathSync(entryS",
+      "class": "non-render/control",
+      "rationale": "Paused recovery compares canonical executable paths to bind repair authority, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "onst reconciled = await rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, true);\n          if (reconcil",
+      "class": "non-render/control",
+      "rationale": "Paused recovery launches the verified reconciliation child under global install custody, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": " !== 0) throw new Error(failure(reconciled));\n          snapshot.di",
+      "class": "non-render/control",
+      "rationale": "Paused recovery formats a failed reconciliation process result as an error, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "const installed = await rt.spawnGlobal(root, \"install\", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);\n          if (installe",
+      "class": "non-render/control",
+      "rationale": "Interrupted recovery starts the npm reinstall process for the recorded previous package, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": " !== 0) throw new Error(failure(installed));\n          entry = rt.",
+      "class": "non-render/control",
+      "rationale": "Interrupted recovery converts the installer process exit status into a failure diagnostic, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.verifyGlobalEntry(root, record.previous)",
+      "class": "non-render/control",
+      "rationale": "Interrupted recovery verifies the previous installed executable and release before launch, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "onst reconciled = await rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\"], env, true);\n        if (reconciled",
+      "class": "non-render/control",
+      "rationale": "Interrupted recovery executes the verified previous generation's reconciliation child, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": " !== 0) throw new Error(failure(reconciled));\n        snapshot.disc",
+      "class": "non-render/control",
+      "rationale": "Interrupted recovery checks reconciliation exit status before discarding its snapshot, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`✗ could not resolve npm's global root before install: ${failure(rootResult)}`",
+      "class": "non-render/control",
+      "rationale": "Installation diagnostics report the npm root query's process failure, not agent presence or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "failure(rootResult)",
+      "class": "non-render/control",
+      "rationale": "This helper formats the npm root query's child process exit result, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "t.stdout.trim();\n  if (!isAbsolute(root) || /[\\r\\n]/.test(root))",
+      "class": "non-render/control",
+      "rationale": "The updater tests that npm returned an absolute single-line installation path, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "f (!isAbsolute(root) || /[\\r\\n]/.test(root)) {\n    rt.err(c.red(`✗ ",
+      "class": "non-render/control",
+      "rationale": "The regular expression rejects multi-line npm root output before mutation, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`✗ npm returned an invalid global root: ${JSON.stringify(rootResult.stdout)}`",
+      "class": "non-render/control",
+      "rationale": "This diagnostic quotes malformed npm root output and makes no claim about peer activity."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "realpathSync(root)",
+      "class": "non-render/control",
+      "rationale": "The updater canonicalizes the validated installation path to identify its owning package, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "y {\n    releaseGlobal = rt.claimGlobalUpdate(root);\n  } catch (e) {\n    rt",
+      "class": "non-render/control",
+      "rationale": "Global installation custody is acquired before a package replacement begins, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.prepareExecution(targetVersion, root)",
+      "class": "non-render/control",
+      "rationale": "Staged execution preparation receives a release and installation root before publication, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.spawnGlobal(\n    root,\n    \"install\",\n    npmInstall.file,\n    npmInstall.args,\n    rt.env,\n    false,\n    npmInstall.windowsVerbatimArguments,\n  )",
+      "class": "non-render/control",
+      "rationale": "The legacy path starts a guarded npm installation process whose status is an exit code, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "latestNotAvailable(installed, targetVersion)",
+      "class": "non-render/control",
+      "rationale": "The updater classifies npm's missing-release process result before deciding whether to restore, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`✗ global cotal-ai@${targetVersion} install failed: ${failure(installed)}`",
+      "class": "non-render/control",
+      "rationale": "This installation failure message reports an npm child process outcome, not peer activity or work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "sion} install failed: ${failure(installed)}`));\n    return await r",
+      "class": "non-render/control",
+      "rationale": "The installer exit result is formatted for the failed-install diagnostic, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`global install failed: ${failure(installed)}`",
+      "class": "non-render/control",
+      "rationale": "The rollback reason records the installation process failure, not peer activity or progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "lobal install failed: ${failure(installed)}`);\n  }\n\n  rt.out(\"Veri",
+      "class": "non-render/control",
+      "rationale": "The recovery reason formats an npm child process failure before verification, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.verifyGlobalEntry(root, targetVersion)",
+      "class": "non-render/control",
+      "rationale": "The updater verifies the target release's installed executable before reconciliation, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "rt.spawnGlobal(root, \"reconcile\", rt.nodePath, [entry, \"update\", ...targetArgv(target)], env, true)",
+      "class": "non-render/control",
+      "rationale": "The verified target executable is launched as a guarded reconciliation child, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`",
+      "class": "non-render/control",
+      "rationale": "This diagnostic reports the installed target's reconciliation process failure, not agent work progress."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "its reconcile failed: ${failure(child)}`));\n    return await r",
+      "class": "non-render/control",
+      "rationale": "The reconciliation child's exit status is formatted for an installation error, not peer presence."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "`reconcile failed: ${failure(child)}`",
+      "class": "non-render/control",
+      "rationale": "The restoration journal reason describes a reconciliation process failure, not agent presence or activity."
+    },
+    {
+      "path": "implementations/cli/src/commands/update.ts",
+      "kind": "derived-output",
+      "anchor": "nt(`reconcile failed: ${failure(child)}`, child.status ?? 1);\n",
+      "class": "non-render/control",
+      "rationale": "Rollback receives the reconciliation failure reason and child exit code, not peer presence."
     }
   ]
 }
