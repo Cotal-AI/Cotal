@@ -105,6 +105,13 @@ test('Windows automatic closure census uses installed seeded declarations, not a
  assert.match(source,/installedWorkspace\.SEEDED_EXTENSIONS/);assert.match(source,/assert.deepEqual\(firstParty.map/);
  assert.doesNotMatch(source,/\.length,8\)/);assert.ok(source.indexOf('report.extensions=extensions')<source.indexOf('assert.deepEqual(firstParty'));
 });
+test('automatic interruption diagnostics retain logs and narrowed receipt before cleanup without task mutation',()=>{
+ assert.match(source,/update-attempt\.log/);assert.match(source,/name:value.name,owner:value.owner,drained:value.drained/);
+ assert.match(source,/automatic admission observation/);assert.match(source,/clearInterval\(automaticEvidenceTimer\)/);
+ const observation=source.slice(source.indexOf("'inspect exact failed helper task'"),source.indexOf('throw error;}',source.indexOf("'inspect exact failed helper task'")));
+ assert.match(observation,/LastTaskResult/);assert.match(observation,/GetTask\(\$env:CELL_HELPER_TASK\)/);
+ assert.doesNotMatch(observation,/DeleteTask|\.Run\(|\.Stop\(|Enabled=/);
+});
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });

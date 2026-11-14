@@ -55,12 +55,13 @@ export async function run(){
  const generationSnapshots=[];
  const captureGeneration=label=>{
   const snapshot={label,at:new Date().toISOString(),files:{}};
-  for(const [name,path]of [['daemon.log',join(cotalHome,'daemon/daemon.log')],['update-recovery.json',join(cotalHome,'update-recovery.json')],['update-attempt.json',join(cotalHome,'update-attempt.json')],['installed-package.json',join(pkg,'package.json')]]){
-   try{const text=readFileSync(path,'utf8');if(name==='daemon.log')snapshot.files[name]=text.slice(-65536).replace(/eyJ[A-Za-z0-9_.-]*/g,'<redacted>');else{const value=JSON.parse(text);snapshot.files[name]=name==='update-recovery.json'?(value===null?null:{phase:value.phase,previous:value.previous,target:value.target,installed:value.installed,preparedRestart:value.preparedRestart,reason:value.reason,owner:value.owner?{pid:value.owner.pid,start:value.owner.start}:undefined}):name==='installed-package.json'?{name:value.name,version:value.version}:value;}}catch(error){snapshot.files[name]={error:error.code??error.message};}
+  for(const [name,path]of [['daemon.log',join(cotalHome,'daemon/daemon.log')],['update-attempt.log',join(cotalHome,'update-attempt.log')],['update-windows.json',join(cotalHome,'update-windows.json')],['update-recovery.json',join(cotalHome,'update-recovery.json')],['update-attempt.json',join(cotalHome,'update-attempt.json')],['installed-package.json',join(pkg,'package.json')]]){
+   try{const text=readFileSync(path,'utf8');if(name.endsWith('.log'))snapshot.files[name]=text.slice(-65536).replace(/eyJ[A-Za-z0-9_.-]*/g,'<redacted>');else{const value=JSON.parse(text);snapshot.files[name]=name==='update-windows.json'?{name:value.name,owner:value.owner,drained:value.drained,done:value.done,revoked:value.revoked,bootId:value.bootId}:name==='update-recovery.json'?(value===null?null:{phase:value.phase,previous:value.previous,target:value.target,installed:value.installed,preparedRestart:value.preparedRestart,reason:value.reason,owner:value.owner?{pid:value.owner.pid,start:value.owner.start}:undefined}):name==='installed-package.json'?{name:value.name,version:value.version}:value;}}catch(error){snapshot.files[name]={error:error.code??error.message};}
   }
   generationSnapshots.push(snapshot);save('generation-snapshots.json',generationSnapshots);
  };
  const age=()=>{for(const [name,fields]of [['update-check.json',['checkedAt','attemptedAt','firstSeenAt']],['update-attempt.json',['next']]]){const path=join(cotalHome,name),before=json(path),after={...before};for(const field of fields)after[field]=Date.now()-26*3600000;save('clock-'+name,{before,after});writeFileSync(path,JSON.stringify(after));}};
+ let automaticEvidenceTimer;
  let overlayA,overlayB,restore,proxy,hold=false,installed=false;const held=[];
  try{
   const packed=json(join(output,'versions.json'));const latest=packed.published;report.published=latest;
@@ -100,6 +101,7 @@ export async function run(){
   const off=await status();assert.equal(off.update.automatic,false);report.cells.push({name:'off-before-tick',pass:true,status:off});save('report.json',report);
   ok(await cli('switch automatic updates on',['update','--auto','on']));
   // Kill a real updater worker after helper admission, holding registry only to prevent replacement.
+  automaticEvidenceTimer=setInterval(()=>captureGeneration('automatic admission observation'),1000);
   hold=true;age();
   await poll('registry block armed by actual worker',()=>held.length>0,120000,50);
   const receipt=await poll('real scheduled helper owner',()=>{const f=join(cotalHome,'update-windows.json');if(!existsSync(f))return;try{const r=json(f);return r.owner&&!r.drained?r:undefined;}catch{}},120000,100);
@@ -136,8 +138,11 @@ export async function run(){
   const cleared=await poll('automatic schedule resumed after manual success',async()=>{const s=await status();return s?.update?.automatic===true?s:undefined;},120000);
   report.cells.push({name:'owner-kill-sameboot-manual-clear',pass:true,ownerReceipt,ownerKill:JSON.parse(ownerKill.stdout),paused,cleared});
   ok(await cli('public status after acceptance',['status']));report.pass=true;
- }catch(error){report.pass=false;report.error=String(error.stack??error);captureGeneration('failure before native service cleanup');throw error;}
+ }catch(error){report.pass=false;report.error=String(error.stack??error);captureGeneration('failure before native service cleanup');
+  try{const r=json(join(cotalHome,'update-windows.json'));report.helperTask=await ps('inspect exact failed helper task',"$ErrorActionPreference='Stop';$s=New-Object -ComObject Schedule.Service;$s.Connect();$t=$s.GetFolder('\\').GetTask($env:CELL_HELPER_TASK);ConvertTo-Json -Compress @{name=$t.Name;state=[int]$t.State;lastResult=[long]$t.LastTaskResult;instances=[int]$t.GetInstances(0).Count;lastRun=$t.LastRunTime.ToUniversalTime().ToString('o')}",{CELL_HELPER_TASK:r.name});}catch(observation){report.helperTaskObservationError=String(observation);}
+  throw error;}
  finally{
+  clearInterval(automaticEvidenceTimer);
   hold=false;for(const x of held.splice(0)){x.res.writeHead(503).end('fixture teardown');}
   if(installed){const result=await cli('cleanup exact owned native service',['daemon','uninstall','--yes','--json']);report.cleanup=result;if(result.exit!==0)report.pass=false;}
   restore?.();await overlayA?.close();await overlayB?.close();if(proxy){proxy.closeAllConnections();await new Promise(resolveClose=>proxy.close(resolveClose));}save('report.json',report);
