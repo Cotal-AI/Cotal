@@ -1262,6 +1262,21 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// A staged rollback already retains the complete previous graph and needs no registry copy.
+{
+  const fixture = updateRuntime({
+    npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    releaseNpm: args => {
+      const spec = args[0] === "view" ? args[1] : args[2];
+      assert.ok(!spec.endsWith("@0.13.1"), "retained rollback must not request previous archives");
+      return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "0.13.2", dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+    },
+  });
+  fixture.rt.prepareExecution = async () => ({ entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json", async preflight() {}, publish() {}, restore() {}, verify() {} });
+  assert.equal(await executeUpdate(true, fixture.rt), 0);
+  assert.ok(!fixture.events.some(event => event.startsWith("global:install:")), "npm must not reify the live package for staged publication");
+}
+
 // --- only the selected latest's structured npm ETARGET is a release deferral -------------------
 for (const [code, summary, deferred] of [
   ["ETARGET", "No matching version found for cotal-ai@0.13.2.", true],

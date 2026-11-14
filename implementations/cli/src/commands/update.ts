@@ -936,8 +936,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     checkReleaseArchives(targetVersion, rt);
     checkInstalledClosure(targetVersion, rt);
-    // A previous generation must remain downloadable and verified before replacement begins.
-    checkReleaseArchives(current, rt);
+    // In-place rollback reinstalls the previous release. Staged rollback keeps its complete graph.
+    if (!rt.prepareExecution) checkReleaseArchives(current, rt);
   } catch (e) {
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
