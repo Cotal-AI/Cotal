@@ -34,7 +34,7 @@ import { constants } from "node:fs";
 import { createConnection } from "node:net";
 import { processStartToken } from "@cotal-ai/core";
 import { lockExclusiveNb, processStartTime } from "@cotal-ai/seat";
-import { codeSpan, shellPath } from "@cotal-ai/workspace";
+import { codeSpan, shellPath, win32ProcessBinding } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
 /** The socket a holder published, identified by the inode it is, not by its path alone. */
@@ -51,7 +51,17 @@ export interface SocketGeneration {
  * Undefined when there is no such process.
  */
 export function processBirth(pid: number): string | undefined {
-  return process.platform === "linux" ? processStartToken(pid) : processStartTime(pid);
+  if (process.platform === "linux") return processStartToken(pid);
+  const token = processStartTime(pid);
+  if (token === undefined || process.platform !== "win32") return token;
+  let pin;
+  try {
+    pin = win32ProcessBinding().pinProcess(pid);
+    return pin.exited() || pin.token !== token ? undefined : token;
+  } catch (error) {
+    if (error instanceof Error && /\(Windows error (?:5|87)\)/.test(error.message)) return undefined;
+    throw error;
+  } finally { pin?.close(); }
 }
 
 /** What a holder writes through the locked descriptor. `socket` is absent until it publishes one. */

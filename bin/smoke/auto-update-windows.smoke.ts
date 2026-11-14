@@ -98,5 +98,10 @@ try {
   const installSource = readFileSync(new URL("../daemon/install.ts", import.meta.url), "utf8");
   assert.match(installSource, /startGate = openSync\(unitReceiptFile\(paths\), constants\.O_RDWR\)/);
   assert.match(installSource, /lockExclusiveNb\(startGate\)/);
+  const lifetimeSource = readFileSync(new URL("../daemon/lifetime.ts", import.meta.url), "utf8");
+  assert.match(lifetimeSource, /pin = win32ProcessBinding\(\)\.pinProcess\(pid\)/);
+  assert.match(lifetimeSource, /pin\.exited\(\)/);
+  assert.match(custodySource, /pin = win32ProcessBinding\(\)\.pinProcess\(r\.owner\.pid\)/);
+  assert.match(custodySource, /!pin\.exited\(\)/);
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { rmSync(home, { recursive: true, force: true }); }

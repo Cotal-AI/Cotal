@@ -68,7 +68,17 @@ function task(r: WindowsUpdateReceipt, operation: "read" | "disable" | "delete" 
 function ownerAlive(r: WindowsUpdateReceipt): boolean {
   if (!r.owner) return false;
   const token = win32ProcessBinding().creationToken(r.owner.pid);
-  if (token !== undefined) return token === r.owner.start;
+  if (token !== undefined) {
+    if (token !== r.owner.start) return false;
+    let pin;
+    try {
+      pin = win32ProcessBinding().pinProcess(r.owner.pid);
+      return pin.token === r.owner.start && !pin.exited();
+    } catch (error) {
+      if (error instanceof Error && /\(Windows error 87\)/.test(error.message)) return false;
+      throw error;
+    } finally { pin?.close(); }
+  }
   try { process.kill(r.owner.pid, 0); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; }
   throw new Error("Windows automatic owner lifetime cannot be read");
