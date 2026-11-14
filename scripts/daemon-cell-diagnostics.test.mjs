@@ -175,22 +175,34 @@ test('macOS and Windows without native plan still collect public status; missing
 });
 
 test('macOS supervisor adapters archive only scoped native state and disabled flag', async () => {
-  for (const disabled of [false, true]) {
+  for (const [token, disabled] of [['false', false], ['true', true], ['enabled', false], ['disabled', true]]) {
     const f = fixture(), unit = 'ai.cotal.daemon';
     const calls = [];
     const report = await captureDaemonDiagnostics({ ...f.options, platform: 'darwin', plan: { unit }, run: (file, args, bounds) => {
       calls.push({ file, args });
-      const text = args[0] === 'print' ? 'state = running\npid = 123\nlast exit code = 0\narguments = DO_NOT_ARCHIVE\nenvironment = DO_NOT_ARCHIVE' : args[0] === 'print-disabled' ? `disabled services = {\n"${unit}" => ${disabled}\n"foreign.private.service" => true\n}` : '{"result":{"state":"ready"}}';
+      const text = args[0] === 'print' ? 'state = running\npid = 123\nlast exit code = 0\narguments = DO_NOT_ARCHIVE\nenvironment = DO_NOT_ARCHIVE' : args[0] === 'print-disabled' ? `disabled services = {\n"${unit}" => ${token}\n"foreign.private.service" => true\n}` : '{"result":{"state":"ready"}}';
       return f.child(`console.log(${JSON.stringify(text)})`, bounds);
     } });
     const command = kind => JSON.parse(readFileSync(join(f.output, row(report, kind).artifact), 'utf8'));
     assert.deepEqual(calls.slice(0, 2), [{ file: '/bin/launchctl', args: ['print', `gui/${process.getuid()}/${unit}`] }, { file: '/bin/launchctl', args: ['print-disabled', `gui/${process.getuid()}`] }]);
     assert.equal(command('launchctl-print').stdout, 'state = running\npid = 123\nlast exit code = 0');
+    assert.equal(row(report, 'launchctl-disabled').state, 'observed', JSON.stringify(row(report, 'launchctl-disabled')));
     assert.deepEqual(JSON.parse(command('launchctl-disabled').stdout), { unit, disabled });
     for (const item of report.observations.filter(item => item.artifact)) {
       const text = readFileSync(join(f.output, item.artifact), 'utf8');
       assert(!text.includes('DO_NOT_ARCHIVE') && !text.includes('foreign.private.service'));
     }
+    assert.equal(f.children.size, 0);
+  }
+});
+
+test('unknown and duplicate native disabled entries stay explicit errors', async () => {
+  for (const entry of ['"ai.cotal.daemon" => unknown', '"ai.cotal.daemon" => false\n"ai.cotal.daemon" => enabled']) {
+    const f = fixture();
+    const report = await captureDaemonDiagnostics({ ...f.options, platform: 'darwin', plan: { unit: 'ai.cotal.daemon' }, run: (file, args, bounds) => f.child(`console.log(${JSON.stringify(args[0] === 'print-disabled' ? `disabled services = {\n${entry}\n}` : '{}')})`, bounds) });
+    assert.equal(row(report, 'launchctl-disabled').state, 'error');
+    assert.match(row(report, 'launchctl-disabled').error, /invalid native disabled entry:|duplicate native disabled entry/);
+    assert.equal(row(report, 'daemon-status').state, 'observed');
     assert.equal(f.children.size, 0);
   }
 });

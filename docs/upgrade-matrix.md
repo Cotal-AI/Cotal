@@ -78,7 +78,9 @@ Linux the cell-scoped user journal and selected `systemctl --user show` properti
 reading records public daemon status, socket metadata, installed version, update pause records
 and lock observations independently of the updater's output. The macOS socket observer accepts the
 native `/var/folders` alias only when it resolves to the matching `/private/var/folders` parent,
-then checks ownership, the socket leaf and its recorded inode without following a leaf symlink. Missing, unreadable, timed-out or
+then checks ownership, the socket leaf and its recorded inode without following a leaf symlink.
+The launchd disabled observer accepts native boolean or `enabled`/`disabled` states for the selected
+unit. Unknown or duplicate entries remain errors. Missing, unreadable, timed-out or
 truncated observations remain explicit. Diagnostics never turn an update failure into a pass.
 The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
 is a product failure, not a known refusal.

@@ -239,9 +239,10 @@ async function capture(options) {
       assert(/^\s*disabled services = \{[\s\S]*\}\s*$/.test(text), 'invalid native disabled listing');
       const lines = text.split('\n').map(line => line.trim()).filter(line => line.startsWith(`"${unit()}" => `));
       assert(lines.length <= 1, 'duplicate native disabled entry');
-      const disabled = lines.length === 0 ? false : /=> true$/.test(lines[0]) ? true : /=> false$/.test(lines[0]) ? false : undefined;
-      assert(typeof disabled === 'boolean', 'invalid native disabled entry');
-      return JSON.stringify({ unit: unit(), disabled });
+      const token = lines.length === 0 ? 'false' : lines[0].slice(lines[0].indexOf('=>') + 2).trim();
+      const states = { true: true, false: false, disabled: true, enabled: false };
+      assert(Object.hasOwn(states, token), `invalid native disabled entry: ${lines[0] ?? '<absent>'}`);
+      return JSON.stringify({ unit: unit(), disabled: states[token] });
     });
   }
   if ((options.platform ?? process.platform) === 'win32') {
