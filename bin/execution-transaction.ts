@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { executionBinding, executionDescriptorName, executionRecord, executionSha256, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
+import { executionBinding, executionDescriptorPath, executionRecord, executionSha256, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
 import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
@@ -45,7 +45,7 @@ export function journalExecutionTransaction(installed: string, target: RetainedE
     previous: {
       manifest: readFileSync(join(installed, "package.json"), "utf8"),
       bootstrap: readFileSync(join(installed, "dist/cotal.js"), "utf8"),
-      descriptor: lstatSync(join(installed, executionDescriptorName), { throwIfNoEntry: false }) ? executionRecord(join(installed, executionDescriptorName)) as ExecutionDescriptor : null,
+      descriptor: lstatSync(executionDescriptorPath(installed), { throwIfNoEntry: false }) ? executionRecord(executionDescriptorPath(installed)) as ExecutionDescriptor : null,
     }, target,
   };
   const path = join(directory, "execution.json");
@@ -70,8 +70,8 @@ export function readExecutionTransaction(installed: string, path: string): Execu
 export function publishExecutionTransaction(installed: string, path: string, restore = false): void {
   const record = readExecutionTransaction(installed, path);
   const current = executionBinding(installed);
-  const manifest = restore ? record.previous.manifest : readFileSync(join(record.target.root, "package.json"), "utf8");
-  const bootstrap = restore ? record.previous.bootstrap : readFileSync(join(record.target.root, "dist/cotal.js"), "utf8");
+  const manifest = record.previous.manifest;
+  const bootstrap = restore ? record.previous.bootstrap : `${readFileSync(join(record.target.root, "dist/cotal.js"), "utf8")}\n// cotal execution publication ${randomBytes(16).toString("hex")}\n`;
   const meta = JSON.parse(manifest) as { name?: unknown; version?: unknown };
   if (meta.name !== "cotal-ai" || typeof meta.version !== "string") throw new Error("invalid execution publication manifest");
   const finalBinding: ExecutionBinding = { name: "cotal-ai", version: meta.version, bootstrapSha256: executionSha256(bootstrap) };
@@ -85,9 +85,8 @@ export function publishExecutionTransaction(installed: string, path: string, res
     writeExecutionDescriptor(installed, transitional);
   }
   atomicFile(join(installed, "dist/cotal.js"), bootstrap, 0o700);
-  atomicFile(join(installed, "package.json"), manifest, 0o600);
   if (descriptor) writeExecutionDescriptor(installed, descriptor);
-  else rmSync(join(installed, executionDescriptorName), { force: true });
+  else rmSync(executionDescriptorPath(installed), { force: true });
   selectExecutionProgram(installed);
 }
 

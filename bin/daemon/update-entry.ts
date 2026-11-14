@@ -1,6 +1,6 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
 import { update, updateRuntime, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
@@ -12,7 +12,7 @@ import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
-import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate } from "./execution-update.js";
+import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
 import { logicalExecutionEntry } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
@@ -34,6 +34,7 @@ const composed: Command = { ...command, async run(args) {
   await update(args, { ...updateRuntime,
     ...(process.platform === "linux" || process.platform === "darwin" ? {
       preflightExecution: preflightExecutionUpdate,
+      executionGlobalRoot: () => dirname(executionInstallRoot()),
       prepareExecution: (version: string, root: string) => prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; }),
       recoverExecution: recoverExecutionUpdate,
     } : {}), isCurrent() {

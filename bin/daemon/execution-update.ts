@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { logicalExecutionEntry, cmdSpawnSpec } from "@cotal-ai/workspace";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration } from "../execution-transaction.js";
@@ -18,7 +18,7 @@ export function executionInstallRoot(): string {
 export function preflightExecutionUpdate(): void {
   const root = executionInstallRoot();
   assertExecutionDestination(root);
-  if (!updateRuntime.installPrefix()) throw new Error("staged update requires a verified POSIX npm global prefix; use the owning installer");
+  if (basename(dirname(root)) !== "node_modules") throw new Error("staged update requires an installed npm or pnpm package; use the owning installer");
 }
 
 function verifySelected(root: string, version: string): void {

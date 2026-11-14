@@ -15,6 +15,7 @@ if (["linux", "darwin"].includes(process.platform)) {
       writeFileSync(join(root, "dist/cotal-program.js"), "export const version = 'old';\n");
       writeFileSync(join(root, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.1.0", bin: { cotal: "./dist/cotal.js" } }));
     }
+    const oldManifest = readFileSync(join(installed, "package.json"), "utf8");
     const oldProgram = readFileSync(join(installed, "dist/cotal-program.js"), "utf8");
     writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.2.0", bin: { cotal: "./dist/cotal.js" } }));
     writeFileSync(join(source, "dist/cotal-program.js"), "export const version = 'new';\n");
@@ -22,6 +23,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     const journal = journalExecutionTransaction(installed, generation);
     publishExecutionTransaction(installed, journal);
     assert.equal(selectExecutionProgram(installed).root, generation.root);
+    assert.equal(readFileSync(join(installed, "package.json"), "utf8"), oldManifest, "npm record is never rewritten by staged publication");
     assert.equal(readFileSync(join(installed, "dist/cotal-program.js"), "utf8"), oldProgram);
     publishExecutionTransaction(installed, journal, true);
     assert.equal(selectExecutionProgram(installed).root, installed);

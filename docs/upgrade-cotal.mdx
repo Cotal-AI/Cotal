@@ -22,14 +22,18 @@ with reinstall guidance rather than selecting another generation.
 A running command reports the release of its loaded implementation, even if the canonical
 package manifest changes while it runs.
 
-On a writable POSIX npm global installation, `cotal update --self` prepares a complete target
+On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
 It runs installed read-only checks and the target's declared pre-install checks first.
 A refused check leaves the installed package and connector state unchanged.
 An unwritable installation refuses before staging and names the owning install command.
 
-Publication changes the bootstrap, manifest and bound descriptor. Original product code and
-dependencies stay in place for processes that loaded them. A standalone Manager can keep its
+Publication changes only the canonical bootstrap. A protected descriptor in the retained store
+selects the execution generation and binds to the installed package identity and bootstrap hash.
+The package manifest and original dependencies stay as npm or pnpm installed them. A manual
+package-manager install therefore sees its own original record and replaces the package normally.
+Status names both the running generation and an older package-manager record when they differ.
+A standalone Manager can keep its
 loaded generation without stopping seats. New launches still enforce extension generation
 compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
 and consent checks.

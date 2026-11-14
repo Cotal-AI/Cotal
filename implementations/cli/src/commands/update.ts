@@ -110,6 +110,7 @@ export interface UpdateRuntime {
   recoveryOwnerStart?(pid: number): string | undefined;
   /** Refuse unsupported or unwritable execution destinations before any persistent writes. */
   preflightExecution?(): void;
+  executionGlobalRoot?(): string;
   /** Prepare a complete retained target under the held global root lock, without publication. */
   prepareExecution?(version: string, root: string): Promise<ExecutionReplacement>;
   /** Reopen only a journal already validated against this logical installation. */
@@ -290,7 +291,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
       const snapshot = snapshotUpdateClosure(record.snapshot);
       const prefix = rt.installPrefix();
-      const selected = rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
+      const selected = record.execution && rt.executionGlobalRoot ? { status: 0, stdout: rt.executionGlobalRoot(), stderr: "" } : rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
       const root = selected.stdout.trim();
       if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
       const releaseGlobal = rt.claimGlobalUpdate(root);
@@ -958,7 +959,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
   const prefixArgs = prefix ? ["--prefix", prefix] : [];
-  const rootResult = rt.npm(["root", "-g", ...prefixArgs]);
+  const rootResult = rt.executionGlobalRoot ? { status: 0, stdout: rt.executionGlobalRoot(), stderr: "" } : rt.npm(["root", "-g", ...prefixArgs]);
   if (rootResult.status !== 0) {
     rt.err(c.red(`✗ could not resolve npm's global root before install: ${failure(rootResult)}`));
     return 1;

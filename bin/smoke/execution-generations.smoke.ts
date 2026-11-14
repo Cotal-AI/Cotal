@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
-import { executionBinding, executionDescriptorName, executionStore, selectExecutionProgram } from "../cotal.js";
+import { executionBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
 
 const repo = join(import.meta.dirname, "../..");
@@ -42,7 +42,7 @@ try {
   });
   check("missing descriptor runs the initial tree and writes no cache or store", () => {
     const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "initial generation");
-    assert.equal(existsSync(executionStore(root)), false); assert.equal(existsSync(join(root, executionDescriptorName)), false);
+    assert.equal(existsSync(executionStore(root)), false); assert.equal(existsSync(executionDescriptorPath(root)), false);
   });
   check("selected product may import bootstrap primitives without a top-level-await cycle", () => {
     const entry = join(root, "dist/cotal-program.js"), original = readFileSync(entry);
@@ -77,8 +77,8 @@ try {
   const generation = retainExecutionGeneration(root, source);
   check("retention copies a complete graph and creates no active descriptor", () => {
     assert.equal(readFileSync(join(generation.root, "dist/cotal-program.js"), "utf8"), readFileSync(join(source, "dist/cotal-program.js"), "utf8"));
-    assert.equal(existsSync(join(root, executionDescriptorName)), false);
-    assert.equal(readdirSync(executionStore(root)).length, 1);
+    assert.equal(existsSync(executionDescriptorPath(root)), false);
+    assert.equal(readdirSync(executionStore(root)).filter(name => /^[a-f0-9]{32}$/.test(name)).length, 1);
   });
   const descriptor = describeExecutionGeneration(root, generation);
   writeExecutionDescriptor(root, descriptor);
@@ -89,7 +89,7 @@ try {
   check("a bootstrap bound to a different artifact runs the installed tree without writing", () => {
     const stale = { ...descriptor, binding: { ...descriptor.binding, bootstrapSha256: "0".repeat(64) } };
     writeExecutionDescriptor(root, stale);
-    const file = join(root, executionDescriptorName), bytes = readFileSync(file), before = lstatSync(file).mtimeMs;
+    const file = executionDescriptorPath(root), bytes = readFileSync(file), before = lstatSync(file).mtimeMs;
     const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "initial generation");
     assert.deepEqual(readFileSync(file), bytes); assert.equal(lstatSync(file).mtimeMs, before);
     writeExecutionDescriptor(root, descriptor);
@@ -106,26 +106,26 @@ try {
   });
   check("malformed or excessive transition bindings refuse", () => {
     for (const bindings of [[{}], Array.from({ length: 5 }, () => descriptor.binding)]) {
-      writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, bindings }));
+      writeFileSync(executionDescriptorPath(root), JSON.stringify({ ...descriptor, bindings }));
       assert.throws(() => selectExecutionProgram(root), /invalid execution transition bindings/);
     }
     writeExecutionDescriptor(root, descriptor);
   });
   check("alias selection still refuses unknown protocol and corrupt target", () => {
     const aliased = { ...descriptor, binding: { ...descriptor.binding, version: "0.0.0" }, bindings: [descriptor.binding] };
-    writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...aliased, v: 999 }));
+    writeFileSync(executionDescriptorPath(root), JSON.stringify({ ...aliased, v: 999 }));
     assert.throws(() => selectExecutionProgram(root), /unsupported execution descriptor version/);
     writeExecutionDescriptor(root, { ...aliased, generation: { ...descriptor.generation, id: "f".repeat(32) } });
     assert.notEqual(run().status, 0);
     writeExecutionDescriptor(root, descriptor);
   });
   check("a malformed binding is not proof of a different installed artifact", () => {
-    writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, binding: {} }));
+    writeFileSync(executionDescriptorPath(root), JSON.stringify({ ...descriptor, binding: {} }));
     assert.throws(() => selectExecutionProgram(root), /invalid execution artifact binding/);
     writeExecutionDescriptor(root, descriptor);
   });
   check("matching unknown descriptor protocol refuses with reinstall guidance", () => {
-    writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, v: 999 }));
+    writeFileSync(executionDescriptorPath(root), JSON.stringify({ ...descriptor, v: 999 }));
     const result = run(); assert.equal(result.status, 1); assert.match(result.stderr, /unsupported execution descriptor version 999.*reinstall with npm install -g/);
     assert.equal(result.stdout, ""); writeExecutionDescriptor(root, descriptor);
   });
@@ -145,27 +145,27 @@ try {
     assert.throws(() => selectExecutionProgram(root), /inventory differs/); rmSync(extra);
   });
   check("malformed descriptor refuses rather than inferring a fresh install", () => {
-    writeFileSync(join(root, executionDescriptorName), "{"); const result = run(); assert.equal(result.status, 1); assert.equal(result.stdout, "");
+    writeFileSync(executionDescriptorPath(root), "{"); const result = run(); assert.equal(result.status, 1); assert.equal(result.stdout, "");
     writeExecutionDescriptor(root, descriptor);
   });
   check("oversized descriptor is refused before parsing", () => {
-    writeFileSync(join(root, executionDescriptorName), " ".repeat(4 * 1024 * 1024 + 1));
+    writeFileSync(executionDescriptorPath(root), " ".repeat(4 * 1024 * 1024 + 1));
     assert.throws(() => selectExecutionProgram(root), /unsafe execution record/);
     writeExecutionDescriptor(root, descriptor);
   });
   check("a group-writable descriptor cannot select retained code", () => {
-    const file = join(root, executionDescriptorName); chmodSync(file, 0o620);
+    const file = executionDescriptorPath(root); chmodSync(file, 0o620);
     try { assert.throws(() => selectExecutionProgram(root), /unprotected execution entry/); }
     finally { chmodSync(file, 0o600); }
   });
   check("descriptor symlink refuses without reading a foreign record", () => {
-    const file = join(root, executionDescriptorName); rmSync(file); symlinkSync(join(scratch, "absent"), file);
+    const file = executionDescriptorPath(root); rmSync(file); symlinkSync(join(scratch, "absent"), file);
     assert.throws(() => selectExecutionProgram(root), /unsafe execution record/); rmSync(file); writeExecutionDescriptor(root, descriptor);
   });
   check("retention rejects a dependency link escaping the verified package", () => {
     const link = join(source, "escape"); symlinkSync(root, link);
     assert.throws(() => retainExecutionGeneration(root, source), /link escapes/); rmSync(link);
-    assert.equal(readdirSync(executionStore(root)).length, 1);
+    assert.equal(readdirSync(executionStore(root)).filter(name => /^[a-f0-9]{32}$/.test(name)).length, 1);
   });
   check("retained directory symlinks cannot substitute a different store", () => {
     const store = executionStore(root), other = join(scratch, "other"); mkdirSync(other);

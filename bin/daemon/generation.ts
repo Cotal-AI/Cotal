@@ -4,10 +4,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { globalConfigDir } from "@cotal-ai/core";
+import { selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
 export function installedGenerationVersion(): string {
-  const pkg = JSON.parse(readFileSync(packageFile(), "utf8"));
+  const selected = selectExecutionProgram(dirname(packageFile()));
+  const pkg = JSON.parse(readFileSync(join(selected.root, "package.json"), "utf8"));
   if (typeof pkg.version !== "string" || !pkg.version) throw new Error("the daemon's CLI version is not identifiable");
   return pkg.version;
 }
@@ -79,9 +81,7 @@ export function watchDaemonGeneration(version: string, changed: (version: string
     try { if (updateActivationBlocked()) return; } catch { return; }
     let next: string;
     try {
-      const pkg = JSON.parse(readFileSync(file, "utf8"));
-      if (pkg.name !== "cotal-ai" || typeof pkg.version !== "string") return;
-      next = pkg.version;
+      next = installedGenerationVersion();
     } catch { return; }
     if (next === version) { candidate = undefined; retryAt = 0; delay = 5000; pending(undefined); return; }
     if (candidate !== next) {

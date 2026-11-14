@@ -86,9 +86,13 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
   return rows;
 }
 
+export function executionDescriptorPath(root: string): string {
+  return join(executionStore(root), `.active-${executionSha256(realpathSync(root))}.json`);
+}
+
 /** Select a verified program, or the installed first generation when no matching descriptor exists. */
 export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean } {
-  const installed = realpathSync(root), descriptorPath = join(installed, executionDescriptorName);
+  const installed = realpathSync(root), descriptorPath = executionDescriptorPath(installed);
   const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === dirname(fileURLToPath(import.meta.url))
     ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
   let value: unknown;

@@ -18,7 +18,7 @@ function inventory(root: string): { path: string; hash?: string; link?: string }
 
 /** Installed-mode acceptance is driven with normal packed candidates by the existing upgrade matrix. */
 export async function installedExecutionUpdate(input: { cli: string; installed: string; current: string; target: string; cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
-  const before = inventory(input.installed).filter(row => !["package.json", "dist/cotal.js", ".cotal-execution.json"].includes(row.path));
+  const before = inventory(input.installed).filter(row => !["dist/cotal.js"].includes(row.path));
   const records: { args: string[]; status: number | null; stdout: string; stderr: string }[] = [];
   const run = (args: string[]) => new Promise<typeof records[number]>((resolve, reject) => {
     const child = spawn(input.cli, args, { cwd: input.cwd, env: input.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -51,7 +51,7 @@ export async function installedExecutionUpdate(input: { cli: string; installed: 
   const data = JSON.parse(status.stdout);
   assert.equal(data.result.machine.version, input.target);
   assert.ok(data.result.machine.install.root.includes(".cotal-generations"));
-  assert.deepEqual(inventory(input.installed).filter(row => !["package.json", "dist/cotal.js", ".cotal-execution.json"].includes(row.path)), before);
+  assert.deepEqual(inventory(input.installed).filter(row => !["dist/cotal.js"].includes(row.path)), before);
   const output = process.env.COTAL_EXECUTION_ACCEPTANCE_OUTPUT;
   if (output) writeFileSync(output, JSON.stringify({ records, probes: probes.length, canonicalProductUnchanged: true }, null, 2));
   console.log(`installed execution update: ${input.current} to ${input.target}, ${probes.length} overlapping starts, canonical product unchanged`);
