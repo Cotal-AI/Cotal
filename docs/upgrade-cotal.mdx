@@ -125,9 +125,12 @@ It installs and restarts nothing, so it does not replace this reconciliation ste
 Before replacing the global binary, it checks the release's first-party package archives through
 npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
 The command prints progress before release checks, the recovery snapshot, package installation,
-connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector and extension installs still run serially under
-their existing locks. Every update reads and verifies its own package closure without reusing
-results from an earlier command.
+connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector reconciliation installs changed built-ins and first-party operator extensions into one
+private copy of the extension prefix. It checks every package before promoting the complete prefix.
+A failed install or validation leaves the live prefix unchanged. Interrupted promotion is recovered
+before the CLI reads extension declarations. Extension imports used for validation remain serial
+so each package's registrations can be attributed and checked independently.
+Every update reads and verifies its own package closure without reusing results from an earlier command.
 If the release is still reaching the registry, it refuses with retry guidance without starting
 the global install or connector reconciliation.
 If npm's install reports `ETARGET` for the selected latest `cotal-ai` version, the command
