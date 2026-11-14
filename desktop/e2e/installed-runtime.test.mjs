@@ -48,6 +48,21 @@ test('Windows Details helper pins the installed process and admits only the exac
   assert.doesNotMatch(helper, /mouse_event|SetCursorPos|Try again|AutomationId -ceq 'recover'|daemon_request|NODE_OPTIONS/);
 });
 
+test('installed refusal process census publishes only app descendants and explicit unknown on failure', () => {
+  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  const census = helper.slice(helper.indexOf('$processes = @('), helper.indexOf('$root = [System.Windows.Automation.AutomationElement]'));
+  assert.match(census, /Get-CimInstance Win32_Process -Property Name,ProcessId,ParentProcessId,CreationDate/);
+  assert.match(census, /\$parents = @\(\$AppPid\)/);
+  assert.match(census, /\$process.ParentProcessId -in \$parents/);
+  assert.match(census, /\$seen.Add\(\[int\]\$process.ProcessId\)/);
+  assert.match(census, /\$parents = \$next/);
+  for (const field of ['name = $process.Name', 'pid = $process.ProcessId', 'parentPid = $process.ParentProcessId', "creationTime = $process.CreationDate.ToUniversalTime().ToString('o')"]) assert.ok(census.includes(field), field);
+  assert.match(census, /Assert-WindowOwner/);
+  assert.match(census, /processTreeError/);
+  assert.match(helper, /processTree = \$null/);
+  assert.doesNotMatch(helper, /CommandLine|ExecutablePath|GetOwner|Environment|\.Arguments/);
+});
+
 test('installed entitlement assertion accepts codesign output forms and rejects a missing key', () => {
   const assertion = source.split('\n').find(line => line.includes('assert.match(entitlements,'));
   assert.ok(assertion);

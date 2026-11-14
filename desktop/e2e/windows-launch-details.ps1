@@ -6,7 +6,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$report = [ordered]@{ ok = $false; pid = $AppPid; birth = $null; hwnd = $null; before = @(); after = @(); invokedDetails = $false; refusal = $null }
+$report = [ordered]@{ ok = $false; pid = $AppPid; birth = $null; hwnd = $null; processTree = $null; before = @(); after = @(); invokedDetails = $false; refusal = $null }
 try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
@@ -33,6 +33,25 @@ public static class LaunchDetailsWindow {
         if ($windowPid -ne $AppPid -or ![LaunchDetailsWindow]::IsWindowVisible($hwnd)) { throw 'Installed window is no longer visible and owned.' }
     }
     Assert-WindowOwner
+    try {
+        $processes = @(Get-CimInstance Win32_Process -Property Name,ProcessId,ParentProcessId,CreationDate)
+        $descendants = [System.Collections.Generic.List[object]]::new()
+        $parents = @($AppPid)
+        $seen = [System.Collections.Generic.HashSet[int]]::new()
+        $null = $seen.Add($AppPid)
+        while ($parents.Count -gt 0) {
+            $next = @()
+            foreach ($process in $processes) {
+                if ($process.ParentProcessId -in $parents -and $seen.Add([int]$process.ProcessId)) {
+                    $descendants.Add([ordered]@{ name = $process.Name; pid = $process.ProcessId; parentPid = $process.ParentProcessId; creationTime = $process.CreationDate.ToUniversalTime().ToString('o') })
+                    $next += [int]$process.ProcessId
+                }
+            }
+            $parents = $next
+        }
+        Assert-WindowOwner
+        $report.processTree = @($descendants.ToArray())
+    } catch { $report['processTreeError'] = $_.Exception.Message }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
     function Nodes($parent) {
         $parent.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
