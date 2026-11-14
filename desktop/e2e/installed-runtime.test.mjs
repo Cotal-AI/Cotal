@@ -44,7 +44,7 @@ test('Windows failure block retains failed native Details and never replaces the
 
 test('Windows Details helper pins the installed process and admits only the exact disclosure action', () => {
   const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
-  for (const marker of ['$null = $owner.Handle', '$owner.Path, $expected', '$report.birth', 'GetWindowThreadProcessId($hwnd', '$windowPid -ne $AppPid', 'IsWindowVisible($hwnd)', "AutomationId -ceq 'details'", "AutomationId -ceq 'refusal-detail'", "$_.Current.Name -ceq 'Details'", '$buttons.Count -ne 1', 'InvokePattern', '$report.before', '$report.after', '$report.refusal']) assert.ok(helper.includes(marker), marker);
+  for (const marker of ['$null = $owner.Handle', '$report.imagePaths.observedRaw = $owner.Path', '$report.birth', 'GetWindowThreadProcessId($hwnd', '$windowPid -ne $AppPid', 'IsWindowVisible($hwnd)', "AutomationId -ceq 'details'", "AutomationId -ceq 'refusal-detail'", "$_.Current.Name -ceq 'Details'", '$buttons.Count -ne 1', 'InvokePattern', '$report.before', '$report.after', '$report.refusal']) assert.ok(helper.includes(marker), marker);
   assert.equal((helper.match(/\$invoke.Invoke\(\)/g) ?? []).length, 1);
   assert.doesNotMatch(helper, /mouse_event|SetCursorPos|Try again|AutomationId -ceq 'recover'|daemon_request|NODE_OPTIONS/);
 });
@@ -52,6 +52,7 @@ test('Windows Details helper pins the installed process and admits only the exac
 test('native Windows ownership accepts short and long names of one file and rejects another file', { skip: process.platform !== 'win32' }, () => {
   const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
   const code = helper.match(/Add-Type @'\r?\n([\s\S]*?)\r?\n'@/)[1];
+  const admission = helper.slice(helper.indexOf('    $report.imagePaths.observedRaw ='), helper.indexOf('    $hwnd = $owner.MainWindowHandle'));
   const script = `
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -77,10 +78,24 @@ try {
   if ($length -eq 0 -or $length -ge $buffer.Capacity) { throw 'Native short path unavailable.' }
   $short = $buffer.ToString()
   if ($short -ceq $first) { throw 'Test did not produce a distinct short spelling.' }
-  if (![LaunchDetailsWindow]::SameFile($short, $first)) { throw 'Same file short/long identity refused.' }
-  if ([LaunchDetailsWindow]::SameFile($short, $second)) { throw 'Different files admitted.' }
+  function Check-Admission($expected, $observed) {
+    $owner = [pscustomobject]@{ Path = $observed }
+    $report = [ordered]@{ imagePaths = [ordered]@{ expectedRaw = $expected; observedRaw = $null; expectedNormalized = $null; observedNormalized = $null } }
+    $accepted = $false
+    try {
+${admission}
+      $accepted = $true
+    } catch { }
+    [pscustomobject]@{ accepted = $accepted; paths = $report.imagePaths }
+  }
+  $same = Check-Admission $short $first
+  if (!$same.accepted) { throw 'Same file short/long identity refused.' }
+  if ($same.paths.expectedRaw -cne $short -or $same.paths.observedRaw -cne $first -or $same.paths.expectedNormalized -cne $same.paths.observedNormalized) { throw 'Raw/normalized image path receipts lost.' }
+  $different = Check-Admission $short $second
+  if ($different.accepted) { throw 'Different files admitted.' }
+  if (!$different.paths.expectedNormalized -or !$different.paths.observedNormalized) { throw 'Refusal lost normalized image paths.' }
   $missingRefused = $false
-  try { $null = [LaunchDetailsWindow]::SameFile($first, (Join-Path $root 'missing.exe')) } catch { $missingRefused = $true }
+  try { $null = [LaunchDetailsWindow]::LongPath((Join-Path $root 'missing.exe')) } catch { $missingRefused = $true }
   if (!$missingRefused) { throw 'Missing file did not fail closed.' }
   Write-Output 'same-short-long PASS; different-file REFUSED; missing-file REFUSED'
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }
@@ -92,8 +107,11 @@ try {
 test('installed launch ownership resolves both executable spellings through the native long-path API', () => {
   const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
   assert.match(helper, /GetLongPathNameW/);
-  assert.match(helper, /\[LaunchDetailsWindow\]::SameFile\(\$owner.Path, \$expected\)/);
-  assert.match(helper, /LongPath\(left\), LongPath\(right\)/);
+  assert.match(helper, /expectedRaw = \$Binary; observedRaw = \$null; expectedNormalized = \$null; observedNormalized = \$null/);
+  assert.match(helper, /\$report.imagePaths.observedRaw = \$owner.Path/);
+  assert.match(helper, /expectedNormalized = \[LaunchDetailsWindow\]::LongPath\(\$expected\)/);
+  assert.match(helper, /observedNormalized = \[LaunchDetailsWindow\]::LongPath\(\$report.imagePaths.observedRaw\)/);
+  assert.match(helper, /Equals\(\$report.imagePaths.observedNormalized, \$report.imagePaths.expectedNormalized/);
   assert.match(helper, /if \(length == 0\) throw/);
   assert.match(helper, /if \(length >= buffer.Capacity\) throw/);
   assert.doesNotMatch(helper, /EndsWith|GetFileName|\.Path, \$expected, \[StringComparison\]/);

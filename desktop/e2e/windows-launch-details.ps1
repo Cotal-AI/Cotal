@@ -6,7 +6,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$report = [ordered]@{ ok = $false; pid = $AppPid; birth = $null; hwnd = $null; processTree = $null; before = @(); after = @(); invokedDetails = $false; refusal = $null }
+$report = [ordered]@{ ok = $false; pid = $AppPid; birth = $null; hwnd = $null; imagePaths = [ordered]@{
+    expectedRaw = $Binary; observedRaw = $null; expectedNormalized = $null; observedNormalized = $null
+}; processTree = $null; before = @(); after = @(); invokedDetails = $false; refusal = $null }
 try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
@@ -20,15 +22,12 @@ public static class LaunchDetailsWindow {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, ExactSpelling=true)]
     static extern uint GetLongPathNameW(string path, StringBuilder result, uint capacity);
-    static string LongPath(string path) {
+    public static string LongPath(string path) {
         var buffer = new StringBuilder(32768);
         uint length = GetLongPathNameW(path, buffer, (uint)buffer.Capacity);
         if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resolve installed executable long path.");
         if (length >= buffer.Capacity) throw new InvalidOperationException("Installed executable long path exceeds diagnostic buffer.");
         return buffer.ToString();
-    }
-    public static bool SameFile(string left, string right) {
-        return string.Equals(LongPath(left), LongPath(right), StringComparison.OrdinalIgnoreCase);
     }
 }
 '@
@@ -36,7 +35,10 @@ public static class LaunchDetailsWindow {
     $owner = Get-Process -Id $AppPid
     $null = $owner.Handle
     $report.birth = $owner.StartTime.ToUniversalTime().ToString('o')
-    if (![LaunchDetailsWindow]::SameFile($owner.Path, $expected)) { throw 'Launch PID does not own the installed binary.' }
+    $report.imagePaths.observedRaw = $owner.Path
+    $report.imagePaths.expectedNormalized = [LaunchDetailsWindow]::LongPath($expected)
+    $report.imagePaths.observedNormalized = [LaunchDetailsWindow]::LongPath($report.imagePaths.observedRaw)
+    if (![string]::Equals($report.imagePaths.observedNormalized, $report.imagePaths.expectedNormalized, [StringComparison]::OrdinalIgnoreCase)) { throw 'Launch PID does not own the installed binary.' }
     $hwnd = $owner.MainWindowHandle
     $report.hwnd = $hwnd.ToInt64()
     function Assert-WindowOwner {
