@@ -58,8 +58,9 @@ export function updateNotice(status: UpdateStatus | undefined, appVersion: strin
   return status?.channel === "desktop" && status.notify !== false && newerVersion(status.latest, appVersion) && status.latest !== dismissed ? status.latest : undefined;
 }
 
-export function updatePolicy(channel: UpdateStatus["channel"], platform: string): { label: string; description: string } {
-  if (channel === "desktop") return { label: "Install updates automatically", description: "Cotal downloads verified desktop updates when automatic updates are on. Installation waits until it can run safely." };
+export function updatePolicy(channel: UpdateStatus["channel"], platform: string, appConfigured = false): { label: string; description: string } {
+  if (appConfigured) return { label: "Install updates automatically", description: "Cotal downloads verified desktop updates when automatic updates are on. Installation waits until it can run safely." };
+  if (channel === "desktop") return { label: "Notify me about updates", description: "Cotal tells you here when a new version is out. Installing it updates the app and its background service." };
   if (channel === "npm" && platform === "linux") return { label: "Install updates automatically", description: "The background service updates itself for Linux npm installs. This does not replace a desktop app bundle." };
   return { label: "Notify me about updates", description: "Automatic installation is unavailable for this installation. Install a new version yourself." };
 }

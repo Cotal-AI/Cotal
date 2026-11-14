@@ -78,7 +78,7 @@ let ready = false;
 let appVersion: string | undefined;
 let settingsOpen = false;
 let updateStatus: UpdateStatus | undefined;
-let appUpdate: AppUpdate = { phase: "idle" };
+let appUpdate: AppUpdate | undefined;
 let autoUpdates: boolean | undefined;
 let nextAppCheck = 0;
 let appCheckRunning = false;
@@ -87,13 +87,14 @@ async function readAutoUpdates(): Promise<void> {
   if (typeof policy.auto !== "boolean") throw new Error("The automatic update preference is unavailable.");
   autoUpdates = policy.auto;
 }
-async function checkAppUpdates(): Promise<void> {
-  if (appCheckRunning || Date.now() < nextAppCheck) return;
+function appUpdaterConfigured(): boolean { return appUpdate !== undefined && appUpdate.phase !== "unconfigured"; }
+async function checkAppUpdates(manual = false): Promise<void> {
+  if (appCheckRunning || (!manual && Date.now() < nextAppCheck)) return;
   appCheckRunning = true;
   nextAppCheck = Date.now() + 86_400_000;
   try {
-    await readAutoUpdates();
-    appUpdate = await invoke<AppUpdate>("app_update_check");
+    appUpdate = await invoke<AppUpdate>("app_update_check", { manual });
+    if (appUpdaterConfigured()) await readAutoUpdates();
     renderSettings();
     if (autoUpdates && appUpdate.phase === "available") {
       await readAutoUpdates();
@@ -101,7 +102,7 @@ async function checkAppUpdates(): Promise<void> {
     }
   } catch (error) {
     text("settings-message", error instanceof Error ? error.message : String(error));
-    if (appUpdate.phase === "idle") appUpdate = { phase: "failed", reason: error instanceof Error ? error.message : String(error) };
+    if (manual) throw error;
   } finally { appCheckRunning = false; renderSettings(); }
 }
 let daemonVersion = "Unavailable";
@@ -120,7 +121,7 @@ async function loadRelease(version: string): Promise<void> {
   finally { releaseLoading = undefined; renderSettings(); }
 }
 function offeredVersion(): string | undefined {
-  return appUpdate && appUpdate.phase !== "unconfigured" ? appUpdate.version : updateStatus?.latest;
+  return appUpdaterConfigured() ? appUpdate?.version : updateStatus?.latest;
 }
 async function openInstaller(): Promise<void> {
   const version = offeredVersion();
@@ -149,22 +150,23 @@ function renderSettings(): void {
   el("settings-panel").hidden = !settingsOpen;
   document.querySelector<HTMLElement>(".connection-card")!.hidden = settingsOpen;
   document.querySelector(".app")!.classList.toggle("settings-open", settingsOpen);
-  const latest = appVersion ? appUpdate && appUpdate.phase !== "unconfigured" ? appUpdateNotice(appUpdate, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
+  const latest = appVersion ? appUpdaterConfigured() ? appUpdateNotice(appUpdate!, dismissedUpdate) : updateNotice(updateStatus, appVersion, dismissedUpdate) : undefined;
   const nextTray = configured ? latest : undefined;
   if (isTauri() && nextTray !== trayUpdate) { trayUpdate = nextTray; void invoke("set_update_notice", { version: nextTray ?? null }).catch(error => notice(String(error), true)); }
   el("update-banner").hidden = !configured || settingsOpen || !latest;
   text("update-banner-copy", latest ? `Cotal ${latest} is available.` : "");
   text("settings-computer", savedComputerName);
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
-  if (appUpdate) renderAppUpdate(el("settings-update-summary"), appUpdate, autoUpdates !== false);
-  else text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
-  const checkedAt = appUpdate.phase !== "unconfigured" ? appUpdate.checkedAt === undefined ? undefined : new Date(appUpdate.checkedAt).toISOString() : updateStatus?.lastCheck;
+  if (appUpdaterConfigured()) renderAppUpdate(el("settings-update-summary"), appUpdate!, autoUpdates !== false);
+  else { text("settings-update-summary", updateSummary(updateStatus, appVersion ?? "")); delete el("settings-update-summary").dataset.updateState; }
+  const checkedAt = appUpdaterConfigured() ? appUpdate?.checkedAt === undefined ? undefined : new Date(appUpdate.checkedAt).toISOString() : updateStatus?.lastCheck;
   text("settings-last-check", installerMessage ?? lastChecked(checkedAt));
   text("settings-spaces", disconnectSpaces(accountProvider()).map(space => shownSpaceLabel(accountSpaces.get(space)?.label, space)).join(", ") || "No observed spaces for this provider");
-  const policy = updatePolicy(updateStatus?.channel, appPlatform);
-  text("update-preference-label", "Install updates automatically"); text("update-policy", appUpdate?.phase === "unconfigured" ? "Shared with the command line. This build needs the installer." : policy.description);
-  el<HTMLInputElement>("update-preference").checked = autoUpdates !== false;
-  el<HTMLInputElement>("update-preference").disabled = autoUpdates === undefined || busy;
+  const policy = updatePolicy(updateStatus?.channel, appPlatform, appUpdaterConfigured());
+  text("update-preference-label", policy.label);
+  text("update-policy", appUpdate?.phase === "unconfigured" ? updateStatus?.channel === "npm" ? `${policy.description} This build updates through the installer.` : "Cotal tells you here when a new version is out. This build updates through the installer." : policy.description);
+  el<HTMLInputElement>("update-preference").checked = appUpdaterConfigured() ? autoUpdates !== false : policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
+  el<HTMLInputElement>("update-preference").disabled = busy || (appUpdaterConfigured() && autoUpdates === undefined);
   const offered = offeredVersion();
   const available = appVersion && newerVersion(offered, appVersion);
   if (available && offered && releaseVersion !== offered && releaseLoading !== offered && releaseFailed !== offered) void loadRelease(offered);
@@ -1003,7 +1005,7 @@ function openSettings(): void {
     listOpened = true; showStage("finished");
     settingsOpen = true; renderSettings(); el("settings-title").focus();
   }
-  void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
+  if (appUpdaterConfigured()) void readAutoUpdates().then(renderSettings).catch(error => text("settings-message", error instanceof Error ? error.message : String(error)));
   void refresh();
 }
 async function settingsAction(body: Request): Promise<void> {
@@ -1013,21 +1015,25 @@ async function settingsAction(body: Request): Promise<void> {
   el<HTMLButtonElement>("check-updates").disabled = true;
   el<HTMLInputElement>("update-preference").disabled = true;
   try {
-    const result = await request(body);
-    if (body.op === "update-policy") {
-      if (typeof result.auto !== "boolean") throw new Error("The automatic update preference is unavailable.");
-      autoUpdates = result.auto;
-    } else updateStatus = result.update as UpdateStatus | undefined;
-    if (body.op === "update-check") await checkAppUpdates();
-    announce(body.op === "update-check" ? "Update check complete. Cached results may be used." : "Update preference saved.");
+    if (body.op === "update-check" && appUpdaterConfigured()) await checkAppUpdates(true);
+    else {
+      const result = await request(body);
+      if (body.op === "update-policy") {
+        if (typeof result.auto !== "boolean") throw new Error("The automatic update preference is unavailable.");
+        autoUpdates = result.auto;
+      } else updateStatus = result.update as UpdateStatus | undefined;
+      if (body.op === "update-check") await checkAppUpdates(true);
+    }
+    announce(body.op === "update-check" ? appUpdaterConfigured() ? "Update check complete." : "Update check complete. Cached results may be used." : "Update preference saved.");
     text("settings-message", "");
   } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
-  finally { busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false; el<HTMLInputElement>("update-preference").disabled = autoUpdates === undefined; }
+  finally { busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false; }
 }
 el("check-updates").addEventListener("click", () => void settingsAction({ op: "update-check" }));
 el("update-preference").addEventListener("change", () => {
   const enabled = el<HTMLInputElement>("update-preference").checked;
-  void settingsAction({ op: "update-policy", auto: enabled });
+  const policy = updatePolicy(updateStatus?.channel, appPlatform, appUpdaterConfigured());
+  void settingsAction(appUpdaterConfigured() ? { op: "update-policy", auto: enabled } : { op: "update-settings", ...(policy.label === "Install updates automatically" ? { auto: enabled } : { notify: enabled }) });
 });
 el("update-download").addEventListener("click", () => void openInstaller());
 el("settings-download").addEventListener("click", () => void openInstaller());

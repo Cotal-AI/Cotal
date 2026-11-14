@@ -137,10 +137,10 @@ mod configured {
         Ok(view)
     }
 
-    pub async fn check(app: AppHandle, state: &Updates) -> Result<UpdateView, String> {
+    pub async fn check(app: AppHandle, state: &Updates, manual: bool) -> Result<UpdateView, String> {
         let _guard = state.gate.try_lock().map_err(|_| "A desktop update check or download is already running.")?;
         let previous = with_pending(&state, |pending| pending.view.clone())?;
-        if previous.checked_at.is_some_and(|checked| now().saturating_sub(checked) < DAY) { return Ok(previous); }
+        if !manual && previous.checked_at.is_some_and(|checked| now().saturating_sub(checked) < DAY) { return Ok(previous); }
         with_pending(&state, |pending| { pending.view.phase = "checking"; pending.view.reason = None; })?;
         publish(&app, &state)?;
         let result = match app.updater_builder().endpoints(vec![ENDPOINT.parse().map_err(|_| "Invalid compiled updater endpoint.")?]) {
@@ -206,8 +206,8 @@ pub use configured::load;
 
 #[cfg(all(cotal_updater, not(target_os = "linux")))]
 #[tauri::command]
-pub async fn app_update_check(app: tauri::AppHandle, state: tauri::State<'_, configured::Updates>) -> Result<UpdateView, String> {
-    configured::check(app, &state).await
+pub async fn app_update_check(app: tauri::AppHandle, state: tauri::State<'_, configured::Updates>, manual: bool) -> Result<UpdateView, String> {
+    configured::check(app, &state, manual).await
 }
 
 #[cfg(all(cotal_updater, not(target_os = "linux")))]

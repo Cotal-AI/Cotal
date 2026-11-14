@@ -14,7 +14,12 @@ export function nativeStub(scenario) {
     transformCallback(fn) { callbacks.set(++next, fn); return next; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(command, args) {
-      if (command === "app_update_check") return state.appUpdate ?? { phase: "unconfigured" };
+      if (command === "app_update_check") {
+        state.appChecks = [...(state.appChecks ?? []), { manual: args?.manual === true }];
+        if (state.nativeCheckError) throw new Error("Native check unavailable");
+        if (state.nativeCheckPending) await new Promise(() => {});
+        return state.appUpdate ?? { phase: "unconfigured" };
+      }
       if (command === "app_update_download") { state.appDownloads = (state.appDownloads ?? 0) + 1; return state.appUpdate = { phase: "ready", version: state.appUpdate.version }; }
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
@@ -29,7 +34,7 @@ export function nativeStub(scenario) {
         if (state.loading) await new Promise(() => {});
         return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
-      if (request.op === "update-policy") { if (request.auto !== undefined) state.autoUpdates = request.auto; return ok({ auto: state.autoUpdates !== false }); }
+      if (request.op === "update-policy") { if (state.policyError) throw new Error("Preference unavailable"); if (request.auto !== undefined) state.autoUpdates = request.auto; return ok({ auto: state.autoUpdates !== false }); }
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
@@ -110,14 +115,41 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  ...["available", "current", "failed", "notify-off", "pending", "native-error", "policy-error"].map(mode => ({
+    name: `installer-only-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, nativeCheckPending: mode === "pending", nativeCheckError: mode === "native-error", policyError: mode === "policy-error",
+      update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}), ...(mode === "failed" ? { latest: undefined, lastResult: "check failed" } : {}), notify: mode !== "notify-off" } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#update-preference-label").textContent(), "Notify me about updates");
+      assert.equal(await page.locator("#update-preference").isChecked(), mode !== "notify-off");
+      assert.equal(await page.locator("#update-preference").isEnabled(), true);
+      assert.equal(await page.locator("#settings-update-summary").textContent(), mode === "current" ? "You are up to date." : mode === "failed" ? "The update check failed. Try again." : "Version 0.161.0 is available.");
+      if (!["pending", "native-error", "policy-error"].includes(mode)) assert.match(await page.locator("#update-policy").textContent(), /This build updates through the installer/);
+      if (mode === "notify-off") {
+        await page.check("#update-preference");
+        await page.waitForFunction(() => window.__renderState.update.notify === true);
+        assert.equal(await page.evaluate(() => window.__renderState.autoUpdates), undefined, "notify does not write shared auto");
+      }
+      await page.click("#open-settings");
+      assert.equal(await page.locator("#update-banner").isVisible(), !["current", "failed"].includes(mode));
+    },
+  })),
+  ...["current", "failed"].map(phase => ({
+    name: `app-manual-check-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, autoUpdates: false, appUpdate: { phase, checkedAt: Date.now(), reason: "Network unavailable" }, update },
+    act: async page => { await page.click("#open-settings"); await page.click("#check-updates"); },
+    expect: async page => { assert.deepEqual(await page.evaluate(() => window.__renderState.appChecks), [{ manual: false }, { manual: true }]); },
+  })),
+
   ...["checking", "current", "downloading", "ready", "preparing", "unconfigured", "failed", "off"].map(phase => ({
     name: `app-updater-${phase}`,
     state: { installed: true, signedIn: true, connected: true, autoUpdates: phase !== "off", update,
       appUpdate: { phase: phase === "off" ? "available" : phase, ...(phase === "preparing" || phase === "unconfigured" || phase === "current" || phase === "checking" ? {} : { version: "0.161.0" }), downloaded: 25, total: 100, ...(phase === "failed" ? { reason: "Signature verification failed" } : {}) } },
     act: page => page.click("#open-settings"),
     expect: async page => {
-      assert.equal(await page.locator("#settings-update-summary").getAttribute("data-update-state"), phase === "off" ? "available" : phase);
-      assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically");
+      assert.equal(await page.locator("#settings-update-summary").getAttribute("data-update-state"), phase === "unconfigured" ? null : phase === "off" ? "available" : phase);
+      assert.equal(await page.locator("#update-preference-label").textContent(), phase === "unconfigured" ? "Notify me about updates" : "Install updates automatically");
       assert.equal(await page.locator("#update-preference").isChecked(), phase !== "off");
       if (phase === "off") { assert.match(await page.locator("#settings-update-summary").textContent(), /Automatic updates are off/); assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0); }
       if (phase === "preparing") {
@@ -125,7 +157,10 @@ export const scenarios = [
         assert.equal(await page.evaluate(() => window.__renderState.trayUpdate ?? null), null);
         assert.equal(await page.locator("#settings-download-row").isVisible(), false);
       }
-      if (phase === "unconfigured") assert.match(await page.locator("#settings-update-summary").textContent(), /cannot update itself/);
+      if (phase === "unconfigured") {
+        assert.equal(await page.locator("#settings-update-summary").textContent(), "Version 0.161.0 is available.");
+        assert.match(await page.locator("#update-policy").textContent(), /This build updates through the installer/);
+      }
       if (phase === "failed") assert.match(await page.locator("#settings-update-summary").textContent(), /Signature verification failed/);
     },
   })),
@@ -511,7 +546,7 @@ export const scenarios = [
   { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or menu bar. Quit app leaves the background service running.")), expect: async page => { assert.match(await page.locator("#notice").textContent(), /Cotal stays in your system tray/); } },
   { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
   { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
-  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "This build cannot update itself. Use the installer to update Cotal."); } },
+  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
 ];
 
