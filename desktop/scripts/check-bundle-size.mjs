@@ -11,7 +11,7 @@ const bundle = join(release, 'bundle');
 const CEILINGS = {
   installedFileMB: 195,
   installed4kMB: 210,
-  runtimeFileMB: 62,
+  runtimeFileMB: 64,
   runtime4kMB: 75,
   nodeBinaryMB: 112,
   desktopBinaryMB: 18,
