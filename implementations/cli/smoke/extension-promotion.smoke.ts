@@ -15,8 +15,9 @@ for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   const live = join(config, "extensions"), stage = join(config, ".extensions.stage-proof.ready"), old = join(config, ".extensions.rollback-proof");
   mkdirSync(live); writeFileSync(join(live, "whole"), "old");
   mkdirSync(stage); writeFileSync(join(stage, "whole"), "new");
-  const stat = lstatSync(stage);
+  const stat = lstatSync(stage), oldStat = lstatSync(live);
   writeFileSync(join(config, ".extensions-promotion.json"), JSON.stringify({ v: 1, root: live, stage, old,
+    oldIdentity: { dev: String(oldStat.dev), ino: String(oldStat.ino), birth: oldStat.birthtimeMs },
     stageIdentity: { dev: String(stat.dev), ino: String(stat.ino), birth: stat.birthtimeMs } }), { mode: 0o600 });
   if (state !== "prepared") renameSync(live, old);
   if (state === "new-promoted") renameSync(stage, live);

@@ -11,6 +11,7 @@ interface Promotion {
   readonly stage: string;
   readonly old: string;
   readonly stageIdentity: { readonly dev: string; readonly ino: string; readonly birth: number };
+  readonly oldIdentity?: { readonly dev: string; readonly ino: string; readonly birth: number };
 }
 const journalPath = (): string => join(globalConfigDir(), ".extensions-promotion.json");
 function save(record: Promotion): void {
@@ -35,7 +36,7 @@ function checkedRecord(): Promotion | undefined {
 /** Complete a journaled directory promotion while holding the ordinary closure and prefix barriers. */
 export function recoverExtensionPromotion(): void {
   if (!checkedRecord()) return;
-  const releaseClosure = claimUpdateClosureAccess();
+  const releaseClosure = claimUpdateClosureAccess(true);
   try {
     const release = claimExtensionMutation();
     try { const record = checkedRecord(); if (record) finish(record); }
@@ -51,6 +52,8 @@ function finish(record: Promotion): void {
   for (const path of [record.root, record.stage, record.old]) if (existsSync(path) && (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink())) throw new Error("extension promotion directory is not a real directory");
   const verified = stage ? record.stage : root ? record.root : undefined;
   if (!verified || JSON.stringify(identity(verified)) !== JSON.stringify(record.stageIdentity)) throw new Error("extension promotion no longer names its verified prefix");
+  const previous = old ? record.old : stage && root ? record.root : undefined;
+  if (previous && (!record.oldIdentity || JSON.stringify(identity(previous)) !== JSON.stringify(record.oldIdentity))) throw new Error("extension promotion no longer names its previous prefix");
   if (stage && root && !old) renameSync(record.root, record.old);
   else if (stage && root) throw new Error("ambiguous extension promotion directories");
   else if (!root && !stage) throw new Error("extension promotion has no complete prefix");
@@ -90,11 +93,13 @@ export function stageExtensions(): ExtensionStage {
       // still invisible to readers. Only the final pair of whole-directory renames touches live.
       const ready = `${stage}.ready`;
       renameSync(prefix, ready);
-      const record: Promotion = { v: 1, root, stage: ready, old, stageIdentity: identity(ready) };
+      if (existsSync(old)) throw new Error("extension rollback destination already exists");
+      const record: Promotion = { v: 1, root, stage: ready, old, stageIdentity: identity(ready), ...(existsSync(root) ? { oldIdentity: identity(root) } : {}) };
       save(record);
       promoted = true;
       finish(record);
-      rmSync(stage, { recursive: true, force: true });
+      try { rmSync(stage, { recursive: true, force: true }); }
+      catch (error) { console.error(`! could not remove completed extension stage ${stage} (${error instanceof Error ? error.message : String(error)}); remove it by hand`); }
     },
     retain() { promoted = true; },
     discard() { if (!promoted) rmSync(stage, { recursive: true, force: true }); },
