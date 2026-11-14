@@ -26,9 +26,9 @@ import { createHash } from "node:crypto";
 import { lstatSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { basename, join, win32 } from "node:path";
-import { writeSecretFileCreateOnly } from "@cotal-ai/core";
-import { CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
-import { xmlText } from "./install-darwin.js";
+import { writeSecretFileCreateOnly } from "@cotal-ai/core/secret-fs";
+import { CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace/local-observation";
+import { xmlText } from "./install-xml.js";
 import type { NativePlan, NativeRun, NativeService, UnitReceipt } from "./install.js";
 
 /** A System32 tool, resolved from the Windows directory and never from `PATH`. */
