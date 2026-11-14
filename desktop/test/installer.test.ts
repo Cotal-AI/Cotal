@@ -37,7 +37,11 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(hooks, /SetEnvironmentVariable\(t "PSModulePath", p 0\)/);
   assert.match(task, /\$task\.Enabled = \$false/);
   assert.match(task, /GetInstances\(0\)\.Count/);
+  assert.ok(helper.indexOf('prepared = true;') < helper.indexOf("await request('managers-prepare-restart')"));
+  assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf('census(status.pid)'));
+  assert.ok(helper.indexOf('census(status.pid)') < helper.indexOf("await request('daemon-stop')"));
   assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));
+  assert.match(helper, /if \(prepared && !committed && socket\) await request\('managers-abort-restart'\)/);
   assert.ok(helper.indexOf("task('disable')") < helper.indexOf("await request('daemon-stop', true)"));
   assert.match(helper, /rmSync\(stateFile\);\n    outcome\(23/);
   assert.doesNotMatch(helper, /outcome\(0,.*'prepared'/);

@@ -75,7 +75,8 @@ See [Install Cotal](installation.mdx) for installer options and PATH checks.
 Run the newer Windows setup program over the existing desktop installation. Setup refuses
 before replacing application files while its service hosts an agent or another program uses
 its bundled runtime. Stop those agents or close the named program, then choose Retry.
-The service's hosted launch fence stays held until shutdown, so another hosted agent cannot
+The service checks its hosted agent count before setup checks for other programs using the
+installation. Its hosted launch fence stays held until shutdown, so another hosted agent cannot
 start between that check and the stop. Independently launched processes are only observed,
 not fenced against later launches.
 

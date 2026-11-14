@@ -69,6 +69,7 @@ function compare(before, after) {
 }
 let fixture, seat, locker, app;
 let serviceInstalled = false;
+let seatStopped = false;
 try {
   assert.equal(existsSync(root), false, 'Each proof cell requires a fresh runner');
   const sourceVersion = cell === 'early' ? '0.157.0' : '0.164.7';
@@ -151,6 +152,7 @@ try {
     const birth = await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${report.seat.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]);
     report.seat.birth = birth.stdout.trim();
     const status = JSON.parse((await daemon('status')).stdout).result;
+    report.activeAgents = status.agents.filter(row => row.state === 'read').reduce((sum, row) => sum + row.agents.filter(agent => agent.state === 'running').length, 0);
     check('Real hosted Manager inventory contains the live fixture', status.agents.some(row => row.state === 'read' && row.agents.some(agent => agent.name === 'upgrade_fixture' && agent.state === 'running')));
   }
   const before = cell === 'fresh' ? [] : inventory();
@@ -177,9 +179,24 @@ try {
     if (seat) {
       const birth = await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${report.seat.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]);
       check('Same real fixture process survives refusal', birth.stdout.trim() === report.seat.birth);
-      check('Occupied refusal names agent count', diagnostic.code === 20 && diagnostic.activeAgents >= 1);
+      check('Occupied refusal names the real agent count and Retry remedy', result.code === 20 && diagnostic.code === 20 && diagnostic.activeAgents === report.activeAgents && diagnostic.message.includes('Stop them and choose Retry.'));
+      check('Occupied refusal cleanly releases its preparation fence', !diagnostic.message.includes('Recovery was not confirmed'));
+      for (const file of ['helper.log', 'result.json', 'message.txt']) {
+        const path = join(setupHome, file);
+        if (existsSync(path)) writeFileSync(join(output, `refusal-${file}`), readFileSync(path));
+      }
+      await seat.stop(report.manager.instanceId);
+      seatStopped = true;
+      report.retry = await run(candidate, ['/S'], 420_000);
+      check('Setup completes after the real seat stops and the user retries', report.retry.code === 0);
+      report.after = await ready('0.164.9');
+      check('Retry confirms the new running service', report.after.version === '0.164.9');
     }
-    if (cell === 'locker') check('Refusal identifies the actual bundled Node locker', diagnostic.code === 21 && diagnostic.message.includes(`node.exe (${locker.pid})`) && diagnostic.message.includes('Close programs using this installation'));
+    if (cell === 'locker') {
+      check('Refusal identifies the actual bundled Node locker', diagnostic.code === 21 && diagnostic.message.includes(`node.exe (${locker.pid})`) && diagnostic.message.includes('Close programs using this installation'));
+      const status = await ready(sourceVersion);
+      check('Locker refusal releases the hosted launch fence', status.update.restartEvidence.prepared === false);
+    }
     if (cell === 'cannot-start') check('Missing helper produces persistent refusal instead of success', diagnostic.code === 21 && diagnostic.message.includes('helper did not complete'));
     if (cell === 'early') check('Early shipped service lacks graceful stop and reports supported remedy', diagnostic.message.includes('uninstall --yes'));
   } else {
@@ -206,7 +223,7 @@ finally {
   for (const [path, name] of [[seat?.seatEnvironmentNames, 'seat-environment-names.txt'], [seat?.managerEnvironmentNames, 'manager-environment-names.json']]) {
     if (path && existsSync(path)) writeFileSync(join(output, name), readFileSync(path));
   }
-  if (seat) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
+  if (seat && !seatStopped) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
   if (app?.exitCode === null) { const ended = new Promise(resolve => app.once('exit', resolve)); app.kill(); await ended; }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
   if (serviceInstalled) { const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes'); report.cleanup = result; if (result.code !== 0) process.exitCode = 1; }
