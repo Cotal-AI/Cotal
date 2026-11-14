@@ -73,11 +73,20 @@ try {
   const sourceVersion = cell === 'early' ? '0.157.0' : '0.164.7';
   const previous = join(process.env.RUNNER_TEMP, `Cotal_${sourceVersion}_x64-setup.exe`);
   assert.ok(existsSync(previous), 'Workflow must download and verify published source installer');
-  await required(previous, ['/S']);
-  check('Published files are installed', JSON.parse(readFileSync(join(runtime, 'package.json'))).version === sourceVersion);
-  if (cell !== 'absent') {
+  if (cell !== 'fresh') await required(previous, ['/S']);
+  if (cell !== 'fresh') check('Published files are installed', JSON.parse(readFileSync(join(runtime, 'package.json'))).version === sourceVersion);
+  if (!['absent', 'fresh', 'foreign'].includes(cell)) {
     await required(node, [cli, 'daemon', 'install', '--json']); serviceInstalled = true;
     report.before = await ready(sourceVersion);
+  }
+  if (cell === 'foreign') {
+    const foreignCli = join(process.env.RUNNER_TEMP, 'cli-service', 'node_modules', 'cotal-ai', 'dist', 'cotal.js');
+    await required(process.execPath, [foreignCli, 'daemon', 'install', '--json']);
+    report.foreignCli = foreignCli;
+    serviceInstalled = true;
+    const status = await required(process.execPath, [foreignCli, 'daemon', 'status', '--json']);
+    report.before = JSON.parse(status.stdout).result;
+    report.foreignReceipt = readFileSync(join(root, 'daemon', 'service-unit.json'), 'utf8');
   }
   if (cell === 'stopped') {
     const helper = join(repo, 'desktop/src-tauri/installers/service-update.mjs');
@@ -136,7 +145,7 @@ try {
     const status = JSON.parse((await daemon('status')).stdout).result;
     check('Real hosted Manager inventory contains the live fixture', status.agents.some(row => row.state === 'read' && row.agents.some(agent => agent.name === 'upgrade_fixture' && agent.state === 'running')));
   }
-  const before = inventory();
+  const before = cell === 'fresh' ? [] : inventory();
   const start = Date.now();
   let result;
   if (cell === 'interactive' || cell === 'occupied-ui') {
@@ -153,7 +162,7 @@ try {
     const ui = JSON.parse(readFileSync(join(output, 'ui.json'), 'utf8').replace(/^\uFEFF/, ''));
     check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names.some(name => /uninstall before installing/i.test(name))));
   }
-  if (['occupied', 'occupied-ui', 'locker', 'early'].includes(cell)) {
+  if (['occupied', 'occupied-ui', 'locker', 'early', 'cannot-start'].includes(cell)) {
     check('Setup refuses before replacing files', result.code !== 0);
     compare(before, inventory());
     check('Service remains old and running', (await ready(sourceVersion)).pid === report.before.pid);
@@ -166,7 +175,12 @@ try {
   } else {
     check('Setup confirms success', result.code === 0);
     check('New files are installed', JSON.parse(readFileSync(join(runtime, 'package.json'))).version === '0.164.9');
-    if (cell === 'absent') check('No service was installed', !existsSync(join(root, 'daemon/service-unit.json')));
+    if (cell === 'foreign') {
+      const status = JSON.parse((await required(process.execPath, [report.foreignCli, 'daemon', 'status', '--json'])).stdout).result;
+      check('Foreign CLI service keeps its old PID and version', status.pid === report.before.pid && status.version === report.before.version);
+      check('Foreign service receipt is unchanged', readFileSync(join(root, 'daemon', 'service-unit.json'), 'utf8') === report.foreignReceipt);
+      check('Setup names untouched foreign service', diagnostic.message.includes('another installation'));
+    } else if (cell === 'absent' || cell === 'fresh') check('No service was installed', !existsSync(join(root, 'daemon/service-unit.json')));
     else if (cell === 'stopped') {
       const stopped = await daemon('status');
       check('Previously stopped service stays stopped', stopped.code !== 0 && JSON.parse(stopped.stdout).error.cause.code === 'NOT_RUNNING');
@@ -177,7 +191,7 @@ finally {
   if (seat) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
   if (app?.exitCode === null) { const ended = new Promise(resolve => app.once('exit', resolve)); app.kill(); await ended; }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
-  if (serviceInstalled) { const result = await daemon('uninstall', '--yes'); report.cleanup = result; if (result.code !== 0) process.exitCode = 1; }
+  if (serviceInstalled) { const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes'); report.cleanup = result; if (result.code !== 0) process.exitCode = 1; }
   await fixture?.close();
   save();
   console.log(JSON.stringify({ cell, failure: report.failure, checks: report.checks, output }, null, 2));

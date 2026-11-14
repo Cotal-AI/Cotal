@@ -38,7 +38,14 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.ok(roots < helper.indexOf('  let changed;', roots));
   assert.match(task, /\$state.targetVersion=\$env:COTAL_SETUP_VERSION/);
   assert.match(task, /foreign.*true/);
-  assert.match(hooks, /\$CotalCode = 23/);
+  assert.match(hooks, /\$CotalCode == "23"/);
+  assert.doesNotMatch(hooks, /\$CotalCode (?:<>|=) \d/);
+  assert.match(hooks, /\$CotalCode == "timeout"/);
+  assert.match(hooks, /\$CotalCode == "error"/);
+  assert.match(hooks, /Call CotalHelperExit/);
+  assert.match(hooks, /TIMEOUT=360000[^\n]*finish/);
+  assert.match(task, /'preparing','copying','ready'/);
+  assert.match(task, /An unreadable setup handover was repaired/);
   assert.match(hooks, /MB_ICONINFORMATION/);
   assert.match(hooks, /\$CotalFresh/);
   assert.match(helper, /'started-unconfirmed'/);
