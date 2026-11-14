@@ -157,6 +157,16 @@ or rollback guarantees. If migration is refused, the package has already been re
 reconciliation has not started. The parent may retry or restore its previous package. Keep the
 reported failure and inspect the installed version and daemon state before retrying.
 
+## Update a standalone stack
+
+For a standalone Manager started by `cotal up --detach`, an update that cannot preserve its seats
+prints a manual cold-update sequence when protected stack and process records prove its original
+root and launch settings. Run the printed down, update and up commands in order. They retain the
+recorded space, broker address, runtime and supported options. The listed seats end and are not
+restarted. The update command stops nothing itself. `--stop-agents` integrates stopping only for
+daemon-hosted Managers. If standalone ownership or restart settings cannot be proved, the command
+keeps its original-host refusal rather than guessing a shutdown command.
+
 ## Recover an interrupted update
 
 `cotal update --self` restores an interrupted update when its snapshot is a valid directory of
