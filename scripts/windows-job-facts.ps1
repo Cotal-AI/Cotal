@@ -15,7 +15,7 @@ $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true,$false)
 $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
 $null = [IO.Directory]::CreateDirectory($directory,$acl)
-$report = [ordered]@{ schema=1; cell='nativeWindows2022'; approvals=@('core03140248','owner7b963000'); pass=$false; directory=$directory; cases=@(); error=$null; limitations=@('Finite sampling cannot prove absence of sub-sample races','Main Node action inAnyJob only; helper immediate flags and separate direct-action control do not identify Node immediate job','No product acceptance claimed','Ambiguous live custody retained for disposable-host teardown') }
+$report = [ordered]@{ schema=1; cell='nativeWindows2022'; approvals=@('core57c8ff65','corrected-owner-contract'); pass=$false; directory=$directory; cases=@(); error=$null; limitations=@('Finite sampling cannot prove absence of sub-sample races','Main Node action inAnyJob only; helper immediate flags and separate direct-action control do not identify Node immediate job','No product acceptance claimed','Ambiguous live custody retained for disposable-host teardown') }
 function Save($name,$value) { $value | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath (Join-Path $directory $name) -Encoding UTF8 }
 function Wait-File($dir,$name) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -168,6 +168,13 @@ Move-Item -LiteralPath ($Output+'.tmp') -Destination $Output
             $observer = Start-Process -FilePath $helper -ArgumentList @('observe',(Quote $dir),$mode) -PassThru -RedirectStandardError (Join-Path $dir 'observer-error.log') -RedirectStandardOutput (Join-Path $dir 'observer.log')
             $null = $observer.Handle
             Wait-File $dir 'contender-ready.json'
+            $armed = Get-Content -Raw -LiteralPath (Join-Path $dir 'ready.json') | ConvertFrom-Json
+            $pinned = Get-Content -Raw -LiteralPath (Join-Path $dir 'contender-ready.json') | ConvertFrom-Json
+            $expected = @($armed.census | ForEach-Object { "$($_.pid):$($_.token)" } | Sort-Object)
+            $actual = @($pinned.census | ForEach-Object { "$($_.pid):$($_.token)" } | Sort-Object)
+            if (($expected -join ',') -cne ($actual -join ',') -or @($pinned.alive | Where-Object { $_ -ne $true }).Count -ne 0) { throw 'Contender did not pin the full live armed census' }
+            $entry.armedCensus = $armed
+            $entry.pinnedCensus = $pinned
             if ($p.HasExited) { throw 'Runner exited before contender readiness' }
             if ($folder.GetTask($name).Xml -cne $registeredXml) { throw 'Task ownership changed' }
             [IO.File]::WriteAllText((Join-Path $dir 'go'),'')

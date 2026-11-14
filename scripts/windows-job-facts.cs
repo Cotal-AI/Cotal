@@ -45,6 +45,7 @@ public static class WindowsJobFacts {
  static bool Alive(IntPtr h) { uint s=WaitForSingleObject(h,0); if(s==258) return true; if(s==0) return false; throw new Win32Exception(Marshal.GetLastWin32Error(),"WaitForSingleObject"); }
  static bool Gate(IntPtr h,out int error) { OV ov=new OV {offset=1073741824}; bool yes=LockFileEx(h,3,0,1,0,ref ov); error=yes?0:Marshal.GetLastWin32Error(); if(!yes && error!=33) throw new Win32Exception(error,"LockFileEx"); return yes; }
  static void Unlock(IntPtr h) { OV ov=new OV {offset=1073741824}; Check(UnlockFileEx(h,0,1,0,ref ov),"UnlockFileEx"); }
+ static string[] ContextGroups() { using(var wi=WindowsIdentity.GetCurrent()) { var groups=new List<string>(); foreach(IdentityReference group in wi.Groups)groups.Add(group.Value); return groups.ToArray(); } }
  static void Context(string dir,int runnerPid) {
   IntPtr runner=OpenProcess(0x1000,false,runnerPid); if(runner==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
   try {
@@ -57,31 +58,58 @@ public static class WindowsJobFacts {
      Check(QueryInformationJobObject(IntPtr.Zero,4,p,4,out n),"QueryInformationJobObject NULL UI"); ui=new byte[4]; Marshal.Copy(p,ui,0,4); uiFlags=BitConverter.ToUInt32(ui,0);
     } finally { Marshal.FreeHGlobal(p); }
    }
-   Save(dir,"scheduler-job.json",new {actionPid=runnerPid,actionInJob=actionJob,helperInJob=helperJob,limitFlags=flags,perProcessUserTime100ns=limits==null?null:BitConverter.ToInt64(limits,0).ToString(),perJobUserTime100ns=limits==null?null:BitConverter.ToInt64(limits,8).ToString(),uiFlags=uiFlags,extendedLimitRaw=limits,uiRaw=ui,scope="HELPER immediate job only. Main action inAnyJob recorded separately, helper flags MUST NOT be attributed to Node action. Separate direct-task control retained. No job handle opened.",utc=DateTime.UtcNow.ToString("o")});
+   Save(dir,"scheduler-job.json",new {tokenGroups=ContextGroups(),helperIdentity=Identity(Process.GetCurrentProcess().Handle,Process.GetCurrentProcess().Id,runnerPid,"context-helper"),ephemeral=true,actionPid=runnerPid,actionInJob=actionJob,helperInJob=helperJob,limitFlags=flags,perProcessUserTime100ns=limits==null?null:BitConverter.ToInt64(limits,0).ToString(),perJobUserTime100ns=limits==null?null:BitConverter.ToInt64(limits,8).ToString(),uiFlags=uiFlags,extendedLimitRaw=limits,uiRaw=ui,scope="HELPER immediate job only. Main action inAnyJob recorded separately, helper flags MUST NOT be attributed to Node action. Separate direct-task control retained. No job handle opened.",utc=DateTime.UtcNow.ToString("o")});
   } finally { CloseHandle(runner); }
  }
+ static object Identity(IntPtr h,int pid,int parent,string role) {
+  FT b,e,k,u; Check(GetProcessTimes(h,out b,out e,out k,out u),"identity GetProcessTimes");
+  var path=new StringBuilder(32768); uint size=32768; Check(QueryFullProcessImageNameW(h,0,path,ref size),"identity executable");
+  IntPtr token; Check(OpenProcessToken(h,8,out token),"identity SID"); string sid;
+  try { using(var wi=new WindowsIdentity(token)) sid=wi.User.Value; } finally { CloseHandle(token); }
+  return new {pid=pid,parent=parent,role=role,token=b.Token,executable=path.ToString(),sid=sid};
+ }
  static void Breakaway(string[] a) {
+  var root=Load(a[1],"child.json"); var grand=Load(a[1],"grandchild.json");
+  IntPtr rootHandle=Pin(root,false),grandHandle=IntPtr.Zero,createdHandle=IntPtr.Zero;
+  var self=Process.GetCurrentProcess(); IntPtr selfHandle=self.Handle;
+  try {
+  grandHandle=Pin(grand,false);
+  Save(a[1],"helper-ready.json",Identity(selfHandle,self.Id,Convert.ToInt32(root["pid"]),"breakaway-helper"));
+  Stopwatch lifetime=Stopwatch.StartNew();
+  while(!File.Exists(Path.Combine(a[1],"breakaway-request"))) { if(lifetime.ElapsedMilliseconds>20000) throw new TimeoutException("breakaway request"); Thread.Yield(); }
   SI si=new SI {cb=Marshal.SizeOf(typeof(SI))}; PI pi;
   string cmd=Q(a[2])+" "+Q(a[3])+" escape "+Q(a[1])+" "+Q(a[4])+" "+Q(a[5]);
   bool ok=CreateProcessW(a[2],new StringBuilder(cmd),IntPtr.Zero,IntPtr.Zero,false,0x01000000,IntPtr.Zero,a[1],ref si,out pi); int error=ok?0:Marshal.GetLastWin32Error();
   object identity=null;
-  if(ok) { try { FT b,e,k,u; Check(GetProcessTimes(pi.process,out b,out e,out k,out u),"breakaway GetProcessTimes"); bool job; Check(IsProcessInJob(pi.process,IntPtr.Zero,out job),"breakaway IsProcessInJob"); identity=new {pid=pi.pid,token=b.Token,inAnyJob=job}; } finally {CloseHandle(pi.thread);CloseHandle(pi.process);} }
+  if(ok) { createdHandle=pi.process; CloseHandle(pi.thread); identity=Identity(createdHandle,(int)pi.pid,Process.GetCurrentProcess().Id,"breakaway-created"); }
   Save(a[1],"breakaway.json",new {created=ok,lastError=error,flags="CREATE_BREAKAWAY_FROM_JOB",identity=identity});
   if(!ok && error!=5) throw new Win32Exception(error,"Unexpected breakaway refusal");
+  // Setup barrier only. Stay alive and hold process handles, never a job handle.
+  while(!File.Exists(Path.Combine(a[1],"quiesce")) && lifetime.ElapsedMilliseconds<120000) Thread.Yield();
+  } finally { if(createdHandle!=IntPtr.Zero)CloseHandle(createdHandle); if(grandHandle!=IntPtr.Zero)CloseHandle(grandHandle); CloseHandle(rootHandle); self.Dispose(); }
  }
+ static bool[] States(List<IntPtr> pinned) { bool[] states=new bool[pinned.Count]; for(int i=0;i<pinned.Count;i++)states[i]=Alive(pinned[i]); return states; }
  static void Observe(string dir,string mode) {
-  IntPtr runner=IntPtr.Zero,child=IntPtr.Zero,grand=IntPtr.Zero;
+  IntPtr runner=IntPtr.Zero;
+  var pinned=new List<IntPtr>(); var identities=new List<Dictionary<string,object>>();
   var samples=new List<object>(); var report=new Dictionary<string,object>(); bool failed=false;
   report["mode"]=mode;report["frequency"]=Stopwatch.Frequency;report["samples"]=samples;
   try {
    runner=Pin(Load(dir,"runner.json"),true); var ready=Load(dir,"ready.json");
-   child=Pin((Dictionary<string,object>)ready["child"],false); grand=Pin((Dictionary<string,object>)ready["grandchild"],false);
+   foreach(object value in (System.Collections.IEnumerable)ready["census"]) {
+    var id=(Dictionary<string,object>)value; pinned.Add(Pin(id,false)); identities.Add(id);
+   }
+   if(pinned.Count<3) throw new Exception("Incomplete census");
+   report["census"]=identities;
    using(var gate=new FileStream(Path.Combine(dir,"gate.bin"),FileMode.Open,FileAccess.ReadWrite,FileShare.ReadWrite)) {
-    IntPtr h=gate.SafeFileHandle.DangerousGetHandle(); int err; if(Gate(h,out err)) { Unlock(h); throw new Exception("Baseline gate granted"); }
-    Save(dir,"contender-ready.json",new {tick=Tick(),childAlive=Alive(child),grandchildAlive=Alive(grand)});
+    IntPtr h=gate.SafeFileHandle.DangerousGetHandle(); int err;
+    long baselineBefore=Tick(); bool[] baselineLiveBefore=States(pinned); bool baselineGrant=Gate(h,out err); long baselineAcquired=Tick(); bool[] baselineLiveAfter=States(pinned); long baselineAfter=Tick();
+    Save(dir,"baseline-gate.json",new {before=baselineBefore,acquired=baselineAcquired,after=baselineAfter,granted=baselineGrant,error=err,liveBefore=baselineLiveBefore,liveAfter=baselineLiveAfter});
+    if(baselineGrant) { Unlock(h); throw new Exception("Baseline gate granted"); }
+    Save(dir,"contender-ready.json",new {tick=Tick(),census=identities,alive=States(pinned)});
     // Controller waits for this file, then signals go. Contender exists and has pinned all identities BEFORE kill.
     Stopwatch deadline=Stopwatch.StartNew(); while(!File.Exists(Path.Combine(dir,"go"))) { if(deadline.ElapsedMilliseconds>20000) throw new TimeoutException("go"); Thread.Yield(); }
-    if(!Alive(child)||!Alive(grand)) throw new Exception("Tree not alive at intervention");
+    if(Array.Exists(States(pinned),state=>!state)) throw new Exception("Full census not alive at intervention");
     bool granted=false;
     using(var stream=new StreamWriter(Path.Combine(dir,"samples.ndjson"),false,new UTF8Encoding(false))) {
     report["interventionBefore"]=Tick();
@@ -90,25 +118,27 @@ public static class WindowsJobFacts {
     report["interventionAfter"]=Tick();
     deadline.Restart();
      while(deadline.ElapsedMilliseconds<20000) {
-      long before=Tick(); bool cb=Alive(child),gb=Alive(grand); bool got=Gate(h,out err); long acquired=Tick(); bool ca=Alive(child),ga=Alive(grand); long after=Tick();
-      var sample=new {before=before,acquired=acquired,after=after,granted=got,error=err,childBefore=cb,grandchildBefore=gb,childAfter=ca,grandchildAfter=ga};
+      long before=Tick(); bool[] liveBefore=States(pinned); bool got=Gate(h,out err); long acquired=Tick(); bool[] liveAfter=States(pinned); long after=Tick();
+      var sample=new {before=before,acquired=acquired,after=after,granted=got,error=err,liveBefore=liveBefore,liveAfter=liveAfter};
       stream.WriteLine(J.Serialize(sample));
       if(got) {
        samples.Add(sample); Unlock(h); granted=true;
-       if(cb||gb||ca||ga) { failed=true; report["orderingVerdict"]=(ca||ga)?"FAIL: grant bracket ends with live descendant":"UNKNOWN/FAIL: death transition overlaps grant bracket"; }
+       if(Array.Exists(liveBefore,state=>state)||Array.Exists(liveAfter,state=>state)) { failed=true; report["orderingVerdict"]=Array.Exists(liveAfter,state=>state)?"FAIL: grant bracket ends with live descendant":"UNKNOWN/FAIL: death transition overlaps grant bracket"; }
        if(!report.ContainsKey("firstGrantTick")) report["firstGrantTick"]=acquired;
-       if(!ca&&!ga) break;
+       if(!Array.Exists(liveAfter,state=>state)) break;
       }
       // No sleep or post-death grace period masks a grant/death ordering race.
      }
     }
-    if(!granted || Alive(child)||Alive(grand)) throw new Exception("No final grant/quiescence within bound");
+    if(!granted || Array.Exists(States(pinned),state=>state)) throw new Exception("No final grant/full census quiescence within bound");
     if(mode=="normal" && !File.Exists(Path.Combine(dir,"quiesced.json"))) throw new Exception("Normal control missing zero-members/release proof");
    }
-   report["finalObservationTick"]=Tick(); report["childExitCode"]=ExitCode(child); report["grandchildExitCode"]=ExitCode(grand); report["runnerExitCodeAtObservation"]=ExitCode(runner);
+   report["finalObservationTick"]=Tick(); var exits=new List<object>();
+   for(int i=0;i<pinned.Count;i++) exits.Add(new {identity=identities[i],exitCode=ExitCode(pinned[i]),alive=Alive(pinned[i])});
+   report["exits"]=exits; report["runnerExitCodeAtObservation"]=ExitCode(runner);
    report["measurementComplete"]=true; report["pass"]=!failed;
   } catch(Exception e) { report["measurementComplete"]=false; report["pass"]=false; report["error"]=e.ToString(); failed=true; }
-  finally { if(runner!=IntPtr.Zero)CloseHandle(runner);if(child!=IntPtr.Zero)CloseHandle(child);if(grand!=IntPtr.Zero)CloseHandle(grand); report["custody"]="No failure cleanup kills. Retained ambiguous or live custody belongs to disposable-host teardown."; Save(dir,"observation.json",report); }
+  finally { if(runner!=IntPtr.Zero)CloseHandle(runner);foreach(IntPtr handle in pinned)CloseHandle(handle); report["custody"]="No failure cleanup kills. Retained ambiguous or live custody belongs to disposable-host teardown."; Save(dir,"observation.json",report); }
   if(failed) Environment.ExitCode=1;
  }
  public static int Main(string[] a) { try { if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }

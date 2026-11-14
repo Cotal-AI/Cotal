@@ -944,7 +944,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   priority:
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[matrix-diagnostics]') && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     strategy:
       fail-fast: false
       max-parallel: 6

@@ -8,6 +8,16 @@ import { planRelease } from './upgrade-matrix-plan.mjs';
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
 const summary = workflow.jobs['release-summary'].steps.find(s => s.name === 'Verify expected coordinate census and assertion contract').run;
 const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
+test('ordinary landing push cannot admit the legacy priority cascade', () => {
+  const condition = workflow.jobs.priority.if;
+  const evaluate = message => Function('github', 'contains', `return (${condition});`)(
+    { event_name: 'push', event: { head_commit: { message } } }, (text, part) => text.includes(part));
+  assert.equal(evaluate('test: qualify version heads and published upgrades continuously'), false);
+  assert.equal(evaluate('test: explicit diagnostic [matrix-diagnostics]'), true);
+  assert.equal(evaluate('test: corrected native [windows-job-only]'), false);
+  assert.equal(workflow.jobs['desktop-beside-cli'].needs, 'priority');
+  assert(workflow.jobs['desktop-beside-cli'].if.includes("needs.priority.result == 'success' || needs.priority.result == 'failure'"));
+});
 test('durable events preserve immutable heads without privileged PR execution or cancellation', () => {
   assert.deepEqual(workflow.on.pull_request.types, ['opened', 'synchronize', 'reopened']);
   assert.equal(workflow.on.pull_request.paths, undefined);
