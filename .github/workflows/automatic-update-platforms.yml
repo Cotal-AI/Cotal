@@ -31,6 +31,9 @@ on:
       - scripts/windows-job-facts.cs
       - scripts/windows-job-facts.ps1
       - scripts/windows-job-facts.test.mjs
+      - scripts/windows-named-job-facts.cs
+      - scripts/windows-named-job-facts.ps1
+      - scripts/windows-named-job-facts.test.mjs
       - docs/upgrade-matrix.md
 # No workflow-level queue: every immutable PR head and publication must finish.
 permissions:
@@ -526,7 +529,7 @@ jobs:
           node-version: 24
       - name: Validate diagnostic harness without native side effects
         shell: powershell
-        run: node --test scripts/windows-job-facts.test.mjs
+        run: node --test scripts/windows-job-facts.test.mjs scripts/windows-named-job-facts.test.mjs
       - name: Install unchanged published native bindings
         shell: powershell
         run: |
@@ -545,8 +548,13 @@ jobs:
           if ((Get-Content (Join-Path $package 'package.json') -Raw | ConvertFrom-Json).version -ne '0.164.6') { throw 'Unexpected installed product version' }
           "PUBLISHED_PACKAGE_ROOT=$package" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Scheduled task job-object mutator lifetime falsifier
+        if: "!contains(github.event.head_commit.message, '[windows-named-job]')"
         shell: powershell
         run: ./scripts/windows-job-facts.ps1 -Output "$env:RUNNER_TEMP/upgrade-evidence" -PackageRoot "$env:PUBLISHED_PACKAGE_ROOT" -Node (Get-Command node).Source
+      - name: Named single-owner job recovery lifetime facts
+        if: "contains(github.event.head_commit.message, '[windows-named-job]')"
+        shell: powershell
+        run: ./scripts/windows-named-job-facts.ps1 -Output "$env:RUNNER_TEMP/upgrade-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
