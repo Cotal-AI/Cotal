@@ -14,6 +14,7 @@ const recorder = resolve('scripts/windows-shutdown-record.cjs');
 const output = resolve('scripts/shutdown-records');
 mkdirSync(output, { recursive: true });
 const rounds = Number(process.env.SHUTDOWN_ROUNDS || 40);
+const disabledStart = process.env.SHUTDOWN_DISABLED_START === '1';
 assert.ok(Number.isSafeInteger(rounds) && rounds >= 40);
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const seat = join(root, 'node_modules', '@cotal-ai', 'seat', 'dist', 'index.js');
@@ -56,7 +57,7 @@ async function ready(home) {
     await delay(500);
   }
 }
-const summary = { package: manifest.name, version: manifest.version, node: process.version, runner: process.env.RUNNER_OS, run: process.env.GITHUB_RUN_ID, rounds, results, calls, surface: 'restartInstalled from shipped install.js, identical to existing real-service test' };
+const summary = { package: manifest.name, version: manifest.version, node: process.version, runner: process.env.RUNNER_OS, run: process.env.GITHUB_RUN_ID, rounds, disabledStart, results, calls, surface: 'restartInstalled from shipped install.js, identical to existing real-service test' };
 try {
   // This diagnostic documents the literal brief command without claiming it stops a daemon.
   const diagnostic = join(base, 'surface');
@@ -93,7 +94,28 @@ try {
     mkSecretDir(uninstallHome);
     const uninstallPlan = ok(uninstallHome, 'install', ['--dry-run']);
     ok(uninstallHome, 'install');
-    const uninstallBefore = await ready(uninstallHome);
+    let uninstallBefore = await ready(uninstallHome);
+    if (disabledStart) {
+      // Match the desktop recovery order using only this installation's verified task.
+      ok(uninstallHome, 'uninstall', ['--dry-run']);
+      for (const action of ['/Change', '/End']) {
+        const args = action === '/Change' ? [action, '/TN', uninstallPlan.unit, '/DISABLE'] : [action, '/TN', uninstallPlan.unit];
+        const task = spawnSync(join(process.env.SystemRoot, 'System32', 'schtasks.exe'), args, { encoding: 'utf8', timeout: 30_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        result[`native${action}`] = { exit: task.status, signal: task.signal, error: task.error?.message, stdout: task.stdout, stderr: task.stderr };
+        assert.ok(!task.error && !task.signal && task.status === 0, `owned task ${action} completed`);
+      }
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const stopped = call(uninstallHome, 'status');
+        if (stopped.row.nativeCode === 'NOT_RUNNING') break;
+        assert.equal(stopped.row.exit, 0, 'stop observation does not suppress ownership refusals');
+        assert.ok(Date.now() < deadline, 'owned task stop deadline');
+        await delay(100);
+      }
+      ok(uninstallHome, 'start');
+      uninstallBefore = await ready(uninstallHome);
+      result.disabledStartSequence = true;
+    }
     const uninstallBirth = processStartTime(uninstallBefore.pid);
     assert.ok(uninstallBirth, 'uninstall kernel birth');
     const removed = call(uninstallHome, 'uninstall', ['--yes']);
