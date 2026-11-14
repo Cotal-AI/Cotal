@@ -1,100 +1,116 @@
 #!/usr/bin/env node
-/**
- * Executable entry for the `cotal` CLI (published as `cotal-ai`): a Node-version preflight, then a
- * hand-off to the real composition root (./run.js) via dynamic import.
- *
- * The floor is the one `engines.node` declares, 22.10, which is where `module.flushCompileCache()`
- * lands and therefore the oldest Node a connector's seat entry runs on. It is checked here, at the
- * front door, so the binary and the seats it installs agree on one version.
- *
- * Why this file exists separately: the CLI's UI stack (ink, @clack/prompts, string-width) and the
- * bundled `nats-server` optional dependency (@eplightning/nats-server-*) require Node >= 22 —
- * and npm SILENTLY SKIPS an optional dependency whose `engines` the running Node doesn't satisfy,
- * so on an older Node the bundled broker is never installed at all. On top of that, string-width
- * uses a Node-20+ regex flag that is a hard parse error on older Node. An ESM entry parses its whole
- * static-import graph before its own body runs, so a version check inside ./run.ts would come too
- * late — it would crash while parsing string-width. This shim therefore keeps ZERO static imports
- * of that chain: the check runs first, and ./run.js is only pulled in (dynamically) once it passes.
- */
-import { setFlagsFromString } from "node:v8";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-// Node 24 can hang forever in process.exit(), after the command has printed its result
-// (nodejs/node#64274, #5498): exit joins V8's background threads, and a Maglev or background
-// Sparkplug compile parked waiting for a garbage collection never finishes. Turning both off here,
-// before the CLI loads, restores Node 22's defaults; cli-entry.smoke.ts checks that Maglev stays off.
-// Every command, and every daemon this binary re-execs, starts here. Remove these once the supported
-// Node releases carry the fix (nodejs/node#66171).
-setFlagsFromString("--no-maglev");
-setFlagsFromString("--no-concurrent-sparkplug");
+export interface ExecutionBinding { name: "cotal-ai"; version: string; bootstrapSha256: string }
+export interface ExecutionDescriptor {
+  v: 1;
+  binding: ExecutionBinding;
+  generation: { id: string; version: string; inventorySha256: string };
+}
+export interface ExecutionInventoryEntry { path: string; sha256?: string; link?: string }
+export const executionDescriptorName = ".cotal-execution.json";
+export const executionSha256 = (bytes: string | Buffer): string => createHash("sha256").update(bytes).digest("hex");
+const MAX_RECORD_BYTES = 4 * 1024 * 1024;
+const HASH = /^[a-f0-9]{64}$/;
+const ID = /^[a-f0-9]{32}$/;
 
-const MIN_NODE = "22.10";
-const [MIN_MAJOR, MIN_MINOR] = MIN_NODE.split(".").map(Number) as [number, number];
-const [nodeMajor, nodeMinor] = process.versions.node.split(".").map((part) => Number.parseInt(part ?? "", 10));
-
-if (!Number.isInteger(nodeMajor) || !Number.isInteger(nodeMinor) || nodeMajor! < MIN_MAJOR ||
-  (nodeMajor === MIN_MAJOR && nodeMinor! < MIN_MINOR)) {
-  // How cotal was installed decides the fix, so say the one that applies. COTAL_LAUNCHER is set
-  // by the launcher install.sh writes: that install pinned a Node, and reaching here means the
-  // pinned Node was replaced with an older one, which re-running the installer repairs.
-  const viaInstaller = process.env.COTAL_LAUNCHER === "1";
-  const remedy = viaInstaller
-    ? `The Node this install was pinned to has been replaced with an older one.\n` +
-      `Re-run the installer to repin it:\n` +
-      `  curl -fsSL https://get.cotal.ai | sh\n\n` +
-      `Or stop depending on the system Node altogether:\n` +
-      `  curl -fsSL https://get.cotal.ai | sh -s -- --vendor-node\n\n`
-    : `Install a newer Node (https://nodejs.org). With nvm:\n` +
-      `  nvm install ${MIN_NODE} && nvm use ${MIN_NODE}\n\n` +
-      `If you already ran cotal once under the old Node, also clear the npx cache so the bundled\n` +
-      `nats-server is fetched cleanly, then retry:\n` +
-      `  rm -rf ~/.npm/_npx        # or: npx clear-npx-cache\n\n` +
-      `Or let the installer manage the runtime for you:\n` +
-      `  curl -fsSL https://get.cotal.ai | sh\n\n`;
-  process.stderr.write(
-    `\ncotal-ai requires Node.js >= ${MIN_NODE}, but this is ${process.version}.\n` +
-      `Below Node ${MIN_MAJOR}, npm silently skips the bundled nats-server broker and the CLI's UI\n` +
-      `stack cannot parse. Below ${MIN_NODE}, Node has no module compile cache and a seat refuses to\n` +
-      `start.\n\n` +
-      remedy,
-  );
-  // A delegated seat's spawn takes its handoff file, which holds its actor token, before anything
-  // else on a supported Node, so this refusal must not leave it on disk either. Any other command
-  // leaves the file. The leading global flags take no value, so the first other word is the command.
-  // Unlink only, never read.
-  const { unlinkSync } = await import("node:fs");
-  const command = process.argv.slice(2).find((arg) => !arg.startsWith("-"));
-  for (const [key, path] of Object.entries(process.env)) {
-    if (key.toUpperCase() !== "COTAL_MANAGED_HANDOFF_FILE" || !path || (command !== "spawn" && command !== "sp")) continue;
-    try {
-      unlinkSync(path);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
-        process.stderr.write(`cannot remove the managed handoff file: ${(e as Error).message}\n`);
-    }
-  }
-  process.exit(1);
+function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid execution record");
+  return value as Record<string, unknown>;
 }
 
-// Node warns once, as it loads its own color helpers, when FORCE_COLOR and NO_COLOR are both set.
-// The CLI resolves that pair itself (`cotal config` shows FORCE_COLOR winning and NO_COLOR
-// outranked), so that one runtime warning is dropped before anything loads. Every other warning
-// still prints.
-const emitWarning = process.emitWarning.bind(process) as (...args: unknown[]) => void;
-process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
-  if (warning !== "The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.") emitWarning(warning, ...rest);
-}) as typeof process.emitWarning;
+export function executionRecord(path: string): unknown {
+  const info = lstatSync(path);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_RECORD_BYTES) throw new Error("unsafe execution record");
+  protectedExecutionEntry(path);
+  return JSON.parse(readFileSync(path, "utf8")) as unknown;
+}
 
-// A spawned seat execs `cotal agent-bearer` for every bearer, so it runs from its own module before
-// the rest of the CLI loads: loading the whole command surface was most of each bearer's cost. A
-// command line that does not parse goes on to the full CLI, which refuses it with the command's help.
-const bearerDone = process.argv[2] === "agent-bearer" && await (await import("@cotal-ai/auth/agent-bearer")).runAgentBearerEntry(process.argv.slice(3));
-if (process.argv[2] === "__update-check") {
-  await (await import("./update-notice.js")).updateCheckWorker();
-} else if (!bearerDone) {
-  // The notice holds until the command begins, or until the command's own notice takes it over. An
-  // internal entry, such as a stack member or shell completion, keeps Node's default signal exit.
-  // Every word before the command word is a flag.
-  const commandWord = process.argv.slice(2).find((word) => !word.startsWith("-"));
-  if (!commandWord?.startsWith("__")) (await import("./startup-interrupt.js")).holdStartupInterrupt();
-  await import("./run.js");
+/** Read-only checks on a retained object. A missing or unreadable object is never a healthy generation. */
+export function protectedExecutionEntry(path: string): void {
+  const info = lstatSync(path);
+  if (process.platform !== "win32" && ((!info.isSymbolicLink() && (info.mode & 0o022) !== 0) ||
+      typeof process.getuid !== "function" || (info.uid !== process.getuid() && info.uid !== 0)))
+    throw new Error(`unprotected execution entry: ${path}`);
+}
+
+export function executionBinding(root: string): ExecutionBinding {
+  const meta = object(JSON.parse(readFileSync(join(root, "package.json"), "utf8")));
+  if (meta.name !== "cotal-ai" || typeof meta.version !== "string" || !meta.version)
+    throw new Error("the installed execution artifact is not cotal-ai");
+  return { name: "cotal-ai", version: meta.version, bootstrapSha256: executionSha256(readFileSync(join(root, "dist", "cotal.js"))) };
+}
+
+export function executionStore(root: string): string {
+  return join(dirname(dirname(root)), ".cotal-generations");
+}
+
+/** Enumerate the whole package, including dependencies, without following a link outside it. */
+export function executionInventory(root: string): ExecutionInventoryEntry[] {
+  const physical = realpathSync(root);
+  const rows: ExecutionInventoryEntry[] = [];
+  const walk = (directory: string, prefix: string): void => {
+    protectedExecutionEntry(directory);
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const path = join(directory, entry.name), name = prefix ? `${prefix}/${entry.name}` : entry.name;
+      protectedExecutionEntry(path);
+      if (entry.isDirectory()) walk(path, name);
+      else if (entry.isSymbolicLink()) {
+        const target = readlinkSync(path), resolved = realpathSync(path), suffix = relative(physical, resolved);
+        if (isAbsolute(target) || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix))
+          throw new Error(`execution inventory link escapes its package: ${name}`);
+        rows.push({ path: name, link: target });
+      } else if (entry.isFile()) rows.push({ path: name, sha256: executionSha256(readFileSync(path)) });
+      else throw new Error(`unsupported execution inventory entry: ${name}`);
+    }
+  };
+  walk(physical, "");
+  return rows;
+}
+
+/** Select a verified program, or the installed first generation when no matching descriptor exists. */
+export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean } {
+  const installed = realpathSync(root), descriptorPath = join(installed, executionDescriptorName);
+  const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === dirname(fileURLToPath(import.meta.url))
+    ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
+  let value: unknown;
+  try { value = executionRecord(descriptorPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return initial(); throw error; }
+  const descriptor = object(value), binding = object(descriptor.binding), current = executionBinding(installed);
+  if (binding.name !== current.name || binding.version !== current.version || binding.bootstrapSha256 !== current.bootstrapSha256)
+    return initial();
+  if (descriptor.v !== 1) throw new Error(`unsupported execution descriptor version ${String(descriptor.v)}`);
+  if (process.platform === "win32") throw new Error("retained execution generations are unavailable on Windows");
+  const generation = object(descriptor.generation);
+  if (typeof generation.id !== "string" || !ID.test(generation.id) || typeof generation.version !== "string" ||
+      typeof generation.inventorySha256 !== "string" || !HASH.test(generation.inventorySha256)) throw new Error("invalid retained execution identity");
+  protectedExecutionEntry(installed);
+  const store = executionStore(installed), container = join(store, generation.id), selected = join(container, "cotal-ai");
+  for (const path of [store, container, selected]) {
+    const info = lstatSync(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe execution generation directory");
+    protectedExecutionEntry(path);
+  }
+  const inventory = executionRecord(join(container, "inventory.json"));
+  if (!Array.isArray(inventory) || executionSha256(JSON.stringify(inventory)) !== generation.inventorySha256 ||
+      JSON.stringify(executionInventory(selected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
+  const meta = object(JSON.parse(readFileSync(join(selected, "package.json"), "utf8")));
+  if (meta.name !== "cotal-ai" || meta.version !== generation.version) throw new Error("retained execution manifest differs");
+  return { root: selected, entry: join(selected, "dist", "cotal-program.js"), retained: true };
+}
+
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  let selected: ReturnType<typeof selectExecutionProgram> | undefined;
+  try { selected = selectExecutionProgram(resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..")); }
+  catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}; reinstall with npm install -g cotal-ai@latest\n`);
+    process.exitCode = 1;
+  }
+  if (selected) {
+    if (selected.retained) process.argv[1] = join(selected.root, "dist", "cotal.js");
+    await import(pathToFileURL(selected.entry).href);
+  }
 }
