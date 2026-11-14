@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { recoverExtensionPromotion } from "../src/lib/extension-stage.js";
+import { recoverExtensionPromotion, assertStageVerifier } from "../src/lib/extension-stage.js";
+
+const forbidden = mkdtempSync(join(tmpdir(), "promotion-forged-"));
+assert.throws(() => assertStageVerifier(process.ppid, forbidden, "forged"), /no live prefix writer/);
+console.log("forged staged verifier has no mutation authority");
 
 for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   const root = mkdtempSync(join(tmpdir(), "promotion-state-"));
