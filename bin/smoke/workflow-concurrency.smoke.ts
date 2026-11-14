@@ -90,7 +90,8 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  It still counts as grouped: a job's own group evicts its pending job the same way. */
 // desktop.yml and native-cell.yml run on pull requests or dispatch only,
 // so neither push-to-main population changes.
-const EXPECTED_WORKFLOWS = 15;
+// Upgrade matrix adds one PR/workflow-run/manual workflow, not a main-push workflow.
+const EXPECTED_WORKFLOWS = 16;
 const EXPECTED_PUSH_TO_MAIN = 8;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` and `remotion.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,

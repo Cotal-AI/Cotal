@@ -167,8 +167,14 @@ export async function matrixCell(options) {
   const launchdProof = options['launchd-proof'];
   const publishedLaunchd = options['published-launchd'] === 'true';
   const windowsPolicy = options['windows-policy-baseline'] === 'true';
+  const expectedTarget = options['expected-target'];
+  const foreignSnapshot = options['foreign-config-snapshot'] === 'true';
+  const containerManager = options['container-manager'] === 'true';
+  if (containerManager) assert(hosted && process.platform === 'linux' && state === 'configured', 'container Manager cell requires disposable hosted Linux configured state');
+  if (foreignSnapshot) assert(state === 'recovery' && process.platform === 'linux', 'foreign snapshot cell requires Linux recovery state');
+  if (expectedTarget) assert.match(expectedTarget, /^\d+\.\d+\.\d+$/, 'expected target must be a stable published version');
   if (publishedLaunchd) assert(!options.candidate && source === '0.164.6' && launchdProof === 'transition', 'published launchd proof requires released 0.164.6 transition');
-  if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && options.direction === 'A') && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A or published scheduler');
+  if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && source === '0.164.6' && launchdProof === 'transition')) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
@@ -190,6 +196,8 @@ export async function matrixCell(options) {
   for (const dir of [home, project, prefix]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, '.cotal'), { mode: 0o700 });
   const env = { ...cleanEnvironment(), HOME: home, USERPROFILE: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache') };
+  env.TMPDIR = join(root, 'tmp');
+  mkdirSync(env.TMPDIR, { mode: 0o700 });
   if (!(hosted && state === 'daemon')) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
   report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' };
@@ -212,7 +220,7 @@ export async function matrixCell(options) {
   }
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
   async function call(label, file, argv, timeout = 180000) {
     if (/install|seed|upgrade under test/.test(label)) {
@@ -229,7 +237,8 @@ export async function matrixCell(options) {
       child.once('error', error => { clearTimeout(timer); resolveCall({ exit: null, stdout, stderr, error: error.message }); });
       child.once('close', (exit, signal) => { clearTimeout(timer); resolveCall({ exit, signal, stdout, stderr, timeout: timeoutHit }); });
     });
-    const entry = { label, file, argv, startedAt, ...result };
+    const finishedAt = new Date().toISOString();
+    const entry = { label, file, argv, startedAt, finishedAt, elapsedMs: Date.parse(finishedAt) - Date.parse(startedAt), ...result };
     report.calls.push(entry);
     transcript.push(`$ ${file} ${argv.join(' ')}\n${result.stdout}${result.stderr}\n[exit ${result.exit}]\n`);
     writeFileSync(join(output, `${id}.log`), transcript.join('\n'), { mode: 0o600 });
@@ -265,6 +274,7 @@ export async function matrixCell(options) {
   try {
     const target = ok(await npmCall('resolve public latest', ['view', 'cotal-ai@latest', 'version', '--json']), 'public latest');
     report.target = JSON.parse(target.stdout);
+    if (expectedTarget && !options.candidate) assert.equal(report.target, expectedTarget, 'public target differs from frozen release; do not certify another version');
     report.resolvedBeforeCell = report.target;
     report.source = source === 'latest' ? report.target : source;
     if (publishedLaunchd) assert.notEqual(report.target, report.source, 'next published release is not available yet');
@@ -278,6 +288,7 @@ export async function matrixCell(options) {
       env.npm_config_registry = overlay.url;
       if ((options.direction ?? 'B') === 'B') report.target = overlay.identity.version;
       else report.source = overlay.identity.version;
+      if (expectedTarget) assert.equal(report.target, expectedTarget, 'packed target differs from frozen version PR head');
       // Native services read npm's normal per-account config, not the launching shell's registry env.
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
@@ -310,16 +321,68 @@ export async function matrixCell(options) {
       report.staleRuntimes = runtimes;
       report.staleVersion = old;
     }
+    if (options.prepare !== undefined) {
+      assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
+      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, call, cotal, check, report });
+      assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
+    }
+    if (containerManager) {
+      assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'container Manager regression requires a selected remote-user participant composition, not a local host control');
+      check('host selected remote user-sign-in mesh before upgrade', report.participant.remote === true, report.participant);
+      const directory = join(root, 'foreign-container');
+      mkdirSync(directory, { mode: 0o700 });
+      const tag = `cotal-upgrade-foreign-${process.pid}-${Date.now()}`;
+      writeFileSync(join(directory, 'Dockerfile'), [
+        'FROM nats:2.14.0 AS broker', 'FROM node:24-bookworm',
+        'COPY --from=broker /nats-server /usr/local/bin/nats-server',
+        'ENV DO_NOT_TRACK=1 COTAL_TELEMETRY=off',
+        `RUN npm install -g cotal-ai@${report.source} --no-audit --no-fund`,
+        'USER 23001:23001',
+      ].join('\n') + '\n');
+      ok(await call('build stock foreign container fixture', 'docker', ['build', '--tag', tag, directory], 600000), 'foreign container image');
+      const script = 'set -eu; export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; unset COTAL_SPACE; mkdir -p "$HOME" /tmp/project/.cotal; cd /tmp/project; cotal up --space foreign --open --detach --no-manager; cotal use foreign; exec cotal supervise';
+      const label = `${id}-${Date.now()}`;
+      const launched = ok(await call('start foreign stock supervise without space flag', 'docker', ['run', '--detach', '--name', tag, '--label', `cotal.upgrade.cell=${label}`, tag, 'sh', '-c', script]), 'foreign supervisor');
+      const identity = launched.stdout.trim();
+      assert.match(identity, /^[a-f0-9]{64}$/);
+      container = { id: identity, label, image: tag };
+      report.foreignContainer = container;
+      for (let i = 0; i < 90; i++) {
+        const inspected = ok(await call('observe owned foreign container', 'docker', ['inspect', container.id]), 'container inspection');
+        const value = JSON.parse(inspected.stdout)[0];
+        assert.equal(value.Id, container.id); assert.equal(value.Config.Labels['cotal.upgrade.cell'], label);
+        const logs = await call('observe stock foreign Manager readiness', 'docker', ['logs', container.id]);
+        if (!value.State.Running) throw new Error(`foreign stock supervisor exited before readiness: ${logs.stdout}${logs.stderr}`);
+        if (/manager up/i.test(logs.stdout + logs.stderr)) {
+          container.pid = value.State.Pid;
+          container.startedAt = value.State.StartedAt;
+          container.user = value.Config.User;
+          assert.equal(container.user, '23001:23001');
+          assert(Number.isSafeInteger(container.pid) && container.pid > 1);
+          break;
+        }
+        await delay(1000);
+      }
+      assert(container.pid, 'stock foreign container reached manager up with an owned host PID');
+      report.foreignContainer.hostProcesses = ok(await call('record owned foreign supervisor host identity', 'docker', ['top', container.id, '-eo', 'pid,uid,args']), 'owned container process identity').stdout;
+      report.foreignContainer.imageIdentity = ok(await call('record foreign image identity', 'docker', ['image', 'inspect', tag]), 'image identity').stdout;
+    }
     if (state === 'recovery') {
       mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
-      const snapshot = join(config, '.update-snapshot-missing');
+      const snapshot = foreignSnapshot ? join(root, 'other-config-home', 'cotal', '.update-snapshot-foreign') : join(config, '.update-snapshot-missing');
+      if (foreignSnapshot) {
+        mkdirSync(snapshot, { recursive: true, mode: 0o700 });
+        writeFileSync(join(snapshot, 'foreign-owner-sentinel'), 'belongs to a different config home; never touch\n', { mode: 0o600 });
+        report.foreignSnapshot = { path: snapshot, sentinelSha256: digest(readFileSync(join(snapshot, 'foreign-owner-sentinel'))) };
+      }
       const renames = ['extensions', ...['authority.bak.json', 'authority.json', 'reconcile.cursor.json', 'stamp.json', 'witness.json'].map(name => `seed/${name}`)].flatMap(name => [
         { from: join(config, name), to: join(snapshot, `failed-${name}`), done: true },
         { from: join(snapshot, name), to: join(config, name), done: true },
       ]);
-      const fixture = { v: 1, previous: report.source, target: report.target, installed: 'unknown', phase: 'paused', reason: 'interrupted update restore failed: invalid update snapshot directory', owner: { pid: 2147483647, start: '0', nonce: 'fixture-not-a-credential' }, preparedRestart: false, snapshot, renames, recordedAt: new Date().toISOString() };
+      const fixture = { v: 1, previous: foreignSnapshot ? '0.13.1' : report.source, target: foreignSnapshot ? '0.13.2' : report.target, installed: 'unknown', phase: 'paused', reason: 'interrupted update restore failed: invalid update snapshot directory', owner: { pid: 2147483647, start: '0', nonce: 'fixture-not-a-credential' }, preparedRestart: false, snapshot, renames, recordedAt: new Date().toISOString() };
       save(join(cotalHome, 'update-recovery.json'), fixture);
-      report.syntheticFixture = 'paused recovery journal with a missing snapshot and completed rename entries';
+      if (foreignSnapshot) save(join(cotalHome, 'update-attempt.json'), { version: report.source, failures: 1, result: 'interrupted update', next: Date.now() - 3 * 86400000 });
+      report.syntheticFixture = foreignSnapshot ? 'paused journal refreshed now with completed renames and a real snapshot under another config home; separate old attempt clock' : 'paused recovery journal with a missing snapshot and completed rename entries';
       save(join(output, `${id}-recovery-before.json`), fixture);
     }
     if (['agent', 'concurrent'].includes(state)) {
@@ -400,6 +463,7 @@ export async function matrixCell(options) {
     report.versionChanging = report.source !== report.target;
     if (!options.candidate && !windowsPolicy) {
       report.target = JSON.parse(ok(await npmCall('resolve public latest immediately before action', ['view', 'cotal-ai@latest', 'version', '--json']), 'latest before action').stdout);
+      if (expectedTarget) assert.equal(report.target, expectedTarget, 'public target changed before action; do not certify another release');
       report.versionChanging = report.source !== report.target;
     }
     if (launchdProof) {
@@ -517,6 +581,11 @@ export async function matrixCell(options) {
     check('cotal status exits zero', status.exit === 0, status);
     const recovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;
     check('no paused recovery record', recovery === null, recovery);
+    if (foreignSnapshot) check('foreign snapshot bytes remain untouched', existsSync(join(report.foreignSnapshot.path, 'foreign-owner-sentinel')) && digest(readFileSync(join(report.foreignSnapshot.path, 'foreign-owner-sentinel'))) === report.foreignSnapshot.sentinelSha256 && readdirSync(report.foreignSnapshot.path).join(',') === 'foreign-owner-sentinel', report.foreignSnapshot);
+    if (container) {
+      const current = JSON.parse(ok(await call('foreign container after host upgrade', 'docker', ['inspect', container.id]), 'foreign container preservation').stdout)[0];
+      check('foreign container Manager remains running and untouched', current.Id === container.id && current.Config.Labels['cotal.upgrade.cell'] === container.label && current.State.Running === true && current.State.Pid === container.pid && current.State.StartedAt === container.startedAt, { before: container, after: current.State });
+    }
     if (installedService) {
       let active = await daemon('native status after', ['daemon', 'status', '--json']);
       const expectedDaemonVersion = desktopInventory?.version ?? expectedVersion;
@@ -568,6 +637,21 @@ export async function matrixCell(options) {
     }
     report.result = 'failed'; report.refusal = error.message;
   } finally {
+    if (compositionCleanup) {
+      try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
+      catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
+    if (container) {
+      try {
+        const current = JSON.parse(ok(await call('verify owned container before stop', 'docker', ['inspect', container.id]), 'container cleanup ownership').stdout)[0];
+        assert.equal(current.Id, container.id); assert.equal(current.Config.Labels['cotal.upgrade.cell'], container.label);
+        if (current.State.Running) report.foreignStackStop = await call('stop stock stack inside owned foreign container', 'docker', ['exec', container.id, 'sh', '-c', 'export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; cd /tmp/project; cotal down --with-agents'], 60000);
+        ok(await call('stop owned foreign supervisor and broker', 'docker', ['stop', '--time', '20', container.id], 60000), 'foreign container stop');
+        const stopped = JSON.parse(ok(await call('confirm owned foreign container stopped', 'docker', ['inspect', container.id]), 'container stop proof').stdout)[0];
+        assert.equal(stopped.State.Running, false);
+        report.foreignContainerCleanup = 'owned container stopped, not deleted, before reporting';
+      } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
     if (launchdObserver) {
       report.launchdProof ??= { kind: launchdProof };
       report.launchdProof.observer = await launchdObserver.close();

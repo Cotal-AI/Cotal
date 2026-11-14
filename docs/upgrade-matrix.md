@@ -2,166 +2,135 @@
 
 > **Project** (non-normative maintainer notes) · **For:** maintainers qualifying Cotal releases
 
-The [workflow](../.github/workflows/automatic-update-platforms.yml) runs published upgrades on
-Ubuntu 24.04, macOS 15 and Windows 2022. It records the selected release, each command's output,
-assertions and SHA-256 evidence. A failed or unsupported setup is never a passing upgrade.
+Cotal's upgrade matrix uses the same native harness for release checks and operator diagnostics.
+A passing cell requires the target CLI and every recorded extension, status exit0, no paused
+recovery record, a preserved ready service when present, and no required repair step. Missing
+artifacts, skipped required cells and unsupported states are not passes.
+
+## Release triggers
+
+The `Upgrade matrix` workflow starts on every opened, synchronized or reopened pull request.
+Only a same-repository `changeset-release/main` version PR runs the packed-head phase. It freezes
+`pull_request.head.sha` and that head's package version, never the merge ref. Ordinary and fork
+PRs record a non-applicable result without running product cells. Head code receives read-only
+permissions and no publisher credentials.
+
+After each successful npm publication, Changesets writes an `upgrade-publication` receipt after
+promotion. A separate `workflow_run` consumes that receipt even if a later release-note or
+installation job makes the Changesets run red. It binds the receipt to the repository, main SHA,
+run and exact version, then runs the published phase. GitHub Release creation is not the trigger.
+A release announced later or a failure cutting release notes cannot quietly omit the matrix.
+
+`workflow_dispatch` takes `phase`, `source_sha`, `target_version` and `profile`. Use an immutable
+40-character SHA whose package version matches the target. `bounded` is the supported profile.
+`extended` refuses explicitly instead of silently running a smaller set. There is no ref-wide
+cancellation, so one new head or publication cannot evict an older qualification.
+
+## Required release set
+
+Both phases start from published0.164.6 and run16 isolated product coordinates:
+
+| Coordinates | Count |
+|---|---:|
+| npm fresh, configured and stale-extension self-update on Ubuntu24.04, macOS15 and Windows2022 |9|
+| POSIX configured installer rerun and native daemon scheduler |4|
+| Linux local stand-in agent with public stop consent |1|
+| Linux paused record pointing to a real snapshot under another config home |1|
+| Linux host update with a foreign-UID container's bare `cotal supervise` |1|
+
+The foreign snapshot cell keeps completed rename entries, a freshly recorded paused journal and
+an old attempt clock. Its foreign directory and sentinel must remain untouched. The container
+fixture uses a real published CLI, open broker and selected space inside its own container. It
+waits for `manager up`, records only that owned container's host PID/UID, and checks the foreign
+Manager survives the host upgrade. It stops the stock stack and its owned container before
+reporting. Before the container starts, a loopback signed-JWT IdP, broker and auth service prepare
+a selected remote user-sign-in mesh for the host updater, with no local Manager. That fixture's
+readiness and complete teardown are checked separately. The composed hosted container upgrade
+still needs its own original result before it can be called a reproduction or a passing fix.
+
+The packed phase builds the exact PR head's six native targets, assembles all24 fixed-group
+packages and retains native, prepublish and prepack guards. Its read-only loopback registry serves
+the hash-verified candidate closure and installed-version metadata. Candidate version must be newer
+than public latest. Installer reruns use the candidate source's receipt-bound script. The published
+phase uses public npm and `https://get.cotal.ai` itself, with no script override. Both public latest
+resolutions must match the frozen target. If a newer release supersedes it, the cell fails rather
+than certifying the wrong version.
+
+Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
+budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
+builders need two waves and16 product cells need six waves at that limit. Per-job timeouts imply a
+much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
+timestamps so release owners can use measured durations instead of these estimates.
+
+## Exclusions
+
+There is no Windows shell installer. Windows scheduler upgrade remains excluded until its product
+implementation has native acceptance; native task or job-object facts do not establish that.
+The optional candidate-A reverse path, all historical source versions, concurrent replacement,
+missing-snapshot recovery and wider agent combinations remain diagnostic coverage rather than
+claims in the bounded release set. Existing red artifacts are retained when a later fix passes.
+Six native package builders prove closure, not six platform upgrade paths.
+
+The summary compares the complete expected coordinate to its evidence, checks exact layout,
+state, method, source, phase, target and candidate origin, and rejects duplicate or absent results.
+Configured states require a real prior extension inventory. A fresh report cannot be relabelled as
+a configured pass. Every required cell needs its own positive assertions, not an aggregate job exit.
 
 ## Run a published cell
 
-Use a disposable machine with Node 24 and npm. On a persistent Linux machine, the script creates
-private homes under `/var/tmp/upgrade-matrix` and refuses native-service and live-agent rows.
-It refuses installation when fewer than 20 GiB are available. It does not delete test roots.
+Use Node>=22.10. Native service and agent cells require a disposable hosted runner. On a persistent
+Linux host the harness refuses them and places other cells in private mode700 homes under
+`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require20GiB free before
+installation or build. Do not run the container fixture on a workstation.
 
-```bash
-node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout npm --state fresh --method self --output ./upgrade-evidence
+```sh
+node scripts/automatic-update-platform-baseline.mjs --list linux
+node scripts/automatic-update-platform-baseline.mjs --source 0.164.6 --layout npm --state configured --method self --expected-target <version> --output ./upgrade-evidence
+node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence
 ```
 
-Sources are `0.155.0`, `0.160.7`, `0.162.0`, `0.163.5`, `0.164.0` and `latest`.
-Layouts are `npm` and `installer`. States are `fresh`, `configured`, `daemon`, `agent`,
-`stale-extensions`, `recovery` and `concurrent`. Methods are `self`, `scheduler` and `installer`.
-Each published cell resolves npm's current latest release without a registry overlay.
-Print the full coordinate census and exclusion reasons with `node scripts/automatic-update-platform-baseline.mjs --list linux`.
-There are 138 applicable coordinates per POSIX platform and 48 on Windows, before historical-state support is checked.
+`--expected-target` freezes public latest at both resolutions. Omit it only for an explicitly
+runtime-latest diagnostic. A same-version result is not a version-changing upgrade. Optional shell
+completion and pre-existing PATH guidance stay in the transcript, while actual restoration,
+unknown outcomes and required repair commands remain red.
 
-The Windows installer is excluded because none exists. Installer reruns apply only to installer
-layouts. Scheduler cells require the daemon state. Release 0.155.0 cannot prepare automatic-update
-settings through its CLI. macOS and Windows scheduler refusals remain visible rather than becoming
-silent skips. Recovery and contention preparation use labelled fixtures, followed by real commands.
+## Pack a candidate
 
-The daemon scheduler runs in the disposable runner account's normal home. Its real service owns
-the daemon. Only cached clock fields are changed, with before and after evidence. The harness never
-calls the updater on behalf of the scheduler. Receipt checks guard service removal. Unknown native
-outcomes are retained for runner teardown rather than retried blindly.
+Use the existing guarded packer through the harness, with the complete source-matched native
+inputs already assembled:
 
-## Qualify an installer change
-
-For shell-only changes, keep the installed CLI and npm target published. Pass an inspected script
-with `--published-installer <path> --installer-source <commit> --installer-sha256 <sha256>` on an
-installer-layout rerun. The source must be a full commit ID and the script digest must match.
-The initial installation uses the public installer unless `--installer-setup true` explicitly selects
-the same receipt-bound script for setup. For a genuine first install, combine that option with
-`--source latest --state fresh --first-install true`; assertions run after the first installation,
-without an installer rerun. The result records the override separately.
-This option refuses candidate tiers and does not change their source-matching checks.
-
-A paused-snapshot refusal control may add `--expect-recovery-refusal true`. It requires exit 1,
-the reconciliation failure and repair command, `OPERATION_UNKNOWN`, and no final installation
-summary. The upgrade result stays `failed`; a separate `expectedRefusal.passed` field records the
-fail-closed check. Only that explicit control may exit zero for an expected failed upgrade.
-
-The narrow Mac installer job runs one genuine fresh install and one installer-layout upgrade from
-0.164.0 with an operator extension per admitted architecture. Its first step records runner admission before checkout or installation.
-An arm64 runner arriving more than 15 minutes after workflow creation records `unrun` and skips
-all upgrade steps. A job that never acquires a runner is also unrun. Neither case is a product
-result, even when the infrastructure job itself finishes successfully or is cancelled. The summary
-keeps these receipts in `admissions` and a separate runner table, outside product pass/failure counts.
-
-## Test a packed candidate
-
-Build the workspace and assemble source-matched native artifacts as the workflow does. The same
-script calls the existing complete-closure packer, preserving its native release guards.
-During version-only bootstrap rewrites it uses pnpm's warning-only dependency precheck, preventing
-an automatic dependency reinstall. Prepublish, prepack and source-matched native checks still run.
-
-```bash
-node scripts/automatic-update-platform-baseline.mjs --pack ./candidate-B --version B
-node scripts/automatic-update-platform-baseline.mjs --candidate ./candidate-B --direction B --source 0.164.0 --layout npm --state fresh --method self --output ./candidate-evidence
+```sh
+node scripts/automatic-update-platform-baseline.mjs --pack ./candidate --version <candidate-version> --source-root <clean-git-root>
+node scripts/automatic-update-platform-baseline.mjs --candidate ./candidate --direction B --source 0.164.6 --layout npm --state configured --method self --expected-target <candidate-version> --output ./upgrade-evidence
 ```
 
-B tests a published source updating to the packed head. `--version B` derives the next patch above public latest.
-`--version A` derives a lower stable version for the later self-upgrade proof. Numeric versions may also be supplied.
-Each cell checks the required ordering again before installation.
-Every result labels its local registry as synthetic. Third-party dependencies come from npm, while
-every first-party package comes from the candidate archives. Archive hashes and temporary manifest
-changes are recorded. Installed files are never rewritten. Never publish these bootstrap archives.
-The pack also records `installer.sh` and its source/hash receipt. For a candidate installer rerun,
-pass `--candidate-installer ./candidate-B/installer.sh`. The harness verifies that receipt against
-the packed closure before execution. Published rows always download the public installer.
+An explicit source root must be a clean actual Git root. Its own packer is imported. Version-only
+rewrites are restored in `finally`; tracked edits and untracked product inputs refuse admission.
+Direction B upgrades published source to a newer packed target. Direction A installs a below-public
+candidate and takes a newer public version, serving metadata for the installed candidate too.
+Never relabel an older archive or patch installed product bytes to manufacture a transition.
 
-A tests whether the candidate can update itself later. Pack it separately with a stable numeric
-version below public latest, then pass `--direction A`. The overlay supplies metadata and archives
-for that installed candidate version while keeping npm's real latest target. This satisfies both
-the stock version comparison and the updater's installed-version metadata lookup.
+## Observe native custody
 
-For a separate immutable product checkout, add `--source-root <checkout>` to `--pack`. The path
-must be that checkout's clean Git root. The harness imports its own pack helper and records its
-commit, rather than packing the matrix checkout. Ignored build and native outputs are allowed;
-tracked edits and untracked product inputs are refused. Manifest rewrites are restored in `finally`.
+Mac scheduler cells from published0.164.6 use `--published-launchd true --launchd-proof transition`.
+Candidate B transition observation also starts from0.164.6. Snapshots retain receipt, plist bytes
+and digest, loaded job, runner creation identity, completion, exit, job/source retirement and daemon
+generation. A terminal success alone does not establish custody cleanup. Unknown custody retains
+the service for disposable-runner teardown. Off-before-tick and killed-before-result modes remain
+available in the scoped candidate-A diagnostic campaign.
 
-## Observe a macOS scheduler transition
+Each candidate cell starts its own registry. After confirmed native removal, it restores unchanged
+owned npm configuration before stopping the registry. A changed configuration is retained. Native
+Windows baseline probes separately record policy ticks, demand task lifetime and inherited lock
+facts. An inherited handle was observed not to retain its owner's LockFileEx lock after owner
+death, so that fact is not accepted as a mutator-lifetime barrier. Job-object ordering probes must
+report any grant while a descendant lives, without adding a wait that hides the interval.
 
-A scoped native proof uses a below-latest candidate as the installed side with `--direction A`,
-`--layout installer --state daemon --method scheduler`. Add `--launchd-proof transition` for
-read-only snapshots of the updater receipt, plist bytes and digest, loaded job, runner birth and
-completion, daemon generation and final job/source removal. A successful terminal attempt alone
-does not satisfy active custody or cleanup assertions. Unknown custody retains the native service
-for disposable-runner teardown instead of removing the evidence.
+## Extend a composition
 
-`--launchd-proof off-before-tick` sets automatic updates off through the CLI before installing the
-service, then observes at least two normal tick intervals with only the permitted clock edits. It
-requires the old installation to remain unchanged and no handoff receipt to appear. A failure-retry
-cell must establish its exact pre-result runner identity before any signal. It is not accepted as a
-transition when that observation is missing.
-
-Each candidate cell starts its own registry. After confirmed native removal, it restores the prior
-account npm configuration before stopping that registry. Changed configuration or uncertain custody
-is retained for disposable-runner teardown. The `[mac-controls-only]` push mode runs the off and
-killed-before-result controls in separate disposable jobs, one at a time, with failure cancellation
-disabled. It reuses a pinned candidate artifact and verifies its archive digest and source manifest
-without rebuilding. A failed control cannot suppress the other or share its native custody.
-
-## Observe Windows baseline facts
-
-`[windows-baseline-only]` admits one `windows-2022` job. It installs the unchanged published
-0.164.6 CLI and native daemon, enables automatic-update preferences, then observes a normal timer
-check and the recorded Windows refusal. A labelled loopback registry advertises 0.164.7 metadata
-only. It serves no package archive and cannot install that version. Clock sidecars and tick status
-show what the native daemon observed, rather than inferring a refusal from its initial status.
-
-Separate native probes record a demand-started one-shot task's action PID, creation identity,
-instance state and engine PID before and after termination, and after task deletion while its
-program runs. Another probe measures an inherited exclusive-lock handle while the runner dies
-and its child stays alive, then after the child exits. These are observed platform facts, not a
-claim that an updater can safely recover. Each probe acts only on its own identity-checked task
-or process. An earlier failed probe does not suppress the remaining cells.
-
-## Test Windows job containment
-
-`[windows-job-only]` runs one `windows-2022` cell against the published 0.164.6 workspace launcher.
-An owned demand-started task records its existing scheduler job and limits before nested launch.
-The gate owner launches a child tree through the shipped kill-on-close job binding. A contender
-starts before the owner is killed and records immediate gate acquisition with descendant liveness.
-Any grant while a mutating descendant lives, refused nested assignment or escaped breakaway fails
-the cell. A normal-exit control also checks quiescence before release. No wait masks an ordering
-failure. These observations qualify a platform boundary, not the complete Windows updater.
-
-## Check the next published release
-
-On releases after 0.164.6, two isolated `macos-15` cells start from published 0.164.6. One installs
-the service and observes the next public version through launchd with `--published-launchd true`.
-The other upgrades through the script fetched from `https://get.cotal.ai` itself, with no script
-or candidate override. Both resolve the public target at run time. They do not run in a scoped
-Windows baseline push.
-
-## Keep desktop custody separate
-
-The Linux desktop-beside-CLI job uses the existing v0.164.2 release workflow's desktop package,
-verifies its published digest and every bundled runtime file, then installs that runtime's real
-native daemon on the disposable runner. A separate npm CLI updates through its own prefix.
-The cell requires the desktop service source, runtime bytes, version and desktop update channel
-to stay unchanged. It does not build a desktop or substitute a desktop marker fixture.
-
-## Read the result
-
-A cell passes only when the CLI and recorded extensions reach the target, `cotal status` succeeds,
-no paused recovery remains, an existing daemon stays ready and no manual remedy is printed.
-The JSON identifies failed assertions and the transcript preserves the text a person saw.
-Optional shell-completion profile notices are retained verbatim in `advisory`. They do not fail an
-otherwise consistent installation. The installer's pre-existing PATH selection notice is retained in
-the transcript as environment guidance. Required installation repair commands still fail the assertion.
-Combine downloaded cell artifacts with `node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence`.
-For a release that supports scripted stop consent, add `--stop-agents true` to the harness command.
-This passes the public updater flag without answering a prompt on the person's behalf.
-A same-version run is recorded separately from a version-changing upgrade. Keep red results when
-qualifying a release and route product defects to their owners rather than repairing product code
-inside the harness.
+A program importing `matrixCell` may supply an in-process `prepare` callback. After source setup,
+it receives the private environment, project, installed package, call recorder and report. It may
+return an async disposer, which runs in `finally` before reporting. A prepare failure must clean
+anything it started before throwing. This composes stock IdP, broker or remote-user fixtures over
+the same updater path; it does not add a second installer harness. Never pass callback text through
+CLI arguments. Tests run with `pnpm smoke:upgrade-matrix` in ordinary CI.
