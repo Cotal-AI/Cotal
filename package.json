@@ -524,6 +524,7 @@
     "smoke:issued-profile-census": "tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
     "smoke:delivery-coverage": "tsx implementations/delivery/smoke/delivery-coverage.smoke.ts",
     "smoke:hosted-delivery-lifetime": "tsx implementations/delivery/smoke/hosted-delivery-lifetime.smoke.ts",
+    "smoke:hosted-delivery-native-connections": "tsx implementations/delivery/smoke/hosted-delivery-native-connections.smoke.ts",
     "smoke:hosted-delivery-startup-isolation": "tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts",
     "smoke:delivery-multi-space": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-multi-space.smoke.ts",
     "smoke:delivery-standby": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-standby.smoke.ts",
