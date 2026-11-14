@@ -25,6 +25,15 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(selectExecutionProgram(installed).root, generation.root);
     assert.equal(readFileSync(join(installed, "package.json"), "utf8"), oldManifest, "npm record is never rewritten by staged publication");
     assert.equal(readFileSync(join(installed, "dist/cotal-program.js"), "utf8"), oldProgram);
+    const nextSource = join(scratch, "next/cotal-ai");
+    cpSync(source, nextSource, { recursive: true });
+    writeFileSync(join(nextSource, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.3.0", bin: { cotal: "./dist/cotal.js" } }));
+    const next = retainExecutionGeneration(installed, nextSource);
+    const secondJournal = journalExecutionTransaction(installed, next);
+    publishExecutionTransaction(installed, secondJournal);
+    assert.equal(selectExecutionProgram(installed).root, next.root);
+    publishExecutionTransaction(installed, secondJournal, true);
+    assert.equal(selectExecutionProgram(installed).root, generation.root, "second rollback restores previous selected generation, not npm original version");
     publishExecutionTransaction(installed, journal, true);
     assert.equal(selectExecutionProgram(installed).root, installed);
     assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version, "0.1.0");
