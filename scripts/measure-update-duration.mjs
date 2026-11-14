@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { prependPath } from './update-duration-environment.mjs';
+import { captureRecords } from './update-duration-records.mjs';
 import { pathToFileURL } from 'node:url';
 
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'measurement requires GitHub Actions');
@@ -71,17 +72,13 @@ try {
   report.installed = JSON.parse(readFileSync(join(pkg, 'package.json'))).version;
   assert.equal(report.installed, report.target);
   report.after = JSON.parse((await call('verify installed extensions', [cli, 'ext', 'list', '--json'])).stdout);
+  assert.equal(report.after.result.items.length, 8);
+  assert.deepEqual(report.after.result.items.map(entry => entry.pkg), report.before.result.items.map(entry => entry.pkg));
+  assert(report.after.result.items.every(entry => entry.version === report.target));
   report.versionOutput = (await call('verify global CLI version', [cli, 'version'])).stdout;
   assert(report.versionOutput.startsWith(`cotal-ai ${report.target}`));
   // Retain operator records but never copy credentials or arbitrary state.
-  report.records = {};
-  for (const base of [env.COTAL_HOME, join(env.XDG_CONFIG_HOME, 'cotal')]) {
-    if (!existsSync(base)) continue;
-    for (const name of readdirSync(base)) {
-      if (!/^(?:extensions|update-settings|update-state|seed-stamp|seed-authority|seed-witness)\.json$/.test(name)) continue;
-      report.records[name] = JSON.parse(readFileSync(join(base, name)));
-    }
-  }
+  report.records = captureRecords(root, env);
   report.result = 'passed';
 } catch (error) {
   report.result = 'failed'; report.error = error.stack; process.exitCode = 1;

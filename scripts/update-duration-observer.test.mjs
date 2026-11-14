@@ -6,6 +6,25 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { delimiter } from 'node:path';
 import { prependPath } from './update-duration-environment.mjs';
+import { captureRecords } from './update-duration-records.mjs';
+
+test('records capture nested update state but never arbitrary credential files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'update-records-'));
+  const env = { COTAL_HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config') };
+  const seed = join(env.XDG_CONFIG_HOME, 'cotal', 'seed');
+  const ext = join(env.XDG_CONFIG_HOME, 'cotal', 'extensions');
+  for (const dir of [env.COTAL_HOME, seed, ext]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(seed, 'stamp.json'), '{"generation":"0.164.8"}');
+  writeFileSync(join(ext, 'extensions.json'), '{"extensions":[]}');
+  writeFileSync(join(env.COTAL_HOME, 'update-recovery.json'), 'null');
+  writeFileSync(join(env.COTAL_HOME, 'credentials.json'), 'not-json-and-must-not-be-read');
+  const records = captureRecords(root, env);
+  assert.equal(Object.keys(records).length, 14);
+  assert.deepEqual(records[join('<sample-root>', 'config', 'cotal', 'seed', 'stamp.json')], { generation: '0.164.8' });
+  assert.equal(records[join('<sample-root>', 'home', 'update-recovery.json')], null);
+  assert.deepEqual(records[join('<sample-root>', 'config', 'cotal', 'seed', 'reconcile.cursor.json')], { absent: true });
+  assert(!Object.keys(records).some(key => key.includes('credentials')));
+});
 
 test('private prefix preserves inherited Windows Path and POSIX PATH', () => {
   for (const key of ['Path', 'PATH', 'path']) {
