@@ -167,6 +167,29 @@ def move_pointer(x, y, receipt, persist):
         persist()
 
 
+def missing_control_diagnostics():
+    """Retain read-only panel facts without admitting another control or input."""
+    evidence = {'panelPid': args.panel_pid, 'tree': None, 'plugins': [], 'errors': []}
+    report['missingControl'] = evidence
+    try:
+        verify(args.panel_pid, args.panel_start_time)
+        evidence['tree'] = save('missing-control-tree', snapshot())
+    except Exception as error:
+        evidence['errors'].append({'field': 'tree', 'error': str(error)})
+    argv = ['xfconf-query', '--channel', 'xfce4-panel', '--list', '--verbose']
+    try:
+        verify(args.panel_pid, args.panel_start_time)
+        result = subprocess.run(argv, text=True, capture_output=True, timeout=10)
+        evidence['plugins'].append({'argv': argv, 'exit': result.returncode,
+                                    'stdout': result.stdout, 'stderr': result.stderr})
+    except Exception as error:
+        evidence['errors'].append({'field': 'plugins', 'error': str(error)})
+    try:
+        save('missing-control', evidence)
+    except Exception as error:
+        evidence['errors'].append({'field': 'write', 'error': str(error)})
+
+
 def click_unique(pid_set, names, roles=None, button=1):
     matches = []
     for app in apps():
@@ -181,6 +204,8 @@ def click_unique(pid_set, names, roles=None, button=1):
                 if rect.width > 0 and rect.height > 0 and rect.x >= 0 and rect.y >= 0:
                     matches.append((node, rect))
     if len(matches) != 1:
+        if not matches:
+            missing_control_diagnostics()
         raise RuntimeError(f'Expected one visible native control {names}, found {len(matches)}')
     verify(args.pid, args.start_time)
     verify(args.panel_pid, args.panel_start_time)
