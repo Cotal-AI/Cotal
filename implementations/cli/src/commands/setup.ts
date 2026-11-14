@@ -1143,8 +1143,10 @@ export async function refreshConnectorInstalls(): Promise<string[]> {
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
     if (refresh) {
+      const started = Date.now();
       console.error(`Refreshing ${refresh.title}`);
       lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+      console.error(`Update step integration:${connector.name} completed in ${Date.now() - started} ms`);
     }
   }
   return lines;
