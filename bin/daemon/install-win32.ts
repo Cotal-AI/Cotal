@@ -152,6 +152,8 @@ export interface WindowsTaskService extends NativeService {
   inspect(receipt: UnitReceipt): { present: boolean; enabled?: boolean; instances?: number };
   enable(receipt: UnitReceipt): void;
   readonly pendingEnd: boolean;
+  /** Start only an enabled idle task, never overriding an operator disable. */
+  startEnabled(receipt: UnitReceipt): void;
 }
 
 export function scheduledTaskService(run: NativeRun): WindowsTaskService {
@@ -257,6 +259,11 @@ export function scheduledTaskService(run: NativeRun): WindowsTaskService {
     },
     check(receipt) {
       owned(receipt);
+    },
+    startEnabled(receipt) {
+      const task = owned(receipt, true);
+      if (!task.present || task.enabled !== true) throw new CommandFailure("refused", "CONFLICT", "the owned task is absent or disabled; update did not enable it");
+      if (task.instances === 0) step(["/Run", "/TN", receipt.unit]);
     },
     start(receipt) {
       const task = owned(receipt, true);
