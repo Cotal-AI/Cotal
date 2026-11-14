@@ -1,5 +1,47 @@
 # cotal-ai
 
+## 0.164.11
+
+### Patch Changes
+
+- 5fce3ef: Fix the closing step of `cotal update --self` on a machine with the service installed. Since 0.164.10 that step compared the restarted daemon with the release that started the update instead of the release now installed. On Windows the update ended with exit 3 and "Outcome unconfirmed" although the new release was installed and reconciled. The closing step compares the daemon with the installed release again, as it did up to 0.164.9. Scheduled updates were not affected.
+- Updated dependencies [5fce3ef]
+  - @cotal-ai/cli@0.164.11
+  - @cotal-ai/connector-core@0.164.11
+  - @cotal-ai/auth@0.164.11
+  - @cotal-ai/delivery@0.164.11
+  - @cotal-ai/manager@0.164.11
+  - @cotal-ai/registry@0.164.11
+  - @cotal-ai/runtime@0.164.11
+  - @cotal-ai/core@0.164.11
+  - @cotal-ai/seat@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- 4359750: The desktop app's Details no longer tells you to install the background service when it is already installed and stopped. It now says the service is stopped and that Start service starts it. A computer with no installed service keeps the install sentence.
+- 44ce7f5: Add verified execution generations to the CLI entry without changing the update transaction.
+  
+  The built-ins-only bootstrap accepts an artifact-bound descriptor, validates the retained package inventory and runs the selected generation. Fresh installations run their installed tree without copying it or writing startup state. Invalid matching descriptors refuse with reinstall guidance.
+- 1ad9989: Keep the installed Windows background service running after a manual update.
+  
+  The replacement updater starts only its verified enabled scheduled task after the old daemon exits, and checks target readiness under the existing deadline. Windows updater ownership uses retained process creation identity, including guarded compatibility with published records that lack a start token.
+- Updated dependencies [44ce7f5]
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/cli@0.164.10
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/connector-core@0.164.10
+  - @cotal-ai/auth@0.164.10
+  - @cotal-ai/delivery@0.164.10
+  - @cotal-ai/manager@0.164.10
+  - @cotal-ai/registry@0.164.10
+  - @cotal-ai/runtime@0.164.10
+  - @cotal-ai/seat@0.164.10
+
 ## 0.164.9
 
 ### Patch Changes

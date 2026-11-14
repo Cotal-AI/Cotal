@@ -39,7 +39,7 @@ import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { repairInstallModes, withInstallUmask } from "../lib/install-umask.js";
-import { cliVersion } from "../lib/version.js";
+import { cliVersion, installedCliVersion } from "../lib/version.js";
 import { runSeed, compareSemver, seedInstallationCurrent, assertReadableSeedState } from "../seed/reconcile.js";
 import { operatorInstallDiffers } from "../seed/verify.js";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
@@ -146,6 +146,8 @@ export interface UpdateRuntime {
   stdout(message: string): void;
   stderr(message: string): void;
 }
+
+export { installedCliVersion };
 
 export const updateRuntime: UpdateRuntime = {
   env: process.env,

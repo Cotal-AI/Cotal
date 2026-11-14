@@ -37,6 +37,15 @@ if (!["linux", "darwin"].includes(process.platform)) {
     const daemonIdentity = spawnSync(process.execPath, ["--input-type=module", "-e", `const {binVersion}=await import(${JSON.stringify(pathToFileURL(join(installed, "dist/daemon/command.js")).href)}); console.log(binVersion());`], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.equal(daemonIdentity.status, 0, daemonIdentity.stderr);
     assert.equal(daemonIdentity.stdout.trim(), originalVersion, "daemon identity must name loaded code, not the canonical manifest");
+    // A manual update's closing step runs in the release that started it and must restart the daemon
+    // into the release now on disk.
+    const entry = join(installed, "dist/cotal.js");
+    const closing = spawnSync(process.execPath, ["--input-type=module", "-e", `process.argv[1]=${JSON.stringify(entry)};
+Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), { value: Object.freeze({ loadedEntry: ${JSON.stringify(entry)} }), writable: false, configurable: false });
+const {updateRuntime, installedCliVersion}=await import(${JSON.stringify(pathToFileURL(join(installed, "node_modules/@cotal-ai/cli/dist/commands/update.js")).href)});
+console.log(updateRuntime.version(), installedCliVersion());`], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
+    assert.equal(closing.status, 0, closing.stderr);
+    assert.equal(closing.stdout.trim(), `${originalVersion} 99.0.0`, "the update's closing step must name the installed release while the updater keeps its loaded one");
     writeFileSync(join(installed, "package.json"), originalManifest);
     writeExecutionDescriptor(installed, descriptor);
     const stopped = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });

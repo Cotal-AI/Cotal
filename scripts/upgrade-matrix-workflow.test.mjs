@@ -10,6 +10,19 @@ import { knownRefusals } from './upgrade-matrix-refusals.mjs';
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
 const summary = workflow.jobs['release-summary'].steps.find(s => s.name === 'Verify expected coordinate census and assertion contract').run;
 const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
+test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
+  const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
+  const cells = workflow.jobs['release-cells'];
+  assert.equal(plan.matrix.include.length, 22);
+  assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
+  assert.deepEqual(cells.needs, ['select', 'release-pack']);
+  assert.equal(cells.strategy['fail-fast'], false);
+  assert.equal(cells['runs-on'], '${{ matrix.runner }}');
+  assert(plan.matrix.include.some(cell => cell.platform === 'darwin'));
+  assert(plan.matrix.include.some(cell => cell.platform === 'linux'));
+  assert(plan.matrix.include.some(cell => cell.platform === 'win32'));
+  assert.equal(workflow.jobs['release-native'].strategy['max-parallel'], 3);
+});
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
   const condition = workflow.jobs.priority.if;
   const evaluate = message => Function('github', 'contains', `return (${condition});`)(
