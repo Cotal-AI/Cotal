@@ -146,22 +146,26 @@ its installation transaction. It matches the updater's process ID, start token a
 before deferring restoration. Hosted Managers remain fenced until that transaction verifies the
 installed package and connector generation. If the updater disappears, the running service
 performs guarded interrupted-update recovery or reports the refusal in its log and update status.
-On 0.164.0 through 0.164.8, a manual update with the machine service installed can wait for two
-120-second readiness checks, roll back and pause automatic updates. Stopping the service alone
-does not avoid this failure. Before a first update on those versions, save agent work and run:
+A manual update to 0.164.0 through 0.164.8 with the machine service installed waited for two
+120-second readiness checks, rolled back and paused automatic updates. On Linux and macOS,
+`cotal update --self` from any of those versions to 0.164.9 or later completes without extra steps.
+On Windows, the fix ships in the release after 0.164.9.
+
+A paused installation on one of those versions cannot fetch the fix with its own
+`cotal update --self`. The old updater attempts restoration before it looks for a newer release
+and refuses again. Rerun the installer to repair it:
 
 ```bash
-cotal daemon uninstall --yes
-cotal update --self
-cotal daemon install
+curl -fsSL https://get.cotal.ai | sh -s -- --no-setup --no-modify-path
 ```
 
-If the installation is already paused, install a release containing this fix into the same prefix
-and run `cotal update`. It verifies the installed CLI, confirms fresh empty hosted-Manager
-admission and reconciles the restored closure before clearing the pause. An incomplete rollback
-still requires guarded snapshot restoration.
-Before replacing the global binary, it checks the release's first-party package archives through
-npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
+For an npm installation, run `npm install -g cotal-ai@latest` and then `cotal update`. Either
+route installs the new release into the same prefix, verifies the installed CLI, confirms fresh
+empty hosted-Manager admission and reconciles the restored closure before clearing the pause. The
+computer keeps its service credentials and identity. `cotal daemon uninstall` is not needed and
+would remove them. An incomplete rollback still requires guarded snapshot restoration.
+Before replacing the global binary, `cotal update --self` checks the release's first-party
+package archives through npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
 The command prints progress before release checks, the recovery snapshot, package installation,
 connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector and extension installs still run serially under
 their existing locks. Every update reads and verifies its own package closure without reusing
