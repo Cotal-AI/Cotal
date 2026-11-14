@@ -87,6 +87,17 @@ test('generation evidence reads real files passively before cleanup, limits log 
   assert.match(source,/clearInterval\(generationTimer\)/);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+test('native firsthop observer pins only the authenticated old PID and exact installed task, never starts or stops either',()=>{
+ const section=source.slice(source.indexOf('  const taskName='),source.indexOf('  assert.equal(json(join(pkg'));
+ assert.match(section,/publishedService\.pid/);assert.match(section,/\.result\.unit/);
+ assert.match(section,/\$handle=\$p.Handle/);assert.match(section,/ToFileTimeUtc/);assert.match(section,/GetTask\(\$env:CELL_DAEMON_TASK\)/);
+ for(const fact of ['HasExited','ExitCode','LastTaskResult','LastRunTime','GetInstances'])assert.ok(section.includes(fact));
+ assert.doesNotMatch(section,/Get-CimInstance|CommandLine|Stop-Process|Start-ScheduledTask|TerminateJobObject|\.Kill\(|\.Run\(/);
+ assert.match(section,/pinned native generation observer ready/);assert.match(section,/writeFileSync\(observerStop,'stop'\)/);assert.match(section,/await observer/);assert.match(section,/AddMinutes\(10\)/);
+ const scriptLine=section.split('\n').find(line=>line.includes('const observerScript='));
+ const script=JSON.parse(scriptLine.slice(scriptLine.indexOf('=')+1).trim().replace(/;$/,''));
+ assert.ok(script.includes("GetFolder('\\')"),'PowerShell receives a single root-folder slash, not a JS escape loss');
+});
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });
