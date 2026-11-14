@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Collections.Generic;
 using System.Security.Principal;
+using System.Management;
 using System.Web.Script.Serialization;
 public static class WindowsJobFacts {
  static JavaScriptSerializer J = new JavaScriptSerializer { MaxJsonLength = Int32.MaxValue };
@@ -88,6 +89,55 @@ public static class WindowsJobFacts {
   while(!File.Exists(Path.Combine(a[1],"quiesce")) && lifetime.ElapsedMilliseconds<120000) Thread.Yield();
   } finally { if(createdHandle!=IntPtr.Zero)CloseHandle(createdHandle); if(grandHandle!=IntPtr.Zero)CloseHandle(grandHandle); CloseHandle(rootHandle); self.Dispose(); }
  }
+ // Pins every PID supplied by the exact workspace job list. Queries no host-wide argv.
+ static void Census(string dir) {
+  var handles=new List<IntPtr>(); var identities=new Dictionary<int,Dictionary<string,object>>();
+  try {
+   foreach(string stage in new string[]{"before-request-census","armed-census"}) {
+    var facts=new Dictionary<string,object>(); var captured=new List<object>(); facts["census"]=captured;
+    try {
+     var deadline=Stopwatch.StartNew(); string request=stage+"-request.json";
+     while(!File.Exists(Path.Combine(dir,request))) { if(deadline.ElapsedMilliseconds>30000)throw new TimeoutException(request); Thread.Yield(); }
+     var input=Load(dir,request); var known=new Dictionary<int,Dictionary<string,object>>();
+     foreach(object value in (System.Collections.IEnumerable)input["known"]) { var id=(Dictionary<string,object>)value; known.Add(Convert.ToInt32(id["pid"]),id); }
+     foreach(object value in (System.Collections.IEnumerable)input["members"]) {
+      int pid=Convert.ToInt32(value); Dictionary<string,object> id;
+      if(!identities.TryGetValue(pid,out id)) {
+       IntPtr h=OpenProcess(0x100000|0x1000,false,pid); if(h==IntPtr.Zero)throw new Win32Exception(Marshal.GetLastWin32Error(),"OpenProcess job-derived census PID "+pid);
+       handles.Add(h);
+       // Handle is retained BEFORE any identity or targeted parent query.
+       id=new Dictionary<string,object>(); id["pid"]=pid; id["role"]=known.ContainsKey(pid)?(string)known[pid]["role"]:"job-derived-member";
+       captured.Add(id); identities.Add(pid,id);
+       FT firstBirth,firstExit,firstKernel,firstUser; Check(GetProcessTimes(h,out firstBirth,out firstExit,out firstKernel,out firstUser),"census birth"); id["token"]=firstBirth.Token;
+       var image=new StringBuilder(32768); uint imageSize=32768; Check(QueryFullProcessImageNameW(h,0,image,ref imageSize),"census full image"); id["executable"]=image.ToString();
+       IntPtr processToken; Check(OpenProcessToken(h,8,out processToken),"census token SID");
+       try { using(var wi=new WindowsIdentity(processToken))id["sid"]=wi.User.Value; } finally { CloseHandle(processToken); }
+       using(var query=new ManagementObjectSearcher("SELECT ProcessId, ParentProcessId, Name FROM Win32_Process WHERE ProcessId = "+pid)) {
+        using(var rows=query.Get()) {
+         if(rows.Count!=1)throw new Exception("Unknown job-derived parent/image observation "+pid);
+         foreach(ManagementObject row in rows) { id["parent"]=Convert.ToInt32(row["ParentProcessId"]); id["imageName"]=(string)row["Name"]; }
+        }
+       }
+       FT b,e,k,u; Check(GetProcessTimes(h,out b,out e,out k,out u),"census recheck birth");
+       if(b.Token!=(string)id["token"] || !Alive(h))throw new Exception("Census identity changed/exited "+pid);
+       id["parentScope"]="Observed parent PID only, not proof current parent PID still identifies original parent";
+       id["pinnedBeforeIdentity"]=true;
+      } else {
+       IntPtr check=Pin(id,false); CloseHandle(check); captured.Add(id);
+      }
+      Dictionary<string,object> expected;
+      if(known.TryGetValue(pid,out expected) && ((string)expected["token"]!=(string)id["token"] || (string)expected["sid"]!=(string)id["sid"] || !String.Equals((string)expected["executable"],(string)id["executable"],StringComparison.OrdinalIgnoreCase)))throw new Exception("Known identity differs from job-derived native identity");
+     }
+     facts["complete"]=true;
+    } catch(Exception error) { facts["error"]=error.ToString(); facts["complete"]=false; Save(dir,stage+"-pinned.json",facts); throw; }
+    Save(dir,stage+"-pinned.json",facts);
+   }
+   // Retain all identity handles through intervention. No job handle is opened.
+   var hold=Stopwatch.StartNew();
+   while(!File.Exists(Path.Combine(dir,"census-agent-stop")) && hold.ElapsedMilliseconds<120000)Thread.Yield();
+  } catch(Exception error) { Save(dir,"census-agent-failure.json",new {error=error.ToString()}); Environment.ExitCode=1; }
+  finally { foreach(IntPtr h in handles)CloseHandle(h); }
+ }
  static bool[] States(List<IntPtr> pinned) { bool[] states=new bool[pinned.Count]; for(int i=0;i<pinned.Count;i++)states[i]=Alive(pinned[i]); return states; }
  static void Observe(string dir,string mode) {
   IntPtr runner=IntPtr.Zero;
@@ -141,5 +191,5 @@ public static class WindowsJobFacts {
   finally { if(runner!=IntPtr.Zero)CloseHandle(runner);foreach(IntPtr handle in pinned)CloseHandle(handle); report["custody"]="No failure cleanup kills. Retained ambiguous or live custody belongs to disposable-host teardown."; Save(dir,"observation.json",report); }
   if(failed) Environment.ExitCode=1;
  }
- public static int Main(string[] a) { try { if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }
+ public static int Main(string[] a) { try { if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="census")Census(a[1]); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }
 }

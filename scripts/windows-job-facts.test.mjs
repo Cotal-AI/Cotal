@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 const read = ext => readFileSync(new URL(`./windows-job-facts.${ext}`, import.meta.url), 'utf8');
 const js = read('mjs'), ps = read('ps1'), cs = read('cs');
 test('preserved original creation result alone cannot classify exact containment', () => {
@@ -18,21 +19,41 @@ test('preserved original creation result alone cannot classify exact containment
   for (const result of [false, null, undefined]) assert.throws(() => corrected(fixture(result)), /unknown or outside/);
   assert.throws(() => corrected([{ ...fixture(true)[0], currentToken: 'reused' }]), /unknown or outside/);
   assert.throws(() => corrected([{ ...fixture(true)[0], queryError: 'query failed' }]), /unknown or outside/);
-  assert.ok(js.includes('requireContained(beforeRequest)'));
+  assert.ok(js.includes("await reconcile('before-request-census'"));
   assert.ok(js.includes('requireContained(membership)'));
 });
 test('request barrier and full census precede readiness, and successful creation is retained', () => {
-  assert.ok(js.indexOf('requireContained(beforeRequest)') < js.indexOf("writeFileSync(join(dir, 'breakaway-request')"));
+  assert.ok(js.indexOf("await reconcile('before-request-census'") < js.indexOf("writeFileSync(join(dir, 'breakaway-request')"));
   assert.ok(cs.indexOf('"helper-ready.json"') < cs.indexOf('bool ok=CreateProcessW'));
   assert.ok(cs.includes('lifetime.ElapsedMilliseconds<120000'));
   assert.ok(js.includes('if (breakaway.created) census.push(breakaway.identity)'));
-  assert.ok(js.includes('JSON.stringify([...members].sort'));
-  assert.ok(js.indexOf("save('armed-census.json'") < js.indexOf('requireContained(membership)'));
+  assert.ok(js.includes('sorted(members) !== sorted(census.map(p => p.pid))'));
+  assert.ok(js.indexOf('save(`${stage}-reconciled.json`') < js.indexOf('requireContained(membership)'));
   assert.ok(cs.includes('ready["census"]'));
   assert.ok(cs.includes('bool[] liveBefore=States(pinned)'));
   assert.ok(cs.includes('bool[] liveAfter=States(pinned)'));
 });
-test('worker JavaScript parses', () => { const r = spawnSync(process.execPath, ['--check', new URL('./windows-job-facts.mjs', import.meta.url).pathname]); assert.equal(r.status, 0, String(r.stderr)); });
+test('every job-derived PID is pinned before identity and retained through intervention', () => {
+  assert.ok(cs.includes('input["members"]'));
+  assert.ok(cs.indexOf('handles.Add(h)') < cs.indexOf('"census birth"'));
+  assert.ok(cs.includes('SELECT ProcessId, ParentProcessId, Name FROM Win32_Process WHERE ProcessId = '));
+  for (const field of ['parentScope', 'imageName', 'pinnedBeforeIdentity']) assert.ok(cs.includes(`"${field}"`));
+  assert.ok(cs.includes('stage+"-pinned.json",facts); throw;'));
+  assert.ok(cs.includes('"census-agent-stop"'));
+  assert.ok(ps.includes('System.Management.dll'));
+  assert.ok(ps.includes("@('census',(Quote $dir))"));
+  assert.ok(ps.indexOf("Wait-File $dir 'census-verified.json'") < ps.indexOf("(Join-Path $dir 'go')"));
+  assert.ok(js.includes('Native census changed after contender pinning'));
+});
+test('diagnostic branch and marker admit only the existing Windows job', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8');
+  assert.ok(workflow.includes('branches: [test/upgrade-matrix, measure/windows-job-custody]'));
+  const job = workflow.slice(workflow.indexOf('  windows-job-facts:'), workflow.indexOf('  windows-baseline:'));
+  assert.ok(job.includes("contains(github.event.head_commit.message, '[windows-job-only]')"));
+  assert.ok(job.includes('runs-on: windows-2022'));
+  assert.ok(job.includes('node --test scripts/windows-job-facts.test.mjs'));
+});
+test('worker JavaScript parses', () => { const r = spawnSync(process.execPath, ['--check', fileURLToPath(new URL('./windows-job-facts.mjs', import.meta.url))]); assert.equal(r.status, 0, String(r.stderr)); });
 test('only shipped launcher and gate APIs, one launch per runner', () => {
   assert.equal((js.match(/native\.launch\(/g) || []).length, 1);
   for (const s of ['seat.lockExclusiveNb(fd)', 'api.windowsCommandLine', 'api.windowsEnvironmentBlock', 'native.jobProcesses()', 'native.inJob(p.pid)', "'0.164.6'"]) assert.ok(js.includes(s), s);

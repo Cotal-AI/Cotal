@@ -35,7 +35,7 @@ try {
     $helper = Join-Path $directory 'windows-job-facts.exe'
     $worker = Join-Path $directory 'windows-job-facts.mjs'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-job-facts.mjs') -Destination $worker
-    & (Join-Path $framework 'csc.exe') /nologo /target:exe /platform:x64 "/reference:$(Join-Path $framework 'System.Web.Extensions.dll')" "/out:$helper" $source 2>&1 | Out-File (Join-Path $directory 'compile.log')
+    & (Join-Path $framework 'csc.exe') /nologo /target:exe /platform:x64 "/reference:$(Join-Path $framework 'System.Web.Extensions.dll')" "/reference:$(Join-Path $framework 'System.Management.dll')" "/out:$helper" $source 2>&1 | Out-File (Join-Path $directory 'compile.log')
     if ($LASTEXITCODE -ne 0) { throw 'Framework csc failed' }
     Add-Type @'
 using System;
@@ -158,6 +158,9 @@ Move-Item -LiteralPath ($Output+'.tmp') -Destination $Output
             $commands = @(((Quote $Node) + ' ' + $action.Arguments), ($Node + ' ' + $action.Arguments))
             if ($nativeAction.CommandLine -cnotin $commands -or $nativeAction.ExecutablePath -ine $Node) { throw 'Exact scheduled action command mismatch' }
             $entry.action = @{ identity=$id; kernelPipePid=$clientPid; command=$nativeAction.CommandLine; parentPid=$nativeAction.ParentProcessId }
+            # Outside the workspace job. Pins only PIDs supplied by its exact native member list.
+            $censusAgent = Start-Process -FilePath $helper -ArgumentList @('census',(Quote $dir)) -PassThru -RedirectStandardError (Join-Path $dir 'census-agent-error.log') -RedirectStandardOutput (Join-Path $dir 'census-agent.log')
+            $null = $censusAgent.Handle
             Wait-File $dir 'ready.json'
             $runnerFile = Get-Content -Raw -LiteralPath (Join-Path $dir 'runner.json') | ConvertFrom-Json
             if ($runnerFile.pid -ne $clientPid -or $runnerFile.token -cne $id.token) { throw 'Private file identity differs from authenticated runner' }
@@ -175,6 +178,8 @@ Move-Item -LiteralPath ($Output+'.tmp') -Destination $Output
             if (($expected -join ',') -cne ($actual -join ',') -or @($pinned.alive | Where-Object { $_ -ne $true }).Count -ne 0) { throw 'Contender did not pin the full live armed census' }
             $entry.armedCensus = $armed
             $entry.pinnedCensus = $pinned
+            [IO.File]::WriteAllText((Join-Path $dir 'verify-census'),'')
+            Wait-File $dir 'census-verified.json'
             if ($p.HasExited) { throw 'Runner exited before contender readiness' }
             if ($folder.GetTask($name).Xml -cne $registeredXml) { throw 'Task ownership changed' }
             [IO.File]::WriteAllText((Join-Path $dir 'go'),'')
@@ -184,6 +189,8 @@ Move-Item -LiteralPath ($Output+'.tmp') -Destination $Output
             $entry.observations += @{ phase='after'; utc=[DateTime]::UtcNow.ToString('o'); taskState=[int]$task.State; instanceState=[int]$running.State; enginePid=$running.EnginePID }
             if (-not $p.WaitForExit(10000)) { throw 'Runner not quiescent after measurement' }
             if ($observer.ExitCode -ne 0 -or -not $entry.observation.pass) { throw 'Native measurement falsified or incomplete, inspect every sample' }
+            [IO.File]::WriteAllText((Join-Path $dir 'census-agent-stop'),'')
+            if (-not $censusAgent.WaitForExit(10000) -or $censusAgent.ExitCode -ne 0) { throw 'Census agent failed or did not settle' }
             if ($folder.GetTask($name).Xml -cne $registeredXml) { throw 'Task ownership changed before registration cleanup' }
             $folder.DeleteTask($name,0)
             $entry.cleanup = 'Exact owned registration deleted after runner/descendants quiescent; evidence retained'

@@ -23,10 +23,14 @@ on:
         default: bounded
         required: true
   push:
-    branches: [test/upgrade-matrix]
+    branches: [test/upgrade-matrix, measure/windows-job-custody]
     paths:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
+      - scripts/windows-job-facts.mjs
+      - scripts/windows-job-facts.cs
+      - scripts/windows-job-facts.ps1
+      - scripts/windows-job-facts.test.mjs
       - docs/upgrade-matrix.md
 # No workflow-level queue: every immutable PR head and publication must finish.
 permissions:
@@ -520,6 +524,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - name: Validate diagnostic harness without native side effects
+        shell: powershell
+        run: node --test scripts/windows-job-facts.test.mjs
       - name: Install unchanged published native bindings
         shell: powershell
         run: |

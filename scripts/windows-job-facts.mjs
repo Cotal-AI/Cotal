@@ -69,9 +69,27 @@ try {
     const grandchild = JSON.parse(readFileSync(join(dir, 'grandchild.json'), 'utf8'));
     await waitFile('helper-ready.json');
     const helperIdentity = JSON.parse(readFileSync(join(dir, 'helper-ready.json'), 'utf8'));
-    const beforeRequest = [child, { ...grandchild, role: 'grandchild' }, helperIdentity].map(exact);
-    save('before-request.json', { membership: beforeRequest, members: native.jobProcesses() });
-    requireContained(beforeRequest);
+    const reconcile = async (stage, known) => {
+      const membersBefore = native.jobProcesses();
+      save(`${stage}-request.json`, { members: membersBefore, known });
+      await waitFile(`${stage}-pinned.json`);
+      const pinned = JSON.parse(readFileSync(join(dir, `${stage}-pinned.json`), 'utf8'));
+      if (pinned.error) throw new Error(`Full native census failed: ${pinned.error}`);
+      const census = pinned.census;
+      const membership = census.map(exact);
+      const members = native.jobProcesses();
+      const sorted = values => JSON.stringify([...values].sort((a, b) => a - b));
+      save(`${stage}-reconciled.json`, { census, membership, membersBefore, members });
+      requireContained(membership);
+      if (new Set(census.map(p => p.pid)).size !== census.length || sorted(membersBefore) !== sorted(members) || sorted(members) !== sorted(census.map(p => p.pid))) throw new Error('Native census changed during pinned reconciliation');
+      for (const expected of known) {
+        const actual = census.find(p => p.pid === expected.pid);
+        if (!actual || actual.token !== expected.token || actual.executable.toLowerCase() !== expected.executable.toLowerCase() || actual.sid !== expected.sid) throw new Error('Known fixture identity differs from pinned native census');
+      }
+      return { census, membership, members };
+    };
+    const beforeRequest = await reconcile('before-request-census', [child, { ...grandchild, role: 'grandchild' }, helperIdentity]);
+    save('before-request.json', beforeRequest);
     writeFileSync(join(dir, 'breakaway-request'), '', { flag: 'wx' });
     await waitFile('breakaway.json');
     const breakaway = JSON.parse(readFileSync(join(dir, 'breakaway.json'), 'utf8'));
@@ -79,16 +97,22 @@ try {
     if (breakaway.created) census.push(breakaway.identity);
     save('breakaway-result.json', { breakaway, membership: breakaway.created ? exact(breakaway.identity) : null });
     if (!breakaway.created && breakaway.lastError !== 5) throw new Error('Unknown breakaway refusal');
-    const membership = census.map(exact);
-    const members = native.jobProcesses();
-    save('armed-census.json', { root, census, members, membership, breakaway });
     // A successful creation is not an escape. Only the exact workspace-job result decides.
-    if (breakaway.created && membership.at(-1).inJob === false) throw new Error('FAIL: created process escaped exact workspace job, retained for bounded self-expiry');
-    requireContained(membership);
-    const known = census.map(p => p.pid).sort((a, b) => a - b);
-    if (JSON.stringify([...members].sort((a, b) => a - b)) !== JSON.stringify(known)) throw new Error('Full live job census differs from known created processes');
+    const createdMembership = breakaway.created ? exact(breakaway.identity) : null;
+    if (createdMembership?.inJob === false) throw new Error('FAIL: created process escaped exact workspace job, retained for bounded self-expiry');
+    if (createdMembership) requireContained([createdMembership]);
+    const armed = await reconcile('armed-census', census);
+    save('armed-census.json', { root, ...armed, breakaway });
     if (root.pid !== child.pid || root.token !== child.token) throw new Error('Launcher root identity mismatch');
-    save('ready.json', { root, child, grandchild, census, members, membership, breakaway });
+    save('ready.json', { root, child, grandchild, ...armed, breakaway });
+    // Reconcile again after observer pins the full census and before it may intervene.
+    await waitFile('verify-census');
+    const finalMembers = native.jobProcesses();
+    const finalMembership = armed.census.map(exact);
+    save('verified-census.json', { members: finalMembers, membership: finalMembership });
+    requireContained(finalMembership);
+    if (JSON.stringify([...finalMembers].sort((a, b) => a - b)) !== JSON.stringify(armed.census.map(p => p.pid).sort((a, b) => a - b))) throw new Error('Native census changed after contender pinning');
+    save('census-verified.json', { verified: true });
     while (!existsSync(join(dir, 'normal')) && Date.now() < until) await sleep(5);
     if (!existsSync(join(dir, 'normal'))) throw new Error('Runner expiry without controller');
     writeFileSync(join(dir, 'quiesce'), '');
