@@ -24,7 +24,7 @@ export function recoverySnapshotProblem(record: UpdateRecovery): string | undefi
 /** Malformed historical owners have no authority, but the record remains intact for retention. */
 export function recoveryOwner(record: UpdateRecovery): UpdateRecovery["owner"] {
   const owner = record.owner;
-  return owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && typeof owner.start === "string" && owner.start.length > 0 && typeof owner.nonce === "string" ? owner : undefined;
+  return owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && typeof owner.start === "string" && typeof owner.nonce === "string" ? owner : undefined;
 }
 
 /** A best-effort token's absence alone is not proof that its process has ended. */
