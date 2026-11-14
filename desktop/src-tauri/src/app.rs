@@ -278,7 +278,7 @@ pub fn run() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
-                    "quit" => { if app.state::<crate::app_activity::Activity>().allow_exit() { app.exit(0); } },
+                    "quit" => { if app.state::<crate::app_activity::Activity>().request_exit() { app.exit(0); } },
                     _ => {}
                 })
                 .build(app)?;
@@ -324,7 +324,7 @@ pub fn run() {
         .expect("Cotal could not initialize its native desktop application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = &event {
-                if !app.state::<crate::app_activity::Activity>().allow_exit() { api.prevent_exit(); }
+                if !app.state::<crate::app_activity::Activity>().request_exit() { api.prevent_exit(); }
             }
             #[cfg(target_os = "macos")]
             match event {

@@ -7,5 +7,5 @@ for (const [key, value] of Object.entries(process.env)) {
 }
 const executable = resolve(process.argv[2] ?? 'desktop/src-tauri/target/release/cotal-desktop' + (process.platform === 'win32' ? '.exe' : ''));
 const config = JSON.parse(execFileSync(executable, ['--updater-config'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 8192 }));
-assert.deepEqual(config, { schema: 1, endpoints: ['https://github.com/Cotal-AI/Cotal/releases/latest/download/desktop-latest.json'], insecure: false, test: false }, 'The release executable must carry only the production updater endpoint and no test input.');
+assert.deepEqual(config, { schema: 1, endpoints: ['https://github.com/Cotal-AI/Cotal/releases/latest/download/desktop-latest.json'], test: false }, 'The release executable must carry only the production updater endpoint and no test input.');
 console.log('Release executable updater configuration verified: production HTTPS endpoint only.');

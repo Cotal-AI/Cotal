@@ -9,6 +9,7 @@ mod native_presence;
 #[cfg(feature = "desktop")]
 pub mod updater;
 pub mod app_activity;
+pub mod update_receipt;
 pub mod presence;
 pub mod first_paint;
 

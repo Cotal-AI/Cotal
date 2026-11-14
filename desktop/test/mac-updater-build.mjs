@@ -50,7 +50,7 @@ try {
     copyFileSync(join(directory, `${archives[0]}.sig`), join(root, `${name}.app.tar.gz.sig`));
     const executable = join(directory, 'Cotal.app/Contents/MacOS/cotal-desktop');
     const config = JSON.parse((await execute(executable, ['--updater-config'])).stdout);
-    assert.deepEqual(config.endpoints, [endpoint]); assert.equal(config.test, true); assert.equal(config.insecure, false);
+    assert.deepEqual(config.endpoints, [endpoint]); assert.equal(config.test, true);
   }
   const invalid = [
     { name: 'feature', env: proofEnv, args: ['--features', 'updater-e2e'] },

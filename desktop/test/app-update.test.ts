@@ -12,6 +12,7 @@ for (const [state, automatic, expected] of [
   [{ phase: "available", version: "0.165.0" }, false, "Version 0.165.0 is available. Automatic updates are off."],
   [{ phase: "downloading", version: "0.165.0", downloaded: 25, total: 100 }, true, "Downloading Cotal 0.165.0 (25%)…"],
   [{ phase: "ready", version: "0.165.0" }, true, "Cotal 0.165.0 is downloaded and verified. Restart to update, or close the window to update automatically."],
+  [{ phase: "available", version: "0.165.0", reason: "An app operation is still running. The update will wait." }, true, "Version 0.165.0 is available. An app operation is still running. The update will wait."],
   [{ phase: "preparing" }, true, "The newest release is still being prepared."],
   [{ phase: "failed", reason: "Signature verification failed" }, true, "Desktop update failed: Signature verification failed. It will retry at the next check."],
 ] satisfies [AppUpdate, boolean, string][]) {

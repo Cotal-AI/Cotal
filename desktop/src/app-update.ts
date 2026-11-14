@@ -38,15 +38,19 @@ export function appliedUpdateSummary(receipt: AppUpdateReceipt | undefined, appV
 
 /** Only native manifest results supply a candidate. Registry availability cannot authorize installation. */
 export function appUpdateSummary(state: AppUpdate, automatic: boolean): string {
+  const message = updatePhaseSummary(state, automatic);
+  return state.reason && state.phase !== "failed" && state.phase !== "unconfigured" ? `${message} ${state.reason}` : message;
+}
+function updatePhaseSummary(state: AppUpdate, automatic: boolean): string {
   switch (state.phase) {
     case "unconfigured": return state.reason ?? "This build cannot update itself. Use the installer to update Cotal.";
     case "idle": return "Updates have not been checked yet.";
     case "checking": return "Checking for desktop updates…";
     case "current": return automatic ? "You are up to date." : "Automatic updates are off. You are up to date.";
     case "installing": return `Installing Cotal ${state.version} and restarting…`;
-    case "available": return `Version ${state.version} is available.${automatic ? " Restart to update, or close the window to update automatically." : " Automatic updates are off."}`;
+    case "available": return `Version ${state.version} is available.${state.reason ? "" : automatic ? " Restart to update, or close the window to update automatically." : " Automatic updates are off."}`;
     case "downloading": return `Downloading Cotal ${state.version}${state.total ? ` (${Math.min(100, Math.floor((state.downloaded ?? 0) / state.total * 100))}%)` : ""}…`;
-    case "ready": return `Cotal ${state.version} is downloaded and verified.${state.reason ? ` ${state.reason}` : " Restart to update, or close the window to update automatically."}`;
+    case "ready": return `Cotal ${state.version} is downloaded and verified.${state.reason ? "" : " Restart to update, or close the window to update automatically."}`;
     case "preparing": return "The newest release is still being prepared.";
     case "failed": return `Desktop update failed: ${state.reason ?? "Unknown failure"}. It will retry at the next check.`;
   }

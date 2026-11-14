@@ -35,7 +35,10 @@ func press(_ element: AXUIElement) {
     guard AXUIElementPerformAction(element, kAXPressAction as CFString) == .success else { fail("AX press failed") }
 }
 switch operation {
-case "describe": output(["pid": pid, "visible": visible(), "path": path, "activation": running.activationPolicy.rawValue])
+case "describe":
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
+    let authorization = windows.contains { ($0[kCGWindowOwnerName as String] as? String) == "SecurityAgent" && ($0[kCGWindowLayer as String] as? Int) == 0 }
+    output(["pid": pid, "visible": visible(), "path": path, "activation": running.activationPolicy.rawValue, "authorizationPrompt": authorization])
 case "text":
     guard CommandLine.arguments.count == 4 else { fail("missing DOM id") }
     output(text(element(CommandLine.arguments[3])))

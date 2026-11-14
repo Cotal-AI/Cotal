@@ -33,6 +33,15 @@ fn bundle() -> Result<PathBuf, String> {
         .map(PathBuf::from).ok_or_else(|| "Run the packaged Cotal application to install it.".to_string())
 }
 
+#[cfg(all(cotal_updater, target_os = "macos"))]
+pub(crate) fn updater_location(app: &AppHandle) -> Result<PathBuf, String> {
+    let source = bundle()?;
+    if crate::presence::relocation_source(&source, &app.path().download_dir().map_err(|error| error.to_string())?) {
+        return Err("Move Cotal to Applications before updating it. Disk image and Downloads copies cannot update themselves.".into());
+    }
+    Ok(source)
+}
+
 fn transient(app: &AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {

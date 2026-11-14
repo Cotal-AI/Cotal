@@ -88,6 +88,7 @@ let serviceStatus: Record<string, unknown> | undefined;
 async function applyAppUpdate(explicit = false): Promise<void> {
   if (appApplyRunning || busy || loginActive || setupActive || appPlatform !== "darwin" || !autoUpdates || !appUpdate?.version) return;
   appApplyRunning = true;
+  if (explicit) { appliedUpdate = undefined; renderSettings(); }
   try { appUpdate = await invoke<AppUpdate>("app_update_apply", { explicit }); }
   catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
   finally { appApplyRunning = false; renderSettings(); }
@@ -104,6 +105,7 @@ async function checkAppUpdates(manual = false): Promise<void> {
   nextAppCheck = Date.now() + 86_400_000;
   try {
     appUpdate = await invoke<AppUpdate>("app_update_check", { manual });
+    if (appUpdate.phase === "current" && (appliedUpdate?.phase === "failed" || appliedUpdate?.target !== appVersion)) appliedUpdate = undefined;
     if (appUpdaterConfigured()) await readAutoUpdates();
     renderSettings();
     if (autoUpdates && appUpdate.phase === "available") await applyAppUpdate();
@@ -1095,7 +1097,11 @@ async function start(): Promise<void> {
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);
     const arch = info.platform === "darwin" && info.arch === "arm64" ? "Apple silicon" : ({ x64: "64-bit Intel / AMD", arm64: "ARM64", ia32: "32-bit Intel" } as Record<string, string>)[String(info.arch)] ?? String(info.arch);
     text("machine-details", `${os} · ${arch} · ${Math.round(Number(info.memoryBytes) / 1024 ** 3)} GB`);
-    await listen<AppUpdate>("desktop-update", event => { appUpdate = event.payload; renderSettings(); });
+    await listen<AppUpdate>("desktop-update", event => {
+      appUpdate = event.payload;
+      if (appUpdate.phase === "downloading" || appUpdate.phase === "installing") appliedUpdate = undefined;
+      renderSettings();
+    });
     await listen("desktop-hidden", () => void applyAppUpdate());
     try { appliedUpdate = await invoke<AppUpdateReceipt | undefined>("app_update_receipt") ?? undefined; }
     catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }

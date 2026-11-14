@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -41,6 +41,16 @@ const server = createServer((req, res) => {
   if (req.url === '/update.tar.gz') {
     const responseBytes = mode === 'install-error' ? invalidBytes : bytes;
     res.setHeader('content-length', responseBytes.length);
+    if (mode === 'slow') {
+      let offset = 0;
+      const timer = setInterval(() => {
+        const next = Math.min(bytes.length, offset + Math.ceil(bytes.length / 40));
+        res.write(bytes.subarray(offset, next)); offset = next;
+        if (offset === bytes.length) { clearInterval(timer); res.end(); }
+      }, 500);
+      res.on('close', () => clearInterval(timer));
+      return;
+    }
     if (mode === 'interrupted') { res.write(bytes.subarray(0, Math.floor(bytes.length / 3))); res.destroy(); return; }
     res.end(responseBytes); return;
   }
@@ -110,6 +120,51 @@ try {
   await until('N visible for invalid input controls', () => ax('describe'), value => value.visible);
   assert.equal((await call('update', '--auto', 'on')).ok, true);
   await ax('settings');
+  mode = 'slow';
+  await ax('click', 'check-updates');
+  await until('slow candidate', () => ax('text', 'settings-update-summary'), text => text.includes('Restart to update'));
+  let count = requests.filter(item => item.path === '/update.tar.gz').length;
+  await ax('close');
+  await until('hidden slow download started', async () => requests.filter(item => item.path === '/update.tar.gz').length, value => value > count);
+  await run('/usr/bin/open', [app]);
+  await until('Open during download immediately shows window', () => ax('describe'), value => value.visible, 10_000);
+  assert.equal(installed(), '0.164.8');
+  await ax('settings');
+  await until('Open during download leaves verified N ready', () => ax('text', 'settings-update-summary'), text => text.includes('downloaded and verified'), 60_000);
+  assert.equal(installed(), '0.164.8');
+  record('Open during slowed automatic download', { version: installed() });
+  await ax('quit'); await delay(1500);
+  mode = 'publication';
+  await run('/usr/bin/open', ['-n', app]);
+  await until('N visible before Quit download control', () => ax('describe'), value => value.visible);
+  await ax('settings');
+  mode = 'slow'; await ax('click', 'check-updates');
+  await until('second slow candidate', () => ax('text', 'settings-update-summary'), text => text.includes('Restart to update'));
+  count = requests.filter(item => item.path === '/update.tar.gz').length;
+  await ax('close');
+  await until('second hidden slow download started', async () => requests.filter(item => item.path === '/update.tar.gz').length, value => value > count);
+  const downloading = await ax('describe');
+  await ax('quit');
+  await until('Quit during download exits N', () => { try { process.kill(downloading.pid, 0); return false; } catch { return true; } }, Boolean, 10_000);
+  assert.equal(installed(), '0.164.8');
+  mode = 'publication'; await run('/usr/bin/open', ['-n', app]);
+  await until('N reopened after cancelled download', () => ax('describe'), value => value.visible);
+  await ax('settings'); mode = 'valid'; await ax('click', 'check-updates');
+  await until('candidate for permission control', () => ax('text', 'settings-update-summary'), text => text.includes('Restart to update'));
+  chmodSync(app, 0o500);
+  try {
+    await ax('close');
+    await until('hidden permission refusal leaves N ready', async () => {
+      // UI is opened only after the native automatic attempt has had time to complete.
+      await delay(2000);
+      const hidden = await ax('describe'); assert.equal(hidden.authorizationPrompt, false, 'Hidden automatic replacement must not show an authorization prompt');
+      record('hidden permission observation', hidden);
+      await run('/usr/bin/open', [app]); await ax('settings');
+      return ax('text', 'settings-update-summary');
+    }, text => text.includes('administrator permission'), 60_000);
+    assert.equal(installed(), '0.164.8');
+    record('unwritable automatic apply refused without authorization', { version: installed() });
+  } finally { chmodSync(app, 0o755); }
   for (const control of ['missing-signature', 'bad-signature', 'interrupted', 'install-error']) {
     mode = control;
     const priorRequests = requests.filter(item => item.path === '/latest.json').length;
@@ -169,6 +224,12 @@ try {
   await seat.stop(manager.instanceId); seat = undefined;
   await until('target service and ready Manager', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.9' && reply.result.managers?.every(item => item.state === 'answering' && item.connectors?.some(connector => connector.state === 'available')));
   await until('app confirms updated target', () => ax('text', 'applied-update'), text => text === 'Updated to Cotal 0.164.9.');
+  await ax('quit'); await delay(1500);
+  await run('/usr/bin/open', ['-n', app]);
+  await until('second target start visible', () => ax('describe'), value => value.visible);
+  const secondResult = await ax('dump');
+  assert.ok(!secondResult.nodes.some(item => item.text.includes('Updated to Cotal 0.164.9.')), 'The result line is first-session only');
+  record('second start result retired', { version: installed() });
   assert.equal((await run(node, [cli, '--version'])).trim().includes('0.164.9'), true);
   const inventory = JSON.parse(readFileSync(join(runtime, 'desktop-runtime.json'), 'utf8'));
   for (const file of inventory.files) assert.equal(createHash('sha256').update(readFileSync(join(runtime, file.path))).digest('hex'), file.sha256);
@@ -181,7 +242,7 @@ try {
   assert.ok(Object.keys(connectorVersions).length >= 6);
   assert.ok(Object.values(connectorVersions).every(version => version === '0.164.9'));
   record('target bundled graph', { version: installed(), connectorVersions, checkedRuntimeFiles: inventory.files.length });
-  writeFileSync(join(out, 'result.json'), JSON.stringify({ schema: 1, source: build.source, passed: true, debug: true, realLaunchd: true, realFixturePty: true, publication: false, applyMode: hiddenApply ? 'hidden-automatic' : 'explicit', controls: ['visible-waits', 'off', 'missing-signature', 'bad-signature', 'interrupted-download', 'install-error', 'explicit-restart', 'occupied-seat', 'target-service-ready'] }, null, 2));
+  writeFileSync(join(out, 'result.json'), JSON.stringify({ schema: 1, source: build.source, passed: true, debug: true, realLaunchd: true, realFixturePty: true, publication: false, applyMode: hiddenApply ? 'hidden-automatic' : 'explicit', controls: ['visible-waits', 'off', 'open-during-download', 'quit-during-download', 'hidden-permission-refusal', 'second-start-result-retired', 'missing-signature', 'bad-signature', 'interrupted-download', 'install-error', 'explicit-restart', 'occupied-seat', 'target-service-ready'] }, null, 2));
 } catch (error) {
   writeFileSync(join(out, 'failure.json'), JSON.stringify({ message: error.message, stack: error.stack, observation: error.observation }, null, 2));
   try { writeFileSync(join(out, 'app-ax.json'), JSON.stringify(await ax('dump'), null, 2)); } catch (diagnostic) { writeFileSync(join(out, 'app-ax-error.txt'), diagnostic.message); }
