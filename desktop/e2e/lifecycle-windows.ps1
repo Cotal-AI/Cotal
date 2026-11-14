@@ -3,12 +3,16 @@
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
     [Parameter(Mandatory = $true)][ValidateSet('describe', 'close-window', 'settings', 'quit', 'login-entry', 'connected-view', 'settings-back', 'disable-login')][string]$Action,
-    [ValidateRange(1, 2147483647)][int]$AppPid
+    [ValidateRange(1, 2147483647)][int]$AppPid,
+    [ValidateRange(1, 2147483647)][int]$DaemonPid,
+    [string]$DaemonStart
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $diagnostics = [System.Collections.Generic.List[object]]::new()
 $candidates = @()
+$appCandidates = @()
+$serviceLauncher = $null
 try {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Native Windows desktop required.' }
     $expected = (Get-Item -LiteralPath $Binary).FullName
@@ -82,9 +86,9 @@ public static class LifecycleWindows {
         }
     }
     function Process-Candidates {
-        @(Owned-Processes | ForEach-Object {
-            [ordered]@{ pid = $_.Id; birth = $_.StartTime.ToUniversalTime().ToString('o'); path = $_.Path }
-        })
+        Owned-Processes | ForEach-Object {
+            $script:candidates += [ordered]@{ pid = $_.Id; birth = $_.StartTime.ToUniversalTime().ToString('o'); path = $_.Path }
+        }
     }
     function Assert-Owner {
         $matches = @(Owned-Processes | Where-Object { $_.Id -eq $script:ownerPid })
@@ -137,8 +141,27 @@ public static class LifecycleWindows {
         if ($icons.Count -gt 1) { throw 'Multiple exact Cotal tray icons found. Refusing an ambiguous click.' }
         if ($icons.Count -eq 1) { return $icons[0] }
     }
-    $candidates = @(Process-Candidates)
+    Process-Candidates
     $diagnostics.Add([ordered]@{ candidates = @($candidates) })
+    $appCandidates = @($candidates)
+    if ($DaemonPid) {
+        if ($Action -ne 'describe' -or !$DaemonStart -or !$AppPid) { throw 'Daemon classification requires describe, app PID and a pinned daemon birth.' }
+        $daemonProcess = Get-Process -Id $DaemonPid
+        $null = $daemonProcess.Handle
+        if ($daemonProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -cne $DaemonStart) { throw 'Answering daemon birth changed before census.' }
+        $daemonRow = Get-CimInstance Win32_Process -Filter "ProcessId=$DaemonPid" -Property ProcessId,ParentProcessId
+        if (!$daemonRow -or $daemonRow.ProcessId -ne $DaemonPid) { throw 'Daemon parent query unavailable.' }
+        $launcher = Get-Process -Id $daemonRow.ParentProcessId
+        $null = $launcher.Handle
+        if ($launcher.Id -eq $AppPid -or ![string]::Equals($launcher.Path, $expected, [StringComparison]::OrdinalIgnoreCase) -or $launcher.StartTime -gt $daemonProcess.StartTime) { throw 'Answering daemon parent is not a separate exact service launcher.' }
+        $serviceLauncher = [ordered]@{ pid = $launcher.Id; birth = $launcher.StartTime.ToUniversalTime().ToString('o'); path = $launcher.Path }
+        $matchingLauncher = @($candidates | Where-Object { $_.pid -eq $serviceLauncher.pid -and $_.birth -ceq $serviceLauncher.birth -and $_.path -ieq $serviceLauncher.path })
+        if ($matchingLauncher.Count -ne 1) { throw 'Service launcher is not pinned in the complete candidate census.' }
+        $daemonProcess.Refresh()
+        $launcher.Refresh()
+        if ($daemonProcess.HasExited -or $launcher.HasExited) { throw 'Daemon or launcher exited during app census.' }
+        $appCandidates = @($candidates | Where-Object { $_.pid -ne $serviceLauncher.pid })
+    }
     if ($Action -eq 'login-entry') {
         # Open read-only and request only the exact Cotal value. Do not enumerate other login entries.
         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $false)
@@ -311,7 +334,7 @@ public static class LifecycleWindows {
     if ($AppPid) { $selected = @($selected | Where-Object { $_.pid -eq $AppPid }) }
     $reportedPid = if ($Action -eq 'login-entry') { 0 } elseif ($Action -in @('quit', 'settings', 'close-window', 'connected-view', 'settings-back', 'disable-login')) { $script:ownerPid } elseif ($selected.Count -eq 1) { $selected[0].pid } else { 0 }
     $visible = @($summary.windows | Where-Object { $_.pid -eq $reportedPid -and $_.visible -and $_.title -ceq 'Cotal' }).Count -gt 0
-    $output = [ordered]@{ ok = $true; action = $Action; pid = $reportedPid; visible = $visible; candidates = @($candidates); result = $result; diagnostics = @($diagnostics.ToArray()) }
+    $output = [ordered]@{ ok = $true; action = $Action; pid = $reportedPid; visible = $visible; candidates = @($candidates); appCandidates = @($appCandidates); serviceLauncher = $serviceLauncher; result = $result; diagnostics = @($diagnostics.ToArray()) }
     if ($Action -in @('connected-view', 'settings-back')) { $output['title'] = $result.title; $output['label'] = $result.label }
     if ($Action -eq 'disable-login') { $output['checked'] = $false; $output['present'] = $false }
     if ($Action -eq 'login-entry') {
@@ -320,7 +343,7 @@ public static class LifecycleWindows {
     }
     $output | ConvertTo-Json -Depth 10 -Compress
 } catch {
-    [ordered]@{ ok = $false; action = $Action; error = $_.Exception.Message; candidates = @($candidates); diagnostics = @($diagnostics.ToArray()) } | ConvertTo-Json -Depth 10 -Compress
+    [ordered]@{ ok = $false; action = $Action; error = $_.Exception.Message; candidates = @($candidates); appCandidates = @($appCandidates); serviceLauncher = $serviceLauncher; diagnostics = @($diagnostics.ToArray()) } | ConvertTo-Json -Depth 10 -Compress
     [Console]::Error.WriteLine('Windows lifecycle helper failed: ' + $_.Exception.Message)
     exit 1
 }
