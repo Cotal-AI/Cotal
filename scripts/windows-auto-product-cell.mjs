@@ -40,18 +40,18 @@ export async function run(){
   save('versions.json',{published:latest,A,B,source:json(join(output,'candidate-A/manifest.json')).source});
   return;
  }
- assert.equal(process.platform,'win32');assert.equal(process.env.GITHUB_ACTIONS,'true');assert.equal(process.env.RUNNER_ENVIRONMENT,'github-hosted');
+ assert(['win32','linux','darwin'].includes(process.platform));assert.equal(process.env.GITHUB_ACTIONS,'true');assert.equal(process.env.RUNNER_ENVIRONMENT,'github-hosted');
  const repo=resolve(import.meta.dirname,'..'),home=homedir(),project=join(output,'project'),prefix=join(output,'prefix');
  mkdirSync(join(project,'.cotal'),{recursive:true});
  const env={...process.env,DO_NOT_TRACK:'1',COTAL_TELEMETRY:'off',npm_config_prefix:prefix,npm_config_cache:join(output,'npm-cache'),PNPM_CONFIG_WORKSPACE_CONCURRENCY:'3'};
  for(const key of Object.keys(env))if(key.startsWith('COTAL_')&&!['COTAL_TELEMETRY'].includes(key))delete env[key];
  const inheritedPath=Object.entries(env).find(([key])=>key.toLowerCase()==='path')?.[1];assert(inheritedPath,'Windows PATH is unreadable');
  for(const key of Object.keys(env))if(key.toLowerCase()==='path')delete env[key];
- env.PATH=[prefix,dirname(process.execPath),inheritedPath].join(delimiter);
- const npmCli=join(dirname(process.execPath),'node_modules/npm/bin/npm-cli.js');assert(existsSync(npmCli),'npm CLI missing; no shell fallback');
- const npm=process.execPath,npmArgs=args=>[npmCli,...args];
- const pkg=join(prefix,'node_modules/cotal-ai'),entry=join(pkg,'dist/cotal.js'),cotalHome=join(env.LOCALAPPDATA,'Cotal'),config=join(env.APPDATA,'Cotal');
- const report={source:'published 0.164.10→expected closing-step refusal→packed fixed A→manual packed B',calls:[],cells:[],reboot:'UNRUN: hosted runner cannot restart',environment:{home,cotalHome,config,project,prefix,normalNativeHomes:true}};
+ env.PATH=[process.platform==='win32'?prefix:join(prefix,'bin'),dirname(process.execPath),inheritedPath].join(delimiter);
+ const npmCli=process.platform==='win32'?join(dirname(process.execPath),'node_modules/npm/bin/npm-cli.js'):undefined;if(npmCli)assert(existsSync(npmCli),'npm CLI missing; no shell fallback');
+ const npm=npmCli?process.execPath:'npm',npmArgs=args=>npmCli?[npmCli,...args]:args;
+ const pkg=join(prefix,...(process.platform==='win32'?[]:['lib']),'node_modules/cotal-ai'),entry=join(pkg,'dist/cotal.js'),cotalHome=process.platform==='win32'?join(env.LOCALAPPDATA,'Cotal'):join(home,'.cotal'),config=process.platform==='win32'?join(env.APPDATA,'Cotal'):join(home,'.config/cotal');
+ const report={source:process.platform==='win32'?'published 0.164.10→expected closing-step refusal→packed fixed A→manual packed B':'packed fixed A→manual packed B with native service',calls:[],cells:[],reboot:'UNRUN: hosted runner cannot restart',environment:{home,cotalHome,config,project,prefix,normalNativeHomes:true}};
  save('report.json',report);
  async function call(label,file,args,limit=180000){
   const startedAt=new Date().toISOString();const result=await new Promise(resolveCall=>{const p=spawn(file,args,{cwd:project,env,stdio:['ignore','pipe','pipe'],windowsHide:true});let stdout='',stderr='';const timer=setTimeout(()=>p.kill(),limit);p.stdout.on('data',b=>stdout+=b);p.stderr.on('data',b=>stderr+=b);p.once('error',e=>{clearTimeout(timer);resolveCall({exit:null,error:e.message,stdout,stderr});});p.once('close',(exit,signal)=>{clearTimeout(timer);resolveCall({exit,signal,stdout,stderr});});});
@@ -82,15 +82,28 @@ export async function run(){
   await new Promise(resolveListen=>proxy.listen(0,'127.0.0.1',resolveListen));const registry='http://127.0.0.1:'+proxy.address().port;
   env.npm_config_registry=registry;restore=configureCandidateRegistry(home,registry);
   report.registry={...overlayA.identity,actualFront:registry};save('report.json',report);
-  ok(await call('install published 0.164.10 through npm',npm,npmArgs(['install','-g','--prefix',prefix,'cotal-ai@0.164.10','--no-audit','--no-fund'])));
+  const setupVersion=process.platform==='win32'?'0.164.10':versionA;
+  ok(await call('install initial source through npm',npm,npmArgs(['install','-g','--prefix',prefix,'cotal-ai@'+setupVersion,'--no-audit','--no-fund'])));
   ok(await cli('seed published connectors',['ext','seed']));
   const workspaceEntry=join(pkg,'node_modules/@cotal-ai/workspace/dist/index.js');
   ok(await cli('published native daemon plan',['daemon','install','--dry-run','--json']));
   ok(await cli('install pre-existing published service',['daemon','install','--json']));installed=true;
-  report.publishedService=await poll('published service ready',async()=>{const s=await status();return s?.state==='ready'&&s.version==='0.164.10'?s:undefined;});
+  report.publishedService=await poll('published service ready',async()=>{const s=await status();return s?.state==='ready'&&s.version===setupVersion?s:undefined;});
   // Passive file reads retain the actual refusal before timeout or service cleanup can erase it.
   captureGeneration('published service ready');
   const generationTimer=setInterval(()=>captureGeneration('manual first-feature hop pending'),10000);
+  if(process.platform!=='win32'){
+   try {
+   active=overlayB;
+   ok(await cli('fixed A to synthetic B manual update',['update','--self']));
+   const final=await poll('POSIX target ready',async()=>{const s=await status();return s?.state==='ready'&&s.version===versionB?s:undefined;});
+   report.cells.push({name:'fixed-own-next-manual-service',pass:true,status:final});
+   assert.equal(final.update.restartEvidence.prepared,false);
+   const recovery=join(cotalHome,'update-recovery.json');assert(!existsSync(recovery)||json(recovery)===null);
+   assert.equal(json(join(pkg,'package.json')).version,versionB);report.pass=true;
+   return report;
+   } finally { clearInterval(generationTimer); captureGeneration('POSIX fixed own-next finished'); }
+  }
   const taskName=JSON.parse(report.calls.find(c=>c.label==='install pre-existing published service').stdout).result.unit;
   const observerReady=join(output,'generation-observer-ready.json'),observerStop=join(output,'generation-observer-stop');
   Object.assign(env,{CELL_DAEMON_PID:String(report.publishedService.pid),CELL_DAEMON_TASK:taskName,CELL_OBSERVER_READY:observerReady,CELL_OBSERVER_STOP:observerStop,CELL_OBSERVER_LOG:join(output,'generation-native-observer.jsonl')});
