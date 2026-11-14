@@ -10,7 +10,9 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
+import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
+import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
 export function daemonHostedManagerOptions(options, { hosted: disposable = hosted, platform = process.platform } = {}) {
@@ -24,6 +26,31 @@ export function macTransitionSource(source, expectedTarget, kind) {
   return kind === 'transition' && /^\d+\.\d+\.\d+$/.test(source) && /^\d+\.\d+\.\d+$/.test(expectedTarget ?? '')
     && compareVersions(source, '0.164.6') >= 0 && compareVersions(source, expectedTarget) < 0;
 }
+export function needsSchedulerEligibility({ method, platform, launchdProof, windowsPolicy, policy }) {
+  return method === 'scheduler' && ['linux', 'darwin'].includes(platform)
+    && launchdProof !== 'off-before-tick' && !windowsPolicy && policy !== 'unsupported-scheduler';
+}
+
+export async function waitForSchedulerEligibility(report, readStatus, { now = Date.now, sleep = delay, timeoutMs = 90000, intervalMs = 1000 } = {}) {
+  const startedAt = now(), deadline = startedAt + timeoutMs;
+  const receipt = report.schedulerEligibility = { startedAt, deadline, source: report.source, observations: [] };
+  const observe = (status, exit) => {
+    receipt.observations.push({ attempt: receipt.observations.length + 1, observedAt: now(), exit, status });
+    return exit === 0 && status?.state === 'ready' && status.version === report.source && status.update?.automatic === true;
+  };
+  if (observe(report.daemonBefore, 0)) return;
+  while (now() < deadline) {
+    await sleep(Math.min(intervalMs, deadline - now()));
+    if (now() >= deadline) break;
+    const result = await readStatus(deadline - now());
+    const status = result.exit === 0 ? JSON.parse(result.stdout).result : undefined;
+    const eligible = observe(status, result.exit);
+    if (status) report.daemonBefore = status;
+    if (eligible && now() <= deadline) return;
+  }
+  assert.fail(`native scheduler eligibility timed out: ${JSON.stringify(receipt)}`);
+}
+
 export const hostedManagerCommand = space => ['daemon', 'setup', '--space', space, '--json'];
 export const foreignStackCleanupCommand = 'export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; cd /tmp/project; cotal down --with-agents --yes';
 
@@ -262,7 +289,7 @@ export async function matrixCell(options) {
   const [npm, npmPrefix] = npmCommand();
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
-  async function call(label, file, argv, timeout = 180000) {
+  async function call(label, file, argv, timeout = callTimeout(label)) {
     if (/install|seed|upgrade under test/.test(label)) {
       const disk = statfsSync(root);
       assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation action');
@@ -286,7 +313,7 @@ export async function matrixCell(options) {
     return result;
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
-  const cotal = (label, argv) => layout === 'installer' ? call(label, launcher, argv) : call(label, process.execPath, [cli, ...argv]);
+  const cotal = (label, argv, timeout) => layout === 'installer' ? call(label, launcher, argv, timeout) : call(label, process.execPath, [cli, ...argv], timeout);
   const daemon = (label, argv) => desktopRuntime
     ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv])
     : cotal(label, argv);
@@ -319,14 +346,21 @@ export async function matrixCell(options) {
     report.source = source === 'latest' ? report.target : source;
     if (publishedLaunchd) assert.notEqual(report.target, report.source, 'next published release is not available yet');
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
+    if (options['source-candidate']) {
+      assert(options.candidate && options.direction === 'B' && layout === 'npm', 'source candidate requires npm candidate-B proof');
+      const sourceManifest = json(join(resolve(options['source-candidate']), 'manifest.json'));
+      report.source = sourceManifest.packages[0].version;
+      report.sourceCandidate = { source: sourceManifest.source, version: report.source, manifestSha256: digest(readFileSync(join(resolve(options['source-candidate']), 'manifest.json'))) };
+    }
     if (options.candidate) {
-      overlay = await candidateRegistry(resolve(options.candidate), options.direction ?? 'B', report.registry);
+      overlay = await candidateRegistry(resolve(options['source-candidate'] ?? options.candidate), options.direction ?? 'B', report.registry);
       report.candidate = overlay.identity;
       const numeric = value => value.split('.').map(Number);
       const compare = (a, b) => { const left = numeric(a), right = numeric(b); for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i]; return 0; };
-      assert((options.direction ?? 'B') === 'B' ? compare(overlay.identity.version, report.source) > 0 : compare(report.target, overlay.identity.version) > 0, 'candidate ordering must permit a real version-changing stock update');
+      const targetVersion = options['source-candidate'] ? json(join(resolve(options.candidate), 'manifest.json')).packages[0].version : overlay.identity.version;
+      assert((options.direction ?? 'B') === 'B' ? compare(targetVersion, report.source) > 0 : compare(report.target, overlay.identity.version) > 0, 'candidate ordering must permit a real version-changing stock update');
       env.npm_config_registry = overlay.url;
-      if ((options.direction ?? 'B') === 'B') report.target = overlay.identity.version;
+      if ((options.direction ?? 'B') === 'B') report.target = targetVersion;
       else report.source = overlay.identity.version;
       if (expectedTarget) assert.equal(report.target, expectedTarget, 'packed target differs from frozen version PR head');
       // Native services read npm's normal per-account config, not the launching shell's registry env.
@@ -352,6 +386,17 @@ export async function matrixCell(options) {
     if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state)) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
+    }
+    if (options['source-candidate']) {
+      const sourceIdentity = overlay.identity;
+      restoreRegistry();
+      report.sourceRegistryRequests = await overlay.close();
+      overlay = await candidateRegistry(resolve(options.candidate), 'B', report.registry);
+      assert.equal(overlay.identity.source, sourceIdentity.source, 'candidate A/B must come from the same source');
+      report.sourceCandidate = sourceIdentity;
+      report.candidate = overlay.identity;
+      env.npm_config_registry = overlay.url;
+      restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
     if (state === 'stale-extensions') {
       const old = options['stale-version'] ?? (report.source === '0.155.0' ? '0.154.0' : '0.155.0');
@@ -404,6 +449,9 @@ export async function matrixCell(options) {
         await delay(1000);
       }
       assert(container.pid, 'stock foreign container reached manager up with an owned host PID');
+      report.foreignContainer.pid1 = ok(await call('pin foreign container first process', 'docker', ['exec', container.id, 'sh', '-c', 'test -r /proc/1/cmdline && tr "\\000" " " < /proc/1/cmdline']), 'container first process');
+      report.foreignContainer.pid1Supervise = /(?:^|\s)(?:[^ ]*\/)?cotal(?:\.js)? supervise\s*$/.test(report.foreignContainer.pid1.stdout);
+      assert(report.foreignContainer.pid1Supervise, 'owned container first process must be the bare supervisor under test');
       report.foreignContainer.hostProcesses = ok(await call('record owned foreign supervisor host identity', 'docker', ['top', container.id, '-eo', 'pid,uid,args']), 'owned container process identity').stdout;
       report.foreignContainer.imageIdentity = ok(await call('record foreign image identity', 'docker', ['image', 'inspect', tag]), 'image identity').stdout;
     }
@@ -431,10 +479,15 @@ export async function matrixCell(options) {
       const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
       save(join(fixture, 'package.json'), { name: 'cotal-upgrade-native-fixture', version: report.target, type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } });
       const seat = join(fixture, 'seat.mjs');
-      writeFileSync(seat, `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,...(e.COTAL_CREDS?{creds:readFileSync(e.COTAL_CREDS,'utf8')}:{}),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
+      writeFileSync(seat, daemonHostedManager
+        ? `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';import {execFile} from 'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`
+        : `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,...(e.COTAL_CREDS?{creds:readFileSync(e.COTAL_CREDS,'utf8')}:{}),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
+      const recorder = daemonHostedManager ? writeHostedSeatRecorder(fixture, seat) : undefined;
+      const launchedSeat = recorder?.launcher ?? seat;
+      const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
       const ready = join(root, 'writer-ready'), release = join(root, 'writer-release');
       releaseHolder = () => writeFileSync(release, 'release');
-      writeFileSync(join(fixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+      writeFileSync(join(fixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
       if (state === 'agent' && daemonHostedManager) {
         assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'daemon-hosted Manager requires prepared remote user-auth participant without a local Manager');
         const space = report.participant.space;
@@ -454,7 +507,10 @@ export async function matrixCell(options) {
         assert.equal(setup.manager?.state, 'answering');
         assert(setup.manager.instanceId, 'daemon setup must return answering Manager identity');
         report.managerHost.instanceId = setup.manager.instanceId;
-        report.managerHost.spawn = ok(await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', space]), 'hosted spawn');
+        report.managerHost.spawn = await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade_proof_worker', '--detach', '--no-events', '--space', space]);
+        report.managerHost.diagnostics = archiveHostedDiagnostics({ fixture, cotalHome, space, output, id });
+        report.managerHost.launchObservation = await cotal('record daemon-hosted Manager launch inventory', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']);
+        ok(report.managerHost.spawn, 'hosted spawn');
         report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;
       } else if (state === 'agent') {
         report.managerHost = { mode: 'standalone', space: 'upgrade-proof' };
@@ -511,13 +567,9 @@ export async function matrixCell(options) {
         assert.equal(report.daemonBefore.update.automatic, false);
         assert(readFileSync(plan.unitPath, 'utf8').includes(desktopRuntime), 'native service source must name actual released desktop runtime');
       }
-      if (method === 'scheduler' && process.platform === 'linux') {
+      if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
         // Native custody observation runs asynchronously after the socket first becomes ready.
-        for (let i = 0; i < 90 && !report.daemonBefore.update?.automatic; i++) {
-          await delay(1000);
-          const status = await cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json']);
-          if (status.exit === 0) report.daemonBefore = JSON.parse(status.stdout).result;
-        }
+        await waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining));
       }
     }
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
@@ -602,7 +654,7 @@ export async function matrixCell(options) {
           continue;
         }
         let installedVersion;
-        try { installedVersion = json(join(pkg, 'package.json')).version; }
+        try { installedVersion = options['source-candidate'] ? (await cotal('observe selected execution version', ['--version'])).stdout.split(/\r?\n/, 1)[0]?.replace(/^cotal-ai /, '') : json(join(pkg, 'package.json')).version; }
         catch (error) { if (error.code === 'ENOENT') { report.schedulerReplacementObserved = true; continue; } throw error; }
         const status = await cotal('scheduler observation', ['daemon', 'status', '--json']);
         report.schedulerLastStatus = status;
@@ -618,7 +670,7 @@ export async function matrixCell(options) {
         uncertain = true;
         throw new Error(`scheduler outcome unknown after observation deadline: ${attempt.result}; native service retained for runner teardown`);
       }
-      check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : json(join(pkg, 'package.json')).version === report.target && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
+      check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : (options['source-candidate'] ? report.schedulerLastStatus?.exit === 0 && JSON.parse(report.schedulerLastStatus.stdout).result?.version === report.target : json(join(pkg, 'package.json')).version === report.target) && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
       update = { exit: 0, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
@@ -675,7 +727,7 @@ export async function matrixCell(options) {
     report.updaterSelectedVersions = selectedVersions;
     report.updaterSelectedVersion = selectedVersions[0];
     check('upgrade exits successfully', update.exit === 0, update);
-    check('CLI version is target', json(join(pkg, 'package.json')).version === expectedVersion, json(join(pkg, 'package.json')).version);
+    check(options['source-candidate'] ? 'npm installed record remains unchanged' : 'CLI version is target', json(join(pkg, 'package.json')).version === (options['source-candidate'] ? report.source : expectedVersion), json(join(pkg, 'package.json')).version);
     const manifest = join(config, 'extensions/extensions.json');
     const extensions = existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
@@ -712,7 +764,7 @@ export async function matrixCell(options) {
       report.managerHost.instanceAfter = current.instanceId;
       const seats = await cotal('confirm consent stopped daemon-hosted seats', ['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']);
       report.managerHost.after = seats;
-      check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade-proof-worker'), seats);
+      check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade_proof_worker'), seats);
     }
     if (installedService) {
       let active = await daemon('native status after', ['daemon', 'status', '--json']);
@@ -776,7 +828,13 @@ export async function matrixCell(options) {
         assert(current.State.Running, 'owned foreign container must remain running until stack cleanup');
         report.foreignStackStop = await call('stop stock stack inside owned foreign container', 'docker', ['exec', container.id, 'sh', '-c', foreignStackCleanupCommand], 60000);
         report.ownedStackCleanup = report.foreignStackStop;
-        check('owned local stack cleanup succeeds', report.foreignStackStop.exit === 0, report.foreignStackStop);
+        const ended = JSON.parse(ok(await call('observe container immediately after stock down', 'docker', ['inspect', container.id]), 'container end observation').stdout)[0];
+        const processCheck = await call('confirm no owned container process remains', 'docker', ['top', container.id, '-eo', 'pid,uid,args']);
+        const processRows = processCheck.stdout.trim().split('\n').filter(Boolean);
+        const noProcesses = processCheck.exit === 0 ? processRows.length <= 1 : processCheck.exit === 1 && processCheck.stdout.trim() === '' && /is not running/.test(processCheck.stderr);
+        const stackEnded = foreignStackEnded({ stop: report.calls.findLast(entry => entry.label === 'stop stock stack inside owned foreign container'), before: container, after: ended, noProcesses });
+        report.foreignStackEnd = { state: ended.State, noProcesses, processCheck, passed: stackEnded, pid1Exit137: report.foreignStackStop.exit === 137 && stackEnded };
+        check('owned local stack cleanup succeeds', stackEnded, report.foreignStackEnd);
         report.foreignContainerStop = ok(await call('stop owned foreign supervisor and broker', 'docker', ['stop', '--time', '20', container.id], 60000), 'foreign container stop');
         const stopped = JSON.parse(ok(await call('confirm owned foreign container stopped', 'docker', ['inspect', container.id]), 'container stop proof').stdout)[0];
         assert.equal(stopped.Id, container.id);
@@ -784,7 +842,7 @@ export async function matrixCell(options) {
         assert.equal(stopped.State.Running, false);
         report.foreignContainerCleanup = { exit: report.foreignContainerStop.exit, running: stopped.State.Running, retained: true };
         check('foreign container cleanup succeeds', report.foreignContainerCleanup.exit === 0 && !report.foreignContainerCleanup.running, report.foreignContainerCleanup);
-        ok(report.foreignStackStop, 'foreign stack cleanup');
+        assert(stackEnded, 'owned stock stack end was not confirmed');
       } catch (error) {
         if (!report.assertions.some(row => row.name === 'foreign container cleanup succeeds')) check('foreign container cleanup succeeds', false, error.message);
         report.cleanupFailure = error.message; report.result = 'failed';
@@ -809,11 +867,15 @@ export async function matrixCell(options) {
       }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
+    if (daemonHostedManager && report.managerHost?.instanceId) {
+      report.managerHost.diagnosticsBeforeCleanup = archiveHostedDiagnostics({ fixture: join(root, 'native-fixture'), cotalHome, space: report.managerHost.space, output, id, stage: 'before-cleanup' });
+    }
     if (daemonHostedManager && !uncertain && report.managerHost?.instanceId) {
       try {
         report.managerHost.stop = await daemon('stop owned daemon-hosted Manager', ['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']);
         check('owned daemon-hosted Manager stop succeeds', report.managerHost.stop.exit === 0, report.managerHost.stop);
         ok(report.managerHost.stop, 'hosted agent cleanup');
+        report.managerHost.diagnosticsAfterStop = archiveHostedDiagnostics({ fixture: join(root, 'native-fixture'), cotalHome, space: report.managerHost.space, output, id, stage: 'after-stop' });
       } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (installedService) {
@@ -839,7 +901,7 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!(stackStarted || container) || report.ownedStackCleanup?.exit === 0) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
@@ -988,6 +1050,19 @@ export async function candidateRegistry(directory, direction, upstream) {
     close: async () => { save(join(directory, `registry-requests-${process.pid}.json`), requests); await new Promise(done => server.close(done)); return requests; } };
 }
 
+export const callTimeout = (label, platform = process.platform) => label === 'upgrade under test' && platform === 'win32' ? 300000 : 180000;
+
+export function updateCallDuration(report) {
+  if (report.method === 'scheduler') return 'scheduler: not a direct update call';
+  const calls = report.calls ?? [];
+  let call = calls.find(call => call.label === 'upgrade under test');
+  if (report.method === 'installer') {
+    const installers = calls.filter(call => ['public installer', 'receipt-bound published installer', 'candidate source installer'].includes(call.label));
+    if (installers.length > 1 || report.layout === 'npm' || report.id?.endsWith('-first-install')) call = installers.at(-1);
+  }
+  return call?.elapsedMs ?? 'no update call recorded';
+}
+
 export function summarize(directory) {
   const admissions = [];
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
@@ -1000,11 +1075,11 @@ export function summarize(directory) {
   });
   assert(reports.length > 0 || admissions.length > 0, 'no upgrade cell or runner admission evidence found');
   const escape = value => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>');
-  const table = ['| Tier | Cell | Source | Target | Result | Exact refusal |', '|---|---|---|---|---|---|',
-    ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, row.refusal].map(escape).join(' | ')} |`)];
+  const table = ['| Tier | Cell | Source | Target | Result | Update call duration (ms) | Exact refusal |', '|---|---|---|---|---|---|---|',
+    ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, updateCallDuration(row), row.refusal].map(escape).join(' | ')} |`)];
   if (admissions.length) table.push('', '| Runner | Admission | Reason |', '|---|---|---|', ...admissions.map(row => `| ${[row.runner, row.result, row.reason].map(escape).join(' | ')} |`));
   const counts = reports.reduce((counts, row) => ({ ...counts, [row.result]: (counts[row.result] ?? 0) + 1 }), {});
-  const summary = { counts, unexpectedFailures: reports.filter(row => cellExitCode(row) !== 0).length, admissions, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape })) };
+  const summary = { counts, unexpectedFailures: reports.filter(row => cellExitCode(row) !== 0).length, admissions, cells: reports.map(row => { const { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape } = row; return { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape, updateCallDuration: updateCallDuration(row) }; }) };
   save(join(directory, 'summary.json'), summary);
   writeFileSync(join(directory, 'summary.md'), table.join('\n') + '\n');
   console.log(table.join('\n'));

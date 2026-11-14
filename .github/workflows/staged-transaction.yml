@@ -1,0 +1,132 @@
+name: Staged transaction measurement
+on:
+  push:
+    branches: [measure/staged-transaction]
+permissions:
+  contents: read
+env:
+  PRODUCT_SOURCE: 108085b433507f93bcb463fb62ed9e55494269d2
+  pnpm_config_workspace_concurrency: 3
+jobs:
+  workspace-native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
+  seat-native:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm --filter @cotal-ai/seat build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staged-seat-${{ matrix.arch }}
+          path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+  pack:
+    needs: [workspace-native, seat-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SOURCE }}
+          path: product
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/native-inputs
+      - name: Assemble unchanged source-matched native inputs
+        working-directory: product
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ github.sha }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/native-inputs/staged-seat-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/native-inputs/staged-seat-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/native-inputs/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native-inputs/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/native-inputs/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/native-inputs/seat-native-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native-inputs/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native-inputs/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native-inputs/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native-inputs/workspace-native-darwin-arm64
+      - name: Pack the exact product as A and B with normal release guards
+        run: |
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-A" --version 0.164.9 --source-root "$GITHUB_WORKSPACE/product"
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate-B" --version 0.164.10 --source-root "$GITHUB_WORKSPACE/product"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staged-candidates
+          path: |
+            ${{ runner.temp }}/candidate-A
+            ${{ runner.temp }}/candidate-B
+          if-no-files-found: error
+  mac:
+    needs: pack
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        method: [self, scheduler]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          name: staged-candidates
+          path: ${{ runner.temp }}/candidates
+      - name: Real candidate A to B through the existing matrix
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          args=()
+          if [ '${{ matrix.method }}' = scheduler ]; then args+=(--launchd-proof transition); fi
+          node scripts/automatic-update-platform-baseline.mjs --source-candidate "$RUNNER_TEMP/candidates/candidate-A" --candidate "$RUNNER_TEMP/candidates/candidate-B" --direction B --source 0.164.9 --expected-target 0.164.10 --layout npm --state daemon --method '${{ matrix.method }}' "${args[@]}" --output "$RUNNER_TEMP/staged-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: staged-mac-${{ matrix.method }}
+          path: ${{ runner.temp }}/staged-evidence
+          if-no-files-found: error
