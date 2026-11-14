@@ -85,7 +85,7 @@ try {
   }
   const invalidArchive = join(root, 'invalid-install.tar.gz');
   writeFileSync(invalidArchive, 'signed invalid updater archive, test-owned input\n');
-  await run(repo, ['--dir', 'desktop', 'exec', 'tauri', 'signer', 'sign', '--app-version', '0.164.9', invalidArchive], proofEnv, join(root, 'invalid-install-sign.log'));
+  await run(repo, ['--dir', 'desktop', 'exec', 'tauri', 'signer', 'sign', '-f', key, '--app-version', '0.164.9', invalidArchive], { ...env, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '' }, join(root, 'invalid-install-sign.log'));
   writeFileSync(join(root, 'build-result.json'), JSON.stringify({ schema: 1, source: head, versions: ['0.164.8', '0.164.9'], debug: true, endpoint: 'http://127.0.0.1:43189/latest.json', signing: 'disposable updater key and ad-hoc platform signatures', fixturePubkey: trust, fixtureKeyId, configPubkey: inertPubkey, configKeyId, configEndpoints: [], mismatchWarnings }, null, 2));
 } finally {
   // Keep build evidence, never the generated private material or signer output.

@@ -5,8 +5,9 @@ import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
 const { parse } = createRequire(import.meta.url)("yaml");
 
-function proofConfig(configKey: string | undefined, fixtureKey = "fixture-public-key") {
-  const source = readFileSync(new URL("mac-updater-version.mjs", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+function proofConfig(configKey: string | undefined, fixtureKey = "fixture-public-key", crlf = false) {
+  const raw = readFileSync(new URL("mac-updater-version.mjs", import.meta.url), "utf8");
+  const source = (crlf ? raw.replace(/\r?\n/g, "\r\n") : raw).replace(/^import .*;\r?\n/gm, "");
   let overlay: Record<string, unknown> | undefined;
   runInNewContext(source, {
     process: { platform: "darwin", argv: ["node", "stamper", "0.164.8"], env: {
@@ -22,12 +23,14 @@ function proofConfig(configKey: string | undefined, fixtureKey = "fixture-public
 }
 
 test("proof stamper supplies only a distinct inert bundler public key", () => {
-  const overlay = proofConfig("config-public-key");
-  assert.deepEqual(overlay, {
-    bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: "-" } },
-    plugins: { updater: { pubkey: "config-public-key" } },
-  });
-  assert.notEqual((overlay?.plugins as { updater: { pubkey: string } }).updater.pubkey, "fixture-public-key");
+  for (const crlf of [false, true]) {
+    const overlay = proofConfig("config-public-key", "fixture-public-key", crlf);
+    assert.deepEqual(overlay, {
+      bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: "-" } },
+      plugins: { updater: { pubkey: "config-public-key" } },
+    });
+    assert.notEqual((overlay?.plugins as { updater: { pubkey: string } }).updater.pubkey, "fixture-public-key");
+  }
 });
 
 test("proof stamper refuses absent or matching config public keys", () => {
