@@ -43,7 +43,7 @@ import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/c
 import { codeSpan, CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
-import { openVerified, readLine } from "./client.js";
+import { isStoppingLifetime, openVerified, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
@@ -562,7 +562,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !isStoppingLifetime(error, owner)) throw error;
       }
       if (absent && processBirth(owner.pid) !== owner.start) break;
       if (Date.now() >= deadline) throw new Error("old daemon death and endpoint absence were not confirmed within 130s");
@@ -718,7 +718,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
         // The native CI reproducer observed a connect reset while close() tears down
         // accepted sockets. It proves neither a live endpoint nor absence. Reobserve.
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(process.platform === "win32" && socket && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
       if (Date.now() >= deadline) throw uncertain("daemon shutdown was not confirmed within 130s");
