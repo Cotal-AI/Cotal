@@ -98,8 +98,23 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
-`cotal status` warns when a first-party extension's recorded version differs from the CLI and names `cotal update --self` as the reconciliation command.
 It checks running-manager continuity before installation repair.
+On Linux, a supervisor in another user's installation or an isolated container does not add local
+custody. A supervisor that resolves to this installation still counts, including one launched
+through sudo. If attribution remains uncertain, update refuses with the process ID, numeric user
+ID and stop command before contacting an unselected remote Manager.
+On 0.164.6 and older, an unrelated container or another user's Manager can instead produce
+`a manager for this mesh runs on this machine; reading its custody`, followed by
+`running manager continuity check` and a refused manager-caller exchange. That old updater
+refuses before replacing itself, so another `cotal update --self` cannot load this fix while the
+foreign supervisor runs. Rerun the installer to replace the package and run the new release's
+own reconciliation:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh -s -- --no-setup --no-modify-path
+```
+
+Then run `cotal version` and `cotal status` with the installer's launcher at `~/.local/bin/cotal`.
 Remote credential exchanges that time out or return HTTP 5xx retry for up to 120 seconds during
 that check. Credential denials and other HTTP 4xx responses still fail without retry.
 If it refuses, follow the reported remedy instead of removing credentials or reinstalling an unrelated copy.
