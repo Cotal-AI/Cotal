@@ -29,7 +29,8 @@ if ($Census) {
   try {
     $tasks=@(Get-ScheduledTask -TaskPath '\' -TaskName $Unit -ErrorAction Stop)
     if ($tasks.Count -ne 1) { throw 'Exact scheduled task query was not singular.' }
-    $task=@{state='read';unit=$Unit;taskState=$tasks[0].State.ToString()}
+    $info=Get-ScheduledTaskInfo -InputObject $tasks[0] -ErrorAction Stop
+    $task=@{state='read';unit=$Unit;taskState=$tasks[0].State.ToString();lastRunTime=$info.LastRunTime.ToUniversalTime().ToString('o');nextRunTime=$info.NextRunTime.ToUniversalTime().ToString('o');lastTaskResult=$info.LastTaskResult}
   } catch { $task=@{state='unknown';unit=$Unit;reason=$_.Exception.Message} }
   @{daemon=$daemon;parent=$parent;task=$task;processes=$processes;unknownCandidates=$unknown} | ConvertTo-Json -Depth 7 -Compress
   exit 0

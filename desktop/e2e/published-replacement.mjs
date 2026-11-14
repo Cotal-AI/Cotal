@@ -18,7 +18,10 @@ process.umask(0o077);
 const here = dirname(fileURLToPath(import.meta.url));
 const output = join(process.env.RUNNER_TEMP, 'desktop-replacement');
 mkdirSync(output, { recursive: true });
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
+const metadataToken = process.env.DESKTOP_METADATA_TOKEN;
+assert.ok(metadataToken, 'workflow release metadata token is required');
+delete process.env.DESKTOP_METADATA_TOKEN;
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH', 'DESKTOP_METADATA_TOKEN'].includes(key)));
 env.DO_NOT_TRACK = '1';
 const ps = process.platform === 'win32' ? join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe') : undefined;
 const appRoot = process.platform === 'darwin' ? '/Applications/Cotal.app' : join(process.env.LOCALAPPDATA, 'Cotal');
@@ -30,6 +33,7 @@ const report = { schema: 1, mode, platform: process.platform, arch: process.arch
   'Windows setup runs silent (/S). The prompt shown to a person is not measured.',
   'No space is signed in. The restart inside daemon setup is not exercised. Uninstall then install is a route this cell can try, not the only stock recovery route.',
   'Gatekeeper and SmartScreen acceptance are out of scope because installers were not downloaded by a browser.',
+  'The runner logon predates creation of this task. Its minute repetition may not be armed until a later user sign-in.',
 ] };
 let installed = false, serviceAttempted = false, installerUnknown = false, windowOutstanding = false, app;
 const mounts = [];
@@ -90,7 +94,7 @@ async function waitStatus(expected, timeout = 45_000) {
 async function download(version) {
   const suffix = process.platform === 'darwin' ? 'aarch64.dmg' : 'x64-setup.exe';
   const name = `Cotal_${version}_${suffix}`;
-  const meta = await fetch(`https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v${version}`, { signal: AbortSignal.timeout(30_000), headers: { Accept: 'application/vnd.github+json' } });
+  const meta = await fetch(`https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v${version}`, { signal: AbortSignal.timeout(30_000), redirect: 'error', headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${metadataToken}` } });
   assert.equal(meta.status, 200);
   const release = await meta.json();
   assert.equal(release.draft, false); assert.equal(release.tag_name, `v${version}`);
@@ -254,13 +258,24 @@ try {
     state: !byName.has(row.file) ? 'removed' : byName.get(row.file).sha256 !== row.sha256 ? 'replaced-content' : byName.get(row.file).ino !== row.ino ? 'replaced-same-content' : 'left' }));
   report.replacementCompleted = replaced.code === 0;
   report.installedVersion = JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version;
-  const settleDeadline = Date.now() + 30_000;
+  const settleStartedAt = Date.now();
+  const settleDeadline = settleStartedAt + (process.platform === 'win32' ? 150_000 : 30_000);
+  report.watch = { startedAtUnixMs: settleStartedAt, deadlineUnixMs: settleDeadline, intervalMs: 5000, samples: [] };
   while (Date.now() < settleDeadline) {
+    const sampleStartedAt = Date.now();
     const sample = await daemon('status');
-    report.samples.push({ label: 'post-replacement-status', at: new Date().toISOString(), code: sample.code, result: sample.body?.result, error: sample.body?.error });
-    if (sample.body?.result?.version === '0.164.7') break;
-    await delay(5000);
+    const census = await launcherCensus(sample.body?.result?.pid ?? before.pid, 'post-replacement-watch');
+    report.watch.samples.push({ atUnixMs: Date.now(), code: sample.code, result: sample.body?.result, error: sample.body?.error, census });
+    if (sample.code === 0 && sample.body?.result?.version === '0.164.7' && !report.watch.automaticReturn) {
+      report.watch.automaticReturn = { atUnixMs: Date.now(), elapsedMs: Date.now() - settleStartedAt, pid: sample.body.result.pid, census };
+    }
+    save();
+    if (process.platform !== 'win32' && sample.body?.result?.version === '0.164.7') break;
+    await delay(Math.max(0, Math.min(5000 - (Date.now() - sampleStartedAt), settleDeadline - Date.now())));
   }
+  report.watch.completedAtUnixMs = Date.now();
+  report.launcherWatchEnd = await launcherCensus(report.watch.samples.at(-1)?.result?.pid ?? before.pid, 'launcher-watch-end');
+  save();
   await closeApp(); await openApp(); await window('window-reopened');
   report.afterReopenStatus = await daemon('status');
   report.launcherAfterReopen = await launcherCensus(report.afterReopenStatus.body?.result?.pid ?? before.pid, 'launcher-after-reopen');
@@ -308,6 +323,13 @@ finally {
         assert.ok(!existsSync(binary));
       }
       report.cleanup = 'service-and-app-removed';
+      const listLeftovers = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+        const path = join(directory, entry.name);
+        const row = { file: relative(appRoot, path), kind: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' };
+        return entry.isDirectory() ? [row, ...listLeftovers(path)] : [row];
+      });
+      report.installationLeftovers = existsSync(appRoot) ? listLeftovers(appRoot) : [];
+      report.installationRootRemains = existsSync(appRoot);
     }
   } catch (error) { report.cleanup = 'failed-retained-for-runner-disposal'; report.cleanupError = error.stack ?? String(error); process.exitCode = 1; }
   for (const mount of mounts.reverse()) {

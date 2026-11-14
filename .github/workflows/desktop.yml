@@ -34,6 +34,7 @@ jobs:
       - name: Replace published 0.164.6 with published 0.164.7
         env:
           DESKTOP_REPLACEMENT_MODE: ${{ matrix.mode }}
+          DESKTOP_METADATA_TOKEN: ${{ github.token }}
           DO_NOT_TRACK: '1'
         run: node desktop/e2e/published-replacement.mjs
       - name: Upload original replacement observations
