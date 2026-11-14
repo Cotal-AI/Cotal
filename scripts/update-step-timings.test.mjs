@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { updateStepTimings } from './update-step-timings.mjs';
-test('extract ordered step receipts without inventing timings for older releases', () => {
+test('extract ordered human-style step completions without inventing old timings', () => {
   assert.deepEqual(updateStepTimings('old update output'), []);
-  assert.deepEqual(updateStepTimings('noise\nUpdate step global-install completed in 123 ms\r\n\x1b[32mUpdate step connector:claude completed in 0 ms\x1b[0m\nUpdate step extension:@cotal-ai/tmux completed in 456 ms\n'), [
-    { step: 'global-install', elapsedMs: 123 }, { step: 'connector:claude', elapsedMs: 0 }, { step: 'extension:@cotal-ai/tmux', elapsedMs: 456 },
+  assert.deepEqual(updateStepTimings('noise\n✓ global package install finished (12.3 s)\r\n\x1b[32m✓ built-in claude reconciled (0.0 s)\x1b[0m\n✓ extension @cotal-ai/tmux install finished (4.5 s)\n✓ integration codex refreshed (0.1 s)\n'), [
+    { step: 'global-install', elapsedMs: 12300 }, { step: 'connector:claude', elapsedMs: 0 }, { step: 'extension:@cotal-ai/tmux', elapsedMs: 4500 }, { step: 'integration:codex', elapsedMs: 100 },
   ]);
-  assert.deepEqual(updateStepTimings('not Update step bad completed in 42 ms\nUpdate step bad completed in -1 ms'), []);
-  assert.throws(() => updateStepTimings('Update step bad completed in 9007199254740992 ms'), /safe integer/);
+  assert.deepEqual(updateStepTimings('not ✓ release archives checked (4.2 s)\n✓ unrelated (1.0 s)\n✓ release archives checked (-1.0 s)'), []);
+  assert.throws(() => updateStepTimings('✓ release archives checked (9007199254740992.0 s)'), /safe integer/);
 });

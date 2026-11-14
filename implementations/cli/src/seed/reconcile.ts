@@ -696,7 +696,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
   if (r.status !== 0) throw new SeedChildFailure(`failed to seed connector "${name}" from ${storePath}`, childFailure(r).split("\n"));
-  console.error(`Update step connector:${name} completed in ${Date.now() - started} ms`);
+  console.error(`✓ built-in ${name} reconciled (${((Date.now() - started) / 1000).toFixed(1)} s)`);
 }
 
 /** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress

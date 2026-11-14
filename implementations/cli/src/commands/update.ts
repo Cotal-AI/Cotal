@@ -462,7 +462,7 @@ async function reconcileCurrent(
     rt.out("Refreshing connector integrations");
     const refreshStarted = Date.now();
     for (const line of await rt.refreshConnectors()) rt.out(c.green(`✓ ${line}`));
-    rt.out(`Update step connector-integrations completed in ${Date.now() - refreshStarted} ms`);
+    rt.out(`✓ connector integrations refreshed (${((Date.now() - refreshStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));
     return finish(false);
@@ -524,7 +524,7 @@ async function reconcileCurrent(
       delete env[UPDATE_PARENT_ENV];
       const extensionStarted = Date.now();
       const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
-      rt.out(`Update step extension:${entry.pkg} completed in ${Date.now() - extensionStarted} ms`);
+      rt.out(`✓ extension ${entry.pkg} install finished (${((Date.now() - extensionStarted) / 1000).toFixed(1)} s)`);
       writeChildOutput(result);
       if (result.status !== 0) {
         rt.err(c.red(`✗ ${entry.pkg}: ${failure(result)}`));
@@ -939,7 +939,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     // A previous generation must remain downloadable and verified before replacement begins.
     rt.out(`Checking cotal-ai@${current} recovery archives`);
     await checkReleaseArchives(current, rt);
-    rt.out(`Update step release-checks completed in ${Date.now() - releaseChecksStarted} ms`);
+    rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
@@ -1016,7 +1016,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     releaseClosure = claimUpdateClosureAccess();
     rt.out("Saving update recovery snapshot");
     snapshot = snapshotUpdateClosure();
-    rt.out(`Update step recovery-snapshot completed in ${Date.now() - snapshotStarted} ms`);
+    rt.out(`✓ recovery snapshot saved (${((Date.now() - snapshotStarted) / 1000).toFixed(1)} s)`);
   } catch (error) {
     releaseClosure?.();
     await releaseAdmission?.();
@@ -1054,7 +1054,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     false,
     npmInstall.windowsVerbatimArguments,
   );
-  rt.out(`Update step global-install completed in ${Date.now() - installStarted} ms`);
+  rt.out(`✓ global package install finished (${((Date.now() - installStarted) / 1000).toFixed(1)} s)`);
   if (latestNotAvailable(installed, targetVersion)) {
     // npm resolves the requested version before reifying the global tree. This refusal
     // did not replace packages, so neither rollback nor a failed-attempt charge applies.
@@ -1089,7 +1089,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   rt.out(`Reconciling installed cotal-ai@${targetVersion}`);
   const reconcileStarted = Date.now();
   const child = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update", ...targetArgv(target)], env, true);
-  rt.out(`Update step installed-reconcile completed in ${Date.now() - reconcileStarted} ms`);
+  rt.out(`✓ installed reconciliation finished (${((Date.now() - reconcileStarted) / 1000).toFixed(1)} s)`);
   if (child.stderr) rt.stderr(child.stderr);
   if (child.stdout) rt.stdout(child.stdout);
   if (child.status !== 0) {
