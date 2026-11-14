@@ -15,6 +15,7 @@ try {
 const home = join(root, 'home'), config = join(root, 'config'), tools = join(root, 'tools');
 for (const dir of [home, config, tools]) mkdirSync(dir, { mode: 0o700 });
 const bin = resolve('bin/dist/cotal.js');
+const generation = (JSON.parse(readFileSync(resolve('bin/package.json'), 'utf8')) as { version: string }).version;
 const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
   COTAL_ALLOW_CHECKOUT_SEED: '1', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_NO_UPDATE_CHECK: '1' };
 const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 120000 });
@@ -37,7 +38,7 @@ const before = digest(prefix);
 const npm = spawnSync('which', ['npm'], { encoding: 'utf8' }).stdout.trim();
 assert(npm);
 const shim = join(tools, 'npm');
-writeFileSync(shim, `#!/bin/sh\ncase "$*" in\n  *install*opencode*) echo 'fixture: second connector unavailable' >&2; exit 1;;\n  *view*cotal-ai@latest*) printf '"0.164.8"\\n'; exit 0;;\nesac\nexec ${JSON.stringify(npm)} "$@"\n`);
+writeFileSync(shim, `#!/bin/sh\ncase "$*" in\n  *install*opencode*) echo 'fixture: second connector unavailable' >&2; exit 1;;\n  *view*cotal-ai@latest*) printf '"${generation}"\\n'; exit 0;;\nesac\nexec ${JSON.stringify(npm)} "$@"\n`);
 chmodSync(shim, 0o700);
 const updated = run(['update'], { PATH: [tools, process.env.PATH].join(delimiter) });
 assert.notEqual(updated.status, 0, 'second package refusal must fail update');
@@ -50,6 +51,6 @@ assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes('undefine
 for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readdirSync(join(prefix, 'node_modules/@cotal-ai', pkg)).includes('damage.txt'));
 console.log('whole-set successful update repairs every selected package');
 const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
-assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], 'file:../seed/store/0.164.8/claude');
+assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], `file:../seed/store/${generation}/claude`);
 } finally { rmSync(root, { recursive: true, force: true }); }
 }
