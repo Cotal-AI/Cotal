@@ -922,10 +922,7 @@ Status and sign-in requests remain available while native supervisor tools run. 
 are cached. Restart and uninstall preparation re-observe unless ownership was verified, replacing
 an unfinished startup check with one bounded to 65 seconds inside the installer's 70-second wait.
 A refusal distinguishes a missing native provenance from an observation that remains unknown.
-The daemon logs safe reason codes without native error text or file paths. A failed observation
-also records its receipt, source, task or identity stage, a bounded failure code and elapsed time.
-For native adapter tools it records a fixed tool name, exit status and elapsed time, never arguments
-or output. An unavailable exit status remains null. These diagnostics do not grant stop authority.
+The daemon logs safe reason codes without native error text or file paths.
 Automatic activation requires the initial observation to be owned; a failed or unfinished check
 never grants native-service authority.
 Generation activation prepares idle Managers, then restarts the daemon. The new daemon reconciles

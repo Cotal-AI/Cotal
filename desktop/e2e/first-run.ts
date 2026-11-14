@@ -376,12 +376,21 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   };
   const browserUrls = () => existsSync(browserLog) ? readFileSync(browserLog, "utf8").trim().split("\n").filter(Boolean) : [];
   const driver = process.platform === "darwin" ? new MacWindowDriver(env) : new WindowDriver(undefined, process.platform === "win32" ? join(output, "webdriver-launch.jsonl") : undefined);
+  let windowsAppPid: number | undefined;
   const lifecycle = async (action: LifecycleAction): Promise<NativeObservation> => {
     let observation: NativeObservation;
     if (driver instanceof MacWindowDriver) {
       if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("tray-label") };
       else observation = await driver.native(action);
-    } else observation = await nativeLifecycle(binary, action, env);
+    } else {
+      if (process.platform === "win32" && action === "close-window") {
+        assert.ok(windowsAppPid, "close-window requires the launch-pinned Windows app PID");
+        const census = await nativeLifecycle(binary, "describe", env, windowsAppPid);
+        writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action: "before-close-window", observation: census })}\n`, { flag: "a" });
+        check(`single app process before close-window: ${JSON.stringify(census.candidates)}`, census.candidates?.length === 1);
+      }
+      observation = await nativeLifecycle(binary, action, env, action === "close-window" ? windowsAppPid : undefined);
+    }
     writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action, observation })}\n`, { flag: "a" });
     return observation;
   };
@@ -457,6 +466,10 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       if (!args.includes("--background")) await until("native app metadata", () => driver.text("machine-details"), value => value.includes("macOS") && value.includes("GB"));
       return;
     }
+    const launchStarted = Date.now();
+    const launchReceipts = join(output, "deep-link-receipts.jsonl");
+    const launchOffset = existsSync(launchReceipts) ? readFileSync(launchReceipts).length : 0;
+    windowsAppPid = undefined;
     server = spawn(process.env.TAURI_DRIVER ?? "tauri-driver", [], { env: guiEnv, cwd: home, stdio: ["ignore", "pipe", "pipe"] });
     server.stdout?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
     server.stderr?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
@@ -465,6 +478,18 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     if (process.platform === "win32" && args.length === 1 && args[0].startsWith("cotal://")) {
       await driver.openWindowsLink(binary, args[0], { env: guiEnv, cwd: home, receipts: join(output, "deep-link-receipts.jsonl") });
     } else await driver.open(binary, args);
+    if (process.platform === "win32") {
+      const launched = await until("fresh native Windows app launch PID", async () => {
+        if (!existsSync(launchReceipts)) return undefined;
+        const rows = readFileSync(launchReceipts).subarray(launchOffset).toString("utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+        const starts = rows.filter(row => row.source === "process-argv" && row.atUnixMs >= launchStarted);
+        assert.equal(starts.length, 1, "one fresh native process-argv launch receipt required");
+        assert.ok(Number.isSafeInteger(starts[0].pid) && starts[0].pid > 0);
+        return starts[0];
+      }, Boolean, 30_000);
+      windowsAppPid = launched.pid;
+      writeFileSync(join(output, "windows-app-launches.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), pid: windowsAppPid, launchStarted })}\n`, { flag: "a", mode: 0o600 });
+    }
     if (!args.includes("--background")) await until("native app metadata", () => driver.text("version"), value => value.startsWith("v"));
     if (process.platform === "win32") await driver.call("POST", driver.path("execute/sync"), { script: `
       const callbacks = window.__TAURI_INTERNALS__?.callbacks;

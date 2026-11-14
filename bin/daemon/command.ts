@@ -472,12 +472,11 @@ async function serve(args: ParsedArgs): Promise<void> {
   let provenance = new AbortController();
   const loggedReasons = new Set<string>();
   const observe = async (): Promise<DaemonOwnershipObservation> => {
-    const result: DaemonOwnershipObservation = await observeDaemonOwnedService(paths, home, provenance.signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
+    const result = await observeDaemonOwnedService(paths, home, provenance.signal).catch(() => ({ state: "unknown", reason: "worker-failed" } as const));
     if (result.state === "owned") owned = true;
     if (!loggedReasons.has(result.reason)) {
       loggedReasons.add(result.reason);
       process.stderr.write(`daemon: native ownership ${result.state}: ${result.reason}\n`);
-      if (result.diagnostic) process.stderr.write(`daemon: native ownership failure ${JSON.stringify(result.diagnostic)}\n`);
     }
     return result;
   };

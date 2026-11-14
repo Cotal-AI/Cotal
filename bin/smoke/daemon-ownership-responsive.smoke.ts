@@ -76,14 +76,6 @@ try {
         await requestInstalledDaemon(socket, "daemon-stop");
         assert.equal(readFileSync(count, "utf8").trim().split("\n").length, 4, "owned result is cached");
         assert.equal(output.split("native ownership unknown: observation-failed").length - 1, 1, "safe failure reason logged once");
-        const diagnosticLine = output.split("\n").find(line => line.startsWith("daemon: native ownership failure "));
-        assert.ok(diagnosticLine, "forced source-stage failure logs a structured diagnostic");
-        const diagnostic = JSON.parse(diagnosticLine.slice("daemon: native ownership failure ".length));
-        assert.equal(diagnostic.stage, "source");
-        assert.match(diagnostic.code, /^[A-Z][A-Z0-9_]{0,47}$/);
-        assert.ok(Number.isSafeInteger(diagnostic.elapsedMs) && diagnostic.elapsedMs >= 0);
-        assert.equal(diagnostic.nativeTool, null, "Linux source lookup is outside the native adapter runner");
-        assert.deepEqual(Object.keys(diagnostic).sort(), ["code", "elapsedMs", "nativeTool", "stage"]);
         assert.ok(!output.includes(unitPath), "ownership log does not expose source paths");
         console.log("PASS distinct unknown and not-owned refusals retain daemon authority fences");
         console.log("PASS real daemon-stop retries failed startup observation and caches only owned");

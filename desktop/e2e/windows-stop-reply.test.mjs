@@ -136,13 +136,14 @@ test("real entry uses collector on its existing bounded single read and persists
 
 test("product explicitly refuses unknown provenance without preparing stop, native pause retains its own ownership checks", () => {
   const server = readFileSync(new URL("../../bin/daemon/server.ts", import.meta.url), "utf8");
-  const install = readFileSync(new URL("../../bin/daemon/install.ts", import.meta.url), "utf8");
+  const ownership = readFileSync(new URL("../../bin/daemon/ownership-win32.ts", import.meta.url), "utf8");
   const native = readFileSync(new URL("../../bin/daemon/install-win32.ts", import.meta.url), "utf8");
   assert.match(server, /const observation = req.commit \? stopPrepared : await opts.stopAllowed\?\.\(\)/);
   assert.match(server, /const unknown = typeof observation === "object" && observation.state === "unknown"/);
   assert.ok(server.includes(JSON.stringify(unknownProvenance.error.message)));
   assert.match(server, /return;\s*\}\s*\/\/ Only an explicit commit[\s\S]*?stopPrepared = true/);
-  assert.match(install, /catch \(error\) \{\s*const code = [^\n]+;\s*return \{ state: "unknown", reason: "observation-failed", diagnostic: \{ stage, code: ownershipFailureCode\(code\), elapsedMs: Date\.now\(\) - started, nativeTool \} \}/);
+  assert.match(ownership, /checkWindowsRecordedUnit\(paths, receipt, scheduledTaskService\(nativeRun\)\)/);
+  assert.match(ownership, /catch \{ return \{ state: "unknown", reason: "observation-failed" \}; \}/);
   assert.match(native, /async pause\(receipt\) \{\s*const task = owned\(receipt, true\)/);
   assert.ok(native.includes('step(["/End", "/TN", receipt.unit])'));
   assert.ok(native.includes('"the owned task did not confirm no running instances after End"'));
