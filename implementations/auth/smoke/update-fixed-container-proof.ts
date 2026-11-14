@@ -8,7 +8,7 @@ import { prepareUpdateParticipant } from "./update-participant.fixture.js";
 assert.equal(process.env.GITHUB_ACTIONS, "true");
 assert.equal(process.env.RUNNER_ENVIRONMENT, "github-hosted");
 const route = process.argv[2];
-assert(route === "bootstrap" || route === "self");
+assert(route === "bootstrap" || route === "self" || route === "control");
 const root = resolve(process.env.UPDATE_CANDIDATE_ROOT!);
 const output = resolve(process.env.UPDATE_MEASUREMENT_OUT!);
 mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -25,7 +25,7 @@ const report = await matrixCell({
   source: "0.164.6", layout: "npm", state: "configured", method: "self", output,
   candidate: join(root, "B"), direction: "B", "expected-target": "0.164.8", "expected-public-target": "0.164.6",
   ...(route === "self" ? { "source-candidate": join(root, "A") } : { "bootstrap-reconcile": "true" }),
-  "container-manager": "true",
+  "container-manager": route === "control" ? "false" : "true",
   prepare: async (context: Parameters<typeof prepareUpdateParticipant>[0] & { cotal: (label: string, args: string[]) => Promise<unknown> }) => {
     const close = await prepareUpdateParticipant(context);
     return async () => {
@@ -37,7 +37,8 @@ const report = await matrixCell({
 assert.equal(report.result, "passed", report.refusal);
 assert.equal(report.update?.exit, 0);
 assert.equal(report.participant?.selected, true);
-assert.equal(report.foreignContainerCleanup, "owned container stopped, not deleted, before reporting");
+if (route !== "control") assert.equal(report.foreignContainerCleanup, "owned container stopped, not deleted, before reporting");
+else assert.equal(report.foreignContainer, undefined, "control started no foreign container");
 assert.equal(report.candidate.source, a.source);
 if (route === "self") {
   assert.equal(report.source, "0.164.7");
