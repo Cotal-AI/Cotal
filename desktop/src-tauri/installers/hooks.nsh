@@ -18,6 +18,20 @@ Function CotalSetupMessage
   FileClose $0
 FunctionEnd
 
+Function CotalHelperExit
+  ${If} $CotalCode == "timeout"
+  ${OrIf} $CotalCode == "error"
+    CreateDirectory "$LOCALAPPDATA\CotalSetup"
+    FileOpen $0 "$LOCALAPPDATA\CotalSetup\result.json" w
+    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"refused$\",$\"code$\":21,$\"message$\":$\"Setup helper did not complete. No success was confirmed. Run the installer again.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"$CotalVersion$\"}'
+    FileClose $0
+    FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" w
+    FileWrite $0 "Setup helper did not complete. No success was confirmed. Run the installer again.$\r$\n"
+    FileClose $0
+    StrCpy $CotalCode "21"
+  ${EndIf}
+FunctionEnd
+
 Function CotalSetupRefused
   Call CotalSetupMessage
   DetailPrint "$CotalMessage"
@@ -33,7 +47,8 @@ Function CotalSetupAbort
   ${AndIf} $CotalCopying <> 1
     nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
     Pop $CotalCode
-    ${If} $CotalCode <> 0
+    Call CotalHelperExit
+    ${If} $CotalCode != "0"
       Call CotalSetupMessage
       DetailPrint "$CotalMessage"
       SetErrorLevel $CotalCode
@@ -79,7 +94,8 @@ FunctionEnd
   nsExec::ExecToStack /TIMEOUT=40000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action recover'
   Pop $CotalCode
   Pop $CotalMessage
-  ${If} $CotalCode <> 0
+  Call CotalHelperExit
+  ${If} $CotalCode != "0"
     DetailPrint "$CotalMessage"
     SetErrorLevel 21
     ${IfNot} ${Silent}
@@ -94,14 +110,15 @@ FunctionEnd
     cotal_prepare_retry:
     nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" prepare "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
-    ${If} $CotalCode = 20
+    Call CotalHelperExit
+    ${If} $CotalCode == "20"
     ${AndIfNot} ${Silent}
       Call CotalSetupMessage
       MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$CotalMessage" IDRETRY cotal_prepare_retry
       SetErrorLevel 20
       Quit
     ${EndIf}
-    ${If} $CotalCode <> 0
+    ${If} $CotalCode != "0"
       Call CotalSetupRefused
     ${EndIf}
     StrCpy $CotalPrepared 1
@@ -115,19 +132,20 @@ FunctionEnd
   ${If} $CotalFresh = 1
     CreateDirectory "$LOCALAPPDATA\CotalSetup"
     FileOpen $0 "$LOCALAPPDATA\CotalSetup\result.json" w
-    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"updated$\",$\"code$\":0,$\"message$\":$\"Cotal is installed. No background service was installed.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"${VERSION}$\",$\"completedAt$\":null}'
+    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"updated$\",$\"code$\":0,$\"message$\":$\"Cotal is installed. No background service was installed.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"${VERSION}$\"}'
     FileClose $0
   ${Else}
-    nsExec::ExecToLog /TIMEOUT=120000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
+    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
-    ${If} $CotalCode = 23
+    Call CotalHelperExit
+    ${If} $CotalCode == "23"
       Call CotalSetupMessage
       DetailPrint "$CotalMessage"
       ${IfNot} ${Silent}
         MessageBox MB_ICONINFORMATION|MB_OK "$CotalMessage"
       ${EndIf}
       SetErrorLevel 23
-    ${ElseIf} $CotalCode <> 0
+    ${ElseIf} $CotalCode != "0"
       Call CotalSetupRefused
     ${EndIf}
   ${EndIf}

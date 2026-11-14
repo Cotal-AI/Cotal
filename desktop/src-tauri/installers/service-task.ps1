@@ -1,5 +1,8 @@
 param([Parameter(Mandatory=$true)][ValidateSet('inspect','disable','enable','start','census','recover')][string]$Action)
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Management
+Import-Module Microsoft.PowerShell.Utility
+Import-Module CimCmdlets
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $root = [IO.Path]::GetFullPath($env:COTAL_SETUP_ROOT).TrimEnd('\')
 $statePath = Join-Path $env:LOCALAPPDATA 'CotalSetup\service-update.json'
@@ -64,22 +67,39 @@ try {
   $owned = Get-OwnedTask
   if ($Action -eq 'recover') {
     if (!(Test-Path -LiteralPath $statePath)) { 'none'; exit 0 }
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    if ($state.schema -ne 1 -or ![string]::Equals($state.installPath,$root,[StringComparison]::OrdinalIgnoreCase) -or $state.phase -notin @('copying','ready')) { throw 'An interrupted setup handover is invalid. Run the installer again.' }
-    if ($state.phase -eq 'ready') {
+    $state=$null
+    $damaged=$false
+    try {
+      $state=Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+      if ($state.schema -ne 1 -or ![string]::Equals($state.installPath,$root,[StringComparison]::OrdinalIgnoreCase) -or $state.phase -notin @('preparing','copying','ready')) { $damaged=$true }
+    } catch { $damaged=$true }
+    if (!$damaged -and $state.phase -eq 'ready') {
       Remove-Item -LiteralPath $statePath
       'none'; exit 0
     }
-    if ($state.installed) {
-      if (!$owned -or $owned.receiptDigest -cne $state.receiptDigest -or $owned.task.Enabled -or $owned.task.GetInstances(0).Count -ne 0) { throw 'Interrupted setup requires the unchanged owned task disabled with no running instances.' }
-    } elseif ($owned -and !$owned.foreign) { throw 'A service appeared after interrupted setup began.' }
-    if ($state.oldPid) {
-      $process = Get-Process -Id $state.oldPid -ErrorAction SilentlyContinue
-      if ($process -and $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ceq $state.oldBirth) { throw 'The old service is still alive. No replacement was authorized.' }
+    if (!$damaged -and $state.phase -eq 'preparing' -and $state.oldPid) {
+      $process=Get-Process -Id $state.oldPid -ErrorAction SilentlyContinue
+      if ($process -and $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ceq $state.oldBirth) {
+        if (!$owned -or $owned.foreign -or $owned.receiptDigest -cne $state.receiptDigest) { throw 'The original service ownership changed during preparation.' }
+        $owned.task.Enabled=[bool]$state.taskEnabled
+        Remove-Item -LiteralPath $statePath
+        'none'; exit 0
+      }
     }
-    $live=@(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) })
-    if ($live.Count -ne 0) { throw 'A process still uses the interrupted installation. Close it before running setup again.' }
-    $state.targetVersion=$env:COTAL_SETUP_VERSION
+    $live=@(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath,Name | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) -or (!$_.ExecutablePath -and $_.Name -in @('node.exe','cotal-desktop.exe')) })
+    if ($live.Count -ne 0) { throw 'A process still uses the interrupted installation or could not be identified. Close it before running setup again.' }
+    if ($owned -and !$owned.foreign -and $owned.task.GetInstances(0).Count -ne 0) { throw 'The owned task still has a native instance. No replacement was authorized.' }
+    if ($damaged) {
+      $state=@{schema=1;installPath=$root;targetVersion=$env:COTAL_SETUP_VERSION;oldVersion=$null;installed=[bool]($owned -and !$owned.foreign);foreign=[bool]($owned -and $owned.foreign);taskEnabled=[bool]($owned -and !$owned.foreign -and $owned.task.Enabled);running=$false;receiptDigest=$(if($owned -and !$owned.foreign){$owned.receiptDigest}else{$null});phase='copying';recoveryMessage='An unreadable setup handover was repaired. Prior running state was unknown, so no service was started.'}
+    } else {
+      if ($state.installed -and (!$owned -or $owned.foreign -or $owned.receiptDigest -cne $state.receiptDigest)) { throw 'The owned task changed during interrupted setup.' }
+      $state.phase='copying'
+      $state.targetVersion=$env:COTAL_SETUP_VERSION
+    }
+    if ($owned -and !$owned.foreign) {
+      $owned.task.Enabled=$false
+      if ($owned.task.Enabled -or $owned.task.GetInstances(0).Count -ne 0) { throw 'The owned task did not confirm disabled zero-instance state for recovery.' }
+    }
     [IO.File]::WriteAllText($statePath,($state|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
     'recover'; exit 0
   }

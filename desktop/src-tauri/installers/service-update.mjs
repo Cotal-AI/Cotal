@@ -98,7 +98,9 @@ async function finish(rollback = false) {
   if (!rollback) {
     const manifest = JSON.parse(readFileSync(join(root, 'runtime', 'desktop-runtime.json'), 'utf8'));
     if (manifest.version !== targetVersion || !Array.isArray(manifest.files) || manifest.files.length === 0) throw new Error('The replacement runtime inventory is invalid. Run the installer again.');
+    const hashDeadline = Date.now() + 120_000;
     for (const file of manifest.files) {
+      if (Date.now() >= hashDeadline) throw new Error('Runtime verification exceeded 120 seconds. Run the installer again.');
       if (typeof file.path !== 'string' || file.path.split(/[\\/]/).includes('..') || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('The replacement runtime inventory contains an invalid path or digest.');
       const bytes = readFileSync(join(root, 'runtime', file.path));
       if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error(`The replacement runtime is incomplete at ${file.path}. Run the installer again.`);
@@ -129,7 +131,7 @@ async function finish(rollback = false) {
     return;
   }
   rmSync(stateFile);
-  outcome(0, state.foreign ? `Cotal ${version} is installed. The service from another installation was left unchanged.` : state.installed ? `Cotal ${version} is installed. The background service remains stopped.` : `Cotal ${version} is installed. No background service was installed.`);
+  outcome(0, state.recoveryMessage ?? (state.foreign ? `Cotal ${version} is installed. The service from another installation was left unchanged.` : state.installed ? `Cotal ${version} is installed. The background service remains stopped.` : `Cotal ${version} is installed. No background service was installed.`));
 }
 try {
   if (mode === 'finish' || mode === 'abort') {

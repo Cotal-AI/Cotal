@@ -91,6 +91,11 @@ Run a current setup program again to finish it. The app shows that setup was int
 links to the installer without offering Start service. A newer setup can replace a partial
 older update after verifying that the owned task is disabled and its old process has stopped.
 A verified update whose startup was not confirmed leaves no incomplete-copy handover.
+If the preparation helper dies while its old service is alive, its hosted launch fence can
+remain held until setup completes the service restart. Existing agents are not stopped by
+that fence. Run setup again to finish the transition.
+An invalid handover can be repaired when no installation process or owned task instance
+remains. Setup preserves the task state it can observe and does not infer prior running state.
 A service belonging to a separate command-line installation is left unchanged.
 Early desktop services before 0.157.8 have no graceful stop
 request. After stopping their agents, use their bundled CLI's `cotal daemon uninstall --yes`,

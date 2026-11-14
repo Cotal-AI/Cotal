@@ -41,6 +41,18 @@ jobs:
           name: setup-candidate
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+      - name: Build cannot-start helper invalid-input control
+        shell: pwsh
+        run: |
+          node desktop/test/setup-invalid-helper.mjs
+          if($LASTEXITCODE -ne 0){throw 'Invalid-helper fixture preparation failed'}
+          pnpm --dir desktop exec tauri build --bundles nsis --config '{"bundle":{"windows":{"nsis":{"installerHooks":"installers/invalid-helper.nsh"}}}}'
+          if($LASTEXITCODE -ne 0){throw 'Invalid-helper control build failed'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-invalid-helper
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
   native:
     needs: build
     runs-on: windows-2022
@@ -49,7 +61,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted, app-open, app-tray]
+        cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted, app-open, app-tray, foreign, fresh, cannot-start]
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -74,6 +86,17 @@ jobs:
         with:
           name: setup-candidate
           path: candidate
+      - uses: actions/download-artifact@v4
+        if: matrix.cell == 'cannot-start'
+        with:
+          name: setup-invalid-helper
+          path: invalid-candidate
+      - name: Prepare independent published CLI service
+        if: matrix.cell == 'foreign'
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/cli-service" cotal-ai@0.164.7
+          if($LASTEXITCODE -ne 0){throw 'Published CLI fixture install failed'}
       - name: Verify published installers and fixture broker
         shell: pwsh
         env:
@@ -95,11 +118,12 @@ jobs:
           Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $zip
           Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
           (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
-          $candidate=@(Get-ChildItem candidate/*-setup.exe)
+          $folder=if('${{ matrix.cell }}' -eq 'cannot-start'){'invalid-candidate'}else{'candidate'}
+          $candidate=@(Get-ChildItem "$folder/*-setup.exe")
           if($candidate.Count -ne 1){throw 'Candidate not singular'}
           "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
       - name: Exercise actual installed setup
-        run: node desktop/test/setup-proof.mjs ${{ matrix.cell }}
+        run: pnpm exec tsx desktop/test/setup-proof.mjs ${{ matrix.cell }}
       - name: Existing Windows service lifecycle suites
         if: always() && matrix.cell == 'absent'
         shell: pwsh
