@@ -456,12 +456,14 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
-  const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
+  const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
+  const { recoverExecutionUpdate } = await import("./execution-update.js");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
   const deferredRecovery = readUpdateRecovery();
   const observedLiveUpdater = deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
-  if (await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
+  if (await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
@@ -513,7 +515,7 @@ async function serve(args: ParsedArgs): Promise<void> {
         recoveryBusy = true;
         clearInterval(recoveryTimer);
         process.stderr.write("daemon: observed updater ended; checking guarded interrupted-update recovery\n");
-        void running.prepareGenerationRestart().then(() => recoverInterruptedUpdate(undefined, true)).then(async restored => {
+        void running.prepareGenerationRestart().then(() => recoverInterruptedUpdate(recoveryRuntime, true)).then(async restored => {
           if (restored) {
             process.stderr.write("daemon: interrupted update restored the previous installation; restarting the recorded service\n");
             await updates?.close();

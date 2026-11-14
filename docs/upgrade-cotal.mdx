@@ -27,8 +27,36 @@ version and provenance. A Node wrapper that imports the bootstrap calls its
 `startExecutionProgram()` export to delegate execution once. Importing reader helpers alone
 does not start a command.
 
-This entry and generation-store support does not change `cotal update --self` yet.
-The updater still uses its existing installation and recovery path.
+On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
+package and its dependencies in retained storage before changing the selected execution.
+It runs installed read-only checks and the target's declared pre-install checks first.
+Linux also reads the install-wide process census. macOS reads the daemon's hosted Managers,
+the selected target and registered spaces without invoking the Linux-only census.
+A refused check leaves the installed package and connector state unchanged.
+The initial admission verifies the daemon lifetime from those checks. Rollback after a daemon
+restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
+Rollback restores captured connector configuration before verifying the previous execution.
+It releases its own admission fences even when the daemon still runs the target generation.
+A successful manual update waits for the target daemon generation, not its updater's loaded version.
+An unwritable installation refuses before staging and names the owning install command.
+A source checkout keeps the separate global-install route and does not stage its checkout tree.
+
+Publication changes only the canonical bootstrap. A protected descriptor in the retained store
+selects the execution generation and binds to the installed package identity and bootstrap hash.
+The package manifest and original dependencies stay as npm or pnpm installed them. A manual
+package-manager install therefore sees its own original record and replaces the package normally.
+Status names both the running generation and an older package-manager record when they differ.
+Native ownership checks retain the bootstrap's validated logical installation identity when they
+run in a worker, so a restarted retained daemon still matches its recorded native launch source.
+A standalone Manager can keep its
+loaded generation without stopping seats. New launches still enforce extension generation
+compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
+and consent checks.
+
+Current and previous execution generations are retained. Older generations remain when their
+holders cannot be proved absent. A later manual npm or pnpm replacement is outside this staged
+publication guarantee. The update that first installs this support still runs the older updater.
+Windows keeps its existing in-place update route and does not use retained publication.
 
 ## Plan the upgrade
 
