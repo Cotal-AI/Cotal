@@ -203,6 +203,9 @@ finally {
     if (existsSync(path)) writeFileSync(join(output, `setup-${file}`), readFileSync(path));
   }
   if (seat?.launchOutput && existsSync(seat.launchOutput)) writeFileSync(join(output, 'seat-output.log'), readFileSync(seat.launchOutput));
+  for (const [path, name] of [[seat?.seatEnvironmentNames, 'seat-environment-names.txt'], [seat?.managerEnvironmentNames, 'manager-environment-names.json']]) {
+    if (path && existsSync(path)) writeFileSync(join(output, name), readFileSync(path));
+  }
   if (seat) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
   if (app?.exitCode === null) { const ended = new Promise(resolve => app.once('exit', resolve)); app.kill(); await ended; }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
