@@ -115,7 +115,7 @@ public static class NamedJobFacts {
  static bool[] States(List<IntPtr> pins){var states=new bool[pins.Count];for(int i=0;i<pins.Count;i++)states[i]=Alive(pins[i]);return states;}
  static void Observe(string dir,string mode){
   var report=new Dictionary<string,object>{{"mode",mode},{"frequency",Stopwatch.Frequency},{"pass",false},{"setupComplete",false}};
-  var pins=new List<IntPtr>();var ids=new List<Dictionary<string,object>>();IntPtr owner=IntPtr.Zero,job=IntPtr.Zero;
+  var pins=new List<IntPtr>();var ids=new List<Dictionary<string,object>>();IntPtr owner=IntPtr.Zero,job=IntPtr.Zero;StreamWriter log=null;
   try{
    var attempt=Load(dir,"attempt.json");string name=(string)attempt["name"];owner=Pin((Dictionary<string,object>)attempt["owner"],true);
    var snapshot=Load(dir,"job-members.json");var known=new HashSet<int>();
@@ -125,18 +125,31 @@ public static class NamedJobFacts {
    report["pinned"]=ids;report["beforeAlive"]=States(pins);report["name"]=name;
    if(Array.Exists(States(pins),v=>!v))throw new Exception("Pinned member already exited before intervention");
    if(File.Exists(Path.Combine(dir,"spawning-finished.json")))throw new Exception("Spawning ended before intervention");
+   var samples=new List<object>();report["samples"]=samples;bool unsafeAbsence=false;var clock=new Stopwatch();
+   log=new StreamWriter(Path.Combine(dir,"name-observations.ndjson"),false,new UTF8Encoding(false));
+   // Warm native open and serialization before intervention, without opening the real job.
+   IntPtr missing=OpenJobObjectW(0x000c,false,name+"-prewarm-missing");int missingError=Marshal.GetLastWin32Error();
+   if(missing!=IntPtr.Zero){CloseHandle(missing);throw new Exception("Unexpected prewarm name collision");}if(missingError!=2)throw new Win32Exception(missingError,"prewarm absent-name open");
+   J.Serialize(new {before=Tick(),opened=Tick(),after=Tick(),error=2,success=false,ownerBefore=true,ownerAfter=true,liveBefore=States(pins),liveAfter=States(pins)});
    File.WriteAllText(Path.Combine(dir,"spawn-go"),"");var spawning=Stopwatch.StartNew();
-   while(!File.Exists(Path.Combine(dir,"spawning-active.json"))){if(spawning.ElapsedMilliseconds>10000)throw new TimeoutException("Active spawning barrier");Thread.Yield();}
+   while(!File.Exists(Path.Combine(dir,"spawning-active.json"))||Directory.GetFiles(dir,"member-*.json").Length<3){if(spawning.ElapsedMilliseconds>10000)throw new TimeoutException("Active spawning/late-child barrier");Thread.Yield();}
    report["spawningActive"]=Load(dir,"spawning-active.json");
+   // Pin births observed after the original snapshot while further births continue.
+   foreach(string file in Directory.GetFiles(dir,"member-*.json")){var id=Load(dir,Path.GetFileName(file));if(known.Add(Convert.ToInt32(id["pid"]))){pins.Add(Pin(id,false));ids.Add(id);}}
+   report["observedBirthFilesAtKill"]=Directory.GetFiles(dir,"member-*.json").Length;
+   report["beforeAlive"]=States(pins);
+   if(Array.Exists(States(pins),v=>!v))throw new Exception("Late-born pinned process exited before kill");
+   if(File.Exists(Path.Combine(dir,"spawning-finished.json")))throw new Exception("Spawning finished before kill after late-child pinning");
    report["setupComplete"]=true;
    if(mode=="open-control"){
     job=OpenJobObjectW(0x000c,false,name);if(job==IntPtr.Zero)throw new Win32Exception(Marshal.GetLastWin32Error(),"owner-alive open control");
     report["ownerAliveAtOpen"]=Alive(owner);report["controlScope"]="Open while owner alive; deliberately NOT last-close absence measurement";
    }
+   // All allocations/file opens required by the measurement precede owner termination.
    report["killBefore"]=Tick();Check(TerminateProcess(owner,197),"kill exact owner");report["killAfter"]=Tick();
    if(mode=="after-owner-exit"&&WaitForSingleObject(owner,10000)!=0)throw new Exception("Owner did not signal before successor opens");
-   var samples=new List<object>();report["samples"]=samples;bool unsafeAbsence=false;var clock=Stopwatch.StartNew();
-   if(job==IntPtr.Zero){using(var log=new StreamWriter(Path.Combine(dir,"name-observations.ndjson"),false,new UTF8Encoding(false))){
+   clock.Start();
+   if(job==IntPtr.Zero){
     while(clock.ElapsedMilliseconds<20000){long before=Tick();bool[] liveBefore=States(pins);bool ownerBefore=Alive(owner);job=OpenJobObjectW(0x000c,false,name);int error=job==IntPtr.Zero?Marshal.GetLastWin32Error():0;long opened=Tick();bool[] liveAfter=States(pins);bool ownerAfter=Alive(owner);long after=Tick();var s=new {before=before,opened=opened,after=after,error=error,success=job!=IntPtr.Zero,ownerBefore=ownerBefore,ownerAfter=ownerAfter,liveBefore=liveBefore,liveAfter=liveAfter};log.WriteLine(J.Serialize(s));samples.Add(s);
      if(job!=IntPtr.Zero)break;
      if(error!=2)throw new Win32Exception(error,"Exact-name open unknown, not absence");
@@ -144,7 +157,7 @@ public static class NamedJobFacts {
      else if(Array.Exists(liveBefore,v=>v)){unsafeAbsence=true;report["absenceTransitionAmbiguous"]=true;}
      if(!Array.Exists(liveAfter,v=>v))break;
     }
-   }}
+   }
    report["absenceWithLiveMember"]=unsafeAbsence;report["opened"]=job!=IntPtr.Zero;
    if(job==IntPtr.Zero&&Array.Exists(States(pins),v=>v))throw new TimeoutException("Named absence observation ended before known members signaled");
    // Process references are measurement pins only; release before accounting-zero demand.
@@ -153,7 +166,7 @@ public static class NamedJobFacts {
    else{report["pass"]=!unsafeAbsence;report["absenceScope"]="Pinned subset with continuing births, not universal all-member death proof";}
    report["measurementComplete"]=true;
   }catch(Exception error){report["error"]=error.ToString();report["pass"]=false;}
-  finally{if(owner!=IntPtr.Zero)CloseHandle(owner);foreach(IntPtr pin in pins)CloseHandle(pin);if(job!=IntPtr.Zero)CloseHandle(job);Save(dir,"named-observation.json",report);}
+  finally{if(log!=null)log.Dispose();if(owner!=IntPtr.Zero)CloseHandle(owner);foreach(IntPtr pin in pins)CloseHandle(pin);if(job!=IntPtr.Zero)CloseHandle(job);Save(dir,"named-observation.json",report);}
   if(!(bool)report["pass"])Environment.ExitCode=1;
  }
  public static int Main(string[] a){try{if(a[0]=="owner")Owner(a[1]);else if(a[0]=="tree")Tree(a[1]);else if(a[0]=="leaf")Leaf();else if(a[0]=="observe")Observe(a[1],a[2]);else throw new Exception("Unknown fixture mode");return Environment.ExitCode;}catch(Exception e){if(a.Length>1)Save(a[1],a[0]+"-failure-"+Process.GetCurrentProcess().Id+".json",new {error=e.ToString()});Console.Error.WriteLine(e);return 1;}}

@@ -37,6 +37,14 @@ test('controller records setup failures and keeps all three cases independent', 
   assert.ok(ps.includes("artifact-hashes.json"));
   assert.doesNotMatch(ps, /Stop-Process|taskkill/);
 });
+test('sample setup precedes kill and actual late birth is observed before intervention', () => {
+  const observer = cs.slice(cs.indexOf('static void Observe('));
+  assert.ok(observer.indexOf('new StreamWriter(') < observer.indexOf('TerminateProcess(owner,197)'));
+  assert.ok(observer.includes('name+"-prewarm-missing"'));
+  assert.ok(observer.includes('Directory.GetFiles(dir,"member-*.json").Length<3'));
+  assert.ok(observer.includes('observedBirthFilesAtKill'));
+  assert.ok(observer.includes('Late-born pinned process exited before kill'));
+});
 test('named marker routes one diagnostic cell, preserves prior native facts and always uploads', () => {
   assert.ok(workflow.includes('scripts/windows-named-job-facts.cs'));
   assert.ok(workflow.includes("if: \"contains(github.event.head_commit.message, '[windows-named-job]')\""));
