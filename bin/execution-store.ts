@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, constants, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { executionBinding, executionDescriptorName, executionInventory, executionSha256, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
+import { executionBinding, executionDescriptorPath, executionInventory, executionSha256, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
 export interface RetainedExecutionGeneration {
   id: string;
@@ -58,9 +58,10 @@ export function describeExecutionGeneration(installedRoot: string, generation: R
 /** Test and operator-building primitive. The updater must hold its existing lock before calling it. */
 export function writeExecutionDescriptor(installedRoot: string, descriptor: ExecutionDescriptor): void {
   protectedExecutionEntry(installedRoot);
-  const temporary = join(installedRoot, `${executionDescriptorName}.${randomBytes(16).toString("hex")}`);
+  const path = executionDescriptorPath(installedRoot);
+  const temporary = `${path}.${randomBytes(16).toString("hex")}`;
   try {
     writeFileSync(temporary, `${JSON.stringify(descriptor)}\n`, { flag: "wx", mode: 0o600 });
-    renameSync(temporary, join(installedRoot, executionDescriptorName));
+    renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
 }

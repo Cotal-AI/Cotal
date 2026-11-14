@@ -4,6 +4,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { executionDescriptorPath } from "../cotal.js";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
 
 if (!["linux", "darwin"].includes(process.platform)) {
@@ -41,7 +42,7 @@ if (!["linux", "darwin"].includes(process.platform)) {
     const stopped = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.notEqual(stopped.status, 0, "retained package without runtime dependencies must not silently use the old installed graph");
     assert.match(stopped.stderr, /ERR_MODULE_NOT_FOUND/);
-    assert.ok(readFileSync(join(installed, ".cotal-execution.json")).length > 0);
+    assert.ok(readFileSync(executionDescriptorPath(installed)).length > 0);
     console.log("execution generation CLI: real version/docs defaults pass; retained missing closure refuses");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
