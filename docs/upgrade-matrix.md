@@ -94,6 +94,13 @@ runtime-latest diagnostic. A same-version result is not a version-changing upgra
 completion and pre-existing PATH guidance stay in the transcript, while actual restoration,
 unknown outcomes and required repair commands remain red.
 
+Historical diagnostics can pass `--expect-policy-refusal legacy-seat`, `unsupported-scheduler` or
+`missing-config` only on their reproduced source, layout, platform and state. These controls retain
+the refused or unsupported upgrade result and report policy acceptance separately. The missing-config
+control records the 0.160.7 refusal, then reruns the public installer into the original prefix and
+checks its target version, seeded connectors, status and recovery state. None of these controls
+accepts the newest-version repair hint or turns an unsupported scheduler into upgrade acceptance.
+
 ## Pack a candidate
 
 Use the existing guarded packer through the harness, with the complete source-matched native
