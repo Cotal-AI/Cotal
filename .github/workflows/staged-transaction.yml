@@ -164,10 +164,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ '${{ matrix.platform }}' = mac ]; then test "$(uname -m)" = arm64; fi
-          args=()
+          args=(--source 0.164.9)
           if [ '${{ matrix.source }}' = staged ]; then args+=(--source-candidate "$RUNNER_TEMP/candidates/candidate-A"); fi
           if [ '${{ matrix.platform }}' = mac ] && [ '${{ matrix.method }}' = scheduler ]; then args+=(--launchd-proof transition); fi
-          node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidates/candidate-B" --direction B --source 0.164.9 --expected-target 0.164.10 --layout npm --state daemon --method '${{ matrix.method }}' "${args[@]}" --output "$RUNNER_TEMP/staged-evidence"
+          node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidates/candidate-B" --direction B --expected-target 0.164.10 --layout npm --state daemon --method '${{ matrix.method }}' "${args[@]}" --output "$RUNNER_TEMP/staged-evidence"
       - name: Read final native ownership diagnostics
         if: always() && matrix.platform == 'mac'
         run: node scripts/staged-native-diagnostics.mjs "$RUNNER_TEMP/staged-evidence"
