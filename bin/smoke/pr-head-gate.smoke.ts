@@ -36,7 +36,7 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 // fixture's run row for it is added beside the others, as for Mutation reproof.
 // "Attribution" left the set when attribution.yml was removed (9cc9117c6).
 // Remotion's workflow includes package.json, which every recorded case here changes.
-const expectedNames = ["CI", "Cold setup", "Docs", "Mutation reproof", "Remotion typecheck", "Windows"];
+const expectedNames = ["CI", "Cold setup", "Docs", "Mutation reproof", "Remotion typecheck", "Upgrade matrix", "Windows"];
 const positive = fixture.cases.find((c: { pr: number }) => c.pr === 1087);
 // Synthetic pending run for the newer declaration; this is not a historical GitHub run. Keep the
 // recorded fixture file intact while exercising a complete current-workflow positive control.
@@ -44,11 +44,15 @@ positive.runs.push({
   id: -1, name: "Remotion typecheck", event: "pull_request", head_sha: positive.headSha,
   status: "pending", conclusion: null, pull_requests: [{ number: positive.pr }],
 });
+positive.runs.push({
+  id: -2, name: "Upgrade matrix", event: "pull_request", head_sha: positive.headSha,
+  status: "pending", conclusion: null, pull_requests: [{ number: positive.pr }],
+});
 check(
   "path-filtered workflows are included only when a changed path matches their declaration",
-  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Cold setup", "Docs", "Mutation reproof", "Remotion typecheck", "Windows"]) &&
-    JSON.stringify(expectedPullRequestWorkflows(workflows, ["remotion/src/Root.tsx"])) === JSON.stringify(["CI", "Cold setup", "Mutation reproof", "Remotion typecheck", "Windows"]) &&
-    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Cold setup", "Docs", "Installer", "Mutation reproof", "Windows"]),
+  JSON.stringify(expectedPullRequestWorkflows(workflows, ["package.json"])) === JSON.stringify(["CI", "Cold setup", "Docs", "Mutation reproof", "Remotion typecheck", "Upgrade matrix", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["remotion/src/Root.tsx"])) === JSON.stringify(["CI", "Cold setup", "Mutation reproof", "Remotion typecheck", "Upgrade matrix", "Windows"]) &&
+    JSON.stringify(expectedPullRequestWorkflows(workflows, ["install.sh"])) === JSON.stringify(["CI", "Cold setup", "Docs", "Installer", "Mutation reproof", "Upgrade matrix", "Windows"]),
 );
 let repositoryWorkflowsParsed = false;
 try {

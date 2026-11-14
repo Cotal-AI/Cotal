@@ -360,6 +360,39 @@ jobs:
             npm dist-tag add "$spec" latest
           done < "$RUNNER_TEMP/promote-specs.txt"
 
+  upgrade-publication:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Record the published upgrade target
+        env:
+          PUBLICATION_RECEIPT: ${{ runner.temp }}/upgrade-publication
+        run: |
+          mkdir -p "$PUBLICATION_RECEIPT"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const version = JSON.parse(readFileSync('bin/package.json')).version;
+          writeFileSync(process.env.PUBLICATION_RECEIPT + '/publication.json', JSON.stringify({
+            version, sourceSHA: process.env.GITHUB_SHA, runId: process.env.GITHUB_RUN_ID,
+            repository: process.env.GITHUB_REPOSITORY, published: true, promoted: true,
+          }) + '\n');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-publication
+          path: ${{ runner.temp }}/upgrade-publication
+          if-no-files-found: error
+
   verify-install:
     needs: publish
     if: needs.publish.outputs.published == 'true'

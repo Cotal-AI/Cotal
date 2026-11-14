@@ -1,0 +1,150 @@
+# Run the upgrade matrix
+
+> **Project** (non-normative maintainer notes) · **For:** maintainers qualifying Cotal releases
+
+Cotal's upgrade matrix uses the same native harness for release checks and operator diagnostics.
+A passing cell requires the target CLI and every recorded extension, status exit0, no paused
+recovery record, a preserved ready service when present, and no required repair step. Missing
+artifacts, skipped required cells and unsupported states are not passes.
+
+## Release triggers
+
+The `Upgrade matrix` workflow starts on every opened, synchronized or reopened pull request.
+Only a same-repository `changeset-release/main` version PR runs the packed-head phase. It freezes
+`pull_request.head.sha` and that head's package version, never the merge ref. Ordinary and fork
+PRs record a non-applicable result without running product cells. Head code receives read-only
+permissions and no publisher credentials.
+
+After npm promotion, a separate `upgrade-publication` job records and uploads the receipt.
+It needs only the completed publish job and runs only when its output says packages were published.
+The publish job remains strict. No job depends on the receipt job, so a receipt failure cannot fail
+or shorten publication, or delay installation verification and release work.
+A separate `workflow_run` consumes the receipt even if a later release-note or installation job
+makes the Changesets run red. It binds the receipt to the repository, main SHA, run and exact
+version, then runs the published phase. GitHub Release creation is not the trigger. A missing
+receipt is reported as publication not confirmed, so no published-phase run starts. The publish
+job does not retry receipt recording or upload.
+
+The matrix is advisory, not a required check or a merge gate. Maintainers review a version PR's
+result when available; a harness fault does not hold a release.
+
+`workflow_dispatch` takes `phase`, `source_sha`, `target_version` and `profile`. Use an immutable
+40-character SHA whose package version matches the target. `bounded` is the supported profile.
+`extended` refuses explicitly instead of silently running a smaller set. There is no ref-wide
+cancellation, so one new head or publication cannot evict an older qualification.
+
+## Required release set
+
+Both phases start from published0.164.6 and run16 isolated product coordinates:
+
+| Coordinates | Count |
+|---|---:|
+| npm fresh, configured and stale-extension self-update on Ubuntu24.04, macOS15 and Windows2022 |9|
+| POSIX configured installer rerun and native daemon scheduler |4|
+| Linux local stand-in agent with public stop consent |1|
+| Linux paused record pointing to a real snapshot under another config home |1|
+| Linux host update with a foreign-UID container's bare `cotal supervise` |1|
+
+The foreign snapshot cell keeps completed rename entries, a freshly recorded paused journal and
+an old attempt clock. Its foreign directory and sentinel must remain untouched. The container
+fixture uses a real published CLI, open broker and selected space inside its own container. It
+waits for `manager up`, records only that owned container's host PID/UID, and checks the foreign
+Manager survives the host upgrade. It stops the stock stack and its owned container before
+reporting. Before the container starts, a loopback signed-JWT IdP, broker and auth service prepare
+a selected remote user-sign-in mesh for the host updater, with no local Manager. That fixture's
+readiness and complete teardown are checked separately. The composed hosted container upgrade
+still needs its own original result before it can be called a reproduction or a passing fix.
+
+The packed phase builds the exact PR head's six native targets, assembles all24 fixed-group
+packages and retains native, prepublish and prepack guards. Its read-only loopback registry serves
+the hash-verified candidate closure and installed-version metadata. Candidate version must be newer
+than public latest. Installer reruns use the candidate source's receipt-bound script. The published
+phase uses public npm and `https://get.cotal.ai` itself, with no script override. Both public latest
+resolutions must match the frozen target. If a newer release supersedes it, the cell fails rather
+than certifying the wrong version.
+
+Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
+budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
+builders need two waves and16 product cells need six waves at that limit. Per-job timeouts imply a
+much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
+timestamps so release owners can use measured durations instead of these estimates.
+
+## Exclusions
+
+There is no Windows shell installer. Windows scheduler upgrade remains excluded until its product
+implementation has native acceptance; native task or job-object facts do not establish that.
+The optional candidate-A reverse path, all historical source versions, concurrent replacement,
+missing-snapshot recovery and wider agent combinations remain diagnostic coverage rather than
+claims in the bounded release set. Existing red artifacts are retained when a later fix passes.
+Six native package builders prove closure, not six platform upgrade paths.
+
+The summary compares the complete expected coordinate to its evidence, checks exact layout,
+state, method, source, phase, target and candidate origin, and rejects duplicate or absent results.
+Configured states require a real prior extension inventory. A fresh report cannot be relabelled as
+a configured pass. Every required cell needs its own positive assertions, not an aggregate job exit.
+
+## Run a published cell
+
+Use Node>=22.10. Native service and agent cells require a disposable hosted runner. On a persistent
+Linux host the harness refuses them and places other cells in private mode700 homes under
+`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require20GiB free before
+installation or build. Do not run the container fixture on a workstation.
+
+```sh
+node scripts/automatic-update-platform-baseline.mjs --list linux
+node scripts/automatic-update-platform-baseline.mjs --source 0.164.6 --layout npm --state configured --method self --expected-target <version> --output ./upgrade-evidence
+node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence
+```
+
+`--expected-target` freezes public latest at both resolutions. Omit it only for an explicitly
+runtime-latest diagnostic. A same-version result is not a version-changing upgrade. Optional shell
+completion and pre-existing PATH guidance stay in the transcript, while actual restoration,
+unknown outcomes and required repair commands remain red.
+
+Historical diagnostics can pass `--expect-policy-refusal legacy-seat`, `unsupported-scheduler` or
+`missing-config` only on their reproduced source, layout, platform and state. These controls retain
+the refused or unsupported upgrade result and report policy acceptance separately. The missing-config
+control records the 0.160.7 refusal, then reruns the public installer into the original prefix and
+checks its target version, seeded connectors, status and recovery state. None of these controls
+accepts the newest-version repair hint or turns an unsupported scheduler into upgrade acceptance.
+
+## Pack a candidate
+
+Use the existing guarded packer through the harness, with the complete source-matched native
+inputs already assembled:
+
+```sh
+node scripts/automatic-update-platform-baseline.mjs --pack ./candidate --version <candidate-version> --source-root <clean-git-root>
+node scripts/automatic-update-platform-baseline.mjs --candidate ./candidate --direction B --source 0.164.6 --layout npm --state configured --method self --expected-target <candidate-version> --output ./upgrade-evidence
+```
+
+An explicit source root must be a clean actual Git root. Its own packer is imported. Version-only
+rewrites are restored in `finally`; tracked edits and untracked product inputs refuse admission.
+Direction B upgrades published source to a newer packed target. Direction A installs a below-public
+candidate and takes a newer public version, serving metadata for the installed candidate too.
+Never relabel an older archive or patch installed product bytes to manufacture a transition.
+
+## Observe native custody
+
+Mac scheduler cells from published0.164.6 use `--published-launchd true --launchd-proof transition`.
+Candidate B transition observation also starts from0.164.6. Snapshots retain receipt, plist bytes
+and digest, loaded job, runner creation identity, completion, exit, job/source retirement and daemon
+generation. A terminal success alone does not establish custody cleanup. Unknown custody retains
+the service for disposable-runner teardown. Off-before-tick and killed-before-result modes remain
+available in the scoped candidate-A diagnostic campaign.
+
+Each candidate cell starts its own registry. After confirmed native removal, it restores unchanged
+owned npm configuration before stopping the registry. A changed configuration is retained. Native
+Windows baseline probes separately record policy ticks, demand task lifetime and inherited lock
+facts. An inherited handle was observed not to retain its owner's LockFileEx lock after owner
+death, so that fact is not accepted as a mutator-lifetime barrier. Job-object ordering probes must
+report any grant while a descendant lives, without adding a wait that hides the interval.
+
+## Extend a composition
+
+A program importing `matrixCell` may supply an in-process `prepare` callback. After source setup,
+it receives the private environment, project, installed package, call recorder and report. It may
+return an async disposer, which runs in `finally` before reporting. A prepare failure must clean
+anything it started before throwing. This composes stock IdP, broker or remote-user fixtures over
+the same updater path; it does not add a second installer harness. Never pass callback text through
+CLI arguments. Tests run with `pnpm smoke:upgrade-matrix` in ordinary CI.
