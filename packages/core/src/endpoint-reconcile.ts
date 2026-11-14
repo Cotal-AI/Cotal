@@ -157,6 +157,8 @@ export async function reconcileEndpointGate(opts: {
 
   // ---- 2. THE GUARD. Affirmative liveness, before anything is mutated.
   const liveness = await opts.probeHolder(row.principal);
+  if (!liveness || typeof liveness !== "object")
+    throw new GateReconcileRefused("liveness-unestablishable", `the freeze-holder "${row.principal}" returned malformed liveness evidence`);
   log(`freeze-holder ${row.principal}: ${liveness.state} — ${liveness.detail}`);
   if (liveness.state === "live")
     throw new GateReconcileRefused(
@@ -174,9 +176,14 @@ export async function reconcileEndpointGate(opts: {
       `liveness for freeze-holder "${row.principal}" CANNOT BE ESTABLISHED (${liveness.detail}) — without the oracle this repair has no affirmative check to stand on, and it will not infer death from silence.`,
     );
 
+  if (liveness.state !== "gone")
+    throw new GateReconcileRefused("liveness-unestablishable", `the freeze-holder "${row.principal}" did not return an affirmative gone verdict; refusing malformed liveness evidence`);
+
   if (opts.probeRegistrationExecutor) {
     const executor = await opts.probeRegistrationExecutor(row.principal);
-    log(`registration-executor for ${row.principal}: ${executor.state} — ${executor.detail}`);
+    if (!executor || typeof executor !== "object")
+      throw new GateReconcileRefused("liveness-unestablishable", `the registration executor for "${row.principal}" returned malformed liveness evidence`);
+    log(`registration-executor for ${row.principal}: ${executor.state}: ${executor.detail}`);
     if (executor.state !== "gone") {
       const condition = executor.state === "live" ? "holder-alive"
         : executor.state === "unknown" ? "holder-unknown" : "liveness-unestablishable";

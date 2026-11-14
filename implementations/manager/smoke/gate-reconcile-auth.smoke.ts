@@ -268,6 +268,20 @@ try {
       rows.length === 1 && rows[0]?.state === "active", rows);
   }
 
+  // Runtime adapters can return an invalid enum despite the TypeScript contract.
+  {
+    const { instanceId, kv } = await buildResidue({ holderLive: false });
+    const before = await kv.get(epgateKey(ENDPOINT, instanceId));
+    const malformed = await attempt({
+      kv, recordsKv, space, endpoint: ENDPOINT, instanceId,
+      probeHolder: async () => ({ state: "invalid", detail: "malformed runtime verdict" } as unknown as HolderLiveness),
+      evictHolders: realEvict, log: () => {},
+    });
+    check("MALFORMED HOLDER: only an affirmative gone verdict can pass the guard", !malformed.ok && malformed.condition === "liveness-unestablishable", malformed);
+    const after = await kv.get(epgateKey(ENDPOINT, instanceId));
+    check("MALFORMED HOLDER: refusal preserves the freeze token", before?.revision === after?.revision);
+  }
+
   // A separate registration executor must pass the same fail-closed guard before repair writes.
   {
     const { instanceId, principal, kv } = await buildResidue({ holderLive: false });
@@ -281,19 +295,23 @@ try {
     const base = { kv, recordsKv, space, endpoint: ENDPOINT, instanceId, probeHolder: realProbe(observerNc), evictHolders: realEvict, log: () => {} };
     const live = await attempt({ ...base, probeRegistrationExecutor: async holder => {
       if (holder !== principal) throw new Error("executor proof received a foreign holder");
-      return realProbe(observerNc)(executorPrincipal);
+      return realProbe(observerNc!)(executorPrincipal);
     } });
     check("EXECUTOR: live separate registration authority refuses with holder-alive", !live.ok && live.condition === "holder-alive" && /registration executor/.test(live.message), live);
     const unknown = await attempt({ ...base, probeRegistrationExecutor: () => realProbe(evictorNc!)(executorPrincipal) });
     check("EXECUTOR: incomplete real sweep refuses with holder-unknown", !unknown.ok && unknown.condition === "holder-unknown", unknown);
     const unavailable = await attempt({ ...base, probeRegistrationExecutor: async () => ({ state: "unestablishable", detail: "executor oracle unavailable" }) });
     check("EXECUTOR: unavailable oracle refuses with liveness-unestablishable", !unavailable.ok && unavailable.condition === "liveness-unestablishable", unavailable);
+    for (const verdict of [undefined, { state: "invalid", detail: "invalid enum" }]) {
+      const malformed = await attempt({ ...base, probeRegistrationExecutor: async () => verdict as unknown as HolderLiveness });
+      check("EXECUTOR: malformed runtime verdict refuses with liveness-unestablishable", !malformed.ok && malformed.condition === "liveness-unestablishable", malformed);
+    }
     const after = await kv.get(epgateKey(ENDPOINT, instanceId));
     const family = await endpointRegistrationBarrier(kv, space, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }).enumerate();
     check("EXECUTOR: all refusals leave the gate revision and active credential family unchanged", before?.revision === after?.revision && family.length === 1 && family[0]?.state === "active");
     await executorNc.close();
     await wait(300);
-    const gone = await attempt({ ...base, probeRegistrationExecutor: () => realProbe(observerNc)(executorPrincipal) });
+    const gone = await attempt({ ...base, probeRegistrationExecutor: () => realProbe(observerNc!)(executorPrincipal) });
     check("EXECUTOR: complete sweeps proving both principals gone retain abandoned recovery", gone.ok, gone);
   }
 

@@ -465,12 +465,12 @@ try {
       const upstreamUrl = new URL(service!.publicUrl!);
       const upstreamPath = req.url?.startsWith("/register/") ? "/register" : req.url;
       const forward = () => {
-      const upstream = httpRequest({
-        host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: upstreamPath,
-        method: req.method, headers: { ...req.headers, host: upstreamUrl.host },
-      }, (response) => { res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res); });
-      upstream.on("error", (error) => { res.statusCode = 502; res.end(error.message); });
-      upstream.end(body);
+        const upstream = httpRequest({
+          host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: upstreamPath,
+          method: req.method, headers: { ...req.headers, host: upstreamUrl.host },
+        }, (response) => { res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res); });
+        upstream.on("error", (error) => { res.statusCode = 502; res.end(error.message); });
+        upstream.end(body);
       };
       const parsed = req.url?.endsWith("/manager-service-authority") ? JSON.parse(body.toString("utf8")) as { request?: { operation?: string } } : undefined;
       if (holdEviction && parsed?.request?.operation === "evict-family-principal") {
@@ -897,6 +897,18 @@ registry.register({
     activeRow?.state === "frozen" && activeRow.op?.kind === "registration" && activeExecutor.state === "live" && absentServe.state === "gone" && absentServe.sweepComplete === true,
     { gateRevision: activeGate.gate?.revision, gate: activeRow, executor: activeExecutor, serve: absentServe });
   console.log("REGISTRATION_OVERLAP_BEFORE", JSON.stringify({ gateRevision: activeGate.gate?.revision, gate: activeRow, executor: activeExecutor, serve: absentServe }));
+  const repairCli = track("participant-native-repair-refusal", spawn(process.execPath, [...process.execArgv, cli, "manager", "reconcile", "--space", space, "--instance", firstState.instanceId, "--yes", "--json"], {
+    cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  let repairCliOutput = "";
+  repairCli.stdout?.on("data", chunk => { repairCliOutput = append(repairCliOutput, chunk); });
+  repairCli.stderr?.on("data", chunk => { repairCliOutput = append(repairCliOutput, chunk); });
+  if (!await awaitClose(repairCli, 15_000)) throw new Error("participant native-repair refusal did not terminate");
+  const repairRefusalGate = await observeGateRepair();
+  check("remote participant cannot bypass host maintenance through native signer-only gate repair",
+    repairCli.exitCode !== 0 && /PERMISSION_DENIED|DEPENDENCY_UNAVAILABLE/.test(repairCliOutput) &&
+    /signing material/.test(repairCliOutput) && repairRefusalGate.gate?.revision === activeGate.gate?.revision,
+    { exitCode: repairCli.exitCode, output: repairCliOutput.slice(-1200), before: activeGate.gate?.revision, after: repairRefusalGate.gate?.revision });
   const crossOwnerRequest = remoteManagerMaintenanceRequest(loadOrCreateRemoteManagerIdentity(secondRoot, space), "cli", "reconcile-registration", firstState.instanceId);
   let crossOwnerRefusal = "";
   process.env.COTAL_HOME = secondHome;

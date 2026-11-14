@@ -48,7 +48,7 @@ let sampleRunning = false;
 try {
   await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
   await setupSpaceStreams({ servers: server, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  observer = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "provisioner"), tls: false }), maxReconnectAttempts: 0 });
+  observer = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId } }), tls: false }), maxReconnectAttempts: 0 });
   livenessObserver = await connect({ servers: server, ...standaloneConnectOpts({ creds: observerCreds, tls: false }), inboxPrefix: MEMBERSHIP_INBOX_PREFIX, maxReconnectAttempts: 0 });
   const authKv = await new Kvm(observer).open(epAuthBucket(space));
   const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
@@ -111,16 +111,19 @@ try {
   });
   sampleRunning = false;
   await sampling;
-  const goneSamples = samples.filter(sample => sample.state === "gone" && sample.sweepComplete);
+  const firstLiveIndex = samples.findIndex(sample => sample.state === "live");
+  const gapStartIndex = samples.findIndex((sample, index) => index > firstLiveIndex && Date.parse(sample.start) >= expiry * 1000 && sample.state === "gone" && sample.sweepComplete);
+  const gapEndOffset = gapStartIndex < 0 ? -1 : samples.slice(gapStartIndex).findIndex(sample => sample.state === "live");
+  const gapEndIndex = gapEndOffset < 0 ? -1 : gapStartIndex + gapEndOffset;
+  const gapSamples = gapStartIndex < 0 ? [] : samples.slice(gapStartIndex, gapEndIndex < 0 ? undefined : gapEndIndex);
   console.log("EXECUTOR_REFRESH_INTERVAL", JSON.stringify({
     credentialExpiry: new Date(expiry * 1000).toISOString(), refreshClocks,
-    sampleCount: samples.length, goneSampleCount: goneSamples.length,
-    firstSample: samples[0], lastSample: samples.at(-1),
-    firstGone: goneSamples[0], lastGone: goneSamples.at(-1),
-    observedGoneSpanMs: goneSamples.length ? Date.parse(goneSamples.at(-1)!.end) - Date.parse(goneSamples[0]!.start) : null,
-    samples,
+    sampleCount: samples.length, gapSampleCount: gapSamples.length,
+    lastLiveBeforeGap: samples[gapStartIndex - 1], firstGone: gapSamples[0], lastGone: gapSamples.at(-1),
+    firstLiveAfterGap: gapEndIndex < 0 ? undefined : samples[gapEndIndex],
+    observedGoneSpanMs: gapSamples.length ? Date.parse(gapSamples.at(-1)!.start) - Date.parse(gapSamples[0]!.end) : null,
   }));
-  assert.ok(goneSamples.length > 0, "live sampling must observe the real disconnected expiry interval");
+  assert.ok(firstLiveIndex >= 0 && gapSamples.length > 0 && gapEndIndex >= 0, "live sampling must bracket the real disconnected expiry interval with live observations");
   assert.equal(refreshes, 1);
   assert.equal(evictions, 2);
   assert.equal(registered.processEpoch, first.processEpoch + 1);
