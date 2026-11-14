@@ -37,3 +37,4 @@ try {
   await refreshRegistrationPolicy({ space: entry.space });
   console.log('UPDATE PARTICIPANT PINS PASS: discovery and real registration refresh agree');
 } finally { await close(); }
+await import('./upgrade-seat.fixture.js');

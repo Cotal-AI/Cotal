@@ -42,13 +42,13 @@ function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '
   const cell = base.cells.find(c => c.id === `linux-npm-${scenario}`);
   const plan = { ...base, cells: [cell] };
   const directory = join(root, 'upgrade-results', `upgrade-cell-${cell.id}`);
-  mkdirSync(directory, { recursive: true }); mkdirSync(join(root, 'upgrade-plan'));
+  mkdirSync(directory, { recursive: true, mode: 0o700 }); mkdirSync(join(root, 'upgrade-plan'), { mode: 0o700 });
   const names = ['CLI version is target', 'selected CLI reports target', 'every recorded extension is at target', 'recorded extension package versions match target', 'every prior extension remains recorded', 'cotal status exits zero', 'no paused recovery record', 'no manual step or refusal'];
   const harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: new URL('..', import.meta.url), encoding: 'utf8' }).trim();
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   const harnessSha256 = digest(execFileSync('git', ['show', harnessSource + ':scripts/automatic-update-platform-baseline.mjs'], { cwd: new URL('..', import.meta.url) }));
   const data = { cell: structuredClone(cell), origin: { source: plan.sourceSHA, artifact: '42', digest: 'sha256:fixed' }, report: { id: 'candidate-B-linux-0.164.6-npm-configured-self', tier: 'candidate-B (synthetic registry, real native processes)', platform: 'linux', source: sourceVersion, sourceRequested: sourceVersion, harnessSource, harnessSha256, cleanupSafety: { passed: true }, target: plan.targetVersion, layout: 'npm', state: 'configured', method: 'self', result: 'passed', environment: { hostedDisposable: true, registryOverridden: true }, candidate: { source: plan.sourceSHA, direction: 'B' }, extensionsBefore: Array.from({ length: 8 }, (_, i) => ({ pkg: `extension-${i}` })), assertions: names.map(name => ({ name, passed: true })), calls: [] } };
-  change(data);
+  change(data, directory);
   writeFileSync(join(root, 'upgrade-plan/plan.json'), JSON.stringify(plan));
   writeFileSync(join(directory, 'coordinate.json'), JSON.stringify(data.cell));
   writeFileSync(join(directory, 'candidate-origin.json'), JSON.stringify(data.origin));
@@ -58,11 +58,61 @@ function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '
   if (corrupt) writeFileSync(join(directory, data.report.id + '.log'), 'tampered transcript\n');
   writeFileSync(join(root, 'summary.mjs'), program
     .replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href))
-    .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href)));
+    .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href))
+    .replace("'./scripts/daemon-manual-acceptance.mjs'", JSON.stringify(new URL('./daemon-manual-acceptance.mjs', import.meta.url).href)));
   const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_HARNESS_SOURCE: harnessSource };
   try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe', cwd: new URL('..', import.meta.url) }); return { exit: 0, root }; }
   catch (error) { return { exit: error.status, stderr: error.stderr.toString(), root }; }
 }
+function manualServiceEvidence(data, directory) {
+  const capturedAt = '2026-11-14T11:00:00.000Z';
+  const observations = [{ kind: 'roots', state: 'observed' }];
+  const archive = (kind, value, state = 'archived') => {
+    const bytes = Buffer.from(JSON.stringify(value));
+    const artifact = `manual-${kind}.txt`;
+    writeFileSync(join(directory, artifact), bytes, { mode: 0o600 });
+    observations.push({ kind, state, artifact, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), ...(kind === 'daemon-status' || kind === 'systemctl-show' ? { exit: 0 } : {}), ...(kind === 'installed-version' ? { version: data.cell.targetVersion } : {}) });
+  };
+  archive('daemon-status', { startedAt: capturedAt, finishedAt: capturedAt, exit: 0, timedOut: false, truncated: false, signal: null, stdout: JSON.stringify({ result: { state: 'ready', version: data.cell.targetVersion, pid: 1234 } }) }, 'observed');
+  archive('systemctl-show', { exit: 0, timedOut: false, truncated: false, signal: null, stdout: 'LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\nMainPID=1234\n' }, 'observed');
+  archive('installed-version', { name: 'cotal-ai', version: data.cell.targetVersion });
+  archive('daemon.lock', { record: { pid: 1234, socket: { dev: 1, ino: 2 } }, ownerProcess: { state: 'observed', startMatches: true, processState: 'S' } });
+  archive('socket', { dev: 1, ino: 2, mtimeMs: Date.parse(capturedAt) });
+  for (const kind of ['update-recovery.json', 'update-recovery-observed.json', '.extensions.lock', '.extensions.lock.update', '.extensions.lock.npm-child', '.cotal-update.lock', '.cotal-update-child']) observations.push({ kind, state: 'missing' });
+  Object.assign(data.report, { state: 'daemon', daemonDiagnostics: { 'after-update': { stage: 'after-update', capturedAt, observations } } });
+  data.report.environment.nativeServiceRequested = true;
+  data.report.calls = [{ label: 'native install', exit: 0 }, { label: 'upgrade under test', exit: 0, argv: ['update', '--self'] }];
+  data.report.assertions.push({ name: 'manual native service starts at source with scheduler disabled', passed: true }, { name: 'independent manual service final state', passed: true });
+}
+test('actual summary regrades manual native final state in both phases', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture((data, directory) => {
+      manualServiceEvidence(data, directory);
+      if (phase === 'published') { data.report.tier = 'published'; data.report.environment.registryOverridden = false; delete data.report.candidate; }
+    }, { scenario: 'daemon-self', phase });
+    assert.equal(result.exit, 0, result.stderr);
+  }
+});
+test('manual service success text and booleans cannot waive missing, paused or tampered final state', () => {
+  for (const mutate of [
+    data => { delete data.report.daemonDiagnostics; },
+    data => { data.report.daemonDiagnostics['after-update'].observations.find(row => row.kind === 'update-recovery.json').state = 'archived'; },
+    data => { data.report.daemonDiagnostics['after-update'].observations.find(row => row.kind === 'daemon-status').sha256 = '0'.repeat(64); },
+    data => { data.report.calls = data.report.calls.filter(call => call.label !== 'native install'); },
+    data => { data.report.daemonDiagnostics['after-update'].observations.find(row => row.kind === 'systemctl-show').state = 'failed'; },
+    data => { data.report.daemonDiagnostics['after-update'].observations.find(row => row.kind === 'socket').state = 'missing'; },
+  ]) {
+    const result = fixture((data, directory) => { manualServiceEvidence(data, directory); mutate(data); }, { scenario: 'daemon-self' });
+    assert.notEqual(result.exit, 0, 'independent final state must fail closed');
+  }
+});
+test('manual service route is daemon state, self method, native Linux preparation and no scheduler proof', () => {
+  const run = workflow.jobs['release-cells'].steps.find(step => step.name === 'Run one real product upgrade coordinate').run;
+  assert(run.includes("'daemon-self': 'daemon'"));
+  assert(workflow.jobs['release-cells'].steps.find(step => step.name === 'Prepare disposable Linux user manager').if.includes("matrix.scenario == 'daemon-self'"));
+  assert(run.includes("cell.platform === 'darwin' && method === 'scheduler'"));
+  assert(program.includes('evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics'));
+});
 test('actual workflow census accepts precisely matching configured evidence', () => assert.equal(fixture().exit, 0));
 test('actual workflow census refuses fresh report relabelled configured', () => assert.notEqual(fixture(d => { d.report.state = 'fresh'; d.report.extensionsBefore = []; }).exit, 0));
 test('actual workflow census refuses wrong immutable artifact identity', () => assert.notEqual(fixture(d => { d.origin.artifact = 'foreign'; }).exit, 0));
