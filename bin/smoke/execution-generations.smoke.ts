@@ -82,6 +82,11 @@ try {
     assert.deepEqual(readFileSync(file), bytes); assert.equal(lstatSync(file).mtimeMs, before);
     writeExecutionDescriptor(root, descriptor);
   });
+  check("a malformed binding is not proof of a different installed artifact", () => {
+    writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, binding: {} }));
+    assert.throws(() => selectExecutionProgram(root), /invalid execution artifact binding/);
+    writeExecutionDescriptor(root, descriptor);
+  });
   check("matching unknown descriptor protocol refuses with reinstall guidance", () => {
     writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, v: 999 }));
     const result = run(); assert.equal(result.status, 1); assert.match(result.stderr, /unsupported execution descriptor version 999.*reinstall with npm install -g/);

@@ -94,6 +94,8 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
   try { value = executionRecord(descriptorPath); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return initial(); throw error; }
   const descriptor = object(value), binding = object(descriptor.binding), current = executionBinding(installed);
+  if (typeof binding.name !== "string" || typeof binding.version !== "string" || !binding.version ||
+      typeof binding.bootstrapSha256 !== "string" || !HASH.test(binding.bootstrapSha256)) throw new Error("invalid execution artifact binding");
   if (binding.name !== current.name || binding.version !== current.version || binding.bootstrapSha256 !== current.bootstrapSha256)
     return initial();
   if (descriptor.v !== 1) throw new Error(`unsupported execution descriptor version ${String(descriptor.v)}`);
