@@ -128,11 +128,12 @@ try {
   result.stop = await cotal(['stop', 'stopfixture', '--space', space, '--on', mgr.managerInstanceId]);
   const completed = performance.now();
   save();
-  assert(!result.stop.timedOut && !result.stop.signal && result.stop.exit !== null, 'stop fixture failed to complete normally');
+  assert(!result.stop.timedOut && !result.stop.signal && result.stop.exit === 0, 'public stop was not accepted, so this is not a product-stop measurement');
   await observeAfterStop(retained, completed, (row) => { result.observations.push(row); save(); });
   result.terminalBytesAfterStop = terminalBytes;
   result.runtime = { status: handle.status(), exit: handle.exitInfo?.() ?? null };
   result.preservation = await mgr.preparePreservation(randomUUID());
+  result.preservationMeaning = 'prepare-only admission, not commit or process-exit proof';
   result.productStopEndedTree = result.observations.at(-1).processes.every((row) => row.exited);
   save();
 } catch (error) {

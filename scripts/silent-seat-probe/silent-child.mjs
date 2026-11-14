@@ -37,6 +37,7 @@ if (role === 'descendant') {
     creds: readFileSync(e.COTAL_CREDS, 'utf8'),
     card: { id: e.COTAL_ID, name: e.COTAL_NAME, kind: 'agent' },
     lifecycleUid: e.COTAL_LIFECYCLE_UID,
+    managerInstanceId: e.COTAL_MANAGER_INSTANCE,
     channels: [],
     consume: false,
     registerPresence: true,
