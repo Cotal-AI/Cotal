@@ -64,6 +64,19 @@ jobs:
         run: |
           node scripts/measure-windows-ownership.mjs run "$env:GITHUB_WORKSPACE\bin" "$env:GITHUB_WORKSPACE\timing" unchanged
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Measure ten fresh published installs
+        shell: pwsh
+        run: |
+          for ($Sample = 1; $Sample -le 10; $Sample++) {
+            $Prefix = Join-Path $env:RUNNER_TEMP "ownership-first-$Sample"
+            npm i -g --prefix "$Prefix" cotal-ai@0.164.6
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $Root = Join-Path $Prefix 'node_modules\cotal-ai'
+            node scripts/measure-windows-ownership.mjs run "$Root" "$env:GITHUB_WORKSPACE\timing" "first-$Sample" 1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npm uninstall -g --prefix "$Prefix" cotal-ai
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Upload raw evidence
         if: always()
         uses: actions/upload-artifact@v4

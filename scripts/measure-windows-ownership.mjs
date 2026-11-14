@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } 
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [mode, packageRoot, outputRoot, label] = process.argv.slice(2);
+const [mode, packageRoot, outputRoot, label, sampleCount = '5'] = process.argv.slice(2);
 assert.equal(process.platform, 'win32', 'measure on native Windows only');
 assert.equal(process.env.GITHUB_ACTIONS, 'true');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
@@ -49,11 +49,12 @@ if (mode === 'sample') {
     assert.equal(result.error, undefined, `${verb} did not complete`);
     assert.equal(result.status, 0, `${verb}: ${result.stdout}\n${result.stderr}`);
   }
+  assert.ok(['1', '5'].includes(sampleCount), 'only one or five samples per fresh installation');
   let installed = false;
   try {
     call('install');
     installed = true;
-    for (let sample = 1; sample <= 5; sample++) {
+    for (let sample = 1; sample <= Number(sampleCount); sample++) {
       const log = join(outputRoot, `${label}-${sample}.jsonl`);
       const result = spawnSync(process.execPath, ['--import', pathToFileURL(resolve('scripts/measure-windows-ownership-hook.mjs')).href,
         resolve('scripts/measure-windows-ownership.mjs'), 'sample', packageRoot, outputRoot, label], {
