@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
+import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
 export function daemonHostedManagerOptions(options, { hosted: disposable = hosted, platform = process.platform } = {}) {
@@ -288,7 +289,7 @@ export async function matrixCell(options) {
   const [npm, npmPrefix] = npmCommand();
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
-  async function call(label, file, argv, timeout = 180000) {
+  async function call(label, file, argv, timeout = callTimeout(label)) {
     if (/install|seed|upgrade under test/.test(label)) {
       const disk = statfsSync(root);
       assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation action');
@@ -461,9 +462,12 @@ export async function matrixCell(options) {
       save(join(fixture, 'package.json'), { name: 'cotal-upgrade-native-fixture', version: report.target, type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } });
       const seat = join(fixture, 'seat.mjs');
       writeFileSync(seat, `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,...(e.COTAL_CREDS?{creds:readFileSync(e.COTAL_CREDS,'utf8')}:{}),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
+      const recorder = daemonHostedManager ? writeHostedSeatRecorder(fixture, seat) : undefined;
+      const launchedSeat = recorder?.launcher ?? seat;
+      const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
       const ready = join(root, 'writer-ready'), release = join(root, 'writer-release');
       releaseHolder = () => writeFileSync(release, 'release');
-      writeFileSync(join(fixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+      writeFileSync(join(fixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
       if (state === 'agent' && daemonHostedManager) {
         assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'daemon-hosted Manager requires prepared remote user-auth participant without a local Manager');
         const space = report.participant.space;
@@ -483,7 +487,10 @@ export async function matrixCell(options) {
         assert.equal(setup.manager?.state, 'answering');
         assert(setup.manager.instanceId, 'daemon setup must return answering Manager identity');
         report.managerHost.instanceId = setup.manager.instanceId;
-        report.managerHost.spawn = ok(await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade_proof_worker', '--detach', '--no-events', '--space', space]), 'hosted spawn');
+        report.managerHost.spawn = await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade_proof_worker', '--detach', '--no-events', '--space', space]);
+        report.managerHost.diagnostics = archiveHostedDiagnostics({ fixture, cotalHome, space, output, id });
+        report.managerHost.launchObservation = await cotal('record daemon-hosted Manager launch inventory', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']);
+        ok(report.managerHost.spawn, 'hosted spawn');
         report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;
       } else if (state === 'agent') {
         report.managerHost = { mode: 'standalone', space: 'upgrade-proof' };
@@ -840,11 +847,15 @@ export async function matrixCell(options) {
       }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
+    if (daemonHostedManager && report.managerHost?.instanceId) {
+      report.managerHost.diagnosticsBeforeCleanup = archiveHostedDiagnostics({ fixture: join(root, 'native-fixture'), cotalHome, space: report.managerHost.space, output, id, stage: 'before-cleanup' });
+    }
     if (daemonHostedManager && !uncertain && report.managerHost?.instanceId) {
       try {
         report.managerHost.stop = await daemon('stop owned daemon-hosted Manager', ['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']);
         check('owned daemon-hosted Manager stop succeeds', report.managerHost.stop.exit === 0, report.managerHost.stop);
         ok(report.managerHost.stop, 'hosted agent cleanup');
+        report.managerHost.diagnosticsAfterStop = archiveHostedDiagnostics({ fixture: join(root, 'native-fixture'), cotalHome, space: report.managerHost.space, output, id, stage: 'after-stop' });
       } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (installedService) {
@@ -1019,6 +1030,19 @@ export async function candidateRegistry(directory, direction, upstream) {
     close: async () => { save(join(directory, `registry-requests-${process.pid}.json`), requests); await new Promise(done => server.close(done)); return requests; } };
 }
 
+export const callTimeout = (label, platform = process.platform) => label === 'upgrade under test' && platform === 'win32' ? 300000 : 180000;
+
+export function updateCallDuration(report) {
+  if (report.method === 'scheduler') return 'scheduler: not a direct update call';
+  const calls = report.calls ?? [];
+  let call = calls.find(call => call.label === 'upgrade under test');
+  if (report.method === 'installer') {
+    const installers = calls.filter(call => ['public installer', 'receipt-bound published installer', 'candidate source installer'].includes(call.label));
+    if (installers.length > 1 || report.layout === 'npm' || report.id?.endsWith('-first-install')) call = installers.at(-1);
+  }
+  return call?.elapsedMs ?? 'no update call recorded';
+}
+
 export function summarize(directory) {
   const admissions = [];
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
@@ -1031,11 +1055,11 @@ export function summarize(directory) {
   });
   assert(reports.length > 0 || admissions.length > 0, 'no upgrade cell or runner admission evidence found');
   const escape = value => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>');
-  const table = ['| Tier | Cell | Source | Target | Result | Exact refusal |', '|---|---|---|---|---|---|',
-    ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, row.refusal].map(escape).join(' | ')} |`)];
+  const table = ['| Tier | Cell | Source | Target | Result | Update call duration (ms) | Exact refusal |', '|---|---|---|---|---|---|---|',
+    ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, updateCallDuration(row), row.refusal].map(escape).join(' | ')} |`)];
   if (admissions.length) table.push('', '| Runner | Admission | Reason |', '|---|---|---|', ...admissions.map(row => `| ${[row.runner, row.result, row.reason].map(escape).join(' | ')} |`));
   const counts = reports.reduce((counts, row) => ({ ...counts, [row.result]: (counts[row.result] ?? 0) + 1 }), {});
-  const summary = { counts, unexpectedFailures: reports.filter(row => cellExitCode(row) !== 0).length, admissions, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape })) };
+  const summary = { counts, unexpectedFailures: reports.filter(row => cellExitCode(row) !== 0).length, admissions, cells: reports.map(row => { const { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape } = row; return { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape, updateCallDuration: updateCallDuration(row) }; }) };
   save(join(directory, 'summary.json'), summary);
   writeFileSync(join(directory, 'summary.md'), table.join('\n') + '\n');
   console.log(table.join('\n'));

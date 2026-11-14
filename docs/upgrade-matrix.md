@@ -7,6 +7,12 @@ A passing cell requires the target CLI and every recorded extension, status exit
 recovery record, a preserved ready service when present, and no required repair step. Missing
 artifacts, skipped required cells and unsupported states are not passes.
 
+Each cell summary shows the update command's recorded `elapsedMs`, not the whole cell's duration.
+Scheduler cells say they are not direct update calls. A cell that fails before updating says no
+update call was recorded. Only the Windows `upgrade under test` command has a temporary300000 ms
+bound for the slowness tracked in #6817. Restore its180000 ms bound when that issue is fixed.
+Other commands and platforms keep their existing bounds.
+
 ## Release triggers
 
 The `Upgrade matrix` workflow starts on every opened, synchronized or reopened pull request.
@@ -50,7 +56,11 @@ product coordinates:
 | Linux host update with a foreign-UID container's bare `cotal supervise` |1|
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
-route. It must complete the update. The standalone cell starts with `up --detach` and records its
+route. It must complete the update. Its test-only launcher retains the child's full stdout, stderr and
+exit result, plus the Manager's launch request and owned log, before cleanup. Missing or unreadable
+diagnostics are recorded explicitly. Console bearer tokens and JWTs are redacted in uploaded logs.
+Launch failure remains a failed cell, not a consent result.
+The standalone cell starts with `up --detach` and records its
 separate consent contract. Container shutdown uses `down --with-agents --yes`. When the bare supervisor is PID1, its clean exit
 can terminate the sibling `docker exec` with137. Only that observed case is accepted: the same
 container must exit0 during the command, without an OOM, with no process left. Other non-zero
