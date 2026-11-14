@@ -332,7 +332,7 @@ jobs:
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           NODE
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'agent-stop-consent')
+        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'agent-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -374,7 +374,7 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           if (process.env.PHASE === 'candidate') {
@@ -461,6 +461,7 @@ jobs:
           import { join } from 'node:path';
           import { verifyResults } from './scripts/upgrade-matrix-plan.mjs';
           import { matchKnownRefusal } from './scripts/upgrade-matrix-refusals.mjs';
+          import { evaluateManualDaemonState } from './scripts/daemon-manual-acceptance.mjs';
           const root = process.env.RUNNER_TEMP + '/upgrade-results';
           mkdirSync(root, { recursive: true });
           const plan = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/upgrade-plan/plan.json'));
@@ -502,7 +503,7 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
@@ -532,6 +533,9 @@ jobs:
               assert(!report.cleanupFailure && !report.error, 'cleanup or harness error cannot be a known refusal');
               assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before grading');
               const ok = name => report.assertions.some(a => a.name === name && a.passed === true);
+              const manualFinalState = cell.scenario === 'daemon-self'
+                ? evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output: directory, target: plan.targetVersion, platform: cell.platform })
+                : undefined;
               const assertions = {
                 'target-version': report.target === plan.targetVersion && ok('CLI version is target') && ok('selected CLI reports target'),
                 'extension-versions': ok('every recorded extension is at target') && ok('recorded extension package versions match target'),
@@ -542,6 +546,8 @@ jobs:
                 'installer-source-receipt': report.candidateInstaller?.source === plan.sourceSHA,
                 'foreign-snapshot-retained': ok('foreign snapshot bytes remain untouched'),
                 'container-manager-preserved': ok('foreign container Manager remains running and untouched') && ok('host selected remote user-sign-in mesh before upgrade') && report.participant?.remote === true && report.participant?.localManagerStarted === false,
+                'native-service-manual': cell.scenario === 'daemon-self' && ok('manual native service starts at source with scheduler disabled') && report.method === 'self' && report.environment?.nativeServiceRequested === true && report.calls.some(call => call.label === 'native install' && call.exit === 0) && report.calls.some(call => call.label === 'upgrade under test' && call.exit === 0 && Array.isArray(call.argv) && call.argv.includes('--self')),
+                'independent-final-state': manualFinalState?.passed === true && ok('independent manual service final state'),
                 'native-scheduler': ok('scheduler completed within observation deadline') && ok('daemon scheduler performed a replacement or reported up to date'),
                 'daemon-restart': ok('native daemon remains active at its expected generation') && (cell.platform !== 'darwin' || ok('launchd transition observed exactly one daemon restart')),
                 'stop-consent': report.calls.some(call => Array.isArray(call.argv) && call.argv.includes('--stop-agents') && call.exit === 0),
