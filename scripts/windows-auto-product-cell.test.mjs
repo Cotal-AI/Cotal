@@ -61,6 +61,10 @@ test('Windows npm invocation uses the existing matrix node-adjacent CLI recipe, 
  assert.match(source,/key.toLowerCase\(\)==='path'/);
  assert.doesNotMatch(source,/cmd\.exe/);
 });
+test('only real Windows update calls get the measured 300second bound',()=>{
+ assert.match(source,/args\[0\]==='update'&&!args.includes\('--auto'\)\?300000:180000/);
+ assert.match(source,/call\(label,file,args,limit=180000\)/);
+});
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });

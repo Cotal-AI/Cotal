@@ -46,7 +46,7 @@ export async function run(){
   const startedAt=new Date().toISOString();const result=await new Promise(resolveCall=>{const p=spawn(file,args,{cwd:project,env,stdio:['ignore','pipe','pipe'],windowsHide:true});let stdout='',stderr='';const timer=setTimeout(()=>p.kill(),limit);p.stdout.on('data',b=>stdout+=b);p.stderr.on('data',b=>stderr+=b);p.once('error',e=>{clearTimeout(timer);resolveCall({exit:null,error:e.message,stdout,stderr});});p.once('close',(exit,signal)=>{clearTimeout(timer);resolveCall({exit,signal,stdout,stderr});});});
   report.calls.push({label,file,args,startedAt,finishedAt:new Date().toISOString(),...result});save('report.json',report);return result;
  }
- const cli=(label,args)=>call(label,process.execPath,[entry,...args]);
+ const cli=(label,args)=>call(label,process.execPath,[entry,...args],args[0]==='update'&&!args.includes('--auto')?300000:180000);
  const ok=r=>{assert.equal(r.exit,0,JSON.stringify(r));return r;};
  const ps=(label,script,extra={})=>{Object.assign(env,extra);return call(label,join(env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);};
  const poll=async(label,fn,limit=180000,interval=1000)=>{const deadline=Date.now()+limit;while(Date.now()<deadline){const value=await fn();if(value)return value;await delay(interval);}throw new Error('Timed out '+label);};
