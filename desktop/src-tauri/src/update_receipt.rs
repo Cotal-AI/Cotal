@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, io::{Read, Write}, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use std::{fs, io::{Read, Write}, path::Path, sync::atomic::{AtomicU64, Ordering}, time::{SystemTime, UNIX_EPOCH}};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -14,7 +14,8 @@ pub struct Receipt {
     pub reason: Option<String>,
 }
 fn unique() -> String {
-    format!("{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos())
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!("{}-{}-{}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(), NEXT.fetch_add(1, Ordering::Relaxed))
 }
 pub fn read(path: &Path) -> Result<Option<Receipt>, String> {
     let file = match fs::File::open(path) {
