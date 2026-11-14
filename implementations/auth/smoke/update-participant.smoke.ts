@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { join } from 'node:path';
 import { findMesh, recordMesh, refreshRegistrationPolicy } from '@cotal-ai/workspace';
 import { prepareUpdateParticipant } from './update-participant.fixture.js';
 
-const root = mkdtempSync('/var/tmp/upgrade-matrix/participant-pins-');
+const parent = '/var/tmp/upgrade-matrix';
+mkdirSync(parent, { recursive: true, mode: 0o700 });
+const root = mkdtempSync(join(parent, 'participant-pins-'));
 const home = join(root, 'home'), config = join(home, 'config'), project = join(root, 'project');
 for (const path of [home, config, project, join(root, 'tmp')]) mkdirSync(path, { recursive: true, mode: 0o700 });
 const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config, TMPDIR: join(root, 'tmp') };
@@ -19,6 +22,13 @@ try {
   assert.equal(entry.server, bundle.server);
   assert.equal(entry.tlsRequired === true, bundle.tlsRequired, 'fixture transport pin must match its served discovery');
   assert.equal(entry.userAuth!.endpoints!.url, bundle.userAuth.endpoints.url);
+  for (const path of ['http://127.0.0.1:1/exchange', '//127.0.0.1:1/exchange']) {
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest(entry.userAuth!.endpoints!.url!, { path }, response => { response.resume(); resolve(response.statusCode!); });
+      request.on('error', reject); request.end();
+    });
+    assert.equal(status, 400, 'fixture front must refuse a request naming another authority');
+  }
   await refreshRegistrationPolicy({ space: entry.space });
   assert(findMesh(entry.space)?.policyCheckedAt, 'real refresh must be recorded before hosted Manager setup');
   recordMesh({ ...entry, tlsRequired: !bundle.tlsRequired, policyCheckedAt: new Date(0).toISOString() });

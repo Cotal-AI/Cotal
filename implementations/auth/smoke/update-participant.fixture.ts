@@ -33,8 +33,11 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
     try { await service?.close(); }
     finally {
       try {
-        if (exchange?.listening) await new Promise<void>((resolve, reject) => exchange!.close(error => error ? reject(error) : resolve()));
-        if (idp?.listening) await new Promise<void>((resolve, reject) => idp!.close(error => error ? reject(error) : resolve()));
+        try {
+          if (exchange?.listening) await new Promise<void>((resolve, reject) => exchange!.close(error => error ? reject(error) : resolve()));
+        } finally {
+          if (idp?.listening) await new Promise<void>((resolve, reject) => idp!.close(error => error ? reject(error) : resolve()));
+        }
       } finally {
         try { await fixture?.close(); }
         finally {
@@ -81,9 +84,15 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
     let exchangeUrl = "";
     exchange = createServer(async (request, response) => {
       if (!upstream) { response.writeHead(503); response.end(); return; }
+      let target: URL;
+      try {
+        assert(typeof request.url === 'string' && request.url.startsWith('/') && !request.url.startsWith('//'));
+        target = new URL(request.url, upstream);
+        assert.equal(target.origin, new URL(upstream).origin);
+      } catch { response.writeHead(400); response.end(); return; }
       if (request.method === "GET" && request.url === "/.well-known/cotal-mesh") {
         try {
-          const fetched = await fetch(new URL(request.url, upstream));
+          const fetched = await fetch(target);
           assert(fetched.ok, "fixture discovery upstream must answer");
           const bundle = await fetched.json() as { userAuth: { endpoints: Record<string, unknown> } };
           response.writeHead(200, { "content-type": "application/json" });
@@ -91,7 +100,7 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
         } catch { response.writeHead(502); response.end(); }
         return;
       }
-      const forwarded = httpRequest(new URL(request.url ?? "/", upstream), { method: request.method, headers: request.headers }, result => {
+      const forwarded = httpRequest(target, { method: request.method, headers: request.headers }, result => {
         response.writeHead(result.statusCode ?? 502, result.headers);
         result.pipe(response);
       });
