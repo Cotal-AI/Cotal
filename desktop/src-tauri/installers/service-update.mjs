@@ -173,9 +173,9 @@ try {
         state.oldPid = status.pid;
         state.oldBirth = modules.lifetime.processBirth(status.pid);
         if (!state.oldBirth || !native.enabled) throw new Error('The service lifetime or enabled state could not be confirmed.');
-        census(status.pid);
         prepared = true;
         await request('managers-prepare-restart');
+        census(status.pid);
         // Unsupported old versions refuse rather than substituting task termination.
         await request('daemon-stop');
         state.running = true;

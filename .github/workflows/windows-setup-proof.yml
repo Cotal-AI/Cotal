@@ -64,6 +64,25 @@ jobs:
       matrix:
         repeat: [0]
         cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted, app-open, app-tray, foreign, fresh, cannot-start]
+        include:
+          - { cell: running, repeat: 1 }
+          - { cell: running, repeat: 2 }
+          - { cell: running, repeat: 3 }
+          - { cell: running, repeat: 4 }
+          - { cell: running, repeat: 5 }
+          - { cell: running, repeat: 6 }
+          - { cell: running, repeat: 7 }
+          - { cell: running, repeat: 8 }
+          - { cell: running, repeat: 9 }
+          - { cell: app-tray, repeat: 1 }
+          - { cell: app-tray, repeat: 2 }
+          - { cell: app-tray, repeat: 3 }
+          - { cell: app-tray, repeat: 4 }
+          - { cell: app-tray, repeat: 5 }
+          - { cell: app-tray, repeat: 6 }
+          - { cell: app-tray, repeat: 7 }
+          - { cell: app-tray, repeat: 8 }
+          - { cell: app-tray, repeat: 9 }
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8

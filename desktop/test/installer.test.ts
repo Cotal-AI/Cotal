@@ -22,6 +22,14 @@ test('setup owns task suppression without task termination and persists caller-r
   const hooks = readFileSync(new URL('hooks.nsh', base), 'utf8');
   const task = readFileSync(new URL('service-task.ps1', base), 'utf8');
   const helper = readFileSync(new URL('service-update.mjs', base), 'utf8');
+  assert.match(task, /finally \{ Write-SetupStep 'exit' \}/);
+  assert.match(task, /Process\]::GetCurrentProcess\(\)\.StartTime\.ToUniversalTime\(\)/);
+  assert.match(task, /AppendAllText/);
+  assert.match(task, /\$lines\.Length -gt 200/);
+  assert.ok(task.indexOf("Write-SetupStep 'start'") < task.indexOf("$ErrorActionPreference = 'Stop'"));
+  assert.ok(task.indexOf("Write-SetupStep 'scheduler-connect'") < task.indexOf('$scheduler.Connect()'));
+  assert.ok(task.indexOf("Write-SetupStep 'module-management'") < task.indexOf('  Import-Module'));
+  assert.match(hooks, /TIMEOUT=40000[^\n]*-Action recover/);
   assert.match(hooks, /MB_RETRYCANCEL/);
   assert.match(hooks, /SetErrorLevel \$CotalCode/);
   assert.match(hooks, /File \/oname=node\.exe/);
@@ -37,7 +45,11 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(hooks, /SetEnvironmentVariable\(t "PSModulePath", p 0\)/);
   assert.match(task, /\$task\.Enabled = \$false/);
   assert.match(task, /GetInstances\(0\)\.Count/);
+  assert.ok(helper.indexOf('prepared = true;') < helper.indexOf("await request('managers-prepare-restart')"));
+  assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf('census(status.pid)'));
+  assert.ok(helper.indexOf('census(status.pid)') < helper.indexOf("await request('daemon-stop')"));
   assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));
+  assert.match(helper, /if \(prepared && !committed && socket\) await request\('managers-abort-restart'\)/);
   assert.ok(helper.indexOf("task('disable')") < helper.indexOf("await request('daemon-stop', true)"));
   assert.match(helper, /rmSync\(stateFile\);\n    outcome\(23/);
   assert.doesNotMatch(helper, /outcome\(0,.*'prepared'/);

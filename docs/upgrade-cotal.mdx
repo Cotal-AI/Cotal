@@ -75,7 +75,8 @@ See [Install Cotal](installation.mdx) for installer options and PATH checks.
 Run the newer Windows setup program over the existing desktop installation. Setup refuses
 before replacing application files while its service hosts an agent or another program uses
 its bundled runtime. Stop those agents or close the named program, then choose Retry.
-The service's hosted launch fence stays held until shutdown, so another hosted agent cannot
+The service checks its hosted agent count before setup checks for other programs using the
+installation. Its hosted launch fence stays held until shutdown, so another hosted agent cannot
 start between that check and the stop. Independently launched processes are only observed,
 not fenced against later launches.
 
@@ -88,7 +89,9 @@ were updated and startup was requested, not that the update failed.
 The latest result is in `%LOCALAPPDATA%\CotalSetup\result.json`; its `message` is also written
 as one line in `message.txt` beside it. If the helper cannot complete, `helperExit` records
 its raw exit status and `phase` names the setup phase. The adjacent `helper.log` keeps the
-last 200 helper runs, with each run's mode, exit code and last step. An interrupted replacement keeps the task disabled.
+last 200 diagnostic lines. Node helper summaries record the mode, exit code and last step.
+PowerShell entries record the action, fixed step name and milliseconds since that process
+started, including its startup and completion timings. An interrupted replacement keeps the task disabled.
 Run a current setup program again to finish it. The app shows that setup was interrupted and
 links to the installer without offering Start service. A newer setup can replace a partial
 older update after verifying that the owned task is disabled and its old process has stopped.
