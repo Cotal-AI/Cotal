@@ -77,7 +77,9 @@ const composed: Command = { ...command, async run(args) {
     return async () => {
       try {
         const current = await queryDaemon({ paths });
-        if (current.ok && current.result.version === updateRuntime.version()) await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
+        // The daemon authenticates this caller's process lifetime and releases only its fences.
+        // A staged rollback may have prepared a newer daemon than the updater's loaded code.
+        if (current.ok && (retainsExecution() || current.result.version === updateRuntime.version())) await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
       } catch (error) {
         if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
       }
