@@ -367,6 +367,36 @@ for (const status of ["blocked", "handoff"] as const) {
     text.includes("cotal run answer r1 /checkpoint:approve#0 --value") && !text.includes("--by"), text.slice(0, 400));
 }
 
+// ── 6c) a plain turn is never told to answer an ask ─────────────────────────────────────────
+//
+// The footer named the ask route under every block. A user's seat given `turn(seat, { name: "ask" })`
+// read it as its own turn, reported the question, schema and route missing, and answered nothing.
+{
+  console.log("6c — the footer mentions the ask route only when a block above carries one");
+  const plain = rig();
+  plain.state.pending = [{
+    goalId: "g9", acceptedAt: Date.now(), deadlineAt: Date.now() + 60_000,
+    payload: JSON.stringify({ run: "r1", step: "/turn:ask#0", context: "the run context", noticeIds: [] }),
+  }];
+  await plain.poll();
+  const text = plain.a.peekPendingTurns()?.text ?? "";
+  check("a plain turn named `ask` gets the ordinary-turn footer and no ask sentence",
+    text.includes("the run context") && text.includes("For ordinary turns") && !text.includes("An ask must be answered"), text);
+  const mixed = rig();
+  const deadlineAt = Date.now() + 60_000;
+  mixed.state.pending = [
+    { goalId: "g10", acceptedAt: Date.now(), deadlineAt, payload: JSON.stringify({ run: "r1", step: "/turn:build#0", context: "the run context", noticeIds: [] }) },
+    {
+      goalId: "g11", acceptedAt: Date.now() + 1, deadlineAt,
+      payload: JSON.stringify({ run: "r1", step: "/ask:size#0", context: "the run context", noticeIds: [], ask: { token: "g11", schema: { estimate: "number" }, attempt: 1, attempts: 1, deadlineAt } }),
+    },
+  ];
+  await mixed.poll();
+  const both = mixed.a.peekPendingTurns()?.text ?? "";
+  check("a surface holding an ask beside a plain turn keeps the ask sentence",
+    both.includes("This turn is an ask") && both.includes("An ask must be answered through its native route above"), both);
+}
+
 // ── a pull that stops answering is SAID, once ────────────────────────────────────────────────
 //
 // Only a manager-launched seat polls (`hasTurnRelay`), so an unanswered pull means its own
@@ -1510,7 +1540,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 60;
+const EXPECTED_CELLS = 62;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {
