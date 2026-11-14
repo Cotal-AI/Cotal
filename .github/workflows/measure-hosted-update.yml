@@ -1,0 +1,193 @@
+name: Measure hosted update
+on:
+  push:
+    branches: [measure/update-hosted-agents]
+permissions:
+  contents: read
+env:
+  PRODUCT_SOURCE: 322ce335cd12f14e8a539bf7c7a4ee1944fa6615
+  HARNESS_SOURCE: 3dfaa3598d4bc75b03ab719aeea1e5139f4a59cb
+  DO_NOT_TRACK: '1'
+  COTAL_TELEMETRY: 'off'
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-24.04 }
+          - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { platform: darwin, arch: x64, runner: macos-15-intel }
+          - { platform: darwin, arch: arm64, runner: macos-15 }
+          - { platform: win32, arch: x64, runner: windows-latest }
+          - { platform: win32, arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SOURCE }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - if: matrix.platform != 'win32'
+        run: |
+          node packages/seat/scripts/build-native.mjs --host
+          if [ '${{ matrix.platform }}' = darwin ]; then node packages/workspace/scripts/build-native.mjs; fi
+      - if: matrix.platform == 'win32'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: measure-seat-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform != 'linux'
+        with:
+          name: measure-workspace-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+  pack:
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HARNESS_SOURCE }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SOURCE }}
+          path: product
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+        with:
+          package_json_file: product/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Disk admission
+        run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: harness
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: measure-*
+          path: ${{ runner.temp }}/natives
+      - name: Guard native closure and pack unchanged main twice
+        env:
+          NATIVE_SOURCE: ${{ env.PRODUCT_SOURCE }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/natives/measure-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/natives/measure-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/natives/measure-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/natives/measure-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/natives/measure-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/natives/measure-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/natives/measure-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/natives/measure-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/natives/measure-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/natives/measure-workspace-darwin-arm64
+        run: |
+          cd product
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+          cd ..
+          node harness/scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/packed-source" --version 0.164.8 --source-root "$GITHUB_WORKSPACE/product"
+          node harness/scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/packed-target" --version 0.164.9 --source-root "$GITHUB_WORKSPACE/product"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packed-unchanged-main
+          path: |
+            ${{ runner.temp }}/packed-source
+            ${{ runner.temp }}/packed-target
+          if-no-files-found: error
+  published:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        variant: [agent-local, agent-url, empty-manager, no-manager]
+        sample: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps: &measurement_steps
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HARNESS_SOURCE }}
+          path: harness
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Disk admission
+        run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: harness
+      - name: Prepare disposable user manager and stock broker
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+          work="$RUNNER_TEMP/broker"
+          mkdir -p "$work"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/nats-server-v2.14.0-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
+          (cd "$work" && awk '$2 == "nats-server-v2.14.0-linux-amd64.tar.gz" {print $1 "  nats-server.tar.gz"}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && sha256sum -c selected.sha256)
+          tar -xzf "$work/nats-server.tar.gz" -C "$work"
+          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+      - run: pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
+        working-directory: harness
+      - uses: actions/download-artifact@v4
+        if: matrix.variant == 'main-candidate'
+        with:
+          name: packed-unchanged-main
+          path: ${{ runner.temp }}
+      - name: Observe one actual hosted update
+        env:
+          VARIANT: ${{ matrix.variant }}
+          SAMPLE: ${{ matrix.sample }}
+        run: node --import ./harness/node_modules/tsx/dist/loader.mjs scripts/measure-hosted-update.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-update-${{ matrix.variant }}-${{ matrix.sample }}
+          path: ${{ runner.temp }}/hosted-update-evidence
+          if-no-files-found: error
+  candidate:
+    needs: pack
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [main-candidate]
+        sample: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps: *measurement_steps
