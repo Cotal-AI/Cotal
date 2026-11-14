@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, relative, sep } from "node:path";
 import { registry, type Command, type Connector, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheExtensionServiceMetadata, cacheServicePreset, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionPackage, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, jsonFlag, plainFlag, presentationOf, provenance, saveExtensionsManifest, seededCommandsMismatch, writeResult, type InstalledExtension, type InstalledExtensionPackage, type LocalProcess, type LocalProcessContext, type Presentation, type Report, type ServicePreset } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -272,8 +272,11 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
     for (const name of ["package.json", "package-lock.json"]) {
       const path = join(stage.prefix, name);
       if (!existsSync(path)) continue;
-      const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
-        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(stage.prefix, item.slice(5))}` : item);
+      const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) => {
+        if (typeof item !== "string" || !item.startsWith("file:")) return item;
+        const destination = resolve(stage.prefix, item.slice(5));
+        return `file:${relative(join(ownerConfig, "extensions"), destination).split(sep).join("/")}`;
+      });
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
     const verified = loadExtensionsManifest();
