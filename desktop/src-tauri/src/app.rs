@@ -220,9 +220,17 @@ pub fn run() {
             crate::native_presence::dismiss_presence_offer,
             crate::native_presence::move_to_applications,
             set_update_notice,
-            crate::native_presence::pin_to_taskbar
+            crate::native_presence::pin_to_taskbar,
+            crate::updater::app_update_check,
+            crate::updater::app_update_download
         ])
         .setup(|app| {
+            #[cfg(all(cotal_updater, not(target_os = "linux")))]
+            {
+                app.handle().plugin(tauri_plugin_updater::Builder::new()
+                    .pubkey(env!("COTAL_UPDATER_PUBLIC_KEY")).build())?;
+                app.manage(crate::updater::load(app.handle()));
+            }
             let window = app.get_webview_window("main").ok_or("The main window is unavailable.")?;
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]

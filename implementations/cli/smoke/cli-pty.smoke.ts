@@ -399,20 +399,34 @@ try {
   const catalog = mkdtempSync(join(tmpdir(), "cotal-cli-pty-catalog-"));
   mkdirSync(join(catalog, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(catalog, ".cotal", "agents", "evb.md"), "---\nname: evb\nsubscribe: []\n---\nbody \x1b]0;PWN\x07\x1b[2JB\n");
+  const unpreparedPty = cotalPty(["personas", "show", "evb"], { cwd: catalog, env });
+  ptys.push(unpreparedPty);
+  const unprepared = session(unpreparedPty);
+  await until(() => unprepared.exitCode !== undefined);
+  check("personas show refuses a catalog folder with no prepared or selected space",
+    unprepared.exitCode === 2 && unprepared.text().includes("TARGET_NOT_FOUND") && unprepared.text().includes("cotal space create <name> --root") && !unprepared.text().includes("PWN"), unprepared.text());
+
+  const spacePty = cotalPty(["space", "create", "ptyspace", "--root", catalog, "--plain"], { cwd: catalog, env });
+  ptys.push(spacePty);
+  const created = session(spacePty);
+  await until(() => created.exitCode !== undefined);
+  check("control: a space is created over the catalog", created.exitCode === 0, created.text());
+  const source = readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8");
+  check("control: the prepared catalog's persona still contains raw terminal control characters",
+    source === "---\nname: evb\nsubscribe: []\n---\nbody \x1b]0;PWN\x07\x1b[2JB\n", JSON.stringify(source));
+
   const showPty = cotalPty(["personas", "show", "evb"], { cwd: catalog, env });
   ptys.push(showPty);
   const shownCard = session(showPty);
   await until(() => shownCard.exitCode !== undefined);
   check("personas show on a terminal escapes the file's control characters",
     shownCard.exitCode === 0 && !/\x1b\]0;|\x07|\x1b\[2J/.test(shownCard.raw) && shownCard.raw.includes("body \\u001b]0;PWN\\u0007\\u001b[2JB"), JSON.stringify(shownCard.raw.slice(-300)));
+  const card = await screen(shownCard.raw, 120, 32);
+  check("the terminal displays the persona's path and complete escaped source",
+    shownCard.exitCode === 0 && card === `${join(catalog, ".cotal", "agents", "evb.md")}\n---\nname: evb\nsubscribe: []\n---\nbody \\u001b]0;PWN\\u0007\\u001b[2JB`, card);
 
   // A cancelled `persona remove` says once that it was cancelled, and its warning says what that
   // left, whether Enter takes the default or `--plain` takes the numbered choice.
-  const spacePty = cotalPty(["space", "create", "ptyspace", "--root", catalog, "--plain"], { cwd: catalog, env });
-  ptys.push(spacePty);
-  const created = session(spacePty);
-  await until(() => created.exitCode !== undefined);
-  check("control: a space is created over the catalog", created.exitCode === 0, created.text());
   for (const [label, argv, ready, answer] of [["Enter", [], "Remove 'evb'", "\r"], ["--plain choice 1", ["--plain"], "Choice [1]", "1\r"]] as const) {
     const removePty = cotalPty(["persona", "remove", "evb", ...argv], { cwd: catalog, env });
     ptys.push(removePty);
@@ -421,9 +435,10 @@ try {
     removePty.write(answer);
     await until(() => r.exitCode !== undefined);
     const shown = await screen(r.raw, 80, 24);
+    const receipt = shown.replace(/\n/g, " ");
     check(`persona remove cancelled by ${label} says so once and keeps the file`,
-      asked && r.exitCode === 0 && shown.split("Removal cancelled: evb is kept at ").length === 2 && shown.includes("nothing was removed") && !shown.includes("persona removal cancelled")
-        && readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8").startsWith("---\nname: evb\n"), shown);
+      asked && r.exitCode === 0 && shown.split("Removal cancelled:").length === 2 && receipt.includes(`Removal cancelled: evb is kept at ${join(catalog, ".cotal", "agents", "evb.md")}.`) && shown.includes("nothing was removed") && !shown.includes("persona removal cancelled")
+        && readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8") === source, shown);
   }
 } catch (err) {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);

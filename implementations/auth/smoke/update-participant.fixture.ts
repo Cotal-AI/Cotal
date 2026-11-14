@@ -1,11 +1,11 @@
 /** Loopback signed-in participant for the real installed update harness. No Manager is started. */
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
-import { findMesh, getCurrent, recordMesh, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
+import { checkDiscoveryDocument, discoveryDocumentUrl, findMesh, getCurrent, recordMesh, refreshRegistrationPolicy, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, saveIdpSession, startAuthService } from "../src/index.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
@@ -25,6 +25,7 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
   for (const key of pathKeys) process.env[key] = env[key];
   let fixture: Awaited<ReturnType<typeof startHostedAuthFixture>> | undefined;
   let idp: Server | undefined;
+  let exchange: Server | undefined;
   let service: Awaited<ReturnType<typeof startAuthService>> | undefined;
   let tokenReads = 0;
   const close = async () => {
@@ -32,7 +33,11 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
     try { await service?.close(); }
     finally {
       try {
-        if (idp?.listening) await new Promise<void>((resolve, reject) => idp!.close(error => error ? reject(error) : resolve()));
+        try {
+          if (exchange?.listening) await new Promise<void>((resolve, reject) => exchange!.close(error => error ? reject(error) : resolve()));
+        } finally {
+          if (idp?.listening) await new Promise<void>((resolve, reject) => idp!.close(error => error ? reject(error) : resolve()));
+        }
       } finally {
         try { await fixture?.close(); }
         finally {
@@ -73,12 +78,49 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
     grantActor(account.stateDir, { owner, actor: "cli", lifecycleUid: mintLifecycleUid(), scope: ["admin", "spawn", "supervise"], allowSubscribe: [">"], allowPublish: [">"] });
     const provisioner = await mintCreds(account.auth, newIdentity(), "provisioner");
     await setupSpaceStreams({ servers: fixture.servers, space: account.space, creds: provisioner });
+    // This test broker is plaintext on loopback. Its own discovery must say so, while the
+    // production public face deliberately advertises TLS. All auth routes still use that face.
+    let upstream: string | undefined;
+    let exchangeUrl = "";
+    exchange = createServer(async (request, response) => {
+      if (!upstream) { response.writeHead(503); response.end(); return; }
+      let target: URL;
+      try {
+        assert(typeof request.url === 'string' && request.url.startsWith('/') && !request.url.startsWith('//'));
+        target = new URL(request.url, upstream);
+        assert.equal(target.origin, new URL(upstream).origin);
+      } catch { response.writeHead(400); response.end(); return; }
+      if (request.method === "GET" && request.url === "/.well-known/cotal-mesh") {
+        try {
+          const fetched = await fetch(target);
+          assert(fetched.ok, "fixture discovery upstream must answer");
+          const bundle = await fetched.json() as { userAuth: { endpoints: Record<string, unknown> } };
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ ...bundle, tlsRequired: false, userAuth: { ...bundle.userAuth, endpoints: { ...bundle.userAuth.endpoints, url: exchangeUrl, managerAuthorityUrl: `${exchangeUrl}/manager-service-authority` } } }));
+        } catch { response.writeHead(502); response.end(); }
+        return;
+      }
+      const forwarded = httpRequest(target, { method: request.method, headers: request.headers }, result => {
+        response.writeHead(result.statusCode ?? 502, result.headers);
+        result.pipe(response);
+      });
+      forwarded.on("error", () => { if (!response.headersSent) response.writeHead(502); response.end(); });
+      request.pipe(forwarded);
+    });
+    await new Promise<void>((resolve, reject) => { exchange!.once("error", reject); exchange!.listen(0, "127.0.0.1", resolve); });
+    exchangeUrl = `http://127.0.0.1:${(exchange.address() as { port: number }).port}`;
     service = await startAuthService({ context: { accountPublicKey: account.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: account.space, servers: fixture.servers, store: account.store, storeIdentity: account.store.identity, stateDir: account.stateDir, publicFace: { port: 0, trustedProxy: false } });
+    assert(service.publicUrl, "fixture requires the real public listener");
+    upstream = service.publicUrl;
+    const checked = await checkDiscoveryDocument(await fetch(discoveryDocumentUrl(new URL(exchangeUrl))));
+    assert(checked.ok, "fixture must register its validated discovery");
+    const bundle = checked.value;
     const participantState = userAuthStateDir(project, account.space);
     mkdirSync(participantState, { recursive: true, mode: 0o700 });
     const sentinel = join(participantState, "sentinel.creds");
-    writeFileSync(sentinel, account.sentinelCreds, { mode: 0o600 });
-    recordMesh({ space: account.space, server: fixture.servers, root: project, mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: { provider: "cotal", remote: true, idp: { url: `${origin}/api/auth`, issuer: origin, audience: origin }, endpoints: { url: service.publicUrl! }, sentinelCredsPath: sentinel } });
+    writeFileSync(sentinel, bundle.sentinelCreds, { mode: 0o600 });
+    recordMesh({ space: bundle.space, server: bundle.server, tlsRequired: bundle.tlsRequired, root: project, mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: { ...bundle.userAuth, remote: true, sentinelCredsPath: sentinel } });
+    await refreshRegistrationPolicy({ space: bundle.space });
     saveIdpSession(cotalHome, `${origin}/api/auth`, { token: session, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "human" });
     setCurrent(account.space);
     assert.equal((await service.readiness()).state, "ready", "real auth service is ready");
