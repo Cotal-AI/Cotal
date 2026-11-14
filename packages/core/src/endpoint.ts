@@ -1,5 +1,6 @@
 import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
+import { nativeBindingAfter, nativeConnectionBinding, type NativeConnectionBinding } from "./native-connection.js";
 import { EventEmitter } from "node:events";
 import { drainAndClose } from "./connection-cleanup.js";
 import { randomUUID } from "node:crypto";
@@ -965,6 +966,11 @@ export class CotalEndpoint extends EventEmitter {
   private startPromise?: Promise<void>;
   /** Includes detached predecessors until their actual connection reports closed. */
   private readonly ownedConnections = new Set<NatsConnection>();
+  /** Whether the current connection has a binding to report: the last `transport` edge, cleared
+   *  when a reconnect is requested on it. Read by {@link nativeConnections}. */
+  private nativeBound = false;
+  /** Credential transactions running now. Each one opens a disposable connection for its proof. */
+  private credsTxnsRunning = 0;
   /** In-flight rebuild (drain+rebind) — serializes manual reconnect, the supervisor's
    *  closed(), and reestablishLoop so only ONE rebuild runs at a time (a second trigger
    *  coalesces onto the shared promise, never starts a parallel connectAndBind). */
@@ -1057,6 +1063,7 @@ export class CotalEndpoint extends EventEmitter {
 
   constructor(opts: EndpointOptions) {
     super();
+    this.on("transport", (state: TransportState) => { this.nativeBound = state.connected; });
     /** Did the dev/static branch fall through to a random connId? Set on every path that assigns
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
@@ -1632,7 +1639,11 @@ export class CotalEndpoint extends EventEmitter {
    *  outcome; the internal chain never rejects. */
   private credsTxn: Promise<unknown> = Promise.resolve();
   private runCredsTxn<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.credsTxn.then(fn, fn);
+    const counted = async (): Promise<T> => {
+      this.credsTxnsRunning++;
+      try { return await fn(); } finally { this.credsTxnsRunning--; }
+    };
+    const next = this.credsTxn.then(counted, counted);
     this.credsTxn = next.then(() => undefined, () => undefined);
     return next;
   }
@@ -2522,6 +2533,27 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
     if (dmOnlyUnsettled)
       throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
+  }
+
+  /** The native binding of every connection this endpoint holds. A host compares the list with a
+   *  complete native census of the account to show that no other connection uses it. The list
+   *  proves neither liveness nor the absence of other connections. A stopped endpoint whose
+   *  connections all closed reports none. It throws while there is no settled answer: before
+   *  start, during a start, rebuild or stop, while a credential transaction or its connection swap
+   *  is pending, and while the connection is down or redialing. */
+  nativeConnections(): NativeConnectionBinding[] {
+    const unsettled = (why: string) => new Error(`endpoint connection inventory is unsettled: ${why}`);
+    if (this.startPromise !== undefined || this.rebuildPromise !== undefined || this.reconnecting)
+      throw unsettled("a start or rebuild is in flight");
+    const open = [...this.ownedConnections].filter((nc) => !nc.isClosed());
+    if (this.stopped) {
+      if (open.length > 0) throw unsettled("the endpoint stopped but a connection has not closed");
+      return [];
+    }
+    if (this.credsTxnsRunning > 0 || this.residentSwap !== undefined)
+      throw unsettled("a credential adoption is in flight");
+    if (!this.nc || !this.nativeBound) throw unsettled("the connection is down or redialing");
+    return open.map((nc) => nativeConnectionBinding(nc, "endpoint connection"));
   }
 
   // ---- messaging -----------------------------------------------------------
@@ -5111,6 +5143,8 @@ export class CotalEndpoint extends EventEmitter {
         // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
         // from that old epoch says nothing about the replacement and must not flip its liveness.
         if (this.nc !== nc) continue;
+        // A requested reconnect is reported before the socket closes and `disconnect` follows.
+        if (nativeBindingAfter(s.type) === false) this.nativeBound = false;
         if (s.type === "disconnect") {
           this.emit("transport", { connected: false, server: s.server } satisfies TransportState);
           continue;

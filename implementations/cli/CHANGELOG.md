@@ -1,5 +1,20 @@
 # @cotal-ai/cli
 
+## 0.164.8
+
+### Patch Changes
+
+- 8d27412: Stop asking users to repair connector integrations after an update reports the installed packages are current.
+- 57aaed2: Standalone stacks with verified ownership now receive concrete manual cold-update commands.
+  
+  The update report preserves the recorded root, space, server, runtime and supported options, and explains that stopped seats are not restarted. It performs no shutdown and keeps the original refusal when the records cannot prove ownership or restart settings.
+- c2db3ac: Updates can continue after an interrupted update leaves an unusable snapshot record.
+  
+  Keep abandoned records in a timestamped folder without touching their snapshots. Fence live or unreadable owners, wait one hour for records without a valid owner, and report the same recovery guidance in status, notices and unattended updates.
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+
 ## 0.164.7
 
 ### Patch Changes
