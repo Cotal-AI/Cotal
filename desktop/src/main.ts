@@ -83,15 +83,17 @@ let autoUpdates: boolean | undefined;
 let nextAppCheck = 0;
 let appCheckRunning = false;
 let appApplyRunning = false;
+let nextAppApplyTick = 0;
 let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
-async function applyAppUpdate(explicit = false): Promise<void> {
+async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
+  if (tick && Date.now() < nextAppApplyTick) return;
   if (appApplyRunning || busy || loginActive || setupActive || appPlatform !== "darwin" || !autoUpdates || !appUpdate?.version) return;
   appApplyRunning = true;
   if (explicit) { appliedUpdate = undefined; renderSettings(); }
   try { appUpdate = await invoke<AppUpdate>("app_update_apply", { explicit }); }
   catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
-  finally { appApplyRunning = false; renderSettings(); }
+  finally { if (!explicit) nextAppApplyTick = Date.now() + 600_000; appApplyRunning = false; renderSettings(); }
 }
 async function readAutoUpdates(): Promise<void> {
   const policy = await request({ op: "update-policy" });
@@ -1043,7 +1045,10 @@ async function settingsAction(body: Request): Promise<void> {
     announce(body.op === "update-check" ? appUpdaterConfigured() ? "Update check complete." : "Update check complete. Cached results may be used." : "Update preference saved.");
     text("settings-message", "");
   } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
-  finally { busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false; }
+  finally {
+    busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false;
+    if (body.op === "update-check" && appUpdate && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate();
+  }
 }
 el("restart-update").addEventListener("click", () => void applyAppUpdate(true));
 el("check-updates").addEventListener("click", () => void settingsAction({ op: "update-check" }));
@@ -1116,7 +1121,7 @@ async function start(): Promise<void> {
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
-  const tick = async () => { if (!busy && !appApplyRunning) { await refresh(); void checkAppUpdates(); if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(); } poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
+  const tick = async () => { if (!busy && !appApplyRunning) { await refresh(); void checkAppUpdates(); if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(false, true); } poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
   poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000);
 }
 document.querySelector(".connection-card")!.addEventListener("transitionend", event => {

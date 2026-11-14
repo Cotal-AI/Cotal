@@ -183,6 +183,24 @@ test("Mac restart is an explicit native admission request and hidden notificatio
   } finally { a.dom.window.close(); }
 });
 
+test("automatic tick retries wait ten minutes but hide, fresh check and button are immediate", async () => {
+  const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0", reason: "Administrator permission is needed." } });
+  try {
+    const initial = a.applyArgs.length;
+    for (let i = 0; i < 30; i++) { a.advance(1000); await a.tick(); }
+    assert.equal(a.applyArgs.length, initial, "a standing refusal must not start one native attempt per status tick");
+    await a.emit("desktop-hidden");
+    assert.equal(a.applyArgs.length, initial + 1, "hide bypasses tick cooldown");
+    await a.emit("desktop-open-settings");
+    await a.click("check-updates");
+    assert.equal(a.applyArgs.length, initial + 2, "fresh check bypasses tick cooldown");
+    await a.click("restart-update");
+    assert.equal(a.applyArgs.length, initial + 3, "explicit button bypasses tick cooldown");
+    a.advance(600_001); await a.tick();
+    assert.equal(a.applyArgs.length, initial + 4, "tick retries after ten minutes");
+  } finally { a.dom.window.close(); }
+});
+
 test("auto off and installer-only Windows never request app replacement", async () => {
   for (const options of [{ autoUpdates: false }, { platform: "win32" }]) {
     const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" }, ...options });

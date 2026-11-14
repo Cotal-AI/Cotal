@@ -151,9 +151,27 @@ try {
   await until('N reopened after cancelled download', () => ax('describe'), value => value.visible);
   await ax('settings'); mode = 'valid'; await ax('click', 'check-updates');
   await until('candidate for permission control', () => ax('text', 'settings-update-summary'), text => text.includes('Restart to update'));
+  async function bridgeStarts(seconds) {
+    const owned = await ax('describe');
+    const seen = new Set();
+    const deadline = Date.now() + seconds * 1000;
+    while (Date.now() < deadline) {
+      const rows = await run('/bin/ps', ['-axo', 'pid=,ppid=,comm=']);
+      for (const line of rows.split('\n')) {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
+        if (match && Number(match[2]) === owned.pid && match[3].endsWith('/cotal-node')) seen.add(Number(match[1]));
+      }
+      await delay(100);
+    }
+    return seen.size;
+  }
+  const ordinaryStatusStarts = await bridgeStarts(30);
   chmodSync(app, 0o500);
   try {
     await ax('close');
+    const refusedStarts = await bridgeStarts(30);
+    assert.ok(refusedStarts <= ordinaryStatusStarts + 3, `Standing hidden refusal adds no per-tick preference sidecar: baseline=${ordinaryStatusStarts}, refused=${refusedStarts}`);
+    record('thirty-second hidden sidecar rate', { ordinaryStatusStarts, refusedStarts });
     await until('hidden permission refusal leaves N ready', async () => {
       // UI is opened only after the native automatic attempt has had time to complete.
       await delay(2000);

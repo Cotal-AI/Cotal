@@ -315,8 +315,11 @@ mod configured {
         };
         if !with_pending(state, |pending| pending.update.is_some())? { return with_pending(state, |pending| pending.view.clone()); }
         if !explicit && windows(&app, false).await? { return with_pending(state, |pending| pending.view.clone()); }
-        if !automatic(&app).await? { return waiting(&app, state, "Automatic updates are off. No app files were changed."); }
         if let Err(reason) = crate::native_presence::updater_location(&app) { return waiting(&app, state, &reason); }
+        if !explicit && !unprivileged_replacement(&app)? {
+            return waiting(&app, state, "This app needs administrator permission to update. Use Restart to update or the installer.");
+        }
+        if !automatic(&app).await? { return waiting(&app, state, "Automatic updates are off. No app files were changed."); }
         clear_failed_receipt(&app)?;
         *state.receipt.lock().map_err(|_| "Desktop update result is unavailable.")? = None;
         if !with_pending(state, |pending| pending.bytes.is_some())? {
