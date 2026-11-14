@@ -11,16 +11,21 @@ test('temporary workflow admits only measurement branch, reuses native builders 
  assert.deepEqual(workflow.on.push.branches,['measure/auto-update-windows']);
  assert.equal(workflow.on.pull_request,undefined);assert.equal(workflow.on.workflow_dispatch,undefined);
  assert.equal(workflow.jobs.native.uses,'./.github/workflows/workspace-native.yml');assert.equal(workflow.jobs.native.with.darwin,true);
- assert.equal(workflow.jobs.acceptance['runs-on'],'windows-2022');assert.equal(workflow.jobs.acceptance.needs,'native');
+ assert.equal(workflow.jobs.acceptance['runs-on'],'windows-2022');assert.equal(workflow.jobs.acceptance.needs,'pack');
+ assert.equal(workflow.jobs.pack['runs-on'],'ubuntu-latest');assert.equal(workflow.jobs.pack.needs,'native');
+ const windowsCommands=workflow.jobs.acceptance.steps.map(x=>x.run??'').join('\n');
+ assert.doesNotMatch(windowsCommands,/pnpm|packCandidate|assemble|source comparison|build/);
+ assert.ok(!workflow.jobs.acceptance.steps.some(x=>x.uses?.startsWith('actions/checkout@')));
  assert.equal(workflow.jobs.acceptance.steps.at(-1).if,'always()');
- for(const step of workflow.jobs.acceptance.steps.filter(s=>s.uses?.startsWith('actions/download-artifact@')))assert.ok(step.with.path.startsWith('${{ runner.temp }}'),'artifact inputs stay outside clean pack source');
- const commands=workflow.jobs.acceptance.steps.map(x=>x.run??'').join('\n');
- assert.match(commands,/smoke:win32-update-job/);assert.match(commands,/smoke:auto-update-windows/);assert.doesNotMatch(commands,/mutation|fix-reversion/);
+ for(const step of workflow.jobs.pack.steps.filter(s=>s.uses?.startsWith('actions/download-artifact@')))assert.ok(step.with.path.startsWith('${{ runner.temp }}'),'artifact inputs stay outside clean pack source');
+ const commands=workflow.jobs.pack.steps.map(x=>x.run??'').join('\n');
+ assert.match(commands,/--pack/);assert.match(commands,/workspace-assemble-natives/);assert.doesNotMatch(commands,/mutation|fix-reversion/);
+ assert.match(source,/installed packed native boot\/accounting\/drain smoke/);
 });
 test('workflow environment keys are unique ignoring case at every scope',()=>{
  const visit=value=>{if(!value||typeof value!=='object')return;if(value.env){const keys=Object.keys(value.env);assert.equal(new Set(keys.map(k=>k.toUpperCase())).size,keys.length,'GitHub env keys ignore case');}for(const child of Object.values(value))visit(child);};
  visit(workflow);
- assert.equal(workflow.jobs.acceptance.env.pnpm_config_workspace_concurrency,'3');
+ assert.equal(workflow.jobs.pack.env.pnpm_config_workspace_concurrency,'3');
 });
 test('driver reuses verified matrix packing and overlay, stock manual firsthop arms existing service without another command',()=>{
  assert.match(source,/candidateRegistry, configureCandidateRegistry, packCandidate/);

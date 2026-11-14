@@ -8,12 +8,27 @@ import { join, resolve, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { candidateRegistry, configureCandidateRegistry, packCandidate } from './automatic-update-platform-baseline.mjs';
-const output=resolve(process.argv[2]??join(process.env.RUNNER_TEMP??'.','windows-auto-evidence'));
+const output=resolve(process.env.WINDOWS_AUTO_EVIDENCE??(process.argv[2]?.startsWith('--')?process.argv[3]:process.argv[2])??join(process.env.RUNNER_TEMP??'.','windows-auto-evidence'));
 mkdirSync(output,{recursive:true});
 const save=(name,value)=>writeFileSync(join(output,name),JSON.stringify(value,null,2)+'\n');
 const json=path=>JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));
 const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
 export async function run(){
+ if(process.argv[2]==='--verify-packed'){
+  const A=await candidateRegistry(join(output,'candidate-A'),'B','https://registry.npmjs.org');
+  const B=await candidateRegistry(join(output,'candidate-B'),'B','https://registry.npmjs.org');
+  try{assert.equal((await(await fetch(A.url+'/cotal-ai/latest')).json()).version,json(join(output,'versions.json')).A);assert.equal((await(await fetch(B.url+'/cotal-ai/latest')).json()).version,json(join(output,'versions.json')).B);console.log('downloaded packed closures/registry bundle verified');}finally{await A.close();await B.close();}
+  return;
+ }
+ if(process.argv[2]==='--pack'){
+  assert.equal(process.platform,'linux');
+  const repo=resolve(import.meta.dirname,'..');
+  const response=await fetch('https://registry.npmjs.org/cotal-ai/latest');assert(response.ok);const latest=(await response.json()).version;
+  const parts=latest.split('.').map(Number);parts[2]++;const A=parts.join('.');parts[2]++;const B=parts.join('.');
+  await packCandidate(join(output,'candidate-A'),A,repo);await packCandidate(join(output,'candidate-B'),B,repo);
+  save('versions.json',{published:latest,A,B,source:json(join(output,'candidate-A/manifest.json')).source});
+  return;
+ }
  assert.equal(process.platform,'win32');assert.equal(process.env.GITHUB_ACTIONS,'true');assert.equal(process.env.RUNNER_ENVIRONMENT,'github-hosted');
  const repo=resolve(import.meta.dirname,'..'),home=homedir(),project=join(output,'project'),prefix=join(output,'prefix');
  mkdirSync(join(project,'.cotal'),{recursive:true});
@@ -36,10 +51,9 @@ export async function run(){
  const age=()=>{for(const [name,fields]of [['update-check.json',['checkedAt','attemptedAt','firstSeenAt']],['update-attempt.json',['next']]]){const path=join(cotalHome,name),before=json(path),after={...before};for(const field of fields)after[field]=Date.now()-26*3600000;save('clock-'+name,{before,after});writeFileSync(path,JSON.stringify(after));}};
  let overlayA,overlayB,restore,proxy,hold=false,installed=false;const held=[];
  try{
-  const latest=JSON.parse(ok(await call('resolve published baseline',npm,npmArgs(['view','cotal-ai@latest','version','--json']))).stdout);report.published=latest;
-  const parts=latest.split('.').map(Number);parts[2]++;const versionA=parts.join('.');parts[2]++;const versionB=parts.join('.');
-  report.versions={A:versionA,B:versionB};
-  await packCandidate(join(output,'candidate-A'),versionA,repo);await packCandidate(join(output,'candidate-B'),versionB,repo);
+  const packed=json(join(output,'versions.json'));const latest=packed.published;report.published=latest;
+  const versionA=packed.A,versionB=packed.B;
+  report.versions={A:versionA,B:versionB,source:packed.source};
   overlayA=await candidateRegistry(join(output,'candidate-A'),'B','https://registry.npmjs.org');overlayB=await candidateRegistry(join(output,'candidate-B'),'B','https://registry.npmjs.org');
   let active=overlayA;
   proxy=createServer(async(req,res)=>{try{if(hold&&decodeURIComponent(req.url).startsWith('/cotal-ai')&&existsSync(join(cotalHome,'update-windows.json'))&&json(join(cotalHome,'update-windows.json')).owner){held.push({req,res});return;}const r=await fetch(active.url+req.url,{signal:AbortSignal.timeout(60000)});res.writeHead(r.status,{'content-type':r.headers.get('content-type')??'application/json'});res.end(Buffer.from(await r.arrayBuffer()));}catch(e){res.writeHead(502).end(String(e));}});
@@ -48,12 +62,14 @@ export async function run(){
   report.registry={...overlayA.identity,actualFront:registry};save('report.json',report);
   ok(await call('install published through npm',npm,npmArgs(['install','-g','--prefix',prefix,'cotal-ai@'+latest,'--no-audit','--no-fund'])));
   ok(await cli('seed published connectors',['ext','seed']));
+  const workspaceEntry=join(pkg,'node_modules/@cotal-ai/workspace/dist/index.js');
   ok(await cli('published native daemon plan',['daemon','install','--dry-run','--json']));
   ok(await cli('install pre-existing published service',['daemon','install','--json']));installed=true;
   await poll('published service ready',async()=>{const s=await status();return s?.state==='ready'&&s.version===latest?s:undefined;});
   // One manual feature hop with an existing service, no auto-on or reinstall afterwards.
   ok(await cli('manual first-feature update',['update','--self']));
   assert.equal(json(join(pkg,'package.json')).version,versionA);
+  const nativeRead=ok(await call('installed packed native boot/accounting/drain smoke',process.execPath,[join(output,'installed-native-smoke.mjs'),workspaceEntry]));report.nativeSmoke=nativeRead;
   const before=await poll('default armed native service',async()=>{const s=await status();return s?.state==='ready'&&s.version===versionA&&s.update?.automatic===true?s:undefined;});
   report.defaultOn={noAutoOnCommand:true,status:before};
   await poll('normal scheduler cache',()=>existsSync(join(cotalHome,'update-check.json')));
