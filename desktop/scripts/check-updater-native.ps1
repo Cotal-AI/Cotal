@@ -23,6 +23,8 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'No-key updater branch did not compile. See no-key.log.' }
   & cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib updater::disabled_tests 1> (Join-Path $out 'no-key-tests.log') 2>&1
   if ($LASTEXITCODE -ne 0) { throw 'No-key updater commands did not pass native tests.' }
+  & cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --lib app_activity::tests 1> (Join-Path $out 'activity-tests.log') 2>&1
+  if ($LASTEXITCODE -ne 0) { throw 'App update activity admission did not pass native tests.' }
   @{ schema = 1; configured = 'compiled'; noKey = 'compiled'; platform = $env:RUNNER_OS; source = $env:GITHUB_SHA; installed = $false } | ConvertTo-Json | Set-Content (Join-Path $out 'result.json')
 } finally {
   if ($null -eq $prior) { Remove-Item Env:COTAL_UPDATER_PUBLIC_KEY -ErrorAction SilentlyContinue }

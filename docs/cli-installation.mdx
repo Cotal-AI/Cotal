@@ -158,9 +158,13 @@ the command installs and starts nothing.
 The desktop app's bundled runtime never runs npm updates. In a configured updater build,
 **Install updates automatically** uses the same saved preference as `cotal update --auto`.
 A build without an updater key keeps its release summary, installer link and **Notify me about updates**
-control. Settings explains that this build updates through the installer. Configured builds
-can download and verify desktop updates, and **Check now** requests the manifest again rather than
-using the automatic daily cache. This release does not apply updates or roll back automatically.
+control. Settings explains that this build updates through the installer. Configured macOS builds
+request the manifest again on **Check now** rather than using the automatic daily cache.
+They download and replace the bundle only before a window appears, with all windows hidden,
+or after **Restart to update**. Sign-in, setup and connection operations hold that work back.
+The app relaunches after replacement, then waits for the target background service and ready
+inventories before reporting success. Windows desktop updates still use the installer, as do
+Linux deb/rpm builds. There is no automatic rollback.
 The app does not change a separately installed command line.
 
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.

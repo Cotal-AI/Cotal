@@ -20,6 +20,11 @@ export function nativeStub(scenario) {
         if (state.nativeCheckPending) await new Promise(() => {});
         return state.appUpdate ?? { phase: "unconfigured" };
       }
+      if (command === "app_update_receipt") return state.appReceipt;
+      if (command === "app_update_apply") {
+        state.appApplies = [...(state.appApplies ?? []), { explicit: args.explicit }];
+        return state.appUpdate ?? { phase: "unconfigured" };
+      }
       if (command === "app_update_download") { state.appDownloads = (state.appDownloads ?? 0) + 1; return state.appUpdate = { phase: "ready", version: state.appUpdate.version }; }
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
@@ -115,6 +120,15 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  { name: 'mac-apply-visible', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0' } },
+    act: page => page.click('#open-settings'), expect: async page => {
+      assert.equal(await page.locator('#restart-update').isVisible(), true);
+      assert.match(await page.locator('#settings-update-summary').textContent(), /Restart to update/);
+      assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0);
+      await page.click('#restart-update');
+      assert.equal(await page.evaluate(() => window.__renderState.appApplies.at(-1).explicit), true);
+    } },
+
   ...["available", "current", "failed", "notify-off", "pending", "native-error", "policy-error"].map(mode => ({
     name: `installer-only-${mode}`,
     state: { installed: true, signedIn: true, connected: true, nativeCheckPending: mode === "pending", nativeCheckError: mode === "native-error", policyError: mode === "policy-error",

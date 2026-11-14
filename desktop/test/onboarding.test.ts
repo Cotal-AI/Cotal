@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
-import type { AppUpdate } from "../src/app-update";
+import type { AppUpdate, AppUpdateReceipt } from "../src/app-update";
 import type { UpdateStatus } from "../src/updates";
 import { COTAL_CLOUD_IDP, type Frame, type Request } from "../src/model.ts";
 
@@ -15,11 +15,11 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
-  const calls: Request[] = [], urls: string[] = [], nativeCalls: string[] = [], checkArgs: { manual?: boolean }[] = [];
+  const calls: Request[] = [], urls: string[] = [], nativeCalls: string[] = [], checkArgs: { manual?: boolean }[] = [], applyArgs: { explicit?: boolean }[] = [];
   let update = options.update;
   let autoUpdates = options.autoUpdates ?? true;
   const callbacks = new Map<number, (frame: unknown) => void>(); let next = 0;
@@ -39,7 +39,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
   win.isTauri = true;
   win.__TAURI_INTERNALS__ = {
     transformCallback(fn: (frame: unknown) => void) { callbacks.set(++next, fn); return next; }, unregisterCallback() {},
-    async invoke(cmd: string, args: { manual?: boolean; request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
+    async invoke(cmd: string, args: { explicit?: boolean; manual?: boolean; request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
@@ -52,6 +52,8 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
         if (options.nativeCheckPending) await new Promise(() => {});
         return options.appUpdate ?? { phase: "unconfigured" };
       }
+      if (cmd === "app_update_receipt") return options.appReceipt;
+      if (cmd === "app_update_apply") { applyArgs.push({ explicit: args.explicit }); return options.appUpdate ?? { phase: "unconfigured" }; }
       if (cmd === "app_update_download") return { phase: "ready", version: options.appUpdate?.version };
       if (cmd === "open_browser") { urls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request"); const r = args.request!; calls.push(r);
@@ -63,7 +65,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
       if (r.op === "update-release") return ok({ assets: [] });
       if (r.op === "about") {
         if (options.loading) await new Promise(() => {});
-        return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
+        return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
       if (r.op === "install") { installed = true; return ok({ installed: true }); }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
@@ -104,7 +106,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, options, arm: () => { installed = true; }, stop: () => { installed = false; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; }, stop: () => { installed = false; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -154,18 +156,43 @@ for (const phase of ["current", "failed"] as const) {
   });
 }
 
-test("desktop updates download by default, never apply, and use the manifest answer", async () => {
+test("desktop updates wait while visible and use the manifest answer", async () => {
   const a = await app({ installed: true, connected: true, registryLatest: "0.166.0", appUpdate: { phase: "available", version: "0.165.0" } });
   try {
-    assert.equal(a.nativeCalls.filter(call => call === "app_update_download").length, 1);
-    assert.ok(!a.nativeCalls.some(call => /install|relaunch/.test(call)), "no apply command exists in this batch");
+    assert.equal(a.nativeCalls.filter(call => call === "app_update_download").length, 0);
+    assert.ok(a.nativeCalls.includes("app_update_apply"), "native side decides actual hidden-window admission");
     await a.emit("desktop-open-settings");
-    assert.match(a.node("settings-update-summary").textContent!, /0\.165\.0.*downloaded and verified/);
+    assert.match(a.node("settings-update-summary").textContent!, /Version 0\.165\.0 is available/);
     assert.ok(!a.node("settings-update-summary").textContent!.includes("0.166.0"));
     assert.equal(a.node<HTMLInputElement>("update-preference").checked, true);
     await a.tick(); await a.tick();
     assert.equal(a.nativeCalls.filter(call => call === "app_update_check").length, 1, "status polling adds no update polling");
   } finally { a.dom.window.close(); }
+});
+
+test("Mac restart is an explicit native admission request and hidden notification is automatic", async () => {
+  const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" } });
+  try {
+    await a.emit("desktop-open-settings");
+    assert.equal(a.node("restart-update").hidden, false);
+    await a.click("restart-update");
+    assert.equal(a.applyArgs.at(-1)!.explicit, true);
+    await a.emit("desktop-hidden");
+    assert.equal(a.applyArgs.at(-1)!.explicit, false);
+    assert.ok(!a.nativeCalls.includes("app_update_download"), "download only happens inside native install admission");
+  } finally { a.dom.window.close(); }
+});
+
+test("auto off and installer-only Windows never request app replacement", async () => {
+  for (const options of [{ autoUpdates: false }, { platform: "win32" }]) {
+    const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" }, ...options });
+    try {
+      await a.emit("desktop-open-settings");
+      await a.emit("desktop-hidden");
+      assert.equal(a.node("restart-update").hidden, true);
+      assert.equal(a.applyArgs.length, 0);
+    } finally { a.dom.window.close(); }
+  }
 });
 
 test("desktop auto off reports the manifest version and does not download", async () => {

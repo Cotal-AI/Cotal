@@ -42,6 +42,10 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--updater-config") {
+        println!("{}", cotal_desktop::updater::compiled_config());
+        return;
+    }
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--remove-login") {
         use windows::{core::w, Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER}};

@@ -62,7 +62,11 @@ Builds without an updater public key keep the release summary, installer link an
 
 When a build has an updater key, desktop availability comes from its HTTPS release manifest. Downloads are verified against that key before they are marked ready. A missing manifest during release publication keeps the last good answer and shows only in Settings that the newest release is still being prepared. It does not add an error or a new version notice to the main view. Automatic checks keep the daily rhythm. In a configured build, **Check now** requests the manifest again, including after a failed check.
 
-This release prepares and verifies desktop updates but does not apply them. A verified download waits rather than replacing a running app or service. There is no automatic rollback. Linux deb/rpm builds require the matching platform installer because package installation needs administrator rights. The app does not update a command line installed separately through npm or the shell installer.
+On macOS, a build with an updater key downloads and installs only before showing a window, while all its windows are hidden, or after **Restart to update** is pressed. It rereads the shared automatic-update preference and waits for this app's sign-in, setup, connect, disconnect and other operations to finish. It does not replace files underneath a visible window. Download begins when installation can proceed, rather than downloading again on every visible launch.
+
+Replacement and relaunch run together. The background service's existing generation watcher handles activation and waits for running agent seats. The app shows that waiting reason and says **Updated** only when the target background service and readable agent and ready application inventories are confirmed. The updater adds no service stop or restart request. A failed download or installation reports its reason and keeps the installer link.
+
+Windows desktop download and installation remain unavailable until its installer service-preservation fix is integrated. Linux deb/rpm builds require the matching platform installer because package installation needs administrator rights. There is no automatic rollback. The app does not update a command line installed separately through npm or the shell installer.
 
 ## Develop
 
@@ -88,7 +92,9 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --
 pnpm --dir desktop app:build
 ```
 
-The Rust tests without default features check request, URL and environment boundaries, not the native webview or tray. A browser preview displays a native-controls-unavailable message rather than simulated daemon state.
+The Rust tests without default features check request, URL, environment and app-local update admission boundaries, not the native webview or tray. A browser preview displays a native-controls-unavailable message rather than simulated daemon state.
+
+Hosted updater acceptance uses debug bundles with the explicit `updater-e2e` feature and a compiled literal loopback manifest endpoint. Release builds refuse that feature, a test endpoint or an insecure transport input. Before any package upload, the desktop workflow runs the built executable's fixed `--updater-config` inspection and requires its sole endpoint to be the production HTTPS address. The check does not start a window or service.
 
 `pnpm --dir desktop test:render` builds the real front end and serves it to headless Chromium with only the native bridge stubbed. Install its browser with `pnpm --dir desktop exec playwright-core install chromium`. The suite checks every state in the paper theme at 880×660 and 560×660: browser errors, page scroll, text clipping, target overlap, Tab order, axe accessibility including contrast, and reduced motion. Screenshots go to `desktop/test/render/artifacts/`, or `SHOTS=<directory>`. `CHROMIUM_PATH` selects an installed Chromium executable. `MOTION=1` also records 0, 80, 160 and 240 ms frames in normal and reduced motion, plus a JSON record of captured animations. Progress completion, success, notice expansion and Details opening must capture their expected finite animation. The server uses the app's shipped CSP. `CASES=<comma-separated-names>` narrows a local iteration. CI uploads the renders without comparing font-sensitive golden images.
 

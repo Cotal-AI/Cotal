@@ -14,7 +14,7 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::sync::Semaphore;
 
 const MAX_FRAME: usize = 64 * 1024;
-struct RequestSlots(Arc<Semaphore>);
+pub(crate) struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
@@ -26,6 +26,11 @@ async fn daemon_request(
     request: DesktopRequest,
     on_event: Channel<Value>,
 ) -> Result<Value, String> {
+    let _activity = app.state::<crate::app_activity::Activity>().request()?;
+    run_request(&app, &slots, request, Some(on_event)).await
+}
+
+pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: DesktopRequest, on_event: Option<Channel<Value>>) -> Result<Value, String> {
     let _permit = slots
         .0
         .clone()
@@ -82,7 +87,7 @@ async fn daemon_request(
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt" | "setup-progress") => on_event.send(frame).map_err(|_| "The application closed its progress view.")?,
+                        Some("login-prompt" | "setup-progress") => on_event.as_ref().ok_or("Unexpected progress from the update preference reader.")?.send(frame).map_err(|_| "The application closed its progress view.")?,
                         Some("result") if result.is_none() => result = Some(frame),
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }
@@ -175,7 +180,12 @@ fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-fn show_now(app: &AppHandle) {
+pub(crate) fn show_now(app: &AppHandle) {
+    let activity = app.state::<crate::app_activity::Activity>();
+    let _ = activity.show(|| show_window(app));
+}
+
+fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let result = (|| -> tauri::Result<()> {
             #[cfg(target_os = "macos")]
@@ -206,6 +216,7 @@ pub fn run() {
         }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
         .manage(PaintState(std::sync::Mutex::new(FirstPaint::default())))
+        .manage(crate::app_activity::Activity::default())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -222,10 +233,12 @@ pub fn run() {
             set_update_notice,
             crate::native_presence::pin_to_taskbar,
             crate::updater::app_update_check,
-            crate::updater::app_update_download
+            crate::updater::app_update_download,
+            crate::updater::app_update_apply,
+            crate::updater::app_update_receipt
         ])
         .setup(|app| {
-            #[cfg(all(cotal_updater, not(target_os = "linux")))]
+            #[cfg(all(cotal_updater, target_os = "macos"))]
             {
                 app.handle().plugin(tauri_plugin_updater::Builder::new()
                     .pubkey(env!("COTAL_UPDATER_PUBLIC_KEY")).build())?;
@@ -263,13 +276,18 @@ pub fn run() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "dashboard" => { show(app); let _ = app.emit("desktop-open-dashboard", ()); }
-                    "quit" => app.exit(0),
+                    "quit" => { if app.state::<crate::app_activity::Activity>().allow_exit() { app.exit(0); } },
                     _ => {}
                 })
                 .build(app)?;
-            if !std::env::args().any(|arg| arg == "--background") {
-                show(app.handle());
+            let mut open = !std::env::args().any(|arg| arg == "--background");
+            #[cfg(all(cotal_updater, target_os = "macos"))]
+            match crate::updater::reopen(app.handle()) {
+                Ok(Some(reopen)) => open = reopen,
+                Ok(None) => {},
+                Err(reason) => { let _ = app.emit("desktop-presence-error", reason); },
             }
+            if open { show(app.handle()); }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -290,6 +308,7 @@ pub fn run() {
                 }
                 let result = (|| -> tauri::Result<()> {
                     window.hide()?;
+                    let _ = window.emit("desktop-hidden", ());
                     #[cfg(target_os = "macos")]
                     window.app_handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
                     Ok(())
@@ -302,6 +321,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("Cotal could not initialize its native desktop application")
         .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = &event {
+                if !app.state::<crate::app_activity::Activity>().allow_exit() { api.prevent_exit(); }
+            }
             #[cfg(target_os = "macos")]
             match event {
                 tauri::RunEvent::Reopen { .. } | tauri::RunEvent::Opened { .. } => show(app),
