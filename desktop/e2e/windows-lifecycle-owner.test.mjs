@@ -37,7 +37,10 @@ test('actual lifecycle wrapper forwards launch PID and retains candidates even o
   const candidates = [{ pid: 42, birth: '2026-11-14T01:42:37.507Z', path: 'C:\\owned\\cotal-desktop.exe' },
     { pid: 43, birth: '2026-11-14T01:20:00.000Z', path: 'C:\\owned\\cotal-desktop.exe' }];
   const diagnostics = [{ overflowMatches: [], count: 0 },
-    { explorerButton: 'synthetic button', automationId: '', className: 'Button', offscreen: false }];
+    { explorerButton: 'synthetic button', automationId: '', className: 'Button', offscreen: false },
+    { rawExplorerSurface: { className: 'NotifyIconOverflowWindow', hwnd: 84, visible: false, pid: 24 },
+      rawDescendantCount: 1, descendants: [{ controlType: 'ControlType.Pane', name: '', automationId: '', className: 'Pane', frameworkId: 'Win32', offscreen: true,
+        boundingRectangle: { empty: true, left: null, top: null, width: null, height: null } }] }];
   let refused = false;
   t.mock.method(childProcess, 'execFile', (file, args, options, callback) => {
     calls.push({ file, args, options });
@@ -102,11 +105,29 @@ test('tray overflow records the matched native controls before refusing an ambig
   assert.doesNotMatch(tray, /Notification Chevron/);
 });
 
+test('raw tray diagnostics walk every verified surface including hidden overflow without selecting them', () => {
+  const raw = helper.slice(helper.indexOf('function Record-RawExplorerTree'), helper.indexOf('function Explorer-Surfaces'));
+  assert.match(raw, /\[System.Windows.Automation.TreeWalker\]::RawViewWalker/);
+  assert.match(raw, /GetFirstChild\(\$parent\)/);
+  assert.match(raw, /GetNextSibling\(\$element\)/);
+  assert.match(raw, /Walk-RawChildren \$element/);
+  for (const field of ['controlType = $current.ControlType.ProgrammaticName', 'name = $current.Name', 'automationId = $current.AutomationId',
+    'className = $current.ClassName', 'frameworkId = $current.FrameworkId', 'offscreen = $current.IsOffscreen', 'boundingRectangle =',
+    'empty = $rect.IsEmpty', 'left =', 'top =', 'width =', 'height =', 'rawDescendantCount = $null']) assert.ok(raw.includes(field), field);
+  assert.ok(raw.indexOf('$diagnostics.Add($row)') < raw.indexOf('Walk-RawChildren $surface'));
+  assert.match(raw, /\$row\['rawDescendantCount'\] = \$descendants.Count/);
+  assert.doesNotMatch(raw, /IsControlElement|ControlViewWalker|Click-Element|Invoke\(/);
+  const surfaces = helper.slice(helper.indexOf('function Explorer-Surfaces'), helper.indexOf('function Explorer-Children'));
+  assert.match(surfaces, /foreach \(\$window in \$trayWindows\)/);
+  assert.ok(surfaces.indexOf('Tray surface is not owned by Windows Explorer.') < surfaces.indexOf('Record-RawExplorerTree $surface $window'));
+  assert.ok(surfaces.indexOf('Record-RawExplorerTree $surface $window') < surfaces.indexOf('if ($window.visible) { $surface }'));
+});
+
 test('tray diagnostics distinguish absent native surfaces from empty UI Automation descendants', () => {
   const surfaces = helper.slice(helper.indexOf('function Explorer-Surfaces'), helper.indexOf('function Find-TrayIcon'));
   assert.match(surfaces, /explorerSurfaces = @\(\$trayWindows \| ForEach-Object/);
   for (const field of ['className = $_.className', 'hwnd = $_.hwnd', 'visible = $_.visible', 'pid = $_.pid']) assert.ok(surfaces.includes(field), field);
-  assert.match(surfaces, /\$windows = @\(\$trayWindows \| Where-Object \{ \$_.visible \}\)/);
+  assert.match(surfaces, /if \(\$window.visible\) \{ \$surface \}/);
   assert.match(surfaces, /function Explorer-Children/);
   for (const field of ['className = $surface.Current.ClassName', 'hwnd = $surface.Current.NativeWindowHandle', 'pid = $surface.Current.ProcessId', 'descendantCount = $null']) assert.ok(surfaces.includes(field), field);
   assert.ok(surfaces.indexOf('$diagnostics.Add($row)') < surfaces.indexOf('$elements = @(Children $surface)'));

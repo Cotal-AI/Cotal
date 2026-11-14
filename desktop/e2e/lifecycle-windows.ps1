@@ -116,17 +116,54 @@ public static class LifecycleWindows {
         if ($hit.Current.ProcessId -ne $element.Current.ProcessId) { throw 'UI element is obscured by another process.' }
         [LifecycleWindows]::Click($x, $y)
     }
+    function Record-RawExplorerTree($surface, $window) {
+        $descendants = [System.Collections.Generic.List[object]]::new()
+        $row = [ordered]@{ rawExplorerSurface = [ordered]@{
+            className = $window.className; hwnd = $window.hwnd; visible = $window.visible; pid = $window.pid
+        }; rawDescendantCount = $null; descendants = $descendants }
+        $diagnostics.Add($row)
+        $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+        function Walk-RawChildren($parent) {
+            $element = $walker.GetFirstChild($parent)
+            while ($null -ne $element) {
+                $current = $element.Current
+                $rect = $current.BoundingRectangle
+                $descendants.Add([ordered]@{
+                    controlType = $current.ControlType.ProgrammaticName; name = $current.Name
+                    automationId = $current.AutomationId; className = $current.ClassName
+                    frameworkId = $current.FrameworkId; offscreen = $current.IsOffscreen
+                    boundingRectangle = [ordered]@{
+                        empty = $rect.IsEmpty
+                        left = if ($rect.IsEmpty) { $null } else { $rect.Left }
+                        top = if ($rect.IsEmpty) { $null } else { $rect.Top }
+                        width = if ($rect.IsEmpty) { $null } else { $rect.Width }
+                        height = if ($rect.IsEmpty) { $null } else { $rect.Height }
+                    }
+                })
+                Walk-RawChildren $element
+                $element = $walker.GetNextSibling($element)
+            }
+        }
+        try {
+            Walk-RawChildren $surface
+            $row['rawDescendantCount'] = $descendants.Count
+        } catch {
+            # A diagnostic read failure stays explicit and does not replace the existing selector.
+            $row['error'] = $_.Exception.Message
+        }
+    }
     function Explorer-Surfaces {
         $trayWindows = @([LifecycleWindows]::Windows() | Where-Object { $_.className -in @('Shell_TrayWnd', 'Shell_SecondaryTrayWnd', 'NotifyIconOverflowWindow', 'TopLevelWindowForOverflowXamlIsland') })
         $diagnostics.Add([ordered]@{ explorerSurfaces = @($trayWindows | ForEach-Object {
             [ordered]@{ className = $_.className; hwnd = $_.hwnd; visible = $_.visible; pid = $_.pid }
         }) })
-        $windows = @($trayWindows | Where-Object { $_.visible })
-        foreach ($window in $windows) {
+        foreach ($window in $trayWindows) {
             $process = Get-Process -Id $window.pid
             $explorer = Join-Path $env:WINDIR 'explorer.exe'
             if (![string]::Equals($process.Path, $explorer, [StringComparison]::OrdinalIgnoreCase)) { throw 'Tray surface is not owned by Windows Explorer.' }
-            [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hwnd)
+            $surface = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hwnd)
+            Record-RawExplorerTree $surface $window
+            if ($window.visible) { $surface }
         }
     }
     function Explorer-Children($surface) {
