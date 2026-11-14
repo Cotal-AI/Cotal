@@ -43,6 +43,8 @@ selects the execution generation and binds to the installed package identity and
 The package manifest and original dependencies stay as npm or pnpm installed them. A manual
 package-manager install therefore sees its own original record and replaces the package normally.
 Status names both the running generation and an older package-manager record when they differ.
+Native ownership checks retain the bootstrap's validated logical installation identity when they
+run in a worker, so a restarted retained daemon still matches its recorded native launch source.
 A standalone Manager can keep its
 loaded generation without stopping seats. New launches still enforce extension generation
 compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
