@@ -16,6 +16,11 @@ test('temporary workflow admits only measurement branch, reuses native builders 
  const commands=workflow.jobs.acceptance.steps.map(x=>x.run??'').join('\n');
  assert.match(commands,/smoke:win32-update-job/);assert.match(commands,/smoke:auto-update-windows/);assert.doesNotMatch(commands,/mutation|fix-reversion/);
 });
+test('workflow environment keys are unique ignoring case at every scope',()=>{
+ const visit=value=>{if(!value||typeof value!=='object')return;if(value.env){const keys=Object.keys(value.env);assert.equal(new Set(keys.map(k=>k.toUpperCase())).size,keys.length,'GitHub env keys ignore case');}for(const child of Object.values(value))visit(child);};
+ visit(workflow);
+ assert.equal(workflow.jobs.acceptance.env.pnpm_config_workspace_concurrency,'3');
+});
 test('driver reuses verified matrix packing and overlay, stock manual firsthop arms existing service without another command',()=>{
  assert.match(source,/candidateRegistry, configureCandidateRegistry, packCandidate/);
  assert.ok(source.indexOf("'install pre-existing published service'")<source.indexOf("'manual first-feature update'"));

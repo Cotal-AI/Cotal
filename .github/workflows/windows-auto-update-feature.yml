@@ -19,7 +19,6 @@ jobs:
     env:
       DO_NOT_TRACK: '1'
       COTAL_TELEMETRY: 'off'
-      PNPM_CONFIG_WORKSPACE_CONCURRENCY: '3'
       pnpm_config_workspace_concurrency: '3'
     steps:
       - uses: actions/checkout@v6
