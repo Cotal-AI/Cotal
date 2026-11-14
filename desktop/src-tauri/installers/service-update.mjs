@@ -18,7 +18,7 @@ const resultFile = join(directory, 'result.json');
 const messageFile = join(directory, 'message.txt');
 const script = fileURLToPath(new URL('service-task.ps1', import.meta.url));
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-const env = { ...process.env, COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: targetVersion };
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: targetVersion };
 const write = (file, value) => { const temp = `${file}.${process.pid}.tmp`; writeFileSync(temp, `${JSON.stringify(value)}\n`); renameSync(temp, file); };
 const task = action => {
   try { return JSON.parse(execFileSync(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Action', action], { env, windowsHide: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024 })); }

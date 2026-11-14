@@ -1,13 +1,16 @@
 param([Parameter(Mandatory=$true)][ValidateSet('inspect','disable','enable','start','census','recover')][string]$Action)
 $ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Management
-Import-Module Microsoft.PowerShell.Utility
-Import-Module CimCmdlets
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $root = [IO.Path]::GetFullPath($env:COTAL_SETUP_ROOT).TrimEnd('\')
 $statePath = Join-Path $env:LOCALAPPDATA 'CotalSetup\service-update.json'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $name = "cotal-daemon-$sid"
+function File-Digest([string]$Path) {
+  $stream=[IO.File]::OpenRead($Path)
+  $algorithm=[Security.Cryptography.SHA256]::Create()
+  try { return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant() }
+  finally { $algorithm.Dispose(); $stream.Dispose() }
+}
 function Get-OwnedTask {
   $receiptPath = Join-Path $env:LOCALAPPDATA 'Cotal\daemon\service-unit.json'
   $scheduler = New-Object -ComObject Schedule.Service
@@ -36,7 +39,7 @@ function Get-OwnedTask {
   $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
   $source = Join-Path $env:LOCALAPPDATA 'Cotal\daemon\service-task.xml'
   if ($receipt.v -ne 1 -or $receipt.mechanism -cne 'scheduled-task' -or $receipt.unit -cne $name -or $receipt.unitPath -cne $source -or $receipt.daemonHome) { throw 'The service receipt does not name this user and default daemon.' }
-  if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -cne $receipt.unitSha256) { throw 'The recorded task source changed.' }
+  if ((File-Digest $source) -cne $receipt.unitSha256) { throw 'The recorded task source changed.' }
   if ($tasks.Count -ne 1) { throw 'The recorded scheduled task is missing or ambiguous.' }
   [xml]$xml = Get-Content -Raw -LiteralPath $source
   $task = $tasks[0]
@@ -46,9 +49,12 @@ function Get-OwnedTask {
   if ($user -notmatch '^S-1-') { $user = ([Security.Principal.NTAccount]::new($user)).Translate([Security.Principal.SecurityIdentifier]).Value }
   if ($actions.Count -ne 1 -or $actions.Item(1).Path -cne [string]$xml.Task.Actions.Exec.Command -or $actions.Item(1).Arguments -cne [string]$xml.Task.Actions.Exec.Arguments -or $actions.Item(1).WorkingDirectory -cne [string]$xml.Task.Actions.Exec.WorkingDirectory -or $user -cne $sid -or $principal.LogonType -ne 3 -or $principal.RunLevel -ne 0) { throw 'The registered task no longer matches the owned definition.' }
   if (![string]::Equals($actions.Item(1).Path,(Join-Path $root 'cotal-desktop.exe'),[StringComparison]::OrdinalIgnoreCase) -or $actions.Item(1).Arguments -cne '--daemon') { throw 'The service belongs to another installation.' }
-  return @{ task=$task; receipt=$receipt; receiptDigest=(Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant() }
+  return @{ task=$task; receipt=$receipt; receiptDigest=(File-Digest $receiptPath) }
 }
 try {
+  Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Management\Microsoft.PowerShell.Management.psd1"
+  Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1"
+  Import-Module "$PSHOME\Modules\CimCmdlets\CimCmdlets.psd1"
   if ($Action -eq 'census') {
     $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,Name,CreationDate)
     $owned = @()
@@ -86,8 +92,15 @@ try {
         'none'; exit 0
       }
     }
-    $live=@(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath,Name | Where-Object { ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) -or (!$_.ExecutablePath -and $_.Name -in @('node.exe','cotal-desktop.exe')) })
-    if ($live.Count -ne 0) { throw 'A process still uses the interrupted installation or could not be identified. Close it before running setup again.' }
+    $rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,Name)
+    $apps=[Collections.Generic.HashSet[int]]::new()
+    foreach($row in $rows) { if ($row.ExecutablePath -and [string]::Equals($row.ExecutablePath,(Join-Path $root 'cotal-desktop.exe'),[StringComparison]::OrdinalIgnoreCase)) { $null=$apps.Add([int]$row.ProcessId) } }
+    do {
+      $changed=$false
+      foreach($row in $rows) { if ($apps.Contains([int]$row.ParentProcessId) -and $apps.Add([int]$row.ProcessId)) { $changed=$true } }
+    } while($changed)
+    $live=@($rows | Where-Object { !$apps.Contains([int]$_.ProcessId) -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) -or (!$_.ExecutablePath -and $_.Name -in @('node.exe','cotal-desktop.exe'))) })
+    if ($live.Count -ne 0) { throw 'Another program still uses the interrupted installation or could not be identified. Close it before running setup again.' }
     if ($owned -and !$owned.foreign -and $owned.task.GetInstances(0).Count -ne 0) { throw 'The owned task still has a native instance. No replacement was authorized.' }
     if ($damaged) {
       $state=@{schema=1;installPath=$root;targetVersion=$env:COTAL_SETUP_VERSION;oldVersion=$null;installed=[bool]($owned -and !$owned.foreign);foreign=[bool]($owned -and $owned.foreign);taskEnabled=[bool]($owned -and !$owned.foreign -and $owned.task.Enabled);running=$false;receiptDigest=$(if($owned -and !$owned.foreign){$owned.receiptDigest}else{$null});phase='copying';recoveryMessage='An unreadable setup handover was repaired. Prior running state was unknown, so no service was started.'}

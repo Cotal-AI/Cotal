@@ -25,8 +25,14 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(hooks, /SetErrorLevel \$CotalCode/);
   assert.match(hooks, /setup-node\.exe/);
   assert.doesNotMatch(task, /Stop-Process|Stop-ScheduledTask|\/End|\.Stop\(/i);
-  assert.match(task, /Import-Module Microsoft.PowerShell.Management/);
-  assert.match(task, /Import-Module Microsoft.PowerShell.Utility/);
+  assert.match(task, /Import-Module "\$PSHOME\\Modules\\Microsoft.PowerShell.Management/);
+  assert.match(task, /Import-Module "\$PSHOME\\Modules\\Microsoft.PowerShell.Utility/);
+  assert.match(task, /Import-Module "\$PSHOME\\Modules\\CimCmdlets/);
+  assert.ok(task.indexOf('Import-Module') > task.indexOf('\ntry {'));
+  assert.doesNotMatch(task, /Get-FileHash/);
+  assert.match(task, /Security.Cryptography.SHA256/);
+  assert.match(helper, /key.toLowerCase\(\) !== 'psmodulepath'/);
+  assert.match(hooks, /SetEnvironmentVariable\(t "PSModulePath", p 0\)/);
   assert.match(task, /\$task\.Enabled = \$false/);
   assert.match(task, /GetInstances\(0\)\.Count/);
   assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));

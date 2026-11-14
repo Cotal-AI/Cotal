@@ -13,7 +13,7 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
   foreach($window in $windows) {
     $elements=@($window.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition))
     $names=@($elements | ForEach-Object {$_.Current.Name})
-    $observations+=@{at=[DateTime]::UtcNow.ToString('o');title=$window.Current.Name;names=$names}
+    $observations+=@{at=[DateTime]::UtcNow.ToString('o');title=$window.Current.Name;names=$names;controls=@($elements|ForEach-Object{@{name=$_.Current.Name;type=$_.Current.ControlType.ProgrammaticName;id=$_.Current.AutomationId;enabled=$_.Current.IsEnabled;offscreen=$_.Current.IsOffscreen}})}
     if (($names -join ' ') -match '\d+ agent\(s\) are running') {
       $occupiedSeen=$true
       if($Mode -ne 'occupied') { throw 'Unexpected occupied refusal.' }

@@ -46,7 +46,7 @@ jobs:
         run: |
           node desktop/test/setup-invalid-helper.mjs
           if($LASTEXITCODE -ne 0){throw 'Invalid-helper fixture preparation failed'}
-          pnpm --dir desktop exec tauri build --bundles nsis --config '{"bundle":{"windows":{"nsis":{"installerHooks":"installers/invalid-helper.nsh"}}}}'
+          pnpm --dir desktop exec tauri build --bundles nsis --config src-tauri/invalid-helper.json
           if($LASTEXITCODE -ne 0){throw 'Invalid-helper control build failed'}
       - uses: actions/upload-artifact@v4
         with:
