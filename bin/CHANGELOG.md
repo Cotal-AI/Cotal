@@ -1,5 +1,26 @@
 # cotal-ai
 
+## 0.164.8
+
+### Patch Changes
+
+- c2db3ac: Updates can continue after an interrupted update leaves an unusable snapshot record.
+  
+  Keep abandoned records in a timestamped folder without touching their snapshots. Fence live or unreadable owners, wait one hour for records without a valid owner, and report the same recovery guidance in status, notices and unattended updates.
+- Updated dependencies [8d27412]
+- Updated dependencies [57aaed2]
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/cli@0.164.8
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/auth@0.164.8
+  - @cotal-ai/delivery@0.164.8
+  - @cotal-ai/manager@0.164.8
+  - @cotal-ai/runtime@0.164.8
+  - @cotal-ai/connector-core@0.164.8
+  - @cotal-ai/registry@0.164.8
+  - @cotal-ai/core@0.164.8
+  - @cotal-ai/seat@0.164.8
+
 ## 0.164.7
 
 ### Patch Changes
