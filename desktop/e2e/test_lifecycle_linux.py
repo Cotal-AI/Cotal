@@ -431,5 +431,47 @@ class PointerTests(unittest.TestCase):
                 self.assertEqual(env['report']['indicatorInput']['phases'][0]['state'], 'failed')
 
 
+class MissingControlDiagnosticsTests(unittest.TestCase):
+    def environment(self):
+        source = ast.parse(Path(__file__).with_name('lifecycle-linux.py').read_text())
+        functions = ast.Module(body=[n for n in source.body if isinstance(n, ast.FunctionDef)],
+                               type_ignores=[])
+        saved = {}
+        env = {'args': SimpleNamespace(pid=10, panel_pid=20, panel_start_time='owned'),
+               'report': {}, 'verify': Mock(), 'snapshot': Mock(return_value={'panel': []}),
+               'subprocess': SimpleNamespace(run=Mock(return_value=SimpleNamespace(
+                   returncode=0, stdout='/plugins/plugin-1 systray\n', stderr=''))),
+               'save': lambda name, value: saved.setdefault(name, deepcopy(value)) or name}
+        exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
+        env.update(verify=Mock(), snapshot=Mock(return_value={'panel': []}),
+                   save=lambda name, value: saved.setdefault(name, deepcopy(value)) or name)
+        return env, saved
+
+    def test_missing_control_records_tree_and_read_only_plugin_list(self):
+        env, saved = self.environment()
+        env['missing_control_diagnostics']()
+        self.assertIn('missing-control-tree', saved)
+        self.assertIn('missing-control', saved)
+        argv = env['subprocess'].run.call_args.args[0]
+        self.assertEqual(argv, ['xfconf-query', '--channel', 'xfce4-panel', '--list', '--verbose'])
+        self.assertEqual(env['report']['missingControl']['errors'], [])
+
+    def test_no_match_still_refuses_after_observation(self):
+        env, saved = self.environment()
+        env['apps'] = lambda: []
+        with self.assertRaisesRegex(RuntimeError, 'found 0'):
+            env['click_unique']({20}, {''}, {'push button'}, button=3)
+        self.assertIn('missing-control', saved)
+        self.assertNotIn('indicatorInput', env['report'])
+
+    def test_diagnostic_errors_are_recorded_without_native_input(self):
+        env, saved = self.environment()
+        env['snapshot'].side_effect = RuntimeError('tree unavailable')
+        env['subprocess'].run.side_effect = RuntimeError('plugin query unavailable')
+        env['missing_control_diagnostics']()
+        self.assertEqual(len(env['report']['missingControl']['errors']), 2)
+        self.assertIn('missing-control', saved)
+
+
 if __name__ == '__main__':
     unittest.main()
