@@ -182,6 +182,20 @@ try {
   report.outcome = "passed";
 } catch (error) {
   report.outcome = "failed"; report.failure = String(error);
+  if (process.platform === "win32" && nativePid) {
+    try {
+      // Release builds have no debug native request sink. Do not substitute a new CLI request.
+      report.bridgeTrace = { state: "unavailable", reason: "The installed release does not emit the debug-only native-errors.jsonl request trace." };
+      const startedAt = new Date().toISOString();
+      const started = performance.now();
+      const details = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", join(repo, "desktop/e2e/windows-launch-details.ps1"), "-AppPid", String(nativePid), "-Binary", binary!], { env, encoding: "utf8", timeout: 20_000, maxBuffer: 512 * 1024 });
+      const observation = { source: "native-uia-details", startedAt, elapsedMs: performance.now() - started, status: details.status, signal: details.signal, error: String(details.error ?? ""), stdout: details.stdout, stderr: details.stderr };
+      writeFileSync(join(output, "failure-details.json"), JSON.stringify(observation, null, 2));
+      // Keep the original welcome image and tree unchanged, even when this diagnostic refuses.
+      const capture = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", join(repo, "desktop/e2e/capture.ps1"), "-AppPid", String(nativePid), "-Destination", join(output, "failure-details.png")], { env, encoding: "utf8", timeout: 15_000 });
+      writeFileSync(join(output, "failure-details-capture.json"), JSON.stringify({ status: capture.status, signal: capture.signal, error: String(capture.error ?? ""), stdout: capture.stdout, stderr: capture.stderr }, null, 2));
+    } catch (diagnosticError) { report.detailsDiagnosticError = String(diagnosticError); }
+  }
   if (process.platform === "linux") {
     for (const [file, args] of [["xwininfo", ["-root", "-tree"]], ["import", ["-window", "root", join(output, "failure-display.png")]]] as const) {
       const diagnostic = spawnSync(file, [...args], { env, encoding: "utf8", timeout: 15_000 });
