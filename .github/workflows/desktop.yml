@@ -202,7 +202,7 @@ jobs:
         if: always() && inputs.updater_compile && runner.os != 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-updater-native-${{ runner.os }}-${{ runner.arch }}
+          name: desktop-updater-native-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}/desktop-updater-native/
           if-no-files-found: error
           retention-days: 7
