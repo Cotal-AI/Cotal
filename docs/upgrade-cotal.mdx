@@ -157,6 +157,27 @@ or rollback guarantees. If migration is refused, the package has already been re
 reconciliation has not started. The parent may retry or restore its previous package. Keep the
 reported failure and inspect the installed version and daemon state before retrying.
 
+## Recover an interrupted update
+
+`cotal update --self` restores an interrupted update when its snapshot is a valid directory of
+this installation. If the snapshot is absent, outside this configuration, or not a plain directory,
+the command checks the recorded owner. A dead or reused owner lets it retain the unusable records
+and continue installation and reconciliation. A live owner blocks the update and names its pid.
+An unreadable owner process refuses with inspection guidance. A missing or malformed owner waits
+one hour from the first observed contents. Retrying does not reset that wait.
+
+Retired records stay in a timestamped `update-recovery-retained-<timestamp>-<suffix>` folder in the
+Cotal home, normally `~/.cotal`. The command prints that folder. It never changes the snapshot
+named by a retired record. The daemon uses the same rules, including unattended updates.
+
+If a machine on 0.164.6 or older is stuck on an unusable interrupted-update record, rerun the installer:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+The old updater stops before it can replace itself. The installer supplies the repaired updater.
+
 ## Restart the mesh
 
 Complete the release-specific credential and state migrations before restarting components.

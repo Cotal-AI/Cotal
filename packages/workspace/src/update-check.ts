@@ -1,4 +1,5 @@
 import { readUpdateRecovery } from "./updates.js";
+import { recoveryDisposition } from "./update-recovery.js";
 import { spawn } from "node:child_process";
 import { acquireLock } from "@cotal-ai/core";
 import { cmdSpawnSpec } from "./win-cmd.js";
@@ -71,7 +72,7 @@ export function newerUpdate(latest: string, current: string): boolean {
 export function cachedUpdateSummary(current: string): string {
   try {
     const recovery = readUpdateRecovery();
-    if (recovery) return `update needs repair: installed ${recovery.installed}; automatic updates paused; run \`cotal update --self\``;
+    if (recovery) return `update needs repair: installed ${recovery.installed}; ${recoveryDisposition(recovery).instruction}`;
   } catch { return "update state unreadable; automatic updates paused"; }
   const cached = readUpdateCheck();
   return !cached?.latest ? "update status unknown" : newerUpdate(cached.latest, current) ? `newer version ${cached.latest} available` : "up to date";

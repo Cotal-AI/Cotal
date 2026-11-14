@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { homeCotalDir } from "./cotal-home.js";
+import { recoveryOwner, recoverySnapshotProblem } from "./update-recovery.js";
 
 /** Shared CLI and daemon update preferences, independent of telemetry. */
 export interface UpdateSettings {
@@ -60,10 +61,10 @@ export function readUpdateRecovery(): UpdateRecovery | undefined {
   const record = value as UpdateRecovery;
   if (!record || record.v !== 1 || !["replacing", "restoring", "verified-ready", "paused"].includes(record.phase) ||
       ![record.previous, record.target, record.installed, record.reason, record.recordedAt].every(field => typeof field === "string")) throw new Error("invalid update recovery record in update-recovery.json");
-  if (record.owner && (!Number.isSafeInteger(record.owner.pid) || record.owner.pid <= 0 || typeof record.owner.start !== "string" || typeof record.owner.nonce !== "string")) throw new Error("invalid update transaction owner");
   if (record.preparedRestart !== undefined && typeof record.preparedRestart !== "boolean") throw new Error("invalid prepared restart evidence");
   if (record.snapshot !== undefined && typeof record.snapshot !== "string") throw new Error("invalid update snapshot path");
   if (record.renames !== undefined && (!Array.isArray(record.renames) || record.renames.some(entry => !entry || typeof entry.from !== "string" || typeof entry.to !== "string" || typeof entry.done !== "boolean"))) throw new Error("invalid update rename journal");
+  if (record.owner && !recoveryOwner(record) && !recoverySnapshotProblem(record)) throw new Error("invalid update transaction owner");
   return record;
 }
 
