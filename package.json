@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:update-extension-set": "tsx implementations/cli/smoke/extension-promotion.smoke.ts && tsx implementations/cli/smoke/extension-promotion-crash.smoke.ts && tsx implementations/cli/smoke/update-set-atomic.smoke.ts",
     "smoke:discovery-login": "tsx packages/workspace/smoke/discovery-login.smoke.ts && tsx bin/smoke/daemon-discovery-login.smoke.ts",
     "smoke:login-service-stores": "tsx implementations/auth/smoke/login-private-group.smoke.ts && tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
     "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts && tsx bin/smoke/fresh-cloud-guidance.smoke.ts",
@@ -515,6 +516,7 @@
     "smoke:remote-resume-completion": "tsx implementations/manager/smoke/remote-resume-completion.smoke.ts",
     "smoke:hosted-bootstrap-order": "tsx implementations/auth/smoke/hosted-bootstrap-order.smoke.ts",
     "smoke:auth-plane-native-connections": "tsx implementations/auth/smoke/auth-plane-native-connections.smoke.ts",
+    "smoke:local-workers-native-connections": "tsx implementations/auth/smoke/local-workers-native-connections.smoke.ts",
     "smoke:manager-standing-renewal": "tsx implementations/auth/smoke/manager-standing-renewal.smoke.ts",
     "smoke:remote-run-admission": "tsx implementations/auth/smoke/remote-run-admission.smoke.ts",
     "smoke:remote-run-revoke": "tsx implementations/auth/smoke/remote-run-revoke.smoke.ts",
