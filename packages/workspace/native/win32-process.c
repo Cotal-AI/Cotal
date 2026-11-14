@@ -151,9 +151,9 @@ static napi_value pin_process(napi_env env, napi_callback_info info) {
 // objects alive across PID reuse. Parent creation order rejects stale ancestry.
 static napi_value process_tree(napi_env env, napi_callback_info info) {
   size_t argc = 2;
-  napi_value args[2], result;
-  uint32_t root_pid;
-  char expected[21]; size_t length;
+  napi_value args[2], result = NULL;
+  uint32_t root_pid = 0;
+  char expected[21] = {0}; size_t length = 0;
   if (napi_get_cb_info(env, info, &argc, args, NULL, NULL) != napi_ok || argc != 2 ||
       napi_get_value_uint32(env, args[0], &root_pid) != napi_ok || root_pid == 0 ||
       napi_get_value_string_utf8(env, args[1], expected, sizeof(expected), &length) != napi_ok || length == 0 || length >= sizeof(expected))
