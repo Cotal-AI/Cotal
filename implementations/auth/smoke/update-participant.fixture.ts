@@ -85,7 +85,7 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
     const selected = findMesh(getCurrent()!);
     assert.equal(selected?.space, account.space, "participant is selected");
     assert.equal(selected?.userAuth?.remote, true, "selected participant uses remote user sign-in");
-    report.participant = { space: account.space, server: fixture.servers, remote: true, selected: true, localManagerStarted: false };
+    report.participant = { space: account.space, server: fixture.servers, owner, remote: true, selected: true, localManagerStarted: false };
     return close;
   } catch (error) {
     await close();

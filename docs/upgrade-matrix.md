@@ -20,7 +20,8 @@ It needs only the completed publish job and runs only when its output says packa
 The publish job remains strict. No job depends on the receipt job, so a receipt failure cannot fail
 or shorten publication, or delay installation verification and release work.
 A separate `workflow_run` consumes the receipt even if a later release-note or installation job
-makes the Changesets run red. It binds the receipt to the repository, main SHA, run and exact
+makes the Changesets run red. It verifies the completed run's workflow path rather than its display
+name, which can be `Publish packages`. It binds the receipt to the repository, main SHA, run and exact
 version, then runs the published phase. GitHub Release creation is not the trigger. A missing
 receipt is reported as publication not confirmed, so no published-phase run starts. The publish
 job does not retry receipt recording or upload.
@@ -35,15 +36,23 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 ## Required release set
 
-Both phases start from published0.164.6 and run16 isolated product coordinates:
+At plan time both phases read public npm metadata and freeze the newest stable published version
+strictly below the target. The plan records that source and its registry observation. Missing registry
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs17 isolated
+product coordinates:
 
 | Coordinates | Count |
 |---|---:|
 | npm fresh, configured and stale-extension self-update on Ubuntu24.04, macOS15 and Windows2022 |9|
 | POSIX configured installer rerun and native daemon scheduler |4|
-| Linux local stand-in agent with public stop consent |1|
+| Linux stand-in agent with public stop consent, separately daemon-hosted and standalone |2|
 | Linux paused record pointing to a real snapshot under another config home |1|
 | Linux host update with a foreign-UID container's bare `cotal supervise` |1|
+
+The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
+route. It must complete the update. The standalone cell starts with `up --detach` and records its
+separate consent contract. Container shutdown uses `down --with-agents --yes`; both that exit and the owned
+container's confirmed shutdown must pass, even when the upgrade has a known refusal.
 
 The foreign snapshot cell keeps completed rename entries, a freshly recorded paused journal and
 an old attempt clock. Its foreign directory and sentinel must remain untouched. The container
@@ -65,7 +74,7 @@ than certifying the wrong version.
 
 Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
 budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
-builders need two waves and16 product cells need six waves at that limit. Per-job timeouts imply a
+builders need two waves and17 product cells need six waves at that limit. Per-job timeouts imply a
 much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
 timestamps so release owners can use measured durations instead of these estimates.
 
@@ -83,6 +92,22 @@ state, method, source, phase, target and candidate origin, and rejects duplicate
 Configured states require a real prior extension inventory. A fresh report cannot be relabelled as
 a configured pass. Every required cell needs its own positive assertions, not an aggregate job exit.
 
+## Known refusals
+
+`scripts/upgrade-matrix-refusals.mjs` binds each listed coordinate and source range to a public issue,
+command exit, complete refusal transcript and failed-assertion set. Only typed fixture identifiers may
+vary. Source, artifact, safety and cleanup guards run before matching. Unknown refusals, changed text,
+extra failures and listed cells that turn green fail the summary. A green listed cell requires retiring
+the entry. Raw reports stay failed. The census reports expected refusals separately from genuine
+upgrade passes, with separate summary acceptance and full upgrade acceptance.
+
+The standalone consent entry names [#6802](https://github.com/Cotal-AI/Cotal/issues/6802). The container
+entry names [#6785](https://github.com/Cotal-AI/Cotal/issues/6785) and applies only to source0.164.6;
+source0.164.7 must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747).
+Entries with no released fix use `fixedIn: null`. Set the cutoff only when a release carries the fix,
+then remove stale entries when their listed source turns green. A packed target fix does not change
+which installed source executes the first update attempt.
+
 ## Run a published cell
 
 Use Node>=22.10. Native service and agent cells require a disposable hosted runner. On a persistent
@@ -92,7 +117,7 @@ installation or build. Do not run the container fixture on a workstation.
 
 ```sh
 node scripts/automatic-update-platform-baseline.mjs --list linux
-node scripts/automatic-update-platform-baseline.mjs --source 0.164.6 --layout npm --state configured --method self --expected-target <version> --output ./upgrade-evidence
+node scripts/automatic-update-platform-baseline.mjs --source <source-version> --layout npm --state configured --method self --expected-target <version> --output ./upgrade-evidence
 node scripts/automatic-update-platform-baseline.mjs --summary ./upgrade-evidence
 ```
 
@@ -115,7 +140,7 @@ inputs already assembled:
 
 ```sh
 node scripts/automatic-update-platform-baseline.mjs --pack ./candidate --version <candidate-version> --source-root <clean-git-root>
-node scripts/automatic-update-platform-baseline.mjs --candidate ./candidate --direction B --source 0.164.6 --layout npm --state configured --method self --expected-target <candidate-version> --output ./upgrade-evidence
+node scripts/automatic-update-platform-baseline.mjs --candidate ./candidate --direction B --source <source-version> --layout npm --state configured --method self --expected-target <candidate-version> --output ./upgrade-evidence
 ```
 
 An explicit source root must be a clean actual Git root. Its own packer is imported. Version-only
@@ -126,8 +151,9 @@ Never relabel an older archive or patch installed product bytes to manufacture a
 
 ## Observe native custody
 
-Mac scheduler cells from published0.164.6 use `--published-launchd true --launchd-proof transition`.
-Candidate B transition observation also starts from0.164.6. Snapshots retain receipt, plist bytes
+Mac scheduler transition cells require a stable source at least0.164.6 and a newer explicit target.
+They use `--published-launchd true --launchd-proof transition` for a published target and the same
+transition observer for candidate B. Snapshots retain receipt, plist bytes
 and digest, loaded job, runner creation identity, completion, exit, job/source retirement and daemon
 generation. A terminal success alone does not establish custody cleanup. Unknown custody retains
 the service for disposable-runner teardown. Off-before-tick and killed-before-result modes remain

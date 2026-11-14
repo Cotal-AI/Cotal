@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { parse } from 'yaml';
 import { planRelease } from './upgrade-matrix-plan.mjs';
+import { knownRefusals } from './upgrade-matrix-refusals.mjs';
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
 const summary = workflow.jobs['release-summary'].steps.find(s => s.name === 'Verify expected coordinate census and assertion contract').run;
 const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
@@ -32,29 +34,84 @@ test('durable events preserve immutable heads without privileged PR execution or
   assert(workflow.jobs['release-summary'].if.includes('always()'));
   assert.equal(workflow.jobs['release-cells'].strategy['fail-fast'], false);
 });
-function fixture(change = () => {}) {
+function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '0.164.6', targetVersion = '0.164.7', phase = 'candidate', corrupt = false } = {}) {
   const root = mkdtempSync('/var/tmp/upgrade-matrix/census-guard-');
-  const base = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.7', profile: 'bounded' } }, { eventName: 'workflow_dispatch' });
-  const cell = base.cells.find(c => c.id === 'linux-npm-configured');
+  const base = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: targetVersion, profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion });
+  base.phase = phase;
+  for (const cell of base.cells) cell.phase = phase;
+  const cell = base.cells.find(c => c.id === `linux-npm-${scenario}`);
   const plan = { ...base, cells: [cell] };
   const directory = join(root, 'upgrade-results', `upgrade-cell-${cell.id}`);
   mkdirSync(directory, { recursive: true }); mkdirSync(join(root, 'upgrade-plan'));
   const names = ['CLI version is target', 'selected CLI reports target', 'every recorded extension is at target', 'recorded extension package versions match target', 'every prior extension remains recorded', 'cotal status exits zero', 'no paused recovery record', 'no manual step or refusal'];
-  const data = { cell: structuredClone(cell), origin: { source: plan.sourceSHA, artifact: '42', digest: 'sha256:fixed' }, report: { id: 'candidate-B-linux-0.164.6-npm-configured-self', tier: 'candidate-B (synthetic registry, real native processes)', platform: 'linux', source: '0.164.6', target: plan.targetVersion, layout: 'npm', state: 'configured', method: 'self', result: 'passed', environment: { hostedDisposable: true, registryOverridden: true }, candidate: { source: plan.sourceSHA, direction: 'B' }, extensionsBefore: Array.from({ length: 8 }, (_, i) => ({ pkg: `extension-${i}` })), assertions: names.map(name => ({ name, passed: true })), calls: [] } };
+  const harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: new URL('..', import.meta.url), encoding: 'utf8' }).trim();
+  const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+  const harnessSha256 = digest(execFileSync('git', ['show', harnessSource + ':scripts/automatic-update-platform-baseline.mjs'], { cwd: new URL('..', import.meta.url) }));
+  const data = { cell: structuredClone(cell), origin: { source: plan.sourceSHA, artifact: '42', digest: 'sha256:fixed' }, report: { id: 'candidate-B-linux-0.164.6-npm-configured-self', tier: 'candidate-B (synthetic registry, real native processes)', platform: 'linux', source: sourceVersion, sourceRequested: sourceVersion, harnessSource, harnessSha256, cleanupSafety: { passed: true }, target: plan.targetVersion, layout: 'npm', state: 'configured', method: 'self', result: 'passed', environment: { hostedDisposable: true, registryOverridden: true }, candidate: { source: plan.sourceSHA, direction: 'B' }, extensionsBefore: Array.from({ length: 8 }, (_, i) => ({ pkg: `extension-${i}` })), assertions: names.map(name => ({ name, passed: true })), calls: [] } };
   change(data);
   writeFileSync(join(root, 'upgrade-plan/plan.json'), JSON.stringify(plan));
   writeFileSync(join(directory, 'coordinate.json'), JSON.stringify(data.cell));
   writeFileSync(join(directory, 'candidate-origin.json'), JSON.stringify(data.origin));
-  writeFileSync(join(directory, 'cell.json'), JSON.stringify(data.report));
-  writeFileSync(join(root, 'summary.mjs'), program.replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href)));
-  const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed' };
-  try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe' }); return { exit: 0, root }; }
+  writeFileSync(join(directory, data.report.id + '.json'), JSON.stringify(data.report));
+  writeFileSync(join(directory, data.report.id + '.log'), 'recorded transcript\n');
+  writeFileSync(join(directory, data.report.id + '.sha256'), [data.report.id + '.json', data.report.id + '.log'].map(name => `${digest(readFileSync(join(directory, name)))}  ${name}\n`).join(''));
+  if (corrupt) writeFileSync(join(directory, data.report.id + '.log'), 'tampered transcript\n');
+  writeFileSync(join(root, 'summary.mjs'), program
+    .replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href))
+    .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href)));
+  const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_HARNESS_SOURCE: harnessSource };
+  try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe', cwd: new URL('..', import.meta.url) }); return { exit: 0, root }; }
   catch (error) { return { exit: error.status, stderr: error.stderr.toString(), root }; }
 }
 test('actual workflow census accepts precisely matching configured evidence', () => assert.equal(fixture().exit, 0));
 test('actual workflow census refuses fresh report relabelled configured', () => assert.notEqual(fixture(d => { d.report.state = 'fresh'; d.report.extensionsBefore = []; }).exit, 0));
 test('actual workflow census refuses wrong immutable artifact identity', () => assert.notEqual(fixture(d => { d.origin.artifact = 'foreign'; }).exit, 0));
 test('actual workflow census refuses changed coordinate metadata', () => assert.notEqual(fixture(d => { d.cell.scenario = 'fresh'; }).exit, 0));
+test('actual census binds rolling source and rejects raw source, harness or digest skew', () => {
+  assert.equal(fixture(() => {}, { sourceVersion: '0.164.7', targetVersion: '0.164.8' }).exit, 0);
+  for (const change of [d => { d.report.source = '0.164.6'; }, d => { d.report.sourceRequested = 'latest'; }, d => { d.report.candidate.source = 'b'.repeat(40); }, d => { d.report.harnessSha256 = '0'.repeat(64); }, d => { delete d.report.cleanupSafety; }]) assert.notEqual(fixture(change, { sourceVersion: '0.164.7', targetVersion: '0.164.8' }).exit, 0);
+  assert.notEqual(fixture(() => {}, { corrupt: true }).exit, 0);
+});
+function standaloneEvidence(data) {
+  const entry = knownRefusals.find(entry => entry.id === 'linux-npm-standalone-stop-consent');
+  const stdout = entry.stdout.replaceAll('{{space}}', 'upgrade-proof').replaceAll('{{manager}}', 'sdz0a0f5fxj1ct3pzd181eaqvdozem1').replaceAll('{{pid}}', '2699');
+  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr: entry.stderr };
+  Object.assign(data.report, { result: 'failed', state: 'agent', agentHost: 'standalone', managerHost: { mode: 'standalone', space: 'upgrade-proof' }, update });
+  data.report.extensionsBefore = Array.from({ length: 8 }, (_, i) => ({ pkg: `@cotal-ai/extension-${i}`, version: data.cell.sourceVersion }));
+  data.report.extensionsAfter = structuredClone(data.report.extensionsBefore);
+  data.report.assertions = [...entry.failedAssertions.map(name => ({ name, passed: false, observed: name === 'upgrade exits successfully' ? update : name === 'CLI version is target' ? data.cell.sourceVersion : undefined })), ...entry.requiredAssertions.map(name => ({ name, passed: true }))];
+}
+test('actual summary accepts only exact safe listed red and keeps full upgrade acceptance false', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(data => {
+      standaloneEvidence(data);
+      if (phase === 'published') { data.report.tier = 'published'; data.report.environment.registryOverridden = false; delete data.report.candidate; }
+    }, { scenario: 'standalone-stop-consent', phase });
+    assert.equal(result.exit, 0, result.stderr);
+    const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
+    assert.equal(census.acceptance, true);
+    assert.equal(census.upgradeAcceptance, false);
+    assert.equal(census.passed.length, 0);
+    assert.equal(census.knownRefusals[0].issue, 'https://github.com/Cotal-AI/Cotal/issues/6802');
+  }
+});
+test('actual summary refuses listed green, changed refusal, extra failure and missing cleanup', () => {
+  for (const mutate of [d => { d.report.result = 'passed'; }, d => { d.report.update.stdout += 'changed\n'; }, d => { d.report.assertions.push({ name: 'extra failure', passed: false }); }, d => { d.report.cleanupSafety.passed = false; }, d => { d.report.candidate.source = 'b'.repeat(40); }]) {
+    const result = fixture(d => { standaloneEvidence(d); mutate(d); }, { scenario: 'standalone-stop-consent' });
+    assert.notEqual(result.exit, 0);
+  }
+  const unknown = fixture(d => { d.report.result = 'failed'; });
+  assert.notEqual(unknown.exit, 0);
+});
+test('daemon consent summary uses daemon cleanup proof and cannot inherit standalone refusal', () => {
+  const result = fixture(d => {
+    d.report.state = 'agent'; d.report.agentHost = 'daemon';
+    d.report.cleanup = 'receipt-guarded native removal confirmed';
+    d.report.calls = [{ argv: ['update', '--self', '--stop-agents'], exit: 0 }];
+    d.report.assertions.push({ name: 'owned daemon-hosted Manager stop succeeds', passed: true });
+  }, { scenario: 'agent-stop-consent' });
+  assert.equal(result.exit, 0, result.stderr);
+});
 test('actual workflow census refuses missing manual/recovery/status requirements', () => {
   for (const name of ['no manual step or refusal', 'no paused recovery record', 'cotal status exits zero']) assert.notEqual(fixture(d => { d.report.assertions = d.report.assertions.filter(a => a.name !== name); }).exit, 0);
 });
@@ -68,6 +125,7 @@ test('actual publication selector reports a missing receipt without starting the
     const jobsAPI = () => {}, artifactsAPI = () => {};
     const fakeRequire = name => {
       if (name === 'node:assert/strict') return assert;
+      if (name === 'node:crypto') return { createHash };
       if (name === 'node:url') return { pathToFileURL: value => new URL(`file://${value}`) };
       if (name === 'node:fs') return { mkdirSync() {}, writeFileSync(path, bytes) { saved[path] = JSON.parse(bytes); } };
       assert.equal(name, 'node:child_process');
@@ -78,7 +136,7 @@ test('actual publication selector reports a missing receipt without starting the
       { eventName: 'workflow_run', repo: { owner: 'Cotal-AI', repo: 'Cotal' }, payload: { action: 'completed', repository, workflow_run: run } },
       { rest: { actions: { getWorkflowRun: async () => ({ data: run }), listJobsForWorkflowRun: jobsAPI, listWorkflowRunArtifacts: artifactsAPI } }, paginate: async method => method === jobsAPI ? [{ name: 'publish', conclusion: 'success' }] : (assert.equal(method, artifactsAPI), artifacts) },
       { env: { GITHUB_WORKSPACE: new URL('..', import.meta.url).pathname.replace(/\/$/, ''), RUNNER_TEMP: '/fixture' } },
-      { setOutput(key, value) { outputs[key] = value; }, summary });
+      { setOutput(key, value) { outputs[key] = value; }, summary, info() {} });
     assert.equal(outputs.applicable, 'false');
     assert.equal(outputs.matrix, '{"include":[]}');
     assert.equal(saved['/fixture/upgrade-plan/plan.json'].status, 'skipped');

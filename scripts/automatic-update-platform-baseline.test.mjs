@@ -4,6 +4,52 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
+test('daemon hosted consent admission is separate from standalone and refuses unsafe options', async () => {
+  const options = { state: 'agent', method: 'self', 'stop-agents': 'true', 'daemon-hosted-manager': 'true', prepare() {} };
+  const runner = { hosted: true, platform: 'linux' };
+  assert.equal(baseline.daemonHostedManagerOptions(options, runner), true);
+  assert.equal(baseline.daemonHostedManagerOptions({ state: 'agent', 'stop-agents': 'true' }, runner), false);
+  for (const change of [{ state: 'configured' }, { method: 'scheduler' }, { 'stop-agents': 'false' }, { prepare: undefined }, { 'daemon-hosted-manager': 'false' }]) {
+    assert.throws(() => baseline.daemonHostedManagerOptions({ ...options, ...change }, runner));
+  }
+  for (const environment of [{ hosted: false, platform: 'linux' }, { hosted: true, platform: 'darwin' }, { hosted: true, platform: 'win32' }]) {
+    assert.throws(() => baseline.daemonHostedManagerOptions(options, environment));
+  }
+  await assert.rejects(baseline.matrixCell(options), /requires hosted Linux/);
+});
+
+test('documented hosted Manager command and container cleanup are extracted without execution', () => {
+  assert.deepEqual(baseline.hostedManagerCommand('upgrade-proof'), ['daemon', 'setup', '--space', 'upgrade-proof', '--json']);
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(source.includes("hostedManagerCommand(space)"));
+  assert(source.includes("['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId"));
+  assert(source.indexOf("'register daemon-hosted stand-in connector'") < source.indexOf("'start documented daemon-hosted Manager'"));
+  assert(source.includes("['daemon', 'status', '--space', report.managerHost.space, '--json']"));
+  assert(source.includes("['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']"));
+  assert(source.includes("const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir()"));
+  assert(source.includes("if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign"));
+  assert(source.includes("if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
+  assert(source.includes('const deadline = Date.now() + 60000;'));
+  assert(source.includes('JSON.stringify(observed)'));
+  assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
+  assert.match(baseline.foreignStackCleanupCommand, /cotal down --with-agents --yes$/);
+  assert(source.includes("ok(report.foreignStackStop, 'foreign stack cleanup')"));
+  for (const name of ['owned local stack cleanup succeeds', 'foreign container cleanup succeeds', 'source generation unchanged']) assert(source.includes(name));
+  assert(source.includes("report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone'"));
+  assert(source.includes('if (!report.cleanupSafety.passed)'));
+  assert.equal(baseline.cellExitCode({ result: 'passed', cleanupSafety: { passed: false } }), 1);
+  assert.equal(baseline.cellExitCode({ result: 'failed', expectedRefusal: { passed: true }, cleanupSafety: { passed: false } }), 1);
+});
+
+test('Mac transition accepts stable newer sources only below explicit target and retains Windows history', () => {
+  for (const source of ['0.164.6', '0.164.7', '0.165.0']) assert(baseline.macTransitionSource(source, '0.166.0', 'transition'));
+  for (const source of ['0.164.5', '0.166.0', '0.167.0', 'latest', '0.165.0-rc.1']) assert(!baseline.macTransitionSource(source, '0.166.0', 'transition'));
+  for (const kind of ['off-before-tick', 'killed-before-result']) assert(!baseline.macTransitionSource('0.164.7', '0.166.0', kind));
+  assert(!baseline.macTransitionSource('0.164.7', undefined, 'transition'));
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(windowsPolicy\) assert\(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6'/);
+});
+
 function productCheckout() {
   const parent = '/var/tmp/upgrade-matrix';
   mkdirSync(parent, { recursive: true, mode: 0o700 });

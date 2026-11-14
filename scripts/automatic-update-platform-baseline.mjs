@@ -11,6 +11,21 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
+import { compareVersions } from './upgrade-matrix-plan.mjs';
+
+export function daemonHostedManagerOptions(options, { hosted: disposable = hosted, platform = process.platform } = {}) {
+  if (options['daemon-hosted-manager'] === undefined) return false;
+  assert.equal(options['daemon-hosted-manager'], 'true', 'daemon-hosted-manager accepts only true');
+  assert(disposable && platform === 'linux' && options.state === 'agent' && (options.method ?? 'self') === 'self' && options['stop-agents'] === 'true', 'daemon-hosted-manager requires hosted Linux agent self with explicit stop-agents consent');
+  assert.equal(typeof options.prepare, 'function', 'daemon-hosted-manager requires a real remote participant preparation');
+  return true;
+}
+export function macTransitionSource(source, expectedTarget, kind) {
+  return kind === 'transition' && /^\d+\.\d+\.\d+$/.test(source) && /^\d+\.\d+\.\d+$/.test(expectedTarget ?? '')
+    && compareVersions(source, '0.164.6') >= 0 && compareVersions(source, expectedTarget) < 0;
+}
+export const hostedManagerCommand = space => ['daemon', 'setup', '--space', space, '--json'];
+export const foreignStackCleanupCommand = 'export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; cd /tmp/project; cotal down --with-agents --yes';
 
 export const sources = ['0.155.0', '0.160.7', '0.162.0', '0.163.5', '0.164.0', 'latest'];
 export const states = ['fresh', 'configured', 'daemon', 'agent', 'stale-extensions', 'recovery', 'concurrent'];
@@ -76,8 +91,8 @@ export function verifyPublishedInstaller(options) {
 }
 
 export const cellExitCode = report => report.expectedRefusal
-  ? (report.expectedRefusal.passed && !report.cleanupFailure ? 0 : 1)
-  : (['passed', 'excluded'].includes(report.result) ? 0 : 1);
+  ? (report.expectedRefusal.passed && !report.cleanupFailure && report.cleanupSafety?.passed !== false ? 0 : 1)
+  : (['passed', 'excluded'].includes(report.result) && report.cleanupSafety?.passed !== false ? 0 : 1);
 
 export function policyCoordinate(kind, { source, state, method, platform, layout = 'npm', candidate, stopAgents }) {
   if (candidate || stopAgents) return false;
@@ -180,6 +195,7 @@ function safeRoot(output) {
 
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
+  const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
@@ -195,13 +211,14 @@ export async function matrixCell(options) {
   if (containerManager) assert(hosted && process.platform === 'linux' && state === 'configured', 'container Manager cell requires disposable hosted Linux configured state');
   if (foreignSnapshot) assert(state === 'recovery' && process.platform === 'linux', 'foreign snapshot cell requires Linux recovery state');
   if (expectedTarget) assert.match(expectedTarget, /^\d+\.\d+\.\d+$/, 'expected target must be a stable published version');
-  if (publishedLaunchd) assert(!options.candidate && source === '0.164.6' && launchdProof === 'transition', 'published launchd proof requires released 0.164.6 transition');
-  if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && source === '0.164.6' && launchdProof === 'transition')) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
+  if (publishedLaunchd) assert(!options.candidate && macTransitionSource(source, expectedTarget, launchdProof), 'published launchd proof requires stable source >=0.164.6 below expected target transition');
+  if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && macTransitionSource(source, expectedTarget, launchdProof))) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
+  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
   const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
   const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
+  report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
   const omit = exclusion({ layout, method, state });
   if (omit) {
     mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -212,7 +229,7 @@ export async function matrixCell(options) {
   }
   assert(hosted || !['daemon', 'agent'].includes(state), 'REFUSED: native services and agent stacks require a disposable hosted runner');
   const root = safeRoot(output);
-  const home = hosted && state === 'daemon' ? homedir() : join(root, 'home');
+  const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir() : join(root, 'home');
   const prefix = layout === 'installer' ? (launchdProof ? join(root, 'installer') : join(home, '.local/share/cotal')) : join(root, 'prefix');
   const project = join(root, 'project');
   for (const dir of [home, project, prefix]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -220,9 +237,10 @@ export async function matrixCell(options) {
   const env = { ...cleanEnvironment(), HOME: home, USERPROFILE: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache') };
   env.TMPDIR = join(root, 'tmp');
   mkdirSync(env.TMPDIR, { mode: 0o700 });
-  if (!(hosted && state === 'daemon')) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
+  if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
+  if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
-  report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' };
+  report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
   const cotalHome = env.COTAL_HOME ?? (process.platform === 'win32' ? join(env.LOCALAPPDATA, 'Cotal') : join(home, '.cotal'));
   const config = env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'cotal') : process.platform === 'win32' ? join(env.APPDATA, 'Cotal') : join(home, '.config/cotal');
@@ -417,7 +435,29 @@ export async function matrixCell(options) {
       const ready = join(root, 'writer-ready'), release = join(root, 'writer-release');
       releaseHolder = () => writeFileSync(release, 'release');
       writeFileSync(join(fixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
-      if (state === 'agent') {
+      if (state === 'agent' && daemonHostedManager) {
+        assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'daemon-hosted Manager requires prepared remote user-auth participant without a local Manager');
+        const space = report.participant.space;
+        assert(typeof space === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(space), 'prepared participant must name its space');
+        report.managerHost = { mode: 'daemon-hosted', space };
+        ok(await cotal('register daemon-hosted stand-in connector', ['ext', 'add', fixture]), 'hosted stand-in registration');
+        const planned = ok(await daemon('hosted Manager native install plan', ['daemon', 'install', '--dry-run', '--json']), 'hosted native plan');
+        plan = JSON.parse(planned.stdout).result;
+        assert.equal(plan.state, 'would-install', 'hosted cell must own a new native service');
+        report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
+        installedService = true;
+        report.managerHost.setup = ok(await daemon('start documented daemon-hosted Manager', hostedManagerCommand(space)), 'daemon Manager setup');
+        receipt = json(join(report.daemonHome, 'service-unit.json'));
+        assert.equal(receipt.unit, plan.unit);
+        assert.equal(receipt.unitSha256, digest(readFileSync(plan.unitPath)));
+        const setup = JSON.parse(report.managerHost.setup.stdout).result;
+        assert.equal(setup.manager?.state, 'answering');
+        assert(setup.manager.instanceId, 'daemon setup must return answering Manager identity');
+        report.managerHost.instanceId = setup.manager.instanceId;
+        report.managerHost.spawn = ok(await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', space]), 'hosted spawn');
+        report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;
+      } else if (state === 'agent') {
+        report.managerHost = { mode: 'standalone', space: 'upgrade-proof' };
         ok(await cotal('register native stand-in connector', ['ext', 'add', fixture]), 'stand-in registration');
         ok(await cotal('prepare local stand-in space', ['setup', '--destination', 'local', '--harness', 'upgrade-standin', '--project', project, '--space', 'upgrade-proof', '--no-input', '--configure-only']), 'local setup');
         stackStarted = true;
@@ -483,6 +523,7 @@ export async function matrixCell(options) {
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
     const sourceInventory = () => [join(pkg, 'package.json'), cli, join(config, 'extensions/extensions.json'), ...report.extensionsBefore.map(entry => join(config, 'extensions/node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
     if (policy) report.policyInventoryBefore = sourceInventory();
+    report.sourceInventoryBeforeAction = sourceInventory();
     report.targetBeforeAction = report.target;
     report.versionChanging = report.source !== report.target;
     if (!options.candidate && !windowsPolicy) {
@@ -583,6 +624,8 @@ export async function matrixCell(options) {
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
       }
     }
+    report.sourceInventoryAfterAction = sourceInventory();
+    if (update.exit !== 0) check('source generation unchanged', JSON.stringify(report.sourceInventoryAfterAction) === JSON.stringify(report.sourceInventoryBeforeAction), { before: report.sourceInventoryBeforeAction, after: report.sourceInventoryAfterAction });
     if (policy) {
       report.update = update;
       report.targetUpgradeAcceptance = 'not accepted: source refused or scheduler is unsupported';
@@ -653,6 +696,24 @@ export async function matrixCell(options) {
       const current = JSON.parse(ok(await call('foreign container after host upgrade', 'docker', ['inspect', container.id]), 'foreign container preservation').stdout)[0];
       check('foreign container Manager remains running and untouched', current.Id === container.id && current.Config.Labels['cotal.upgrade.cell'] === container.label && current.State.Running === true && current.State.Pid === container.pid && current.State.StartedAt === container.startedAt, { before: container, after: current.State });
     }
+    if (daemonHostedManager) {
+      let observed, current;
+      const deadline = Date.now() + 60000;
+      do {
+        observed = await daemon('observe current daemon-hosted Manager', ['daemon', 'status', '--space', report.managerHost.space, '--json']);
+        report.managerHost.statusAfter = observed;
+        if (observed.exit === 0) {
+          current = JSON.parse(observed.stdout).result.managers?.find(manager => manager.space === report.managerHost.space);
+          if (current?.state === 'answering' && current.instanceId) break;
+        }
+        await delay(1000);
+      } while (Date.now() < deadline);
+      assert(current?.state === 'answering' && current.instanceId, `current daemon-hosted Manager must answer after update: ${JSON.stringify(observed)}`);
+      report.managerHost.instanceAfter = current.instanceId;
+      const seats = await cotal('confirm consent stopped daemon-hosted seats', ['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']);
+      report.managerHost.after = seats;
+      check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade-proof-worker'), seats);
+    }
     if (installedService) {
       let active = await daemon('native status after', ['daemon', 'status', '--json']);
       const expectedDaemonVersion = desktopInventory?.version ?? expectedVersion;
@@ -704,7 +765,7 @@ export async function matrixCell(options) {
     }
     report.result = 'failed'; report.refusal = error.message;
   } finally {
-    if (compositionCleanup) {
+    if (compositionCleanup && !daemonHostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
@@ -712,12 +773,22 @@ export async function matrixCell(options) {
       try {
         const current = JSON.parse(ok(await call('verify owned container before stop', 'docker', ['inspect', container.id]), 'container cleanup ownership').stdout)[0];
         assert.equal(current.Id, container.id); assert.equal(current.Config.Labels['cotal.upgrade.cell'], container.label);
-        if (current.State.Running) report.foreignStackStop = await call('stop stock stack inside owned foreign container', 'docker', ['exec', container.id, 'sh', '-c', 'export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; cd /tmp/project; cotal down --with-agents'], 60000);
-        ok(await call('stop owned foreign supervisor and broker', 'docker', ['stop', '--time', '20', container.id], 60000), 'foreign container stop');
+        assert(current.State.Running, 'owned foreign container must remain running until stack cleanup');
+        report.foreignStackStop = await call('stop stock stack inside owned foreign container', 'docker', ['exec', container.id, 'sh', '-c', foreignStackCleanupCommand], 60000);
+        report.ownedStackCleanup = report.foreignStackStop;
+        check('owned local stack cleanup succeeds', report.foreignStackStop.exit === 0, report.foreignStackStop);
+        report.foreignContainerStop = ok(await call('stop owned foreign supervisor and broker', 'docker', ['stop', '--time', '20', container.id], 60000), 'foreign container stop');
         const stopped = JSON.parse(ok(await call('confirm owned foreign container stopped', 'docker', ['inspect', container.id]), 'container stop proof').stdout)[0];
+        assert.equal(stopped.Id, container.id);
+        assert.equal(stopped.Config.Labels['cotal.upgrade.cell'], container.label);
         assert.equal(stopped.State.Running, false);
-        report.foreignContainerCleanup = 'owned container stopped, not deleted, before reporting';
-      } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+        report.foreignContainerCleanup = { exit: report.foreignContainerStop.exit, running: stopped.State.Running, retained: true };
+        check('foreign container cleanup succeeds', report.foreignContainerCleanup.exit === 0 && !report.foreignContainerCleanup.running, report.foreignContainerCleanup);
+        ok(report.foreignStackStop, 'foreign stack cleanup');
+      } catch (error) {
+        if (!report.assertions.some(row => row.name === 'foreign container cleanup succeeds')) check('foreign container cleanup succeeds', false, error.message);
+        report.cleanupFailure = error.message; report.result = 'failed';
+      }
     }
     if (launchdObserver) {
       report.launchdProof ??= { kind: launchdProof };
@@ -731,8 +802,19 @@ export async function matrixCell(options) {
       if (holderResult.exit !== 0) report.result = 'failed';
     }
     if (stackStarted && !uncertain) {
-      try { ok(await cotal('stop owned local stack', ['down', '--yes']), 'local stack cleanup'); }
+      try {
+        report.ownedStackCleanup = await cotal('stop owned local stack', ['down', '--yes']);
+        check('owned local stack cleanup succeeds', report.ownedStackCleanup.exit === 0, report.ownedStackCleanup);
+        ok(report.ownedStackCleanup, 'local stack cleanup');
+      }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
+    if (daemonHostedManager && !uncertain && report.managerHost?.instanceId) {
+      try {
+        report.managerHost.stop = await daemon('stop owned daemon-hosted Manager', ['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']);
+        check('owned daemon-hosted Manager stop succeeds', report.managerHost.stop.exit === 0, report.managerHost.stop);
+        ok(report.managerHost.stop, 'hosted agent cleanup');
+      } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (installedService) {
       report.cleanup = 'retained for disposable runner teardown';
@@ -742,17 +824,23 @@ export async function matrixCell(options) {
           assert.equal(current.unit, receipt.unit);
           assert.equal(current.unitPath, receipt.unitPath);
           assert.equal(digest(readFileSync(current.unitPath)), current.unitSha256);
-          ok(await daemon('native uninstall', ['daemon', 'uninstall', '--yes', '--json']), 'native removal');
+          report.nativeUninstall = ok(await daemon('native uninstall', ['daemon', 'uninstall', '--yes', '--json']), 'native removal');
           assert(!existsSync(join(report.daemonHome, 'service-unit.json')) && !existsSync(plan.unitPath));
           report.cleanup = 'receipt-guarded native removal confirmed';
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
+    }
+    if (compositionCleanup && daemonHostedManager) {
+      try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped after hosted Manager removal'; }
+      catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (restoreRegistry && !uncertain && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')) {
       try { restoreRegistry(); report.registryConfig = 'restored before candidate registry stopped'; }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!(stackStarted || container) || report.ownedStackCleanup?.exit === 0) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
     report.root = root;
@@ -760,7 +848,7 @@ export async function matrixCell(options) {
     report.retentionOwner = hosted ? 'disposable runner teardown' : 'lane owner after process quiescence';
     save(join(output, `${id}.json`), report);
     writeFileSync(join(output, `${id}.sha256`), `${digest(readFileSync(join(output, `${id}.json`)))}  ${id}.json\n${digest(readFileSync(join(output, `${id}.log`)))}  ${id}.log\n`);
-    console.log(JSON.stringify({ tier: report.tier, cell: id, target: report.target, result: report.result, expectedRefusal: report.expectedRefusal, refusal: report.refusal, evidence: join(output, `${id}.json`) }));
+    console.log(JSON.stringify({ tier: report.tier, cell: id, target: report.target, result: report.result, expectedRefusal: report.expectedRefusal, refusal: report.refusal, managerHostMode: report.environment.managerHostMode, cleanupSafety: report.cleanupSafety, evidence: join(output, `${id}.json`) }));
     if (process.env.GITHUB_STEP_SUMMARY) writeFileSync(process.env.GITHUB_STEP_SUMMARY, `| Cell | Target | Result | Exact refusal |\n|---|---|---|---|\n| ${id} | ${report.target ?? 'unresolved'} | ${report.result} | ${(report.refusal ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>')} |\n`, { flag: 'a' });
   }
   return report;
