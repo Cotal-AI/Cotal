@@ -137,6 +137,15 @@ test("normal publication gap stays in Settings and does not advertise registry l
   } finally { a.dom.window.close(); }
 });
 
+test("Settings timestamps the desktop manifest check, not an absent registry check", async () => {
+  const a = await app({ installed: true, connected: true, appUpdate: { phase: "current", checkedAt: Date.now() } });
+  try {
+    await a.emit("desktop-open-settings");
+    assert.match(a.node("settings-last-check").textContent!, /Last checked today/);
+    assert.ok(!a.node("settings-last-check").textContent!.includes("Not checked yet"));
+  } finally { a.dom.window.close(); }
+});
+
 test("computer name edits save, cancel and reject invalid input before request", async () => {
   const a = await app({ installed: true });
   try {

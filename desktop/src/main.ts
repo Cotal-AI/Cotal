@@ -158,7 +158,8 @@ function renderSettings(): void {
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
   if (appUpdate) renderAppUpdate(el("settings-update-summary"), appUpdate, autoUpdates !== false);
   else text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
-  text("settings-last-check", installerMessage ?? lastChecked(updateStatus?.lastCheck));
+  const checkedAt = appUpdate.phase !== "unconfigured" ? appUpdate.checkedAt === undefined ? undefined : new Date(appUpdate.checkedAt).toISOString() : updateStatus?.lastCheck;
+  text("settings-last-check", installerMessage ?? lastChecked(checkedAt));
   text("settings-spaces", disconnectSpaces(accountProvider()).map(space => shownSpaceLabel(accountSpaces.get(space)?.label, space)).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform);
   text("update-preference-label", "Install updates automatically"); text("update-policy", appUpdate?.phase === "unconfigured" ? "This build needs the platform installer. Your automatic update preference is shared with the command line." : policy.description);
