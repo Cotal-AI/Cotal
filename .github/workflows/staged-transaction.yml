@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 env:
-  PRODUCT_SOURCE: 342676b9dd7d19b49a89eeb1d3d77164d1e12f58
+  PRODUCT_SOURCE: 8150de3250c32ae7b6793966bb7293fa1bc18b3f
   pnpm_config_workspace_concurrency: 3
 jobs:
   workspace-native:
@@ -95,15 +95,47 @@ jobs:
             ${{ runner.temp }}/candidate-A
             ${{ runner.temp }}/candidate-B
           if-no-files-found: error
-  mac:
+  native:
     needs: pack
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        method: [self, scheduler]
+        include:
+          - runner: macos-15
+            platform: mac
+            source: staged
+            method: self
+          - runner: macos-15
+            platform: mac
+            source: staged
+            method: scheduler
+          - runner: ubuntu-24.04
+            platform: linux
+            source: staged
+            method: self
+          - runner: ubuntu-24.04
+            platform: linux
+            source: staged
+            method: scheduler
+          - runner: ubuntu-24.04
+            platform: linux
+            source: public
+            method: self
+          - runner: ubuntu-24.04
+            platform: linux
+            source: public
+            method: scheduler
+          - runner: macos-15
+            platform: mac
+            source: public
+            method: self
+          - runner: macos-15
+            platform: mac
+            source: public
+            method: scheduler
     steps:
       - uses: actions/checkout@v6
         with:
@@ -117,19 +149,31 @@ jobs:
         with:
           name: staged-candidates
           path: ${{ runner.temp }}/candidates
-      - name: Real candidate A to B through the existing matrix
+      - name: Prepare disposable Linux user manager
+        if: matrix.platform == 'linux'
         shell: bash
         run: |
-          test "$(uname -m)" = arm64
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Real native update through the existing matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.platform }}' = mac ]; then test "$(uname -m)" = arm64; fi
           args=()
-          if [ '${{ matrix.method }}' = scheduler ]; then args+=(--launchd-proof transition); fi
-          node scripts/automatic-update-platform-baseline.mjs --source-candidate "$RUNNER_TEMP/candidates/candidate-A" --candidate "$RUNNER_TEMP/candidates/candidate-B" --direction B --source 0.164.9 --expected-target 0.164.10 --layout npm --state daemon --method '${{ matrix.method }}' "${args[@]}" --output "$RUNNER_TEMP/staged-evidence"
+          if [ '${{ matrix.source }}' = staged ]; then args+=(--source-candidate "$RUNNER_TEMP/candidates/candidate-A"); fi
+          if [ '${{ matrix.platform }}' = mac ] && [ '${{ matrix.method }}' = scheduler ]; then args+=(--launchd-proof transition); fi
+          node scripts/automatic-update-platform-baseline.mjs --candidate "$RUNNER_TEMP/candidates/candidate-B" --direction B --source 0.164.9 --expected-target 0.164.10 --layout npm --state daemon --method '${{ matrix.method }}' "${args[@]}" --output "$RUNNER_TEMP/staged-evidence"
       - name: Read final native ownership diagnostics
-        if: always()
+        if: always() && matrix.platform == 'mac'
         run: node scripts/staged-native-diagnostics.mjs "$RUNNER_TEMP/staged-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: staged-mac-${{ matrix.method }}
+          name: staged-${{ matrix.platform }}-${{ matrix.source }}-${{ matrix.method }}
           path: ${{ runner.temp }}/staged-evidence
           if-no-files-found: error
