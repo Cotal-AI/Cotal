@@ -1,3 +1,4 @@
+!define MUI_CUSTOMFUNCTION_ABORT CotalSetupAbort
 !define COTAL_HOOK_DIR "${__FILEDIR__}"
 
 Var CotalPrepared
@@ -25,7 +26,7 @@ Function CotalSetupRefused
   Quit
 FunctionEnd
 
-Function .onUserAbort
+Function CotalSetupAbort
   ${If} $CotalPrepared = 1
   ${AndIf} $CotalCopying <> 1
     nsExec::ExecToLog /TIMEOUT=240000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
@@ -58,6 +59,7 @@ FunctionEnd
     Quit
   ${EndIf}
   ${If} $CotalMessage == "finish$\r$\n"
+  ${OrIf} $CotalMessage == "finish$\n"
     nsExec::ExecToLog /TIMEOUT=120000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
     ${If} $CotalCode <> 0
@@ -66,6 +68,7 @@ FunctionEnd
     StrCpy $CotalMessage "none"
   ${EndIf}
   ${If} $CotalMessage == "recover$\r$\n"
+  ${OrIf} $CotalMessage == "recover$\n"
     StrCpy $CotalPrepared 1
   ${Else}
     cotal_prepare_retry:

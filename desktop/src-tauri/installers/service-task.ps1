@@ -73,6 +73,12 @@ try {
   }
   ConvertTo-Json -InputObject @{ installed=$true; enabled=[bool]$task.Enabled; instances=[int]$task.GetInstances(0).Count; receiptDigest=$owned.receiptDigest; unit=$name } -Compress
 } catch {
-  [Console]::Error.WriteLine($_.Exception.Message)
+  $message=$_.Exception.Message -replace '[\r\n\x00-\x1f]',' '
+  $resultDirectory=Join-Path $env:LOCALAPPDATA 'CotalSetup'
+  $null=New-Item -ItemType Directory -Path $resultDirectory -Force
+  $result=@{schema=1;outcome='refused';code=21;message=$message;activeAgents=0;fromVersion=$null;toVersion=$env:COTAL_SETUP_VERSION;completedAt=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText((Join-Path $resultDirectory 'result.json'),$result,[Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText((Join-Path $resultDirectory 'message.txt'),$message+"`r`n")
+  [Console]::Error.WriteLine($message)
   exit 21
 }
