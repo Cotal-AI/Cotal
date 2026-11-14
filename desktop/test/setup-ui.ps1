@@ -47,7 +47,7 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
       if($buttons[0].Current.Name -eq 'Finish') {
         foreach($check in @($elements | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and $_.Current.Name -match 'Run Cotal'})) { $toggle=$check.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern); if($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On){$toggle.Toggle()} }
       }
-      Click-Control $buttons[0] $window ($names -contains 'Choose Start Menu Folder')
+      Click-Control $buttons[0] $window (($names -contains 'Choose Start Menu Folder') -or $buttons[0].Current.Name -eq 'Finish')
     }
   }
   Start-Sleep -Milliseconds 400
