@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { globalConfigDir } from "@cotal-ai/core";
 import { SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
@@ -176,16 +177,18 @@ export function cliPackageRoot(): string {
   }
 }
 
-/**
- * This `cotal-ai` binary's published version — the nearest `package.json` above the {@link entryScript}
- * (`cotal-ai` published, or `bin/package.json` in a dev `tsx bin/cotal.ts` run). Surfaced by
- * `cotal version` and `cotal status`. Fails loud if unreadable.
- */
+/** Capture the loaded implementation's release before canonical metadata can change. */
+const loadedCliVersion = (() => {
+  const root = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const meta = JSON.parse(readFileSync(root, "utf8")) as { name?: unknown; version?: unknown };
+  if (meta.name !== "@cotal-ai/cli" || typeof meta.version !== "string" || !meta.version)
+    throw new Error(`cannot determine the loaded cotal version: ${root}`);
+  return meta.version;
+})();
+
+/** This process's loaded release, independent of the mutable logical installation manifest. */
 export function cliVersion(): string {
-  const root = cliPackageRoot();
-  const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string }).version;
-  if (typeof version === "string" && version) return version;
-  throw new Error(`cannot determine the cotal version: ${join(root, "package.json")} has no version`);
+  return loadedCliVersion;
 }
 
 /**

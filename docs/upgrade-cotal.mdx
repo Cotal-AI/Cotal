@@ -18,6 +18,8 @@ A descriptor bound to this package's name, version and bootstrap hash selects a 
 package only after its inventory verifies. A missing or differently bound descriptor runs
 the installed tree in place and writes nothing. An invalid matching descriptor refuses
 with reinstall guidance rather than selecting another generation.
+A running command reports the release of its loaded implementation, even if the canonical
+package manifest changes while it runs.
 
 This entry and generation-store support does not change `cotal update --self` yet.
 The updater still uses its existing installation and recovery path.
