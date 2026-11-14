@@ -149,7 +149,16 @@ performs guarded interrupted-update recovery or reports the refusal in its log a
 A manual update to 0.164.0 through 0.164.8 with the machine service installed waited for two
 120-second readiness checks, rolled back and paused automatic updates. On Linux and macOS,
 `cotal update --self` from any of those versions to 0.164.9 or later completes without extra steps.
-On Windows, the fix ships in the release after 0.164.9.
+On Windows, the same holds from 0.164.10.
+
+A manual `cotal update --self` from 0.164.10 with the machine service installed installs the new
+release and then reports a failure that is wrong. The command waits for the daemon to answer with
+0.164.10 after it has started the new release. On Linux it ends after 120 seconds with
+`the updated daemon did not restore its hosted Managers before the deadline` and exit code 2. On
+macOS it waits the same way. On Windows it ends with `Outcome unconfirmed` and exit code 3. In
+each case the new release is installed, the service runs it and no recovery record is left.
+`cotal daemon status` shows the new version, and nothing needs repair. Scheduled updates from
+0.164.10 are not affected. The fix is in 0.164.11.
 
 A paused installation on one of those versions cannot fetch the fix with its own
 `cotal update --self`. The old updater attempts restoration before it looks for a newer release
