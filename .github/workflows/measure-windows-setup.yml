@@ -1,0 +1,28 @@
+name: Measure Windows setup service preservation
+on:
+  push:
+    branches: [measure/win-setup-keeps-service]
+permissions:
+  contents: read
+jobs:
+  published-replacement:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Observe published 0.164.6 to 0.164.7 replacement
+        env:
+          MEASURE_RELEASE_TOKEN: ${{ github.token }}
+          DO_NOT_TRACK: '1'
+        run: node .github/scripts/measure-windows-setup.mjs
+      - name: Upload raw observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup-published-replacement
+          path: ${{ runner.temp }}/windows-setup-observations/
+          if-no-files-found: error
+          retention-days: 14
