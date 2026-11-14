@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $diagnostics = [System.Collections.Generic.List[object]]::new()
+$candidates = @()
 try {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'Native Windows desktop required.' }
     $expected = (Get-Item -LiteralPath $Binary).FullName
@@ -80,6 +81,11 @@ public static class LifecycleWindows {
             })
         }
     }
+    function Process-Candidates {
+        @(Owned-Processes | ForEach-Object {
+            [ordered]@{ pid = $_.Id; birth = $_.StartTime.ToUniversalTime().ToString('o'); path = $_.Path }
+        })
+    }
     function Assert-Owner {
         $matches = @(Owned-Processes | Where-Object { $_.Id -eq $script:ownerPid })
         if ($matches.Count -ne 1) { throw 'The selected PID no longer owns the exact expected binary.' }
@@ -131,6 +137,8 @@ public static class LifecycleWindows {
         if ($icons.Count -gt 1) { throw 'Multiple exact Cotal tray icons found. Refusing an ambiguous click.' }
         if ($icons.Count -eq 1) { return $icons[0] }
     }
+    $candidates = @(Process-Candidates)
+    $diagnostics.Add([ordered]@{ candidates = @($candidates) })
     if ($Action -eq 'login-entry') {
         # Open read-only and request only the exact Cotal value. Do not enumerate other login entries.
         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $false)
@@ -303,7 +311,7 @@ public static class LifecycleWindows {
     if ($AppPid) { $selected = @($selected | Where-Object { $_.pid -eq $AppPid }) }
     $reportedPid = if ($Action -eq 'login-entry') { 0 } elseif ($Action -in @('quit', 'settings', 'close-window', 'connected-view', 'settings-back', 'disable-login')) { $script:ownerPid } elseif ($selected.Count -eq 1) { $selected[0].pid } else { 0 }
     $visible = @($summary.windows | Where-Object { $_.pid -eq $reportedPid -and $_.visible -and $_.title -ceq 'Cotal' }).Count -gt 0
-    $output = [ordered]@{ ok = $true; action = $Action; pid = $reportedPid; visible = $visible; result = $result; diagnostics = @($diagnostics.ToArray()) }
+    $output = [ordered]@{ ok = $true; action = $Action; pid = $reportedPid; visible = $visible; candidates = @($candidates); result = $result; diagnostics = @($diagnostics.ToArray()) }
     if ($Action -in @('connected-view', 'settings-back')) { $output['title'] = $result.title; $output['label'] = $result.label }
     if ($Action -eq 'disable-login') { $output['checked'] = $false; $output['present'] = $false }
     if ($Action -eq 'login-entry') {
@@ -312,7 +320,7 @@ public static class LifecycleWindows {
     }
     $output | ConvertTo-Json -Depth 10 -Compress
 } catch {
-    [ordered]@{ ok = $false; action = $Action; error = $_.Exception.Message; diagnostics = @($diagnostics.ToArray()) } | ConvertTo-Json -Depth 10 -Compress
+    [ordered]@{ ok = $false; action = $Action; error = $_.Exception.Message; candidates = @($candidates); diagnostics = @($diagnostics.ToArray()) } | ConvertTo-Json -Depth 10 -Compress
     [Console]::Error.WriteLine('Windows lifecycle helper failed: ' + $_.Exception.Message)
     exit 1
 }
