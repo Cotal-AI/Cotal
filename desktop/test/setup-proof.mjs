@@ -66,7 +66,7 @@ function compare(before, after) {
   check('Every shipped application file is unchanged on refusal', shipped.every(row => all.get(row.file) === row.sha256));
   report.mutableChanges = changed.filter(row => !shipped.includes(row)).map(row => row.file);
 }
-let fixture, seat, locker;
+let fixture, seat, locker, app;
 let serviceInstalled = false;
 try {
   assert.equal(existsSync(root), false, 'Each proof cell requires a fresh runner');
@@ -97,12 +97,25 @@ try {
     const native = JSON.parse((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', taskScript, '-Action', 'inspect'])).stdout);
     check('Disabled task remains empty under explicit launch challenge', native.enabled === false && native.instances === 0);
     // A real interrupted copy has overwritten the manifest but not completed runtime publication.
-    writeFileSync(join(runtime, 'package.json'), '{"name":"cotal-ai","version":"0.164.9","type":"module"}');
+    const handover = JSON.parse(readFileSync(join(setupHome, 'service-update.json')));
+    handover.targetVersion = '0.164.8';
+    writeFileSync(join(setupHome, 'service-update.json'), JSON.stringify(handover));
+    writeFileSync(join(runtime, 'package.json'), '{"name":"cotal-ai","version":"0.164.8","type":"module"}');
     if (existsSync(join(repo, 'desktop/src-tauri/target/release/cotal-desktop.exe'))) {
       const guarded = await run(join(repo, 'desktop/src-tauri/target/release/cotal-desktop.exe'), ['--daemon']);
       check('New native launcher refuses unfinished handover before Node launch', guarded.code !== 0);
     }
     report.interrupted = true;
+  }
+  if (cell === 'app-open' || cell === 'app-tray') {
+    app = spawn(join(root, 'cotal-desktop.exe'), [], { env, stdio: 'ignore', windowsHide: false });
+    await delay(8000);
+    check('Published app remains open while setup starts', app.pid && app.exitCode === null);
+    if (cell === 'app-tray') {
+      await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$p=Get-Process -Id ${app.pid} -ErrorAction Stop; if(!$p.CloseMainWindow()){throw 'Could not close owned app window to tray'}`]);
+      await delay(1000);
+      check('Owned app stays alive in tray', app.exitCode === null);
+    }
   }
   if (cell === 'locker') {
     locker = spawn(node, ['-e', 'setInterval(()=>{},1000)'], { env, windowsHide: true, stdio: 'ignore' });
@@ -131,7 +144,7 @@ try {
     check('Actual UI Automation driver completed', result.code === 0);
     report.ui = JSON.parse(result.stdout);
     result.code = report.ui.exitCode;
-  } else result = await run(candidate, ['/S'], 300_000);
+  } else result = await run(candidate, ['/S'], 420_000);
   report.setup = result;
   report.setupElapsedMs = Date.now() - start;
   const diagnostic = JSON.parse(readFileSync(join(setupHome, 'result.json')));
@@ -162,6 +175,7 @@ try {
 } catch (error) { report.failure = error.stack; process.exitCode = 1; }
 finally {
   if (seat) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
+  if (app?.exitCode === null) { const ended = new Promise(resolve => app.once('exit', resolve)); app.kill(); await ended; }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
   if (serviceInstalled) { const result = await daemon('uninstall', '--yes'); report.cleanup = result; if (result.code !== 0) process.exitCode = 1; }
   await fixture?.close();

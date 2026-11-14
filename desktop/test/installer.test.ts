@@ -14,6 +14,7 @@ test('pinned installer guard precedes the old uninstaller without changing updat
   assert.equal((source.match(/StrCpy \$UpdateMode 1/g) ?? []).length, (upstream.match(/StrCpy \$UpdateMode 1/g) ?? []).length);
   const pre = source.indexOf('!insertmacro NSIS_HOOK_PREINSTALL');
   assert.ok(pre < source.indexOf('!insertmacro CheckIfAppIsRunning', pre));
+  assert.ok(source.indexOf('StrCpy $CotalCopying 1') > source.indexOf('!insertmacro CheckIfAppIsRunning', pre));
   assert.ok(pre < source.indexOf('File "${MAINBINARYSRCPATH}"'));
 });
 test('setup owns task suppression without task termination and persists caller-readable results', () => {
@@ -28,6 +29,18 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(task, /GetInstances\(0\)\.Count/);
   assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));
   assert.ok(helper.indexOf("task('disable')") < helper.indexOf("await request('daemon-stop', true)"));
+  assert.match(helper, /rmSync\(stateFile\);\n    outcome\(23/);
+  assert.doesNotMatch(helper, /outcome\(0,.*'prepared'/);
+  const app = readFileSync(new URL('../src/app.rs', base), 'utf8');
+  assert.ok(app.indexOf('setup_state::interrupted') < app.indexOf('.sidecar(NODE_SIDECAR)'));
+  assert.match(app, /SETUP_INTERRUPTED/);
+  const roots = helper.indexOf('// GUI launchers and their bounded bridge children');
+  assert.ok(roots < helper.indexOf('  let changed;', roots));
+  assert.match(task, /\$state.targetVersion=\$env:COTAL_SETUP_VERSION/);
+  assert.match(task, /foreign.*true/);
+  assert.match(hooks, /\$CotalCode = 23/);
+  assert.match(hooks, /MB_ICONINFORMATION/);
+  assert.match(hooks, /\$CotalFresh/);
   assert.match(helper, /'started-unconfirmed'/);
   for (const field of ['schema', 'outcome', 'code', 'message', 'activeAgents', 'fromVersion', 'toVersion', 'completedAt']) assert.ok(helper.includes(field));
 });

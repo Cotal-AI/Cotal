@@ -78,13 +78,13 @@ function census(servicePid) {
   const service = rows.find(row => row.pid === servicePid);
   const launcher = service && rows.find(row => row.pid === service.parentPid && row.path.toLowerCase() === join(root, 'cotal-desktop.exe').toLowerCase());
   const allowed = new Set([process.pid, servicePid, launcher?.pid]);
+  // GUI launchers and their bounded bridge children belong to the app tree.
+  for (const row of rows) if (row.path.toLowerCase() === join(root, 'cotal-desktop.exe').toLowerCase()) allowed.add(row.pid);
   let changed;
   do {
     changed = false;
     for (const row of rows) if (allowed.has(row.parentPid) && !allowed.has(row.pid)) { allowed.add(row.pid); changed = true; }
   } while (changed);
-  // GUI launchers are closed by the template only after service preparation succeeds.
-  for (const row of rows) if (row.path.toLowerCase() === join(root, 'cotal-desktop.exe').toLowerCase()) allowed.add(row.pid);
   const foreign = rows.filter(row => !allowed.has(row.pid));
   if (foreign.length) throw new Error(`Close programs using this installation before retrying: ${foreign.map(row => `${row.name} (${row.pid})`).join(', ')}. No files were replaced.`);
 }
@@ -124,11 +124,12 @@ async function finish(rollback = false) {
       }
       await delay(500);
     } while (Date.now() < deadline);
+    rmSync(stateFile);
     outcome(23, `Cotal ${version} is installed and service startup was requested, but readiness was not confirmed within 60 seconds. Check cotal daemon status.`, 'started-unconfirmed');
     return;
   }
   rmSync(stateFile);
-  outcome(0, state.installed ? `Cotal ${version} is installed. The background service remains stopped.` : `Cotal ${version} is installed. No background service was installed.`);
+  outcome(0, state.foreign ? `Cotal ${version} is installed. The service from another installation was left unchanged.` : state.installed ? `Cotal ${version} is installed. The background service remains stopped.` : `Cotal ${version} is installed. No background service was installed.`);
 }
 try {
   if (mode === 'finish' || mode === 'abort') {
@@ -138,7 +139,7 @@ try {
     if (existsSync(stateFile)) throw new Error('An interrupted setup must be recovered by the installer before loading installed commands.');
     const native = task('inspect');
     const oldVersion = existsSync(join(root, 'runtime', 'package.json')) ? JSON.parse(readFileSync(join(root, 'runtime', 'package.json'), 'utf8')).version : null;
-    state = { schema: 1, installPath: root, targetVersion, oldVersion, installed: native.installed, receiptDigest: native.receiptDigest ?? null, taskEnabled: native.enabled ?? false, running: false, phase: 'preparing' };
+    state = { schema: 1, installPath: root, targetVersion, oldVersion, installed: native.installed, foreign: native.foreign ?? false, receiptDigest: native.receiptDigest ?? null, taskEnabled: native.enabled ?? false, running: false, phase: 'preparing' };
     if (native.installed) {
       await load();
 
@@ -173,7 +174,7 @@ try {
     } else census();
     state.phase = 'copying';
     write(stateFile, state);
-    outcome(0, 'Background service prepared. Setup can replace the files.', 'prepared');
+    process.stdout.write('Background service prepared. Setup can replace the files.\n');
   }
 } catch (error) {
   const active = error.code === 'SEATS_ACTIVE' ? Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? 1) : 0;

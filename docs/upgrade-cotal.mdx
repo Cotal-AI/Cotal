@@ -87,8 +87,12 @@ were updated and startup was requested, not that the update failed.
 
 The latest result is in `%LOCALAPPDATA%\CotalSetup\result.json`; its `message` is also written
 as one line in `message.txt` beside it. An interrupted replacement keeps the task disabled.
-Run the same setup program again to finish it. Start service refuses an unfinished replacement
-rather than loading mixed files. Early desktop services before 0.157.8 have no graceful stop
+Run a current setup program again to finish it. The app shows that setup was interrupted and
+links to the installer without offering Start service. A newer setup can replace a partial
+older update after verifying that the owned task is disabled and its old process has stopped.
+A verified update whose startup was not confirmed leaves no incomplete-copy handover.
+A service belonging to a separate command-line installation is left unchanged.
+Early desktop services before 0.157.8 have no graceful stop
 request. After stopping their agents, use their bundled CLI's `cotal daemon uninstall --yes`,
 then run setup again and install the service if needed.
 
