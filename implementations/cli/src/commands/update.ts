@@ -1208,7 +1208,6 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       writeUpdateRecovery({ ...recovery, phase: "restoring" });
       if (execution) {
         execution.restore();
-        execution.verify(current);
       } else {
         await checkReleaseArchives(current, rt);
         const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
@@ -1217,6 +1216,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
         rt.verifyGlobalEntry(root, current);
       }
       snapshot.restore();
+      if (execution) execution.verify(current);
       await releaseAdmission?.();
       releaseAdmission = await rt.prepareReplacement?.();
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");
