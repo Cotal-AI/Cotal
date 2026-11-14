@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fchmodSync, lstatSync, openSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { closeSync, constants, fchmodSync, lstatSync, openSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeSecretFileAtomic, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { lockExclusiveNb } from "@cotal-ai/seat";
@@ -119,6 +119,20 @@ export function renderWindowsUpdateTask(sid: string, argv: readonly string[], ho
   if (bytes.length > 64 * 1024) throw new Error("Windows update task source exceeds its byte limit");
   return bytes;
 }
+/** Bind the helper's npm destination to the invoked global package, never the service environment. */
+export function windowsAutomaticPrefix(entry: string): string {
+  const canonical = realpathSync(entry);
+  const root = dirname(dirname(canonical));
+  const modules = dirname(root);
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const declared = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
+  if (basename(root) !== "cotal-ai" || basename(modules) !== "node_modules" || pkg.name !== "cotal-ai"
+    || typeof declared !== "string" || realpathSync(join(root, declared)) !== canonical
+    || canonical !== realpathSync(join(root, "dist", "cotal.js")))
+    throw new Error("Windows automatic update cannot identify its installed global CLI prefix");
+  return realpathSync(dirname(modules));
+}
+
 export function startWindowsUpdate(failures: number): void {
   if (process.platform !== "win32" || daemonStartedByOwnedService(daemonPaths()).state !== "owned") throw new Error("Windows automatic update does not own its native daemon service");
   if (!["absent", "completed", "failed"].includes(cleanWindowsUpdate())) throw new Error(WINDOWS_INTERRUPTED_UPDATE);
@@ -127,7 +141,8 @@ export function startWindowsUpdate(failures: number): void {
   const source = join(homeCotalDir(), `${name}.xml`), bytes = renderWindowsUpdateTask(win32ProcessBinding().userSid(), argv, homeCotalDir());
   writeSecretFileCreateOnly(source, bytes);
   const keys = ["PATH", "HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "TMPDIR", "npm_config_prefix", "npm_config_registry", "DO_NOT_TRACK", "COTAL_TELEMETRY", "COTAL_SKIP_CONNECTOR_SEED"];
-  const env = Object.fromEntries(keys.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]!]));
+  const env = Object.fromEntries(keys.filter(key => key !== "npm_config_prefix" && process.env[key] !== undefined).map(key => [key, process.env[key]!]));
+  env.npm_config_prefix = windowsAutomaticPrefix(fileURLToPath(new URL("../cotal.js", import.meta.url)));
   const r: WindowsUpdateReceipt = { v: 1, nonce, name, source, argv, env, sha256: digest(bytes), failures, bootId: win32ProcessBinding().bootId(), revoked: false };
   save(r); assertSource(r);
   const fd = gate(r); closeSync(fd);

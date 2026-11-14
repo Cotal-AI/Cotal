@@ -178,6 +178,8 @@ This is a deferred update, not confirmation that the new version was installed. 
 attempt retries after one hour without consuming the version's failure budget. You can also run
 `cotal update --self` again later. Other npm resolution errors remain failures.
 
+The helper binds npm's destination to the verified global CLI package that owns the daemon,
+not the scheduled task's inherited npm prefix. An unknown package layout refuses before launch.
 On Windows, a manual update retains the old daemon's authenticated process lifetime. After that
 process exits, it starts the unchanged owned scheduled task once if the task is enabled and has
 no running instance. It never enables a disabled task or reinstalls the service. The same
