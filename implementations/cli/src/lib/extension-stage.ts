@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
@@ -78,7 +78,7 @@ export function stageExtensions(): ExtensionStage {
   const config = globalConfigDir(), root = join(config, "extensions");
   if (checkedRecord()) throw new Error("an unfinished extension promotion must be recovered before staging");
   mkdirSync(config, { recursive: true, mode: 0o700 });
-  protectedLocalDirectory(config);
+  protectedLocalDirectory(realpathSync(config));
   const stage = mkdtempSync(join(config, ".extensions.stage-"));
   const stageConfig = join(stage, "config"), prefix = join(stageConfig, "cotal", "extensions");
   mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });

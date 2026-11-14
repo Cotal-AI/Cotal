@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { recoverExtensionPromotion, assertStageVerifier } from "../src/lib/extension-stage.js";
+import { recoverExtensionPromotion, assertStageVerifier, stageExtensions } from "../src/lib/extension-stage.js";
 
 const originalConfig = process.env.XDG_CONFIG_HOME;
 const roots: string[] = [];
@@ -11,6 +11,23 @@ const forbidden = mkdtempSync(join(tmpdir(), "promotion-forged-"));
 roots.push(forbidden);
 assert.throws(() => assertStageVerifier(process.ppid, forbidden, "forged"), /no live prefix writer/);
 console.log("forged staged verifier has no mutation authority");
+
+if (process.platform !== "win32") {
+  const root = mkdtempSync(join(tmpdir(), "promotion-linked-"));
+  roots.push(root);
+  const physical = join(root, "physical"), linked = join(root, "linked");
+  mkdirSync(physical, { mode: 0o700 });
+  symlinkSync(physical, linked);
+  process.env.XDG_CONFIG_HOME = linked;
+  const stage = stageExtensions();
+  try {
+    writeFileSync(join(stage.prefix, "whole"), "new");
+    stage.promote();
+    assert.equal(readFileSync(join(physical, "cotal", "extensions", "whole"), "utf8"), "new");
+    assert(!existsSync(join(linked, "cotal", ".extensions-promotion.json")));
+  } finally { stage.discard(); }
+  console.log("promotion through a private symlinked config root preserves its physical prefix");
+}
 
 for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   const root = mkdtempSync(join(tmpdir(), "promotion-state-"));
