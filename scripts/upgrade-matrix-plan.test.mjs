@@ -104,13 +104,15 @@ const requiredIDs = [
   "linux-installer-configured-rerun", "linux-installer-daemon-scheduler",
   "darwin-installer-configured-rerun", "darwin-installer-daemon-scheduler",
   "linux-npm-agent-stop-consent", "linux-npm-standalone-stop-consent", "linux-npm-foreign-config-recovery", "linux-npm-container-manager",
+  "linux-npm-daemon-self", "darwin-npm-daemon-self", "win32-npm-daemon-self",
+  "linux-installer-daemon-self", "darwin-installer-daemon-self",
 ];
-test("bounded enumeration is deterministic: 9 npm + 4 POSIX + 2 consent + 2 Linux isolation", () => {
+test("bounded enumeration is deterministic: 17 existing + 5 manual service self-updates", () => {
   const plan = dispatch();
   const cells = boundedCells(plan);
   assert.deepEqual(cells.filter(c => c.required).map(c => c.id), requiredIDs);
   assert.deepEqual(boundedCells(plan), cells);
-  assert.equal(cells.length, 19);
+  assert.equal(cells.length, 25);
   assert.equal(new Set(cells.map(c => c.id)).size, cells.length);
   for (const cell of cells) {
     assert.equal(cell.sourceSHA, sourceSHA);
@@ -119,7 +121,7 @@ test("bounded enumeration is deterministic: 9 npm + 4 POSIX + 2 consent + 2 Linu
     assert.equal(cell.runner, { linux: "ubuntu-24.04", darwin: "macos-15", win32: "windows-2022" }[cell.platform]);
     if (cell.required) for (const assertion of ["status-healthy", "no-recovery", "no-manual-intervention"]) assert.ok(cell.requiredAssertions.includes(assertion));
     if (!cell.required) assert.ok(cell.reason);
-    if (cell.channel === "installer") { assert.equal(cell.targetSource, "https://get.cotal.ai"); assert.equal(cell.installerOverride, false); }
+    if (cell.channel === "installer" && cell.scenario !== "daemon-self") { assert.equal(cell.targetSource, "https://get.cotal.ai"); assert.equal(cell.installerOverride, false); }
   }
   assert.deepEqual(jobsMatrix(cells).include.map(c => c.id), requiredIDs);
   assert.equal(cells.find(c => c.id === "win32-npm-daemon-scheduler").required, false);
@@ -127,7 +129,7 @@ test("bounded enumeration is deterministic: 9 npm + 4 POSIX + 2 consent + 2 Linu
 
 test("candidate B uses packed target and receipt-pinned installer artifact, candidate A optional", () => {
   const cells = boundedCells(dispatch({ phase: "candidate" }));
-  assert.equal(cells.filter(c => c.required).length, 17);
+  assert.equal(cells.filter(c => c.required).length, 22);
   assert.ok(cells.filter(c => c.required && c.channel === "npm").every(c => c.targetSource === "packed-target"));
   const installers = cells.filter(c => c.channel === "installer" && c.scenario === "configured-rerun");
   const schedulers = cells.filter(c => c.required && c.scenario === "daemon-scheduler");
@@ -137,6 +139,40 @@ test("candidate B uses packed target and receipt-pinned installer artifact, cand
   assert.ok(schedulers.every(c => c.required && !c.installerReceiptRequired && !c.requiredAssertions.includes("installer-source-receipt")));
   assert.equal(verifyResults(cells, goodResults(cells)).acceptance, true);
   assert.equal(cells.find(c => c.scenario === "candidate-a").required, false);
+});
+
+test("automatic phases include manual service self-updates with self target provenance and strict evidence", () => {
+  for (const [event, metadata, phase, targetSource] of [[pr(), context, "candidate", "packed-target"], [run(), publishContext, "published", "npm-exact"]]) {
+    const plan = planRelease(event, metadata);
+    assert.equal(plan.phase, phase);
+    assert.deepEqual(plan.expectedIDs, requiredIDs);
+    assert.deepEqual(plan.matrix.include.map(c => c.id), requiredIDs);
+    const selfCells = plan.cells.filter(c => c.scenario === "daemon-self" && c.required);
+    assert.deepEqual(selfCells.map(c => c.id), requiredIDs.slice(-5));
+    assert.equal(plan.cells.filter(c => c.required).length, 22);
+    const exclusions = plan.cells.filter(c => !c.required);
+    assert.deepEqual(exclusions.map(c => c.id), ["win32-installer-daemon-self", "win32-npm-daemon-scheduler", "linux-npm-candidate-a"]);
+    assert.match(exclusions[0].reason, /no public shell installer route/);
+    assert.deepEqual(exclusions[0].requiredAssertions, []);
+    assert.equal(verifyResults(plan.cells, [...goodResults(plan.cells), { id: exclusions[0].id, status: "passed" }]).acceptance, false);
+    for (const cell of selfCells) {
+      assert.equal(cell.targetSource, targetSource);
+      assert.equal(cell.installerSource, null);
+      assert.equal(cell.installerReceiptRequired, false);
+      assert.equal(cell.installerOverride, false);
+      assert.ok(!cell.requiredAssertions.includes("installer-source-receipt"));
+      for (const assertion of ["native-service-manual", "independent-final-state"]) {
+        assert.ok(cell.requiredAssertions.includes(assertion));
+        const results = goodResults(plan.cells);
+        delete results.find(r => r.id === cell.id).assertions[assertion];
+        const report = verifyResults(plan.cells, results);
+        assert.equal(report.acceptance, false);
+        assert.ok(report.failures.includes(`${cell.id}: missing required assertions: ${assertion}`));
+      }
+      assert.equal(verifyResults(plan.cells, goodResults(plan.cells).filter(r => r.id !== cell.id)).acceptance, false);
+    }
+    assert.equal(verifyResults(plan.cells, goodResults(plan.cells)).upgradeAcceptance, true);
+  }
 });
 
 test("service baseline target must be newer or explicitly excluded, never same-version upgrade green", () => {
@@ -151,8 +187,8 @@ test("aggregator maps all required assertions, missing cells/assertions and fail
   const results = goodResults(cells);
   const report = verifyResults(cells, results);
   assert.equal(report.acceptance, true);
-  assert.equal(report.passed.length, 17);
-  assert.equal(report.excluded.length, 2);
+  assert.equal(report.passed.length, 22);
+  assert.equal(report.excluded.length, 3);
   assert.equal(verifyResults(cells, results.slice(1)).acceptance, false);
   const missing = structuredClone(results);
   delete missing[0].assertions["target-version"];
@@ -169,7 +205,7 @@ test("aggregator maps all required assertions, missing cells/assertions and fail
 test("workflow wrapper accepts snake-case dispatch fields and exposes exact expected IDs", () => {
   const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase: "candidate", source_sha: sourceSHA, target_version: "0.164.7", profile: "bounded" } }, { sourceVersion: "0.164.6" });
   assert.deepEqual(plan.expectedIDs, requiredIDs);
-  assert.equal(plan.matrix.include.length, 17);
+  assert.equal(plan.matrix.include.length, 22);
   const results = goodResults(plan.cells);
   assert.equal(verifyResults(plan.cells, results).acceptance, true);
   delete results.find(r => r.id === "linux-installer-configured-rerun").assertions["installer-source-receipt"];
@@ -179,7 +215,7 @@ test("workflow wrapper accepts snake-case dispatch fields and exposes exact expe
 test("newer minor releases are valid and Linux isolation cells require their own evidence in both phases", () => {
   for (const phase of ["candidate", "published"]) {
     const cells = boundedCells(dispatch({ phase, targetVersion: "0.165.0" }));
-    assert.equal(cells.filter(c => c.required).length, 17);
+    assert.equal(cells.filter(c => c.required).length, 22);
     for (const [id, assertion] of [["linux-npm-foreign-config-recovery", "foreign-snapshot-retained"], ["linux-npm-container-manager", "container-manager-preserved"]]) {
       const cell = cells.find(c => c.id === id);
       assert.equal(cell.sourceVersion, "0.164.6");
