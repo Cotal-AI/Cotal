@@ -32,7 +32,7 @@ const composed: Command = { ...command, async run(args) {
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   await update(args, { ...updateRuntime,
-    ...(process.platform === "linux" || process.platform === "darwin" ? {
+    ...(logicalExecutionEntry() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       prepareExecution: (version: string, root: string) => prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; }),
