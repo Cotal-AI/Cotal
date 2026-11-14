@@ -146,7 +146,7 @@ test('symlink files, parent escapes, unsafe files and create-only collisions are
   assert.equal(f.children.size, 0);
 });
 
-test('macOS and Windows use public status without running service commands; missing runners explicit', async () => {
+test('macOS and Windows without native plan still collect public status; missing runners explicit', async () => {
   for (const platform of ['darwin', 'win32']) {
     const f = fixture();
     const report = await captureDaemonDiagnostics({ ...f.options, platform });
@@ -159,4 +159,63 @@ test('macOS and Windows use public status without running service commands; miss
   const result = await captureDaemonDiagnostics({ ...f.options, run: undefined });
   assert.equal(row(result, 'daemon-status').state, 'error');
   assert.equal(row(result, 'journal').state, 'error');
+});
+
+test('macOS supervisor adapters archive only scoped native state and disabled flag', async () => {
+  for (const disabled of [false, true]) {
+    const f = fixture(), unit = 'ai.cotal.daemon';
+    const calls = [];
+    const report = await captureDaemonDiagnostics({ ...f.options, platform: 'darwin', plan: { unit }, run: (file, args, bounds) => {
+      calls.push({ file, args });
+      const text = args[0] === 'print' ? 'state = running\npid = 123\nlast exit code = 0\narguments = DO_NOT_ARCHIVE\nenvironment = DO_NOT_ARCHIVE' : args[0] === 'print-disabled' ? `disabled services = {\n"${unit}" => ${disabled}\n"foreign.private.service" => true\n}` : '{"result":{"state":"ready"}}';
+      return f.child(`console.log(${JSON.stringify(text)})`, bounds);
+    } });
+    const command = kind => JSON.parse(readFileSync(join(f.output, row(report, kind).artifact), 'utf8'));
+    assert.deepEqual(calls.slice(0, 2), [{ file: '/bin/launchctl', args: ['print', `gui/${process.getuid()}/${unit}`] }, { file: '/bin/launchctl', args: ['print-disabled', `gui/${process.getuid()}`] }]);
+    assert.equal(command('launchctl-print').stdout, 'state = running\npid = 123\nlast exit code = 0');
+    assert.deepEqual(JSON.parse(command('launchctl-disabled').stdout), { unit, disabled });
+    for (const item of report.observations.filter(item => item.artifact)) {
+      const text = readFileSync(join(f.output, item.artifact), 'utf8');
+      assert(!text.includes('DO_NOT_ARCHIVE') && !text.includes('foreign.private.service'));
+    }
+    assert.equal(f.children.size, 0);
+  }
+});
+
+test('Windows supervisor adapter selects only task facts with validated literal task name', async () => {
+  const f = fixture(), unit = 'cotal-daemon-S-1-5-21-123';
+  const prior = process.env.SystemRoot;
+  process.env.SystemRoot = 'C:\\Windows';
+  try {
+    let script;
+    const report = await captureDaemonDiagnostics({ ...f.options, platform: 'win32', plan: { unit }, run: (file, args, bounds) => {
+      if (args.includes('-EncodedCommand')) {
+        assert.equal(file, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+        script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
+        return f.child(`console.log(JSON.stringify({Name:${JSON.stringify(unit)},State:'Running',Enabled:true,LastResult:267009,Actions:'DO_NOT_ARCHIVE',Environment:'DO_NOT_ARCHIVE'}))`, bounds);
+      }
+      return f.child('console.log("{}")', bounds);
+    } });
+    assert(script.includes(`-TaskName '${unit}'`));
+    assert(script.includes('Get-ScheduledTaskInfo -InputObject $task'));
+    assert(!script.includes('.Actions') && !script.includes('$env:'));
+    const command = JSON.parse(readFileSync(join(f.output, row(report, 'scheduled-task').artifact), 'utf8'));
+    assert.deepEqual(JSON.parse(command.stdout), { Name: unit, State: 'Running', Enabled: true, LastResult: 267009 });
+    assert.equal(command.exit, 0);
+    assert.equal(f.children.size, 0);
+    const bad = await captureDaemonDiagnostics({ ...f.options, platform: 'win32', stage: 'unsafe-task', plan: { unit: "bad'; Remove-ScheduledTask" } });
+    assert.equal(row(bad, 'scheduled-task').state, 'error');
+  } finally {
+    if (prior === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = prior;
+  }
+});
+
+test('native supervisor adapter failures do not prevent independent public status', async () => {
+  const f = fixture();
+  const report = await captureDaemonDiagnostics({ ...f.options, platform: 'darwin', plan: { unit: 'ai.cotal.daemon' }, run: (file, _args, bounds) => f.child(file === '/bin/launchctl' ? 'process.exit(7)' : 'console.log("{}")', bounds) });
+  assert.equal(row(report, 'launchctl-print').exit, 7);
+  assert.equal(row(report, 'launchctl-disabled').state, 'failed');
+  assert.equal(row(report, 'daemon-status').state, 'observed');
+  assert.equal(f.children.size, 0);
 });

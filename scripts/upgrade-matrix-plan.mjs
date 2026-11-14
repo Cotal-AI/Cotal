@@ -114,11 +114,11 @@ export function boundedCells(plan) {
     const id = `${platform}-${channel}-${scenario}`;
     cells.push({ id, platform, runner: runners[platform], channel, scenario, phase: plan.phase,
       sourceSHA: plan.sourceSHA, sourceVersion: plan.sourceVersion, targetVersion: plan.targetVersion,
-      targetSource: channel === "installer" ? (plan.phase === "candidate" ? "candidate-installer-artifact" : "https://get.cotal.ai") : plan.targetSource,
+      targetSource: channel === "installer" && scenario !== "daemon-self" ? (plan.phase === "candidate" ? "candidate-installer-artifact" : "https://get.cotal.ai") : plan.targetSource,
       installerSource: channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? "ARTIFACT/installer.sh" : null,
       installerReceiptRequired: channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate",
       installerOverride: false, required: !reason, disposition: reason ? "excluded" : "required", reason,
-      requiredAssertions: reason ? [] : ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", ...(channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? ["installer-source-receipt"] : []), ...(scenario === "daemon-scheduler" ? ["native-scheduler", "daemon-restart"] : []), ...(["agent-stop-consent", "standalone-stop-consent"].includes(scenario) ? ["stop-consent", "owned-stack-cleanup"] : []), ...(scenario === "foreign-config-recovery" ? ["foreign-snapshot-retained"] : []), ...(scenario === "container-manager" ? ["container-manager-preserved", "owned-stack-cleanup"] : [])] });
+      requiredAssertions: reason ? [] : ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", ...(channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? ["installer-source-receipt"] : []), ...(scenario === "daemon-scheduler" ? ["native-scheduler", "daemon-restart"] : []), ...(scenario === "daemon-self" ? ["native-service-manual", "independent-final-state"] : []), ...(["agent-stop-consent", "standalone-stop-consent"].includes(scenario) ? ["stop-consent", "owned-stack-cleanup"] : []), ...(scenario === "foreign-config-recovery" ? ["foreign-snapshot-retained"] : []), ...(scenario === "container-manager" ? ["container-manager-preserved", "owned-stack-cleanup"] : [])] });
   };
   for (const platform of platforms) for (const scenario of ["fresh", "configured", "stale-self"]) add(platform, "npm", scenario);
   for (const platform of ["linux", "darwin"]) {
@@ -129,6 +129,9 @@ export function boundedCells(plan) {
   add("linux", "npm", "standalone-stop-consent");
   add("linux", "npm", "foreign-config-recovery");
   add("linux", "npm", "container-manager");
+  for (const platform of platforms) add(platform, "npm", "daemon-self");
+  for (const platform of ["linux", "darwin"]) add(platform, "installer", "daemon-self");
+  add("win32", "installer", "daemon-self", "Windows installer self-update excluded: no public shell installer route");
   add("win32", "npm", "daemon-scheduler", "Windows scheduler upgrade excluded until product readiness is established");
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
   return cells;

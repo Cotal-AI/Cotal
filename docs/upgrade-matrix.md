@@ -44,16 +44,24 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs17 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs22 isolated
 product coordinates:
 
 | Coordinates | Count |
 |---|---:|
 | npm fresh, configured and stale-extension self-update on Ubuntu24.04, macOS15 and Windows2022 |9|
 | POSIX configured installer rerun and native daemon scheduler |4|
+| Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts |5|
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone |2|
 | Linux paused record pointing to a real snapshot under another config home |1|
 | Linux host update with a foreign-UID container's bare `cotal supervise` |1|
+
+The manual native-service cells disable automatic updates, install the real service without a Manager
+or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
+status, installed version, socket and pause/lock records
+are sampled independently before cleanup. The census verifies the archived observation hashes and
+rechecks the final state rather than trusting the updater's success output. These are separate
+from unattended scheduler cells. A failed manual service update stays red until fixed.
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
 route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector
@@ -101,13 +109,14 @@ than certifying the wrong version.
 
 Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
 budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
-builders need two waves and17 product cells need six waves at that limit. Per-job timeouts imply a
+builders need two waves and22 product cells need eight waves at that limit. Per-job timeouts imply a
 much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
 timestamps so release owners can use measured durations instead of these estimates.
 
 ## Exclusions
 
-There is no Windows shell installer. Windows scheduler upgrade remains excluded until its product
+There is no Windows shell installer, so its installer-layout manual-service coordinate is explicitly
+excluded. Windows npm manual-service update is required. Windows scheduler upgrade remains excluded until its product
 implementation has native acceptance; native task or job-object facts do not establish that.
 The optional candidate-A reverse path, all historical source versions, concurrent replacement,
 missing-snapshot recovery and wider agent combinations remain diagnostic coverage rather than

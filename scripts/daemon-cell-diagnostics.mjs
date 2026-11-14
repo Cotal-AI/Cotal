@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { createHash } from 'node:crypto';
 import { redactDiagnostic } from './hosted-consent-diagnostics.mjs';
 
 const LIMIT = 256 * 1024;
-export const daemonShowProperties = Object.freeze(['Id', 'LoadState', 'ActiveState', 'SubState', 'Result', 'MainPID', 'ExecMainPID', 'ExecMainCode', 'ExecMainStatus', 'NRestarts', 'ActiveEnterTimestamp', 'InactiveEnterTimestamp', 'InvocationID']);
+export const daemonShowProperties = Object.freeze(['Id', 'LoadState', 'UnitFileState', 'ControlGroup', 'ActiveState', 'SubState', 'Result', 'MainPID', 'ExecMainPID', 'ExecMainCode', 'ExecMainStatus', 'NRestarts', 'ActiveEnterTimestamp', 'InactiveEnterTimestamp', 'InvocationID']);
 const fields = new Set(['v', 'hash', 'firstObservedAt', 'current', 'latest', 'nextAttempt', 'snapshot', 'code', 'message', 'reason', 'remedy', 'outcome', 'pid', 'start', 'startedAt', 'recordedAt', 'phase', 'previous', 'target', 'installed', 'preparedRestart', 'version', 'failures', 'result', 'next', 'deferred', 'automatic', 'auto', 'notify', 'owner', 'socket', 'path', 'dev', 'ino', 'ts', 'done', 'state', 'uptime', 'uptimeMs', 'update', 'lastResult', 'lastCheck', 'nextCheck', 'label', 'sha256']);
 function project(value, depth = 0) {
   if (depth > 6) return '<depth-limit>';
@@ -212,6 +212,40 @@ async function capture(options) {
     await command('journal', bounds => {
       assert(typeof options.startedAt === 'string' && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(options.startedAt) && Number.isFinite(Date.parse(options.startedAt)), 'cell start must be an ISO UTC timestamp');
       return options.run('journalctl', ['--user', '-u', 'cotal-daemon.service', '--since', options.startedAt, '--no-pager', '--output', 'short-iso-precise'], bounds);
+    });
+  }
+  if ((options.platform ?? process.platform) === 'darwin') {
+    const unit = () => {
+      assert.match(options.plan?.unit ?? '', /^ai\.cotal\.daemon(?:\.[a-f0-9]{16})?$/);
+      assert(Number.isSafeInteger(process.getuid?.()), 'native user id unavailable');
+      return options.plan.unit;
+    };
+    await command('launchctl-print', bounds => options.run('/bin/launchctl', ['print', `gui/${process.getuid()}/${unit()}`], bounds), text => text.split('\n').map(line => line.trim()).filter(line => /^(?:state|pid|last exit code) = [A-Za-z0-9 -]+$/.test(line)).join('\n'));
+    await command('launchctl-disabled', bounds => {
+      unit();
+      return options.run('/bin/launchctl', ['print-disabled', `gui/${process.getuid()}`], bounds);
+    }, text => {
+      if (!text.trim()) return '';
+      assert(/^\s*disabled services = \{[\s\S]*\}\s*$/.test(text), 'invalid native disabled listing');
+      const lines = text.split('\n').map(line => line.trim()).filter(line => line.startsWith(`"${unit()}" => `));
+      assert(lines.length <= 1, 'duplicate native disabled entry');
+      const disabled = lines.length === 0 ? false : /=> true$/.test(lines[0]) ? true : /=> false$/.test(lines[0]) ? false : undefined;
+      assert(typeof disabled === 'boolean', 'invalid native disabled entry');
+      return JSON.stringify({ unit: unit(), disabled });
+    });
+  }
+  if ((options.platform ?? process.platform) === 'win32') {
+    await command('scheduled-task', bounds => {
+      const unit = options.plan?.unit;
+      assert.match(unit ?? '', /^cotal-daemon-(?:[a-f0-9]{16}-)?S-1-[0-9]+(?:-[0-9]+)+$/);
+      const root = process.env.SystemRoot ?? process.env.windir;
+      assert(typeof root === 'string' && win32.isAbsolute(root), 'Windows system directory unavailable');
+      const script = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $task=Get-ScheduledTask -TaskPath '\\' -TaskName '${unit}'; $info=Get-ScheduledTaskInfo -InputObject $task; [pscustomobject]@{Name=[string]$task.TaskName;State=[string]$task.State;Enabled=[bool]$task.Settings.Enabled;LastResult=$info.LastTaskResult}|ConvertTo-Json -Compress`;
+      return options.run(win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], bounds);
+    }, text => {
+      if (!text.trim()) return '';
+      const value = JSON.parse(text.replace(/^\uFEFF/, ''));
+      return JSON.stringify({ Name: value.Name, State: value.State, Enabled: value.Enabled, LastResult: value.LastResult });
     });
   }
   // Always independent of file/service observations, including when an earlier capture failed.

@@ -14,6 +14,7 @@ import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
 import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
 import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
+import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
 export function daemonHostedManagerOptions(options, { hosted: disposable = hosted, platform = process.platform } = {}) {
@@ -578,7 +579,7 @@ export async function matrixCell(options) {
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
-      report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', method === 'self' || launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
       if (windowsPolicy) report.policyBaseline.settingsBeforeInstall = json(join(cotalHome, 'update-settings.json'));
       installedService = true;
       ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
@@ -594,6 +595,13 @@ export async function matrixCell(options) {
         await delay(1000);
       }
       assert(report.daemonBefore, 'native daemon ready before update');
+      if (method === 'self' && !desktopRuntime) {
+        const manualReady = report.daemonBefore.version === report.source && report.daemonBefore.update?.automatic === false
+          && Array.isArray(report.daemonBefore.managers) && report.daemonBefore.managers.length === 0
+          && Array.isArray(report.daemonBefore.agents) && report.daemonBefore.agents.length === 0;
+        check('manual native service starts at source with scheduler disabled', manualReady, report.daemonBefore);
+        assert(manualReady, 'manual update must start at the source with no Manager, agent or competing scheduler');
+      }
       if (desktopRuntime) {
         report.desktop = { runtime: desktopRuntime, inventory: desktopInventory, nodeSha256: digest(readFileSync(desktopNode)), release: 'v0.164.2', workflowRun: 43456519342 };
         assert.equal(report.daemonBefore.version, '0.164.2');
@@ -858,6 +866,11 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
+    if (installedService && state === 'daemon' && method === 'self' && !desktopRuntime) {
+      report.manualServiceFinalState = evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output, target: report.target, platform: process.platform });
+      check('independent manual service final state', report.manualServiceFinalState.passed, report.manualServiceFinalState);
+      if (!report.manualServiceFinalState.passed) report.result = 'failed';
+    }
     if (compositionCleanup && !daemonHostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
