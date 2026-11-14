@@ -411,6 +411,7 @@ test('published policy expectations cannot accept latest no-op repair hints', ()
     assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, source: 'latest' }));
     assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, candidate: '/candidate' }));
     assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, stopAgents: true }));
+    assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, layout: 'installer' }));
     const output = 'No newer CLI version; installed package closure is current. No connector reconciliation was run.\nRun `cotal update` to repair connector integrations.';
     assert(requiresManualStep(output));
     assert(!baseline.policyRefusal('legacy-seat', { exit: 0, stdout: output, stderr: '' }));
@@ -425,9 +426,12 @@ test('missing config policy matches only the known exact first-hop refusal', () 
   assert(!baseline.policyRefusal('missing-config', { ...update, stderr: update.stderr + 'another failure' }, config));
 });
 test('old non-Linux scheduler is unsupported only with exact recorded source policy', () => {
-  const coordinate = { source: '0.163.5', state: 'daemon', method: 'scheduler', platform: 'darwin' };
+  const coordinate = { source: '0.163.5', state: 'daemon', method: 'scheduler', platform: 'darwin', layout: 'installer' };
   assert(baseline.policyCoordinate('unsupported-scheduler', coordinate));
   assert(!baseline.policyCoordinate('unsupported-scheduler', { ...coordinate, platform: 'linux' }));
+  assert(!baseline.policyCoordinate('unsupported-scheduler', { ...coordinate, layout: 'npm' }));
+  assert(baseline.policyCoordinate('unsupported-scheduler', { ...coordinate, platform: 'win32', layout: 'npm' }));
+  assert(!baseline.policyCoordinate('missing-config', { source: '0.160.7', state: 'fresh', method: 'self', platform: 'linux', layout: 'installer' }));
   assert(!baseline.policyCoordinate('unsupported-scheduler', { ...coordinate, source: '0.164.6' }));
   const daemon = { update: { automatic: false, lastResult: 'not checked. Automatic installation is available on Linux in this release. Run `cotal update --self` here' } };
   assert(baseline.policyRefusal('unsupported-scheduler', {}, '', daemon));

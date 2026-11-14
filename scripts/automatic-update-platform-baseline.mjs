@@ -79,11 +79,11 @@ export const cellExitCode = report => report.expectedRefusal
   ? (report.expectedRefusal.passed && !report.cleanupFailure ? 0 : 1)
   : (['passed', 'excluded'].includes(report.result) ? 0 : 1);
 
-export function policyCoordinate(kind, { source, state, method, platform, candidate, stopAgents }) {
+export function policyCoordinate(kind, { source, state, method, platform, layout = 'npm', candidate, stopAgents }) {
   if (candidate || stopAgents) return false;
-  if (kind === 'missing-config') return source === '0.160.7' && platform === 'linux' && state === 'fresh' && method === 'self';
-  if (kind === 'legacy-seat') return ['0.160.7', '0.163.5', '0.164.0'].includes(source) && state === 'agent' && method === 'self';
-  return kind === 'unsupported-scheduler' && ['0.163.5', '0.164.0'].includes(source) && ['darwin', 'win32'].includes(platform) && state === 'daemon' && method === 'scheduler';
+  if (kind === 'missing-config') return layout === 'npm' && source === '0.160.7' && platform === 'linux' && state === 'fresh' && method === 'self';
+  if (kind === 'legacy-seat') return layout === 'npm' && ['0.160.7', '0.163.5', '0.164.0'].includes(source) && state === 'agent' && method === 'self';
+  return kind === 'unsupported-scheduler' && ['0.163.5', '0.164.0'].includes(source) && (platform === 'darwin' && layout === 'installer' || platform === 'win32' && layout === 'npm') && state === 'daemon' && method === 'scheduler';
 }
 
 export function policyRefusal(kind, update, config, daemon) {
@@ -181,7 +181,7 @@ function safeRoot(output) {
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   const policy = options['expect-policy-refusal'];
-  if (policy) assert(policyCoordinate(policy, { source, state, method, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
+  if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
   const publishedInstaller = options['published-installer'] ? verifyPublishedInstaller({ ...options, layout, method }) : undefined;
   if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
