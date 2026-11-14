@@ -1,4 +1,4 @@
-name: Windows daemon shutdown measurement
+name: Published desktop daemon shutdown measurement
 on:
   push:
     branches:
@@ -6,40 +6,56 @@ on:
 permissions:
   contents: read
 jobs:
-  published:
+  published-desktop:
     runs-on: windows-2022
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [restart, disabled-start]
     env:
       DO_NOT_TRACK: '1'
       COTAL_TELEMETRY: 'off'
       COTAL_SKIP_CONNECTOR_SEED: '1'
-      SHUTDOWN_ROUNDS: '40'
-      SHUTDOWN_DISABLED_START: '1'
+      SHUTDOWN_MODE: ${{ matrix.mode }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: '24.21.0'
-      - name: Install the unchanged published CLI
+      - name: Install the published desktop package at its default location
         shell: pwsh
+        env:
+          RELEASE_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $prefix = Join-Path $env:RUNNER_TEMP 'published-cotal'
-          npm i -g cotal-ai@0.164.7 --prefix $prefix
-          if ($LASTEXITCODE -ne 0) { throw 'Published package installation failed' }
-          $package = Join-Path $prefix 'node_modules/cotal-ai'
-          "SHUTDOWN_PACKAGE_ROOT=$package" >> $env:GITHUB_ENV
-          Get-FileHash (Join-Path $package 'dist/daemon/client.js'), (Join-Path $package 'dist/daemon/install.js'), (Join-Path $package 'dist/daemon/server.js') -Algorithm SHA256 | Format-List
-      - name: Measure original stop probes and handle close ordering
+          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v0.164.8' -Headers @{ Authorization = "Bearer $env:RELEASE_TOKEN"; Accept = 'application/vnd.github+json' }
+          if ($release.tag_name -ne 'v0.164.8') { throw 'Release pin mismatch' }
+          $assets = @($release.assets | Where-Object { $_.name -match 'x64-setup\.exe$' })
+          if ($assets.Count -ne 1 -or $assets[0].digest -notmatch '^sha256:[0-9a-f]{64}$') { throw 'One digest-pinned Windows setup is required' }
+          $installer = Join-Path $env:RUNNER_TEMP 'cotal-0.164.8-setup.exe'
+          Invoke-WebRequest -Uri $assets[0].browser_download_url -OutFile $installer
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ("sha256:$hash" -ne $assets[0].digest) { throw 'Installer digest mismatch' }
+          New-Item -ItemType Directory -Path scripts/shutdown-records -Force | Out-Null
+          @{ version = '0.164.8'; asset = $assets[0].name; digest = $hash; url = $assets[0].browser_download_url } | ConvertTo-Json | Set-Content scripts/shutdown-records/installer.json
+          Remove-Item Env:RELEASE_TOKEN
+          $process = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Published setup failed: $($process.ExitCode)" }
+          $root = Join-Path $env:LOCALAPPDATA 'Cotal'
+          foreach ($file in @('cotal-desktop.exe', 'node.exe', 'runtime/desktop-runtime.json', 'runtime/dist/cotal.js')) {
+            if (-not (Test-Path (Join-Path $root $file))) { throw "Missing installed file $file" }
+          }
+      - name: Run forty stock service stop paths
         shell: pwsh
         run: |
-          node scripts/windows-shutdown-measure.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'Measurement stopped before all rounds, inspect raw artifact' }
-      - name: Upload raw original-call records
+          node scripts/windows-desktop-shutdown-measure.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Stopped on refusal or incomplete outcome. Original records retained, no command retry.' }
+      - name: Upload original records
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-daemon-shutdown-published
+          name: windows-desktop-shutdown-${{ matrix.mode }}
           path: scripts/shutdown-records
           if-no-files-found: error
           retention-days: 7
