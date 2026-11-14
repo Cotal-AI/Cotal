@@ -8,6 +8,7 @@ const [mode, packageRoot, outputRoot, label, sampleCount = '5'] = process.argv.s
 assert.equal(process.platform, 'win32', 'measure on native Windows only');
 assert.equal(process.env.GITHUB_ACTIONS, 'true');
 assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
+if (mode === 'run') delete process.env.COTAL_DAEMON_NATIVE_SERVICE;
 const dist = join(resolve(packageRoot), 'dist');
 const cli = join(dist, 'cotal.js');
 mkdirSync(outputRoot, { recursive: true });

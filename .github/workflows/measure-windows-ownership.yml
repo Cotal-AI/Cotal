@@ -6,81 +6,155 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+env:
+  DO_NOT_TRACK: "1"
+  COTAL_TELEMETRY: "off"
+  COTAL_SKIP_CONNECTOR_SEED: "1"
+  PRODUCT_SHA: 968309d61e7a430e0b9163337c0a6b053aeacf9f
+  HARNESS_SHA: d57044a3f5e8821d7ff4427352137d0af3e9b30e
 
 jobs:
-  baseline:
-    runs-on: windows-2022
-    timeout-minutes: 35
-    env:
-      DO_NOT_TRACK: "1"
-      COTAL_TELEMETRY: "off"
-      COTAL_SKIP_CONNECTOR_SEED: "1"
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      native-run: ${{ steps.natives.outputs.run }}
+      native-source: ${{ steps.natives.outputs.source }}
     steps:
       - uses: actions/checkout@v6
         with:
+          path: measurement
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: d57044a3f5e8821d7ff4427352137d0af3e9b30e
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 968309d61e7a430e0b9163337c0a6b053aeacf9f
+          path: product
+          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
+        with:
+          package_json_file: product/package.json
       - uses: actions/setup-node@v6
         with:
           node-version: 24.21.0
-      - name: Record runner and source identity
-        shell: pwsh
+      - name: Require packing disk budget
+        run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free')"
+      - run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: harness
+      - run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: product
+      - name: Select only trusted native artifacts with identical inputs
+        id: natives
+        working-directory: product
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          New-Item -ItemType Directory -Force timing | Out-Null
-          git rev-parse HEAD | Out-File timing/head.txt
-          git log -1 --format=%P | Out-File timing/parents.txt
-          node --version | Out-File timing/node.txt
-          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber | ConvertTo-Json | Out-File timing/windows.json
-      - name: Install published baseline
-        shell: pwsh
-        run: |
-          npm i -g cotal-ai@0.164.6
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $Root = Join-Path ((npm root -g).Trim()) 'cotal-ai'
-          node scripts/measure-windows-ownership.mjs run "$Root" "$env:GITHUB_WORKSPACE\timing" published
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build Windows native bindings
-        shell: cmd
-        run: |
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          if not exist "%VSWHERE%" exit /b 1
-          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
-          if not defined VS exit /b 1
-          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
-          if errorlevel 1 exit /b 1
-          node packages/workspace/scripts/build-native.mjs
-          if errorlevel 1 exit /b 1
-          node packages/seat/scripts/build-native.mjs --host
-          if errorlevel 1 exit /b 1
-      - name: Install and build unchanged source
-        shell: pwsh
-        run: |
-          pnpm install --frozen-lockfile --prefer-offline
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm --workspace-concurrency 3 --filter "cotal-ai..." build
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Measure unchanged source
-        shell: pwsh
-        run: |
-          node scripts/measure-windows-ownership.mjs run "$env:GITHUB_WORKSPACE\bin" "$env:GITHUB_WORKSPACE\timing" unchanged
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Measure ten fresh published installs
-        shell: pwsh
-        run: |
-          for ($Sample = 1; $Sample -le 10; $Sample++) {
-            $Prefix = Join-Path $env:RUNNER_TEMP "ownership-first-$Sample"
-            npm i -g --prefix "$Prefix" cotal-ai@0.164.6
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $Root = Join-Path $Prefix 'node_modules\cotal-ai'
-            node scripts/measure-windows-ownership.mjs run "$Root" "$env:GITHUB_WORKSPACE\timing" "first-$Sample" 1
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            npm uninstall -g --prefix "$Prefix" cotal-ai
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      - name: Upload raw evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+          node scripts/native-artifact-source.mjs select "$PRODUCT_SHA" >> "$GITHUB_OUTPUT"
+      - name: Refuse unavailable reuse rather than relabel or skip native guards
+        env:
+          NATIVE_RUN: ${{ steps.natives.outputs.run }}
+        run: test -n "$NATIVE_RUN"
+      - uses: actions/download-artifact@v4
         with:
-          name: windows-ownership-timings
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.natives.outputs.run }}
+          pattern: '*-native-*'
+          path: ${{ runner.temp }}/native
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - name: Verify and assemble complete matching native closure
+        working-directory: product
+        env:
+          NATIVE_SOURCE: ${{ steps.natives.outputs.source }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/native/seat-native-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/native/seat-native-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/native/seat-native-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/native/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/native/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/native/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/native/workspace-native-darwin-arm64
+        run: |
+          node scripts/native-artifact-source.mjs verify "$NATIVE_SOURCE" "$PRODUCT_SHA"
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+      - name: Pack full closure through pinned shared harness
+        working-directory: harness
+        run: node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/ownership-candidate" --version B --source-root "$GITHUB_WORKSPACE/product"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ownership-candidate
+          path: ${{ runner.temp }}/ownership-candidate
+          if-no-files-found: error
+  windows:
+    needs: pack
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: measurement
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: d57044a3f5e8821d7ff4427352137d0af3e9b30e
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 968309d61e7a430e0b9163337c0a6b053aeacf9f
+          path: product
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+        with:
+          package_json_file: product/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.21.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: ownership-candidate
+          path: ${{ runner.temp }}/ownership-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.pack.outputs.native-run }}
+          pattern: '*-native-*'
+          path: ${{ runner.temp }}/native
+      - name: Place matching Windows source-fixture native helpers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force product/packages/workspace/build/Release/win32-x64 | Out-Null
+          New-Item -ItemType Directory -Force product/packages/seat/build/Release/win32-x64 | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/native/workspace-native-x64/*" product/packages/workspace/build/Release/win32-x64/
+          Copy-Item "$env:RUNNER_TEMP/native/seat-native-win32-x64/*" product/packages/seat/build/Release/win32-x64/
+      - run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: harness
+      - run: pnpm install --frozen-lockfile --prefer-offline
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 --filter "cotal-ai..." build
+        working-directory: product
+      - name: Packed installed candidate and published baseline proof
+        working-directory: measurement
+        shell: pwsh
+        run: |
+          node scripts/prove-windows-ownership.mjs "$env:GITHUB_WORKSPACE\harness" "$env:RUNNER_TEMP\ownership-candidate" "$env:GITHUB_WORKSPACE\product" "$env:GITHUB_WORKSPACE\timing"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-ownership-afterproof
           path: timing
           if-no-files-found: error
