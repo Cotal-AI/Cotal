@@ -43,7 +43,7 @@ import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/c
 import { codeSpan, CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
-import { openVerified, readLine } from "./client.js";
+import { isStoppingLifetime, openVerified, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
@@ -530,6 +530,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
   const owner = readLifetimeRecord(paths.lock);
   let phase = "prepare";
   let pauseAttempted = false;
+  let stopCommitted = false;
   const progress = (detail: string) => { phase = detail; report?.(detail); };
   const startedAt = Date.now();
   const heartbeat = setInterval(() => report?.(`${phase} (${Math.floor((Date.now() - startedAt) / 1000)}s elapsed)`), 5000);
@@ -548,6 +549,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
     await task.pause(receipt);
     phase = "stop-commit";
     if (processBirth(owner.pid) === owner.start) {
+      stopCommitted = true;
       try { await request("daemon-stop", true); }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -562,7 +564,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(stopCommitted && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && processBirth(owner.pid) !== owner.start) break;
       if (Date.now() >= deadline) throw new Error("old daemon death and endpoint absence were not confirmed within 130s");
@@ -663,6 +665,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
   // stop only that listener, never a reused PID or a later daemon generation.
   const before = readLifetimeRecord(paths.lock);
   let socket;
+  let stopCommitted = false;
   try { socket = await openVerified({ paths }); }
   catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
   const owner = readLifetimeRecord(paths.lock);
@@ -695,6 +698,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     }
     if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
       const id = randomUUID().replaceAll("-", "");
+      stopCommitted = true;
       socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "daemon-stop", commit: true }));
       try {
         const reply = JSON.parse(await readLine(socket, 5000)) as DaemonResponse;
@@ -718,7 +722,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
         // The native CI reproducer observed a connect reset while close() tears down
         // accepted sockets. It proves neither a live endpoint nor absence. Reobserve.
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(process.platform === "win32" && stopCommitted && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
       if (Date.now() >= deadline) throw uncertain("daemon shutdown was not confirmed within 130s");

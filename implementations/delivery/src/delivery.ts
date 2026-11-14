@@ -21,7 +21,9 @@ import {
   sameSecretStoreIdentity,
   standaloneConnectOpts,
   startTimerWriter,
+  watchNativeConnection,
   type MembershipFeedHandle,
+  type NativeConnectionBinding,
   type ParsedArgs,
   type SecretStore,
   type SecretStoreIdentity,
@@ -380,9 +382,28 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStart
   await new Promise<void>(() => {}); // CLI runs until signalled
 }
 
+/** One data-account connection a hosted delivery context holds. The label says which part of the
+ *  context holds it and is not an authority. */
+export interface DeliveryNativeConnection extends NativeConnectionBinding {
+  label: "endpoint" | "membership-rw" | "timer-writer";
+}
+
+/** A hosted delivery context, with the native bindings of its data-account connections. */
+export interface DeliveryServiceHandle extends HostedServiceHandle {
+  /** Every data-account connection this context holds now: the endpoint's, the membership feed's
+   *  conn B when the feed runs, and the timer writer's. A host compares the list with a complete
+   *  native census of the account to show that no other connection uses it. The list proves neither
+   *  liveness nor the absence of other connections. Connections in the system account (the
+   *  membership observer and the sweeps) are not listed. A context that closed successfully reports
+   *  none. It throws while there is no settled answer: while the timer writer is not connected, while
+   *  a connection is down or redialing, during a credential adoption, and during or after a close
+   *  that did not succeed. No credential or connection object is returned. */
+  nativeConnections(): DeliveryNativeConnection[];
+}
+
 /** Start one independently owned delivery context. No cwd, process signal, pidfile, or exit
  * policy is borrowed from the CLI runner. The caller owns its explicit state path and store. */
-export async function startDeliveryService(inputs: HostedContextInputs): Promise<HostedServiceHandle> {
+export async function startDeliveryService(inputs: HostedContextInputs): Promise<DeliveryServiceHandle> {
   if (!inputs.context.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
     throw new Error("delivery: hosted context needs an account, lifecycle, space, server and stateDir");
   if (inputs.store.identity === undefined)
@@ -402,6 +423,7 @@ export async function startDeliveryService(inputs: HostedContextInputs): Promise
       readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }),
       drain: started.close,
       close: started.close,
+      nativeConnections: started.nativeConnections,
     };
   } catch (error) {
     // The start-up fault is the report; a row the release left behind is the bucket TTL's to expire.
@@ -482,7 +504,7 @@ async function runStartedDelivery(
   store: SecretStore | undefined,
   publishReleaser: (release: () => Promise<void>) => void,
   owner: DeliveryOwner,
-): Promise<{ status(): DeliveryStatus; close(): Promise<void>; ended: Promise<string> }> {
+): Promise<{ status(): DeliveryStatus; close(): Promise<void>; ended: Promise<string>; nativeConnections(): DeliveryNativeConnection[] }> {
   const hosted = owner.kind === "hosted" ? owner.inputs : undefined;
   const held = owner.kind !== "cli";
   const log = owner.kind === "lane" ? owner.log : consoleLog;
@@ -800,8 +822,12 @@ async function runStartedDelivery(
   let settleEnded!: (what: string) => void;
   const ended = new Promise<string>((resolve) => { settleEnded = resolve; });
   let closePromise: Promise<void> | undefined;
+  /** Set once close() released the lease and proved every connection closed. */
+  let closedClean = false;
   let membership: MembershipFeedHandle | undefined;
-  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
+  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>; native: ReturnType<typeof watchNativeConnection> } | undefined;
+  /** Every timer writer connection that has not reported closed, the retry loop's earlier ones included. */
+  const timerWriterConns = new Set<Awaited<ReturnType<ReturnType<typeof dialerFor>>>>();
   let timerWriterAttempt: Promise<void> | undefined;
   /** Ends the timer writer's retry backoff early. close() calls it so a shutdown that lands during
    *  a backoff does not wait out a retry it will not make (#3633). */
@@ -926,6 +952,7 @@ async function runStartedDelivery(
       }
       if (left !== undefined)
         throw new Error(`delivery: the lease for shard ${shard} is still held by ${ep.ownsDeliveryLease(left.info) ? "this instance" : left.info.holder} after close`);
+      closedClean = true;
     })();
     // Settled once everything is closed, release or not, so a holder that reopens the space does so
     // after this context's connections and lease are gone.
@@ -1100,10 +1127,13 @@ async function runStartedDelivery(
           name: "cotal-delivery-timer-writer",
           maxReconnectAttempts: -1,
         });
+        const dialed = nc;
+        timerWriterConns.add(dialed);
+        void dialed.closed().then(() => timerWriterConns.delete(dialed));
         if (stopping) { await nc.close(); return; }
         const handle = await startTimerWriter(nc, space);
         if (stopping) { await handle.stop(); await nc.close(); return; }
-        timerWriter = { handle, nc };
+        timerWriter = { handle, nc, native: watchNativeConnection(nc, "delivery timer writer connection") };
         backoffMs = 5_000;
         log.out(`✓ timer writer up (space ${space}) — workflow pauses on this space expire`);
         await handle.done; // resolves only through stop(); a fault rejects
@@ -1523,10 +1553,30 @@ async function runStartedDelivery(
     })();
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
+  const nativeConnections = (): DeliveryNativeConnection[] => {
+    const unsettled = (why: string) => new Error(`delivery connection inventory is unsettled: ${why}`);
+    if (closePromise !== undefined) {
+      if (!closedClean) throw unsettled("the context is closing, or its close did not succeed");
+      // close() swallows each part's teardown fault, so each part is asked what it still holds.
+      if (ep.nativeConnections().length > 0 || (membership?.nativeDataConnections().length ?? 0) > 0 || timerWriterConns.size > 0)
+        throw unsettled("the context closed but a connection has not closed");
+      return [];
+    }
+    // While the writer is absent its retry loop is dialing, starting or backing off, so a
+    // connection of its own may exist that nothing here can name yet.
+    if (timerWriter === undefined || timerWriterConns.size !== 1) throw unsettled("the timer writer is not connected");
+    return [
+      ...ep.nativeConnections().map((binding) => ({ label: "endpoint" as const, ...binding })),
+      ...(membership?.nativeDataConnections() ?? []).map((binding) => ({ label: "membership-rw" as const, ...binding })),
+      { label: "timer-writer" as const, ...timerWriter.native.binding() },
+    ];
+  };
+
   return {
     status: (): DeliveryStatus =>
       unavailable !== undefined ? { state: "unavailable", cause: unavailable } : { state: stopping ? "draining" : "ready" },
     close,
     ended,
+    nativeConnections,
   };
 }

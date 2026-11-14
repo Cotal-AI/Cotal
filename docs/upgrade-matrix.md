@@ -7,6 +7,12 @@ A passing cell requires the target CLI and every recorded extension, status exit
 recovery record, a preserved ready service when present, and no required repair step. Missing
 artifacts, skipped required cells and unsupported states are not passes.
 
+Each cell summary shows the update command's recorded `elapsedMs`, not the whole cell's duration.
+Scheduler cells say they are not direct update calls. A cell that fails before updating says no
+update call was recorded. Only the Windows `upgrade under test` command has a temporary300000 ms
+bound for the slowness tracked in #6817. Restore its180000 ms bound when that issue is fixed.
+Other commands and platforms keep their existing bounds.
+
 ## Release triggers
 
 The `Upgrade matrix` workflow starts on every opened, synchronized or reopened pull request.
@@ -38,19 +44,43 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs17 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs22 isolated
 product coordinates:
 
 | Coordinates | Count |
 |---|---:|
 | npm fresh, configured and stale-extension self-update on Ubuntu24.04, macOS15 and Windows2022 |9|
 | POSIX configured installer rerun and native daemon scheduler |4|
+| Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts |5|
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone |2|
 | Linux paused record pointing to a real snapshot under another config home |1|
 | Linux host update with a foreign-UID container's bare `cotal supervise` |1|
 
+The manual native-service cells disable automatic updates, install the real service without a Manager
+or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
+status, installed version, socket and pause/lock records
+are sampled independently before cleanup. The census verifies the archived observation hashes and
+rechecks the final state rather than trusting the updater's success output. A missing recovery record
+or its hash-verified JSON-null clear is healthy; a paused, unreadable or unobserved record is not.
+These are separate from unattended scheduler cells. A failed manual service update stays red until fixed.
+
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
-route. It must complete the update. The standalone cell starts with `up --detach` and records its
+route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector
+launch contract. The participant stack includes the real delivery-admin endpoint for retirement.
+It must complete the update. Its test-only launcher retains the child's full stdout, stderr and
+exit result, plus the Manager's launch request and owned log, before cleanup. Missing or unreadable
+diagnostics are recorded explicitly. Console bearer tokens and JWTs are redacted in uploaded logs.
+Launch failure remains a failed cell, not a consent result.
+
+Every cell that installs a native daemon collects evidence before updating and again before any
+cleanup, including when the update fails or times out. It retains the service's own log, and on
+Linux the cell-scoped user journal and selected `systemctl --user show` properties. The final
+reading records public daemon status, socket metadata, installed version, update pause records
+and lock observations independently of the updater's output. Missing, unreadable, timed-out or
+truncated observations remain explicit. Diagnostics never turn an update failure into a pass.
+The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
+is a product failure, not a known refusal.
+The standalone cell starts with `up --detach` and records its
 separate consent contract. Container shutdown uses `down --with-agents --yes`. When the bare supervisor is PID1, its clean exit
 can terminate the sibling `docker exec` with137. Only that observed case is accepted: the same
 container must exit0 during the command, without an OOM, with no process left. Other non-zero
@@ -80,13 +110,14 @@ than certifying the wrong version.
 
 Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
 budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
-builders need two waves and17 product cells need six waves at that limit. Per-job timeouts imply a
+builders need two waves and22 product cells need eight waves at that limit. Per-job timeouts imply a
 much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
 timestamps so release owners can use measured durations instead of these estimates.
 
 ## Exclusions
 
-There is no Windows shell installer. Windows scheduler upgrade remains excluded until its product
+There is no Windows shell installer, so its installer-layout manual-service coordinate is explicitly
+excluded. Windows npm manual-service update is required. Windows scheduler upgrade remains excluded until its product
 implementation has native acceptance; native task or job-object facts do not establish that.
 The optional candidate-A reverse path, all historical source versions, concurrent replacement,
 missing-snapshot recovery and wider agent combinations remain diagnostic coverage rather than
