@@ -46,6 +46,9 @@ try {
   assert.doesNotMatch(gateSource, /openPrivateAppend|O_APPEND|O_WRONLY/);
   assert.ok(gateSource.indexOf("protect(path)") < gateSource.indexOf("lockExclusiveNb(fd)"));
   const runner = readFileSync(new URL("../daemon/update-windows-runner.ts", import.meta.url), "utf8");
+  assert.match(runner, /writeSecretFile\(logPath, ""\)/);
+  assert.doesNotMatch(runner, /ftruncateSync|openPrivateAppend/);
+  assert.ok(runner.indexOf('writeSecretFile(logPath, "")') < runner.indexOf("native.launch("));
   assert.ok(runner.indexOf("native.drain(20_000)") < runner.indexOf("done = true;", runner.indexOf("native.launch(")));
   assert.match(runner, /if \(drained\) custody.complete\(done\)/);
   assert.doesNotMatch(runner, /OpenJobObject|DuplicateHandle|named-job/);
