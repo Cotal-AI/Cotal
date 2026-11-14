@@ -368,7 +368,6 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         const custody = await rt.reportRunningManager(target);
         rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
         if (custody === "legacy") rt.out("A later update will require stopping the agents listed above before replacing packages.");
-        rt.out("Run `cotal update` to repair connector integrations.");
         reportVersion(current, latest.version, rt, false);
         return 0;
       } catch (error) {

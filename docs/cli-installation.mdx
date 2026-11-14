@@ -244,6 +244,9 @@ recovery guidance instead of suggesting another update that would meet the same 
 
 ### Manager continuity
 
+When `update --self` finds no newer release and verifies the installed package closure is current,
+it reports that no connector reconciliation ran. It does not suggest a repair it did not observe.
+
 If an older updater refuses an answering hosted Manager as `starting`, install the fixed release
 with npm directly in the same installation prefix. For an installer-managed Unix installation,
 run `npm install -g --prefix "$HOME/.local/share/cotal" cotal-ai@<version>` using its Node runtime.
