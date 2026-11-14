@@ -1,16 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BASELINE_VERSION, planPhase, planRelease, boundedCells, jobsMatrix, compareVersions, assertTarget, verifyResults } from "./upgrade-matrix-plan.mjs";
+import { publishedPredecessor, planPhase, planRelease, boundedCells, jobsMatrix, compareVersions, assertTarget, verifyResults } from "./upgrade-matrix-plan.mjs";
 
 const sourceSHA = "a".repeat(40), newerSHA = "b".repeat(40);
 const repository = "Cotal-AI/Cotal";
 const repo = { full_name: repository };
-const context = { eventName: "pull_request", repository, packageManifest: { version: "0.164.7" } };
+const context = { eventName: "pull_request", repository, sourceVersion: "0.164.6", packageManifest: { version: "0.164.7" } };
 function pr() { return { action: "synchronize", pull_request: { state: "open", head: { ref: "changeset-release/main", sha: sourceSHA, repo }, base: { ref: "main", sha: newerSHA, repo } } }; }
-function dispatch(overrides = {}) { return planPhase({ eventName: "workflow_dispatch", inputs: { phase: "published", sourceSHA, targetVersion: "0.164.7", profile: "bounded", ...overrides } }); }
-function run(conclusion = "failure") { return { action: "completed", repository: repo, workflow_run: { status: "completed", name: "Changesets", conclusion, head_branch: "main", head_sha: sourceSHA, repository: repo, head_repository: repo } }; }
+function dispatch(overrides = {}) { return planPhase({ eventName: "workflow_dispatch", inputs: { phase: "published", sourceSHA, targetVersion: "0.164.7", profile: "bounded", ...overrides } }, { sourceVersion: "0.164.6" }); }
+function run(conclusion = "failure") { return { action: "completed", repository: repo, workflow_run: { status: "completed", name: "Publish packages", path: ".github/workflows/changesets.yml", conclusion, head_branch: "main", head_sha: sourceSHA, repository: repo, head_repository: repo } }; }
 const publishContext = { ...context, eventName: "workflow_run", published: true, publishJobConclusion: "success", targetVersion: "0.164.7" };
 function goodResults(cells) { return cells.filter(c => c.required).map(c => ({ id: c.id, status: "passed", assertions: Object.fromEntries(c.requiredAssertions.map(a => [a, true])) })); }
+
+test("registry predecessor excludes target, newer versions, prereleases and malformed keys without a fallback", () => {
+  const registry = { versions: Object.fromEntries(["0.164.6", "0.164.7", "0.164.8", "0.165.0", "0.164.8-rc.1", "latest"].map(version => [version, { version }])) };
+  assert.equal(publishedPredecessor(registry, "0.164.8"), "0.164.7");
+  assert.equal(publishedPredecessor(registry, "0.164.7"), "0.164.6");
+  assert.throws(() => publishedPredecessor({}, "0.164.8"), /versions missing/);
+  assert.throws(() => publishedPredecessor({ versions: {} }, "0.164.8"), /no published stable source/);
+  assert.throws(() => publishedPredecessor({ versions: { "0.164.7": { version: "0.164.6" } } }, "0.164.8"), /version mismatch/);
+  const plan = planPhase(pr(), { ...context, sourceVersion: "0.164.7", packageManifest: { version: "0.164.8" } });
+  assert(boundedCells(plan).every(cell => cell.sourceVersion === "0.164.7"));
+  assert.throws(() => planPhase(pr(), { ...context, sourceVersion: undefined }), /frozen published/);
+});
 
 test("candidate trigger: same-repository version PR freezes head SHA and explicit manifest version", () => {
   const event = pr();
@@ -54,7 +66,7 @@ test("published trigger accepts ANY overall conclusion only with validated publi
 });
 
 test("published trigger rejects incomplete, foreign, non-main and non-Changesets runs", () => {
-  for (const mutate of [e => { e.action = "requested"; }, e => { e.workflow_run.status = "in_progress"; }, e => { e.workflow_run.name = "CI"; }, e => { e.workflow_run.head_branch = "feature"; }, e => { e.workflow_run.head_repository = { full_name: "fork/Cotal" }; }]) {
+  for (const mutate of [e => { e.action = "requested"; }, e => { e.workflow_run.status = "in_progress"; }, e => { e.workflow_run.path = ".github/workflows/ci.yml"; }, e => { e.workflow_run.head_branch = "feature"; }, e => { e.workflow_run.head_repository = { full_name: "fork/Cotal" }; }]) {
     const event = run(); mutate(event);
     assert.equal(planPhase(event, publishContext).status, "skipped");
   }
@@ -72,16 +84,17 @@ test("manual phase/profile/version are explicit and immutable SHA is mandatory",
 });
 
 test("semver comparison and target assertion reject stale/same source and every mismatched resolution", () => {
-  assert.equal(BASELINE_VERSION, "0.164.6");
+  assert.throws(() => assertTarget("0.164.7", "0.164.7"), /semver/);
+  const source = { sourceVersion: "0.164.6" };
   assert.equal(compareVersions("0.164.10", "0.164.9"), 1);
   assert.equal(compareVersions("0.164.7-rc.10", "0.164.7-rc.2"), 1);
   assert.equal(compareVersions("0.164.7-rc.1", "0.164.7"), -1);
   assert.equal(compareVersions("0.164.7+build", "0.164.7"), 0);
-  assert.equal(assertTarget("0.164.7", { cli: "0.164.7", core: "0.164.7", ext: "0.164.7" }), true);
-  assert.throws(() => assertTarget("0.164.7", ["0.164.7", "0.164.6"]), /resolved/);
-  assert.throws(() => assertTarget("0.164.6", "0.164.6"), /newer/);
-  assert.throws(() => assertTarget("0.164.5", "0.164.5"), /newer/);
-  assert.throws(() => assertTarget("0.164.7", {}), /missing/);
+  assert.equal(assertTarget("0.164.7", { cli: "0.164.7", core: "0.164.7", ext: "0.164.7" }, source), true);
+  assert.throws(() => assertTarget("0.164.7", ["0.164.7", "0.164.6"], source), /resolved/);
+  assert.throws(() => assertTarget("0.164.6", "0.164.6", source), /newer/);
+  assert.throws(() => assertTarget("0.164.5", "0.164.5", source), /newer/);
+  assert.throws(() => assertTarget("0.164.7", {}, source), /missing/);
 });
 
 const requiredIDs = [
@@ -90,14 +103,14 @@ const requiredIDs = [
   "win32-npm-fresh", "win32-npm-configured", "win32-npm-stale-self",
   "linux-installer-configured-rerun", "linux-installer-daemon-scheduler",
   "darwin-installer-configured-rerun", "darwin-installer-daemon-scheduler",
-  "linux-npm-agent-stop-consent", "linux-npm-foreign-config-recovery", "linux-npm-container-manager",
+  "linux-npm-agent-stop-consent", "linux-npm-standalone-stop-consent", "linux-npm-foreign-config-recovery", "linux-npm-container-manager",
 ];
-test("bounded enumeration is deterministic: 9 npm + 4 POSIX + 1 consent + 2 Linux isolation", () => {
+test("bounded enumeration is deterministic: 9 npm + 4 POSIX + 2 consent + 2 Linux isolation", () => {
   const plan = dispatch();
   const cells = boundedCells(plan);
   assert.deepEqual(cells.filter(c => c.required).map(c => c.id), requiredIDs);
   assert.deepEqual(boundedCells(plan), cells);
-  assert.equal(cells.length, 18);
+  assert.equal(cells.length, 19);
   assert.equal(new Set(cells.map(c => c.id)).size, cells.length);
   for (const cell of cells) {
     assert.equal(cell.sourceSHA, sourceSHA);
@@ -114,7 +127,7 @@ test("bounded enumeration is deterministic: 9 npm + 4 POSIX + 1 consent + 2 Linu
 
 test("candidate B uses packed target and receipt-pinned installer artifact, candidate A optional", () => {
   const cells = boundedCells(dispatch({ phase: "candidate" }));
-  assert.equal(cells.filter(c => c.required).length, 16);
+  assert.equal(cells.filter(c => c.required).length, 17);
   assert.ok(cells.filter(c => c.required && c.channel === "npm").every(c => c.targetSource === "packed-target"));
   const installers = cells.filter(c => c.channel === "installer" && c.scenario === "configured-rerun");
   const schedulers = cells.filter(c => c.required && c.scenario === "daemon-scheduler");
@@ -138,7 +151,7 @@ test("aggregator maps all required assertions, missing cells/assertions and fail
   const results = goodResults(cells);
   const report = verifyResults(cells, results);
   assert.equal(report.acceptance, true);
-  assert.equal(report.passed.length, 16);
+  assert.equal(report.passed.length, 17);
   assert.equal(report.excluded.length, 2);
   assert.equal(verifyResults(cells, results.slice(1)).acceptance, false);
   const missing = structuredClone(results);
@@ -154,9 +167,9 @@ test("aggregator maps all required assertions, missing cells/assertions and fail
 });
 
 test("workflow wrapper accepts snake-case dispatch fields and exposes exact expected IDs", () => {
-  const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase: "candidate", source_sha: sourceSHA, target_version: "0.164.7", profile: "bounded" } });
+  const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase: "candidate", source_sha: sourceSHA, target_version: "0.164.7", profile: "bounded" } }, { sourceVersion: "0.164.6" });
   assert.deepEqual(plan.expectedIDs, requiredIDs);
-  assert.equal(plan.matrix.include.length, 16);
+  assert.equal(plan.matrix.include.length, 17);
   const results = goodResults(plan.cells);
   assert.equal(verifyResults(plan.cells, results).acceptance, true);
   delete results.find(r => r.id === "linux-installer-configured-rerun").assertions["installer-source-receipt"];
@@ -166,7 +179,7 @@ test("workflow wrapper accepts snake-case dispatch fields and exposes exact expe
 test("newer minor releases are valid and Linux isolation cells require their own evidence in both phases", () => {
   for (const phase of ["candidate", "published"]) {
     const cells = boundedCells(dispatch({ phase, targetVersion: "0.165.0" }));
-    assert.equal(cells.filter(c => c.required).length, 16);
+    assert.equal(cells.filter(c => c.required).length, 17);
     for (const [id, assertion] of [["linux-npm-foreign-config-recovery", "foreign-snapshot-retained"], ["linux-npm-container-manager", "container-manager-preserved"]]) {
       const cell = cells.find(c => c.id === id);
       assert.equal(cell.sourceVersion, "0.164.6");

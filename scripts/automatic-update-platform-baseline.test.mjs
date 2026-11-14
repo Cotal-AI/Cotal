@@ -4,6 +4,121 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
+test('daemon hosted consent admission is separate from standalone and refuses unsafe options', async () => {
+  const options = { state: 'agent', method: 'self', 'stop-agents': 'true', 'daemon-hosted-manager': 'true', prepare() {} };
+  const runner = { hosted: true, platform: 'linux' };
+  assert.equal(baseline.daemonHostedManagerOptions(options, runner), true);
+  assert.equal(baseline.daemonHostedManagerOptions({ state: 'agent', 'stop-agents': 'true' }, runner), false);
+  for (const change of [{ state: 'configured' }, { method: 'scheduler' }, { 'stop-agents': 'false' }, { prepare: undefined }, { 'daemon-hosted-manager': 'false' }]) {
+    assert.throws(() => baseline.daemonHostedManagerOptions({ ...options, ...change }, runner));
+  }
+  for (const environment of [{ hosted: false, platform: 'linux' }, { hosted: true, platform: 'darwin' }, { hosted: true, platform: 'win32' }]) {
+    assert.throws(() => baseline.daemonHostedManagerOptions(options, environment));
+  }
+  await assert.rejects(baseline.matrixCell(options), /requires hosted Linux/);
+});
+
+test('documented hosted Manager command and container cleanup are extracted without execution', () => {
+  assert.deepEqual(baseline.hostedManagerCommand('upgrade-proof'), ['daemon', 'setup', '--space', 'upgrade-proof', '--json']);
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(source.includes("hostedManagerCommand(space)"));
+  assert(source.includes("['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId"));
+  assert(source.indexOf("'register daemon-hosted stand-in connector'") < source.indexOf("'start documented daemon-hosted Manager'"));
+  assert(source.includes("['daemon', 'status', '--space', report.managerHost.space, '--json']"));
+  assert(source.includes("['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']"));
+  assert(source.includes("const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir()"));
+  assert(source.includes("if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign"));
+  assert(source.includes("if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
+  assert(source.includes('const deadline = Date.now() + 60000;'));
+  assert(source.includes('JSON.stringify(observed)'));
+  assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
+  assert.match(baseline.foreignStackCleanupCommand, /cotal down --with-agents --yes$/);
+  assert(source.includes('const stackEnded = foreignStackEnded('));
+  assert(source.includes("assert(stackEnded, 'owned stock stack end was not confirmed')"));
+  assert(source.indexOf("'observe container immediately after stock down'") < source.indexOf("'stop owned foreign supervisor and broker'"));
+  for (const name of ['owned local stack cleanup succeeds', 'foreign container cleanup succeeds', 'source generation unchanged']) assert(source.includes(name));
+  assert(source.includes("report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone'"));
+  assert(source.includes('if (!report.cleanupSafety.passed)'));
+  assert.equal(baseline.cellExitCode({ result: 'passed', cleanupSafety: { passed: false } }), 1);
+  assert.equal(baseline.cellExitCode({ result: 'failed', expectedRefusal: { passed: true }, cleanupSafety: { passed: false } }), 1);
+});
+
+test('Mac transition accepts stable newer sources only below explicit target and retains Windows history', () => {
+  for (const source of ['0.164.6', '0.164.7', '0.165.0']) assert(baseline.macTransitionSource(source, '0.166.0', 'transition'));
+  for (const source of ['0.164.5', '0.166.0', '0.167.0', 'latest', '0.165.0-rc.1']) assert(!baseline.macTransitionSource(source, '0.166.0', 'transition'));
+  for (const kind of ['off-before-tick', 'killed-before-result']) assert(!baseline.macTransitionSource('0.164.7', '0.166.0', kind));
+  assert(!baseline.macTransitionSource('0.164.7', undefined, 'transition'));
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(windowsPolicy\) assert\(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6'/);
+});
+
+// Retained run 43566289714, artifact 14102463041: first ready observation,
+// before any assertions or scheduler action (10 calls, uptime 63 ms).
+const macStartupObservation = {
+  state: 'ready', version: '0.164.7', uptimeMs: 63,
+  update: { channel: 'npm', current: '0.164.7', automatic: false, lastResult: 'not checked' },
+};
+
+test('scheduler eligibility waits on both native platforms without changing policy controls', () => {
+  const normal = { method: 'scheduler', platform: 'darwin', launchdProof: 'transition' };
+  for (const platform of ['linux', 'darwin']) assert(baseline.needsSchedulerEligibility({ ...normal, platform }));
+  for (const change of [{ platform: 'win32' }, { method: 'self' }, { method: 'installer' }, { launchdProof: 'off-before-tick' }, { windowsPolicy: true }, { policy: 'unsupported-scheduler' }]) {
+    assert(!baseline.needsSchedulerEligibility({ ...normal, ...change }));
+  }
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(source.includes("needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })"));
+  assert(source.includes("waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining))"));
+});
+
+test('actual early Mac observation remains in timed-out report, never treated as eligibility', async () => {
+  const report = { source: '0.164.7', daemonBefore: structuredClone(macStartupObservation) };
+  let clock = 1000, calls = 0;
+  await assert.rejects(baseline.waitForSchedulerEligibility(report, async remaining => {
+    calls++;
+    assert(remaining > 0 && remaining <= 90);
+    return { exit: 0, stdout: JSON.stringify({ result: macStartupObservation }) };
+  }, { now: () => clock, sleep: async ms => { clock += ms; }, timeoutMs: 100, intervalMs: 10 }), /native scheduler eligibility timed out/);
+  assert.equal(calls, 9);
+  assert.equal(report.schedulerEligibility.deadline, 1100);
+  assert.equal(report.schedulerEligibility.source, '0.164.7');
+  assert.equal(report.schedulerEligibility.observations.length, 10);
+  for (const [i, observation] of report.schedulerEligibility.observations.entries()) {
+    assert.equal(observation.attempt, i + 1);
+    assert.deepEqual(observation.status, macStartupObservation);
+  }
+});
+
+test('eligibility helper requires observed ready source and automatic true, not just a ready socket', async () => {
+  const report = { source: '0.164.7', daemonBefore: structuredClone(macStartupObservation) };
+  let clock = 0;
+  // Synthetic helper contract only, not native service or upgrade acceptance evidence.
+  const statuses = [
+    { exit: 1, stdout: '' },
+    { exit: 0, stdout: '{}' },
+    ...[
+      { ...macStartupObservation, state: 'starting', update: { automatic: true } },
+      { ...macStartupObservation, version: '0.166.0', update: { automatic: true } },
+      { ...macStartupObservation, update: { automatic: true } },
+    ].map(result => ({ exit: 0, stdout: JSON.stringify({ result }) })),
+  ];
+  await baseline.waitForSchedulerEligibility(report, async () => statuses.shift(), {
+    now: () => clock, sleep: async ms => { clock += ms; }, timeoutMs: 100, intervalMs: 10,
+  });
+  assert.equal(report.schedulerEligibility.observations.length, 6);
+  assert.equal(report.daemonBefore.version, report.source);
+  assert.equal(report.daemonBefore.update.automatic, true);
+});
+
+test('eligibility rejects status arriving after deadline even when it claims automatic true', async () => {
+  const report = { source: '0.164.7', daemonBefore: macStartupObservation };
+  let clock = 0;
+  await assert.rejects(baseline.waitForSchedulerEligibility(report, async () => {
+    clock = 101;
+    return { exit: 0, stdout: JSON.stringify({ result: { ...macStartupObservation, update: { automatic: true } } }) };
+  }, { now: () => clock, sleep: async ms => { clock += ms; }, timeoutMs: 100, intervalMs: 10 }), /timed out/);
+  assert.equal(report.schedulerEligibility.observations.at(-1).observedAt, 101);
+});
+
 function productCheckout() {
   const parent = '/var/tmp/upgrade-matrix';
   mkdirSync(parent, { recursive: true, mode: 0o700 });

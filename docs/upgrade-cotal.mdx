@@ -123,7 +123,12 @@ If it refuses, follow the reported remedy instead of removing credentials or rei
 It installs and restarts nothing, so it does not replace this reconciliation step.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
 Before replacing the global binary, it checks the release's first-party package archives through
-npm. If the release is still reaching the registry, it refuses with retry guidance without starting
+npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
+The command prints progress before release checks, the recovery snapshot, package installation,
+connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector and extension installs still run serially under
+their existing locks. Every update reads and verifies its own package closure without reusing
+results from an earlier command.
+If the release is still reaching the registry, it refuses with retry guidance without starting
 the global install or connector reconciliation.
 If npm's install reports `ETARGET` for the selected latest `cotal-ai` version, the command
 reports that the release is still arriving and exits 0 without replacing packages or rolling back.
@@ -156,6 +161,37 @@ This preserves updater availability during a service stop, but does not add star
 or rollback guarantees. If migration is refused, the package has already been replaced and
 reconciliation has not started. The parent may retry or restore its previous package. Keep the
 reported failure and inspect the installed version and daemon state before retrying.
+
+## Update a standalone stack
+
+For a standalone Manager started by `cotal up --detach`, an update that cannot preserve its seats
+prints a manual cold-update sequence when protected stack and process records prove its original
+root and launch settings. Run the printed down, update and up commands in order. They retain the
+recorded space, broker address, runtime and supported options. The listed seats end and are not
+restarted. The update command stops nothing itself. `--stop-agents` integrates stopping only for
+daemon-hosted Managers. If standalone ownership or restart settings cannot be proved, the command
+keeps its original-host refusal rather than guessing a shutdown command.
+
+## Recover an interrupted update
+
+`cotal update --self` restores an interrupted update when its snapshot is a valid directory of
+this installation. If the snapshot is absent, outside this configuration, or not a plain directory,
+the command checks the recorded owner. A dead or reused owner lets it retain the unusable records
+and continue installation and reconciliation. A live owner blocks the update and names its pid.
+An unreadable owner process refuses with inspection guidance. A missing or malformed owner waits
+one hour from the first observed contents. Retrying does not reset that wait.
+
+Retired records stay in a timestamped `update-recovery-retained-<timestamp>-<suffix>` folder in the
+Cotal home, normally `~/.cotal`. The command prints that folder. It never changes the snapshot
+named by a retired record. The daemon uses the same rules, including unattended updates.
+
+If a machine on 0.164.6 or older is stuck on an unusable interrupted-update record, rerun the installer:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+The old updater stops before it can replace itself. The installer supplies the repaired updater.
 
 ## Restart the mesh
 

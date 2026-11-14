@@ -13,6 +13,10 @@ on:
         description: 'Run only the Windows native job for an installed-service diagnostic'
         type: boolean
         default: false
+      updater_compile:
+        description: 'Compile configured and no-key updater branches with a disposable test key on macOS and Windows'
+        type: boolean
+        default: false
   schedule:
     - cron: '17 6 * * 1'
   pull_request:
@@ -190,6 +194,18 @@ jobs:
       - run: pnpm --filter cotal-ai seeded-connectors
       - run: pnpm --dir desktop prepare:runtime
       - run: pnpm --dir desktop check:runtime
+      - name: Compile configured and no-key updater branches
+        if: inputs.updater_compile && runner.os != 'Linux'
+        shell: pwsh
+        run: ./desktop/scripts/check-updater-native.ps1
+      - name: Upload updater native compiler evidence
+        if: always() && inputs.updater_compile && runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-updater-native-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/desktop-updater-native/
+          if-no-files-found: error
+          retention-days: 7
       - name: Check notarization credential selection
         shell: pwsh
         run: ./desktop/scripts/check-notarization.ps1

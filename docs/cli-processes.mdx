@@ -898,6 +898,10 @@ registration request and identity. Removal failures exit non-zero and keep the i
 for retry. The lifetime lock file and unrelated records remain. Remote records may remain until you
 remove the computer in the dashboard. A later install has no Manager or machine-service connection
 to resume from those removed intents. Pause and rename are not implemented.
+On Windows, uninstall and installed restart keep waiting when the same pinned process lifetime
+still answers after clearing its lifetime record. Nothing is sent on that refused connection.
+A different process, birth or nonempty record still refuses. Completion requires endpoint absence
+and the old process lifetime to have ended within the existing shutdown deadline.
 
 Setup reuses completed stages but probes an existing Manager again, pinned to its recorded instance,
 before reporting launch-readiness. If the running daemon's version or protocol differs from the

@@ -56,9 +56,13 @@ Open **Settings** in the window or **Settings…** from the tray or menu bar aft
 
 ## Updates
 
-A newer desktop version appears in a gold notice and in the tray menu after setup. **Later** hides that version until another version is available. Opening the installer checks that version's GitHub release assets for this platform and architecture. If no matching installer exists, Cotal opens the release page and explains why. Installer feedback appears in Settings under Updates and is announced to assistive technology. Install the downloaded version and reopen Cotal. The app does not replace itself, and no automatic-update feed is configured.
+A newer desktop version appears in a gold notice and in the tray menu after setup. **Later** hides that version until another version is available. In a configured updater build, **Install updates automatically** is on by default and uses the same saved preference as `cotal update --auto on|off`, independent of whether the background service can update itself. Turning it off reports availability without downloading or installing an update.
 
-**Check now** runs the background service's existing update check. Its registry cache lasts a day after success and an hour after an attempt, so this does not promise a fresh network request. Desktop installations offer **Notify me about updates**, because their app and bundled service update through the platform installer. Linux npm installations can offer **Install updates automatically** for the background service. These preferences are the same ones used by `cotal update --auto` and `cotal update --notify`.
+Builds without an updater public key keep the release summary, installer link and **Notify me about updates** control. Settings adds that this build updates through the installer. Until the native updater answers, the same controls remain available, including when the native check fails. Opening the installer checks that version's GitHub release assets for this platform and architecture. If no matching installer exists, Cotal opens the release page and explains why. Install the downloaded version and reopen Cotal.
+
+When a build has an updater key, desktop availability comes from its HTTPS release manifest. Downloads are verified against that key before they are marked ready. A missing manifest during release publication keeps the last good answer and shows only in Settings that the newest release is still being prepared. It does not add an error or a new version notice to the main view. Automatic checks keep the daily rhythm. In a configured build, **Check now** requests the manifest again, including after a failed check.
+
+This release prepares and verifies desktop updates but does not apply them. A verified download waits rather than replacing a running app or service. There is no automatic rollback. Linux deb/rpm builds require the matching platform installer because package installation needs administrator rights. The app does not update a command line installed separately through npm or the shell installer.
 
 ## Develop
 
@@ -87,6 +91,8 @@ pnpm --dir desktop app:build
 The Rust tests without default features check request, URL and environment boundaries, not the native webview or tray. A browser preview displays a native-controls-unavailable message rather than simulated daemon state.
 
 `pnpm --dir desktop test:render` builds the real front end and serves it to headless Chromium with only the native bridge stubbed. Install its browser with `pnpm --dir desktop exec playwright-core install chromium`. The suite checks every state in the paper theme at 880×660 and 560×660: browser errors, page scroll, text clipping, target overlap, Tab order, axe accessibility including contrast, and reduced motion. Screenshots go to `desktop/test/render/artifacts/`, or `SHOTS=<directory>`. `CHROMIUM_PATH` selects an installed Chromium executable. `MOTION=1` also records 0, 80, 160 and 240 ms frames in normal and reduced motion, plus a JSON record of captured animations. Progress completion, success, notice expansion and Details opening must capture their expected finite animation. The server uses the app's shipped CSP. `CASES=<comma-separated-names>` narrows a local iteration. CI uploads the renders without comparing font-sensitive golden images.
+
+The Desktop apps workflow also has an `updater_compile` dispatch input. On disposable macOS and Windows runners it generates a throwaway key, compiles the configured updater branch, then compiles again without a key. Compiler logs are uploaded separately. The test key is discarded, no production key is read, and neither build installs an update. Successful compilation does not prove native installation or signature failure recovery.
 
 ## Real-window checks
 

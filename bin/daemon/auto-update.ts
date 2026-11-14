@@ -3,7 +3,7 @@ import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { checkForUpdate, homeCotalDir, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { checkForUpdate, homeCotalDir, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanLaunchUpdate, startLaunchUpdate } from "./update-launchd.js";
 
@@ -45,7 +45,11 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       notify = settings.notify;
       automatic = ["linux", "darwin"].includes(process.platform) && !desktop && settings.auto && process.env.COTAL_NO_UPDATE_CHECK !== "1" && host.eligible();
       const recovery = readUpdateRecovery();
-      if (recovery) { automatic = false; reason = `automatic updates paused: installed ${recovery.installed}; ${recovery.reason}; run \`cotal update --self\``; }
+      if (recovery) {
+        const decision = recoveryDisposition(recovery);
+        if (decision.action !== "retire") automatic = false;
+        reason = `automatic updates ${decision.action === "retire" ? "can resume" : "paused"}: installed ${recovery.installed}; ${recovery.reason}; ${decision.instruction}`;
+      }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
     if (!["linux", "darwin"].includes(process.platform)) reason = `${reason}. Automatic installation is unavailable on ${process.platform === "win32" ? "Windows" : process.platform} in this release. Run \`cotal update --self\` here`;
     if (desktop) reason = "update the desktop app with its signed platform installer";
@@ -68,7 +72,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     }
     const settings = readUpdateSettings();
     const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
-    if (closed || Date.now() < state.next) return;
+    const recovery = readUpdateRecovery();
+    const retiring = recovery !== undefined && recoveryDisposition(recovery).action === "retire";
+    if (closed || !retiring && Date.now() < state.next) return;
     if (desktop) {
       state = { ...state, next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS };
       persist();
@@ -78,9 +84,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
-    if (state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
-    if (!newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
-    if (Date.now() - (cached.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
+    if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
+    if (!retiring && !newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
+    if (!retiring && Date.now() - (cached.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
     try { await host.prepare(); }
     catch (error) { state = { ...state, result: `waiting for idle Managers: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + 60_000 }; persist(); return; }
     try {

@@ -155,9 +155,13 @@ the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 
-The desktop app's bundled runtime checks for newer versions but never runs npm updates. Its notices
-point to the signed desktop installer. `cotal update --auto on` has no effect on that runtime;
-update the desktop app instead.
+The desktop app's bundled runtime never runs npm updates. In a configured updater build,
+**Install updates automatically** uses the same saved preference as `cotal update --auto`.
+A build without an updater key keeps its release summary, installer link and **Notify me about updates**
+control. Settings explains that this build updates through the installer. Configured builds
+can download and verify desktop updates, and **Check now** requests the manifest again rather than
+using the automatic daily cache. This release does not apply updates or roll back automatically.
+The app does not change a separately installed command line.
 
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.

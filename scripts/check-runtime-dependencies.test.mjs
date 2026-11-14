@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import ts from 'typescript';
-import { auditPackage, packageName, runtimeImports } from './check-runtime-dependencies.mjs';
+import { auditPackage, packageName, runtimeDependencyExemption, runtimeImports } from './check-runtime-dependencies.mjs';
 
 test('emitted runtime imports include import, re-export, dynamic import and require', () => {
   const js = ts.transpileModule(`import type { A } from 'type-only';
@@ -16,6 +16,15 @@ require.resolve('resolved');
 import.meta.resolve('esm-resolved');
 console.log(B, x);`, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
   assert.deepEqual(runtimeImports(js).map(row => row.specifier), ['@scope/runtime/subpath', 're-export', 'late/subpath', 'common', 'resolved', 'esm-resolved']);
+});
+
+test('source-launch loader classification matches only its published Jcode file and specifier', () => {
+  assert.match(runtimeDependencyExemption('@cotal-ai/connector-jcode', 'dist/index.js', 'tsx'), /source-launch branch/);
+  for (const [name, file, specifier] of [
+    ['@cotal-ai/connector-core', 'dist/index.js', 'tsx'],
+    ['@cotal-ai/connector-jcode', 'dist/host.js', 'tsx'],
+    ['@cotal-ai/connector-jcode', 'dist/index.js', 'tsx/cli'],
+  ]) assert.equal(runtimeDependencyExemption(name, file, specifier), undefined);
 });
 
 test('built-ins, file URLs, relative paths and self imports are not npm dependencies', () => {

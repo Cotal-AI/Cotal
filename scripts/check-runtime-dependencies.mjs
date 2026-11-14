@@ -48,6 +48,12 @@ const COMPUTED_LOADS = new Map([
   ['@cotal-ai/workspace/dist/materialize.js/pathToFileURL(join(dir, entry)).href', 'operator-installed extension entry'],
 ]);
 
+export function runtimeDependencyExemption(name, file, specifier) {
+  if (name === '@cotal-ai/connector-jcode' && file === 'dist/index.js' && specifier === 'tsx')
+    return 'The source-launch branch resolves the TypeScript loader; published dist selects host.js without evaluating that branch.';
+  return undefined;
+}
+
 export function auditPackage(directory) {
   const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'));
   const dist = join(directory, 'dist');
@@ -75,6 +81,7 @@ export function auditPackage(directory) {
       violations.push({ package: manifest.name, file: builtFile, ...item, specifier: item.expression, dependency: '<computed load requires classification>' });
       continue;
     }
+    if (runtimeDependencyExemption(manifest.name, builtFile, item.specifier)) continue;
     const dependency = packageName(item.specifier);
     if (!dependency) continue;
     const row = { package: manifest.name, file: builtFile, ...item, dependency };
