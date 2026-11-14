@@ -3801,7 +3801,7 @@ export class Manager {
     }));
     // Deprovision EVERY snapshot entry regardless of whether its stop failed (allSettled + a loud log).
     await Promise.allSettled(
-      managed.filter((a) => !a.suppressCleanup && (process.platform !== "win32" || a.handle.kind !== "pty" || !this.agents.has(a.name))).map((a) => {
+      managed.filter((a) => !a.suppressCleanup).map((a) => {
         // Retired here on every mesh, the open mesh included, which runs no teardown of its own.
         const settled = a.launch.source.kind !== "inline" || this.dropInlineSnapshot(a.name, a.lifecycleUid);
         return this.deprovision({ ...this.teardownTarget(a), ...(settled ? { snapshotSettled: true as const } : {}) }).catch((e) => console.error(`deprovision ${a.name} (${a.id}) on shutdown: ${rejectionText(e)}`));
