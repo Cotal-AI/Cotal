@@ -80,6 +80,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/update-packed/scripts" "$RUNNER_TEMP/update-packed/.changeset"
           node scripts/bundle-update-duration.mjs "$RUNNER_TEMP/update-packed/scripts/driver.mjs"
           cp scripts/update-duration-observer.cjs "$RUNNER_TEMP/update-packed/scripts/update-duration-observer.cjs"
+          cp scripts/update-duration-diagnostic.mjs "$RUNNER_TEMP/update-packed/scripts/update-duration-diagnostic.mjs"
           cp .changeset/config.json "$RUNNER_TEMP/update-packed/.changeset/config.json"
       - uses: actions/upload-artifact@v4
         with:
@@ -89,16 +90,14 @@ jobs:
           if-no-files-found: error
   fixed:
     needs: pack
-    name: fixed-${{ matrix.runner }}-${{ matrix.sample }}-${{ matrix.mode }}
-    runs-on: ${{ matrix.runner }}
+    name: diagnostic-linux-control-${{ matrix.sample }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
       max-parallel: 3
       matrix:
-        runner: [windows-2022, ubuntu-24.04]
-        sample: [1, 2, 3]
-        mode: [passive, control]
+        sample: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/setup-node@v6
         with:
@@ -110,13 +109,13 @@ jobs:
       - name: Measure packed fixed update without building on acceptance runner
         env:
           SAMPLE: ${{ matrix.sample }}
-          MODE: ${{ matrix.mode }}
+          MODE: control
           PACKED_INPUTS: ${{ runner.temp }}/update-packed
           UPDATE_OBSERVER: ${{ runner.temp }}/update-packed/scripts/update-duration-observer.cjs
-        run: node "${{ runner.temp }}/update-packed/scripts/driver.mjs"
+        run: node "${{ runner.temp }}/update-packed/scripts/update-duration-diagnostic.mjs" "${{ runner.temp }}/update-packed/scripts/driver.mjs"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: update-duration-fixed-${{ matrix.runner }}-${{ matrix.sample }}-${{ matrix.mode }}
+          name: update-duration-diagnostic-linux-control-${{ matrix.sample }}
           path: ${{ runner.temp }}/update-duration-evidence
           if-no-files-found: error
