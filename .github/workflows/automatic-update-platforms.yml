@@ -63,7 +63,8 @@ jobs:
             const { mkdirSync, writeFileSync } = require('node:fs');
             const { pathToFileURL } = require('node:url');
             const { execFileSync } = require('node:child_process');
-            const { planPhase, boundedCells, jobsMatrix, compareVersions } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
+            const { createHash } = require('node:crypto');
+            const { planPhase, boundedCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
             const event = context.payload;
             const repository = `${context.repo.owner}/${context.repo.repo}`;
             const metadata = { eventName: context.eventName, repository };
@@ -80,26 +81,33 @@ jobs:
               phase = event.inputs.phase;
             } else if (context.eventName === 'workflow_run') {
               const run = event.workflow_run;
-              if (run.name === 'Changesets' && run.status === 'completed' && run.head_branch === 'main' && run.head_repository?.full_name === repository && event.repository.full_name === repository) {
+              if (event.action === 'completed' && run.status === 'completed' && run.head_branch === 'main' && run.head_repository?.full_name === repository && event.repository.full_name === repository) {
                 const { data: actual } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: run.id });
+                assert.equal(actual.id, run.id);
+                assert.equal(actual.status, 'completed');
                 assert.equal(actual.head_sha, run.head_sha);
                 assert.equal(actual.head_branch, 'main');
                 assert.equal(actual.head_repository.full_name, repository);
                 assert.equal(actual.path, '.github/workflows/changesets.yml');
+                event.workflow_run.path = actual.path;
+                core.info(`Publication lookup: run ${run.id}, path ${actual.path}, name ${actual.name}, status ${actual.status}`);
                 const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, { ...context.repo, run_id: run.id, filter: 'latest', per_page: 100 });
                 const publish = jobs.find(job => job.name === 'publish');
                 const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, { ...context.repo, run_id: run.id, per_page: 100 });
                 const receipts = artifacts.filter(artifact => artifact.name === 'upgrade-publication' && !artifact.expired);
+                core.info(`Publication evidence: run ${run.id}, publish ${publish?.conclusion ?? 'missing'}, receipts ${receipts.length}`);
                 assert(receipts.length <= 1, 'ambiguous publication receipt');
                 if (publish?.conclusion === 'success' && receipts.length === 1) {
                   const artifact = receipts[0];
                   assert.equal(artifact.workflow_run.id, run.id);
                   assert.equal(artifact.workflow_run.head_sha, run.head_sha);
                   const { data: archive } = await github.rest.actions.downloadArtifact({ ...context.repo, artifact_id: artifact.id, archive_format: 'zip' });
+                  assert.equal('sha256:' + createHash('sha256').update(Buffer.from(archive)).digest('hex'), artifact.digest, 'publication receipt archive digest mismatch');
                   const zip = `${process.env.RUNNER_TEMP}/upgrade-publication.zip`;
                   writeFileSync(zip, Buffer.from(archive));
                   publication = JSON.parse(execFileSync('unzip', ['-p', zip, 'publication.json'], { encoding: 'utf8', maxBuffer: 1024 * 1024 }));
                   assert.equal(publication.sourceSHA, run.head_sha);
+                  assert.equal(publication.repository, repository);
                   assert.equal(String(publication.runId), String(run.id));
                   assert.equal(publication.published, true);
                   assert.equal(publication.promoted, true);
@@ -124,10 +132,11 @@ jobs:
               metadata.targetVersion = metadata.packageManifest.version;
               if (publication) assert.equal(publication.version, metadata.targetVersion);
               if (context.eventName === 'workflow_dispatch') assert.equal(event.inputs.target_version, metadata.targetVersion, 'manual target must match the immutable source manifest');
-              assert(compareVersions(metadata.targetVersion, '0.164.6') > 0, 'target must upgrade the fixed published baseline');
               const response = await fetch('https://registry.npmjs.org/cotal-ai');
               assert(response.ok, 'public npm metadata unavailable');
               const registry = await response.json();
+              metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
+              metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
               if (phase === 'candidate') assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
               else assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
             }
@@ -135,10 +144,10 @@ jobs:
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
             const cells = boundedCells(plan);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
-            writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, cells }, null, 2));
+            writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
             for (const [key, value] of Object.entries({ phase: plan.phase, source: plan.sourceSHA, target: plan.targetVersion, profile: plan.profile, matrix: JSON.stringify(jobsMatrix(cells)) })) core.setOutput(key, value ?? '');
-            await core.summary.addHeading('Upgrade matrix selection').addRaw(plan.status === 'skipped' ? `Not applicable: ${plan.reason}` : `${plan.phase}: ${plan.targetVersion} from ${plan.sourceSHA}, ${cells.filter(c => c.required).length} isolated cells`).write();
+            await core.summary.addHeading('Upgrade matrix selection').addRaw(plan.status === 'skipped' ? `Not applicable: ${plan.reason}` : `${plan.phase}: ${plan.sourceVersion} to ${plan.targetVersion} from ${plan.sourceSHA}, ${cells.filter(c => c.required).length} isolated cells`).write();
       - uses: actions/upload-artifact@v4
         with:
           name: upgrade-plan
@@ -323,7 +332,7 @@ jobs:
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           NODE
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && matrix.scenario == 'daemon-scheduler'
+        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'agent-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -333,7 +342,7 @@ jobs:
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Prepare owned broker fixture dependencies
-        if: matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent')
+        if: matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -345,7 +354,7 @@ jobs:
           tar -xzf "$work/nats-server.tar.gz" -C "$work"
           echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
       - name: Build only the signed-in participant fixture dependencies
-        if: matrix.scenario == 'container-manager'
+        if: matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent'
         shell: bash
         run: |
           node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
@@ -357,39 +366,47 @@ jobs:
           PHASE: ${{ needs.select.outputs.phase }}
         run: |
           node --import tsx --input-type=module <<'NODE'
-          import { spawnSync } from 'node:child_process';
+          import assert from 'node:assert/strict';
           import { pathToFileURL } from 'node:url';
+          import { matchKnownRefusal } from './scripts/upgrade-matrix-refusals.mjs';
           import { mkdirSync, writeFileSync } from 'node:fs';
           const cell = JSON.parse(process.env.CELL);
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'agent-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
-          const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', '0.164.6', '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
+          const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           if (process.env.PHASE === 'candidate') {
             const candidate = process.env.RUNNER_TEMP + '/release-candidate';
             args.push('--candidate', candidate, '--direction', 'B');
             if (method === 'installer') args.push('--candidate-installer', candidate + '/installer.sh');
           }
-          if (cell.scenario === 'agent-stop-consent') args.push('--stop-agents', 'true');
+          if (['agent-stop-consent', 'standalone-stop-consent'].includes(cell.scenario)) args.push('--stop-agents', 'true');
+          if (cell.scenario === 'agent-stop-consent') args.push('--daemon-hosted-manager', 'true');
           if (cell.scenario === 'foreign-config-recovery') args.push('--foreign-config-snapshot', 'true');
           if (cell.scenario === 'container-manager') args.push('--container-manager', 'true');
           if (cell.platform === 'darwin' && method === 'scheduler') {
             args.push('--launchd-proof', 'transition');
             if (process.env.PHASE === 'published') args.push('--published-launchd', 'true');
           }
-          if (cell.scenario === 'container-manager') {
-            const { matrixCell, cellExitCode } = await import(pathToFileURL(process.cwd() + '/scripts/automatic-update-platform-baseline.mjs'));
+          const { matrixCell, cellExitCode } = await import(pathToFileURL(process.cwd() + '/scripts/automatic-update-platform-baseline.mjs'));
+          const options = Object.fromEntries(args.slice(1).reduce((rows, value, index, all) => index % 2 === 0 ? [...rows, [value.slice(2), all[index + 1]]] : rows, []));
+          if (['container-manager', 'agent-stop-consent'].includes(cell.scenario)) {
             const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
-            const options = Object.fromEntries(args.slice(1).reduce((rows, value, index, all) => index % 2 === 0 ? [...rows, [value.slice(2), all[index + 1]]] : rows, []));
-            const report = await matrixCell({ ...options, prepare: prepareUpdateParticipant });
-            process.exitCode = cellExitCode(report);
-          } else {
-            const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
-            if (result.error) throw result.error;
-            process.exitCode = result.status ?? 1;
+            options.prepare = prepareUpdateParticipant;
           }
+          const report = await matrixCell(options);
+          assert.equal(report.environment?.hostedDisposable, true);
+          assert.equal(report.source, cell.sourceVersion);
+          assert.equal(report.sourceRequested, cell.sourceVersion);
+          assert.equal(report.target, cell.targetVersion);
+          assert.equal(report.platform, cell.platform);
+          assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before matching');
+          assert(!report.cleanupFailure && !report.error, 'harness or cleanup error cannot be an expected refusal');
+          if (cell.phase === 'candidate') assert.equal(report.candidate?.source, cell.sourceSHA);
+          const refusal = matchKnownRefusal(cell, report);
+          process.exitCode = refusal ? 0 : cellExitCode(report);
           NODE
       - uses: actions/upload-artifact@v4
         if: always()
@@ -434,16 +451,21 @@ jobs:
         env:
           EXPECTED_CANDIDATE_ARTIFACT: ${{ needs.release-pack.outputs.artifact }}
           EXPECTED_CANDIDATE_DIGEST: ${{ needs.release-pack.outputs.digest }}
+          EXPECTED_HARNESS_SOURCE: ${{ github.sha }}
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
           import { readdirSync, readFileSync, mkdirSync, writeFileSync, existsSync, appendFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
           import { join } from 'node:path';
           import { verifyResults } from './scripts/upgrade-matrix-plan.mjs';
+          import { matchKnownRefusal } from './scripts/upgrade-matrix-refusals.mjs';
           const root = process.env.RUNNER_TEMP + '/upgrade-results';
           mkdirSync(root, { recursive: true });
           const plan = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/upgrade-plan/plan.json'));
           const actual = [];
+          const knownRefusals = [];
           for (const entry of readdirSync(root, { withFileTypes: true }).filter(x => x.isDirectory())) {
             const directory = join(root, entry.name);
             if (!existsSync(join(directory, 'coordinate.json'))) continue;
@@ -459,19 +481,40 @@ jobs:
               assert.equal(origin.digest, process.env.EXPECTED_CANDIDATE_DIGEST);
               assert(origin.artifact && origin.digest, 'candidate artifact identity must be present');
             }
-            const reports = readdirSync(directory).filter(x => x.endsWith('.json')).map(x => JSON.parse(readFileSync(join(directory, x)))).filter(x => x.tier && Array.isArray(x.assertions));
+            const entries = readdirSync(directory);
+            const sidecars = entries.filter(name => name.endsWith('.sha256'));
+            assert.equal(sidecars.length, 1, 'each coordinate needs one report/log digest sidecar');
+            const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+            const bindings = readFileSync(join(directory, sidecars[0]), 'utf8').trim().split('\n').map(line => {
+              const match = /^([a-f0-9]{64})  ([A-Za-z0-9._-]+)$/.exec(line);
+              assert(match, 'malformed evidence digest');
+              assert.equal(digest(readFileSync(join(directory, match[2]))), match[1], 'raw evidence digest mismatch');
+              return match[2];
+            });
+            assert.equal(bindings.length, 2, 'sidecar must bind report and transcript');
+            assert.equal(new Set(bindings).size, 2, 'duplicate digest binding');
+            const reports = entries.filter(x => x.endsWith('.json')).map(x => JSON.parse(readFileSync(join(directory, x)))).filter(x => x.tier && Array.isArray(x.assertions));
             assert.equal(reports.length, 1, 'each coordinate must have exactly one raw harness report');
             for (const report of reports) {
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'agent-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              assert(bindings.includes(report.id + '.json') && bindings.includes(report.id + '.log'), 'sidecar must bind this report and log');
+              assert.equal(report.harnessSource, process.env.EXPECTED_HARNESS_SOURCE, 'report must come from this workflow harness revision');
+              assert.match(report.harnessSource, /^[a-f0-9]{40}$/);
+              const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
+              const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
+              assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
               assert.equal(report.method, method);
-              assert.equal(report.source, '0.164.6');
+              assert.equal(report.source, plan.sourceVersion);
+              assert.equal(report.sourceRequested, plan.sourceVersion);
+              assert.equal(cell.sourceVersion, plan.sourceVersion);
               assert.equal(report.target, plan.targetVersion);
               if (plan.phase === 'candidate') {
                 assert.equal(report.tier, 'candidate-B (synthetic registry, real native processes)');
                 assert.equal(report.candidate?.direction, 'B');
+                assert.equal(report.candidate?.source, plan.sourceSHA, 'raw candidate source must match before refusal matching');
                 assert.equal(report.environment?.registryOverridden, true);
               } else {
                 assert.equal(report.tier, 'published');
@@ -479,6 +522,15 @@ jobs:
                 assert.equal(report.candidate, undefined);
               }
               if (!['fresh', 'foreign-config-recovery'].includes(cell.scenario)) assert(report.extensionsBefore?.length >= 8, 'configured scenarios require populated extension inventory');
+              assert(Array.isArray(report.assertions) && report.assertions.length > 0);
+              assert.equal(new Set(report.assertions.map(a => a.name)).size, report.assertions.length, 'duplicate raw assertion');
+              assert(report.assertions.every(a => typeof a.name === 'string' && typeof a.passed === 'boolean'), 'malformed raw assertion');
+              assert.equal(report.environment?.hostedDisposable, true, 'real hosted evidence required');
+              assert.equal(report.platform, cell.platform);
+              if (cell.scenario === 'agent-stop-consent') assert.equal(report.agentHost, 'daemon', 'documented consent must use a daemon-hosted Manager');
+              if (cell.scenario === 'standalone-stop-consent') assert.equal(report.agentHost, 'standalone', 'standalone refusal must use up --detach');
+              assert(!report.cleanupFailure && !report.error, 'cleanup or harness error cannot be a known refusal');
+              assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before grading');
               const ok = name => report.assertions.some(a => a.name === name && a.passed === true);
               const assertions = {
                 'target-version': report.target === plan.targetVersion && ok('CLI version is target') && ok('selected CLI reports target'),
@@ -493,14 +545,18 @@ jobs:
                 'native-scheduler': ok('scheduler completed within observation deadline') && ok('daemon scheduler performed a replacement or reported up to date'),
                 'daemon-restart': ok('native daemon remains active at its expected generation') && (cell.platform !== 'darwin' || ok('launchd transition observed exactly one daemon restart')),
                 'stop-consent': report.calls.some(call => Array.isArray(call.argv) && call.argv.includes('--stop-agents') && call.exit === 0),
+                'owned-stack-cleanup': (cell.scenario === 'agent-stop-consent' ? ok('owned daemon-hosted Manager stop succeeds') && report.cleanup === 'receipt-guarded native removal confirmed' : ok('owned local stack cleanup succeeds')) && (cell.scenario !== 'container-manager' || ok('foreign container cleanup succeeds')),
               };
-              const genuine = report.environment?.hostedDisposable === true && report.source === '0.164.6' && report.platform === cell.platform && report.assertions.every(a => a.passed === true) && (plan.phase !== 'candidate' || report.candidate?.source === plan.sourceSHA);
+              if (['agent-stop-consent', 'standalone-stop-consent', 'container-manager'].includes(cell.scenario)) assert(assertions['owned-stack-cleanup'], 'owned cleanup must succeed before grading');
+              const refusal = matchKnownRefusal(cell, report);
+              if (refusal) knownRefusals.push({ id: cell.id, issue: refusal.issue });
+              const genuine = report.assertions.every(a => a.passed === true) && (plan.phase !== 'candidate' || report.candidate?.source === plan.sourceSHA);
               actual.push({ id: cell.id, status: genuine ? report.result : 'failed', assertions });
             }
           }
-          const verdict = verifyResults(plan.cells, actual);
+          const verdict = verifyResults(plan.cells, actual, { knownRefusals });
           writeFileSync(join(root, 'census.json'), JSON.stringify(verdict, null, 2));
-          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Expected coordinate census\n\n${verdict.passed.length}/${verdict.requiredCount} required cells passed. Acceptance: ${verdict.acceptance}.\n\n${verdict.failures.join('\n')}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n## Expected coordinate census\n\n${verdict.passed.length}/${verdict.requiredCount} genuine upgrade passes. ${verdict.knownRefusals.length} expected refusals. Summary acceptance: ${verdict.acceptance}. Full upgrade acceptance: ${verdict.upgradeAcceptance}.\n\n${verdict.knownRefusals.map(r => `${r.id}: expected refusal ${r.issue}`).join('\n')}\n${verdict.failures.join('\n')}\n`);
           if (!verdict.acceptance) process.exitCode = 1;
           NODE
       - uses: actions/upload-artifact@v4
