@@ -1146,7 +1146,7 @@ export async function refreshConnectorInstalls(): Promise<string[]> {
       const started = Date.now();
       console.error(`Refreshing ${refresh.title}`);
       lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
-      console.error(`Update step integration:${connector.name} completed in ${Date.now() - started} ms`);
+      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
     }
   }
   return lines;

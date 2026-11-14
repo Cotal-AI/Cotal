@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:update-extension-set": "tsx implementations/cli/smoke/extension-promotion.smoke.ts && tsx implementations/cli/smoke/extension-promotion-crash.smoke.ts && tsx implementations/cli/smoke/update-set-atomic.smoke.ts",
     "smoke:discovery-login": "tsx packages/workspace/smoke/discovery-login.smoke.ts && tsx bin/smoke/daemon-discovery-login.smoke.ts",
     "smoke:login-service-stores": "tsx implementations/auth/smoke/login-private-group.smoke.ts && tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
     "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts && tsx bin/smoke/fresh-cloud-guidance.smoke.ts",
@@ -290,7 +291,7 @@
     "smoke:sys-rotation": "tsx implementations/cli/smoke/sys-rotation.smoke.ts",
     "smoke:sys-rotation-e2e": "tsx implementations/cli/smoke/sys-rotation-e2e.smoke.ts",
     "smoke:anchor-renewal": "tsx packages/core/smoke/anchor-renewal.smoke.ts",
-    "smoke:signing-key-rotation": "tsx packages/core/smoke/signing-key-rotation-auth.smoke.ts",
+    "smoke:signing-key-rotation": "tsx packages/core/smoke/signing-key-rotation-auth.smoke.ts && tsx packages/core/smoke/signing-key-rotation-policy.smoke.ts",
     "smoke:system-account-rotation": "tsx packages/core/smoke/system-account-rotation-auth.smoke.ts",
     "smoke:cutover-restart-eviction": "tsx packages/core/smoke/cutover-restart-eviction-auth.smoke.ts",
     "smoke:evict-live:auth": "tsx packages/core/smoke/evict-live-auth.smoke.ts",
@@ -524,6 +525,7 @@
     "smoke:issued-profile-census": "tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
     "smoke:delivery-coverage": "tsx implementations/delivery/smoke/delivery-coverage.smoke.ts",
     "smoke:hosted-delivery-lifetime": "tsx implementations/delivery/smoke/hosted-delivery-lifetime.smoke.ts",
+    "smoke:hosted-delivery-native-connections": "tsx implementations/delivery/smoke/hosted-delivery-native-connections.smoke.ts",
     "smoke:hosted-delivery-startup-isolation": "tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts",
     "smoke:delivery-multi-space": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-multi-space.smoke.ts",
     "smoke:delivery-standby": "pnpm --filter cotal-ai... build && tsx implementations/delivery/smoke/delivery-standby.smoke.ts",
@@ -1313,7 +1315,7 @@
     "smoke:auto-update-snapshot": "tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-install-native": "tsx bin/smoke/daemon-ownership-imports.smoke.ts && tsx bin/smoke/daemon-ownership-win32.smoke.ts && tsx bin/smoke/daemon-install-native.smoke.ts && tsx bin/smoke/daemon-install-entry.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --retry && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --pending && tsx bin/smoke/daemon-owned-uninstall.smoke.ts && tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
-    "smoke:daemon-transport": "tsx bin/smoke/daemon-transport.smoke.ts"
+    "smoke:daemon-transport": "tsx bin/smoke/daemon-shutdown-probe.smoke.ts && tsx bin/smoke/daemon-transport.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

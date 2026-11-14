@@ -5,30 +5,118 @@ on:
 permissions:
   contents: read
 jobs:
-  throughput:
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+  native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
+      test_controls: false
+  linux-native:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-2022, ubuntu-24.04]
+        include:
+          - { arch: x64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
+          node-version: 22
+      - run: node packages/seat/scripts/build-native.mjs --host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-linux-${{ matrix.arch }}
+          path: packages/seat/build/Release/linux-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
+  pack:
+    needs: [native, linux-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TELEMETRY: 'off'
+      PNPM_CONFIG_WORKSPACE_CONCURRENCY: '3'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
           node-version: 24
-      - name: Measure original published rollback copy throughput
+      - run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free before pack')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm --workspace-concurrency 3 build
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: workspace-native-*
+          path: ${{ runner.temp }}/workspace-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-*
+          path: ${{ runner.temp }}/seat-inputs
+      - name: Assemble the complete release native closure
         env:
-          SAMPLE: '1'
-          MODE: passive
-          COPY_THROUGHPUT: '1'
-          COPY_THROUGHPUT_OBSERVER: ${{ github.workspace }}/scripts/update-copy-throughput.cjs
-        run: node scripts/measure-update-duration.mjs
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-inputs/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-inputs/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-inputs/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-inputs/workspace-native-darwin-arm64
+          SEAT_NATIVE_X64: ${{ runner.temp }}/seat-inputs/seat-native-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-inputs/seat-native-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-inputs/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-inputs/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-inputs/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-inputs/seat-native-win32-arm64/peercred.node
+        run: |
+          node scripts/workspace-assemble-natives.mjs
+          node scripts/seat-assemble-natives.mjs
+      - name: Pack both exact-version fixed implementations with release guards
+        run: node scripts/pack-update-duration.mjs "$RUNNER_TEMP/update-packed"
+      - name: Bundle standalone measurement driver
+        run: |
+          mkdir -p "$RUNNER_TEMP/update-packed/scripts" "$RUNNER_TEMP/update-packed/.changeset"
+          node scripts/bundle-update-duration.mjs "$RUNNER_TEMP/update-packed/scripts/driver.mjs"
+          cp scripts/update-duration-observer.cjs "$RUNNER_TEMP/update-packed/scripts/update-duration-observer.cjs"
+          cp .changeset/config.json "$RUNNER_TEMP/update-packed/.changeset/config.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: update-packed-inputs
+          include-hidden-files: true
+          path: ${{ runner.temp }}/update-packed
+          if-no-files-found: error
+  fixed:
+    needs: pack
+    name: fixed-${{ matrix.runner }}-${{ matrix.sample }}-${{ matrix.mode }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        runner: [windows-2022, ubuntu-24.04]
+        sample: [1, 2, 3]
+        mode: [passive, control]
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: update-packed-inputs
+          path: ${{ runner.temp }}/update-packed
+      - name: Measure packed fixed update without building on acceptance runner
+        env:
+          SAMPLE: ${{ matrix.sample }}
+          MODE: ${{ matrix.mode }}
+          PACKED_INPUTS: ${{ runner.temp }}/update-packed
+          UPDATE_OBSERVER: ${{ runner.temp }}/update-packed/scripts/update-duration-observer.cjs
+        run: node "${{ runner.temp }}/update-packed/scripts/driver.mjs"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: update-copy-throughput-${{ matrix.runner }}
+          name: update-duration-fixed-${{ matrix.runner }}-${{ matrix.sample }}-${{ matrix.mode }}
           path: ${{ runner.temp }}/update-duration-evidence
           if-no-files-found: error

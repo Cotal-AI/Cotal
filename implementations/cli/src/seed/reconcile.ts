@@ -51,7 +51,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -384,6 +384,14 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   const refreshed: string[] = [];
   const verified: string[] = [];
   const removedKept: string[] = [];
+  const staged: { name: string; pkg: string; spec: string; version: string; source: "seeded" }[] = [];
+  const install = (name: string, force: boolean): void => {
+    if (mode !== "verify") { seedOne(name, generation, nonce, force); verifyInstalled(name, generation); return; }
+    console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
+    writeCursor({ nonce, package: name, phase: "copy" });
+    const spec = stageSeedPayload(generation, name, { force });
+    staged.push({ name, pkg: SEEDED_EXTENSIONS[name].pkg, spec, version: generation, source: "seeded" });
+  };
   // A verify run keeps a built-in only on proof. An interrupted or failed earlier run and a prefix
   // that is not the tree its lock records each void that proof for every built-in at once, so the run
   // reinstalls all of them the way `--force` does, and says why. Read when the first installed
@@ -408,13 +416,11 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       // The interrupted package (the cursor only ever names an ADD in progress — removals never write
       // it): re-install it regardless of current manifest state, whether the crash tore the files or
       // died before the manifest commit. Verified below before the cursor is cleared.
-      seedOne(name, generation, nonce, true);
-      verifyInstalled(name, generation);
+      install(name, true);
       everSeeded.add(name);
       refreshed.push(name);
     } else if (!wasSeeded) {
-      seedOne(name, generation, nonce, mode === "reset" || mode === "force");
-      verifyInstalled(name, generation);
+      install(name, mode === "reset" || mode === "force");
       everSeeded.add(name);
       seeded.push(name);
     } else if (entry) {
@@ -441,20 +447,27 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
         }
       }
       if (refresh) {
-        seedOne(name, generation, nonce, true);
-        verifyInstalled(name, generation);
+        install(name, true);
         refreshed.push(name);
       }
     } else if (manifestRebuilt && installState(name) !== "absent") {
       // The manifest was corrupt and quarantined, but this connector is STILL on disk: its entry was
       // lost with the manifest, not removed. Re-seed it to rebuild the record (a quarantined manifest
       // carries no reliable "removed" fact — only on-disk presence can distinguish the two).
-      seedOne(name, generation, nonce, true);
-      verifyInstalled(name, generation);
+      install(name, true);
       refreshed.push(name);
     } else {
       removedKept.push(name); // seeded before, deliberately removed (or absent on disk) → leave removed
     }
+  }
+
+  if (mode === "verify") {
+    const { installExtensionSet } = await import("../commands/ext.js");
+    const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
+    const operators = loadExtensionsManifest().extensions.filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && operatorInstallDiffers(entry, generation) !== undefined)
+      .map(entry => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
+    await installExtensionSet([...staged, ...operators]);
+    for (const entry of staged) verifyInstalled(entry.name, generation);
   }
 
   // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
@@ -696,7 +709,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // command's result (a first-boot `cotal meshes --json` printed seven non-JSON lines).
   if (r.stdout) process.stderr.write(r.stdout);
   if (r.status !== 0) throw new SeedChildFailure(`failed to seed connector "${name}" from ${storePath}`, childFailure(r).split("\n"));
-  console.error(`Update step connector:${name} completed in ${Date.now() - started} ms`);
+  console.error(`✓ built-in ${name} reconciled (${((Date.now() - started) / 1000).toFixed(1)} s)`);
 }
 
 /** Why a seed child failed. It writes its progress and then its `✗` failure to stderr: the progress

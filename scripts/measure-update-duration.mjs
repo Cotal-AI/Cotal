@@ -43,7 +43,6 @@ async function call(label, argv, observed = false) {
   console.log(`${new Date(startedAt).toISOString()} start ${label}`);
   const childEnv = { ...env };
   if (observed) Object.assign(childEnv, { UPDATE_TIMING_DIR: trace, NODE_OPTIONS: `--require=${JSON.stringify(observerPath)}` });
-  if (observed && process.env.COPY_THROUGHPUT === '1') Object.assign(childEnv, { COPY_THROUGHPUT_DIR: trace, NODE_OPTIONS: `--require=${JSON.stringify(resolve(process.env.COPY_THROUGHPUT_OBSERVER))}` });
   const result = await new Promise((done, reject) => {
     const child = spawn(process.execPath, argv, { cwd: project, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '', stderr = '';
