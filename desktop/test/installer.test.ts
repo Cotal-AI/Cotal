@@ -23,7 +23,8 @@ test('setup owns task suppression without task termination and persists caller-r
   const helper = readFileSync(new URL('service-update.mjs', base), 'utf8');
   assert.match(hooks, /MB_RETRYCANCEL/);
   assert.match(hooks, /SetErrorLevel \$CotalCode/);
-  assert.match(hooks, /setup-node\.exe/);
+  assert.match(hooks, /File \/oname=node\.exe/);
+  assert.doesNotMatch(hooks, /setup-node\.exe/);
   assert.doesNotMatch(task, /Stop-Process|Stop-ScheduledTask|\/End|\.Stop\(/i);
   assert.match(task, /Import-Module "\$PSHOME\\Modules\\Microsoft.PowerShell.Management/);
   assert.match(task, /Import-Module "\$PSHOME\\Modules\\Microsoft.PowerShell.Utility/);
@@ -48,8 +49,9 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(task, /foreign.*true/);
   assert.match(hooks, /\$CotalCode == "23"/);
   assert.doesNotMatch(hooks, /\$CotalCode (?:<>|=) \d/);
-  assert.match(hooks, /\$CotalCode == "timeout"/);
-  assert.match(hooks, /\$CotalCode == "error"/);
+  for (const code of [0, 20, 21, 22, 23]) assert.ok(hooks.includes(`$CotalCode != "${code}"`));
+  assert.match(hooks, /Delete "\$LOCALAPPDATA\\CotalSetup\\result.json"/);
+  assert.match(hooks, /Delete "\$LOCALAPPDATA\\CotalSetup\\message.txt"/);
   assert.match(hooks, /Call CotalHelperExit/);
   assert.match(hooks, /TIMEOUT=360000[^\n]*finish/);
   assert.match(task, /'preparing','copying','ready'/);

@@ -16,6 +16,8 @@ mkdirSync(directory, { recursive: true });
 const stateFile = join(directory, 'service-update.json');
 const resultFile = join(directory, 'result.json');
 const messageFile = join(directory, 'message.txt');
+rmSync(resultFile, { force: true });
+rmSync(messageFile, { force: true });
 const script = fileURLToPath(new URL('service-task.ps1', import.meta.url));
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: targetVersion };

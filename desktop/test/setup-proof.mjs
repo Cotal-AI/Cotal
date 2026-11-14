@@ -20,6 +20,7 @@ const runtime = join(root, 'runtime');
 const cli = join(runtime, 'dist', 'cotal.js');
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const repo = fileURLToPath(new URL('../../', import.meta.url));
+const proofStartedAt = new Date().toISOString();
 const report = { head: process.env.GITHUB_SHA, cell, calls: [], checks: [], limits: [] };
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
 Object.assign(env, { COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: '0.164.9' });
@@ -84,7 +85,14 @@ try {
     await required(process.execPath, [foreignCli, 'daemon', 'install', '--json']);
     report.foreignCli = foreignCli;
     serviceInstalled = true;
-    const status = await required(process.execPath, [foreignCli, 'daemon', 'status', '--json']);
+    const deadline = Date.now() + 60_000;
+    let status;
+    do {
+      status = await run(process.execPath, [foreignCli, 'daemon', 'status', '--json']);
+      if (status.code === 0) break;
+      await delay(500);
+    } while (Date.now() < deadline);
+    assert.equal(status.code, 0, status.stdout || status.stderr);
     report.before = JSON.parse(status.stdout).result;
     report.foreignReceipt = readFileSync(join(root, 'daemon', 'service-unit.json'), 'utf8');
   }
@@ -188,12 +196,14 @@ try {
       check('Previously stopped service stays stopped', stopped.code !== 0 && JSON.parse(stopped.stdout).error.cause.code === 'NOT_RUNNING');
     } else report.after = await ready('0.164.9');
   }
-} catch (error) { report.failure = error.stack; process.exitCode = 1; }
+} catch (error) { report.failure = error.stack; report.failureObservation = error.observation; process.exitCode = 1; }
 finally {
   if (seat) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
   if (app?.exitCode === null) { const ended = new Promise(resolve => app.once('exit', resolve)); app.kill(); await ended; }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
   if (serviceInstalled) { const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes'); report.cleanup = result; if (result.code !== 0) process.exitCode = 1; }
+  const events = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $start=[DateTime]::Parse('${proofStartedAt}').ToUniversalTime(); $events=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000;StartTime=$start} -ErrorAction SilentlyContinue); ConvertTo-Json -InputObject @($events|ForEach-Object{@{time=$_.TimeCreated.ToUniversalTime().ToString('o');id=$_.Id;message=$_.Message}}) -Compress`], 30_000);
+  writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));
   await fixture?.close();
   save();
   console.log(JSON.stringify({ cell, failure: report.failure, checks: report.checks, output }, null, 2));
