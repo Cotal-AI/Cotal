@@ -13,12 +13,14 @@ A computer that has never had `~/.config/cotal` needs one manual `npm install -g
 
 ## Execution generations
 
-The `cotal` entry reads a versioned execution descriptor when one is present.
-A descriptor bound to this package's name, version and bootstrap hash selects a retained
-package only after its inventory verifies. A descriptor may also list up to four validated
-artifact bindings for a bootstrap and manifest transition. A missing or differently bound descriptor runs
-the installed tree in place and writes nothing. An invalid matching descriptor refuses
-with reinstall guidance rather than selecting another generation.
+The `cotal` entry reads a versioned execution descriptor from its sibling retained-generation store.
+The descriptor name is bound to the logical package root. Its package name, original installed
+version and bootstrap hash select a retained package only after its inventory verifies.
+A descriptor can also bind the package-manager launch route's incarnation, so uninstalling and
+reinstalling a cached pnpm package does not reactivate an earlier selection.
+Up to four validated artifact bindings support a later bootstrap transition.
+A missing or differently bound descriptor runs the installed tree in place and writes nothing.
+An invalid matching descriptor refuses with reinstall guidance rather than selecting another generation.
 A running command reports the release of its loaded implementation, even if the canonical
 package manifest changes while it runs.
 
