@@ -261,7 +261,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       return false;
     }
     if (startup && (decision.action === "wait" || decision.action === "active" || decision.action === "restore" && record.phase === "paused")) return false;
-    if (decision.action !== "restore") throw new CommandFailure("refused", decision.action === "active" ? "LIFECYCLE_BLOCKED" : decision.action === "wait" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE", decision.instruction, { remedy: "follow the recovery instruction above, then run `cotal update --self`" });
+    if (decision.action !== "restore") throw new CommandFailure("refused", decision.action === "active" ? "LIFECYCLE_BLOCKED" : decision.action === "wait" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE", decision.instruction, { native: { code: decision.action === "active" ? "UPDATE_RECOVERY_OWNER_ACTIVE" : decision.action === "wait" ? "UPDATE_RECOVERY_OBSERVATION_WAIT" : "UPDATE_RECOVERY_INSPECTION_FAILED" }, remedy: "follow the recovery instruction above, then run `cotal update --self`" });
     if (!record.owner) return false;
     const start = processStartToken(record.owner.pid);
     if (start !== undefined && start === record.owner.start) return false;

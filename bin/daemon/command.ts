@@ -25,7 +25,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";

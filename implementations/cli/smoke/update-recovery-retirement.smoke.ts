@@ -38,6 +38,11 @@ for (const automatic of [false, true]) {
   const c = cell(automatic ? "dead-auto" : "dead-manual");
   const before = [readFileSync(c.receipt), readFileSync(c.attempt)];
   const foreignBefore = readFileSync(join(c.foreign, "untouched"));
+  const check = c.run({}, ["update", "--check"]);
+  assert.equal(check.code, 0, check.output);
+  assert.match(check.output, /retain these unusable records and continue/);
+  assert.deepEqual(readFileSync(c.receipt), before[0], "check does not rewrite recovery");
+  assert.equal(existsSync(c.observation), false, "check never starts observation");
   const result = c.run(automatic ? { COTAL_AUTO_UPDATE: "1" } : {});
   assert.equal(result.code, 0, result.output);
   assert.match(result.output, /Retained unusable interrupted-update records in .*; continuing the update/);
@@ -63,6 +68,25 @@ for (const lookupFails of [false, true]) {
   assert.deepEqual(readFileSync(c.receipt), before[0]);
   assert.deepEqual(readFileSync(c.attempt), before[1]);
   assert.equal(existsSync(c.observation), false);
+  assert.deepEqual(c.retained(), []);
+}
+
+for (const failed of [false, true]) {
+  const c = cell(failed ? "valid-restore-failure" : "valid-startup");
+  const local = join(c.env.XDG_CONFIG_HOME, "cotal/.update-snapshot-valid");
+  mkdirSync(join(local, "seed"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(local, "seed", "restored"), "original seed bytes");
+  c.save({ ...c.record, phase: "replacing", snapshot: local });
+  const result = c.run(failed ? { RECOVERY_TEST_RESTORE_FAIL: "1" } : { RECOVERY_TEST_STARTUP: "1" });
+  if (failed) {
+    assert.notEqual(result.code, 0, result.output);
+    assert.equal(JSON.parse(readFileSync(c.receipt, "utf8")).phase, "paused");
+    assert.equal(existsSync(local), true, "a valid snapshot with a failed restore is never retired");
+  } else {
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /startup restored: true/);
+    assert.equal(readFileSync(join(c.env.XDG_CONFIG_HOME, "cotal/seed/restored"), "utf8"), "original seed bytes");
+  }
   assert.deepEqual(c.retained(), []);
 }
 
