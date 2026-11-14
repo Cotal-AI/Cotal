@@ -71,14 +71,14 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
 export function recoverExecutionUpdate(path: string): ExecutionReplacement {
   const installed = executionInstallRoot();
   const record = readExecutionTransaction(installed, path);
-  const previous = JSON.parse(record.previous.manifest) as { version: string };
+  const previous = record.previous.descriptor?.generation.version ?? (JSON.parse(record.previous.manifest) as { version: string }).version;
   return {
     entry: join(installed, "dist/cotal.js"), journal: path,
     async preflight() { throw new Error("a recovering execution transaction cannot be prepared again"); },
     publish() { throw new Error("a recovering execution transaction cannot publish a new target"); },
     restore() { publishExecutionTransaction(installed, path, true); },
     verify(version) {
-      if (version !== previous.version) throw new Error("execution recovery previous version differs");
+      if (version !== previous) throw new Error("execution recovery previous version differs");
       verifySelected(installed, version);
     },
   };
