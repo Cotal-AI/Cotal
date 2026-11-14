@@ -118,6 +118,13 @@ test('retry eligibility ages only after normal interrupted-task retirement commi
  assert.match(boundary,/!existsSync\(join\(cotalHome,'update-windows.json'\)\)/);
  assert.doesNotMatch(boundary,/cli\(|\/Run|setUpdate|next=/);
 });
+test('candidate proxy retains both packed recovery and target closures with the active latest tag',()=>{
+ assert.match(source,/candidatePairResponse\(overlayA,overlayB,active,req.url\)/);
+ assert.match(source,/body.versions=\{\.\.\.additional.versions,\.\.\.body.versions\}/);
+ assert.match(source,/endsWith\('\/'\+A.identity.version\)\?A:pathname.endsWith\('\/'\+B.identity.version\)\?B:active/);
+ assert.match(source,/metadata.versions\[versions.A\]/);assert.match(source,/metadata.versions\[versions.B\]/);
+ assert.match(source,/selected.dist.integrity/);assert.match(source,/fetch\(selected.dist.tarball\)/);
+});
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });

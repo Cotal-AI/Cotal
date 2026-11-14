@@ -14,11 +14,26 @@ mkdirSync(output,{recursive:true});
 const save=(name,value)=>writeFileSync(join(output,name),JSON.stringify(value,null,2)+'\n');
 const json=path=>JSON.parse(readFileSync(path,'utf8').replace(/^\uFEFF/,''));
 const sha=path=>createHash('sha256').update(readFileSync(path)).digest('hex');
+export async function candidatePairResponse(A,B,active,path){
+ const pathname=decodeURIComponent(new URL(path,'http://localhost').pathname);
+ const target=pathname.endsWith('/'+A.identity.version)?A:pathname.endsWith('/'+B.identity.version)?B:active;
+ const response=await fetch(target.url+path,{signal:AbortSignal.timeout(60000)});
+ const contentType=response.headers.get('content-type')??'application/json';
+ if(!contentType.includes('json'))return {status:response.status,contentType,bytes:Buffer.from(await response.arrayBuffer())};
+ const text=await response.text();let body;try{body=JSON.parse(text);}catch{return {status:response.status,contentType,bytes:Buffer.from(text)};}
+ if(body?.versions){
+  const other=target===A?B:A;
+  const extra=await fetch(other.url+path,{signal:AbortSignal.timeout(60000)});assert(extra.ok,'both candidate closures must be readable');
+  const additional=await extra.json();assert(additional.versions,'candidate package metadata must include versions');
+  body.versions={...additional.versions,...body.versions};
+ }
+ return {status:response.status,contentType,bytes:Buffer.from(JSON.stringify(body))};
+}
 export async function run(){
  if(process.argv[2]==='--verify-packed'){
   const A=await candidateRegistry(join(output,'candidate-A'),'B','https://registry.npmjs.org');
   const B=await candidateRegistry(join(output,'candidate-B'),'B','https://registry.npmjs.org');
-  try{assert.equal((await(await fetch(A.url+'/cotal-ai/latest')).json()).version,json(join(output,'versions.json')).A);assert.equal((await(await fetch(B.url+'/cotal-ai/latest')).json()).version,json(join(output,'versions.json')).B);console.log('downloaded packed closures/registry bundle verified');}finally{await A.close();await B.close();}
+  try{const versions=json(join(output,'versions.json'));assert.equal((await(await fetch(A.url+'/cotal-ai/latest')).json()).version,versions.A);assert.equal((await(await fetch(B.url+'/cotal-ai/latest')).json()).version,versions.B);for(const active of [A,B]){const metadata=JSON.parse((await candidatePairResponse(A,B,active,'/cotal-ai')).bytes);assert(metadata.versions[versions.A]);assert(metadata.versions[versions.B]);assert.equal(metadata['dist-tags'].latest,active.identity.version);for(const version of [versions.A,versions.B]){const selected=JSON.parse((await candidatePairResponse(A,B,active,'/cotal-ai/'+version)).bytes);assert.equal(selected.version,version);assert(selected.dist.integrity);assert.equal((await fetch(selected.dist.tarball)).status,200);}}console.log('downloaded packed closures/registry pair bundle verified');}finally{await A.close();await B.close();}
   return;
  }
  if(process.argv[2]==='--pack'){
@@ -69,7 +84,7 @@ export async function run(){
   report.versions={A:versionA,B:versionB,source:packed.source};
   overlayA=await candidateRegistry(join(output,'candidate-A'),'B','https://registry.npmjs.org');overlayB=await candidateRegistry(join(output,'candidate-B'),'B','https://registry.npmjs.org');
   let active=overlayA;
-  proxy=createServer(async(req,res)=>{try{if(hold&&decodeURIComponent(req.url).startsWith('/cotal-ai')&&existsSync(join(cotalHome,'update-windows.json'))&&json(join(cotalHome,'update-windows.json')).owner){held.push({req,res});return;}const r=await fetch(active.url+req.url,{signal:AbortSignal.timeout(60000)});res.writeHead(r.status,{'content-type':r.headers.get('content-type')??'application/json'});res.end(Buffer.from(await r.arrayBuffer()));}catch(e){res.writeHead(502).end(String(e));}});
+  proxy=createServer(async(req,res)=>{try{if(hold&&decodeURIComponent(req.url).startsWith('/cotal-ai')&&existsSync(join(cotalHome,'update-windows.json'))&&json(join(cotalHome,'update-windows.json')).owner){held.push({req,res});return;}const r=await candidatePairResponse(overlayA,overlayB,active,req.url);res.writeHead(r.status,{'content-type':r.contentType});res.end(r.bytes);}catch(e){res.writeHead(502).end(String(e));}});
   await new Promise(resolveListen=>proxy.listen(0,'127.0.0.1',resolveListen));const registry='http://127.0.0.1:'+proxy.address().port;
   env.npm_config_registry=registry;restore=configureCandidateRegistry(home,registry);
   report.registry={...overlayA.identity,actualFront:registry};save('report.json',report);
