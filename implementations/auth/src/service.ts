@@ -73,7 +73,7 @@ import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
-import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
+import { OwnedConnections, type AuthConnectionState, type AuthNativeConnection, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { calloutLimits, type AuthCalloutLimits } from "./callout.js";
 import { runCalloutHost } from "./callout-host.js";
@@ -523,6 +523,15 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   };
 }
 
+/** The standalone data-account plane's local connection custody, without a callout or HTTP face. */
+export interface AuthAuthorityPlaneHandle extends AuthAuthorityPlane {
+  /** Tracked live-client bindings only. A host compares these with a complete native account census;
+   * the list alone proves neither liveness nor absence of other connections or issuers. */
+  nativeConnections(): AuthNativeConnection[];
+  /** Resolves only after successful plane-close ordering and all tracked connections have ended. */
+  readonly closed: Promise<AuthServiceClosed>;
+}
+
 /**
  * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
  * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
@@ -535,8 +544,27 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
  * These are STATIC data-account users (signed by the data-account signing key), so they never
  * transit the auth callout — the callout cannot deadlock on its own reader.
  */
-export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions): Promise<AuthAuthorityPlane> {
-  return await openAuthAuthorityPlaneWithCustody(opts);
+export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions): Promise<AuthAuthorityPlaneHandle> {
+  const owned = new OwnedConnections();
+  let plane: AuthAuthorityPlane;
+  try {
+    plane = await openAuthAuthorityPlaneWithCustody(opts, (nc, label) => owned.track(nc, label));
+  } catch (cause) {
+    try { await owned.closeRemaining(); owned.complete(); await owned.closed; }
+    catch (cleanup) { throw new AggregateError([cause, cleanup], "auth authority open failed and its connections did not close"); }
+    throw cause;
+  }
+  return {
+    ...plane,
+    nativeConnections: () => owned.nativeConnections(),
+    closed: owned.closed,
+    close: async () => {
+      await plane.close();
+      await owned.closeRemaining();
+      owned.complete();
+      await owned.closed;
+    },
+  };
 }
 
 /** The hosted door over a plane's service endpoint host: refused before entry unless the context is
