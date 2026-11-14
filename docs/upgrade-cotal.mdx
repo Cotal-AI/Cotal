@@ -37,6 +37,7 @@ The initial admission verifies the daemon lifetime from those checks. Rollback a
 restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
+A successful manual update waits for the target daemon generation, not its updater's loaded version.
 An unwritable installation refuses before staging and names the owning install command.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
 

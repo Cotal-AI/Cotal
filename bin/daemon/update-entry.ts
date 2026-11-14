@@ -28,6 +28,7 @@ const composed: Command = { ...command, async run(args) {
   let currentPackages = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
+  let replacementVersion: string | undefined;
   let targetAdmissionChecked = false;
   let recoveryFence = false;
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
@@ -38,7 +39,11 @@ const composed: Command = { ...command, async run(args) {
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       executionGlobalRoot: () => dirname(executionInstallRoot()),
-      prepareExecution: (version: string, root: string) => prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; }),
+      prepareExecution: async (version: string, root: string) => {
+        const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; });
+        replacementVersion = version;
+        return execution;
+      },
       recoverExecution: recoverExecutionUpdate,
     } : {}), isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
@@ -225,6 +230,7 @@ const composed: Command = { ...command, async run(args) {
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
+  const expectedVersion = replacementVersion ?? updateRuntime.version();
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
@@ -237,10 +243,10 @@ const composed: Command = { ...command, async run(args) {
     console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
     return;
   }
-  if (current.result.version !== updateRuntime.version()) {
+  if (current.result.version !== expectedVersion) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
-    try { await restartInstalled(paths, undefined, false, updateRuntime.version(), detail => console.log(`machine daemon: ${detail}`)); }
+    try { await restartInstalled(paths, undefined, false, expectedVersion, detail => console.log(`machine daemon: ${detail}`)); }
     catch (error) {
       if (hosted && process.platform !== "win32") {
         try { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
@@ -253,7 +259,7 @@ const composed: Command = { ...command, async run(args) {
   for (;;) {
     try {
       const reply = await queryDaemon({ paths });
-      if (reply.ok && reply.result.version === updateRuntime.version() && hostedSpaces.every((space) => reply.result.managers?.some((manager) => manager.space === space && manager.state === "answering"))) return;
+      if (reply.ok && reply.result.version === expectedVersion && hostedSpaces.every((space) => reply.result.managers?.some((manager) => manager.space === space && manager.state === "answering"))) return;
     } catch (error) { if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error; }
     if (Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the updated daemon did not restore its hosted Managers before the deadline", { remedy: "read \`cotal daemon status\` and the recorded daemon user service" });
     await new Promise((resolve) => setTimeout(resolve, 250));
