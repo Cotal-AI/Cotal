@@ -41,6 +41,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -463,6 +464,8 @@ async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
+  const deferredRecovery = readUpdateRecovery();
+  const observedLiveUpdater = deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   if (await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
@@ -504,6 +507,32 @@ async function serve(args: ParsedArgs): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let closed = false;
     let stopWatching = () => {};
+    let recoveryTimer: ReturnType<typeof setInterval> | undefined;
+    let recoveryBusy = false;
+    if (observedLiveUpdater) {
+      recoveryTimer = setInterval(() => {
+        if (closed || recoveryBusy) return;
+        const record = readUpdateRecovery();
+        if (!record) { clearInterval(recoveryTimer); return; }
+        if (liveUpdateClosureOwner(record)) return;
+        recoveryBusy = true;
+        clearInterval(recoveryTimer);
+        process.stderr.write("daemon: observed updater ended; checking guarded interrupted-update recovery\n");
+        void recoverInterruptedUpdate(undefined, true).then(async restored => {
+          if (restored) {
+            process.stderr.write("daemon: interrupted update restored the previous installation; restarting the recorded service\n");
+            await updates?.close();
+            await running.close();
+            resolve();
+          } else if (readUpdateRecovery()) {
+            process.stderr.write("daemon: interrupted update remains paused; read daemon status and run `cotal update --self`\n");
+          } else process.stderr.write("daemon: updater completed; no interrupted-update recovery remains\n");
+        }).catch((error: unknown) => {
+          process.stderr.write(`daemon: guarded interrupted-update recovery refused: ${error instanceof Error ? error.message : String(error)}; run \`cotal update --self\`\n`);
+        });
+      }, 1000);
+      recoveryTimer.unref();
+    }
     void ownership.then(observation => {
       if (closed) return;
       const verified = observation.state === "owned";
@@ -525,7 +554,7 @@ async function serve(args: ParsedArgs): Promise<void> {
         resolve();
       }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
     });
-    const stop = () => { closed = true; provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
+    const stop = () => { closed = true; clearInterval(recoveryTimer); provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
     void running.stopped.then(stop, reject);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

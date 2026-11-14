@@ -28,6 +28,7 @@ import {
   targetFlags,
   resolveControlTarget,
   recoveryDisposition,
+  liveUpdateClosureOwner,
   recoveryProcessStartToken,
   observeUnownedRecovery,
 } from "@cotal-ai/workspace";
@@ -242,7 +243,14 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
 
 /** Resume an abandoned replacement before a command or daemon can activate its closure. */
 export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false): Promise<boolean> {
-  if (childBinding(rt).kind === "bound" || !readUpdateRecovery()) return false;
+  if (childBinding(rt).kind === "bound") return false;
+  const observed = readUpdateRecovery();
+  if (!observed) return false;
+  if (startup) {
+    // A restarted daemon must answer the updater that still owns the closure. It may only
+    // observe that live transaction here, never compete with it for restoration authority.
+    if (liveUpdateClosureOwner(observed, rt.recoveryOwnerStart ?? recoveryProcessStartToken)) return false;
+  }
   const release = claimUpdateClosureAccess(true);
   try {
     const record = readUpdateRecovery();

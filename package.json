@@ -1048,6 +1048,7 @@
     "smoke:daemon-name": "tsx bin/smoke/daemon-name.smoke.ts",
     "smoke:daemon-other-providers": "tsx bin/smoke/daemon-other-providers.smoke.ts",
     "smoke:daemon-update-generation": "tsx bin/smoke/daemon-update-generation.smoke.ts",
+    "smoke:daemon-update-startup": "tsx bin/smoke/daemon-update-startup.smoke.ts",
     "smoke:daemon-update-no-runtime": "tsx bin/smoke/daemon-update-no-runtime.smoke.ts",
     "smoke:daemon-paused-update": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-paused-update.smoke.ts",
     "smoke:daemon-expired-provider": "tsx bin/smoke/daemon-other-providers.smoke.ts --expired",
