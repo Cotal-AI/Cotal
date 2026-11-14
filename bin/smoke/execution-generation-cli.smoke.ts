@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
@@ -26,6 +26,13 @@ if (!["linux", "darwin"].includes(process.platform)) {
     const docs = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "docs", "--search", "upgrade", "--json"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.equal(docs.status, 0, docs.stderr);
     assert.equal(JSON.parse(docs.stdout).command, "docs");
+    const originalManifest = readFileSync(join(installed, "package.json"), "utf8");
+    const originalVersion = JSON.parse(originalManifest).version as string;
+    writeFileSync(join(installed, "package.json"), JSON.stringify({ ...JSON.parse(originalManifest), version: "99.0.0" }));
+    const publishing = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
+    assert.equal(publishing.status, 0, publishing.stderr);
+    assert.equal(publishing.stdout.split("\n")[0], `cotal-ai ${originalVersion}`, "loaded code identity must not come from newly published canonical metadata");
+    writeFileSync(join(installed, "package.json"), originalManifest);
     writeExecutionDescriptor(installed, descriptor);
     const stopped = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.notEqual(stopped.status, 0, "retained package without runtime dependencies must not silently use the old installed graph");
