@@ -4,6 +4,7 @@ on:
     branches: [measure/win-setup-keeps-service]
 permissions:
   contents: read
+  actions: read
 jobs:
   build:
     runs-on: windows-2022
@@ -61,7 +62,27 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
+        repeat: [0]
         cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted, app-open, app-tray, foreign, fresh, cannot-start]
+        include:
+          - { cell: running, repeat: 1 }
+          - { cell: running, repeat: 2 }
+          - { cell: running, repeat: 3 }
+          - { cell: running, repeat: 4 }
+          - { cell: running, repeat: 5 }
+          - { cell: running, repeat: 6 }
+          - { cell: running, repeat: 7 }
+          - { cell: running, repeat: 8 }
+          - { cell: running, repeat: 9 }
+          - { cell: app-tray, repeat: 1 }
+          - { cell: app-tray, repeat: 2 }
+          - { cell: app-tray, repeat: 3 }
+          - { cell: app-tray, repeat: 4 }
+          - { cell: app-tray, repeat: 5 }
+          - { cell: app-tray, repeat: 6 }
+          - { cell: app-tray, repeat: 7 }
+          - { cell: app-tray, repeat: 8 }
+          - { cell: app-tray, repeat: 9 }
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -124,6 +145,7 @@ jobs:
           "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
       - name: Exercise actual installed setup
         env:
+          COTAL_SETUP_REPEAT: ${{ matrix.repeat }}
           COTAL_SETUP_CANDIDATE_KIND: ${{ matrix.cell == 'cannot-start' && 'invalid-helper-control' || 'product' }}
         run: pnpm exec tsx desktop/test/setup-proof.mjs ${{ matrix.cell }}
       - name: Existing Windows service lifecycle suites
@@ -142,8 +164,41 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: setup-proof-${{ matrix.cell }}
+          name: setup-proof-${{ matrix.cell }}-${{ matrix.repeat }}
           path: |
             ${{ runner.temp }}/setup-proof/
             ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
+  stock-ui-control:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Exercise unchanged UI driver against published fresh setup
+        shell: pwsh
+        env:
+          RELEASE_METADATA_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if(Test-Path "$env:LOCALAPPDATA/Cotal"){throw 'Control requires a clean installation'}
+          $name='Cotal_0.164.8_x64-setup.exe'
+          $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} 'https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v0.164.8'
+          $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+          if($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw 'Published control digest unavailable'}
+          $expected=$Matches[1]
+          $installer=Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest $asset[0].browser_download_url -OutFile $installer
+          if((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected){throw 'Published control digest mismatch'}
+          $output=Join-Path $env:RUNNER_TEMP 'stock-ui-control'
+          $null=New-Item -ItemType Directory -Path $output
+          @{head=$env:GITHUB_SHA;version='0.164.8';sha256=$expected;driverSha256=(Get-FileHash desktop/test/setup-ui.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json | Set-Content "$output/identity.json"
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File desktop/test/setup-ui.ps1 -Installer $installer -Mode install -Output "$output/ui.json" > "$output/stdout.txt" 2> "$output/stderr.txt"
+          $code=$LASTEXITCODE
+          @{exitCode=$code} | ConvertTo-Json | Set-Content "$output/result.json"
+          if($code -ne 0){throw 'Stock published UI control did not complete'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: setup-proof-stock-ui-control
+          path: ${{ runner.temp }}/stock-ui-control/
           if-no-files-found: error
