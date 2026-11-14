@@ -93,6 +93,12 @@ export interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "pe
   readonly output?: Writable;
 }
 
+/** The check the install operation makes before it starts a recorded service. Any refusal reads as not installed. */
+function serviceInstalled(target: ReturnType<DesktopBridgeOptions["resolveTarget"]>): boolean {
+  try { planUninstall(target.paths, target.home); return true; }
+  catch { return false; }
+}
+
 /** Run one app operation through the stock local client. Closing the UI never stops the service. */
 export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void> {
   const output = opts.output ?? process.stdout;
@@ -103,6 +109,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     emit({ v: 1, event: "result", ok: false, error: { code: "BAD_REQUEST", message: "The app request was incomplete, oversized or unsupported." } });
     return;
   }
+  let target: ReturnType<DesktopBridgeOptions["resolveTarget"]> | undefined;
   try {
     if (req.op === "update-policy") {
       const settings = req.auto === undefined ? readUpdateSettings() : setUpdateSetting("auto", req.auto);
@@ -129,7 +136,8 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       const assets = release.assets.filter((asset: { name?: unknown; browser_download_url?: unknown }) => typeof asset.name === "string" && typeof asset.browser_download_url === "string").map((asset: { name: string; browser_download_url: string }) => ({ name: asset.name, url: asset.browser_download_url }));
       emit({ v: 1, event: "result", ok: true, result: { assets } }); return;
     }
-    const { paths, home } = opts.resolveTarget();
+    target = opts.resolveTarget();
+    const { paths, home } = target;
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
     if (req.op === "setup") {
@@ -193,7 +201,9 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const message = e instanceof CommandFailure && (req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
-      : code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
+      : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
+        ? "The background service is installed but stopped. Choose Start service to start it."
+        : "The daemon is not running. Install its background service first.")
       : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use \`cotal daemon status\` for diagnostics."
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
