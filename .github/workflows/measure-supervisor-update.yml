@@ -4,6 +4,7 @@ on:
     branches: [measure/foreign-supervisor]
 permissions:
   contents: read
+  actions: read
 env:
   PRODUCT_SHA: bbee0ea5e74884fe633df223a319628c5d6a6215
   SHARED_SHA: d57044a3f5e8821d7ff4427352137d0af3e9b30e
@@ -11,6 +12,7 @@ env:
   COTAL_TELEMETRY: 'off'
 jobs:
   native:
+    if: false
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -64,7 +66,6 @@ jobs:
           path: packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
           if-no-files-found: error
   pack:
-    needs: native
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -91,6 +92,8 @@ jobs:
         with:
           pattern: release-*
           path: ${{ runner.temp }}/release-natives
+          run-id: 43545720192
+          github-token: ${{ github.token }}
       - name: Assemble and guard complete native closure
         working-directory: product
         run: |
