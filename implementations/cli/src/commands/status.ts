@@ -460,6 +460,13 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
+  const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
+  const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
+    code: "EXTENSION_VERSION_SKEW",
+    target: { version: machine.version, packages: skewedExtensions.map((item) => item.package) },
+    message: `extension version skew: ${skewedExtensions.map((item) => `${item.package} is ${item.version}`).join(", ")}; this cotal is ${machine.version}. Run \`${displayCmd()} update --self\` to reconcile this installation.`,
+  }] : [];
+  if (extensionWarnings.length) hints.push(`reconcile extension versions with \`${displayCmd()} update --self\``);
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
@@ -512,7 +519,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       target: { space: result.selected.space ?? null, scope: values.all ? "all" : "selected" },
       result,
       completeness: parts ? "partial" : "complete",
-      warnings: [...gaps.warnings, ...invalidValues, ...survivors],
+      warnings: [...gaps.warnings, ...extensionWarnings, ...invalidValues, ...survivors],
       ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
     (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
