@@ -1,0 +1,78 @@
+name: Windows automatic update feature proof
+on:
+  push:
+    branches: [measure/auto-update-windows]
+permissions:
+  contents: read
+jobs:
+  # Existing source-matched pack guards require all four workspace targets.
+  # Core ab5ceff0 cleared source-matched builders for this measurement branch only.
+  native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
+      test_controls: false
+  acceptance:
+    needs: native
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TELEMETRY: 'off'
+      PNPM_CONFIG_WORKSPACE_CONCURRENCY: '3'
+      pnpm_config_workspace_concurrency: '3'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: workspace-native-*
+          path: native-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-*
+          path: seat-inputs
+      - name: Initialize evidence and provenance
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-auto-evidence" -Force | Out-Null
+          git rev-parse HEAD | Out-File "$env:RUNNER_TEMP/windows-auto-evidence/head.txt"
+          git status --short | Out-File "$env:RUNNER_TEMP/windows-auto-evidence/source-status.txt"
+      - run: pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=2
+      - name: Validate temporary driver and workflow scope
+        run: node --test scripts/windows-auto-product-cell.test.mjs
+      - name: Assemble exact source-matched workspace artifacts
+        shell: powershell
+        env:
+          WORKSPACE_NATIVE_X64: native-inputs/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: native-inputs/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: native-inputs/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: native-inputs/workspace-native-darwin-arm64
+        run: |
+          node scripts/workspace-assemble-natives.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/windows-auto-native-inputs.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run: pnpm build
+      - name: Real shipped Windows boot and accounting readers
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/windows-auto-evidence" -Force | Out-Null
+          pnpm smoke:win32-update-job 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-auto-evidence/native-smoke.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm smoke:auto-update-windows 2>&1 | Tee-Object "$env:RUNNER_TEMP/windows-auto-evidence/state-smoke.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Packed user installation and real Task Scheduler acceptance
+        shell: powershell
+        run: node scripts/windows-auto-product-cell.mjs "$env:RUNNER_TEMP/windows-auto-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-automatic-update-feature
+          path: ${{ runner.temp }}/windows-auto-evidence
+          if-no-files-found: error
