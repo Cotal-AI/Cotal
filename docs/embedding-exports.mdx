@@ -17,6 +17,13 @@ stay registered. The reason argument and `PruneReason` type are removed. Callers
 `"gone"` must report the target offline without calling `pruneMesh`; callers that passed
 `"mismatch"` omit the argument.
 
+## Local observation reads
+
+`@cotal-ai/workspace/local-observation` exports `CommandFailure` and
+`readLocalRecordSource(path, limit, privateFile)`. These are the same implementations as the
+workspace root exports, without loading the workstation command graph. The reader keeps its
+bounded descriptor read and platform-specific file checks. It caches no source or ownership result.
+
 ## Node connection signing
 
 Node endpoints, the Manager's standing service, goal-writer and session-ledger connections, and

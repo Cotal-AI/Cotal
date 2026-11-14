@@ -16,6 +16,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./local-observation": {
+      "types": "./dist/local-observation.d.ts",
+      "import": "./dist/local-observation.js"
+    },
     "./liveness": {
       "types": "./dist/liveness.d.ts",
       "import": "./dist/liveness.js"

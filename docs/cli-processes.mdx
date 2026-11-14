@@ -1034,6 +1034,10 @@ entry cannot load at all, Task Scheduler's last result is the diagnostic and no 
 Install refuses before preparing a task if its launch entry is missing or is not a file.
 Task lookup imports ScheduledTasks and Microsoft.PowerShell.Utility by name before querying the
 task and serializing its result, avoiding automatic module discovery for those commands.
+The Windows ownership observer loads only the read-only task and recorded-source checks in its
+worker. It reads the current SID, source digest, registered action and principal afresh on each
+observation. It does not load CLI commands or Manager startup code, and its 65-second observation
+budget and refusal behavior are unchanged.
 Native service tools have a 30-second budget. A tool that cannot complete refuses
 `DEPENDENCY_UNAVAILABLE` and names a timeout, output overflow, startup error code or terminating
 signal with elapsed time. JSON output includes the native code, elapsed milliseconds and budget

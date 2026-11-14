@@ -31,8 +31,11 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { recordedSourceIdentity, recordedSourceMarked } from "./install-identity.js";
+import { nativeRun } from "./install-native-run.js";
+import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
@@ -67,26 +70,14 @@ export interface UnitReceipt {
   readonly daemonHome?: string;
 }
 
-/** Where the receipt lives: beside the lifetime lock, in this daemon's own state directory. */
-export function unitReceiptFile(paths: Pick<DaemonPaths, "state">): string {
-  return join(paths.state, "service-unit.json");
-}
+import { readReceipt, unitReceiptFile } from "./install-receipt.js";
+export { unitReceiptFile } from "./install-receipt.js";
 
 /** `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for an explicit daemon home, derived
  *  the same way its socket directory is so the two always agree. */
 export function daemonUnitName(daemonHome: string | undefined): string {
   if (daemonHome === undefined) return "cotal-daemon.service";
   return `cotal-daemon-${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}.service`;
-}
-
-function readReceipt(paths: Pick<DaemonPaths, "state">): UnitReceipt | undefined {
-  let o: unknown;
-  try { o = JSON.parse(readFileSync(unitReceiptFile(paths), "utf8")); } catch { return undefined; }
-  if (!o || typeof o !== "object") return undefined;
-  const r = o as Record<string, unknown>;
-  if (r.v !== 1 || typeof r.unit !== "string" || typeof r.unitPath !== "string" || typeof r.unitSha256 !== "string" || typeof r.installedAt !== "string") return undefined;
-  if (r.mechanism !== undefined && r.mechanism !== "systemd-user" && r.mechanism !== "launchd-agent" && r.mechanism !== "scheduled-task") return undefined;
-  return { v: 1, ...(r.mechanism !== undefined ? { mechanism: r.mechanism } : {}), unit: r.unit, unitPath: r.unitPath, unitSha256: r.unitSha256, installedAt: r.installedAt, ...(typeof r.daemonHome === "string" ? { daemonHome: r.daemonHome } : {}) };
 }
 
 function writeReceipt(paths: DaemonPaths, receipt: UnitReceipt): void {
@@ -188,25 +179,6 @@ export interface NativeResult {
 
 /** Runs one native tool by absolute path with an argument vector, never through a shell. */
 export type NativeRun = (file: string, args: readonly string[], env?: NodeJS.ProcessEnv) => NativeResult;
-
-function nativeRun(file: string, args: readonly string[], env?: NodeJS.ProcessEnv): NativeResult {
-  const started = Date.now();
-  const result = spawnSync(file, args, { encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...(env ? { env } : {}) });
-  if (result.error || result.signal) {
-    const elapsedMs = Date.now() - started;
-    const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-    const reason = code === "ETIMEDOUT" ? "timed out after 30 s"
-      : code === "ENOBUFS" ? "exceeded its 256 KiB output limit"
-      : code ? `could not start or complete (${code})`
-      : `exited by signal ${result.signal}`;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${basename(file)} ${reason} (elapsed ${elapsedMs} ms); no further native step was taken`, {
-      native: { code: code ?? result.signal ?? "NATIVE_TOOL_FAILED", detail: { elapsedMs, timeoutMs: 30_000, signal: result.signal } },
-    });
-  }
-  const stdout = typeof result.stdout === "string" ? result.stdout : "";
-  const stderr = typeof result.stderr === "string" ? result.stderr : "";
-  return { status: result.status, stdout, detail: (stderr.trim() || stdout.trim()).replace(/[\u0000-\u001f\u007f]+/gu, " ").slice(0, 300) };
-}
 
 /** What a macOS or Windows install would write and register, with no effect yet. */
 export interface NativePlan {
@@ -376,9 +348,12 @@ function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | un
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
   const mechanism = receipt.mechanism ?? "systemd-user";
   if (mechanism !== (service ? service.mechanism : "systemd-user")) throw new CommandFailure("refused", "CONFLICT", `the recorded unit ${receipt.unit} is a ${mechanism} unit, which this OS does not run; nothing was removed`);
+  if (process.platform === "win32") {
+    checkWindowsRecordedUnit(paths, receipt, service!);
+    return { receipt, plan: { mechanism, unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt }, service };
+  }
   try { lstatSync(receipt.unitPath); }
   catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the recorded unit file ${receipt.unitPath} is gone; nothing was removed. Delete ${unitReceiptFile(paths)} by hand to forget it`); }
-  if (mechanism === "scheduled-task" && receipt.unitPath !== join(paths.state, "service-task.xml")) throw new CommandFailure("refused", "CONFLICT", "the scheduled-task receipt names a definition outside this daemon state; nothing was changed");
   if (service) service.check(receipt);
   else {
     const unit = daemonUnitName(daemonHome);
@@ -453,35 +428,7 @@ export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemo
 }
 
 function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; current: string } {
-  const bytes = readFileSync(receipt.unitPath);
-  const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
-  let argv: string[];
-  if (plan.mechanism === "systemd-user") {
-    const line = /^ExecStart=(.*)$/m.exec(bytes.toString("utf8"))?.[1];
-    if (!line) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon unit has no readable executable and entry");
-    argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
-  } else if (plan.mechanism === "launchd-agent") {
-    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(bytes.toString("utf8"))?.[1] ?? "";
-    argv = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(match => decode(match[1]!));
-  } else {
-    const text = bytes.subarray(2).toString("utf16le");
-    const executable = decode(/<Command>([^<]*)<\/Command>/.exec(text)?.[1] ?? "");
-    const args = decode(/<Arguments>([^<]*)<\/Arguments>/.exec(text)?.[1] ?? "");
-    argv = [executable, ...[...args.matchAll(/"([^"]*)"|(\S+)/g)].map(match => match[1] ?? match[2]!)];
-  }
-  const expected = daemonServeArgv(receipt.daemonHome);
-  const coordinate = (args: string[]) => {
-    const daemon = args.indexOf("daemon");
-    const entry = daemon >= 2 ? args[daemon - 1]! : args[0]!;
-    return { executable: args[0], entry };
-  };
-  const installed = coordinate(argv), current = coordinate(expected);
-  // launchd pins the adjacent cwd bootstrap instead of cotal.js itself.
-  if (plan.mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
-  if (plan.mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
-  if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
-  const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
-  return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, current: `${current.executable} ${current.entry}` };
+  return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
 
 export interface DaemonOwnershipObservation {
@@ -496,10 +443,7 @@ export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: str
     const recorded = recordedUnit(paths, daemonHome);
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
-    const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
-    const marked = plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
-      : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
-      : source.includes("daemon-native.js") || (source.includes("cotal-desktop.exe</Command>") && source.includes("<Arguments>--daemon"));
+    const marked = recordedSourceMarked(receipt, plan.mechanism);
     return marked ? { state: "owned", reason: "verified" } : { state: "not-owned", reason: "source-marker-absent" };
   } catch { return { state: "unknown", reason: "observation-failed" }; }
 }
@@ -525,12 +469,17 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
   return new Promise(resolve => {
     // Reuse the installer's exact source, identity and native-job checks. The worker's
     // default argv names this helper, so explicitly preserve the daemon's launch vector.
+    let expected: string[] | undefined;
+    if (process.platform === "win32") {
+      try { expected = daemonServeArgv(daemonHome); }
+      catch { resolve({ state: "unknown", reason: "observation-failed" }); return; }
+    }
     const worker = new Worker(`
       const { parentPort, workerData } = require('node:worker_threads');
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
-      import(workerData.module).then(m => parentPort.postMessage(m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
-    `, { eval: true, workerData: { module: import.meta.url, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv }, stdout: true, stderr: true });
+      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
+    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
     const finish = (observation: DaemonOwnershipObservation) => {
