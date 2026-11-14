@@ -1,0 +1,91 @@
+name: Windows automatic update feature proof
+on:
+  push:
+    branches: [measure/windows-auto-integrated]
+permissions:
+  contents: read
+jobs:
+  native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      darwin: true
+      test_controls: false
+  pack:
+    needs: native
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TELEMETRY: 'off'
+      pnpm_config_workspace_concurrency: '3'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: workspace-native-*
+          path: ${{ runner.temp }}/workspace-inputs
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-*
+          path: ${{ runner.temp }}/seat-inputs
+      - run: pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=2
+      - run: node --test scripts/windows-auto-product-cell.test.mjs
+      - name: Assemble release native inputs without changing their receipts
+        env:
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/workspace-inputs/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/workspace-inputs/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/workspace-inputs/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/workspace-inputs/workspace-native-darwin-arm64
+          SEAT_NATIVE_INPUTS: ${{ runner.temp }}/seat-inputs
+        run: |
+          node scripts/workspace-assemble-natives.mjs
+          node scripts/windows-auto-native-inputs.mjs
+      - run: pnpm --filter '!./examples/**' -r build
+      - name: Pack complete user-install closures on the release platform
+        run: node scripts/windows-auto-product-cell.mjs --pack "$RUNNER_TEMP/windows-packed"
+      - name: Carry the measurement driver with no source build dependency on Windows
+        run: |
+          node scripts/windows-auto-bundle-driver.mjs "$RUNNER_TEMP/windows-packed/bin/driver.mjs"
+          mkdir -p "$RUNNER_TEMP/windows-packed/.changeset"
+          cp .changeset/config.json "$RUNNER_TEMP/windows-packed/.changeset/config.json"
+          cp scripts/windows-auto-installed-native.mjs "$RUNNER_TEMP/windows-packed/installed-native-smoke.mjs"
+          node "$RUNNER_TEMP/windows-packed/bin/driver.mjs" --verify-packed "$RUNNER_TEMP/windows-packed"
+          git rev-parse HEAD > "$RUNNER_TEMP/windows-packed/head.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-packed-inputs
+          include-hidden-files: true
+          path: ${{ runner.temp }}/windows-packed
+          if-no-files-found: error
+  acceptance:
+    needs: pack
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TELEMETRY: 'off'
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-packed-inputs
+          path: ${{ runner.temp }}/windows-auto-evidence
+      - name: Install packed packages and run real Scheduler/readers only
+        shell: powershell
+        run: node "$env:RUNNER_TEMP/windows-auto-evidence/bin/driver.mjs" "$env:RUNNER_TEMP/windows-auto-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-automatic-update-feature
+          include-hidden-files: true
+          path: ${{ runner.temp }}/windows-auto-evidence
+          if-no-files-found: error
