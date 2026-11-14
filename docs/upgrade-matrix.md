@@ -84,6 +84,8 @@ blocked second hop fails.
 The consent chain also binds public daemon status and seat inventory to its prepared space and
 answering Manager before and after the second hop. Both captures require the consented seats to
 have ended. The second hop must restore the Manager without setup or repair between hops.
+The explicitly owned local connector fixture keeps its recorded version, local path and immutable
+package and launcher bytes. Every first-party recorded extension must reach the target version.
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
 route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector

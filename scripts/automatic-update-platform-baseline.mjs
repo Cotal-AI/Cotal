@@ -108,6 +108,32 @@ export function runDiagnosticCommand(file, argv, { cwd, env, timeoutMs = 10000, 
   });
 }
 
+/** Only the explicitly recorded local test fixture may retain its original generation. */
+export function extensionVersionChecks({extensions, before, target, fixture, installed}) {
+  const prior = fixture && before.filter(entry => entry.pkg === fixture.pkg);
+  const owned = fixture?.pkg === 'cotal-upgrade-native-fixture' && prior?.length === 1
+    && prior[0].spec === fixture.spec && prior[0].version === fixture.version
+    && typeof fixture.spec === 'string' && typeof fixture.path === 'string' && typeof fixture.realpath === 'string'
+    && ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'].every(name => typeof fixture.files?.[name] === 'string');
+  const counts = new Set(extensions.map(entry => entry.pkg)).size === extensions.length
+    && (!fixture || owned && extensions.filter(entry => entry.pkg === fixture.pkg).length === 1);
+  const isFixture = entry => owned && entry.pkg === fixture.pkg;
+  const recorded = counts && extensions.every(entry => isFixture(entry)
+    ? entry.spec === fixture.spec && entry.version === fixture.version
+    : entry.version === target);
+  const packages = counts && extensions.every(entry => {
+    const matches = installed.filter(row => row.pkg === entry.pkg);
+    if (matches.length !== 1) return false;
+    const current = matches[0];
+    if (!isFixture(entry)) return current.version === target;
+    return entry.spec === fixture.spec && entry.version === fixture.version
+      && current.path === fixture.path && current.realpath === fixture.realpath && current.version === fixture.version
+      && Object.keys(current.files ?? {}).length === Object.keys(fixture.files).length
+      && Object.entries(fixture.files).every(([name, hash]) => current.files?.[name] === hash);
+  });
+  return {recorded, installed: packages};
+}
+
 export const hostedManagerCommand = space => ['daemon', 'setup', '--space', space, '--json'];
 export const foreignStackCleanupCommand = 'export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; cd /tmp/project; cotal down --with-agents --yes';
 
@@ -583,6 +609,17 @@ export async function matrixCell(options) {
         assert(typeof space === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(space), 'prepared participant must name its space');
         report.managerHost = { mode: 'daemon-hosted', space };
         ok(await cotal('register daemon-hosted stand-in connector', ['ext', 'add', fixture]), 'hosted stand-in registration');
+        const fixturePath = join(config, 'extensions/node_modules/cotal-upgrade-native-fixture');
+        const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
+        const fixtureMetadata = json(join(fixturePath, 'package.json'));
+        assert.equal(fixtureMetadata.name, 'cotal-upgrade-native-fixture');
+        assert.equal(fixtureMetadata.version, report.target);
+        const files = Object.fromEntries(fixtureFiles.map(name => {
+          const bytes = readFileSync(join(fixturePath, name));
+          assert.equal(digest(bytes), digest(readFileSync(join(fixture, name))), 'installed local fixture differs from the owned source');
+          return [name, digest(bytes)];
+        }));
+        report.ownedLocalFixture = {pkg: fixtureMetadata.name, spec: fixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files};
         const planned = ok(await daemon('hosted Manager native install plan', ['daemon', 'install', '--dry-run', '--json']), 'hosted native plan');
         plan = JSON.parse(planned.stdout).result;
         assert.equal(plan.state, 'would-install', 'hosted cell must own a new native service');
@@ -877,13 +914,18 @@ export async function matrixCell(options) {
     const extensions = existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
-    check('every recorded extension is at target', extensions.every(entry => entry.version === expectedVersion), extensions.map(({ pkg, version }) => ({ pkg, version })));
+    const installedExtensions = extensions.map(entry => {
+      const path = join(config, 'extensions/node_modules', entry.pkg);
+      const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
+      const files = entry.pkg === report.ownedLocalFixture?.pkg ? Object.fromEntries(Object.keys(report.ownedLocalFixture.files).map(name => [name, existsSync(join(path, name)) ? digest(readFileSync(join(path, name))) : null])) : {};
+      return {pkg: entry.pkg, path, realpath: existsSync(path) ? realpathSync(path) : null, version: metadata?.version, files};
+    });
+    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions});
+    report.installedExtensionVersions = installedExtensions;
+    check('every recorded extension is at target', versions.recorded, extensions.map(({ pkg, version }) => ({ pkg, version })));
     const version = await cotal('selected CLI version assertion', ['--version']);
     check('selected CLI reports target', version.exit === 0 && cliReportsVersion(version.stdout, expectedVersion), version);
-    check('recorded extension package versions match target', extensions.every(entry => {
-      const path = join(config, 'extensions/node_modules', entry.pkg, 'package.json');
-      return existsSync(path) && json(path).version === expectedVersion;
-    }), extensions.map(entry => ({ pkg: entry.pkg, path: join(config, 'extensions/node_modules', entry.pkg, 'package.json') })));
+    check('recorded extension package versions match target', versions.installed, installedExtensions);
     const status = await cotal('status assertion', ['status']);
     check('cotal status exits zero', status.exit === 0, status);
     const recovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;

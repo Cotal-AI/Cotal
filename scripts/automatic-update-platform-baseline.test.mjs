@@ -4,6 +4,57 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
+test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
+  const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
+  const extensions = [before[0], {...before[1], version: '0.164.1011'}];
+  const fixture = { ...before[0], path: '/config/node_modules/cotal-upgrade-native-fixture', realpath: '/owned/native-fixture', files: {'package.json': 'package-hash', 'index.js': 'entry-hash', 'seat.mjs': 'seat-hash', 'record-seat.mjs': 'recorder-hash'} };
+  const installed = extensions.map(entry => ({pkg: entry.pkg, path: '/config/node_modules/' + entry.pkg, realpath: entry.pkg === fixture.pkg ? fixture.realpath : '/config/node_modules/' + entry.pkg, version: entry.version, files: entry.pkg === fixture.pkg ? {...fixture.files} : {}}));
+  const args = {extensions, before, target: '0.164.1011', fixture, installed};
+  assert.deepEqual(baseline.extensionVersionChecks(args), {recorded: true, installed: true});
+  for (const change of [
+    v => { v.extensions[1].version = '0.164.11'; },
+    v => { v.installed[1].version = '0.164.11'; },
+    v => { v.extensions[0].spec = '/foreign/fixture'; },
+    v => { v.extensions[0].version = '0.164.1011'; },
+    v => { v.fixture.pkg = '@cotal-ai/tmux'; },
+    v => { v.fixture.spec = '/foreign/fixture'; },
+    v => { v.installed[0].path = '/foreign/installed'; },
+    v => { v.installed[0].realpath = '/foreign/resolved'; },
+    v => { v.extensions.shift(); },
+    v => { v.installed[0].files['index.js'] = 'changed'; },
+    v => { delete v.installed[0].files['package.json']; },
+    v => { v.before = []; },
+    v => { v.extensions.push({...v.extensions[0]}); },
+    v => { v.extensions.push({pkg: 'unknown-local', version: '0.164.11', spec: '/other'}); v.installed.push({pkg: 'unknown-local', version: '0.164.11'}); },
+  ]) {
+    const changed = structuredClone(args); change(changed);
+    const result = baseline.extensionVersionChecks(changed);
+    assert.equal(result.recorded && result.installed, false);
+  }
+  assert.deepEqual(baseline.extensionVersionChecks({...args, fixture: undefined}), {recorded: false, installed: false});
+});
+
+test('owned fixture invariant uses real immutable file bytes and the driver records both inventories', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'fixture-invariant-')));
+  const path = join(root, 'fixture');
+  mkdirSync(path);
+  const source = {'package.json': JSON.stringify({name: 'cotal-upgrade-native-fixture', version: '0.164.11'}), 'index.js': 'export const fixture = true;', 'seat.mjs': 'setInterval(() => {}, 1000);', 'record-seat.mjs': '// owned recorder'};
+  for (const [name, bytes] of Object.entries(source)) writeFileSync(join(path, name), bytes);
+  const files = () => Object.fromEntries(Object.keys(source).map(name => [name, createHash('sha256').update(readFileSync(join(path, name))).digest('hex')]));
+  const entry = {pkg: 'cotal-upgrade-native-fixture', spec: path, version: '0.164.11'};
+  const fixture = {...entry, path, realpath: realpathSync(path), files: files()};
+  const installed = () => [{...entry, path, realpath: realpathSync(path), files: files()}];
+  const args = {extensions: [entry], before: [entry], target: '0.164.1011', fixture};
+  assert.deepEqual(baseline.extensionVersionChecks({...args, installed: installed()}), {recorded: true, installed: true});
+  writeFileSync(join(path, 'seat.mjs'), '// altered fixture');
+  assert.deepEqual(baseline.extensionVersionChecks({...args, installed: installed()}), {recorded: true, installed: false});
+  const driver = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(driver.indexOf('report.ownedLocalFixture =') > driver.indexOf("ok(await cotal('register daemon-hosted stand-in connector'"));
+  assert(driver.includes('fixture: report.ownedLocalFixture, installed: installedExtensions'));
+  assert(driver.includes("check('every recorded extension is at target', versions.recorded"));
+  assert(driver.includes("check('recorded extension package versions match target', versions.installed"));
+});
+
 test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
   const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
   assert.equal(baseline.candidateNextOptions(options,true),'candidate');
@@ -252,7 +303,8 @@ test('source-root refuses non-repositories and untracked product inputs', () => 
   const outside = mkdtempSync(join('/var/tmp/upgrade-matrix', 'not-git-'));
   assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
 });
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
