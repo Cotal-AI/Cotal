@@ -171,6 +171,7 @@ try {
       check('Same real fixture process survives refusal', birth.stdout.trim() === report.seat.birth);
       check('Occupied refusal names agent count', diagnostic.code === 20 && diagnostic.activeAgents >= 1);
     }
+    if (cell === 'cannot-start') check('Missing helper produces persistent refusal instead of success', diagnostic.code === 21 && diagnostic.message.includes('helper did not complete'));
     if (cell === 'early') check('Early shipped service lacks graceful stop and reports supported remedy', diagnostic.message.includes('uninstall --yes'));
   } else {
     check('Setup confirms success', result.code === 0);

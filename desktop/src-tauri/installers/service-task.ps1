@@ -95,7 +95,7 @@ try {
     }
     if ($owned -and !$owned.foreign) {
       $owned.task.Enabled=$false
-      if ($owned.task.Enabled) { throw 'The owned task did not confirm disabled state for recovery.' }
+      if ($owned.task.Enabled -or $owned.task.GetInstances(0).Count -ne 0) { throw 'The owned task did not confirm disabled zero-instance state for recovery.' }
     }
     [IO.File]::WriteAllText($statePath,($state|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
     'recover'; exit 0
