@@ -977,12 +977,20 @@ jobs:
         run: |
           failed=0
           if [ '${{ matrix.source }}' = '0.160.7' ]; then
-            node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
-            node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --prior-status true --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --method self --expect-policy-refusal missing-config --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            node scripts/automatic-update-platform-baseline.mjs --source 0.160.7 --layout npm --state fresh --prior-status true --method self --expect-policy-refusal missing-config --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           fi
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state stale-extensions --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state concurrent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
-          node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state agent --method self --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+          seat_expectation=()
+          scheduler_expectation=()
+          if [ '${{ matrix.source }}' != latest ]; then
+            seat_expectation=(--expect-policy-refusal legacy-seat)
+          fi
+          if [ '${{ runner.os }}' != Linux ] && { [ '${{ matrix.source }}' = '0.163.5' ] || [ '${{ matrix.source }}' = '0.164.0' ]; }; then
+            scheduler_expectation=(--expect-policy-refusal unsupported-scheduler)
+          fi
+          node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state agent --method self "${seat_expectation[@]}" --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           if [ '${{ matrix.source }}' = latest ]; then
             node scripts/automatic-update-platform-baseline.mjs --source latest --layout npm --state agent --method self --stop-agents true --output "$RUNNER_TEMP/upgrade-consent-evidence" || failed=1
           fi
@@ -991,9 +999,9 @@ jobs:
           fi
           if [ '${{ runner.os }}' != Windows ]; then
             node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state stale-extensions --method installer --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
-            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state daemon --method scheduler --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout installer --state daemon --method scheduler "${scheduler_expectation[@]}" --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           else
-            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state daemon --method scheduler --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
+            node scripts/automatic-update-platform-baseline.mjs --source '${{ matrix.source }}' --layout npm --state daemon --method scheduler "${scheduler_expectation[@]}" --output "$RUNNER_TEMP/upgrade-evidence" || failed=1
           fi
           exit "$failed"
       - uses: actions/upload-artifact@v4

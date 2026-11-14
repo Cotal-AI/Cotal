@@ -76,8 +76,28 @@ export function verifyPublishedInstaller(options) {
 }
 
 export const cellExitCode = report => report.expectedRefusal
-  ? (report.expectedRefusal.passed ? 0 : 1)
+  ? (report.expectedRefusal.passed && !report.cleanupFailure ? 0 : 1)
   : (['passed', 'excluded'].includes(report.result) ? 0 : 1);
+
+export function policyCoordinate(kind, { source, state, method, platform, candidate, stopAgents }) {
+  if (candidate || stopAgents) return false;
+  if (kind === 'missing-config') return source === '0.160.7' && platform === 'linux' && state === 'fresh' && method === 'self';
+  if (kind === 'legacy-seat') return ['0.160.7', '0.163.5', '0.164.0'].includes(source) && state === 'agent' && method === 'self';
+  return kind === 'unsupported-scheduler' && ['0.163.5', '0.164.0'].includes(source) && ['darwin', 'win32'].includes(platform) && state === 'daemon' && method === 'scheduler';
+}
+
+export function policyRefusal(kind, update, config, daemon) {
+  if (kind === 'missing-config') return update.exit === 1 && update.stdout === ''
+    && update.stderr.trim() === `update snapshot refused: ENOENT: no such file or directory, lstat '${config}'`;
+  if (kind === 'unsupported-scheduler') return daemon?.update?.automatic === false
+    && daemon.update.lastResult === 'not checked. Automatic installation is available on Linux in this release. Run `cotal update --self` here';
+  return kind === 'legacy-seat' && update.exit === 1 && update.stderr === ''
+    && update.stdout.includes('! legacy manager custody: PTY continuity is impossible; this update is not a hot update')
+    && update.stdout.includes('upgrade-proof-worker: drain-only')
+    && (update.stdout.includes('Cannot determine this Manager\'s original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.')
+      && update.stdout.includes('Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.')
+      || update.stdout.includes('Next: stop that mesh with `cotal down --space upgrade-proof`, then run this update again; the stop ends the seats above, and the update after it is a cold one'));
+}
 
 export function expectedRecoveryRefusal(report) {
   const update = report.update;
@@ -160,6 +180,8 @@ function safeRoot(output) {
 
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
+  const policy = options['expect-policy-refusal'];
+  if (policy) assert(policyCoordinate(policy, { source, state, method, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
   const publishedInstaller = options['published-installer'] ? verifyPublishedInstaller({ ...options, layout, method }) : undefined;
   if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
@@ -426,7 +448,7 @@ export async function matrixCell(options) {
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
-      ok(await cotal('set automatic updates before native service', ['update', '--auto', launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
       if (windowsPolicy) report.policyBaseline.settingsBeforeInstall = json(join(cotalHome, 'update-settings.json'));
       installedService = true;
       ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
@@ -459,6 +481,8 @@ export async function matrixCell(options) {
       }
     }
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+    const sourceInventory = () => [join(pkg, 'package.json'), cli, join(config, 'extensions/extensions.json'), ...report.extensionsBefore.map(entry => join(config, 'extensions/node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
+    if (policy) report.policyInventoryBefore = sourceInventory();
     report.targetBeforeAction = report.target;
     report.versionChanging = report.source !== report.target;
     if (!options.candidate && !windowsPolicy) {
@@ -478,6 +502,7 @@ export async function matrixCell(options) {
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
     else if (method === 'installer') update = await installer(report.target, true);
+    else if (policy === 'unsupported-scheduler') update = { attempted: false, exit: null, stdout: '', stderr: '', reason: 'source scheduler policy does not support automatic installation on this OS' };
     else {
       if (launchdProof !== 'off-before-tick' && !windowsPolicy) assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
       else if (launchdProof === 'off-before-tick') check('automatic updates disabled before first native tick', report.daemonBefore.update.automatic === false, report.daemonBefore.update);
@@ -557,6 +582,48 @@ export async function matrixCell(options) {
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
       }
+    }
+    if (policy) {
+      report.update = update;
+      report.targetUpgradeAcceptance = 'not accepted: source refused or scheduler is unsupported';
+      check('exact source policy refusal', policyRefusal(policy, update, config, report.daemonBefore), { update, daemon: report.daemonBefore });
+      if (policy === 'legacy-seat') check('real local legacy seat observed before refusal', stackStarted && report.agentBefore.includes('upgrade-proof-worker'), report.agentBefore);
+      if (policy === 'unsupported-scheduler') check('unsupported scheduler retains ready source daemon', nativeGenerationReady(report.daemonBefore, report.source), report.daemonBefore);
+      if (policy === 'unsupported-scheduler') {
+        check('settings CLI reports Linux-only automatic installation', report.automaticSettings.stdout.includes('Automatic updates: on') && report.automaticSettings.stdout.includes('Automatic installation is available on Linux in this release. Run `cotal update --self` here for a manual update.'), report.automaticSettings);
+        const final = JSON.parse(ok(await daemon('unsupported scheduler final status', ['daemon', 'status', '--json']), 'final source daemon').stdout).result;
+        check('unsupported scheduler leaves daemon identity unchanged', nativeGenerationReady(final, report.source) && final.pid === report.daemonBefore.pid && typeof final.startedAt === 'string' && final.startedAt === report.daemonBefore.startedAt, { before: report.daemonBefore, after: final });
+      }
+      if (policy === 'missing-config') check('missing config remains absent after refused first hop', !existsSync(config), config);
+      check('source inventory unchanged', JSON.stringify(sourceInventory()) === JSON.stringify(report.policyInventoryBefore), sourceInventory());
+      check('source CLI remains selected', cliReportsVersion(ok(await cotal('source version after refusal', ['--version']), 'source version').stdout, report.source), report.source);
+      check('all eight first-party extensions recorded before refusal', policy === 'missing-config' ? report.extensionsBefore.length === 0 : report.extensionsBefore.filter(entry => entry.pkg.startsWith('@cotal-ai/')).length === 8, report.extensionsBefore);
+      if (policy === 'legacy-seat') check('stand-in fixture remains separately recorded', report.extensionsBefore.length === 9, report.extensionsBefore);
+      check('cotal status exits zero after refusal', (await cotal('status after refusal', ['status'])).exit === 0, null);
+      check('no paused recovery after refusal', !existsSync(join(cotalHome, 'update-recovery.json')), null);
+      if (policy === 'missing-config' && report.assertions.every(row => row.passed)) {
+        // The old binary cannot repair its first hop. Keep its transcript above.
+        env.COTAL_INSTALL_DIR = prefix;
+        env.COTAL_BIN_DIR = dirname(launcher);
+        report.installerEscape = { source: report.source, target: report.target, prefix, bin: dirname(launcher), route: 'public installer into the original npm prefix; separate acceptance' };
+        const escape = await installer(report.target);
+        report.installerEscape.update = escape;
+        check('public installer escape exits zero without repair hint', escape.exit === 0 && !requiresManualStep(completionAdvisory(escape.stdout + escape.stderr).required), escape);
+        check('public installer replaces original prefix with target', json(join(pkg, 'package.json')).version === report.target, prefix);
+        const selected = await call('public installer selected launcher', launcher, ['--version']);
+        check('public installer launcher selects target', selected.exit === 0 && cliReportsVersion(selected.stdout, report.target), selected);
+        const escapedExtensions = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+        report.installerEscape.extensions = escapedExtensions;
+        const seeded = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'].map(name => `@cotal-ai/${name}`);
+        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(config, 'extensions/node_modules', entry.pkg, 'package.json')) && json(join(config, 'extensions/node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
+        check('public installer status exits zero', (await call('public installer status', launcher, ['status'])).exit === 0, null);
+        check('public installer leaves no recovery', !existsSync(join(cotalHome, 'update-recovery.json')), null);
+        report.installerEscape.accepted = report.assertions.every(row => row.passed);
+      }
+      report.result = policy === 'unsupported-scheduler' && report.assertions.every(row => row.passed) ? 'unsupported' : 'failed';
+      report.expectedRefusal = { kind: policy, passed: report.assertions.every(row => row.passed) };
+      report.refusal = report.assertions.filter(row => !row.passed).map(row => row.name).join('\n') || report.targetUpgradeAcceptance;
+      return report;
     }
     const expectedVersion = launchdProof === 'off-before-tick' ? report.source : report.target;
     report.expectedVersion = expectedVersion;
@@ -849,7 +916,7 @@ export function summarize(directory) {
     ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, row.refusal].map(escape).join(' | ')} |`)];
   if (admissions.length) table.push('', '| Runner | Admission | Reason |', '|---|---|---|', ...admissions.map(row => `| ${[row.runner, row.result, row.reason].map(escape).join(' | ')} |`));
   const counts = reports.reduce((counts, row) => ({ ...counts, [row.result]: (counts[row.result] ?? 0) + 1 }), {});
-  const summary = { counts, admissions, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal })) };
+  const summary = { counts, unexpectedFailures: reports.filter(row => cellExitCode(row) !== 0).length, admissions, cells: reports.map(({ tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape }) => ({ tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape })) };
   save(join(directory, 'summary.json'), summary);
   writeFileSync(join(directory, 'summary.md'), table.join('\n') + '\n');
   console.log(table.join('\n'));
@@ -861,7 +928,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     console.log(JSON.stringify(coordinates(process.argv[3] ?? process.platform), null, 2));
   } else if (process.argv[2] === '--summary') {
     const summary = summarize(resolve(process.argv[3]));
-    process.exitCode = summary.counts.failed || summary.counts.unsupported ? 1 : 0;
+    process.exitCode = summary.unexpectedFailures ? 1 : 0;
   } else if (process.argv[2] === '--pack') {
     const options = args();
     await packCandidate(options.pack, options.version, options['source-root']);

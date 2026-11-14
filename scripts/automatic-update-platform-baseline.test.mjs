@@ -404,6 +404,37 @@ test('pre-existing installer PATH notice does not require installation repair', 
 test('actual upgrade remedies and unknown outcomes stay red', () => {
   for (const text of ['run `cotal update --self`', 'Outcome unconfirmed', 'Code: OPERATION_UNKNOWN', 'an interrupted update needs restoration', 'manual intervention']) assert.equal(requiresManualStep(text), true, text);
 });
+test('published policy expectations cannot accept latest no-op repair hints', () => {
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const coordinate = { source: '0.164.0', state: 'agent', method: 'self', platform };
+    assert(baseline.policyCoordinate('legacy-seat', coordinate));
+    assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, source: 'latest' }));
+    assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, candidate: '/candidate' }));
+    assert(!baseline.policyCoordinate('legacy-seat', { ...coordinate, stopAgents: true }));
+    const output = 'No newer CLI version; installed package closure is current. No connector reconciliation was run.\nRun `cotal update` to repair connector integrations.';
+    assert(requiresManualStep(output));
+    assert(!baseline.policyRefusal('legacy-seat', { exit: 0, stdout: output, stderr: '' }));
+  }
+});
+test('missing config policy matches only the known exact first-hop refusal', () => {
+  const config = '/cell/home/config/cotal';
+  const update = { exit: 1, stdout: '', stderr: `update snapshot refused: ENOENT: no such file or directory, lstat '${config}'\n` };
+  assert(baseline.policyRefusal('missing-config', update, config));
+  assert(!baseline.policyRefusal('missing-config', { ...update, exit: 0 }, config));
+  assert(!baseline.policyRefusal('missing-config', update, '/other/config/cotal'));
+  assert(!baseline.policyRefusal('missing-config', { ...update, stderr: update.stderr + 'another failure' }, config));
+});
+test('old non-Linux scheduler is unsupported only with exact recorded source policy', () => {
+  const coordinate = { source: '0.163.5', state: 'daemon', method: 'scheduler', platform: 'darwin' };
+  assert(baseline.policyCoordinate('unsupported-scheduler', coordinate));
+  assert(!baseline.policyCoordinate('unsupported-scheduler', { ...coordinate, platform: 'linux' }));
+  assert(!baseline.policyCoordinate('unsupported-scheduler', { ...coordinate, source: '0.164.6' }));
+  const daemon = { update: { automatic: false, lastResult: 'not checked. Automatic installation is available on Linux in this release. Run `cotal update --self` here' } };
+  assert(baseline.policyRefusal('unsupported-scheduler', {}, '', daemon));
+  assert(!baseline.policyRefusal('unsupported-scheduler', {}, '', { update: { ...daemon.update, automatic: true } }));
+  assert(!baseline.policyRefusal('unsupported-scheduler', {}, '', { update: { automatic: false, lastResult: 'unrelated error' } }));
+  assert.equal(baseline.cellExitCode({ result: 'unsupported', expectedRefusal: { passed: true }, cleanupFailure: 'failed to stop' }), 1);
+});
 test('matrix includes each requested source, state and method', () => {
   assert.equal(coordinates('linux').length, 252);
   assert.equal(coordinates('linux').filter(cell => !cell.excluded).length, 138);
