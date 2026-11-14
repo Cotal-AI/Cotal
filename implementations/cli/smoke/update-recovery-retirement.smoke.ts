@@ -148,4 +148,20 @@ for (const shape of ["absent", "missing", "file", "symlink", "reused-owner"] as 
   assert.deepEqual(c.retained(), []);
 }
 
+for (const complete of [false, true]) {
+  const c = cell(complete ? "completed-rollback" : "partial-rollback");
+  const local = join(c.env.XDG_CONFIG_HOME, "cotal/.update-snapshot-completed");
+  mkdirSync(local, { mode: 0o700 });
+  const from = join(local, "old-entry"), to = join(c.env.XDG_CONFIG_HOME, "cotal", "restored-entry");
+  writeFileSync(complete ? to : from, "rollback bytes");
+  c.save({ ...c.record, installed: c.record.previous, snapshot: local, renames: [{ from, to, done: complete }] });
+  const result = c.run({ RECOVERY_TEST_COMPLETED_ROLLBACK: "1" });
+  assert.equal(result.code, 0, result.output);
+  assert.match(result.output, complete ? /Repaired the paused installation with cotal-ai@0.164.6/ : /Restored cotal-ai@0.13.1/);
+  if (complete) assert.doesNotMatch(result.output, /recovery operation: install/, "verified completed rollback does not reinstall the defective previous updater");
+  else assert.match(result.output, /recovery operation: install/, "incomplete rollback still uses guarded previous-package restoration");
+  assert.equal(JSON.parse(readFileSync(c.receipt, "utf8")), null);
+  assert.equal(existsSync(local), false);
+}
+
 emitSentinel({ passed: counted.cells(), failed: 0 });
