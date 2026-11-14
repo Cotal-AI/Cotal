@@ -2,6 +2,49 @@ use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use url::{Host, Url};
 
+#[cfg(all(feature = "e2e", not(debug_assertions)))]
+compile_error!("The e2e harness is forbidden in release builds");
+
+/// Native-only test configuration. No renderer command accepts these coordinates.
+#[cfg(all(feature = "e2e", debug_assertions))]
+fn e2e_configuration() -> Option<serde_json::Value> {
+    let path = std::env::var("COTAL_DESKTOP_E2E_CONTEXT").ok().or_else(|| {
+        // A Windows scheduled task does not inherit its installing process's environment.
+        std::env::args().skip_while(|arg| arg != "--daemon-home").nth(1)
+            .map(|home| std::path::Path::new(&home).join("desktop-e2e.json").to_string_lossy().into_owned())
+    }).or_else(|| {
+        // A default Windows task carries no --daemon-home. Its isolated CI build has
+        // one native-only context beside the executable, never in a release build.
+        if !cfg!(windows) { return None; }
+        let path = std::env::current_exe().ok()?.parent()?.join("desktop-e2e.json");
+        path.is_file().then(|| path.to_string_lossy().into_owned())
+    })?;
+    Some(serde_json::from_slice(&std::fs::read(path).expect("read E2E context")).expect("decode E2E context"))
+}
+
+/// Test-only trace destination, separate from the production daemon environment allowlist.
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub fn e2e_trace_home() -> Option<std::path::PathBuf> {
+    let value = e2e_configuration()?;
+    let path = std::path::PathBuf::from(value["traceHome"].as_str()?);
+    assert!(path.is_absolute(), "E2E trace home must be absolute");
+    Some(path)
+}
+
+/// Native-only test configuration. No renderer command accepts these coordinates.
+#[cfg(all(feature = "e2e", debug_assertions))]
+pub fn e2e_context() -> Option<(Option<String>, Vec<(String, String)>)> {
+    let value = e2e_configuration()?;
+    let home = value["daemonHome"].as_str().map(str::to_owned);
+    let env = value["env"].as_object().expect("E2E environment").iter()
+        .filter(|(key, _)| daemon_env_key(key))
+        .map(|(key, value)| (key.clone(), value.as_str().expect("E2E environment string").to_owned())).collect();
+    Some((home, env))
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+mod e2e_deep_link;
+
 #[cfg(feature = "desktop")]
 pub mod app;
 #[cfg(feature = "desktop")]

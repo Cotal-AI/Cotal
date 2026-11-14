@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 
 type Presence = { loginEnabled: boolean; relocationOffer: boolean; pinOffer: boolean; pinMessage: string };
 let offerShown = false;
@@ -65,4 +65,9 @@ export async function startPresence(notice: (message: string, error?: boolean) =
 export async function setLoginPreference(enabled: boolean): Promise<void> {
   try { await invoke("set_login_preference", { enabled }); }
   finally { await refreshPresence(); }
+}
+
+export function recordLoginInput(enabled: boolean, trusted: boolean, busy: boolean): void {
+  // The listener exists only in debug E2E builds. Never delay the actual handler for diagnostics.
+  void emit("desktop-login-input", { enabled, trusted, busy }).catch(() => {});
 }

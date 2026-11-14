@@ -86,6 +86,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
           { step: "sign-in", outcome: "already-signed-in", detail: "session" },
           { step: "discover", outcome: "registered", detail: "space" },
           { step: "manager", outcome: "running", detail: "application check" },
+          { step: "manager", outcome: "running", detail: "Waiting for the old daemon to exit (15s elapsed)." },
         ] as const;
         metadata.forEach((progress, i) => send({ v: 1, event: "setup-progress", line: `opaque diagnostic ${i}`, progress }, i));
         await new Promise<void>(resolve => { releaseSetup = resolve; });
@@ -434,6 +435,7 @@ test("linked first run needs sign-in approval then connect, with one panel and s
     await a.click("connect");
     assert.equal(a.node("connect-panel").hidden, true);
     assert.deepEqual([...a.doc.querySelectorAll<HTMLElement>("#setup-progress li")].map(li => li.dataset.state), ["done", "done", "done", "running", "waiting"]);
+    assert.equal(a.doc.querySelector('[data-testid="progress-3"] .progress-detail')!.textContent, "Waiting for the old daemon to exit (15s elapsed).");
     assert.equal(a.node<HTMLDetailsElement>("details").open, false);
     assert.match(a.node("setup-lines").textContent!, /opaque diagnostic/);
     assert.doesNotMatch(a.node("setup-progress").textContent!, /opaque diagnostic/);

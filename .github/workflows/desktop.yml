@@ -9,6 +9,10 @@ on:
         description: 'Install and remove an isolated per-user daemon service on disposable Linux/macOS/Windows runners'
         type: boolean
         default: false
+      windows_only:
+        description: 'Run only the Windows native job for an installed-service diagnostic'
+        type: boolean
+        default: false
       updater_compile:
         description: 'Compile configured and no-key updater branches with a disposable test key on macOS and Windows'
         type: boolean
@@ -30,6 +34,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   render:
+    if: ${{ !inputs.windows_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -40,6 +45,8 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Verify passive native diagnostic wiring
+        run: node --test desktop/e2e/diagnostic-wiring.test.mjs desktop/e2e/receipt-mirror.test.mjs desktop/e2e/windows-task-stage-script.test.mjs desktop/e2e/windows-task-context-measure.test.mjs desktop/e2e/windows-task-context-preflight.test.mjs
       - run: pnpm --dir desktop exec playwright-core install --with-deps chromium
       - run: pnpm --dir desktop test:render
       - name: Verify desktop motion
@@ -60,19 +67,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            bundles: deb,rpm
-          - os: macos-15
-            bundles: app,dmg
-          - os: macos-15-intel
-            bundles: app,dmg
-          - os: windows-2022
-            bundles: nsis,msi
+        include: >-
+          ${{ fromJSON(inputs.windows_only &&
+          '[{"os":"windows-2022","bundles":"nsis,msi"}]' ||
+          '[{"os":"ubuntu-24.04","bundles":"deb,rpm"},{"os":"macos-15","bundles":"app,dmg"},{"os":"macos-26","bundles":"app,dmg","artifact_suffix":"-macos26"},{"os":"macos-15-intel","bundles":"app,dmg"},{"os":"windows-2022","bundles":"nsis,msi"}]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v6
+      - name: Measure cold Windows task stages before setup or scenario
+        if: runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 21
+        run: node desktop/e2e/windows-task-stage-preflight.mjs measure
+      - name: Upload Windows task stage samples
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-task-stages
+          path: ${{ runner.temp }}/desktop-windows-task-stages/
+          if-no-files-found: error
+          retention-days: 7
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
@@ -81,7 +96,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Linux webview and tray build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev webkit2gtk-driver xvfb xdotool x11-utils imagemagick tesseract-ocr python3-pyatspi at-spi2-core dbus-x11 xfce4-panel xfconf openbox wmctrl
       - run: pnpm install --frozen-lockfile
       - name: Build the stock Windows identity bindings
         if: runner.os == 'Windows'
@@ -99,6 +114,8 @@ jobs:
         if: runner.os == 'macOS'
         run: node packages/workspace/scripts/build-native.mjs
       - run: pnpm --workspace-concurrency=1 --filter cotal-ai... build
+      - name: Typecheck native desktop test sources
+        run: pnpm --dir desktop exec tsc --noEmit -p e2e/tsconfig.json
       - name: Build the daemon host primitives
         if: runner.os != 'Windows'
         run: pnpm --filter @cotal-ai/seat build:native
@@ -113,12 +130,43 @@ jobs:
           if errorlevel 1 exit /b 1
           node packages/seat/scripts/build-native.mjs --host
           if errorlevel 1 exit /b 1
+      - name: Remove only the receipt-owned Windows diagnostic task
+        if: always() && runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 4
+        run: node desktop/e2e/windows-task-stage-preflight.mjs cleanup
+      - name: Upload Windows task stage cleanup
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-task-stage-cleanup
+          path: ${{ runner.temp }}/desktop-windows-task-stages/cleanup.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Compare Windows task and harness execution contexts
+        if: runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 80
+        run: node desktop/e2e/windows-task-context-preflight.mjs measure
+      - name: Remove only the receipt-owned Windows context task
+        if: always() && runner.os == 'Windows'
+        shell: cmd
+        timeout-minutes: 4
+        run: node desktop/e2e/windows-task-context-preflight.mjs cleanup
+      - name: Upload Windows task context comparison
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-task-context
+          path: ${{ runner.temp }}/desktop-windows-task-context/
+          if-no-files-found: error
+          retention-days: 7
       - run: pnpm smoke:daemon-transport
       - run: pnpm --dir desktop test
       - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --lib
       - run: pnpm smoke:daemon-install-native
       - name: Prepare the disposable Linux user manager
-        if: inputs.real_service && runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
           test "$RUNNER_ENVIRONMENT" = github-hosted
           test "$(id -u)" -ne 0
@@ -131,15 +179,15 @@ jobs:
           test "$(loginctl show-user "$USER" --property=Linger --value)" = yes
           printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
       - name: Verify the real per-user daemon service
-        if: inputs.real_service
+        if: inputs.real_service && runner.os == 'macOS'
         env:
           COTAL_TEST_REAL_SERVICE: '1'
         run: node bin/smoke/daemon-install-real.smoke.mjs
       - name: Upload the real service result
-        if: always() && inputs.real_service
+        if: always() && inputs.real_service && runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: daemon-service-${{ runner.os }}-${{ runner.arch }}
+          name: daemon-service-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}/daemon-service-result.json
           if-no-files-found: error
           retention-days: 7
@@ -154,7 +202,7 @@ jobs:
         if: always() && inputs.updater_compile && runner.os != 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-updater-native-${{ runner.os }}-${{ runner.arch }}
+          name: desktop-updater-native-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}/desktop-updater-native/
           if-no-files-found: error
           retention-days: 7
@@ -279,6 +327,261 @@ jobs:
           "$node" -e 'console.log(process.version)'
           "$node" "$runtime/dist/cotal.js" --version
           find "$runtime/node_modules" -name '*.node' -print0 | xargs -0 -n 1 "$node" -e 'require(require("node:path").resolve(process.argv[1]))'
+      - name: Install Windows screenshot text verifier
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          choco install tesseract --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Windows OCR installation failed.' }
+      - name: Launch the installed release package and capture its first window
+        timeout-minutes: 8
+        env:
+          GDK_BACKEND: x11
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          GTK_A11Y: always
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- xvfb-run -a --server-args='-screen 0 1440x1200x24' pnpm --dir desktop exec tsx e2e/launch.ts
+          else
+            pnpm --dir desktop exec tsx e2e/launch.ts
+          fi
+      - name: Measure Windows native task queries with cold and warm private profiles
+        if: runner.os == 'Windows'
+        timeout-minutes: 9
+        run: pnpm --dir desktop exec tsx e2e/windows-native.ts
+      - name: Upload Windows native task query measurements
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-native
+          path: ${{ runner.temp }}/desktop-windows-native/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload installed-package window proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-launch-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
+          path: ${{ runner.temp }}/desktop-launch/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Install native window driver
+        if: runner.os != 'macOS'
+        timeout-minutes: 10
+        shell: bash
+        run: cargo install tauri-driver --locked
+      - name: Match Windows Edge WebDriver to the app's WebView2 runtime
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = @(Get-ChildItem "${env:ProgramFiles(x86)}\Microsoft\EdgeWebView\Application\*\msedgewebview2.exe")
+          if ($runtime.Count -ne 1) { throw 'Expected one installed WebView2 runtime.' }
+          $edge = $runtime[0].VersionInfo.ProductVersion
+          Write-Output "Matching WebView2 runtime $edge"
+          $zip = Join-Path $env:RUNNER_TEMP 'edge-driver.zip'
+          Invoke-WebRequest "https://msedgedriver.microsoft.com/$edge/edgedriver_win64.zip" -OutFile $zip
+          $driver = Join-Path $env:RUNNER_TEMP 'edge-driver'
+          Expand-Archive $zip $driver
+          $driver >> $env:GITHUB_PATH
+      - name: Install fixture broker
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '2.12.2'
+          if ($env:RUNNER_OS -eq 'Windows') {
+            $archive = Join-Path $env:RUNNER_TEMP 'nats.zip'
+            Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $archive
+            Expand-Archive $archive (Join-Path $env:RUNNER_TEMP 'nats')
+            (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
+          } else {
+            $platform = if ($env:RUNNER_OS -eq 'macOS') { 'darwin' } else { 'linux' }
+            $arch = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'amd64' }
+            $archive = Join-Path $env:RUNNER_TEMP 'nats.tar.gz'
+            Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-$platform-$arch.tar.gz" -OutFile $archive
+            tar -xzf $archive -C $env:RUNNER_TEMP
+            if ($LASTEXITCODE -ne 0) { throw 'Fixture broker extraction failed.' }
+            (Join-Path $env:RUNNER_TEMP "nats-server-v$version-$platform-$arch") >> $env:GITHUB_PATH
+          }
+      - name: Build release-isolated real-window test binary
+        timeout-minutes: 20
+        shell: pwsh
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_DEV_INCREMENTAL: 'false'
+        run: |
+          pnpm --dir desktop exec tauri build --debug --no-bundle --features e2e
+          if ($LASTEXITCODE -ne 0) { throw 'E2E test binary build failed.' }
+          Copy-Item -Recurse desktop/src-tauri/runtime desktop/src-tauri/target/debug/runtime
+      - name: Verify Windows stock peer identity observation
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        shell: pwsh
+        env:
+          PEER_TRACE_BUNDLED_RUNTIME: ${{ github.workspace }}/desktop/src-tauri/target/debug/runtime
+        run: |
+          $outer = Join-Path $env:RUNNER_TEMP ('desktop-peer-outer-' + [guid]::NewGuid().ToString('N'))
+          foreach ($entry in @{ HOME='home'; COTAL_HOME='cotal'; XDG_CONFIG_HOME='config'; XDG_DATA_HOME='data'; XDG_STATE_HOME='state'; XDG_CACHE_HOME='cache' }.GetEnumerator()) {
+            $path = Join-Path $outer $entry.Value
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            [Environment]::SetEnvironmentVariable($entry.Key, $path, 'Process')
+          }
+          node --test desktop/e2e/windows-peer-trace.test.mjs desktop/e2e/windows-peer-trace-native.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Stock Windows peer identity observation failed.' }
+      - name: Diagnose Windows native deep-link argv and plugin delivery
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        timeout-minutes: 3
+        shell: pwsh
+        run: pnpm --dir desktop exec tsx e2e/windows-deep-link.ts
+      - name: Upload Windows native deep-link diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-deep-link
+          path: ${{ runner.temp }}/desktop-windows-deep-link/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify Windows deep-link diagnostic released its context
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath 'desktop/src-tauri/target/debug/desktop-e2e.json') {
+            throw 'Windows diagnostic context remains owned; real journeys will not overwrite it.'
+          }
+      - name: Windows restart recovery cell 1 reconnects without input
+        id: windows-before-start
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        shell: pwsh
+        env:
+          COTAL_DAEMON_SMOKE_TMP: ${{ runner.temp }}
+        run: node desktop/e2e/windows-journey.mjs start "${{ runner.temp }}/desktop-windows-before" "${{ runner.temp }}/desktop-e2e/before-poll" before-poll
+      - name: Finish cell 1 through its original cleanup owner
+        id: windows-before-finish
+        if: runner.os == 'Windows'
+        timeout-minutes: 12
+        shell: pwsh
+        run: node desktop/e2e/windows-journey.mjs resume "${{ runner.temp }}/desktop-windows-before" "${{ runner.temp }}/desktop-e2e/before-poll" before-poll
+      - name: Verify cell 1 original cleanup independently of its link tail
+        id: windows-before-cleanup
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-before-start.outcome == 'success'"
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          node desktop/e2e/windows-journey.mjs verify-cleanup "${{ runner.temp }}/desktop-windows-before" "${{ runner.temp }}/desktop-e2e/before-poll" before-poll
+          if ($LASTEXITCODE -ne 0) { throw 'Cell 1 original cleanup is not proven.' }
+          'clean=true' >> $env:GITHUB_OUTPUT
+      - name: Windows stopped-service cell 2 reconnects through Start service
+        id: windows-after-start
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-before-cleanup.outputs.clean == 'true'"
+        timeout-minutes: 12
+        shell: pwsh
+        env:
+          COTAL_DAEMON_SMOKE_TMP: ${{ runner.temp }}
+        run: node desktop/e2e/windows-journey.mjs start "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
+      - name: Finish cell 2 through its original cleanup owner
+        id: windows-after-finish
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'"
+        timeout-minutes: 12
+        shell: pwsh
+        run: node desktop/e2e/windows-journey.mjs resume "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
+      - name: Verify cell 2 original cleanup independently of its link tail
+        id: windows-after-cleanup
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-after-start.outcome == 'success'"
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          node desktop/e2e/windows-journey.mjs verify-cleanup "${{ runner.temp }}/desktop-windows-after" "${{ runner.temp }}/desktop-e2e/after-poll" after-poll
+          if ($LASTEXITCODE -ne 0) { throw 'Cell 2 original cleanup is not proven.' }
+          'clean=true' >> $env:GITHUB_OUTPUT
+      - name: Windows connected account Ready, Settings and login-command lifecycle
+        if: "!cancelled() && runner.os == 'Windows' && steps.windows-before-cleanup.outputs.clean == 'true' && steps.windows-after-cleanup.outputs.clean == 'true'"
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          COTAL_DAEMON_SMOKE_TMP: ${{ runner.temp }}
+        run: node desktop/e2e/windows-journey.mjs account "${{ runner.temp }}/desktop-windows-account" "${{ runner.temp }}/desktop-account-e2e" account-only
+      - name: Cancel an unfinished Windows journey through its fixture owner
+        if: always() && runner.os == 'Windows'
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($cell in @('before-poll', 'after-poll', 'account-only')) {
+            $name = if ($cell -eq 'before-poll') { 'before' } elseif ($cell -eq 'after-poll') { 'after' } else { 'account' }
+            $directory = Join-Path $env:RUNNER_TEMP "desktop-windows-$name"
+            $output = if ($cell -eq 'account-only') { "${{ runner.temp }}/desktop-account-e2e" } else { "${{ runner.temp }}/desktop-e2e/$cell" }
+            if (Test-Path -LiteralPath (Join-Path $directory 'controller.json')) {
+              node desktop/e2e/windows-journey.mjs cancel $directory $output $cell
+              if ($LASTEXITCODE -ne 0) { $failed = $true }
+            }
+          }
+          if ($failed) { throw 'Windows journey cleanup is failed or still outstanding. See phase and suite logs.' }
+      - name: Real-window onboarding, recovery and app-installed service lifecycle
+        if: runner.os == 'Linux'
+        timeout-minutes: 12
+        env:
+          GDK_BACKEND: x11
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          GTK_A11Y: always
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-e2e"
+          outer=$(mktemp -d "$RUNNER_TEMP/desktop-service-outer.XXXXXX")
+          export HOME="$outer/home" COTAL_HOME="$outer/cotal" XDG_CONFIG_HOME="$outer/config" XDG_DATA_HOME="$outer/data" XDG_STATE_HOME="$outer/state" XDG_CACHE_HOME="$outer/cache"
+          mkdir -p "$HOME" "$COTAL_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- xvfb-run -a --server-args='-screen 0 1440x1200x24' pnpm exec tsx bin/smoke/daemon-service-connect.smoke.ts --desktop-window --keep-fixture 2>&1 | tee "$RUNNER_TEMP/desktop-e2e/suite.log"
+          else
+            pnpm exec tsx bin/smoke/daemon-service-connect.smoke.ts --desktop-window --keep-fixture 2>&1 | tee "$RUNNER_TEMP/desktop-e2e/suite.log"
+          fi
+      - name: Upload real-window screenshots and daemon observations
+        if: always() && runner.os != 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-e2e-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
+          path: ${{ runner.temp }}/desktop-e2e/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Connected account Ready, native Settings and login-command lifecycle
+        if: runner.os != 'Windows'
+        timeout-minutes: 15
+        env:
+          GDK_BACKEND: x11
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          GTK_A11Y: always
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-account-e2e"
+          outer=$(mktemp -d "$RUNNER_TEMP/desktop-account-outer.XXXXXX")
+          export HOME="$outer/home" COTAL_HOME="$outer/cotal" XDG_CONFIG_HOME="$outer/config" XDG_DATA_HOME="$outer/data" XDG_STATE_HOME="$outer/state" XDG_CACHE_HOME="$outer/cache"
+          mkdir -p "$HOME" "$COTAL_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- xvfb-run -a --server-args='-screen 0 1440x1200x24' pnpm exec tsx bin/smoke/daemon-service-connect.smoke.ts --desktop-window --desktop-account --keep-fixture 2>&1 | tee "$RUNNER_TEMP/desktop-account-e2e/suite.log"
+          else
+            pnpm exec tsx bin/smoke/daemon-service-connect.smoke.ts --desktop-window --desktop-account --keep-fixture 2>&1 | tee "$RUNNER_TEMP/desktop-account-e2e/suite.log"
+          fi
+      - name: Upload connected account native lifecycle observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-account-e2e-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
+          path: |
+            ${{ runner.temp }}/desktop-account-e2e/
+            ${{ runner.temp }}/desktop-e2e-lifecycle/
+          if-no-files-found: error
+          retention-days: 7
       - name: Remove temporary signing material
         if: always()
         shell: pwsh
@@ -289,13 +592,13 @@ jobs:
       - name: Upload built desktop packages
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-validation-${{ runner.os }}-${{ runner.arch }}
+          name: desktop-validation-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
           path: desktop/src-tauri/target/release/bundle/
           if-no-files-found: error
           retention-days: 7
       - name: Verify macOS window-scoped Dock presence, focus and reopen
         if: runner.os == 'macOS'
-        run: bash desktop/scripts/check-presence-macos.sh
+        run: bash -x desktop/scripts/check-presence-macos.sh
       - name: Verify installed Windows shortcuts and taskbar presence
         if: runner.os == 'Windows'
         shell: pwsh
@@ -317,15 +620,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-presence-${{ runner.os }}-${{ runner.arch }}
+          name: desktop-presence-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
           path: ${{ runner.temp }}/desktop-presence/
           if-no-files-found: warn
           retention-days: 7
       - name: Stage release installers
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && matrix.os != 'macos-26'
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-release-${{ runner.os }}-${{ runner.arch }}
+          name: desktop-release-${{ runner.os }}-${{ runner.arch }}${{ matrix.artifact_suffix }}
           path: |
             desktop/src-tauri/target/release/bundle/**/*.dmg
             desktop/src-tauri/target/release/bundle/**/*.deb

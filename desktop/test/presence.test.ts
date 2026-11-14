@@ -21,6 +21,7 @@ test("presence offers are explicit, dismissible, one-time and use no renderer pa
     async invoke(cmd: string, args: unknown) {
       calls.push({ cmd, args: args === undefined ? undefined : JSON.parse(JSON.stringify(args)) });
       if (cmd === "plugin:event|listen") return 1;
+      if (cmd === "plugin:event|emit") return;
       if (cmd === "desktop_presence") return { loginEnabled: true, relocationOffer: true, pinOffer: true, pinMessage: "" };
       if (cmd === "dismiss_presence_offer" || cmd === "set_login_preference") return;
       if (cmd === "pin_to_taskbar") return false;
@@ -46,6 +47,9 @@ test("presence offers are explicit, dismissible, one-time and use no renderer pa
     assert.equal(doc.querySelector("#move-offer"), null);
     await api.setLoginPreference(false);
     assert.deepEqual(calls.find(call => call.cmd === "set_login_preference")?.args, { enabled: false });
+    api.recordLoginInput(false, true, false); await settle();
+    assert.deepEqual(calls.find(call => call.cmd === "plugin:event|emit")?.args, { event: "desktop-login-input", payload: { enabled: false, trusted: true, busy: false } });
+    assert.equal(calls.filter(call => call.cmd === "set_login_preference").length, 1, "diagnostics never repeat the mutation");
   } finally { dom.window.close(); }
 });
 

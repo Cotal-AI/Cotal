@@ -13,6 +13,42 @@ use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tokio::sync::Semaphore;
 
+#[cfg(all(feature = "e2e", debug_assertions))]
+fn trace_native_request(request: &DesktopRequest, phase: &str, request_id: u64, elapsed_ms: u128, frame: Option<&Value>) {
+    use std::io::Write;
+    let Some(home) = crate::e2e_trace_home() else { return; };
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let Ok(_guard) = LOCK.lock() else { return; };
+    let at_unix_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .expect("E2E clock after Unix epoch").as_millis();
+    // Metadata only, never successful results, prompts or credentials.
+    let row = serde_json::json!({ "atUnixMs": at_unix_ms,
+        "phase": phase, "requestId": request_id, "elapsedMs": elapsed_ms, "request": request,
+        "ok": frame.and_then(|value| value.get("ok")), "error": frame.and_then(|value| value.get("error")) });
+    if let (Ok(mut bytes), Ok(mut file)) = (serde_json::to_vec(&row),
+        std::fs::OpenOptions::new().create(true).append(true).open(home.join("native-errors.jsonl"))) {
+        bytes.push(b'\n');
+        let _ = file.write_all(&bytes);
+    }
+}
+
+#[cfg(all(feature = "e2e", debug_assertions))]
+struct NativeRequestTrace<'a> {
+    request: &'a DesktopRequest,
+    id: u64,
+    started: std::time::Instant,
+    terminal: bool,
+    phase: &'static str,
+}
+#[cfg(all(feature = "e2e", debug_assertions))]
+impl Drop for NativeRequestTrace<'_> {
+    fn drop(&mut self) {
+        if !self.terminal {
+            trace_native_request(self.request, self.phase, self.id, self.started.elapsed().as_millis(), None);
+        }
+    }
+}
+
 const MAX_FRAME: usize = 64 * 1024;
 struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
@@ -61,6 +97,29 @@ async fn daemon_request(
         .args([entry.to_string_lossy().as_ref(), "daemon", "desktop"])
         .kill_on_drop(true)
         .set_process_group(false);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let command = if let Some((home, env)) = crate::e2e_context() {
+        let command = command.envs(env);
+        if let Some(home) = home { command.args(["--daemon-home", &home]) } else { command }
+    } else { command };
+    #[cfg(all(feature = "e2e", debug_assertions, windows))]
+    let command = if let Some(home) = crate::e2e_trace_home() {
+        let trace = home.join("windows-bridge-trace.mjs");
+        if trace.is_file() {
+            command.env("COTAL_DESKTOP_E2E_TRACE_HOME", home.to_string_lossy().as_ref())
+                .env("NODE_OPTIONS", format!("--import={}", url::Url::from_file_path(trace).expect("absolute E2E trace path")))
+        } else { command }
+    } else { command };
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let (trace_id, trace_started) = {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        (NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), std::time::Instant::now())
+    };
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    trace_native_request(&request, "start", trace_id, 0, None);
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    let mut trace = NativeRequestTrace { request: &request, id: trace_id,
+        started: trace_started, terminal: false, phase: "error" };
     let (mut events, mut child) = command
         .spawn()
         .map_err(|_| "The packaged daemon client could not start.")?;
@@ -82,8 +141,26 @@ async fn daemon_request(
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt" | "setup-progress") => on_event.send(frame).map_err(|_| "The application closed its progress view.")?,
-                        Some("result") if result.is_none() => result = Some(frame),
+                        Some("login-prompt" | "setup-progress") => {
+                            #[cfg(all(feature = "e2e", debug_assertions))]
+                            if frame["event"] == "setup-progress" {
+                                if let Some(home) = crate::e2e_trace_home() {
+                                    use std::io::Write;
+                                    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(home.join("native-setup-progress.jsonl")) {
+                                        let _ = writeln!(file, "{}", frame);
+                                    }
+                                }
+                            }
+                            on_event.send(frame).map_err(|_| "The application closed its progress view.")?
+                        },
+                        Some("result") if result.is_none() => {
+                            #[cfg(all(feature = "e2e", debug_assertions))]
+                            {
+                                trace_native_request(&request, "result", trace_id, trace_started.elapsed().as_millis(), Some(&frame));
+                                trace.terminal = true;
+                            }
+                            result = Some(frame)
+                        },
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }
                 }
@@ -103,6 +180,8 @@ async fn daemon_request(
         Err("The daemon client closed without an exit receipt.".into())
     }).await;
     let _ = child.kill();
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if answer.is_err() { trace.phase = "timeout"; }
     let frame = answer.map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())??;
     if matches!(operation, "status" | "setup") {
         let status = crate::presence::tray_status(&frame);
@@ -118,6 +197,13 @@ async fn daemon_request(
 #[tauri::command]
 fn open_browser(app: AppHandle, url: String) -> Result<(), String> {
     let url = browser_url(&url)?;
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    if let Ok(path) = std::env::var("COTAL_DESKTOP_E2E_BROWSER_LOG") {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+        writeln!(file, "{}", url.as_str()).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     app.opener()
         .open_url(url.as_str(), None::<&str>)
         .map_err(|_| "The browser could not be opened.".into())
@@ -192,6 +278,8 @@ fn show_now(app: &AppHandle) {
 }
 
 pub fn run() {
+    #[cfg(all(feature = "e2e", debug_assertions))]
+    crate::e2e_deep_link::receipt("process-argv", std::env::args().skip(1));
     #[cfg(windows)]
     unsafe {
         windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(windows::core::w!("ai.cotal.desktop"))
@@ -202,6 +290,8 @@ pub fn run() {
     let autostart = autostart.macos_launcher(tauri_plugin_autostart::MacosLauncher::LaunchAgent);
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
+            #[cfg(all(feature = "e2e", debug_assertions))]
+            crate::e2e_deep_link::receipt("single-instance", args.iter().skip(1).cloned());
             if !args.iter().any(|arg| arg == "--background") { show(app); }
         }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
@@ -225,6 +315,26 @@ pub fn run() {
             crate::updater::app_update_download
         ])
         .setup(|app| {
+            #[cfg(all(feature = "e2e", debug_assertions))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                use tauri::Listener;
+                #[derive(serde::Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct LoginInput { enabled: bool, trusted: bool, busy: bool }
+                app.listen("desktop-login-input", |event| {
+                    if let Ok(input) = serde_json::from_str::<LoginInput>(event.payload()) {
+                        crate::native_presence::login_receipt("dom-change", if input.trusted { "trusted-input" } else { "untrusted-input" }, Some(input.enabled), Some(!input.busy), None);
+                    }
+                });
+                app.deep_link().on_open_url(|event| {
+                    crate::e2e_deep_link::receipt("plugin-open-url", event.urls().into_iter().map(|url| url.to_string()));
+                });
+                match app.deep_link().get_current() {
+                    Ok(urls) => crate::e2e_deep_link::receipt("plugin-current", urls.unwrap_or_default().into_iter().map(|url| url.to_string())),
+                    Err(_) => crate::e2e_deep_link::receipt("plugin-current-error", std::iter::empty()),
+                }
+            }
             #[cfg(all(cotal_updater, not(target_os = "linux")))]
             {
                 app.handle().plugin(tauri_plugin_updater::Builder::new()
@@ -235,7 +345,11 @@ pub fn run() {
             window.set_background_color(Some(tauri::window::Color(255, 252, 238, 255)))?;
             #[cfg(target_os = "macos")]
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: app_config_dir={:?}", app.path().app_config_dir());
             app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: presence loaded");
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
             let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
             let dashboard = MenuItem::with_id(app, "dashboard", "Open dashboard", true, None::<&str>)?;
@@ -249,6 +363,8 @@ pub fn run() {
             let update = MenuItem::with_id(app, "update", "No desktop update", false, None::<&str>)?;
             let menu = Menu::with_items(app, &[&status, &update, &settings, &dashboard, &quit])?;
             app.manage(TrayUpdate(update));
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: menu created");
             app.manage(TrayStatus(status));
             let icon = app
                 .default_window_icon()
@@ -267,6 +383,8 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            #[cfg(all(feature = "e2e", debug_assertions, windows))]
+            eprintln!("E2E native setup: tray created");
             if !std::env::args().any(|arg| arg == "--background") {
                 show(app.handle());
             }

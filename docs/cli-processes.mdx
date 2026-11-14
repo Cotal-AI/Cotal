@@ -786,7 +786,8 @@ Adding a space requires its own confirmation. Owner approval appears in that spa
 The app reports This computer is connected only with an answering registered Manager and an
 available connector. Open dashboard is the primary action on that screen and on later opens.
 Sign-in and space forms appear only when needed. Five named progress steps use structured setup
-reports, while original diagnostics and exact refusals remain under Details. Missing applications
+reports, while original diagnostics and exact refusals remain under Details. A running step updates
+its visible wait detail when another report arrives, even when its outcome has not changed. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
 the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` and directs you to

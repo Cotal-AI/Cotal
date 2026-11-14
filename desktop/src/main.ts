@@ -6,7 +6,7 @@ import { computerName } from "./computer-name";
 import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { refreshPresence, setLoginPreference, startPresence } from "./presence";
+import { refreshPresence, recordLoginInput, setLoginPreference, startPresence } from "./presence";
 import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
@@ -387,15 +387,16 @@ function renderProgress(): void {
       const status = document.createElement("span"); status.className = "sr-only";
       li.append(mark, copy, status); list.append(li);
     }
+    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
+    const detailChanged = detail.textContent !== progressDetails[index];
+    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
+    if (progress[index] === "running" && detailChanged) announce(progressDetails[index]);
     if (li.dataset.state === progress[index]) return;
     li.dataset.state = progress[index];
     const mark = li.querySelector(".progress-mark")!;
     if (progress[index] === "waiting") { mark.removeAttribute("data-icon"); mark.textContent = String(index + 1); }
     else setIcon(mark, progress[index] === "done" ? "check" : progress[index] === "failed" ? "warning" : "spinner");
-    const detail = li.querySelector<HTMLElement>(".progress-detail")!;
-    detail.textContent = progressDetails[index]; detail.hidden = progress[index] !== "running";
     li.querySelector(".sr-only")!.textContent = progress[index];
-    if (progress[index] === "running") announce(progressDetails[index]);
   });
 }
 function setupProgress(frame: Frame): void {
@@ -680,7 +681,7 @@ function renderConnections(): void {
     if (accountRow) { const detail = document.createElement("small"); detail.textContent = computerSpaceState(accountRow, state === "launch-ready"); copy.append(detail); }
     else if (state === "approval-pending") { const waiting = document.createElement("small"); waiting.dataset.testid = "approval-pending"; waiting.textContent = "Waiting for owner approval"; copy.append(waiting); }
     const restore = accountRow?.observed === "removed on this computer";
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "text-button"; remove.textContent = restore ? "Add" : "Remove"; remove.disabled = busy; remove.dataset.testid = restore ? "connected-space-add" : "connected-space-remove"; remove.setAttribute("aria-label", `${restore ? "Add" : "Remove"} ${name.textContent}`);
     remove.addEventListener("click", () => void action(async () => { if (restore) { await request({ op: "space-intent", space, enabled: true }); await refresh(); } else await removeSpace(space); }));
     row.append(copy, remove); return row;
   }));
@@ -1050,10 +1051,11 @@ el("settings-panel").addEventListener("keydown", event => {
 el("settings-name").addEventListener("click", () => el("edit-computer-name").click());
 el("update-later").addEventListener("click", () => { dismissedUpdate = offeredVersion(); if (dismissedUpdate) localStorage.setItem("dismissed-update", dismissedUpdate); renderSettings(); });
 el("release-notes").addEventListener("click", () => { if (appVersion) void invoke("open_browser", { url: releaseUrl(appVersion) }).catch(refusal); });
-el("autostart").addEventListener("change", () => void action(async () => {
+el("autostart").addEventListener("change", event => {
   const checkbox = el<HTMLInputElement>("autostart");
-  await setLoginPreference(checkbox.checked);
-}));
+  recordLoginInput(checkbox.checked, event.isTrusted, busy);
+  void action(async () => { await setLoginPreference(checkbox.checked); });
+});
 function receiveLinks(urls: string[]): void {
   if (busy || loginActive) { refusal(new Error("Finish the current operation before opening another connection link.")); return; }
   if (urls.length !== 1) { refusal(new Error("Open one computer-connection link at a time.")); return; }
