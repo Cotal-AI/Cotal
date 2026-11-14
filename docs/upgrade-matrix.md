@@ -15,8 +15,10 @@ Only a same-repository `changeset-release/main` version PR runs the packed-head 
 PRs record a non-applicable result without running product cells. Head code receives read-only
 permissions and no publisher credentials.
 
-After npm promotion, Changesets attempts to record and upload an `upgrade-publication` receipt.
-Both steps tolerate failure, so they cannot fail an existing publication or skip downstream work.
+After npm promotion, a separate `upgrade-publication` job records and uploads the receipt.
+It needs only the completed publish job and runs only when its output says packages were published.
+The publish job remains strict. No job depends on the receipt job, so a receipt failure cannot fail
+or shorten publication, or delay installation verification and release work.
 A separate `workflow_run` consumes the receipt even if a later release-note or installation job
 makes the Changesets run red. It binds the receipt to the repository, main SHA, run and exact
 version, then runs the published phase. GitHub Release creation is not the trigger. A missing

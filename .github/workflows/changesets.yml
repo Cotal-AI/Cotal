@@ -360,9 +360,21 @@ jobs:
             npm dist-tag add "$spec" latest
           done < "$RUNNER_TEMP/promote-specs.txt"
 
+  upgrade-publication:
+    needs: publish
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Record the published upgrade target
-        continue-on-error: true
-        if: steps.publish.outputs.published == 'true'
         env:
           PUBLICATION_RECEIPT: ${{ runner.temp }}/upgrade-publication
         run: |
@@ -376,8 +388,6 @@ jobs:
           }) + '\n');
           NODE
       - uses: actions/upload-artifact@v4
-        continue-on-error: true
-        if: steps.publish.outputs.published == 'true'
         with:
           name: upgrade-publication
           path: ${{ runner.temp }}/upgrade-publication

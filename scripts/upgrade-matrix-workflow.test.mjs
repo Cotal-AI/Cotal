@@ -85,20 +85,31 @@ test('actual publication selector reports a missing receipt without starting the
     assert(messages.some(message => message.includes('publication not confirmed by validated API evidence')));
   }
 });
-test('publisher receipt is written after successful promotion and is independent of GitHub Release creation', () => {
+test('publication receipt is isolated from the strict publisher and all downstream jobs', () => {
   const publisher = parse(readFileSync(new URL('../.github/workflows/changesets.yml', import.meta.url), 'utf8'));
-  const steps = publisher.jobs.publish.steps;
-  const promotion = steps.findIndex(s => s.name === 'Promote verified packages to latest');
-  const receipt = steps.findIndex(s => s.name === 'Record the published upgrade target');
-  assert(receipt > promotion);
-  assert.equal(steps[receipt].if, "steps.publish.outputs.published == 'true'");
-  assert.equal(steps[receipt]['continue-on-error'], true, 'receipt recording must not fail an already-promoted publication');
-  assert(steps[receipt].run.includes('sourceSHA: process.env.GITHUB_SHA'));
-  assert(steps[receipt].run.includes('published: true, promoted: true'));
-  const upload = steps.find(s => s.with?.name === 'upgrade-publication');
-  assert.equal(upload.if, "steps.publish.outputs.published == 'true'");
-  assert.equal(upload['continue-on-error'], true, 'receipt upload must not fail publication or skip downstream jobs');
-  assert.equal(upload.with['if-no-files-found'], 'error', 'missing receipt stays visible as a tolerated step failure');
-  assert.deepEqual(publisher.jobs['verify-install'].needs, 'publish');
+  const publish = publisher.jobs.publish;
+  const job = publisher.jobs['upgrade-publication'];
+  assert(publish.steps.some(s => s.name === 'Promote verified packages to latest'));
+  assert.equal(publish['continue-on-error'], undefined);
+  assert(publish.steps.every(s => s['continue-on-error'] !== true));
+  assert(!publish.steps.some(s => s.name === 'Record the published upgrade target' || s.with?.name === 'upgrade-publication'));
+  assert.equal(job.needs, 'publish');
+  assert.equal(job.if, "needs.publish.outputs.published == 'true'");
+  assert.deepEqual(job.permissions, { contents: 'read' });
+  assert.equal(job.environment, undefined);
+  assert.equal(job.concurrency, undefined);
+  assert.equal(job.steps[0].with.ref, '${{ github.sha }}');
+  assert.equal(job.steps[0].with['persist-credentials'], false);
+  const receipt = job.steps.findIndex(s => s.name === 'Record the published upgrade target');
+  const upload = job.steps.findIndex(s => s.with?.name === 'upgrade-publication');
+  assert(receipt >= 0 && upload > receipt);
+  assert(job.steps[receipt].run.includes('sourceSHA: process.env.GITHUB_SHA'));
+  assert(job.steps[receipt].run.includes('published: true, promoted: true'));
+  assert.equal(job.steps[upload].with['if-no-files-found'], 'error');
+  for (const downstream of Object.values(publisher.jobs)) {
+    const needs = Array.isArray(downstream.needs) ? downstream.needs : [downstream.needs];
+    assert(!needs.includes('upgrade-publication'), 'no job may wait for the optional receipt');
+  }
+  assert.equal(publisher.jobs['verify-install'].needs, 'publish');
   assert.equal(publisher.jobs['verify-install'].if, "needs.publish.outputs.published == 'true'");
 });
