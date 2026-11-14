@@ -14,7 +14,7 @@ mkdirSync(output, { recursive: true, mode: 0o700 });
 const variant = process.env.VARIANT;
 assert(['agent-local', 'agent-url', 'empty-manager', 'no-manager', 'main-candidate', 'hosted-scheduler', 'repair-paused'].includes(variant));
 const original = readFileSync(join(harness, 'scripts/automatic-update-platform-baseline.mjs'), 'utf8');
-let source = original;
+let source = original.replaceAll('\r\n', '\n');
 function replace(before, after) {
   assert.equal(source.split(before).length, 2, `measurement anchor must be unique: ${before.slice(0, 100)}`);
   source = source.replace(before, after);
@@ -58,9 +58,10 @@ if (variant === 'main-candidate') {
 }
 const measured = join(harness, 'scripts/measure-hosted-generated.mjs');
 writeFileSync(measured, source, { mode: 0o600 });
+writeFileSync(join(output, 'original-harness.mjs'), original);
 writeFileSync(join(output, 'instrumented-harness.mjs'), source);
 writeFileSync(join(output, 'measurement-inputs.json'), JSON.stringify({ variant, sample: process.env.SAMPLE, harness: process.env.HARNESS_SOURCE, product: process.env.PRODUCT_SOURCE, originalSha256: createHash('sha256').update(original).digest('hex'), instrumentedSha256: createHash('sha256').update(source).digest('hex') }, null, 2));
-const patch = spawnSync('diff', ['-u', join(harness, 'scripts/automatic-update-platform-baseline.mjs'), measured], { encoding: 'utf8' });
+const patch = process.platform === 'win32' ? { status: 0, stdout: 'Complete original and instrumented sources are archived; Windows has no required diff executable.\n' } : spawnSync('diff', ['-u', join(harness, 'scripts/automatic-update-platform-baseline.mjs'), measured], { encoding: 'utf8' });
 assert([0, 1].includes(patch.status));
 writeFileSync(join(output, 'instrumentation.diff'), patch.stdout);
 if (process.argv.includes('--instrument-only')) process.exit(0);
