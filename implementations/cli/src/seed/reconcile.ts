@@ -680,6 +680,7 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
   // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
   const [bin, ...argv] = selfArgv();
+  console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
   writeCursor({ nonce, package: name, phase: "copy" });
   const storePath = stageSeedPayload(generation, name, { force });
   writeCursor({ nonce, package: name, phase: "add" });

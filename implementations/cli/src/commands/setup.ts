@@ -1142,7 +1142,10 @@ export async function refreshConnectorInstalls(): Promise<string[]> {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+    if (refresh) {
+      console.error(`Refreshing ${refresh.title}`);
+      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+    }
   }
   return lines;
 }

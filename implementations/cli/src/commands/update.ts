@@ -128,6 +128,7 @@ export interface UpdateRuntime {
   /** The verified prefix of an installed POSIX npm CLI, absent for a checkout or local/npx copy. */
   installPrefix(): string | undefined;
   npm(args: string[], inherit?: boolean): CommandResult;
+  npmAsync(args: string[]): Promise<CommandResult>;
   spawn(file: string, args: string[], env: NodeJS.ProcessEnv, inherit?: boolean): CommandResult;
   spawnGlobal(
     root: string,
@@ -182,6 +183,7 @@ export const updateRuntime: UpdateRuntime = {
   checkout: () => seedWriterKind() === "checkout",
   installPrefix: () => installedUpdatePrefix(cliPackageRoot(), entryScript()),
   npm: runNpm,
+  npmAsync: runNpmAsync,
   spawn: runProcess,
   spawnGlobal: runGlobalProcess,
   verifyGlobalEntry,
@@ -457,6 +459,7 @@ async function reconcileCurrent(
     return finish(false);
   }
   try {
+    rt.out("Refreshing connector integrations");
     for (const line of await rt.refreshConnectors()) rt.out(c.green(`✓ ${line}`));
   } catch (e) {
     rt.err(c.red(`✗ connector installs: ${message(e)}`));
@@ -831,41 +834,54 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
 
 /** Fetch the target's first-party install closure through npm, including integrity verification.
  *  A private cache forces a registry read without changing the installed packages or running scripts. */
-function checkReleaseArchives(version: string, rt: UpdateRuntime): void {
+async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise<void> {
   const cache = mkdtempSync(join(tmpdir(), "cotal-release-check-"));
   const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000", "--prefer-online"];
   const pending = new Set(["cotal-ai"]);
+  const names = ["cotal-ai"];
   try {
-    for (const name of pending) {
-      const spec = `${name}@${version}`;
-      const manifest = rt.npm(["view", spec, "--json", ...options]);
-      if (manifest.status !== 0) throw new Error(`metadata for ${spec} is unavailable`);
-      let meta: Record<string, unknown>;
-      try {
-        const parsed: unknown = JSON.parse(manifest.stdout);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
-        meta = parsed as Record<string, unknown>;
-        if (meta.name !== name || meta.version !== version) throw new Error();
-        const dist = meta.dist as { tarball?: unknown; integrity?: unknown } | undefined;
-        if (typeof dist?.tarball !== "string" || !dist.tarball || typeof dist.integrity !== "string" || !dist.integrity) throw new Error();
-      } catch {
-        throw new Error(`metadata for ${spec} is incomplete or invalid`);
-      }
-      for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
-        const deps = meta[field];
-        if (deps === undefined) continue;
-        if (!deps || typeof deps !== "object" || Array.isArray(deps)) throw new Error(`invalid ${field} for ${spec}`);
-        for (const [dependency, range] of Object.entries(deps)) {
-          if (!dependency.startsWith("@cotal-ai/")) continue;
-          if (!/^@cotal-ai\/[a-z0-9][a-z0-9._-]*$/.test(dependency) || typeof range !== "string" ||
-              (field !== "peerDependencies" && range !== version)) throw new Error(`invalid first-party dependency in ${spec}`);
-          pending.add(dependency);
+    for (let offset = 0; offset < names.length;) {
+      const batch = names.slice(offset, offset + 3);
+      // Settle every read before validating or removing its shared private cache. Validation below
+      // stays in discovery order, including when independent registry requests finish out of order.
+      const manifests = await Promise.allSettled(batch.map(name => rt.npmAsync(["view", `${name}@${version}`, "--json", ...options])));
+      offset += batch.length;
+      for (const [index, name] of batch.entries()) {
+        const spec = `${name}@${version}`;
+        const result = manifests[index]!;
+        if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
+        const manifest = result.value;
+        if (manifest.status !== 0) throw new Error(`metadata for ${spec} is unavailable`);
+        let meta: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(manifest.stdout);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+          meta = parsed as Record<string, unknown>;
+          if (meta.name !== name || meta.version !== version) throw new Error();
+          const dist = meta.dist as { tarball?: unknown; integrity?: unknown } | undefined;
+          if (typeof dist?.tarball !== "string" || !dist.tarball || typeof dist.integrity !== "string" || !dist.integrity) throw new Error();
+        } catch {
+          throw new Error(`metadata for ${spec} is incomplete or invalid`);
+        }
+        for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+          const deps = meta[field];
+          if (deps === undefined) continue;
+          if (!deps || typeof deps !== "object" || Array.isArray(deps)) throw new Error(`invalid ${field} for ${spec}`);
+          for (const [dependency, range] of Object.entries(deps)) {
+            if (!dependency.startsWith("@cotal-ai/")) continue;
+            if (!/^@cotal-ai\/[a-z0-9][a-z0-9._-]*$/.test(dependency) || typeof range !== "string" ||
+                (field !== "peerDependencies" && range !== version)) throw new Error(`invalid first-party dependency in ${spec}`);
+            if (!pending.has(dependency)) { pending.add(dependency); names.push(dependency); }
+          }
         }
       }
-      // npm applies the configured registry, scoped authentication, proxy/TLS policy and SRI checks.
-      // cache add downloads only this archive, so enumerate the dependency closure above as well.
-      const archive = rt.npm(["cache", "add", spec, "--ignore-scripts", ...options]);
-      if (archive.status !== 0) throw new Error(`archive for ${spec} could not be downloaded and verified`);
+    }
+    // npm verifies each archive's integrity and applies registry, scoped auth and proxy/TLS policy.
+    // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.
+    for (let offset = 0; offset < names.length; offset += 6) {
+      const specs = names.slice(offset, offset + 6).map(name => `${name}@${version}`);
+      const archive = await rt.npmAsync(["cache", "add", ...specs, "--ignore-scripts", ...options]);
+      if (archive.status !== 0) throw new Error(`archives for ${specs.join(", ")} could not be downloaded and verified`);
     }
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
@@ -911,10 +927,13 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   }
 
   try {
-    checkReleaseArchives(targetVersion, rt);
+    rt.out(`Checking cotal-ai@${targetVersion} release archives`);
+    await checkReleaseArchives(targetVersion, rt);
+    rt.out(`Checking installed extension dependencies for ${targetVersion}`);
     checkInstalledClosure(targetVersion, rt);
     // A previous generation must remain downloadable and verified before replacement begins.
-    checkReleaseArchives(current, rt);
+    rt.out(`Checking cotal-ai@${current} recovery archives`);
+    await checkReleaseArchives(current, rt);
   } catch (e) {
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
     rt.err(c.red(`✗ cotal-ai@${targetVersion} release is not ready: ${message(e)}. The release is still reaching the registry or registry access failed; no global install was attempted. Check registry access and run \`cotal update --self\` again in a few minutes.`));
@@ -988,6 +1007,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   let snapshot: UpdateSnapshot;
   try {
     releaseClosure = claimUpdateClosureAccess();
+    rt.out("Saving update recovery snapshot");
     snapshot = snapshotUpdateClosure();
   } catch (error) {
     releaseClosure?.();
@@ -1041,6 +1061,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return await repairReplacement(`global install failed: ${failure(installed)}`);
   }
 
+  rt.out("Verifying installed global entry");
   let entry: string;
   try {
     entry = rt.verifyGlobalEntry(root, targetVersion);
@@ -1055,6 +1076,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     [UPDATE_PARENT_ENV]: String(rt.pid),
   };
   delete env[EXT_UPDATE_PARENT_ENV];
+  rt.out(`Reconciling installed cotal-ai@${targetVersion}`);
   const child = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update", ...targetArgv(target)], env, true);
   if (child.stderr) rt.stderr(child.stderr);
   if (child.stdout) rt.stdout(child.stdout);
@@ -1062,6 +1084,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
     return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1);
   }
+  rt.out("Removing completed update recovery snapshot");
   snapshot.discard();
   clearUpdateRecovery();
   recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
@@ -1094,7 +1117,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       const recovery = readUpdateRecovery();
       if (!recovery) throw new Error("update recovery journal is missing");
       writeUpdateRecovery({ ...recovery, phase: "restoring" });
-      checkReleaseArchives(current, rt);
+      await checkReleaseArchives(current, rt);
       const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
       const restored = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
       if (restored.status !== 0) throw new Error(failure(restored));
@@ -1211,6 +1234,21 @@ export function verifyGlobalEntry(root: string, expectedVersion: string): string
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
     throw new Error(`the installed cotal executable escapes its package: ${entry}`);
   return entry;
+}
+
+async function runNpmAsync(args: string[]): Promise<CommandResult> {
+  try {
+    const { file, args: spawnArgs, windowsVerbatimArguments } = cmdSpawnSpec("npm", args);
+    const child = spawn(file, spawnArgs, { windowsVerbatimArguments, windowsHide: true });
+    let stdout = "", stderr = "", error: string | undefined;
+    child.stdout?.on("data", (chunk: Buffer | string) => { stdout += chunk.toString(); });
+    child.stderr?.on("data", (chunk: Buffer | string) => { stderr += chunk.toString(); });
+    child.once("error", cause => { error = cause.message; });
+    const status = await new Promise<number | null>(resolveClose => child.once("close", resolveClose));
+    return { status, stdout, stderr, ...(error ? { error } : {}) };
+  } catch (error) {
+    return { status: null, stdout: "", stderr: "", error: message(error) };
+  }
 }
 
 function runNpm(args: string[], inherit = false): CommandResult {
