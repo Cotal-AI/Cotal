@@ -111,7 +111,8 @@ export async function run(){
   hold=false;for(const x of held.splice(0)){x.res.writeHead(503).end('fixture released after worker interruption');}
   const drained=await poll('owner native drain outcome',()=>{try{const r=json(join(cotalHome,'update-windows.json'));return r.drained?r:undefined;}catch{}},60000,100);
   const failed=json(join(cotalHome,'update-attempt.json'));assert.equal(failed.failures,1);report.cells.push({name:'worker-kill-owner-alive',pass:true,receipt,workerKill:JSON.parse(workerKill.stdout),drained,attempt:failed});save('report.json',report);
-  // Only eligibility clocks are aged; normal timer owns the retry and package replacement.
+  // Only eligibility clocks are aged after normal cleanup commits its retry schedule.
+  await poll('owned interrupted task retired before retry aging',()=>!existsSync(join(cotalHome,'update-windows.json')),90000);
   age();
   const transitioned=await poll('actual Scheduler candidate transition',async()=>{if(!existsSync(join(pkg,'package.json')))return;try{if(json(join(pkg,'package.json')).version!==versionB)return;const s=await status();return s?.state==='ready'&&s.version===versionB?s:undefined;}catch{}},600000,3000);
   const after=json(join(cotalHome,'update-attempt.json'));assert.equal(after.failures,0);

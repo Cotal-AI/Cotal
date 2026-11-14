@@ -112,6 +112,12 @@ test('automatic interruption diagnostics retain logs and narrowed receipt before
  assert.match(observation,/LastTaskResult/);assert.match(observation,/GetTask\(\$env:CELL_HELPER_TASK\)/);
  assert.doesNotMatch(observation,/DeleteTask|\.Run\(|\.Stop\(|Enabled=/);
 });
+test('retry eligibility ages only after normal interrupted-task retirement commits its schedule',()=>{
+ const boundary=source.slice(source.indexOf("name:'worker-kill-owner-alive'"),source.indexOf("'actual Scheduler candidate transition'"));
+ assert.ok(boundary.indexOf('owned interrupted task retired before retry aging')<boundary.indexOf('age();'));
+ assert.match(boundary,/!existsSync\(join\(cotalHome,'update-windows.json'\)\)/);
+ assert.doesNotMatch(boundary,/cli\(|\/Run|setUpdate|next=/);
+});
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });
