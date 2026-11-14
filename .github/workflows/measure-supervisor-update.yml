@@ -1,0 +1,85 @@
+name: Measure supervisor update attribution
+
+on:
+  push:
+    branches: [measure/foreign-supervisor]
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        mode: [control, container]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: product
+      - uses: actions/checkout@v4
+        with:
+          ref: test/upgrade-matrix
+          path: matrix
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: product/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+      - name: Prepare private environment and check disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          df -h "$GITHUB_WORKSPACE"
+          test "$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR==2 {print $4}')" -ge 20971520
+          root="$RUNNER_TEMP/private-measurement"
+          mkdir -m 700 "$root" "$root/home" "$root/cotal" "$root/config" "$root/tmp" "$RUNNER_TEMP/evidence"
+          for key in ${!COTAL_@}; do echo "$key=" >> "$GITHUB_ENV"; done
+          printf 'HOME=%s\nCOTAL_HOME=%s\nXDG_CONFIG_HOME=%s\nTMPDIR=%s\n' "$root/home" "$root/cotal" "$root/config" "$root/tmp" >> "$GITHUB_ENV"
+          printf 'DO_NOT_TRACK=1\nCOTAL_TELEMETRY=off\nCOTAL_SKIP_CONNECTOR_SEED=1\n' >> "$GITHUB_ENV"
+          git -C product rev-parse HEAD > "$RUNNER_TEMP/evidence/product-head.txt"
+          git -C matrix rev-parse HEAD > "$RUNNER_TEMP/evidence/harness-head.txt"
+      - name: Install and build unchanged fixture dependencies
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          pnpm install --frozen-lockfile --prefer-offline
+          pnpm --workspace-concurrency 3 build
+      - name: Install pinned native broker for the loopback fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=v2.14.0
+          archive="nats-server-${version}-linux-amd64.tar.gz"
+          base="https://github.com/nats-io/nats-server/releases/download/${version}"
+          mkdir -m 700 "$RUNNER_TEMP/nats"
+          curl -fsSL "$base/$archive" -o "$RUNNER_TEMP/nats/$archive"
+          curl -fsSL "$base/SHA256SUMS" -o "$RUNNER_TEMP/nats/SHA256SUMS"
+          (cd "$RUNNER_TEMP/nats" && awk -v file="$archive" '$2==file {print}' SHA256SUMS > expected && test -s expected && sha256sum -c expected)
+          tar -xzf "$RUNNER_TEMP/nats/$archive" -C "$RUNNER_TEMP/nats"
+          echo "$RUNNER_TEMP/nats/nats-server-${version}-linux-amd64" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/nats/nats-server-${version}-linux-amd64/nats-server" --version | tee "$RUNNER_TEMP/evidence/nats-version.txt"
+      - name: Measure published update and retain transcript
+        working-directory: product
+        env:
+          UPDATE_MATRIX_HARNESS: ${{ github.workspace }}/matrix/scripts/automatic-update-platform-baseline.mjs
+          UPDATE_MEASUREMENT_OUT: ${{ runner.temp }}/evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          node --import tsx implementations/auth/smoke/update-container-measurement.ts '${{ matrix.mode }}' 2>&1 | tee "$RUNNER_TEMP/evidence/driver.log"
+      - name: Upload original evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supervisor-update-${{ matrix.mode }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
