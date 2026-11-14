@@ -87,8 +87,9 @@ is a product failure, not a known refusal.
 The standalone cell starts with `up --detach` and records its
 separate consent contract. Container shutdown uses `down --with-agents --yes`. When the bare supervisor is PID1, its clean exit
 can terminate the sibling `docker exec` with137. Only that observed case is accepted: the same
-container must exit0 during the command, without an OOM, with no process left. Other non-zero
-outcomes and unknown end states fail. Raw exit137 remains in the transcript. Owned Docker shutdown
+container must exit0 between the command's start and the immediately following inspect call's
+start, without an OOM, with no process left. Both clocks are compared at millisecond precision.
+Other non-zero outcomes and unknown end states fail. Raw exit137 remains in the transcript. Owned Docker shutdown
 and its final stopped-state check still run.
 
 The foreign snapshot cell keeps completed rename entries, a freshly recorded paused journal and
