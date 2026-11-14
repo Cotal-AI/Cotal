@@ -1,5 +1,13 @@
 # @cotal-ai/connector-jcode
 
+## 0.164.7
+
+### Patch Changes
+
+- ad8d996: Jcode seats launched from a source checkout can finish graceful shutdown without a wrapper killing the host.
+  
+  Source launches load TypeScript directly in Node instead of using the tsx command-line signal forwarder. Published compiled-host launches are unchanged.
+
 ## 0.164.6
 
 No changes in this release.
