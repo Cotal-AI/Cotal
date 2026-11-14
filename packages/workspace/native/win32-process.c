@@ -63,6 +63,75 @@ static napi_value creation_token(napi_env env, napi_callback_info info) {
   return filetime_token(env, creation);
 }
 
+typedef struct { HANDLE handle; } process_pin;
+
+static void finalize_pin(napi_env env, void *data, void *hint) {
+  (void)env; (void)hint;
+  process_pin *pin = data;
+  if (pin->handle != NULL) CloseHandle(pin->handle);
+  HeapFree(GetProcessHeap(), 0, pin);
+}
+
+static process_pin *pin_receiver(napi_env env, napi_callback_info info) {
+  napi_value self;
+  process_pin *pin = NULL;
+  if (napi_get_cb_info(env, info, NULL, NULL, &self, NULL) != napi_ok ||
+      napi_unwrap(env, self, (void **)&pin) != napi_ok || pin == NULL) {
+    napi_throw_error(env, NULL, "invalid retained process pin");
+    return NULL;
+  }
+  return pin;
+}
+
+static napi_value pin_exited(napi_env env, napi_callback_info info) {
+  process_pin *pin = pin_receiver(env, info);
+  if (pin == NULL) return NULL;
+  if (pin->handle == NULL) return refuse(env, "the retained process pin is closed");
+  DWORD result = WaitForSingleObject(pin->handle, 0);
+  if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) return fail(env, "WaitForSingleObject retained process");
+  napi_value value;
+  if (napi_get_boolean(env, result == WAIT_OBJECT_0, &value) != napi_ok) return NULL;
+  return value;
+}
+
+static napi_value pin_close(napi_env env, napi_callback_info info) {
+  process_pin *pin = pin_receiver(env, info);
+  if (pin == NULL) return NULL;
+  if (pin->handle != NULL) {
+    if (!CloseHandle(pin->handle)) return fail(env, "CloseHandle retained process");
+    pin->handle = NULL;
+  }
+  return unreadable(env);
+}
+
+// A read-only handle pins one kernel process object even after PID reuse. It is never inherited.
+static napi_value pin_process(napi_env env, napi_callback_info info) {
+  DWORD pid;
+  if (!pid_arg(env, info, &pid)) return refuse(env, "pinProcess takes one positive PID");
+  HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+  if (handle == NULL) return fail(env, "OpenProcess retained process");
+  FILETIME creation, exit_time, kernel_time, user_time;
+  if (!GetProcessTimes(handle, &creation, &exit_time, &kernel_time, &user_time)) {
+    DWORD error = GetLastError(); CloseHandle(handle); SetLastError(error);
+    return fail(env, "GetProcessTimes retained process");
+  }
+  process_pin *pin = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(process_pin));
+  if (pin == NULL) { CloseHandle(handle); return refuse(env, "retained process allocation failed"); }
+  pin->handle = handle;
+  napi_value result, token;
+  if (napi_create_object(env, &result) != napi_ok || (token = filetime_token(env, creation)) == NULL ||
+      napi_set_named_property(env, result, "token", token) != napi_ok ||
+      napi_wrap(env, result, pin, finalize_pin, NULL, NULL) != napi_ok) {
+    finalize_pin(env, pin, NULL); return NULL;
+  }
+  napi_property_descriptor properties[] = {
+    { "exited", NULL, pin_exited, NULL, NULL, NULL, napi_default, NULL },
+    { "close", NULL, pin_close, NULL, NULL, NULL, napi_default, NULL },
+  };
+  if (napi_define_properties(env, result, 2, properties) != napi_ok) return NULL;
+  return result;
+}
+
 // The account this process runs as, as its string SID.
 static napi_value user_sid(napi_env env, napi_callback_info info) {
   (void)info;
@@ -335,6 +404,7 @@ static napi_value terminate(napi_env env, napi_callback_info info) {
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
     { "creationToken", NULL, creation_token, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "pinProcess", NULL, pin_process, NULL, NULL, NULL, napi_enumerable, NULL },
     { "userSid", NULL, user_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "systemId", NULL, system_id, NULL, NULL, NULL, napi_enumerable, NULL },
     { "launch", NULL, launch, NULL, NULL, NULL, napi_enumerable, NULL },
