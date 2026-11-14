@@ -4,6 +4,17 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const script = fileURLToPath(new URL('./published-replacement.mjs', import.meta.url));
+test('launcher/task census, Finder authorization and scope limits stay explicit', () => {
+  const source = readFileSync(script, 'utf8');
+  const powershell = readFileSync(new URL('./replacement-windows-observe.ps1', import.meta.url), 'utf8');
+  for (const field of ['launcherBefore', 'launcherAfter', 'launcherAfterReopen', 'sameLauncherLifetime', 'limits:', 'harness-unauthorized']) assert.ok(source.includes(field), field);
+  assert.ok(source.includes('No space is signed in.'));
+  assert.ok(source.includes('Gatekeeper and SmartScreen'));
+  assert.ok(powershell.includes('-TaskName $Unit'));
+  assert.ok(powershell.includes('ProcessId,ParentProcessId,ExecutablePath'));
+  assert.ok(!/CommandLine\b/.test(powershell), 'never request a process command line');
+  assert.ok(powershell.includes("state='unknown'"));
+});
 test('measurement refuses before any filesystem or native action outside a hosted run', () => {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_')));
   delete env.GITHUB_ACTIONS; delete env.RUNNER_ENVIRONMENT;

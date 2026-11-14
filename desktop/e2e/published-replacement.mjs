@@ -26,7 +26,11 @@ const binary = join(appRoot, process.platform === 'darwin' ? 'Contents/MacOS/cot
 const node = join(appRoot, process.platform === 'darwin' ? 'Contents/MacOS/cotal-node' : 'node.exe');
 const runtime = join(appRoot, process.platform === 'darwin' ? 'Contents/Resources/runtime' : 'runtime');
 const cli = join(runtime, 'dist/cotal.js');
-const report = { schema: 1, mode, platform: process.platform, arch: process.arch, appRoot, startedAt: new Date().toISOString(), calls: [], samples: [], cleanup: 'not-started' };
+const report = { schema: 1, mode, platform: process.platform, arch: process.arch, appRoot, startedAt: new Date().toISOString(), calls: [], samples: [], cleanup: 'not-started', limits: [
+  'Windows setup runs silent (/S). The prompt shown to a person is not measured.',
+  'No space is signed in. The restart inside daemon setup is not exercised. Uninstall then install is a route this cell can try, not the only stock recovery route.',
+  'Gatekeeper and SmartScreen acceptance are out of scope because installers were not downloaded by a browser.',
+] };
 let installed = false, serviceAttempted = false, installerUnknown = false, windowOutstanding = false, app;
 const mounts = [];
 const save = () => writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
@@ -61,6 +65,17 @@ async function kernelBirth(pid) {
   }
   const result = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$p=Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]);
   return result.code === 0 ? result.stdout.trim() : undefined;
+}
+async function launcherCensus(pid, label) {
+  if (process.platform !== 'win32') return undefined;
+  const result = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', join(here, 'replacement-windows-observe.ps1'), '-Census', '-TargetPid', String(pid), '-Binary', binary, '-NodeBinary', node, '-Unit', report.installation.unit]);
+  let census;
+  try { census = JSON.parse(result.stdout); } catch { census = { state: 'unknown', reason: result.stderr || result.error || 'Invalid census JSON' }; }
+  if (census.state === 'unknown' || census.daemon?.state !== 'read' || census.task?.state !== 'read' || census.unknownCandidates?.length || census.processes?.some(row => row.state !== 'read')) {
+    report.launcherObservationIncomplete = true; process.exitCode = 1;
+  }
+  report.samples.push({ label, at: new Date().toISOString(), result, census }); save();
+  return census;
 }
 async function waitStatus(expected, timeout = 45_000) {
   const deadline = Date.now() + timeout;
@@ -108,7 +123,13 @@ async function install(path, replacing = false) {
   const result = replacing ? await run('/usr/bin/osascript', ['-e', `tell application "Finder" to duplicate POSIX file ${JSON.stringify(source)} to POSIX file "/Applications" with replacing`], 120_000)
     : await run('/usr/bin/ditto', [source, appRoot]);
   if (result.code === null || result.signal || result.killed) installerUnknown = true;
-  report[replacing ? 'replacement' : 'initialInstall'] = result; save(); return result;
+  if (replacing && (result.killed || result.code === null || /not authorized|not authorised|-1743|not permitted to send Apple events/i.test(result.stderr ?? ''))) {
+    report.finderUnauthorized = true;
+    report.outcome = 'harness-unauthorized';
+  }
+  report[replacing ? 'replacement' : 'initialInstall'] = result; save();
+  if (report.finderUnauthorized) throw new Error('Finder replacement was not authorized or timed out. This is a harness limitation, not a platform replacement refusal.');
+  return result;
 }
 function inventory(root = appRoot) {
   const files = [];
@@ -202,6 +223,7 @@ try {
   const beforeBirth = await kernelBirth(before.pid);
   report.before = { status: before, birth: beforeBirth };
   assert.ok(beforeBirth, 'daemon kernel lifetime is pinned');
+  report.launcherBefore = await launcherCensus(before.pid, 'launcher-before');
   const beforeFiles = await observe(before.pid, 'service-before');
   if (process.platform === 'darwin') assert.ok(beforeFiles.bundledFiles.some(file => file === node), 'service has the installed bundled Node open');
   else assert.equal(resolve(beforeFiles.process.path).toLowerCase(), resolve(node).toLowerCase(), 'service uses installed Node');
@@ -217,6 +239,13 @@ try {
   const replaced = await replacement;
   report.sameServiceLifetime = await kernelBirth(before.pid) === beforeBirth;
   report.afterReplacementStatus = await daemon('status');
+  report.launcherAfter = await launcherCensus(report.afterReplacementStatus.body?.result?.pid ?? before.pid, 'launcher-after');
+  if (process.platform === 'win32') {
+    const parentBefore = report.launcherBefore?.parent, afterRows = report.launcherAfter?.processes;
+    report.sameLauncherLifetime = parentBefore?.state === 'read' && Array.isArray(afterRows) && !report.launcherAfter?.unknownCandidates?.length && afterRows.every(row => row.state === 'read')
+      ? afterRows.some(row => row.state === 'read' && row.pid === parentBefore.pid && row.birth === parentBefore.birth && row.path === parentBefore.path)
+      : 'unknown';
+  }
   await observe(before.pid, 'service-after').catch(error => { report.serviceAfterObservation = String(error); });
   await window('window-after');
   const newInventory = inventory(); writeFileSync(join(output, 'files-after.json'), JSON.stringify(newInventory));
@@ -234,6 +263,7 @@ try {
   }
   await closeApp(); await openApp(); await window('window-reopened');
   report.afterReopenStatus = await daemon('status');
+  report.launcherAfterReopen = await launcherCensus(report.afterReopenStatus.body?.result?.pid ?? before.pid, 'launcher-after-reopen');
   report.sameServiceLifetimeAfterReopen = await kernelBirth(before.pid) === beforeBirth;
   report.recoveredByReopen = report.afterReopenStatus.code === 0 && report.afterReopenStatus.body?.result?.version === '0.164.7';
   report.requiredStockCommand = null;
@@ -252,8 +282,8 @@ try {
   } else if (!report.recoveredByReopen) report.requiredStockCommand = 'replacement refused or outcome unknown; no recovery mutation attempted';
   // Native package/loopback input is absent. Neither published app nor this harness signs in.
   report.noSignIn = true;
-  report.outcome = report.windowObservationIncomplete ? 'incomplete-window-observation' : 'measured';
-} catch (error) { report.outcome = 'failed'; report.error = error.stack ?? String(error); process.exitCode = 1; }
+  report.outcome = report.launcherObservationIncomplete ? 'incomplete-launcher-observation' : report.windowObservationIncomplete ? 'incomplete-window-observation' : 'measured';
+} catch (error) { report.outcome = report.finderUnauthorized ? 'harness-unauthorized' : 'failed'; report.error = error.stack ?? String(error); process.exitCode = 1; }
 finally {
   report.cleanup = 'started'; save();
   try { await closeApp(); } catch (error) { report.windowCleanupError = String(error); process.exitCode = 1; }
