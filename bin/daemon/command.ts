@@ -463,7 +463,13 @@ async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
-  if (await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  let automaticCustodyPaused = false;
+  if (process.platform === "win32") {
+    const { cleanWindowsUpdate } = await import("./update-windows.js");
+    const disposition = cleanWindowsUpdate();
+    automaticCustodyPaused = disposition === "paused" || disposition === "pending";
+  }
+  if (!automaticCustodyPaused && await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;

@@ -145,6 +145,21 @@ A Mac on a version before this one needs one `cotal update --self`, and updates 
 CLI-only users must install the background service with `cotal daemon install` to receive automatic
 installation. `cotal update --auto off` disables it.
 
+On Windows, the daemon registers a separate demand-only Task Scheduler helper under the signed-in
+user's interactive token at least privilege. It runs the guarded updater inside a no-breakaway job.
+The helper retains that job until native accounting reports no active members and a complete empty
+process list. A failed or timed-out drain does not admit another automatic update. The task has no
+recurring trigger or failure restart, and cleanup checks the recorded source and action before deletion.
+
+If the worker is interrupted while its helper survives, the helper drains its job and the normal
+failure budget permits a retry. If the helper dies in the same boot, automatic installation pauses.
+Status and notices instruct you to restart the computer or run `cotal update`; successful manual
+reconciliation clears the pause without changing manual update admission. A later OS-loader boot
+sequence lets the next automatic attempt use the existing interrupted-update recovery under the
+update lock. Clock changes do not establish a new boot. An unavailable boot query refuses.
+Older Windows versions need one manual update to obtain this scheduler path. Actual reboot recovery
+cannot be exercised by the hosted Windows acceptance runner and remains a native validation limit.
+
 On Linux, a daemon-started automatic update moves its authenticated updater parent and reconcile
 child into a sibling systemd user scope before reconciliation. This requires cgroup v2,
 `systemctl`, `busctl`, and a reachable user manager that permits transient scopes with existing

@@ -1,3 +1,4 @@
+import { clearWindowsUpdateAfterManualSuccess } from "./update-windows-state.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
@@ -76,6 +77,7 @@ export function writeUpdateRecovery(record: Omit<UpdateRecovery, "v" | "recorded
 export function recordUpdateCompletion(version: string, result: string, success: boolean): void {
   const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
   const automatic = process.env.COTAL_AUTO_UPDATE === "1";
+  if (success && !automatic && process.platform === "win32") clearWindowsUpdateAfterManualSuccess();
   save("update-attempt.json", { version, failures: success || !automatic ? 0 : previous?.failures ?? 1, result, next: Date.now() + (success ? 86400_000 : 3600_000) });
 }
 

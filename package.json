@@ -1303,6 +1303,8 @@
     "smoke:claude-mcp-default": "tsx extensions/connector-claude-code/smoke/mcp-default.smoke.ts",
     "smoke:presence-runtime": "tsx packages/core/smoke/presence-runtime.smoke.ts",
     "smoke:auto-update-cache": "tsx bin/smoke/auto-update-cache.smoke.ts",
+    "smoke:auto-update-windows": "tsx bin/smoke/auto-update-windows.smoke.ts",
+    "smoke:win32-update-job": "tsx packages/workspace/smoke/win32-update-job.smoke.ts",
     "smoke:auto-update-state": "tsx bin/smoke/auto-update-state.smoke.ts",
     "smoke:auto-update-notice": "tsx bin/smoke/auto-update-notice.smoke.ts",
     "smoke:auto-update-log": "tsx bin/smoke/auto-update-log.smoke.ts",

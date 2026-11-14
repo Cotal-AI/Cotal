@@ -6,6 +6,7 @@
 #include <node_api.h>
 #include <math.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -123,10 +124,47 @@ static napi_value system_id(napi_env env, napi_callback_info info) {
   return value;
 }
 
+// ProcessTelemetryIdInformation (64), documented by Microsoft. Dynamically resolved as required
+// by NtQueryInformationProcess. BootId is an OS-loader sequence, never a wall-clock estimate.
+static napi_value boot_id(napi_env env, napi_callback_info info) {
+  (void)info;
+  typedef LONG (NTAPI *query_process_fn)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+  typedef struct {
+    ULONG header_size, process_id;
+    ULONGLONG process_start_key, create_time, interrupt_time, unbiased_time, sequence, session_create_time;
+    ULONG session_id, boot_id, image_checksum, image_timestamp, sid_offset, image_offset, package_offset, relative_offset, command_offset;
+  } telemetry;
+  HMODULE library = GetModuleHandleW(L"ntdll.dll");
+  query_process_fn query = NULL;
+  FARPROC address = library == NULL ? NULL : GetProcAddress(library, "NtQueryInformationProcess");
+  if (address != NULL && sizeof(query) == sizeof(address)) memcpy(&query, &address, sizeof(query));
+  if (query == NULL) return refuse(env, "Windows boot identity reader is unavailable");
+  ULONG capacity = 4096, returned = 0;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    telemetry *value = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, capacity);
+    if (value == NULL) return refuse(env, "Windows boot identity allocation failed");
+    LONG status = query(GetCurrentProcess(), 64, value, capacity, &returned);
+    if (status >= 0) {
+      if (returned < offsetof(telemetry, boot_id) + sizeof(ULONG) || value->header_size < offsetof(telemetry, boot_id) + sizeof(ULONG) || value->header_size > returned || value->process_id != GetCurrentProcessId()) {
+        HeapFree(GetProcessHeap(), 0, value); return refuse(env, "Windows boot identity layout is unsupported");
+      }
+      ULONG boot = value->boot_id;
+      HeapFree(GetProcessHeap(), 0, value);
+      napi_value result;
+      return napi_create_uint32(env, boot, &result) == napi_ok ? result : NULL;
+    }
+    HeapFree(GetProcessHeap(), 0, value);
+    if (returned <= capacity || returned > 1048576) return refuse(env, "Windows boot identity query failed");
+    capacity = returned;
+  }
+  return refuse(env, "Windows boot identity query exceeded its bound");
+}
+
 // One launched job per process. Its handle is never finalized from JS: closing the last handle
 // terminates every member, so it lives until this process exits.
 static HANDLE job = NULL;
 static HANDLE root = NULL;
+static int draining = 0;
 
 static wchar_t *string_property(napi_env env, napi_value object, const char *name, int block) {
   napi_value value;
@@ -264,6 +302,7 @@ static int launched(napi_env env) {
 static napi_value root_exit(napi_env env, napi_callback_info info) {
   (void)info;
   if (!launched(env)) return NULL;
+  if (root == NULL) return refuse(env, "the job's root handle was released for drain");
   DWORD wait = WaitForSingleObject(root, 0), code;
   if (wait == WAIT_TIMEOUT) return unreadable(env);
   if (wait != WAIT_OBJECT_0) return fail(env, "WaitForSingleObject");
@@ -332,11 +371,80 @@ static napi_value terminate(napi_env env, napi_callback_info info) {
   return unreadable(env);
 }
 
+// Query the same retained job, including nested members. No PID snapshot supplies authority.
+static int job_empty(DWORD *active, DWORD *assigned, DWORD *count) {
+  JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting;
+  if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), NULL)) return 0;
+  *active = accounting.ActiveProcesses;
+  DWORD capacity = 64;
+  for (int attempt = 0; attempt < 8; attempt++) {
+    DWORD bytes = (DWORD)(sizeof(JOBOBJECT_BASIC_PROCESS_ID_LIST) + (capacity - 1) * sizeof(ULONG_PTR));
+    JOBOBJECT_BASIC_PROCESS_ID_LIST *list = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytes);
+    if (list == NULL) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    BOOL ok = QueryInformationJobObject(job, JobObjectBasicProcessIdList, list, bytes, NULL);
+    DWORD error = GetLastError();
+    if ((ok || error == ERROR_MORE_DATA) && list->NumberOfProcessIdsInList < list->NumberOfAssignedProcesses) {
+      capacity = list->NumberOfAssignedProcesses + 16;
+      HeapFree(GetProcessHeap(), 0, list);
+      if (capacity > 65536) { SetLastError(ERROR_MORE_DATA); return 0; }
+      continue;
+    }
+    if (!ok) { HeapFree(GetProcessHeap(), 0, list); SetLastError(error); return 0; }
+    *assigned = list->NumberOfAssignedProcesses;
+    *count = list->NumberOfProcessIdsInList;
+    HeapFree(GetProcessHeap(), 0, list);
+    return 1;
+  }
+  SetLastError(ERROR_MORE_DATA); return 0;
+}
+
+static napi_value accounting(napi_env env, napi_callback_info info) {
+  (void)info;
+  if (!launched(env)) return NULL;
+  DWORD active, assigned, count;
+  if (!job_empty(&active, &assigned, &count)) return fail(env, "job accounting");
+  napi_value result, a, b, c;
+  if (napi_create_object(env, &result) != napi_ok || napi_create_uint32(env, active, &a) != napi_ok ||
+      napi_create_uint32(env, assigned, &b) != napi_ok || napi_create_uint32(env, count, &c) != napi_ok ||
+      napi_set_named_property(env, result, "active", a) != napi_ok || napi_set_named_property(env, result, "assigned", b) != napi_ok ||
+      napi_set_named_property(env, result, "count", c) != napi_ok) return NULL;
+  return result;
+}
+
+// One owner only. Revocation is irreversible: launch already permits only one job, and drain
+// never drops its job handle. Release member references before demanding accounting zero.
+static napi_value drain(napi_env env, napi_callback_info info) {
+  size_t argc = 1; napi_value arg; double milliseconds;
+  if (napi_get_cb_info(env, info, &argc, &arg, NULL, NULL) != napi_ok || argc != 1 ||
+      napi_get_value_double(env, arg, &milliseconds) != napi_ok || !isfinite(milliseconds) || milliseconds < 0 || milliseconds > 30000)
+    return refuse(env, "job drain needs a deadline of at most 30000 milliseconds");
+  if (!launched(env)) return NULL;
+  if (!draining) {
+    if (!TerminateJobObject(job, 197)) return fail(env, "TerminateJobObject drain");
+    draining = 1;
+  }
+  if (root != NULL) { CloseHandle(root); root = NULL; }
+  ULONGLONG deadline = GetTickCount64() + (ULONGLONG)milliseconds;
+  DWORD active = 0, assigned = 0, count = 0;
+  const char *state;
+  for (;;) {
+    if (!job_empty(&active, &assigned, &count)) return fail(env, "job drain accounting");
+    if (active == 0 && assigned == 0 && count == 0) { state = "drained"; break; }
+    if (GetTickCount64() >= deadline) { state = "timeout"; break; }
+    SwitchToThread();
+  }
+  napi_value result;
+  return napi_create_string_utf8(env, state, NAPI_AUTO_LENGTH, &result) == napi_ok ? result : NULL;
+}
+
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
     { "creationToken", NULL, creation_token, NULL, NULL, NULL, napi_enumerable, NULL },
     { "userSid", NULL, user_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "systemId", NULL, system_id, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "bootId", NULL, boot_id, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "accounting", NULL, accounting, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "drain", NULL, drain, NULL, NULL, NULL, napi_enumerable, NULL },
     { "launch", NULL, launch, NULL, NULL, NULL, napi_enumerable, NULL },
     { "rootExit", NULL, root_exit, NULL, NULL, NULL, napi_enumerable, NULL },
     { "jobProcesses", NULL, job_processes, NULL, NULL, NULL, napi_enumerable, NULL },

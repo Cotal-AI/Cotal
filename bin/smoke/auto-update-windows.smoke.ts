@@ -1,0 +1,48 @@
+import "../../implementations/cli/smoke/update-isolation.js";
+import strictAssert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+import { windowsBootDisposition, readWindowsUpdatePause, clearWindowsUpdateAfterManualSuccess, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE } from "@cotal-ai/workspace";
+import { renderWindowsUpdateTask } from "../daemon/update-windows.js";
+const counted = countedAssert(strictAssert);
+const assert: typeof strictAssert = counted.assert as typeof strictAssert;
+const home = mkdtempSync(join(tmpdir(), "windows-auto-state-"));
+process.env.COTAL_HOME = home;
+try {
+  assert.equal(windowsBootDisposition(8, 8), "same");
+  assert.equal(windowsBootDisposition(8, 9), "later");
+  for (const pair of [[9, 8], [-1, 1], [1, 0x100000000], [1, NaN]]) assert.throws(() => windowsBootDisposition(pair[0]!, pair[1]!));
+  const originalNow = Date.now;
+  try { Date.now = () => -999999; assert.equal(windowsBootDisposition(8, 8), "same"); Date.now = () => 9999999999999; assert.equal(windowsBootDisposition(8, 8), "same"); }
+  finally { Date.now = originalNow; }
+  const nonce = "a".repeat(32);
+  writeFileSync(join(home, "update-windows.json"), JSON.stringify({ nonce }), { mode: 0o600 });
+  writeFileSync(join(home, "update-windows-paused.json"), JSON.stringify({ v: 1, nonce, bootId: 8 }), { mode: 0o600 });
+  assert.equal(readWindowsUpdatePause()?.nonce, nonce);
+  assert.equal(windowsUpdateManuallyCleared(nonce), false);
+  assert.match(WINDOWS_INTERRUPTED_UPDATE, /Restart the computer or run `cotal update`/);
+  clearWindowsUpdateAfterManualSuccess();
+  assert.equal(readWindowsUpdatePause(), undefined);
+  assert.equal(windowsUpdateManuallyCleared(nonce), true);
+  writeFileSync(join(home, "update-windows-paused.json"), JSON.stringify({ v: 1, nonce: "b".repeat(32), bootId: 8 }), { mode: 0o600 });
+  assert.equal(readWindowsUpdatePause()?.nonce, "b".repeat(32), "previous manual completion cannot clear a later attempt");
+  writeFileSync(join(home, "update-windows-clear.json"), "{}", { mode: 0o600 });
+  assert.throws(() => readWindowsUpdatePause(), /invalid.*clearance/);
+  const bytes = renderWindowsUpdateTask("S-1-5-21-123", ["C:\\node.exe", "C:\\entry with & space.js", nonce, "C:\\private"], "C:\\private");
+  assert.equal(bytes[0], 0xff); assert.equal(bytes[1], 0xfe);
+  const xml = bytes.subarray(2).toString("utf16le");
+  assert.match(xml, /<Triggers\/>/); assert.match(xml, /<RunLevel>LeastPrivilege/); assert.match(xml, /<LogonType>InteractiveToken/);
+  assert.doesNotMatch(xml, /RestartOnFailure|LogonTrigger|Repetition|LocalSystem/);
+  assert.match(xml, /entry with &amp; space/);
+  assert.match(xml, /<AllowStartOnDemand>true/);
+  assert.throws(() => renderWindowsUpdateTask("bad", ["C:\\node.exe", "entry", nonce, home], "C:\\private"));
+  assert.throws(() => renderWindowsUpdateTask("S-1-5-21-123", ["relative", "entry", nonce, home], "C:\\private"));
+  assert.throws(() => renderWindowsUpdateTask("S-1-5-21-123", ["C:\\node.exe", "x".repeat(40000), nonce, "C:\\private"], "C:\\private"));
+  const runner = readFileSync(new URL("../daemon/update-windows-runner.ts", import.meta.url), "utf8");
+  assert.ok(runner.indexOf("native.drain(20_000)") < runner.indexOf("done = true;", runner.indexOf("native.launch(")));
+  assert.match(runner, /if \(drained\) custody.complete\(done\)/);
+  assert.doesNotMatch(runner, /OpenJobObject|DuplicateHandle|named-job/);
+  emitSentinel({ passed: counted.cells(), failed: 0 });
+} finally { rmSync(home, { recursive: true, force: true }); }

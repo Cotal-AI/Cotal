@@ -141,19 +141,24 @@ stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. 
 ## update [#update]
 
 Update preferences are saved in the Cotal home. `cotal update --auto off` disables automatic
-installation and `cotal update --auto on` enables it on eligible Linux and macOS installs.
+installation and `cotal update --auto on` enables it on eligible Linux, macOS and Windows installs.
 Automatic installation is on by default and requires the machine daemon service.
-A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
-On Windows and other unsupported platforms, run `cotal update --self` to install manually.
+Older macOS and Windows versions need one manual `cotal update --self` before they can schedule
+updates through the new helper. Other unsupported platforms still require manual updates.
 Daily checks, update notices and their settings remain available on every platform.
 Bare `cotal update --auto` reports the saved setting and the platform limit.
-On Linux and macOS, enabling or reading an enabled setting also checks the daemon's
+On Linux, macOS and Windows, enabling or reading an enabled setting also checks the daemon's
 schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
 An answering daemon without an active automatic schedule is reported separately, including one
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
 the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
+
+On Windows, an interrupted helper in the same boot pauses automatic installation. Status and
+notices tell you to restart the computer or run `cotal update`. A successful manual update clears
+that attempt's pause. A later boot permits the existing interrupted-update recovery before another
+automatic attempt. Boot identity uses the OS-loader sequence, not the wall clock.
 
 The desktop app's bundled runtime checks for newer versions but never runs npm updates. Its notices
 point to the signed desktop installer. `cotal update --auto on` has no effect on that runtime;
