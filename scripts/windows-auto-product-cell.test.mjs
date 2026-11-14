@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
@@ -64,6 +67,25 @@ test('Windows npm invocation uses the existing matrix node-adjacent CLI recipe, 
 test('only real Windows update calls get the measured 300second bound',()=>{
  assert.match(source,/args\[0\]==='update'&&!args.includes\('--auto'\)\?300000:180000/);
  assert.match(source,/call\(label,file,args,limit=180000\)/);
+});
+test('generation evidence reads real files passively before cleanup, limits log bytes and omits recovery nonce',()=>{
+ const root=mkdtempSync(join(tmpdir(),'windows-generation-evidence-'));
+ try{
+  const cotalHome=join(root,'home'),pkg=join(root,'pkg');mkdirSync(join(cotalHome,'daemon'),{recursive:true});mkdirSync(pkg);
+  writeFileSync(join(cotalHome,'daemon/daemon.log'),'x'.repeat(70000)+'eyJsecret.token');
+  writeFileSync(join(cotalHome,'update-recovery.json'),JSON.stringify({phase:'verified-ready',previous:'A',target:'B',owner:{pid:12,start:'34',nonce:'do-not-copy'}}));
+  writeFileSync(join(pkg,'package.json'),JSON.stringify({name:'cotal-ai',version:'B',scripts:{private:'omit'}}));
+  let saved;
+  const body=source.slice(source.indexOf(' const generationSnapshots=[];'),source.indexOf(' const age=()=>'));
+  assert.doesNotMatch(body,/spawn|\.kill\(|cli\(|ps\(/);
+  runInNewContext(body+"captureGeneration('test');",{readFileSync,join,cotalHome,pkg,save:(name,value)=>{assert.equal(name,'generation-snapshots.json');saved=value;}});
+  const snapshot=JSON.parse(JSON.stringify(saved[0]));assert.equal(snapshot.label,'test');
+  assert.ok(snapshot.files['daemon.log'].length<=65536);assert.match(snapshot.files['daemon.log'],/<redacted>$/);assert.doesNotMatch(snapshot.files['daemon.log'],/eyJsecret/);
+  assert.deepEqual(snapshot.files['update-recovery.json'].owner,{pid:12,start:'34'});assert.doesNotMatch(JSON.stringify(snapshot),/do-not-copy/);
+  assert.deepEqual(snapshot.files['installed-package.json'],{name:'cotal-ai',version:'B'});assert.equal(snapshot.files['update-attempt.json'].error,'ENOENT');
+  assert.ok(source.indexOf("captureGeneration('failure before native service cleanup')")<source.indexOf("'cleanup exact owned native service'"));
+  assert.match(source,/clearInterval\(generationTimer\)/);
+ }finally{rmSync(root,{recursive:true,force:true});}
 });
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);

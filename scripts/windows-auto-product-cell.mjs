@@ -51,6 +51,14 @@ export async function run(){
  const ps=(label,script,extra={})=>{Object.assign(env,extra);return call(label,join(env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')]);};
  const poll=async(label,fn,limit=180000,interval=1000)=>{const deadline=Date.now()+limit;while(Date.now()<deadline){const value=await fn();if(value)return value;await delay(interval);}throw new Error('Timed out '+label);};
  const status=async()=>{const r=await cli('native daemon status',['daemon','status','--json']);return r.exit===0?JSON.parse(r.stdout).result:undefined;};
+ const generationSnapshots=[];
+ const captureGeneration=label=>{
+  const snapshot={label,at:new Date().toISOString(),files:{}};
+  for(const [name,path]of [['daemon.log',join(cotalHome,'daemon/daemon.log')],['update-recovery.json',join(cotalHome,'update-recovery.json')],['update-attempt.json',join(cotalHome,'update-attempt.json')],['installed-package.json',join(pkg,'package.json')]]){
+   try{const text=readFileSync(path,'utf8');if(name==='daemon.log')snapshot.files[name]=text.slice(-65536).replace(/eyJ[A-Za-z0-9_.-]*/g,'<redacted>');else{const value=JSON.parse(text);snapshot.files[name]=name==='update-recovery.json'?{phase:value.phase,previous:value.previous,target:value.target,installed:value.installed,preparedRestart:value.preparedRestart,reason:value.reason,owner:value.owner?{pid:value.owner.pid,start:value.owner.start}:undefined}:name==='installed-package.json'?{name:value.name,version:value.version}:value;}}catch(error){snapshot.files[name]={error:error.code??error.message};}
+  }
+  generationSnapshots.push(snapshot);save('generation-snapshots.json',generationSnapshots);
+ };
  const age=()=>{for(const [name,fields]of [['update-check.json',['checkedAt','attemptedAt','firstSeenAt']],['update-attempt.json',['next']]]){const path=join(cotalHome,name),before=json(path),after={...before};for(const field of fields)after[field]=Date.now()-26*3600000;save('clock-'+name,{before,after});writeFileSync(path,JSON.stringify(after));}};
  let overlayA,overlayB,restore,proxy,hold=false,installed=false;const held=[];
  try{
@@ -68,9 +76,12 @@ export async function run(){
   const workspaceEntry=join(pkg,'node_modules/@cotal-ai/workspace/dist/index.js');
   ok(await cli('published native daemon plan',['daemon','install','--dry-run','--json']));
   ok(await cli('install pre-existing published service',['daemon','install','--json']));installed=true;
-  await poll('published service ready',async()=>{const s=await status();return s?.state==='ready'&&s.version===latest?s:undefined;});
+  report.publishedService=await poll('published service ready',async()=>{const s=await status();return s?.state==='ready'&&s.version===latest?s:undefined;});
+  // Passive file reads retain the actual refusal before timeout or service cleanup can erase it.
+  captureGeneration('published service ready');
+  const generationTimer=setInterval(()=>captureGeneration('manual first-feature hop pending'),10000);
   // One manual feature hop with an existing service, no auto-on or reinstall afterwards.
-  ok(await cli('manual first-feature update',['update','--self']));
+  try{ok(await cli('manual first-feature update',['update','--self']));}finally{clearInterval(generationTimer);captureGeneration('manual first-feature hop finished');}
   assert.equal(json(join(pkg,'package.json')).version,versionA);
   const nativeRead=ok(await call('installed packed native boot/accounting/drain smoke',process.execPath,[join(output,'installed-native-smoke.mjs'),workspaceEntry]));report.nativeSmoke=nativeRead;
   const before=await poll('default armed native service',async()=>{const s=await status();return s?.state==='ready'&&s.version===versionA&&s.update?.automatic===true?s:undefined;});
@@ -116,7 +127,7 @@ export async function run(){
   const cleared=await poll('automatic schedule resumed after manual success',async()=>{const s=await status();return s?.update?.automatic===true?s:undefined;},120000);
   report.cells.push({name:'owner-kill-sameboot-manual-clear',pass:true,ownerReceipt,ownerKill:JSON.parse(ownerKill.stdout),paused,cleared});
   ok(await cli('public status after acceptance',['status']));report.pass=true;
- }catch(error){report.pass=false;report.error=String(error.stack??error);throw error;}
+ }catch(error){report.pass=false;report.error=String(error.stack??error);captureGeneration('failure before native service cleanup');throw error;}
  finally{
   hold=false;for(const x of held.splice(0)){x.res.writeHead(503).end('fixture teardown');}
   if(installed){const result=await cli('cleanup exact owned native service',['daemon','uninstall','--yes','--json']);report.cleanup=result;if(result.exit!==0)report.pass=false;}
