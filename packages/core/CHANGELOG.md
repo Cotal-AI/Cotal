@@ -1,5 +1,11 @@
 # @cotal-ai/core
 
+## 0.164.6
+
+### Patch Changes
+
+- b86b5c5: Waking a space keeps its migration revocations, even after a long sleep. Static credentials can have no expiry, so removing an old wildcard fence could let a revoked credential connect again.
+
 ## 0.164.5
 
 No changes in this release.

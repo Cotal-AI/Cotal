@@ -1,5 +1,32 @@
 # cotal-ai
 
+## 0.164.6
+
+### Patch Changes
+
+- 9905ad2: Sign in through an issuer-authorized product discovery name.
+  
+  `cotal login <name>` and daemon sign-in or setup with `--idp <name>` resolve the provider's HTTPS root document and require the issuer's own root to endorse the name with `discoveryNames`. The roots must agree on issuer and audience. The typed root may use its own HTTPS auth origin or the issuer root's complete IdP URL, and other third-origin URLs are refused before approval. Login proofs retain the typed root's pins. Saved accounts and catalog origin checks keep using the resolved IdP URL. Cloud defaults and explicit account migration keep their current behavior.
+- 50d24a9: Updates wait for a newly announced release that npm does not serve yet instead of reporting a failed installation.
+  
+  When npm returns ETARGET for the selected latest cotal-ai version, the updater leaves installed packages unchanged and reports that the release is still arriving. Manual updates exit successfully with a deferred message. Automatic updates retry on the next scheduled attempt without consuming the version's failure budget. Other npm resolution errors retain their existing failure handling.
+- b4f3020: Installer reruns now reconcile installed extensions after updating the CLI. If reconciliation fails, the installer exits with an error and prints the command to finish the update.
+- e09456f: The macOS background service now installs updates automatically when automatic updates are on. It hands the existing guarded updater to a separate one-shot launchd job so restarting the service does not stop installation or extension reconciliation. Failed handoffs report their reason and the manual update command. A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [e09456f]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/auth@0.164.6
+  - @cotal-ai/cli@0.164.6
+  - @cotal-ai/core@0.164.6
+  - @cotal-ai/delivery@0.164.6
+  - @cotal-ai/manager@0.164.6
+  - @cotal-ai/runtime@0.164.6
+  - @cotal-ai/connector-core@0.164.6
+  - @cotal-ai/registry@0.164.6
+  - @cotal-ai/seat@0.164.6
+
 ## 0.164.5
 
 ### Patch Changes
