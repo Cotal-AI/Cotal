@@ -33,7 +33,7 @@ async function fixture(t, { platform = 'linux', status = {}, recovery, lock } = 
   const write = (path, value) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
   write(join(dirs.pkg, 'package.json'), { name: 'cotal-ai', version: '1.2.3' });
   write(join(dirs.daemonHome, 'daemon.lock'), { pid: process.pid, start, socket: { path: join(home, 'daemon.sock'), dev: socket.dev, ino: socket.ino } });
-  if (recovery) write(join(dirs.cotalHome, 'update-recovery.json'), recovery);
+  if (recovery !== undefined) write(join(dirs.cotalHome, 'update-recovery.json'), recovery);
   if (lock) write(join(dirs.globalRoot, '.cotal-update.lock'), lock === 'live' ? { pid: process.pid, start } : lock);
   const child = (value, bounds, exit = 0) => new Promise(resolve => {
     const proc = execFile(process.execPath, ['-e', `console.log(${JSON.stringify(JSON.stringify(value))});process.exitCode=${exit}`], { cwd: home, env: { PATH: '/usr/bin:/bin', HOME: home, USERPROFILE: home, COTAL_HOME: dirs.cotalHome, XDG_CONFIG_HOME: dirs.config, TMPDIR: dirs.tmp, TMP: dirs.tmp, TEMP: dirs.tmp }, timeout: bounds.timeoutMs, maxBuffer: bounds.maxBuffer, encoding: 'utf8', killSignal: 'SIGKILL' }, (error, stdout, stderr) => {
@@ -62,6 +62,15 @@ test('real capture artifacts and reaped child runner support independent passing
   assert.equal(f.evaluate().passed, true, JSON.stringify(f.evaluate()));
   assert.equal(JSON.stringify(f.diagnostics), before, 'raw diagnostics preserved');
 });
+test('hashed JSON-null recovery is the stock cleared state, not a paused record', async t => {
+  // Published run43591255295 successful Linux/macOS scheduler originals archive {record:null}.
+  const f = await fixture(t, { recovery: null });
+  const row = f.diagnostics.observations.find(row => row.kind === 'update-recovery.json');
+  assert.equal(row.state, 'archived');
+  assert.deepEqual(JSON.parse(readFileSync(join(f.dirs.output, row.artifact))), { record: null });
+  assert.equal(f.evaluate().passed, true, JSON.stringify(f.evaluate()));
+});
+
 for (const [name, options] of [
   ['paused recovery despite correct target', { recovery: { phase: 'paused', installed: '1.2.3' } }],
   ['unusable recovery', { recovery: { phase: 'unusable' } }],

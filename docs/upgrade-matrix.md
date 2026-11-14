@@ -60,8 +60,9 @@ The manual native-service cells disable automatic updates, install the real serv
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
 status, installed version, socket and pause/lock records
 are sampled independently before cleanup. The census verifies the archived observation hashes and
-rechecks the final state rather than trusting the updater's success output. These are separate
-from unattended scheduler cells. A failed manual service update stays red until fixed.
+rechecks the final state rather than trusting the updater's success output. A missing recovery record
+or its hash-verified JSON-null clear is healthy; a paused, unreadable or unobserved record is not.
+These are separate from unattended scheduler cells. A failed manual service update stays red until fixed.
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
 route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector

@@ -59,6 +59,7 @@ test('socket metadata uses recorded generation without making a connection', asy
     writeFileSync(join(f.daemonHome, 'daemon.lock'), JSON.stringify({ socket: { path: socket, dev: stat.dev, ino: stat.ino + 1 } }), { mode: 0o600 });
     const changed = await captureDaemonDiagnostics({ ...f.options, platform: 'darwin', stage: 'changed' });
     assert.equal(row(changed, 'socket').state, 'error');
+    assert.match(row(changed, 'socket').error, /recorded socket generation differs/);
   } finally { await new Promise(resolve => server.close(resolve)); }
   assert.equal(f.children.size, 0);
 });

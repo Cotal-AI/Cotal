@@ -39,7 +39,7 @@ function artifact(output, observation, json = true) {
 }
 
 /** Grade only independently captured after-update evidence. Never runs commands or reads product paths.
- * Missing recovery records are valid absence. Existing recovery records remain unresolved evidence.
+ * Missing recovery records and the stock JSON-null clear are valid absence. Other records remain unresolved evidence.
  * Owner records are observations, not kernel-lock custody proof. This never removes stale locks.
  */
 export function evaluateManualDaemonState({ diagnostics, output, target, platform } = {}) {
@@ -131,8 +131,13 @@ export function evaluateManualDaemonState({ diagnostics, output, target, platfor
     assert.equal(installed.version, target);
     assert.equal(row('installed-version').version, target);
   });
-  for (const kind of ['update-recovery.json', 'update-recovery-observed.json']) check(`${kind} absent`, () => {
-    assert.equal(row(kind).state, 'missing', 'recovery present, unreadable, or unobserved');
+  for (const kind of ['update-recovery.json', 'update-recovery-observed.json']) check(`${kind} clear`, () => {
+    const observation = row(kind);
+    if (observation.state === 'missing') return 'record absent';
+    assert.equal(observation.state, 'archived', 'recovery unreadable or unobserved');
+    const value = read(kind);
+    assert(kind === 'update-recovery.json' && value.record === null && Object.keys(value).length === 1, 'recovery present or not the stock cleared record');
+    return 'independently hashed stock JSON-null clear';
   });
   for (const kind of ['.extensions.lock.update', '.extensions.lock.npm-child', '.cotal-update.lock', '.cotal-update-child']) check(`${kind} inactive`, () => {
     const observation = row(kind);

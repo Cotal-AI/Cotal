@@ -74,7 +74,7 @@ function bytes(root, file) {
     return buffer.subarray(0, count).toString('utf8');
   } finally { closeSync(fd); }
 }
-const failure = error => ({ state: error?.code === 'ENOENT' ? 'missing' : error?.code === 'ETIMEDOUT' || error?.name === 'AbortError' ? 'timeout' : 'error', error: clean(error?.code ?? error?.message ?? 'diagnostic error') });
+const failure = error => ({ state: error?.code === 'ENOENT' ? 'missing' : error?.code === 'ETIMEDOUT' || error?.name === 'AbortError' ? 'timeout' : 'error', error: clean(error?.code === 'ERR_ASSERTION' ? error.message : error?.code ?? error?.message ?? 'diagnostic error') });
 
 /** Read-only snapshots before/after an update. No verdict interpretation, lock operation, or service control.
  * run(file, argv, {timeoutMs,maxBuffer,signal}) must enforce the bounds and reap its children before
