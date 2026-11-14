@@ -44,6 +44,12 @@ try {
     const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "initial generation");
     assert.equal(existsSync(executionStore(root)), false); assert.equal(existsSync(join(root, executionDescriptorName)), false);
   });
+  check("selected product may import bootstrap primitives without a top-level-await cycle", () => {
+    const entry = join(root, "dist/cotal-program.js"), original = readFileSync(entry);
+    writeFileSync(entry, "import { executionBinding } from './cotal.js'; console.log(executionBinding(new URL('..', import.meta.url).pathname).version);");
+    try { const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "0.1.0"); }
+    finally { writeFileSync(entry, original); }
+  });
   check("read-only initial package starts without any materialization", () => {
     chmodSync(root, 0o500);
     try { const result = run(); assert.equal(result.status, 0, result.stderr); } finally { chmodSync(root, 0o700); }
