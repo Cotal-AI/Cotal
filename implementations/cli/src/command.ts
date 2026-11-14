@@ -54,6 +54,7 @@ import {
   setCommandSurface,
   setInstalledExtensionsEnabled,
 } from "./ext-loader.js";
+import { recoverExtensionPromotion } from "./lib/extension-stage.js";
 import { SeedChildFailure, deferredSeedRefusal, reconcileSeededConnectors } from "./seed/reconcile.js";
 import { deferSeedToLaunch } from "./seed/launch.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
@@ -597,6 +598,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   const configFolder = globalConfigDirProblem();
   if (opts.extensions) {
     try {
+      recoverExtensionPromotion();
       if (await extSeedGate(registry, argv, configFolder, leadingGlobals)) return;
     } catch (e) {
       seedRefusal(e);

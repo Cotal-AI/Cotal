@@ -40,3 +40,8 @@ assert.notEqual(updated.status, 0, 'second package refusal must fail update');
 assert.match(updated.stderr, /second connector unavailable/);
 assert.equal(digest(prefix), before, 'failed whole-set update must leave live prefix byte-for-byte unchanged');
 console.log('whole-set failed update leaves live prefix unchanged');
+const repaired = run(['update']);
+assert.equal(repaired.status, 0, repaired.stderr);
+assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes('undefined'));
+for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readdirSync(join(prefix, 'node_modules/@cotal-ai', pkg)).includes('damage.txt'));
+console.log('whole-set successful update repairs every selected package');

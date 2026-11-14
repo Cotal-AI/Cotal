@@ -11,6 +11,11 @@ import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
+import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
+import { globalConfigDir } from "@cotal-ai/core";
+import { inspectLock } from "@cotal-ai/workspace";
+import { selfArgv } from "../lib/self-exec.js";
+import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
 import { cliVersion, seedStoreDir } from "../seed/paths.js";
 
@@ -75,6 +80,13 @@ export async function ext(args: ParsedArgs): Promise<void> {
     if (!extensionUpdatePassOwnedBy(process.ppid))
       throw new Error("internal update extension replay requires its parent to own the extension update pass");
     return addExtension(rest[1], rest[0], true).catch(exitOnInterruptedAdd);
+  }
+  if (sub === "__stage-verify" && rest.length === 6) {
+    const [pkg, spec, ownerConfig, nonce, parent, source] = rest as [string, string, string, string, string, string];
+    assertStageVerifier(Number(parent), ownerConfig, nonce);
+    const lines = await verifyCandidate(pkg, spec, extensionsDir(), loadExtensionsManifest().extensions, source === "seeded", false, console.error);
+    for (const line of lines) console.log(line);
+    return;
   }
   if (sub === "remove" && rest[0]) return remove(rest[0]);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
@@ -192,6 +204,70 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
+  }
+}
+
+export interface ExtensionInstallRequest {
+  readonly pkg: string;
+  readonly spec: string;
+  readonly version?: string;
+  readonly source?: "seeded";
+}
+
+/** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
+export async function installExtensionSet(requests: readonly ExtensionInstallRequest[]): Promise<void> {
+  if (!requests.length) return;
+  const ownerConfig = globalConfigDir();
+  const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
+  if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
+  const stage = stageExtensions();
+  const originalConfig = process.env.XDG_CONFIG_HOME;
+  try {
+    // Make all local dependency specs independent of the stage directory's later promotion.
+    for (const name of ["package.json", "package-lock.json"]) {
+      const path = join(stage.prefix, name);
+      if (!existsSync(path)) continue;
+      const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(extensionsDir(), item.slice(5))}` : item);
+      writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+    }
+    for (const request of requests) {
+      if (packageNameFromSpec(request.spec, isPathSpec(request.spec)) !== request.pkg) throw new Error("extension set spec does not match its package");
+      rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
+    }
+    const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", ...requests.map(request => request.spec)], stage.prefix);
+    if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
+    process.env.XDG_CONFIG_HOME = stage.config;
+    for (const request of requests) {
+      const meta = installedExtensionPackage(request.pkg);
+      if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
+    }
+    const [file, ...argv] = selfArgv();
+    for (const request of requests) {
+      const child = spawnSync(file, [...argv, "ext", "__stage-verify", request.pkg, request.spec, ownerConfig, owner.owner.nonce, String(process.pid), request.source ?? "operator"], {
+        encoding: "utf8", env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
+      });
+      if (child.stderr) process.stderr.write(child.stderr);
+      if (child.status !== 0) throw new Error(`extension set verification failed for ${request.pkg}: ${child.stderr || child.error?.message || child.status}`);
+      if (child.stdout) process.stderr.write(child.stdout);
+    }
+    // The verifiers wrote one complete inventory inside the stage. Rebind every retained package,
+    // including packages not changed by this pass, just as each former individual add did.
+    linkExtensionPeers(loadExtensionsManifest().extensions, requests[0]!.pkg, console.error);
+    for (const name of ["package.json", "package-lock.json"]) {
+      const path = join(stage.prefix, name);
+      if (!existsSync(path)) continue;
+      const value = JSON.parse(readFileSync(path, "utf8"), (_key, item: unknown) =>
+        typeof item === "string" && item.startsWith("file:") ? `file:${resolve(stage.prefix, item.slice(5))}` : item);
+      writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
+    }
+    if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalConfig;
+    stage.promote();
+  } finally {
+    if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalConfig;
+    stage.discard();
   }
 }
 
@@ -333,6 +409,10 @@ async function installCandidate(pkg: string, resolved: string, dir: string, reco
     fail(pkg, `npm install failed: ${npmInstallFailure(r.output)}`);
   }
 
+  return verifyCandidate(pkg, resolved, dir, recorded, seeding, staged, note);
+}
+
+async function verifyCandidate(pkg: string, resolved: string, dir: string, recorded: readonly InstalledExtension[], seeding: boolean, staged: boolean, note: (line: string) => void): Promise<string[]> {
   // The spec's package must now be a prefix dependency — anything else is a failed install.
   let deps: Record<string, string>;
   try {
