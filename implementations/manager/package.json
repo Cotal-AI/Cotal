@@ -34,6 +34,7 @@
     "@lydell/node-pty": "1.2.0-beta.12",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
+    "@nats-io/nats-core": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0",
     "@xterm/addon-attach": "^0.11.0",
     "@xterm/addon-fit": "^0.10.0",
@@ -55,7 +56,6 @@
     "@cotal-ai/runtime": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@nats-io/nats-core": "^3.4.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1"
   },
