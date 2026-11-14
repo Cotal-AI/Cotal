@@ -7,6 +7,7 @@ Var CotalCode
 Var CotalMessage
 Var CotalVersion
 Var CotalSetupMutex
+Var CotalFresh
 
 Function CotalSetupMessage
   FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" r
@@ -59,6 +60,12 @@ FunctionEnd
     Quit
   ${EndIf}
   StrCpy $CotalVersion "${VERSION}"
+  ${IfNot} ${FileExists} "$INSTDIR\cotal-desktop.exe"
+  ${AndIfNot} ${FileExists} "$LOCALAPPDATA\CotalSetup\service-update.json"
+  ${AndIfNot} ${FileExists} "$LOCALAPPDATA\Cotal\daemon\service-unit.json"
+    StrCpy $CotalFresh 1
+    Goto cotal_prepared
+  ${EndIf}
   SetOutPath $PLUGINSDIR
   File /oname=service-update.mjs "${COTAL_HOOK_DIR}\service-update.mjs"
   File /oname=service-task.ps1 "${COTAL_HOOK_DIR}\service-task.ps1"
@@ -80,15 +87,6 @@ FunctionEnd
     ${EndIf}
     Quit
   ${EndIf}
-  ${If} $CotalMessage == "finish$\r$\n"
-  ${OrIf} $CotalMessage == "finish$\n"
-    nsExec::ExecToLog /TIMEOUT=120000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
-    Pop $CotalCode
-    ${If} $CotalCode <> 0
-      Call CotalSetupRefused
-    ${EndIf}
-    StrCpy $CotalMessage "none"
-  ${EndIf}
   ${If} $CotalMessage == "recover$\r$\n"
   ${OrIf} $CotalMessage == "recover$\n"
     StrCpy $CotalPrepared 1
@@ -108,15 +106,30 @@ FunctionEnd
     ${EndIf}
     StrCpy $CotalPrepared 1
   ${EndIf}
+  cotal_prepared:
   SetOutPath $INSTDIR
 !macroend
 
 ; Tauri's own functions set the bundle AppUserModelID on each shortcut.
 !macro NSIS_HOOK_POSTINSTALL
-  nsExec::ExecToLog /TIMEOUT=120000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
-  Pop $CotalCode
-  ${If} $CotalCode <> 0
-    Call CotalSetupRefused
+  ${If} $CotalFresh = 1
+    CreateDirectory "$LOCALAPPDATA\CotalSetup"
+    FileOpen $0 "$LOCALAPPDATA\CotalSetup\result.json" w
+    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"updated$\",$\"code$\":0,$\"message$\":$\"Cotal is installed. No background service was installed.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"${VERSION}$\",$\"completedAt$\":null}'
+    FileClose $0
+  ${Else}
+    nsExec::ExecToLog /TIMEOUT=120000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
+    Pop $CotalCode
+    ${If} $CotalCode = 23
+      Call CotalSetupMessage
+      DetailPrint "$CotalMessage"
+      ${IfNot} ${Silent}
+        MessageBox MB_ICONINFORMATION|MB_OK "$CotalMessage"
+      ${EndIf}
+      SetErrorLevel 23
+    ${ElseIf} $CotalCode <> 0
+      Call CotalSetupRefused
+    ${EndIf}
   ${EndIf}
   StrCpy $CotalPrepared 0
   ${If} $UpdateMode <> 1

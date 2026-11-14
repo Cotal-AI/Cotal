@@ -444,6 +444,17 @@ function showStage(next: Stage, focus = false): void {
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
+  let setupInstaller = document.getElementById("setup-installer") as HTMLAnchorElement | null;
+  if (issue === "SETUP_INTERRUPTED" && !setupInstaller) {
+    setupInstaller = document.createElement("a");
+    setupInstaller.id = "setup-installer";
+    setupInstaller.className = "text-button";
+    setupInstaller.textContent = "Download installer";
+    setupInstaller.href = "https://github.com/Cotal-AI/Cotal/releases/latest";
+    setupInstaller.addEventListener("click", event => { event.preventDefault(); void invoke("open_browser", { url: setupInstaller!.href }); });
+    el("recovery-panel").append(setupInstaller);
+  }
+  if (setupInstaller) setupInstaller.hidden = issue !== "SETUP_INTERRUPTED";
   if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "preferences", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;

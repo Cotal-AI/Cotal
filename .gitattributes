@@ -14,3 +14,6 @@ packages/workspace/native/darwin-process.c text eol=lf
 packages/workspace/native/node-sdk.json text eol=lf
 packages/workspace/scripts/build-native.mjs text eol=lf
 packages/workspace/scripts/native-contract.mjs text eol=lf
+
+# The reviewed upstream NSIS template is digest-pinned before applying the service guard.
+desktop/src-tauri/installers/tauri-2.12.4.nsi text eol=lf

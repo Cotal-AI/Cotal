@@ -11,8 +11,23 @@ function Get-OwnedTask {
   $scheduler.Connect()
   $folder = $scheduler.GetFolder('\')
   $tasks = @($folder.GetTasks(1) | Where-Object { $_.Name -ceq $name })
+  if ($tasks.Count -gt 0) {
+    $action=$tasks[0].Definition.Actions
+    if ($action.Count -eq 1 -and ![string]::Equals($action.Item(1).Path,(Join-Path $root 'cotal-desktop.exe'),[StringComparison]::OrdinalIgnoreCase)) {
+      $belongsHere=$false
+      if (Test-Path -LiteralPath $receiptPath) {
+        $record=Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
+        if (Test-Path -LiteralPath $record.unitPath) {
+          [xml]$recordedSource=Get-Content -Raw -LiteralPath $record.unitPath
+          $belongsHere=[string]::Equals([string]$recordedSource.Task.Actions.Exec.Command,(Join-Path $root 'cotal-desktop.exe'),[StringComparison]::OrdinalIgnoreCase)
+        }
+      }
+      if ($belongsHere) { throw 'The registered application task changed from its owned definition.' }
+      return @{foreign=$true;task=$tasks[0]}
+    }
+  }
   if (!(Test-Path -LiteralPath $receiptPath)) {
-    if ($tasks.Count -ne 0) { throw 'A scheduled task exists without its installation receipt.' }
+    if ($tasks.Count -ne 0) { throw 'An application task exists without its installation receipt.' }
     return $null
   }
   $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
@@ -50,18 +65,27 @@ try {
   if ($Action -eq 'recover') {
     if (!(Test-Path -LiteralPath $statePath)) { 'none'; exit 0 }
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    if ($state.schema -ne 1 -or ![string]::Equals($state.installPath,$root,[StringComparison]::OrdinalIgnoreCase) -or $state.phase -notin @('copying','ready') -or $state.targetVersion -cne $env:COTAL_SETUP_VERSION) { throw 'An interrupted setup handover is invalid or belongs to another installer. Run the same installer again.' }
-    if ($state.phase -eq 'ready') { 'finish'; exit 0 }
+    if ($state.schema -ne 1 -or ![string]::Equals($state.installPath,$root,[StringComparison]::OrdinalIgnoreCase) -or $state.phase -notin @('copying','ready')) { throw 'An interrupted setup handover is invalid. Run the installer again.' }
+    if ($state.phase -eq 'ready') {
+      Remove-Item -LiteralPath $statePath
+      'none'; exit 0
+    }
     if ($state.installed) {
       if (!$owned -or $owned.receiptDigest -cne $state.receiptDigest -or $owned.task.Enabled -or $owned.task.GetInstances(0).Count -ne 0) { throw 'Interrupted setup requires the unchanged owned task disabled with no running instances.' }
-    } elseif ($owned) { throw 'A service appeared after interrupted setup began.' }
+    } elseif ($owned -and !$owned.foreign) { throw 'A service appeared after interrupted setup began.' }
     if ($state.oldPid) {
       $process = Get-Process -Id $state.oldPid -ErrorAction SilentlyContinue
       if ($process -and $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ceq $state.oldBirth) { throw 'The old service is still alive. No replacement was authorized.' }
     }
     $live=@(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) })
     if ($live.Count -ne 0) { throw 'A process still uses the interrupted installation. Close it before running setup again.' }
+    $state.targetVersion=$env:COTAL_SETUP_VERSION
+    [IO.File]::WriteAllText($statePath,($state|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
     'recover'; exit 0
+  }
+  if ($owned -and $owned.foreign) {
+    if ($Action -ne 'inspect' -and $Action -ne 'recover') { throw 'The service belongs to another installation and was not changed.' }
+    '{"installed":false,"foreign":true}'; exit 0
   }
   if (!$owned) {
     if ($Action -ne 'inspect') { throw 'No owned service was installed.' }

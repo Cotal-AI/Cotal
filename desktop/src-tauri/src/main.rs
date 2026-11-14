@@ -17,27 +17,8 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     let directory = executable
         .parent()
         .ok_or("the application has no directory")?;
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let handover = std::path::PathBuf::from(local).join("CotalSetup/service-update.json");
-        match std::fs::read(&handover) {
-            Ok(bytes) => {
-                if bytes.len() > 8192 {
-                    return Err("oversized setup handover; run the installer again".into());
-                }
-                let state: serde_json::Value = serde_json::from_slice(&bytes)?;
-                let install = state["installPath"].as_str().ok_or("invalid setup handover")?;
-                if state["schema"] != 1 {
-                    return Err("invalid setup handover; run the installer again".into());
-                }
-                if std::path::Path::new(install).to_string_lossy().eq_ignore_ascii_case(&directory.to_string_lossy())
-                    && state["phase"] != "ready"
-                {
-                    return Err("setup was interrupted, run the installer again".into());
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+    if cotal_desktop::setup_state::interrupted(directory)? {
+        return Err("setup was interrupted, run the installer again".into());
     }
     let node = directory.join(format!("{}.exe", cotal_desktop::NODE_SIDECAR));
     let runtime = directory.join("runtime");

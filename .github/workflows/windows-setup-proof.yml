@@ -49,7 +49,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted]
+        cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted, app-open, app-tray]
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
