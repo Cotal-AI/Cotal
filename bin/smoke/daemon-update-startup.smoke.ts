@@ -16,7 +16,7 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const version = (JSON.parse(readFileSync(join(repo, "bin/package.json"), "utf8")) as { version: string }).version;
 const root = mkdtempSync(join(tmpdir(), "us-"));
 let passed = 0;
-for (const phase of ["replacing", "verified-ready", "paused"] as const) {
+for (const phase of ["replacing", "verified-ready", "paused", "restoring"] as const) {
   const directory = join(root, phase);
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
@@ -55,6 +55,17 @@ for (const phase of ["replacing", "verified-ready", "paused"] as const) {
       assert.equal(reply.result.version, version);
     }
     assert.equal(readUpdateRecovery()?.phase, phase, "startup must not restore or retire a live owner's transaction");
+    if (phase === "restoring") {
+      const reconcile = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update"], {
+        cwd: repo, env: { ...env, ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_UPDATE_CLOSURE_"))), COTAL_UPDATE_PARENT: String(process.pid), COTAL_UPDATE_TARGET_VERSION: version, COTAL_ALLOW_CHECKOUT_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
+      });
+      let text = ""; reconcile.stdout.on("data", b => { text += String(b); }); reconcile.stderr.on("data", b => { text += String(b); });
+      const code = await new Promise(resolve => reconcile.once("close", resolve));
+      assert.equal(code, 0, text);
+      assert.match(text, /hosted Manager continuity: daemon verified prepared fences and zero seats/);
+      const released = await queryDaemon({ paths, timeoutMs: 2000 });
+      assert.equal(released.ok && released.result.update?.restartEvidence?.prepared, false, "fresh restoration fence is released after reconciliation");
+    }
     console.log(`  ✓ ${phase}: real daemon answers while live updater owns closure`);
     passed++;
   } finally {

@@ -518,7 +518,7 @@ async function serve(args: ParsedArgs): Promise<void> {
         recoveryBusy = true;
         clearInterval(recoveryTimer);
         process.stderr.write("daemon: observed updater ended; checking guarded interrupted-update recovery\n");
-        void recoverInterruptedUpdate(undefined, true).then(async restored => {
+        void running.prepareGenerationRestart().then(() => recoverInterruptedUpdate(undefined, true)).then(async restored => {
           if (restored) {
             process.stderr.write("daemon: interrupted update restored the previous installation; restarting the recorded service\n");
             await updates?.close();
@@ -529,7 +529,9 @@ async function serve(args: ParsedArgs): Promise<void> {
           } else process.stderr.write("daemon: updater completed; no interrupted-update recovery remains\n");
         }).catch((error: unknown) => {
           process.stderr.write(`daemon: guarded interrupted-update recovery refused: ${error instanceof Error ? error.message : String(error)}; run \`cotal update --self\`\n`);
-        });
+        }).finally(() => running.abortGenerationRestart().catch((error: unknown) => {
+          process.stderr.write(`daemon: interrupted-update admission release refused: ${error instanceof Error ? error.message : String(error)}\n`);
+        }));
       }, 1000);
       recoveryTimer.unref();
     }

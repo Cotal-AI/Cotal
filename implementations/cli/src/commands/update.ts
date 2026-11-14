@@ -278,12 +278,28 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
       writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
       const snapshot = snapshotUpdateClosure(record.snapshot);
+      const completedRollback = !startup && record.phase === "paused" && record.installed === record.previous
+        && record.renames !== undefined && record.renames.length > 0 && record.renames.every(entry => entry.done);
       const prefix = rt.installPrefix();
       const selected = rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
       const root = selected.stdout.trim();
       if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
       const releaseGlobal = rt.claimGlobalUpdate(root);
       try {
+        if (completedRollback) {
+          const version = rt.version();
+          const entry = rt.verifyGlobalEntry(root, version);
+          if (realpathSync(entry) !== realpathSync(entryScript())) throw new Error("paused repair must run from the verified installed CLI");
+          snapshot.restore();
+          const env = { ...rt.env, [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
+          const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
+          if (reconciled.status !== 0) throw new Error(failure(reconciled));
+          snapshot.discard();
+          clearUpdateRecovery();
+          recordUpdateCompletion(version, `repaired paused installation at ${version}`, true);
+          rt.out(`Repaired the paused installation with cotal-ai@${version}; the machine service and its hosted Managers were verified.`);
+          return true;
+        }
         checkReleaseArchives(record.previous, rt);
         const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
         const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
