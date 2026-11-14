@@ -21,7 +21,7 @@ const cli = join(runtime, 'dist', 'cotal.js');
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const proofStartedAt = new Date().toISOString();
-const report = { head: process.env.GITHUB_SHA, cell, calls: [], checks: [], limits: [] };
+const report = { head: process.env.GITHUB_SHA, candidate: { kind: process.env.COTAL_SETUP_CANDIDATE_KIND ?? 'untraced', file: candidate, sha256: createHash('sha256').update(readFileSync(candidate)).digest('hex') }, cell, calls: [], checks: [], limits: [] };
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
 Object.assign(env, { COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: '0.164.9' });
 const save = () => writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
@@ -168,7 +168,7 @@ try {
   report.diagnostic = diagnostic;
   if (cell === 'interactive') {
     const ui = JSON.parse(readFileSync(join(output, 'ui.json'), 'utf8').replace(/^\uFEFF/, ''));
-    check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names.some(name => /uninstall before installing/i.test(name))));
+    check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names?.some(name => /uninstall before installing/i.test(name))));
   }
   if (['occupied', 'occupied-ui', 'locker', 'early', 'cannot-start'].includes(cell)) {
     check('Setup refuses before replacing files', result.code !== 0);
@@ -198,6 +198,11 @@ try {
   }
 } catch (error) { report.failure = error.stack; report.failureObservation = error.observation; process.exitCode = 1; }
 finally {
+  for (const file of ['helper-trace.log', 'hook-trace.log', 'helper.log', 'service-update.json', 'result.json', 'message.txt']) {
+    const path = join(setupHome, file);
+    if (existsSync(path)) writeFileSync(join(output, `setup-${file}`), readFileSync(path));
+  }
+  if (seat?.launchOutput && existsSync(seat.launchOutput)) writeFileSync(join(output, 'seat-output.log'), readFileSync(seat.launchOutput));
   if (seat) { await seat.stop(report.manager.instanceId).catch(error => { report.seatCleanupFailure = error.message; process.exitCode = 1; }); }
   if (app?.exitCode === null) { const ended = new Promise(resolve => app.once('exit', resolve)); app.kill(); await ended; }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }

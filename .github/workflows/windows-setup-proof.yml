@@ -41,6 +41,18 @@ jobs:
           name: setup-candidate
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
+      - name: Build separate traced diagnostic candidate
+        shell: pwsh
+        run: |
+          node desktop/test/setup-trace-candidate.mjs
+          if($LASTEXITCODE -ne 0){throw 'Trace candidate preparation failed'}
+          pnpm --dir desktop exec tauri build --bundles nsis --config src-tauri/traced-helper.json
+          if($LASTEXITCODE -ne 0){throw 'Trace candidate build failed'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-traced-diagnostic
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
       - name: Build cannot-start helper invalid-input control
         shell: pwsh
         run: |
@@ -61,7 +73,12 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
+        variant: [untraced]
         cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted, app-open, app-tray, foreign, fresh, cannot-start]
+        include:
+          - { cell: running, variant: traced }
+          - { cell: occupied, variant: traced }
+          - { cell: occupied-ui, variant: traced }
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -86,6 +103,11 @@ jobs:
         with:
           name: setup-candidate
           path: candidate
+      - uses: actions/download-artifact@v4
+        if: matrix.variant == 'traced'
+        with:
+          name: setup-traced-diagnostic
+          path: traced-candidate
       - uses: actions/download-artifact@v4
         if: matrix.cell == 'cannot-start'
         with:
@@ -118,11 +140,13 @@ jobs:
           Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $zip
           Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
           (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
-          $folder=if('${{ matrix.cell }}' -eq 'cannot-start'){'invalid-candidate'}else{'candidate'}
+          $folder=if('${{ matrix.variant }}' -eq 'traced'){'traced-candidate'}elseif('${{ matrix.cell }}' -eq 'cannot-start'){'invalid-candidate'}else{'candidate'}
           $candidate=@(Get-ChildItem "$folder/*-setup.exe")
           if($candidate.Count -ne 1){throw 'Candidate not singular'}
           "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
       - name: Exercise actual installed setup
+        env:
+          COTAL_SETUP_CANDIDATE_KIND: ${{ matrix.variant }}
         run: pnpm exec tsx desktop/test/setup-proof.mjs ${{ matrix.cell }}
       - name: Existing Windows service lifecycle suites
         if: always() && matrix.cell == 'absent'
@@ -140,7 +164,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: setup-proof-${{ matrix.cell }}
+          name: setup-proof-${{ matrix.cell }}-${{ matrix.variant }}
           path: |
             ${{ runner.temp }}/setup-proof/
             ${{ runner.temp }}/daemon-service-result.json
