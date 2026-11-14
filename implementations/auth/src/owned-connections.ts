@@ -6,6 +6,13 @@ export interface AuthConnectionState {
   ended: boolean;
 }
 
+/** One tracked connection's last native server/connection binding. Confirm liveness with CONNZ. */
+export interface AuthNativeConnection {
+  label: string;
+  serverId: string;
+  cid: number;
+}
+
 /** The terminal inventory. A failed close leaves this signal pending while any client is live. */
 export interface AuthServiceClosed {
   connections: AuthConnectionState[];
@@ -34,6 +41,18 @@ export class OwnedConnections {
 
   connections(): AuthConnectionState[] {
     return this.clients.map(({ state }) => ({ ...state }));
+  }
+
+  nativeConnections(): AuthNativeConnection[] {
+    const result: AuthNativeConnection[] = [];
+    for (const { nc, state } of this.clients) {
+      if (state.ended) continue;
+      const serverId = nc?.info?.server_id, cid = nc?.info?.client_id;
+      if (!nc || nc.isClosed() || typeof serverId !== "string" || !/^N[A-Z2-7]{55}$/.test(serverId) || !Number.isSafeInteger(cid) || cid! <= 0)
+        throw new Error("auth connection inventory has an unsettled native binding");
+      result.push({ label: state.label, serverId, cid: cid! });
+    }
+    return result;
   }
 
   complete(): void {
