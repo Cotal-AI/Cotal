@@ -112,6 +112,7 @@ jobs:
           WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
       - name: Guarded full-closure candidate A and B packs
         run: |
+          mkdir -m 700 "$RUNNER_TEMP/candidates"
           node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidates/A" --version 0.164.7 --source-root "$GITHUB_WORKSPACE/product"
           node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidates/B" --version 0.164.8 --source-root "$GITHUB_WORKSPACE/product"
           node --input-type=module -e 'import fs from "node:fs";import assert from "node:assert/strict";for(const [label,version]of[["A","0.164.7"],["B","0.164.8"]]){const m=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/candidates/"+label+"/manifest.json"));assert.equal(m.source,process.env.PRODUCT_SHA);assert.equal(m.packages.length,24);assert(m.packages.every(p=>p.version===version));}'
