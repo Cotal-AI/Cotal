@@ -55,6 +55,15 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       }
       if (process.platform === "win32" && readWindowsUpdatePause()) { automatic = false; reason = WINDOWS_INTERRUPTED_UPDATE; }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
+    if (process.platform === "win32") {
+      try {
+        const activation = JSON.parse(readFileSync(join(homeCotalDir(), "update-windows-activation.json"), "utf8"));
+        if (activation?.v !== 1 || !["pending", "ready", "failed", "not-needed"].includes(activation.activation) || typeof activation.target !== "string" || !Number.isFinite(activation.deadline)) throw new Error("invalid Windows activation result");
+        if (activation.target === state.version && activation.activation === "failed" && !readWindowsUpdatePause()) reason = `release ${activation.target} installed; automatic activation failed; use Start service`;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") { automatic = false; reason = `automatic activation status unreadable: ${String(error)}`; }
+      }
+    }
     if (!["linux", "darwin", "win32"].includes(process.platform)) reason = `${reason}. Automatic installation is unavailable on ${process.platform === "win32" ? "Windows" : process.platform} in this release. Run \`cotal update --self\` here`;
     if (desktop) reason = "update the desktop app with its signed platform installer";
     return { channel: desktop ? "desktop" : "npm", current: host.version, latest: cached?.latest, lastCheck: cached?.checkedAt ? new Date(cached.checkedAt).toISOString() : undefined, automatic, notify, failures: state.failures, lastResult: reason, ...(state.next < Number.MAX_SAFE_INTEGER ? { nextAttempt: new Date(state.next).toISOString() } : {}) };

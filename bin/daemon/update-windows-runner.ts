@@ -10,11 +10,13 @@ process.env.COTAL_HOME = home;
 const { admitWindowsUpdate, windowsAutomaticPrefix } = await import("./update-windows.js");
 const { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock, readUpdateSettings, UPDATE_HOUR_MS } = await import("@cotal-ai/workspace");
 const { writeSecretFile, writeSecretFileAtomic } = await import("@cotal-ai/core");
+const { captureWindowsAutomaticActivation } = await import("./update-windows-activation.js");
 const custody = admitWindowsUpdate(process.argv[2] ?? "");
 Object.assign(process.env, custody.receipt.env);
 const native = win32ProcessBinding();
 const attemptPath = join(home, "update-attempt.json");
 let launched = false, done = false, drained = false, drainAttempted = false;
+let activation: Awaited<ReturnType<typeof captureWindowsAutomaticActivation>> | undefined;
 const failed = (error: unknown) => {
   const attempt = JSON.parse(readFileSync(attemptPath, "utf8"));
   writeSecretFileAtomic(attemptPath, `${JSON.stringify({ ...attempt, failures: Math.max(attempt.failures ?? 0, custody.receipt.failures + 1), result: `Windows automatic update refused: ${error instanceof Error ? error.message : String(error)}; retrying automatically`, next: Date.now() + UPDATE_HOUR_MS })}\n`);
@@ -30,6 +32,7 @@ try {
     writeSecretFileAtomic(attemptPath, `${JSON.stringify({ ...attempt, result: "automatic updates disabled before Windows handoff", next: Date.now() + UPDATE_HOUR_MS })}\n`);
     done = true; drained = true;
   } else {
+    activation = await captureWindowsAutomaticActivation(custody.receipt.nonce);
     const logPath = join(home, "update-attempt.log");
     writeSecretFile(logPath, "");
     const args = [fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"];
@@ -45,14 +48,20 @@ try {
     drained = true;
     if (code !== 0) throw new Error(`updater exited with ${code ?? "a timeout"}; inspect update-attempt.log`);
     done = true;
+    custody.complete(true);
+    await activation.activate();
   }
 } catch (error) {
   if (launched && !drainAttempted) {
     drainAttempted = true;
     try { drained = native.drain(20_000) === "drained"; } catch { /* Completion stays unconfirmed and pauses on owner death. */ }
   }
-  failed(error);
+  if (done) {
+    process.stderr.write(`Windows automatic activation failed: ${error instanceof Error ? error.message : String(error)}; release remains installed; use Start service\n`);
+    process.exitCode = 1;
+  } else failed(error);
 } finally {
+  activation?.close();
   if (drained) custody.complete(done);
   custody.release();
 }

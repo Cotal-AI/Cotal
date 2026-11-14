@@ -210,10 +210,10 @@ export interface NativeService {
 }
 
 /** This OS's per-user supervisor, or `undefined` on Linux, whose systemd route is below. */
-function nativeService(): NativeService | undefined {
+function nativeService(run: NativeRun = nativeRun): NativeService | undefined {
   if (process.platform === "linux") return undefined;
-  if (process.platform === "darwin") return launchAgentService(nativeRun);
-  if (process.platform === "win32") return scheduledTaskService(nativeRun);
+  if (process.platform === "darwin") return launchAgentService(run);
+  if (process.platform === "win32") return scheduledTaskService(run);
   throw new CommandFailure("refused", "UNSUPPORTED", `cotal daemon install supports Linux, macOS and Windows; this is ${process.platform}, and no other supervisor was substituted`);
 }
 
@@ -342,8 +342,8 @@ export interface UninstallPlan {
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
-  const service = nativeService();
+function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
+  const service = nativeService(run);
   const receipt = readReceipt(paths);
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
   const mechanism = receipt.mechanism ?? "systemd-user";
@@ -500,11 +500,11 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
 }
 
 /** Send a restart handshake on the caller's already verified, pinned connection. */
-export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof openVerified>> | undefined, op: "daemon-stop" | "status", commit = false) {
+export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof openVerified>> | undefined, op: "daemon-stop" | "status", commit = false, timeoutMs = commit ? 5000 : 70_000) {
   const id = randomUUID().replaceAll("-", "");
   if (!socket) throw new Error("the pinned daemon connection is absent");
   socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op, ...(commit ? { commit: true } : {}) }));
-  const reply = JSON.parse(await readLine(socket, commit ? 5000 : 70_000)) as DaemonResponse;
+  const reply = JSON.parse(await readLine(socket, timeoutMs)) as DaemonResponse;
   const unacknowledged = () => new Error(`the pinned daemon did not acknowledge ${op}`);
   if (!reply || typeof reply !== "object" || reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw unacknowledged();
   if (reply.ok === false) {
@@ -517,14 +517,36 @@ export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof o
   return reply.result;
 }
 
+/** An automatic helper's captured authority, retained until its single activation deadline. */
+export interface WindowsAutomaticRestart {
+  readonly deadline: number;
+  readonly receipt: string;
+  readonly pid: number;
+  readonly start: string;
+  readonly exited: () => boolean;
+}
+
 /** Restart the recorded Windows task only after the pinned daemon lifetime exits. */
-async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false): Promise<UninstallPlan> {
-  const { receipt, plan } = recordedUnit(paths, daemonHome);
+async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+  const remaining = (limit: number): number => {
+    if (!automatic) return limit;
+    const left = automatic.deadline - Date.now();
+    if (left <= 0) throw new Error("Windows automatic activation deadline expired; release remains installed; use Start service");
+    return Math.min(limit, left);
+  };
+  const run: NativeRun = automatic ? (file, args, env) => nativeRun(file, args, env, remaining(30_000)) : nativeRun;
+  const recorded = () => recordedUnit(paths, daemonHome, run);
+  const { receipt, plan } = recorded();
   if (process.platform !== "win32" || plan.mechanism !== "scheduled-task") throw new CommandFailure("refused", "UNSUPPORTED", "Windows daemon restart requires the recorded scheduled task");
-  const task = scheduledTaskService(nativeRun);
+  if (automatic && JSON.stringify(receipt) !== automatic.receipt) throw new Error("the captured Windows installation changed before activation");
+  const task = scheduledTaskService(run);
+  if (automatic) {
+    const observed = task.inspect(receipt);
+    if (!observed.present || observed.enabled !== true) throw new Error("the captured Windows task is absent or disabled; activation refused");
+  }
   const before = readLifetimeRecord(paths.lock);
   let socket: Awaited<ReturnType<typeof openVerified>> | undefined;
-  try { socket = await openVerified({ paths }); }
+  try { socket = await openVerified({ paths, timeoutMs: remaining(5000) }); }
   catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
   socket?.on("error", () => {});
   const owner = readLifetimeRecord(paths.lock);
@@ -535,12 +557,19 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
   const startedAt = Date.now();
   const heartbeat = setInterval(() => report?.(`${phase} (${Math.floor((Date.now() - startedAt) / 1000)}s elapsed)`), 5000);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
-  const request = (op: "daemon-stop" | "status", commit = false) => requestInstalledDaemon(socket, op, commit);
+  const request = (op: "daemon-stop" | "status", commit = false) => requestInstalledDaemon(socket, op, commit, remaining(commit ? 5000 : 70_000));
   try {
     let version = expectedVersion;
     if (socket) {
     if (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed while opening its endpoint");
     const initial = await request("status");
+    if (automatic && (owner.pid !== automatic.pid || owner.start !== automatic.start)) {
+      if (!automatic.exited() || initial.version !== expectedVersion) throw new Error("another daemon lifetime replaced the captured generation");
+      if (JSON.stringify(recorded().receipt) !== automatic.receipt) throw new Error("the installation changed while observing the replacement");
+      const currentTask = task.inspect(receipt);
+      if (!currentTask.present || currentTask.enabled !== true || currentTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
+      return plan;
+    }
     if (startOnly) return plan;
     version ??= initial.version;
     await request("daemon-stop");
@@ -558,10 +587,10 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       }
     }
     progress("waiting for the old daemon lifetime to exit (up to 130s)");
-    const deadline = Date.now() + 130_000;
+    const deadline = Date.now() + remaining(130_000);
     for (;;) {
       let absent = false;
-      try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
+      try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
         else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(stopCommitted && isStoppingLifetime(error, owner))) throw error;
@@ -573,33 +602,35 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
     } else if (owner?.start && processBirth(owner.pid) === owner.start) {
       throw new Error("the recorded live daemon has no verified listener");
     }
+    if (automatic && !automatic.exited()) throw new Error("the captured Windows daemon kernel lifetime has not ended");
     exclusion = excludeLifetime(paths.lock);
     progress("verifying the recorded installation and owned task before startup");
-    try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
+    try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
     catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
-    const current = recordedUnit(paths, daemonHome).receipt;
+    const current = recorded().receipt;
     if (JSON.stringify(current) !== JSON.stringify(receipt)) throw new Error("the installation changed during shutdown");
     const native = task.inspect(receipt);
     if (!native.present || native.instances !== 0) throw new Error("the owned task is absent or still has native instances");
     // The replacement must acquire the lock itself. Never Run while holding exclusion.
     exclusion.release(); exclusion = undefined;
     progress("enabling and starting the verified owned scheduled task");
-    task.start(receipt);
+    if (automatic && !pauseAttempted) task.startEnabled(receipt);
+    else task.start(receipt);
     progress("waiting for a fresh daemon to answer (up to 60s)");
-    const readyUntil = Date.now() + 60_000;
+    const readyUntil = Date.now() + remaining(60_000);
     for (;;) {
       try {
         const prior = readLifetimeRecord(paths.lock);
-        const fresh = await openVerified({ paths, timeoutMs: 1000 });
+        const fresh = await openVerified({ paths, timeoutMs: remaining(1000) });
         try {
           const lifetime = readLifetimeRecord(paths.lock);
           if (!lifetime?.start || prior?.pid !== lifetime.pid || prior.start !== lifetime.start || (lifetime.pid === owner?.pid && lifetime.start === owner.start) || processBirth(lifetime.pid) !== lifetime.start) throw new Error("no fresh stable kernel lifetime");
           const id = randomUUID().replaceAll("-", "");
           fresh.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "status" }));
-          const reply = JSON.parse(await readLine(fresh, 20_000)) as DaemonResponse;
+          const reply = JSON.parse(await readLine(fresh, remaining(20_000))) as DaemonResponse;
           if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || !reply.ok || "event" in reply || !("version" in reply.result) || (version !== undefined && reply.result.version !== version) || !("protocol" in reply.result) || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new Error("replacement version or protocol did not match");
           if (processBirth(lifetime.pid) !== lifetime.start) throw new Error("replacement exited during proof");
-          if (JSON.stringify(recordedUnit(paths, daemonHome).receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed during replacement startup");
+          if (JSON.stringify(recorded().receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed during replacement startup");
           task.check(receipt);
           return plan;
         } finally { fresh.destroy(); }
@@ -616,7 +647,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       recovery = await recoverPausedTask({
         pendingEnd: task.pendingEnd,
         unchanged() {
-          if (JSON.stringify(recordedUnit(paths, daemonHome).receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed");
+          if (JSON.stringify(recorded().receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed");
         },
         async oldAnswers() {
           if (!socket || socket.destroyed || !owner?.start || processBirth(owner.pid) !== owner.start) return false;
@@ -626,7 +657,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         },
         async absent() {
           exclusion ??= excludeLifetime(paths.lock);
-          try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw new Error("a daemon still answers"); }
+          try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); throw new Error("a daemon still answers"); }
           catch (probeError) { if (!(probeError instanceof EndpointRefusal && probeError.code === "NOT_RUNNING")) throw probeError; }
           const native = task.inspect(receipt);
           if (!native.present || native.instances !== 0) throw new Error("native instances are not absent");
@@ -639,8 +670,8 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
 }
 
 /** Restart only the source and native job recorded for this daemon. */
-export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
-  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report);
+export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, false, automatic);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.restart(receipt, reload);
   else {

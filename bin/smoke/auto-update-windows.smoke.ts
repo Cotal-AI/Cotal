@@ -52,6 +52,18 @@ try {
   assert.ok(runner.indexOf("native.drain(20_000)") < runner.indexOf("done = true;", runner.indexOf("native.launch(")));
   assert.match(runner, /if \(drained\) custody.complete\(done\)/);
   assert.doesNotMatch(runner, /OpenJobObject|DuplicateHandle|named-job/);
+  assert.match(runner, /captureWindowsAutomaticActivation/);
+  assert.ok(runner.indexOf("custody.complete(true)") < runner.indexOf("await activation.activate()"));
+  assert.ok(runner.indexOf("native.drain(20_000)") < runner.indexOf("await activation.activate()"));
+  const activation = readFileSync(new URL("../daemon/update-windows-activation.ts", import.meta.url), "utf8");
+  assert.match(activation, /WINDOWS_ACTIVATION_TIMEOUT_MS = 240_000/);
+  assert.match(activation, /deadline = startedAt \+ WINDOWS_ACTIVATION_TIMEOUT_MS/);
+  assert.match(activation, /timeoutMs: WINDOWS_ACTIVATION_TIMEOUT_MS/);
+  assert.match(activation, /await restartInstalled\(/);
+  assert.match(activation, /save\("failed"/);
+  assert.doesNotMatch(activation, /spawn\(|execFile|\/Run|startEnabled|\.start\(/);
+  assert.match(custodySource, /if \(boot === "same" && ownerAlive\(r\)\) return "pending"/);
+  assert.match(runner, /if \(done\) \{[\s\S]*?\} else failed\(error\)/);
   const prefix = join(home, "owned-prefix"), packageRoot = join(prefix, "node_modules", "cotal-ai"), entry = join(packageRoot, "dist", "cotal.js");
   mkdirSync(join(packageRoot, "dist"), { recursive: true });
   writeFileSync(entry, "// fixture entry\n");
