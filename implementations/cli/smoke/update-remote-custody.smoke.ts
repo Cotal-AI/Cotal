@@ -97,6 +97,9 @@ try {
   writeFileSync(join(otherInstall, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
   const otherEntry = join(otherInstall, "dist", "cotal.js");
   writeFileSync(otherEntry, `${idle};\n`);
+  const { supervisorInstallScope } = await import("../src/lib/manager-proc.js");
+  assert.equal(supervisorInstallScope(process.pid, process.getuid!(), `node ${otherEntry} supervise`, thisEntry), "foreign", "same-user separate installation stays excluded");
+  assert.equal(supervisorInstallScope(process.pid, process.getuid!() + 1, `node ${otherEntry} ${thisEntry} supervise`, thisEntry), "local", "a proven current entry is not hidden by another CLI-looking argument");
   mkdirSync(join(root, "other-install", "bin"), { recursive: true });
   const otherShim = join(root, "other-install", "bin", "cotal");
   symlinkSync(otherEntry, otherShim);
@@ -116,6 +119,7 @@ try {
     decoy = spawn(exe, args, { stdio: "ignore", cwd: root });
     await once(decoy, "spawn");
     assert.equal(supervisorMayServe(space), expected, `${what}: ${expected ? "is read as a supervisor of this install" : "adds no custody for this install"}`);
+    if (what === "another install's entry") assert.equal(supervisorMayServe(space, otherEntry), true, "staged target checks attribute against the explicitly supplied installed entry");
     decoy.kill("SIGKILL");
     await once(decoy, "exit");
     decoy = undefined;
