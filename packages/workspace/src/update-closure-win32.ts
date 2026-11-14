@@ -4,7 +4,13 @@ import { win32ProcessBinding, type Win32ProcessPin } from "./win32-process.js";
 import type { UpdateRecovery } from "./updates.js";
 
 const FILETIME_EPOCH = 116444736000000000n;
-let retained: { key: string; pin: Win32ProcessPin } | undefined;
+let retained: { key: string; pin: Win32ProcessPin; timer: ReturnType<typeof setInterval> } | undefined;
+
+function releaseRetained(): void {
+  if (!retained) return;
+  clearInterval(retained.timer);
+  retained.pin.close(); retained = undefined;
+}
 
 /** Compare a Windows process creation token with both durable publication times, without rounding. */
 export function windowsOwnerPredatesRecord(token: string, recordedAt: string, lockBirthNs: bigint): boolean {
@@ -24,19 +30,29 @@ export function liveWindowsUpdateClosureOwner(record: UpdateRecovery, path: stri
     if (!before.isFile() || before.isSymbolicLink()) return false;
     const current = inspectLock(path);
     if (current.state !== "active" || current.owner.pid !== owner.pid || current.owner.nonce !== owner.nonce
-      || (current.owner.start !== undefined && current.owner.start !== owner.start)) return false;
+      || (current.owner.start !== undefined && current.owner.start !== owner.start)) { releaseRetained(); return false; }
     if (retained?.key !== key) {
-      retained?.pin.close(); retained = undefined;
+      releaseRetained();
       const pin = win32ProcessBinding().pinProcess(owner.pid);
       try {
         if ((owner.start ? pin.token !== owner.start : !windowsOwnerPredatesRecord(pin.token, record.recordedAt, before.birthtimeNs)) || pin.exited()) return false;
-        retained = { key, pin };
+        const timer = setInterval(() => {
+          try { if (pin.exited()) releaseRetained(); }
+          catch { releaseRetained(); }
+        }, 1000);
+        timer.unref();
+        retained = { key, pin, timer };
       } finally { if (retained?.pin !== pin) pin.close(); }
     }
     const after = lstatSync(path, { bigint: true });
     const confirmed = inspectLock(path);
-    return before.dev === after.dev && before.ino === after.ino && before.birthtimeNs === after.birthtimeNs
+    const same = before.dev === after.dev && before.ino === after.ino && before.birthtimeNs === after.birthtimeNs
       && confirmed.state === "active" && confirmed.owner.pid === owner.pid && confirmed.owner.nonce === owner.nonce
       && (confirmed.owner.start === undefined || confirmed.owner.start === owner.start) && !retained.pin.exited();
-  } catch { return false; }
+    if (!same) releaseRetained();
+    return same;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") releaseRetained();
+    return false;
+  }
 }
