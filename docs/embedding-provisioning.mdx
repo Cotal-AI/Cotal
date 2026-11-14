@@ -229,6 +229,11 @@ low-level operator primitives. Handle them as account-authority material:
   (`rotateDataAccountSigningKey`). A rotation replaces the account's signing keys and keeps the rest of
   its claim, so the account's connection and leaf-node limits and its revocations still hold after it.
   It ends users a signing key issued, not users the account's own identity key signed.
+  Persist the rotated record with `replaceSpaceAccountAuth(store, { space, account })` from
+  `@cotal-ai/workspace`. It writes that space's account record and nothing else, so the broker
+  record the spaces share is not rewritten. Keep the record you replace: putting it back is the
+  same call. A `SecretStore` has no compare-and-swap, so keep other writers of the space's trust
+  records out while the call runs.
 
 ## Hosted composition gaps [#hosted-composition-gaps]
 

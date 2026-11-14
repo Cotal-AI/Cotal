@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 const home = process.argv[3];
 if (process.platform !== "win32" || !home || !isAbsolute(home)) throw new Error("Windows automatic helper needs its exact recorded home");
 process.env.COTAL_HOME = home;
-const { admitWindowsUpdate } = await import("./update-windows.js");
+const { admitWindowsUpdate, windowsAutomaticPrefix } = await import("./update-windows.js");
 const { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock, readUpdateSettings, UPDATE_HOUR_MS } = await import("@cotal-ai/workspace");
 const { writeSecretFile, writeSecretFileAtomic } = await import("@cotal-ai/core");
 const custody = admitWindowsUpdate(process.argv[2] ?? "");
@@ -21,6 +21,10 @@ const failed = (error: unknown) => {
   process.exitCode = 1;
 };
 try {
+  const prefix = windowsAutomaticPrefix(fileURLToPath(new URL("../cotal.js", import.meta.url)));
+  if (custody.receipt.env.npm_config_prefix !== prefix) throw new Error("Windows automatic update destination differs from its owned installation");
+  for (const key of Object.keys(process.env)) if (key.toLowerCase() === "npm_config_prefix") delete process.env[key];
+  process.env.npm_config_prefix = prefix;
   if (!readUpdateSettings().auto || process.env.COTAL_NO_UPDATE_CHECK === "1") {
     const attempt = JSON.parse(readFileSync(attemptPath, "utf8"));
     writeSecretFileAtomic(attemptPath, `${JSON.stringify({ ...attempt, result: "automatic updates disabled before Windows handoff", next: Date.now() + UPDATE_HOUR_MS })}\n`);

@@ -1130,7 +1130,7 @@
     "smoke:seed-tarball:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/seed-tarball-live.smoke.ts",
     "smoke:down-manifest-usermode:live": "tsx implementations/auth/smoke/down-manifest-usermode.smoke.ts",
     "smoke:secret-store": "tsx packages/workspace/smoke/secret-store.smoke.ts",
-    "smoke:space-auth-store": "tsx packages/workspace/smoke/space-auth-store.smoke.ts",
+    "smoke:space-auth-store": "tsx packages/workspace/smoke/space-auth-store.smoke.ts && tsx packages/workspace/smoke/replace-space-account-auth.smoke.ts",
     "smoke:space-segmentation": "tsx packages/workspace/smoke/space-segmentation.smoke.ts",
     "smoke:segmented-runtime-namespace": "tsx packages/workspace/smoke/segmented-runtime-namespace.smoke.ts",
     "smoke:segmented-runtime-records": "tsx implementations/cli/smoke/segmented-runtime-records.smoke.ts",
@@ -1317,6 +1317,7 @@
     "smoke:auto-update-snapshot": "tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-install-native": "tsx bin/smoke/daemon-ownership-imports.smoke.ts && tsx bin/smoke/daemon-ownership-win32.smoke.ts && tsx bin/smoke/daemon-install-native.smoke.ts && tsx bin/smoke/daemon-install-entry.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --retry && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --pending && tsx bin/smoke/daemon-owned-uninstall.smoke.ts && tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
+    "smoke:execution-generations": "tsx bin/smoke/execution-generations.smoke.ts && tsx bin/smoke/execution-generation-cli.smoke.ts",
     "smoke:daemon-transport": "tsx bin/smoke/daemon-shutdown-probe.smoke.ts && tsx bin/smoke/daemon-transport.smoke.ts"
   },
   "dependencies": {

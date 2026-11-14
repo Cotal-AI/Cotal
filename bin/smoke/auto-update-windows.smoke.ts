@@ -1,11 +1,11 @@
 import "../../implementations/cli/smoke/update-isolation.js";
 import strictAssert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { windowsBootDisposition, readWindowsUpdatePause, clearWindowsUpdateAfterManualSuccess, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE } from "@cotal-ai/workspace";
-import { renderWindowsUpdateTask } from "../daemon/update-windows.js";
+import { renderWindowsUpdateTask, windowsAutomaticPrefix } from "../daemon/update-windows.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const home = mkdtempSync(join(tmpdir(), "windows-auto-state-"));
@@ -52,5 +52,17 @@ try {
   assert.ok(runner.indexOf("native.drain(20_000)") < runner.indexOf("done = true;", runner.indexOf("native.launch(")));
   assert.match(runner, /if \(drained\) custody.complete\(done\)/);
   assert.doesNotMatch(runner, /OpenJobObject|DuplicateHandle|named-job/);
+  const prefix = join(home, "owned-prefix"), packageRoot = join(prefix, "node_modules", "cotal-ai"), entry = join(packageRoot, "dist", "cotal.js");
+  mkdirSync(join(packageRoot, "dist"), { recursive: true });
+  writeFileSync(entry, "// fixture entry\n");
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
+  assert.equal(windowsAutomaticPrefix(entry), realpathSync(prefix));
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "foreign", bin: { cotal: "dist/cotal.js" } }));
+  assert.throws(() => windowsAutomaticPrefix(entry), /cannot identify/);
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/other.js" } }));
+  writeFileSync(join(packageRoot, "dist", "other.js"), "");
+  assert.throws(() => windowsAutomaticPrefix(entry), /cannot identify/);
+  assert.match(runner, /key.toLowerCase\(\) === "npm_config_prefix"/);
+  assert.match(runner, /destination differs from its owned installation/);
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { rmSync(home, { recursive: true, force: true }); }

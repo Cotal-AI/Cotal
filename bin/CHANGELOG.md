@@ -1,5 +1,33 @@
 # cotal-ai
 
+## 0.164.9
+
+### Patch Changes
+
+- 322ce33: The desktop app shares the command line's automatic-update preference and can verify signed update downloads when its build has an updater key. Builds without a key keep their release summary, notification preference and platform installer path. Configured builds check the manifest again when Check now is pressed, while automatic checks stay daily. Release preparation stays in Settings without a main-view error. This change does not install downloaded updates or add automatic rollback.
+- 35db3ae: Keep the machine service responsive during manual updates.
+  
+  Daemon startup checks the updater's full closure identity before taking restoration ownership, so it can answer readiness without waiting on the updater's installation lock. If that updater ends without finishing, the running daemon performs the existing guarded recovery or reports why recovery remains paused. A paused installation whose rollback completed can reconcile through the newly installed CLI after acquiring fresh hosted-Manager admission, without reinstalling the older defective updater.
+- 483e348: Windows daemon uninstall and restart wait for the daemon they stopped to finish shutting down.
+  
+  A probe that reaches the same kernel process lifetime after its record becomes empty remains pending without sending a request. Other ownership refusals stay unchanged, and completion still requires endpoint absence and process exit.
+- Updated dependencies [cf93466]
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [082d0e6]
+- Updated dependencies [0bf357b]
+- Updated dependencies [a926514]
+  - @cotal-ai/auth@0.164.9
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/delivery@0.164.9
+  - @cotal-ai/cli@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/connector-core@0.164.9
+  - @cotal-ai/manager@0.164.9
+  - @cotal-ai/registry@0.164.9
+  - @cotal-ai/runtime@0.164.9
+  - @cotal-ai/seat@0.164.9
+
 ## 0.164.8
 
 ### Patch Changes
