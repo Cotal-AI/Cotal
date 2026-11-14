@@ -11,6 +11,7 @@ Var CotalFresh
 Var CotalPhase
 
 Function CotalSetupMessage
+  ClearErrors
   FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" r
   IfErrors 0 +3
     StrCpy $CotalMessage "Setup could not verify background service safety. No update was authorized. Run cotal daemon start and retry setup."

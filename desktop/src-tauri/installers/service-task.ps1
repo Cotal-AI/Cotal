@@ -89,7 +89,10 @@ try {
     $owned = @()
     foreach ($row in $rows) {
       if (!$row.ExecutablePath) {
-        if ($row.Name -in @('node.exe','cotal-desktop.exe')) { throw "Cannot identify $($row.Name) process $($row.ProcessId)." }
+        if ($row.Name -in @('node.exe','cotal-desktop.exe')) {
+          $created=if($row.CreationDate){$row.CreationDate.ToUniversalTime().ToString('o')}else{'unknown'}
+          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created."
+        }
         continue
       }
       if ($row.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) {
