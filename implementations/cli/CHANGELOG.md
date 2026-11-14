@@ -1,5 +1,23 @@
 # @cotal-ai/cli
 
+## 0.164.9
+
+### Patch Changes
+
+- 35db3ae: Keep the machine service responsive during manual updates.
+  
+  Daemon startup checks the updater's full closure identity before taking restoration ownership, so it can answer readiness without waiting on the updater's installation lock. If that updater ends without finishing, the running daemon performs the existing guarded recovery or reports why recovery remains paused. A paused installation whose rollback completed can reconcile through the newly installed CLI after acquiring fresh hosted-Manager admission, without reinstalling the older defective updater.
+- 082d0e6: Restore passing terminal coverage for persona control-character escaping.
+  Prepare the catalog's space before showing its source, and check the unprepared-folder refusal separately.
+- 0bf357b: Reduce self-update registry verification time and show progress before long update steps.
+  
+  Read independent package metadata in bounded batches and ask npm to verify several archives per invocation. Keep all package, version, dependency, recovery and lock checks, with a private cache for each command.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+
 ## 0.164.8
 
 ### Patch Changes
