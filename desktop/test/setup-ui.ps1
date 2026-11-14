@@ -9,12 +9,18 @@ using System;
 using System.Runtime.InteropServices;
 public static class SetupNative {
   [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 }
 '@
-function Click-Control($Control) {
+function Click-Control($Control,$Window) {
+  $dialog=[IntPtr]$Window.Current.NativeWindowHandle
+  $activated=[SetupNative]::SetForegroundWindow($dialog)
   $handle=[IntPtr]$Control.Current.NativeWindowHandle
   if($handle -eq [IntPtr]::Zero){throw 'Installer control has no native window handle.'}
-  if(![SetupNative]::PostMessage($handle,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)){throw 'Native installer BM_CLICK failed.'}
+  $posted=[SetupNative]::PostMessage($handle,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)
+  $script:observations+=@{at=[DateTime]::UtcNow.ToString('o');action='BM_CLICK';name=$Control.Current.Name;handle=$handle.ToInt64();dialog=$dialog.ToInt64();activated=$activated;foreground=[SetupNative]::GetForegroundWindow().ToInt64();posted=$posted}
+  if(!$posted){throw 'Native installer BM_CLICK failed.'}
 }
 $process=Start-Process -FilePath $Installer -PassThru
 $deadline=[DateTime]::UtcNow.AddSeconds(240)
@@ -30,7 +36,7 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
       $occupiedSeen=$true
       if($Mode -ne 'occupied') { throw 'Unexpected occupied refusal.' }
       $cancel=@($elements | Where-Object {$_.Current.Name -eq 'Cancel' -and $_.Current.IsEnabled -and !$_.Current.IsOffscreen})
-      if($cancel.Count -eq 1) { Click-Control $cancel[0] }
+      if($cancel.Count -eq 1) { Click-Control $cancel[0] $window }
       continue
     }
     if($Mode -eq 'occupied' -and $occupiedSeen) { continue }
@@ -39,7 +45,7 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
       if($buttons[0].Current.Name -eq 'Finish') {
         foreach($check in @($elements | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and $_.Current.Name -match 'Run Cotal'})) { $toggle=$check.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern); if($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On){$toggle.Toggle()} }
       }
-      Click-Control $buttons[0]
+      Click-Control $buttons[0] $window
     }
   }
   Start-Sleep -Milliseconds 400
