@@ -882,11 +882,12 @@ export async function matrixCell(options) {
         assert(current.State.Running, 'owned foreign container must remain running until stack cleanup');
         report.foreignStackStop = await call('stop stock stack inside owned foreign container', 'docker', ['exec', container.id, 'sh', '-c', foreignStackCleanupCommand], 60000);
         report.ownedStackCleanup = report.foreignStackStop;
-        const ended = JSON.parse(ok(await call('observe container immediately after stock down', 'docker', ['inspect', container.id]), 'container end observation').stdout)[0];
+        const endObservation = ok(await call('observe container immediately after stock down', 'docker', ['inspect', container.id]), 'container end observation');
+        const ended = JSON.parse(endObservation.stdout)[0];
         const processCheck = await call('confirm no owned container process remains', 'docker', ['top', container.id, '-eo', 'pid,uid,args']);
         const processRows = processCheck.stdout.trim().split('\n').filter(Boolean);
         const noProcesses = processCheck.exit === 0 ? processRows.length <= 1 : processCheck.exit === 1 && processCheck.stdout.trim() === '' && /is not running/.test(processCheck.stderr);
-        const stackEnded = foreignStackEnded({ stop: report.calls.findLast(entry => entry.label === 'stop stock stack inside owned foreign container'), before: container, after: ended, noProcesses });
+        const stackEnded = foreignStackEnded({ stop: report.calls.findLast(entry => entry.label === 'stop stock stack inside owned foreign container'), before: container, after: ended, noProcesses, observedAt: endObservation.startedAt });
         report.foreignStackEnd = { state: ended.State, noProcesses, processCheck, passed: stackEnded, pid1Exit137: report.foreignStackStop.exit === 137 && stackEnded };
         check('owned local stack cleanup succeeds', stackEnded, report.foreignStackEnd);
         report.foreignContainerStop = ok(await call('stop owned foreign supervisor and broker', 'docker', ['stop', '--time', '20', container.id], 60000), 'foreign container stop');
