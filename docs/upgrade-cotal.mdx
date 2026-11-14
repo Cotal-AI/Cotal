@@ -22,7 +22,10 @@ Up to four validated artifact bindings support a later bootstrap transition.
 A missing or differently bound descriptor runs the installed tree in place and writes nothing.
 An invalid matching descriptor refuses with reinstall guidance rather than selecting another generation.
 A running command reports the release of its loaded implementation, even if the canonical
-package manifest changes while it runs.
+package manifest changes while it runs. Embedded CLI API callers report their entry package's
+version and provenance. A Node wrapper that imports the bootstrap calls its
+`startExecutionProgram()` export to delegate execution once. Importing reader helpers alone
+does not start a command.
 
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.

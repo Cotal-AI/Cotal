@@ -186,9 +186,15 @@ const loadedCliVersion = (() => {
   return meta.version;
 })();
 
-/** This process's loaded release, independent of the mutable logical installation manifest. */
+/** Bootstrapped processes report loaded code. Embedded callers retain their entry-package identity. */
 export function cliVersion(): string {
-  return loadedCliVersion;
+  const identity = Object.getOwnPropertyDescriptor(globalThis, Symbol.for("cotal.execution.identity"));
+  const loadedEntry = (identity?.value as { loadedEntry?: unknown } | undefined)?.loadedEntry;
+  if (identity?.writable === false && identity.configurable === false && typeof loadedEntry === "string" && realpathSync(loadedEntry) === entryScript()) return loadedCliVersion;
+  const root = cliPackageRoot();
+  const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string }).version;
+  if (typeof version === "string" && version) return version;
+  throw new Error(`cannot determine the cotal version: ${join(root, "package.json")} has no version`);
 }
 
 /**
