@@ -4,6 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
+if (process.platform === "win32") {
+  console.log("extension promotion killed-writer fixture: not run on Windows, requires SIGKILL");
+} else {
 const root = mkdtempSync(join(tmpdir(), "promotion-crash-"));
 const bin = resolve("bin/dist/cotal.js");
 try {
@@ -34,3 +37,4 @@ try {
     console.log(`${phase}: actual killed writer recovered complete new prefix through fresh CLI`);
   }
 } finally { rmSync(root, { recursive: true, force: true }); }
+}

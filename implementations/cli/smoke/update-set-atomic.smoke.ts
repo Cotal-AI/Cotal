@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 // Real CLI/natives/npm path. Only the second requested package install is refused by a transparent
 // package-manager fixture, so the failure happens after the first connector's ordinary transaction.
+if (process.platform === 'win32') {
+  console.log('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
+} else {
 const root = mkdtempSync(join(tmpdir(), 'update-set-'));
+try {
 const home = join(root, 'home'), config = join(root, 'config'), tools = join(root, 'tools');
 for (const dir of [home, config, tools]) mkdirSync(dir, { mode: 0o700 });
 const bin = resolve('bin/dist/cotal.js');
@@ -45,3 +49,5 @@ assert.equal(repaired.status, 0, repaired.stderr);
 assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes('undefined'));
 for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readdirSync(join(prefix, 'node_modules/@cotal-ai', pkg)).includes('damage.txt'));
 console.log('whole-set successful update repairs every selected package');
+} finally { rmSync(root, { recursive: true, force: true }); }
+}
