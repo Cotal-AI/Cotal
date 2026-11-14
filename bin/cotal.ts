@@ -123,7 +123,9 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
   return { root: selected, entry: join(selected, "dist", "cotal-program.js"), retained: true };
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const executionStarted = Symbol.for("cotal.execution.started");
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && !Reflect.get(globalThis, executionStarted)) {
+  Object.defineProperty(globalThis, executionStarted, { value: true });
   let selected: ReturnType<typeof selectExecutionProgram> | undefined;
   try { selected = selectExecutionProgram(resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..")); }
   catch (error) {
@@ -132,6 +134,6 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   }
   if (selected) {
     if (selected.retained) process.argv[1] = join(selected.root, "dist", "cotal.js");
-    await import(pathToFileURL(selected.entry).href);
+    void import(pathToFileURL(selected.entry).href);
   }
 }
