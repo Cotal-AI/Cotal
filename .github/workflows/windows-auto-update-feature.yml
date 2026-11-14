@@ -31,11 +31,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: workspace-native-*
-          path: native-inputs
+          path: ${{ runner.temp }}/windows-auto-native-inputs
       - uses: actions/download-artifact@v4
         with:
           pattern: seat-native-*
-          path: seat-inputs
+          path: ${{ runner.temp }}/windows-auto-seat-inputs
       - name: Initialize evidence and provenance
         shell: powershell
         run: |
@@ -48,10 +48,11 @@ jobs:
       - name: Assemble exact source-matched workspace artifacts
         shell: powershell
         env:
-          WORKSPACE_NATIVE_X64: native-inputs/workspace-native-x64
-          WORKSPACE_NATIVE_ARM64: native-inputs/workspace-native-arm64
-          WORKSPACE_NATIVE_DARWIN_X64: native-inputs/workspace-native-darwin-x64
-          WORKSPACE_NATIVE_DARWIN_ARM64: native-inputs/workspace-native-darwin-arm64
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/windows-auto-native-inputs/workspace-native-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/windows-auto-native-inputs/workspace-native-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/windows-auto-native-inputs/workspace-native-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/windows-auto-native-inputs/workspace-native-darwin-arm64
+          SEAT_NATIVE_INPUTS: ${{ runner.temp }}/windows-auto-seat-inputs
         run: |
           node scripts/workspace-assemble-natives.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

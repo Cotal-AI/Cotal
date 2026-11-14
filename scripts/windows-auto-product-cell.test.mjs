@@ -13,6 +13,7 @@ test('temporary workflow admits only measurement branch, reuses native builders 
  assert.equal(workflow.jobs.native.uses,'./.github/workflows/workspace-native.yml');assert.equal(workflow.jobs.native.with.darwin,true);
  assert.equal(workflow.jobs.acceptance['runs-on'],'windows-2022');assert.equal(workflow.jobs.acceptance.needs,'native');
  assert.equal(workflow.jobs.acceptance.steps.at(-1).if,'always()');
+ for(const step of workflow.jobs.acceptance.steps.filter(s=>s.uses?.startsWith('actions/download-artifact@')))assert.ok(step.with.path.startsWith('${{ runner.temp }}'),'artifact inputs stay outside clean pack source');
  const commands=workflow.jobs.acceptance.steps.map(x=>x.run??'').join('\n');
  assert.match(commands,/smoke:win32-update-job/);assert.match(commands,/smoke:auto-update-windows/);assert.doesNotMatch(commands,/mutation|fix-reversion/);
 });
@@ -37,6 +38,14 @@ test('off switch precedes aged tick and controlled worker/owner intervention use
  assert.match(source,/worker-kill-owner-alive/);assert.match(source,/owner-kill-sameboot-manual-clear/);
  assert.match(source,/assert.equal\(failed.failures,1\)/);
  assert.doesNotMatch(source,/COTAL_SKIP_CONNECTOR_SEED|Object.defineProperty\(process,'platform'/);
+});
+test('published seat provenance uses pinned verified release tag, not optional npm gitHead',()=>{
+ const input=readFileSync(new URL('./windows-auto-native-inputs.mjs',import.meta.url),'utf8');
+ assert.doesNotMatch(input,/metadata\.gitHead/);
+ assert.match(input,/b9f7c9b61b27965829f3a8840de1ed74f01cc2af/);
+ assert.match(input,/public seat release tag moved/);
+ assert.match(input,/unchanged seat native input/);
+ assert.match(input,/metadata\.dist\.integrity/);
 });
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
