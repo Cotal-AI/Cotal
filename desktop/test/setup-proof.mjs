@@ -21,7 +21,7 @@ const cli = join(runtime, 'dist', 'cotal.js');
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const proofStartedAt = new Date().toISOString();
-const report = { head: process.env.GITHUB_SHA, candidate: { kind: process.env.COTAL_SETUP_CANDIDATE_KIND ?? 'untraced', file: candidate, sha256: createHash('sha256').update(readFileSync(candidate)).digest('hex') }, cell, calls: [], checks: [], limits: [] };
+const report = { head: process.env.GITHUB_SHA, repeat: process.env.COTAL_SETUP_REPEAT ?? null, candidate: { kind: process.env.COTAL_SETUP_CANDIDATE_KIND ?? 'untraced', file: candidate, sha256: createHash('sha256').update(readFileSync(candidate)).digest('hex') }, cell, calls: [], checks: [], limits: [] };
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
 Object.assign(env, { COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: '0.164.9' });
 const save = () => writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
