@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
@@ -49,6 +50,13 @@ try {
     writeFileSync(entry, "import { executionBinding } from './cotal.js'; console.log(executionBinding(new URL('..', import.meta.url).pathname).version);");
     try { const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "0.1.0"); }
     finally { writeFileSync(entry, original); }
+  });
+  check("an imported wrapper explicitly delegates the selected program once", () => {
+    const wrapper = join(scratch, "wrapper.mjs");
+    writeFileSync(wrapper, `const { startExecutionProgram } = await import(${JSON.stringify(pathToFileURL(join(root, "dist/cotal.js")).href)}); startExecutionProgram(); startExecutionProgram();`);
+    const result = spawnSync(process.execPath, [wrapper, "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "initial generation");
   });
   check("read-only initial package starts without any materialization", () => {
     chmodSync(root, 0o500);
