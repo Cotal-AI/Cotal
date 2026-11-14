@@ -101,7 +101,10 @@ If that boot cannot run, use [`cotal reconcile-gate`](cli-maintenance.mdx#reconc
 That command also covers a non-manager endpoint or recovery without starting a manager.
 
 Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone: `gone` and `sweepComplete=true`.
-A live holder, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
+For a remote Manager, the host must also prove its separate registration executor gone before changing the gate or its credential family.
+The target gate determines both identities, including when another owner's supervisor requests recovery.
+A live holder or executor, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
+A sweep proves broker connection absence at that observation, not process death or exclusion of a later reconnect during credential refresh.
 Silence is not proof of death, and waiting out a TTL does not reopen the gate.
 
 The recovery result depends on the registration's durable state:

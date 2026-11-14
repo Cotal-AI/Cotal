@@ -122,6 +122,10 @@ export async function reconcileEndpointGate(opts: {
   endpoint: string;
   instanceId: string;
   probeHolder: (principal: string) => Promise<HolderLiveness>;
+  /** Additional registration authority when the executor differs from the serve holder.
+   * The host derives that authority from the observed holder, never the recovery requester.
+   * Every verdict other than affirmative gone refuses before any repair mutation. */
+  probeRegistrationExecutor?: (holderPrincipal: string) => Promise<HolderLiveness>;
   /** Verify-evict a SET of holders in one shared sweep, answering `verifiedGone` per holder in
    *  input order. Throwing means nothing in the set is verified. */
   evictHolders: (holderPrincipals: readonly string[]) => Promise<boolean[]>;
@@ -169,6 +173,17 @@ export async function reconcileEndpointGate(opts: {
       "liveness-unestablishable",
       `liveness for freeze-holder "${row.principal}" CANNOT BE ESTABLISHED (${liveness.detail}) — without the oracle this repair has no affirmative check to stand on, and it will not infer death from silence.`,
     );
+
+  if (opts.probeRegistrationExecutor) {
+    const executor = await opts.probeRegistrationExecutor(row.principal);
+    log(`registration-executor for ${row.principal}: ${executor.state} — ${executor.detail}`);
+    if (executor.state !== "gone") {
+      const condition = executor.state === "live" ? "holder-alive"
+        : executor.state === "unknown" ? "holder-unknown" : "liveness-unestablishable";
+      throw new GateReconcileRefused(condition,
+        `the registration executor for "${row.principal}" is ${executor.state.toUpperCase()} (${executor.detail}); refusing to reconcile a registration whose executor is not proven gone`);
+    }
+  }
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
   // The repair evicts the family in bounded sets below, so the barrier is built without an evictor

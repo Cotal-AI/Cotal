@@ -268,6 +268,35 @@ try {
       rows.length === 1 && rows[0]?.state === "active", rows);
   }
 
+  // A separate registration executor must pass the same fail-closed guard before repair writes.
+  {
+    const { instanceId, principal, kv } = await buildResidue({ holderLive: false });
+    const executorActor = `executor${mintLifecycleUid()}`;
+    const executorPrincipal = principalKey(DEV_OWNER, executorActor).key;
+    const executorNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({
+      creds: await mintCreds(auth, newIdentity(), "agent", { principal: { owner: DEV_OWNER, actor: executorActor }, lifecycleUid: mintLifecycleUid() }), tls: false,
+    }), maxReconnectAttempts: 0 });
+    holderConns.push(executorNc);
+    const before = await kv.get(epgateKey(ENDPOINT, instanceId));
+    const base = { kv, recordsKv, space, endpoint: ENDPOINT, instanceId, probeHolder: realProbe(observerNc), evictHolders: realEvict, log: () => {} };
+    const live = await attempt({ ...base, probeRegistrationExecutor: async holder => {
+      if (holder !== principal) throw new Error("executor proof received a foreign holder");
+      return realProbe(observerNc)(executorPrincipal);
+    } });
+    check("EXECUTOR: live separate registration authority refuses with holder-alive", !live.ok && live.condition === "holder-alive" && /registration executor/.test(live.message), live);
+    const unknown = await attempt({ ...base, probeRegistrationExecutor: () => realProbe(evictorNc!)(executorPrincipal) });
+    check("EXECUTOR: incomplete real sweep refuses with holder-unknown", !unknown.ok && unknown.condition === "holder-unknown", unknown);
+    const unavailable = await attempt({ ...base, probeRegistrationExecutor: async () => ({ state: "unestablishable", detail: "executor oracle unavailable" }) });
+    check("EXECUTOR: unavailable oracle refuses with liveness-unestablishable", !unavailable.ok && unavailable.condition === "liveness-unestablishable", unavailable);
+    const after = await kv.get(epgateKey(ENDPOINT, instanceId));
+    const family = await endpointRegistrationBarrier(kv, space, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }).enumerate();
+    check("EXECUTOR: all refusals leave the gate revision and active credential family unchanged", before?.revision === after?.revision && family.length === 1 && family[0]?.state === "active");
+    await executorNc.close();
+    await wait(300);
+    const gone = await attempt({ ...base, probeRegistrationExecutor: () => realProbe(observerNc)(executorPrincipal) });
+    check("EXECUTOR: complete sweeps proving both principals gone retain abandoned recovery", gone.ok, gone);
+  }
+
   // ---------- REFUSAL 2 (unknown holder) — THE NAMED MUTATION CELL ----------
   // A REAL under-report: the blind connection holds no CONNZ grant, so the sweep gets zero replies.
   // The holder here is genuinely DEAD (its connection was closed) — so the ONLY thing standing
