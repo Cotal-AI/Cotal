@@ -38,6 +38,18 @@ try {
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0], ["app-identity", "provision", "--require-approval", "--name", "approval_probe", "--session", session, "--events"]);
   assert.deepEqual(calls[1], calls[0], "an approval retry preserves the native session and proposal");
+  const implied = join(root, "implied.jsonl");
+  writeFileSync(cli, `
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(implied)}, JSON.stringify(args) + '\\n');
+console.log(JSON.stringify({ok:false,pending:true,...${JSON.stringify(pending)}}));
+process.exitCode = 1;
+`);
+  await assert.rejects(host.open("local", "approval_probe"), (error: unknown) => error instanceof ApprovalRequired);
+  const impliedCall = JSON.parse(readFileSync(implied, "utf8").trim()) as string[];
+  assert.deepEqual(impliedCall, ["app-identity", "provision", "--require-approval", "--name", "approval_probe", "--session", session, "--events"],
+    "a connect that names no session uses the one bound native session");
   assert.equal(await host.find("local", "not-a-connection"), undefined);
   assert.equal(await host.close("local", "not-a-connection"), false);
   assert.equal(host.sessionFor("not-a-connection"), undefined);
