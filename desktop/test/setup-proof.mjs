@@ -219,6 +219,22 @@ finally {
     const path = join(setupHome, file);
     if (existsSync(path)) writeFileSync(join(output, `setup-${file}`), readFileSync(path));
   }
+  const helperLog = join(setupHome, 'helper.log');
+  if (existsSync(helperLog)) {
+    const timings = new Map();
+    for (const line of readFileSync(helperLog, 'utf8').trim().split('\n')) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.action !== 'recover' || !Number.isFinite(entry.elapsedMs)) continue;
+      const timing = timings.get(entry.pid) ?? { pid: entry.pid, startupMs: null, totalMs: null, lastStep: null, lastElapsedMs: null };
+      if (entry.step === 'start') timing.startupMs = entry.elapsedMs;
+      if (entry.step === 'exit') timing.totalMs = entry.elapsedMs;
+      timing.lastStep = entry.step;
+      timing.lastElapsedMs = entry.elapsedMs;
+      timings.set(entry.pid, timing);
+    }
+    report.recoverTimings = [...timings.values()];
+  }
   if (seat?.launchOutput && existsSync(seat.launchOutput)) writeFileSync(join(output, 'seat-output.log'), readFileSync(seat.launchOutput));
   for (const [path, name] of [[seat?.seatEnvironmentNames, 'seat-environment-names.txt'], [seat?.managerEnvironmentNames, 'manager-environment-names.json']]) {
     if (path && existsSync(path)) writeFileSync(join(output, name), readFileSync(path));
