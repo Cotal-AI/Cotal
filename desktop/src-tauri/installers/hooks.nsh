@@ -18,9 +18,17 @@ Function CotalSetupMessage
   FileClose $0
 FunctionEnd
 
+Function CotalClearPhaseResult
+  Delete "$LOCALAPPDATA\CotalSetup\result.json"
+  Delete "$LOCALAPPDATA\CotalSetup\message.txt"
+FunctionEnd
+
 Function CotalHelperExit
-  ${If} $CotalCode == "timeout"
-  ${OrIf} $CotalCode == "error"
+  ${If} $CotalCode != "0"
+  ${AndIf} $CotalCode != "20"
+  ${AndIf} $CotalCode != "21"
+  ${AndIf} $CotalCode != "22"
+  ${AndIf} $CotalCode != "23"
     CreateDirectory "$LOCALAPPDATA\CotalSetup"
     FileOpen $0 "$LOCALAPPDATA\CotalSetup\result.json" w
     FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"refused$\",$\"code$\":21,$\"message$\":$\"Setup helper did not complete. No success was confirmed. Run the installer again.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"$CotalVersion$\"}'
@@ -45,7 +53,8 @@ FunctionEnd
 Function CotalSetupAbort
   ${If} $CotalPrepared = 1
   ${AndIf} $CotalCopying <> 1
-    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
+    Call CotalClearPhaseResult
+    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
     Pop $CotalCode
     Call CotalHelperExit
     ${If} $CotalCode != "0"
@@ -85,13 +94,14 @@ FunctionEnd
   File /oname=service-update.mjs "${COTAL_HOOK_DIR}\service-update.mjs"
   File /oname=service-task.ps1 "${COTAL_HOOK_DIR}\service-task.ps1"
   !if "${ARCH}" == "x64"
-    File /oname=setup-node.exe "${COTAL_HOOK_DIR}\..\binaries\node-x86_64-pc-windows-msvc.exe"
+    File /oname=node.exe "${COTAL_HOOK_DIR}\..\binaries\node-x86_64-pc-windows-msvc.exe"
   !else
     !error "Review the installer service helper for this Windows architecture."
   !endif
   System::Call 'kernel32::SetEnvironmentVariable(t "PSModulePath", p 0)'
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_ROOT", t "$INSTDIR")'
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_VERSION", t "${VERSION}")'
+  Call CotalClearPhaseResult
   nsExec::ExecToStack /TIMEOUT=40000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action recover'
   Pop $CotalCode
   Pop $CotalMessage
@@ -110,7 +120,8 @@ FunctionEnd
     StrCpy $CotalPrepared 1
   ${Else}
     cotal_prepare_retry:
-    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" prepare "$INSTDIR" "${VERSION}"'
+    Call CotalClearPhaseResult
+    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\node.exe" "$PLUGINSDIR\service-update.mjs" prepare "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
     Call CotalHelperExit
     ${If} $CotalCode == "20"
@@ -137,7 +148,8 @@ FunctionEnd
     FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"updated$\",$\"code$\":0,$\"message$\":$\"Cotal is installed. No background service was installed.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"${VERSION}$\"}'
     FileClose $0
   ${Else}
-    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
+    Call CotalClearPhaseResult
+    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
     Call CotalHelperExit
     ${If} $CotalCode == "23"

@@ -18,7 +18,13 @@ export async function installFixtureSeat({ root, runtime, node, env, cwd, space,
 const command=JSON.parse(process.env.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(command[0],command.slice(1),{windowsHide:true},(error,out)=>error?reject(error):resolve(out.trim())));
 const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(process.env.COTAL_SENTINEL_CREDS,'utf8'),lifecycleUid:process.env.COTAL_LIFECYCLE_UID,channels:[],consume:false,card:{owner:process.env.COTAL_OWNER,actor:process.env.COTAL_ACTOR,name:process.env.COTAL_NAME,kind:'agent'}});ep.on('error',()=>{});await ep.start();writeFileSync(${JSON.stringify(ready)},JSON.stringify({pid:process.pid,name:process.env.COTAL_NAME,version:JSON.parse(readFileSync(${JSON.stringify(join(runtime, 'package.json'))},'utf8')).version,startedAt:new Date().toISOString()}));while(!existsSync(${JSON.stringify(release)}))await delay(100);await ep.close();`);
   writeFileSync(join(connector, 'index.js'), `import {registry} from '@cotal-ai/core';import {fileURLToPath} from 'node:url';registry.register({kind:'connector',name:'fixture-seat',requires:['node'],buildLaunch:o=>({command:${JSON.stringify(node)},args:[fileURLToPath(new URL('./seat.mjs',import.meta.url))],env:{PATH:process.env.PATH,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE,APPDATA:process.env.APPDATA,LOCALAPPDATA:process.env.LOCALAPPDATA,XDG_CONFIG_HOME:process.env.XDG_CONFIG_HOME,COTAL_HOME:process.env.COTAL_HOME,COTAL_SKIP_CONNECTOR_SEED:'1',COTAL_SPACE:o.space,COTAL_SERVERS:o.servers,COTAL_NAME:o.name,COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_LIFECYCLE_UID:o.lifecycleUid}})});`);
-  const call = args => new Promise((resolve, reject) => execFile(node, [cli, ...args], { env, cwd, windowsHide: true, timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(`${args.join(' ')}: ${stderr || stdout || error.message}`)) : resolve(stdout)));
+  const call = args => new Promise((resolve, reject) => execFile(node, [cli, ...args], { env, cwd, windowsHide: true, timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    if (error) {
+      const failure = new Error(`${args.join(' ')}\nstdout:\n${stdout}\nstderr:\n${stderr}\n${error.message}`);
+      failure.observation = { args, code: error.code, signal: error.signal, stdout, stderr };
+      reject(failure);
+    } else resolve(stdout);
+  }));
   await call(['ext', 'add', connector]);
   return {
     async spawn(instance = managerInstanceId) {
