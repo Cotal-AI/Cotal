@@ -8,6 +8,9 @@ pub mod app;
 mod native_presence;
 pub mod presence;
 pub mod first_paint;
+pub mod updates;
+#[cfg(feature = "desktop")]
+pub mod update_native;
 
 /// The bundled Node executable name, without the platform extension.
 pub const NODE_SIDECAR: &str = if cfg!(windows) { "node" } else { "cotal-node" };
@@ -32,6 +35,10 @@ pub enum DesktopRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         notify: Option<bool>,
     },
+    #[serde(rename = "desktop-update-prepare")]
+    UpdatePrepare {},
+    #[serde(rename = "desktop-update-abort")]
+    UpdateAbort {},
     #[serde(rename = "about")]
     About {},
     #[serde(rename = "status")]

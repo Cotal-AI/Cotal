@@ -32,6 +32,14 @@ async fn daemon_request(
         .try_acquire_owned()
         .map_err(|_| "Too many app requests are running. Wait for an operation to finish.")?;
     request.validate()?;
+    if matches!(request, DesktopRequest::UpdatePrepare {} | DesktopRequest::UpdateAbort {}) {
+        return Err("Update admission is managed by the native updater.".into());
+    }
+    let _operation = crate::updates::OperationGuard::acquire(&app)?;
+    daemon_call(&app, request, Some(on_event)).await
+}
+
+pub(crate) async fn daemon_call(app: &AppHandle, request: DesktopRequest, on_event: Option<Channel<Value>>) -> Result<Value, String> {
     let operation = match &request {
         DesktopRequest::Status {} => "status",
         DesktopRequest::Setup { .. } => "setup",
@@ -82,7 +90,7 @@ async fn daemon_request(
                     let frame: Value = serde_json::from_slice(&line).map_err(|_| "The daemon client returned an invalid JSON frame.")?;
                     if frame.get("v").and_then(Value::as_u64) != Some(1) { return Err("The daemon client protocol is unsupported.".into()); }
                     match frame.get("event").and_then(Value::as_str) {
-                        Some("login-prompt" | "setup-progress") => on_event.send(frame).map_err(|_| "The application closed its progress view.")?,
+                        Some("login-prompt" | "setup-progress") => if let Some(channel) = &on_event { channel.send(frame).map_err(|_| "The application closed its progress view.")?; },
                         Some("result") if result.is_none() => result = Some(frame),
                         _ => return Err("The daemon client returned an unexpected frame.".into()),
                     }
@@ -206,11 +214,16 @@ pub fn run() {
         }))
         .manage(RequestSlots(Arc::new(Semaphore::new(4))))
         .manage(PaintState(std::sync::Mutex::new(FirstPaint::default())))
+        .manage(crate::updates::UpdateAdmission::default())
+        .manage(crate::update_native::UpdaterState::default())
+        .plugin(tauri_plugin_updater::Builder::new().pubkey(option_env!("COTAL_UPDATER_PUBLIC_KEY").unwrap_or("")).build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(autostart.build())
         .invoke_handler(tauri::generate_handler![
+            crate::update_native::desktop_update_status,
+            crate::update_native::desktop_update_check,
             daemon_request,
             open_browser,
             set_connection_state,
@@ -259,6 +272,7 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
+            crate::update_native::start(app.handle());
             if !std::env::args().any(|arg| arg == "--background") {
                 show(app.handle());
             }

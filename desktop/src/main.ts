@@ -1,8 +1,9 @@
 import { renderAgents } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
 import { computerName } from "./computer-name";
-import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
+import { desktopUpdateSummary, type DesktopUpdate, updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, installerLink, lastChecked, accountHost, type UpdateStatus } from "./updates";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
 import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
@@ -76,6 +77,8 @@ let ready = false;
 let appVersion: string | undefined;
 let settingsOpen = false;
 let updateStatus: UpdateStatus | undefined;
+let desktopUpdate: DesktopUpdate | undefined;
+let automaticPreference = true;
 let daemonVersion = "Unavailable";
 let appPlatform = "";
 let appArch = "";
@@ -92,6 +95,10 @@ async function loadRelease(version: string): Promise<void> {
   finally { releaseLoading = undefined; renderSettings(); }
 }
 async function openInstaller(): Promise<void> {
+  if (desktopUpdate?.phase === "unavailable") {
+    await invoke("open_browser", { url: "https://github.com/Cotal-AI/Cotal/releases/latest" });
+    return;
+  }
   const version = updateStatus?.latest;
   if (!version) return;
   try {
@@ -125,18 +132,20 @@ function renderSettings(): void {
   text("update-banner-copy", latest ? `Cotal ${latest} is available.` : "");
   text("settings-computer", savedComputerName);
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
-  text("settings-update-summary", updateSummary(updateStatus, appVersion ?? ""));
+  text("settings-update-summary", desktopUpdate ? desktopUpdateSummary(desktopUpdate) : updateSummary(updateStatus, appVersion ?? ""));
   text("settings-last-check", installerMessage ?? lastChecked(updateStatus?.lastCheck));
   text("settings-spaces", disconnectSpaces(accountProvider()).map(space => accountSpaces.get(space)?.label ?? space).join(", ") || "No observed spaces for this provider");
-  const policy = updatePolicy(updateStatus?.channel, appPlatform);
+  const policy = desktopUpdate ? { label: "Install updates automatically", description: desktopUpdate.phase === "unavailable" ? "Your preference is saved. This build needs the platform installer linked above." : "Cotal installs verified updates when no sign-in, connection change or agent session is running." } : updatePolicy(updateStatus?.channel, appPlatform);
   text("update-preference-label", policy.label); text("update-policy", policy.description);
-  el<HTMLInputElement>("update-preference").checked = policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
+  el<HTMLInputElement>("update-preference").checked = desktopUpdate ? automaticPreference : policy.label === "Install updates automatically" ? updateStatus?.automatic === true : updateStatus?.notify !== false;
   const available = appVersion && newerVersion(updateStatus?.latest, appVersion);
+  const manualBuild = desktopUpdate?.phase === "unavailable";
   if (available && updateStatus?.latest && releaseVersion !== updateStatus.latest && releaseLoading !== updateStatus.latest && releaseFailed !== updateStatus.latest) void loadRelease(updateStatus.latest);
   const download = updateStatus?.latest && releaseVersion === updateStatus.latest ? installerLink(updateStatus.latest, appPlatform, appArch, releaseAssets) : undefined;
   for (const id of ["update-download", "settings-download"]) { text(id, download?.label ?? "Checking release…"); el<HTMLButtonElement>(id).disabled = !download; }
-  el("settings-download-row").hidden = !available;
-  text("settings-download-copy", available ? `Version ${updateStatus?.latest}. Installer availability is checked when opened.` : "");
+  el("settings-download-row").hidden = !available && !manualBuild;
+  text("settings-download-copy", manualBuild ? "Use the signed platform installer for this build." : available ? `Version ${updateStatus?.latest}. Installer availability is checked when opened.` : "");
+  if (manualBuild) { text("settings-download", "Open release page"); el<HTMLButtonElement>("settings-download").disabled = false; }
   text("settings-account", [accountHost(accountProvider()), computerAccount?.label ?? computerAccount?.sub].filter(Boolean).join(" · "));
   renderAccountActions();
   el("settings-panel").classList.toggle("confirming-account", !!pendingAccountAction);
@@ -970,9 +979,19 @@ async function settingsAction(body: Request): Promise<void> {
   } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
   finally { busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false; el<HTMLInputElement>("update-preference").disabled = false; }
 }
-el("check-updates").addEventListener("click", () => void settingsAction({ op: "update-check" }));
+el("check-updates").addEventListener("click", () => {
+  if (!desktopUpdate) { void settingsAction({ op: "update-check" }); return; }
+  void invoke<DesktopUpdate>("desktop_update_check").then(value => { desktopUpdate = value; renderSettings(); }).catch(error => { text("settings-message", String(error)); });
+});
 el("update-preference").addEventListener("change", () => {
   const enabled = el<HTMLInputElement>("update-preference").checked;
+  if (desktopUpdate) {
+    void invoke<Frame>("daemon_request", { request: { op: "desktop-policy", auto: enabled }, onEvent: new Channel() }).then(frame => {
+      automaticPreference = requireResult(frame).auto === true; renderSettings();
+      return invoke<DesktopUpdate>("desktop_update_check");
+    }).then(value => { desktopUpdate = value; renderSettings(); }).catch(error => { text("settings-message", String(error)); renderSettings(); });
+    return;
+  }
   const automatic = updatePolicy(updateStatus?.channel, appPlatform).label === "Install updates automatically";
   void settingsAction({ op: "update-settings", ...(automatic ? { auto: enabled } : { notify: enabled }) });
 });
@@ -1016,6 +1035,13 @@ async function start(): Promise<void> {
     await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
     const info = await request({ op: "about" }); appVersion = String(info.version);
+    if (isTauri()) {
+      await listen<DesktopUpdate>("desktop-update", event => { desktopUpdate = event.payload; renderSettings(); });
+      const policy = await invoke<Frame>("daemon_request", { request: { op: "desktop-policy" }, onEvent: new Channel() });
+      const preference = requireResult(policy);
+      automaticPreference = preference.auto === true;
+      desktopUpdate = await invoke<DesktopUpdate>("desktop_update_status");
+    }
     appPlatform = String(info.platform); appArch = String(info.arch);
     renderComputerName(String(info.machine)); text("version", `v${String(info.version)}`);
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);

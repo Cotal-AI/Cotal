@@ -76,6 +76,12 @@
   },
   "mainBinaryName": "cotal-desktop",
   "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": ["https://github.com/Cotal-AI/Cotal/releases/latest/download/desktop-latest.json"],
+      "requireSignedVersion": true,
+      "windows": { "installMode": "passive" }
+    },
     "deep-link": {
       "desktop": {
         "schemes": [

@@ -38,10 +38,12 @@ async function app(options: { personal?: boolean; link?: string; installed?: boo
     async invoke(cmd: string, args: { request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
+      if (cmd === "desktop_update_status") return undefined;
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (cmd === "first_paint") return;
       if (cmd === "set_connection_state") return;
       if (cmd === "open_browser") { urls.push(args.url!); return; }
+      if (cmd === "daemon_request" && (args.request as { op?: string })?.op === "desktop-policy") return { v: 1, event: "result", ok: true, result: { auto: true } };
       assert.equal(cmd, "daemon_request"); const r = args.request!; calls.push(r);
       const ok = (result: Record<string, unknown>): Frame => ({ v: 1, event: "result", ok: true, result });
       const send = (frame: Frame, index: number) => callbacks.get(args.onEvent!.id)!({ message: frame, index });

@@ -1,4 +1,10 @@
 // Only the native boundary is simulated. The built renderer and styles are unchanged.
+const updaterStates = [
+  ["checking", "Checking for updates"], ["current", "You are up to date"],
+  ["downloading", "Downloading Cotal"], ["ready", "is ready"],
+  ["updated", "Updated to Cotal"], ["off", "Automatic installation is off"],
+  ["unavailable", "Developer ID signing is unavailable"], ["failed", "Signature verification failed"],
+];
 import assert from "node:assert/strict";
 export function nativeStub(scenario) {
   const callbacks = new Map(); let next = 0;
@@ -17,6 +23,7 @@ export function nativeStub(scenario) {
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
+      if (command === "desktop_update_status" || command === "desktop_update_check") return state.desktopUpdate;
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
@@ -25,8 +32,9 @@ export function nativeStub(scenario) {
       const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
       if (request.op === "about") {
         if (state.loading) await new Promise(() => {});
-        return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
+        return ok({ version: state.appVersion ?? "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
+      if (request.op === "desktop-policy") { if (request.auto !== undefined) state.automaticPreference = request.auto; return ok({ auto: state.automaticPreference !== false }); }
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
@@ -107,6 +115,23 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  ...updaterStates.map(([phase, copy]) => ({
+    name: `updater-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, ...(phase === "updated" ? { appVersion: "0.163.0", version: "0.163.0" } : {}), automaticPreference: phase !== "off", desktopUpdate: { phase, version: "0.163.0", reason: phase === "failed" ? "Signature verification failed" : phase === "unavailable" ? "Developer ID signing is unavailable" : undefined } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.match(await page.locator("#settings-update-summary").textContent(), new RegExp(copy));
+      assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically");
+      assert.equal(await page.locator("#update-preference").isChecked(), phase !== "off");
+      if (phase === "updated") assert.equal(await page.locator("#settings-versions").textContent(), "App 0.163.0 · Service 0.163.0");
+      if (phase === "unavailable") {
+        assert.equal(await page.locator("#settings-download").textContent(), "Open release page");
+        assert.ok(await page.locator("#settings-download").isVisible());
+        assert.ok(await page.locator("#settings-download").isEnabled());
+        assert.match(await page.locator("#update-policy").textContent(), /preference is saved.*platform installer/);
+      }
+    },
+  })),
   { name: "connected-short-spaces-padding", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } } },
   { name: "connected-short-spaces-6", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } }, expect: async page => {
     const inline = await page.locator('[data-testid="connected-space-row"] > span').evaluateAll(copies => copies.every(copy => {

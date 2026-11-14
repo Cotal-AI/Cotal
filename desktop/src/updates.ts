@@ -1,3 +1,24 @@
+export type DesktopUpdatePhase = "checking" | "current" | "downloading" | "ready" | "updated" | "off" | "unavailable" | "failed";
+export interface DesktopUpdate {
+  phase: DesktopUpdatePhase;
+  version?: string;
+  reason?: string;
+  downloaded?: number;
+  total?: number;
+}
+export function desktopUpdateSummary(update: DesktopUpdate): string {
+  switch (update.phase) {
+    case "checking": return "Checking for updates…";
+    case "current": return "You are up to date.";
+    case "downloading": return `Downloading Cotal ${update.version ?? "update"}…`;
+    case "ready": return `Cotal ${update.version ?? "update"} is ready. ${update.reason ?? "It will install when this computer is quiet."}`;
+    case "updated": return update.version ? `Updated to Cotal ${update.version}.` : "Cotal was updated.";
+    case "off": return update.version ? `Cotal ${update.version} is available. Automatic installation is off.` : "Automatic installation is off.";
+    case "unavailable": return update.reason ?? "This build cannot install updates. Use the platform installer.";
+    case "failed": return `Update failed: ${update.reason ?? "The update could not finish."}`;
+  }
+}
+
 export interface UpdateStatus {
   channel?: "desktop" | "npm";
   current: string;

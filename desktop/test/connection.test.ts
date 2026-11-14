@@ -43,9 +43,11 @@ test("launch readiness, application retry and polling follow the selected space"
     async invoke(cmd: string, args: { request?: Request; url?: string; onEvent?: { id: number } } = {}) {
       if (cmd === "plugin:event|listen") return ++callback;
       if (cmd === "plugin:deep-link|get_current") return ["cotal://connect?idp=https://example.com/auth&space=sp_first"];
+      if (cmd === "desktop_update_status") return undefined;
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (cmd === "set_connection_state") return;
       if (cmd === "open_browser") { browserUrls.push(args.url!); return; }
+      if (cmd === "daemon_request" && (args.request as { op?: string })?.op === "desktop-policy") return { v: 1, event: "result", ok: true, result: { auto: true } };
       assert.equal(cmd, "daemon_request");
       const req = args.request!;
       calls.push(req);

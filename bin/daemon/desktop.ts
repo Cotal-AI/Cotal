@@ -6,7 +6,7 @@ import { arch, platform, release, totalmem } from "node:os";
 import type { Readable, Writable } from "node:stream";
 import { CommandFailure, readUpdateSettings, setUpdateSetting } from "@cotal-ai/workspace";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
-import { loginViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
+import { loginViaDaemon, managerViaDaemon, updateViaDaemon, openVerified, queryDaemon, readLine, type QueryOptions } from "./client.js";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal } from "./endpoint.js";
 import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
@@ -14,6 +14,8 @@ import { runSetup } from "./setup.js";
 import { desktopApplicationPath } from "./desktop-path.js";
 
 export type DesktopRequest =
+  | { readonly op: "desktop-update-prepare" }
+  | { readonly op: "desktop-update-abort" }
   | { readonly op: "desktop-policy"; readonly auto?: boolean }
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
   | { readonly op: "update-check" }
@@ -31,7 +33,7 @@ export type DesktopRequest =
 export function parseDesktopRequest(value: unknown): DesktopRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("request must be an object");
   const o = value as Record<string, unknown>;
-  const simple = ["about", "status", "install", "update-check"].includes(String(o.op));
+  const simple = ["about", "status", "install", "update-check", "desktop-update-prepare", "desktop-update-abort"].includes(String(o.op));
   const scoped = ["connect-check", "register", "service-connect", "service-disconnect", "service-status"].includes(String(o.op));
   const fields = o.op === "desktop-policy" ? ["op", "auto"] : o.op === "update-release" ? ["op", "version"] : o.op === "update-settings" ? ["op", "auto", "notify"] : o.op === "name" ? ["op", "name"] : o.op === "space-intent" ? ["op", "space", "enabled"] : simple ? ["op"] : scoped ? ["op", "space"] : o.op === "setup" ? ["op", "space", "idp"] : (o.op === "login" || o.op === "logout") ? ["op", "idp"] : o.op === "spaces" ? ["op", "refresh"] : [];
   if (!fields.length || Object.keys(o).some((key) => !fields.includes(key))) throw new Error("unknown operation or field");
@@ -52,7 +54,7 @@ export function parseDesktopRequest(value: unknown): DesktopRequest {
     return { op: "space-intent", space: o.space, enabled: o.enabled };
   }
   if (o.op === "name") return { op: "name", ...(o.name !== undefined ? { name: computerName(o.name) } : {}) };
-  if (simple) return { op: o.op as "about" | "status" | "install" | "update-check" };
+  if (simple) return { op: o.op as "about" | "status" | "install" | "update-check" | "desktop-update-prepare" | "desktop-update-abort" };
   if (scoped) {
     if (!isDaemonSpaceName(o.space)) throw new Error("invalid space");
     return { op: o.op as "connect-check" | "register" | "service-connect" | "service-disconnect" | "service-status", space: o.space };
@@ -179,6 +181,10 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     if (status.result.version !== opts.version) {
       emit({ v: 1, event: "result", ok: false, error: { code: "VERSION_MISMATCH", message: "The running daemon and this app have different versions. Update them together before making changes." } });
       return;
+    }
+    if (req.op === "desktop-update-prepare" || req.op === "desktop-update-abort") {
+      const reply = await managerViaDaemon(client, { op: req.op === "desktop-update-prepare" ? "managers-prepare-restart" : "managers-abort-restart" });
+      emit({ v: 1, event: "result", ok: true, result: reply }); return;
     }
     if (req.op === "update-settings" || req.op === "update-check") {
       emit({ v: 1, event: "result", ok: true, result: await updateViaDaemon(client, req) }); return;

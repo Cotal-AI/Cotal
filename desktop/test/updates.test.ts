@@ -1,8 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { installerLink, installerName, newerVersion, releaseUrl, updateNotice, updatePolicy, updateSummary, type UpdateStatus } from "../src/updates";
+import { desktopUpdateSummary, installerLink, installerName, newerVersion, releaseUrl, updateNotice, updatePolicy, updateSummary, type UpdateStatus } from "../src/updates";
 
 const status: UpdateStatus = { channel: "desktop", current: "0.160.5", latest: "0.161.0", automatic: true, notify: true, lastCheck: "2026-11-11T22:00:00Z", lastResult: "available" };
+test("native updater states preserve actual refusal and deferred reasons", () => {
+  assert.match(desktopUpdateSummary({ phase: "checking" }), /Checking/);
+  assert.match(desktopUpdateSummary({ phase: "current" }), /up to date/);
+  assert.match(desktopUpdateSummary({ phase: "downloading", version: "0.163.0" }), /Downloading Cotal 0.163.0/);
+  assert.match(desktopUpdateSummary({ phase: "ready", version: "0.163.0", reason: "Running agents remain." }), /Running agents remain/);
+  assert.equal(desktopUpdateSummary({ phase: "updated", version: "0.163.0" }), "Updated to Cotal 0.163.0.");
+  assert.match(desktopUpdateSummary({ phase: "off", version: "0.163.0" }), /available.*off/);
+  assert.equal(desktopUpdateSummary({ phase: "unavailable", reason: "No verification key." }), "No verification key.");
+  assert.match(desktopUpdateSummary({ phase: "failed", reason: "Signature verification failed." }), /Signature verification failed/);
+});
 test("desktop notice tracks app version and Later hides only that release", () => {
   assert.equal(updateNotice(status, "0.160.5"), "0.161.0");
   assert.equal(updateNotice(status, "0.160.5", "0.161.0"), undefined);
