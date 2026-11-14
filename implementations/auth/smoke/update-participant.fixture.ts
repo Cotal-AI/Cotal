@@ -20,7 +20,9 @@ export interface UpdateParticipantContext {
 export async function prepareUpdateParticipant(context: UpdateParticipantContext): Promise<() => Promise<void>> {
   const { env, project, cotalHome, report } = context;
   assert(env.HOME && env.COTAL_HOME === cotalHome && env.XDG_CONFIG_HOME && env.TMPDIR, "fixture requires private paths");
-  for (const key of ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "TMPDIR"] as const) process.env[key] = env[key];
+  const pathKeys = ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "TMPDIR"] as const;
+  const prior = Object.fromEntries(pathKeys.map(key => [key, process.env[key]]));
+  for (const key of pathKeys) process.env[key] = env[key];
   const fixture = await startHostedAuthFixture("update-participant", 1);
   const account = fixture.accounts[0]!;
   const key = await generateKeyPair("EdDSA");
@@ -43,9 +45,20 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
   let service: Awaited<ReturnType<typeof startAuthService>> | undefined;
   const close = async () => {
     report.participant = { space: account.space, server: fixture.servers, remote: true, tokenReads, localManagerStarted: false };
-    await service?.close();
-    await new Promise<void>((resolve, reject) => idp.close(error => error ? reject(error) : resolve()));
-    await fixture.close();
+    try { await service?.close(); }
+    finally {
+      try {
+        if (idp.listening) await new Promise<void>((resolve, reject) => idp.close(error => error ? reject(error) : resolve()));
+      } finally {
+        try { await fixture.close(); }
+        finally {
+          for (const key of pathKeys) {
+            if (prior[key] === undefined) delete process.env[key];
+            else process.env[key] = prior[key];
+          }
+        }
+      }
+    }
   };
   try {
     await new Promise<void>(resolve => idp.listen(0, "127.0.0.1", resolve));
