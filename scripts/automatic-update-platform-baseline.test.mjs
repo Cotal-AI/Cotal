@@ -3,6 +3,17 @@ import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
+import { spawnNameError } from '@cotal-ai/core';
+
+test('daemon-hosted fixture name satisfies the actual user-mode actor rule', () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  const name = source.match(/spawn real daemon-hosted agent[^\n]*'--name', '([^']+)'/)?.[1];
+  assert(name, 'read the actual hosted spawn name');
+  assert.match(spawnNameError('upgrade-proof-worker', { userMode: true }), /invalid owner\/actor token/);
+  assert.equal(spawnNameError(name, { userMode: true }), undefined);
+  assert(source.includes(`!seats.stdout.includes('${name}')`));
+  assert(source.includes("'spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker'"), 'standalone known-refusal transcript stays unchanged');
+});
 
 test('daemon hosted consent admission is separate from standalone and refuses unsafe options', async () => {
   const options = { state: 'agent', method: 'self', 'stop-agents': 'true', 'daemon-hosted-manager': 'true', prepare() {} };

@@ -23,6 +23,8 @@ const composed: Command = { ...command, async run(args) {
   let absentRecoveryHost = false;
   let currentPackages = false;
   let askedToStop = false;
+  let recoveryFence = false;
+  try {
   await update(args, { ...updateRuntime, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
@@ -77,8 +79,16 @@ const composed: Command = { ...command, async run(args) {
         console.log("hosted Manager continuity: daemon lifetime proves no live host");
         return "none";
       }
-      const observed = await queryDaemon({ paths });
-      const evidence = observed.ok ? observed.result.update?.restartEvidence : undefined;
+      let observed = await queryDaemon({ paths });
+      let evidence = observed.ok ? observed.result.update?.restartEvidence : undefined;
+      if (recovery.phase === "restoring" && !evidence?.prepared) {
+        // Restart ownership belongs to a daemon generation. Restoration cannot reuse a dead
+        // generation's fence, so the current host must independently fence and confirm zero seats.
+        await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+        recoveryFence = true;
+        observed = await queryDaemon({ paths });
+        evidence = observed.ok ? observed.result.update?.restartEvidence : undefined;
+      }
       if (!evidence?.prepared || evidence.managers.some(row => !row.fenced || row.seats !== 0)) throw new Error("prepared update admission is no longer fenced and empty");
       console.log("hosted Manager continuity: daemon verified prepared fences and zero seats");
       return "none";
@@ -182,6 +192,9 @@ const composed: Command = { ...command, async run(args) {
     }
     return localVerdict;
   }) });
+  } finally {
+    if (recoveryFence) await managerViaDaemon({ paths: daemonPaths() }, { op: "managers-abort-restart" });
+  }
   if (currentPackages || args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.

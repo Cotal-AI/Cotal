@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { homeCotalDir } from "./cotal-home.js";
-import { readUpdateRecovery } from "./updates.js";
+import { readUpdateRecovery, type UpdateRecovery } from "./updates.js";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "./advisory-lock.js";
 
 const OWNER = "COTAL_UPDATE_CLOSURE_OWNER";
@@ -90,6 +90,17 @@ export function updateClosureOwner(): { pid: number; start: string; nonce: strin
   if (!held) throw new Error("this process does not own the update closure transaction");
   process.env.COTAL_UPDATE_CLOSURE_TRANSACTION = "1";
   return { pid: process.pid, start: processStartToken(process.pid) ?? "", nonce: held.nonce };
+}
+
+/** Whether the recorded updater still owns this exact live closure, including its nonce. */
+export function liveUpdateClosureOwner(record: UpdateRecovery, lookup = processStartToken): boolean {
+  const owner = record.owner;
+  if (!owner?.start || !owner.nonce) return false;
+  try {
+    const current = inspectLock(lockPath());
+    return current.state === "active" && current.owner.pid === owner.pid && current.owner.start === owner.start
+      && current.owner.nonce === owner.nonce && lookup(owner.pid) === owner.start;
+  } catch { return false; }
 }
 
 /** No generation may activate before reconciliation or restoration is verified. */
