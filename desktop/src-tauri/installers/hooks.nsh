@@ -89,6 +89,7 @@ FunctionEnd
   !else
     !error "Review the installer service helper for this Windows architecture."
   !endif
+  System::Call 'kernel32::SetEnvironmentVariable(t "PSModulePath", p 0)'
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_ROOT", t "$INSTDIR")'
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_VERSION", t "${VERSION}")'
   nsExec::ExecToStack /TIMEOUT=40000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action recover'
@@ -96,6 +97,7 @@ FunctionEnd
   Pop $CotalMessage
   Call CotalHelperExit
   ${If} $CotalCode != "0"
+    Call CotalSetupMessage
     DetailPrint "$CotalMessage"
     SetErrorLevel 21
     ${IfNot} ${Silent}
