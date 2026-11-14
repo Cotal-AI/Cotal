@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
@@ -46,6 +47,56 @@ test('Windows Details helper pins the installed process and admits only the exac
   for (const marker of ['$null = $owner.Handle', '$owner.Path, $expected', '$report.birth', 'GetWindowThreadProcessId($hwnd', '$windowPid -ne $AppPid', 'IsWindowVisible($hwnd)', "AutomationId -ceq 'details'", "AutomationId -ceq 'refusal-detail'", "$_.Current.Name -ceq 'Details'", '$buttons.Count -ne 1', 'InvokePattern', '$report.before', '$report.after', '$report.refusal']) assert.ok(helper.includes(marker), marker);
   assert.equal((helper.match(/\$invoke.Invoke\(\)/g) ?? []).length, 1);
   assert.doesNotMatch(helper, /mouse_event|SetCursorPos|Try again|AutomationId -ceq 'recover'|daemon_request|NODE_OPTIONS/);
+});
+
+test('native Windows ownership accepts short and long names of one file and rejects another file', { skip: process.platform !== 'win32' }, () => {
+  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  const code = helper.match(/Add-Type @'\r?\n([\s\S]*?)\r?\n'@/)[1];
+  const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type @'
+${code}
+'@
+Add-Type @'
+using System.Text;
+using System.Runtime.InteropServices;
+public static class ShortPathTest {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, ExactSpelling=true)]
+  public static extern uint GetShortPathNameW(string path, StringBuilder result, uint capacity);
+}
+'@
+$root = Join-Path ([IO.Path]::GetTempPath()) ('cotal-long-identity-' + [Guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $root
+try {
+  $first = Join-Path $root 'Installed Application One.exe'
+  $second = Join-Path $root 'Installed Application Two.exe'
+  [IO.File]::WriteAllText($first, 'first')
+  [IO.File]::WriteAllText($second, 'second')
+  $buffer = [Text.StringBuilder]::new(32768)
+  $length = [ShortPathTest]::GetShortPathNameW($first, $buffer, [uint32]$buffer.Capacity)
+  if ($length -eq 0 -or $length -ge $buffer.Capacity) { throw 'Native short path unavailable.' }
+  $short = $buffer.ToString()
+  if ($short -ceq $first) { throw 'Test did not produce a distinct short spelling.' }
+  if (![LaunchDetailsWindow]::SameFile($short, $first)) { throw 'Same file short/long identity refused.' }
+  if ([LaunchDetailsWindow]::SameFile($short, $second)) { throw 'Different files admitted.' }
+  $missingRefused = $false
+  try { $null = [LaunchDetailsWindow]::SameFile($first, (Join-Path $root 'missing.exe')) } catch { $missingRefused = $true }
+  if (!$missingRefused) { throw 'Missing file did not fail closed.' }
+  Write-Output 'same-short-long PASS; different-file REFUSED; missing-file REFUSED'
+} finally { Remove-Item -LiteralPath $root -Recurse -Force }
+`;
+  const result = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', timeout: 20_000 });
+  assert.match(result, /same-short-long PASS; different-file REFUSED; missing-file REFUSED/);
+});
+
+test('installed launch ownership resolves both executable spellings through the native long-path API', () => {
+  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  assert.match(helper, /GetLongPathNameW/);
+  assert.match(helper, /\[LaunchDetailsWindow\]::SameFile\(\$owner.Path, \$expected\)/);
+  assert.match(helper, /LongPath\(left\), LongPath\(right\)/);
+  assert.match(helper, /if \(length == 0\) throw/);
+  assert.match(helper, /if \(length >= buffer.Capacity\) throw/);
+  assert.doesNotMatch(helper, /EndsWith|GetFileName|\.Path, \$expected, \[StringComparison\]/);
 });
 
 test('installed refusal process census publishes only app descendants and explicit unknown on failure', () => {

@@ -12,17 +12,31 @@ try {
     Add-Type -AssemblyName UIAutomationTypes
     Add-Type @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class LaunchDetailsWindow {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, ExactSpelling=true)]
+    static extern uint GetLongPathNameW(string path, StringBuilder result, uint capacity);
+    static string LongPath(string path) {
+        var buffer = new StringBuilder(32768);
+        uint length = GetLongPathNameW(path, buffer, (uint)buffer.Capacity);
+        if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resolve installed executable long path.");
+        if (length >= buffer.Capacity) throw new InvalidOperationException("Installed executable long path exceeds diagnostic buffer.");
+        return buffer.ToString();
+    }
+    public static bool SameFile(string left, string right) {
+        return string.Equals(LongPath(left), LongPath(right), StringComparison.OrdinalIgnoreCase);
+    }
 }
 '@
     $expected = (Get-Item -LiteralPath $Binary).FullName
     $owner = Get-Process -Id $AppPid
     $null = $owner.Handle
     $report.birth = $owner.StartTime.ToUniversalTime().ToString('o')
-    if (![string]::Equals($owner.Path, $expected, [StringComparison]::OrdinalIgnoreCase)) { throw 'Launch PID does not own the installed binary.' }
+    if (![LaunchDetailsWindow]::SameFile($owner.Path, $expected)) { throw 'Launch PID does not own the installed binary.' }
     $hwnd = $owner.MainWindowHandle
     $report.hwnd = $hwnd.ToInt64()
     function Assert-WindowOwner {
