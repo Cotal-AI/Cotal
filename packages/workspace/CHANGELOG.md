@@ -1,5 +1,15 @@
 # @cotal-ai/workspace
 
+## 0.164.7
+
+### Patch Changes
+
+- 38947c4: Windows daemon ownership checks load fewer modules before reading the scheduled task.
+  
+  The observer uses the installer's shared receipt, source, action and principal checks through a small read-only entry. Native command and observation budgets stay unchanged, and each observation reads fresh ownership facts.
+- Updated dependencies [1c18181]
+  - @cotal-ai/core@0.164.7
+
 ## 0.164.6
 
 ### Patch Changes

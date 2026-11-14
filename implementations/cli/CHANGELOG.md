@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.164.7
+
+### Patch Changes
+
+- 84f1298: Show a warning in cotal status when first-party extension versions differ from the CLI. Name the affected packages and recommend cotal update --self to reconcile the installation.
+- d826322: Allow updates when another user's container runs an unrelated Manager.
+  Preserve same-installation supervisors and refuse unresolved local custody with process-specific guidance.
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+
 ## 0.164.6
 
 ### Patch Changes
