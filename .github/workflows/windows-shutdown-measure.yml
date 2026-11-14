@@ -1,0 +1,106 @@
+name: Fixed desktop daemon shutdown proof
+on:
+  push:
+    branches:
+      - measure/win-daemon-shutdown-probe
+permissions:
+  contents: read
+jobs:
+  pack:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_SKIP_CONNECTOR_SEED: '1'
+      pnpm_config_workspace_concurrency: '3'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.21.0'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Build stock native bindings
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - run: pnpm --workspace-concurrency 3 --filter cotal-ai... build
+      - name: Run named Windows daemon suites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/suite-results" -Force | Out-Null
+          $suites = @('daemon-shutdown-probe','daemon-transport','daemon-ownership-imports','daemon-ownership-win32','daemon-install-native','daemon-install-entry','daemon-owned-uninstall')
+          foreach ($suite in $suites) {
+            & pnpm exec tsx "bin/smoke/$suite.smoke.ts" *> "$env:RUNNER_TEMP/suite-results/$suite.log"
+            if ($LASTEXITCODE -ne 0) { throw "$suite failed" }
+          }
+          $env:COTAL_TEST_REAL_SERVICE = '1'
+          node bin/smoke/daemon-install-real.smoke.mjs *> "$env:RUNNER_TEMP/suite-results/daemon-install-real.log"
+          if ($LASTEXITCODE -ne 0) { throw 'daemon-install-real failed' }
+          Copy-Item "$env:RUNNER_TEMP/daemon-service-result.json" "$env:RUNNER_TEMP/suite-results/"
+      - run: pnpm --filter cotal-ai seeded-connectors
+      - run: pnpm --dir desktop prepare:runtime
+      - run: pnpm --dir desktop check:runtime
+      - name: Pack stock unsigned NSIS desktop installer
+        run: pnpm --dir desktop exec tauri build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixed-desktop-installer
+          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fixed-windows-daemon-suites
+          path: ${{ runner.temp }}/suite-results
+          if-no-files-found: error
+  installed:
+    needs: pack
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [restart, disabled-start]
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_SKIP_CONNECTOR_SEED: '1'
+      SHUTDOWN_MODE: ${{ matrix.mode }}
+      SHUTDOWN_EXPECTED_VERSION: '0.164.7'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.21.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixed-desktop-installer
+          path: ${{ runner.temp }}/fixed-installer
+      - name: Install packed desktop at default location
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem "$env:RUNNER_TEMP/fixed-installer/*.exe")
+          if ($files.Count -ne 1) { throw 'One fixed installer required' }
+          $process = Start-Process -FilePath $files[0].FullName -ArgumentList '/S' -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Fixed setup failed $($process.ExitCode)" }
+      - name: Forty installed stop paths
+        shell: pwsh
+        run: |
+          node scripts/windows-desktop-shutdown-measure.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Fixed stop-path proof failed, no retry' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fixed-desktop-shutdown-${{ matrix.mode }}
+          path: scripts/shutdown-records
+          if-no-files-found: error
