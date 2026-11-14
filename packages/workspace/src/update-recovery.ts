@@ -44,8 +44,11 @@ function fingerprint(): string {
 }
 
 function firstObserved(hash: string): number | undefined {
+  const path = join(homeCotalDir(), updateRecoveryObservationName);
+  const info = lstatSync(path, { throwIfNoEntry: false });
+  if (info && (!info.isFile() || info.isSymbolicLink())) throw new Error("update recovery observation is not a plain file");
   let value;
-  try { value = JSON.parse(readFileSync(join(homeCotalDir(), updateRecoveryObservationName), "utf8")); }
+  try { value = JSON.parse(readFileSync(path, "utf8")); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;

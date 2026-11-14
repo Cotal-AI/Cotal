@@ -72,7 +72,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     }
     const settings = readUpdateSettings();
     const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
-    if (closed || Date.now() < state.next) return;
+    const recovery = readUpdateRecovery();
+    const retiring = recovery !== undefined && recoveryDisposition(recovery).action === "retire";
+    if (closed || !retiring && Date.now() < state.next) return;
     if (desktop) {
       state = { ...state, next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS };
       persist();
@@ -82,8 +84,6 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
-    const recovery = readUpdateRecovery();
-    const retiring = recovery !== undefined && recoveryDisposition(recovery).action === "retire";
     if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
     if (!retiring && !newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
     if (!retiring && Date.now() - (cached.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
