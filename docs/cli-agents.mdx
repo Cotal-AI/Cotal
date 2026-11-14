@@ -558,7 +558,10 @@ Removing the seeded `default` persona says so in the question and the receipt, s
 Plain confirmation uses numbered choices. Scripts and JSON removal require `--yes/-y`.
 
 The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
-`show`, `edit`, `new` and `rm --force`. Its `new` requires `--subscribe`, reads `--from -` from
+`show`, `edit`, `new` and `rm --force`. Its `show` requires a prepared or selected space too;
+a folder containing only `.cotal/agents` refuses with `TARGET_NOT_FOUND`. Prepare that folder
+with `cotal space create <name> --root <folder>` before reading its catalog offline.
+Its `new` requires `--subscribe`, reads `--from -` from
 stdin, and overwrites an existing persona only with `--force`. Its local writes share the same
 draft validation and commit fence. Its `list` refuses a catalog folder it cannot read with
 `PERMISSION_DENIED` (exit 2), naming the space and giving the next step `persona` gives, rather
