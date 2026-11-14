@@ -56,7 +56,7 @@ export async function run(){
  const captureGeneration=label=>{
   const snapshot={label,at:new Date().toISOString(),files:{}};
   for(const [name,path]of [['daemon.log',join(cotalHome,'daemon/daemon.log')],['update-recovery.json',join(cotalHome,'update-recovery.json')],['update-attempt.json',join(cotalHome,'update-attempt.json')],['installed-package.json',join(pkg,'package.json')]]){
-   try{const text=readFileSync(path,'utf8');if(name==='daemon.log')snapshot.files[name]=text.slice(-65536).replace(/eyJ[A-Za-z0-9_.-]*/g,'<redacted>');else{const value=JSON.parse(text);snapshot.files[name]=name==='update-recovery.json'?{phase:value.phase,previous:value.previous,target:value.target,installed:value.installed,preparedRestart:value.preparedRestart,reason:value.reason,owner:value.owner?{pid:value.owner.pid,start:value.owner.start}:undefined}:name==='installed-package.json'?{name:value.name,version:value.version}:value;}}catch(error){snapshot.files[name]={error:error.code??error.message};}
+   try{const text=readFileSync(path,'utf8');if(name==='daemon.log')snapshot.files[name]=text.slice(-65536).replace(/eyJ[A-Za-z0-9_.-]*/g,'<redacted>');else{const value=JSON.parse(text);snapshot.files[name]=name==='update-recovery.json'?(value===null?null:{phase:value.phase,previous:value.previous,target:value.target,installed:value.installed,preparedRestart:value.preparedRestart,reason:value.reason,owner:value.owner?{pid:value.owner.pid,start:value.owner.start}:undefined}):name==='installed-package.json'?{name:value.name,version:value.version}:value;}}catch(error){snapshot.files[name]={error:error.code??error.message};}
   }
   generationSnapshots.push(snapshot);save('generation-snapshots.json',generationSnapshots);
  };

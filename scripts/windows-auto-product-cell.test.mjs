@@ -85,6 +85,9 @@ test('generation evidence reads real files passively before cleanup, limits log 
   assert.deepEqual(snapshot.files['installed-package.json'],{name:'cotal-ai',version:'B'});assert.equal(snapshot.files['update-attempt.json'].error,'ENOENT');
   assert.ok(source.indexOf("captureGeneration('failure before native service cleanup')")<source.indexOf("'cleanup exact owned native service'"));
   assert.match(source,/clearInterval\(generationTimer\)/);
+  writeFileSync(join(cotalHome,'update-recovery.json'),'null');
+  runInNewContext(body+"captureGeneration('cleared');",{readFileSync,join,cotalHome,pkg,save:(_name,value)=>{saved=value;}});
+  assert.equal(saved[0].files['update-recovery.json'],null);
  }finally{rmSync(root,{recursive:true,force:true});}
 });
 test('native firsthop observer pins only the authenticated old PID and exact installed task, never starts or stops either',()=>{
