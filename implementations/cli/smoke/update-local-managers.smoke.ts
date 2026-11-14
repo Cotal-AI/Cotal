@@ -72,5 +72,23 @@ if (process.platform === "linux") {
     await once(child, "exit");
     rmSync(fixture, { recursive: true, force: true });
   }
+  const relativeRoot = mkdtempSync(join(tmpdir(), "cotal-update-relative-"));
+  const relativeEntry = join(relativeRoot, "entry.mjs");
+  writeFileSync(relativeEntry, "setInterval(() => {}, 1000);\n");
+  const otherRoot = join(relativeRoot, "other");
+  mkdirSync(otherRoot);
+  writeFileSync(join(otherRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "cotal.js" } }));
+  const otherEntry = join(otherRoot, "cotal.js");
+  writeFileSync(otherEntry, "");
+  const relativeChild = spawn(process.execPath, ["entry.mjs", "supervise", "--space", "relative-proof", "--server", "nats://127.0.0.1:9", otherEntry], { cwd: relativeRoot, stdio: "ignore" });
+  try {
+    await once(relativeChild, "spawn");
+    const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+    assert.throws(() => localUpdateManagers({ space: "relative-proof" }, relativeEntry), /missing identity/, "relative same-install entry is resolved before another absolute CLI argument can exclude it");
+  } finally {
+    relativeChild.kill();
+    await once(relativeChild, "exit");
+    rmSync(relativeRoot, { recursive: true, force: true });
+  }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

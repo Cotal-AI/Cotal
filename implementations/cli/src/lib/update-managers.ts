@@ -168,7 +168,6 @@ export function localUpdateManagers(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       blocked(`cannot inspect process owner for Manager pid ${pid}, user unavailable; stop it through its original host before retrying`);
     }
-    if (supervisorInstallScope(pid, uid, command.command, ownEntry) === "foreign") continue;
     let argv = command.command.split(/\s+/), cwd: string | undefined;
     let env: Record<string, string> = {};
     if (process.platform === "linux") {
@@ -176,7 +175,11 @@ export function localUpdateManagers(
         argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
         cwd = readlinkSync(`/proc/${pid}/cwd`);
         env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(value => value.includes("=")).map(value => { const split = value.indexOf("="); return [value.slice(0, split), value.slice(split + 1)]; }));
-      } catch { if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue; blocked(`cannot read launch coordinates for Manager pid ${pid}, user ${uid}, verb supervise; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying`); }
+      } catch {
+        if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
+        if (supervisorInstallScope(pid, uid, command.command, ownEntry) === "foreign") continue;
+        blocked(`cannot read launch coordinates for Manager pid ${pid}, user ${uid}, verb supervise; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying`);
+      }
     }
     if (process.platform === "linux" && !argv.some(arg => ["supervise", "__daemon-manager", "__service-manager", "__machine-manager"].includes(arg))) continue;
     let loaded = false;
@@ -185,6 +188,7 @@ export function localUpdateManagers(
       try { if (realpathSync(isAbsolute(arg) ? arg : resolve(cwd!, arg)) === ownEntry) loaded = true; } catch { /* Non-path argv is not install evidence. */ }
     }
     if (!loaded) {
+      if (supervisorInstallScope(pid, uid, command.command, ownEntry) === "foreign") continue;
       // A different resolvable cotal entry is affirmative evidence of another installation.
       const other = argv.some(arg => {
         if (!isAbsolute(arg) && !cwd) return false;
