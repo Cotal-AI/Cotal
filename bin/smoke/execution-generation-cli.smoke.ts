@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
 
 if (!["linux", "darwin"].includes(process.platform)) {
@@ -32,6 +33,9 @@ if (!["linux", "darwin"].includes(process.platform)) {
     const publishing = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
     assert.equal(publishing.status, 0, publishing.stderr);
     assert.equal(publishing.stdout.split("\n")[0], `cotal-ai ${originalVersion}`, "loaded code identity must not come from newly published canonical metadata");
+    const daemonIdentity = spawnSync(process.execPath, ["--input-type=module", "-e", `const {binVersion}=await import(${JSON.stringify(pathToFileURL(join(installed, "dist/daemon/command.js")).href)}); console.log(binVersion());`], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
+    assert.equal(daemonIdentity.status, 0, daemonIdentity.stderr);
+    assert.equal(daemonIdentity.stdout.trim(), originalVersion, "daemon identity must name loaded code, not the canonical manifest");
     writeFileSync(join(installed, "package.json"), originalManifest);
     writeExecutionDescriptor(installed, descriptor);
     const stopped = spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });

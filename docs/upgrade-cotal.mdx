@@ -15,7 +15,8 @@ A computer that has never had `~/.config/cotal` needs one manual `npm install -g
 
 The `cotal` entry reads a versioned execution descriptor when one is present.
 A descriptor bound to this package's name, version and bootstrap hash selects a retained
-package only after its inventory verifies. A missing or differently bound descriptor runs
+package only after its inventory verifies. A descriptor may also list up to four validated
+artifact bindings for a bootstrap and manifest transition. A missing or differently bound descriptor runs
 the installed tree in place and writes nothing. An invalid matching descriptor refuses
 with reinstall guidance rather than selecting another generation.
 A running command reports the release of its loaded implementation, even if the canonical

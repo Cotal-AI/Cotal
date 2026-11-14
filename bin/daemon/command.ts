@@ -59,20 +59,15 @@ export const daemonFlags = [
   { name: "space", short: "s", type: "string", value: "<s>", description: "target space (required except for status, where it selects one hosted Manager)" },
 ] as const satisfies readonly FlagSpec[];
 
-/** This binary's own version: the nearest package.json above this module (bin/ in a source run). */
-export function binVersion(): string {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 4; i++) {
-    try {
-      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
-      if (pkg.name === "cotal-ai" && typeof pkg.version === "string") return pkg.version;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-    dir = dirname(dir);
-  }
-  throw new Error("cannot determine the cotal-ai version: no cotal-ai package.json above the daemon module");
-}
+const loadedBinVersion = (() => {
+  const root = dirname(dirname(fileURLToPath(import.meta.resolve("@cotal-ai/cli"))));
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+  if (pkg.name !== "@cotal-ai/cli" || typeof pkg.version !== "string" || !pkg.version) throw new Error("cannot determine the loaded daemon version");
+  return pkg.version;
+})();
+
+/** The daemon's captured loaded release, independent of canonical metadata publication. */
+export function binVersion(): string { return loadedBinVersion; }
 
 const peerUid = defaultPeerUid;
 const peerPid = defaultPeerPid;

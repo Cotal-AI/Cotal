@@ -88,6 +88,31 @@ try {
     assert.deepEqual(readFileSync(file), bytes); assert.equal(lstatSync(file).mtimeMs, before);
     writeExecutionDescriptor(root, descriptor);
   });
+  check("transition binding aliases preserve retained selection across manifest publication", () => {
+    const file = join(root, "package.json"), bytes = readFileSync(file);
+    const next = { ...descriptor.binding, version: "0.3.0" };
+    writeExecutionDescriptor(root, { ...descriptor, bindings: [next] });
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(bytes.toString()), version: next.version }));
+    try {
+      const result = run(); assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "retained generation selected");
+      assert.equal(selectExecutionProgram(root).root, generation.root);
+    } finally { writeFileSync(file, bytes); writeExecutionDescriptor(root, descriptor); }
+  });
+  check("malformed or excessive transition bindings refuse", () => {
+    for (const bindings of [[{}], Array.from({ length: 5 }, () => descriptor.binding)]) {
+      writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, bindings }));
+      assert.throws(() => selectExecutionProgram(root), /invalid execution transition bindings/);
+    }
+    writeExecutionDescriptor(root, descriptor);
+  });
+  check("alias selection still refuses unknown protocol and corrupt target", () => {
+    const aliased = { ...descriptor, binding: { ...descriptor.binding, version: "0.0.0" }, bindings: [descriptor.binding] };
+    writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...aliased, v: 999 }));
+    assert.throws(() => selectExecutionProgram(root), /unsupported execution descriptor version/);
+    writeExecutionDescriptor(root, { ...aliased, generation: { ...descriptor.generation, id: "f".repeat(32) } });
+    assert.notEqual(run().status, 0);
+    writeExecutionDescriptor(root, descriptor);
+  });
   check("a malformed binding is not proof of a different installed artifact", () => {
     writeFileSync(join(root, executionDescriptorName), JSON.stringify({ ...descriptor, binding: {} }));
     assert.throws(() => selectExecutionProgram(root), /invalid execution artifact binding/);
