@@ -1,9 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, lstatSync, rmSync } from "node:fs";
+import { closeSync, constants, fchmodSync, lstatSync, openSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { openPrivateAppend, writeSecretFileAtomic, writeSecretFileCreateOnly } from "@cotal-ai/core";
+import { writeSecretFileAtomic, writeSecretFileCreateOnly } from "@cotal-ai/core";
 import { lockExclusiveNb } from "@cotal-ai/seat";
 import { homeCotalDir, claimUpdateClosureAccess, readLocalRecordSource, windowsBootDisposition, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE, UPDATE_HOUR_MS, win32ProcessBinding } from "@cotal-ai/workspace";
 import { daemonStartedByOwnedService } from "./install.js";
@@ -43,8 +43,9 @@ export function readWindowsUpdate(): WindowsUpdateReceipt | undefined {
 }
 function gate(r: WindowsUpdateReceipt): number {
   const path = join(homeCotalDir(), `${r.name}.gate`);
-  const fd = openPrivateAppend(path);
-  try { protect(path); if (!lockExclusiveNb(fd)) throw new Error("Windows automatic update helper still has admission custody"); return fd; }
+  // LockFileEx needs GENERIC_READ or GENERIC_WRITE. Append-only handles have neither.
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
+  try { fchmodSync(fd, 0o600); protect(path); if (!lockExclusiveNb(fd)) throw new Error("Windows automatic update helper still has admission custody"); return fd; }
   catch (error) { closeSync(fd); throw error; }
 }
 function assertSource(r: WindowsUpdateReceipt): void {

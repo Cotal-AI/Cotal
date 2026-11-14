@@ -40,6 +40,11 @@ try {
   assert.throws(() => renderWindowsUpdateTask("bad", ["C:\\node.exe", "entry", nonce, home], "C:\\private"));
   assert.throws(() => renderWindowsUpdateTask("S-1-5-21-123", ["relative", "entry", nonce, home], "C:\\private"));
   assert.throws(() => renderWindowsUpdateTask("S-1-5-21-123", ["C:\\node.exe", "x".repeat(40000), nonce, "C:\\private"], "C:\\private"));
+  const custodySource = readFileSync(new URL("../daemon/update-windows.ts", import.meta.url), "utf8");
+  const gateSource = custodySource.slice(custodySource.indexOf("function gate("), custodySource.indexOf("function assertSource("));
+  assert.match(gateSource, /openSync\(path, constants\.O_RDWR \| constants\.O_CREAT, 0o600\)/);
+  assert.doesNotMatch(gateSource, /openPrivateAppend|O_APPEND|O_WRONLY/);
+  assert.ok(gateSource.indexOf("protect(path)") < gateSource.indexOf("lockExclusiveNb(fd)"));
   const runner = readFileSync(new URL("../daemon/update-windows-runner.ts", import.meta.url), "utf8");
   assert.ok(runner.indexOf("native.drain(20_000)") < runner.indexOf("done = true;", runner.indexOf("native.launch(")));
   assert.match(runner, /if \(drained\) custody.complete\(done\)/);
