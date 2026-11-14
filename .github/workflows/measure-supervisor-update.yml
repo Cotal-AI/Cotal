@@ -22,7 +22,7 @@ jobs:
           path: product
       - uses: actions/checkout@v4
         with:
-          ref: test/upgrade-matrix
+          ref: 8dba0ab28602bb11e7582778d6229cbc27dc2be8
           path: matrix
       - uses: pnpm/action-setup@v4
         with:
