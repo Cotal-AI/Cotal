@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
+
+test('installed core ESM entry is readable without CommonJS exports', async () => {
+  const packageRoot = fileURLToPath(new URL('../bin', import.meta.url));
+  const coreRoot = realpathSync(join(packageRoot, 'node_modules', '@cotal-ai/core'));
+  const pkg = JSON.parse(readFileSync(join(coreRoot, 'package.json'), 'utf8'));
+  const cli = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+  assert.equal(pkg.name, '@cotal-ai/core');
+  assert.equal(pkg.version, cli.version);
+  const core = await import(pathToFileURL(join(coreRoot, pkg.exports['.'].import)).href);
+  assert.equal(typeof core.mkSecretDir, 'function');
+});
 
 test('observation hook reaches native calls inside the unchanged eval-worker pattern', () => {
   const root = mkdtempSync(join(tmpdir(), 'ownership-hook-'));

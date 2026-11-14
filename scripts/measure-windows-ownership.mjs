@@ -32,9 +32,13 @@ if (mode === 'sample') {
   assert.deepEqual(result, { state: 'owned', reason: 'verified' });
 } else {
   assert.equal(mode, 'run');
-  const { createRequire } = await import('node:module');
-  const require = createRequire(join(resolve(packageRoot), 'package.json'));
-  const { mkSecretDir } = await import(pathToFileURL(require.resolve('@cotal-ai/core')).href);
+  const coreRoot = realpathSync(join(resolve(packageRoot), 'node_modules', '@cotal-ai/core'));
+  const corePackage = JSON.parse(readFileSync(join(coreRoot, 'package.json'), 'utf8'));
+  assert.equal(corePackage.name, '@cotal-ai/core');
+  const packageVersion = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+  assert.equal(corePackage.version, packageVersion, 'measure the installed matching core');
+  assert.equal(typeof corePackage.exports?.['.']?.import, 'string');
+  const { mkSecretDir } = await import(pathToFileURL(join(coreRoot, corePackage.exports['.'].import)).href);
   mkSecretDir(home);
   const commands = [];
   function call(verb, ...flags) {
