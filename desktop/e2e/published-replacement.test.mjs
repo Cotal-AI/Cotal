@@ -16,6 +16,7 @@ test('follow-up scopes token to metadata, observes150s and lists uninstall lefto
   assert.ok(source.includes('report.installationLeftovers'));
   assert.ok(source.includes('runner logon predates'));
   for (const field of ['Get-ScheduledTaskInfo', 'LastRunTime', 'NextRunTime', 'LastTaskResult']) assert.ok(powershell.includes(field));
+  for (const field of ['LastRunTime', 'NextRunTime']) assert.ok(powershell.includes(`if ($null -ne $info.${field}) { $info.${field}.ToUniversalTime().ToString('o') } else { $null }`));
 });
 test('launcher/task census, Finder authorization and scope limits stay explicit', () => {
   const source = readFileSync(script, 'utf8');
