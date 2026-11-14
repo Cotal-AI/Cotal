@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve, delimiter, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { candidateRegistry, configureCandidateRegistry, packCandidate } from './automatic-update-platform-baseline.mjs';
 const output=resolve(process.env.WINDOWS_AUTO_EVIDENCE??(process.argv[2]?.startsWith('--')?process.argv[3]:process.argv[2])??join(process.env.RUNNER_TEMP??'.','windows-auto-evidence'));
@@ -90,8 +91,11 @@ export async function run(){
   assert.equal(json(join(pkg,'package.json')).version,versionA);
   const ready=await poll('manual target service ready',async()=>{const s=await status();return s?.state==='ready'&&s.version===versionA?s:undefined;});
   report.cells.push({name:'published-service-manual-update',pass:true,status:ready});
-  const extensions=json(join(config,'extensions/extensions.json')).extensions;assert.equal(extensions.filter(x=>x.pkg.startsWith('@cotal-ai/')).length,8);for(const x of extensions.filter(x=>x.pkg.startsWith('@cotal-ai/')))assert.equal(x.version,versionA);
-  report.extensions=extensions;
+  const extensions=json(join(config,'extensions/extensions.json')).extensions;report.extensions=extensions;save('report.json',report);
+  const installedWorkspace=await import(pathToFileURL(workspaceEntry).href);
+  const expected=Object.values(installedWorkspace.SEEDED_EXTENSIONS).map(x=>x.pkg).sort();
+  const firstParty=extensions.filter(x=>x.pkg.startsWith('@cotal-ai/'));report.expectedExtensions=expected;save('report.json',report);
+  assert.deepEqual(firstParty.map(x=>x.pkg).sort(),expected);for(const x of firstParty)assert.equal(x.version,versionA);
   const recovery=join(cotalHome,'update-recovery.json');assert(!existsSync(recovery)||json(recovery)===null,'manual update must clear recovery state');
   ok(await cli('public status after acceptance',['status']));report.pass=true;
  }catch(error){report.pass=false;report.error=String(error.stack??error);captureGeneration('failure before native service cleanup');throw error;}

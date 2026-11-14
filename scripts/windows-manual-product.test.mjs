@@ -28,6 +28,12 @@ test('all env scopes are case-unique, Windows PATH canonical and npm exact node-
  const visit=x=>{if(!x||typeof x!=='object')return;if(x.env){const keys=Object.keys(x.env).map(k=>k.toUpperCase());assert.equal(new Set(keys).size,keys.length);}for(const v of Object.values(x))visit(v);};visit(workflow);
  assert.match(source,/key.toLowerCase\(\)==='path'/);assert.match(source,/node_modules\/npm\/bin\/npm-cli.js/);
 });
+test('extension census comes from installed runtime declarations and is archived before assertions',()=>{
+ assert.match(source,/installedWorkspace\.SEEDED_EXTENSIONS/);
+ assert.match(source,/assert.deepEqual\(firstParty.map/);
+ assert.doesNotMatch(source,/\.length,8\)/);
+ assert.ok(source.indexOf('report.extensions=extensions')<source.indexOf('assert.deepEqual(firstParty'));
+});
 test('standalone manual proof source parses',()=>{
  const r=spawnSync(process.execPath,['--check',fileURLToPath(new URL('./windows-auto-product-cell.mjs',import.meta.url))],{encoding:'utf8'});assert.equal(r.status,0,r.stderr);
 });
