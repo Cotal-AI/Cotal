@@ -191,6 +191,13 @@ export function cliVersion(): string {
   const identity = Object.getOwnPropertyDescriptor(globalThis, Symbol.for("cotal.execution.identity"));
   const loadedEntry = (identity?.value as { loadedEntry?: unknown } | undefined)?.loadedEntry;
   if (identity?.writable === false && identity.configurable === false && typeof loadedEntry === "string" && realpathSync(loadedEntry) === entryScript()) return loadedCliVersion;
+  return installedCliVersion();
+}
+
+/** The release in the installed package that owns this process's entry script. A self-update
+ *  replaces that package while the process keeps the code it loaded, so this is the update's
+ *  target where {@link cliVersion} stays the release that started it. */
+export function installedCliVersion(): string {
   const root = cliPackageRoot();
   const version = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string }).version;
   if (typeof version === "string" && version) return version;
