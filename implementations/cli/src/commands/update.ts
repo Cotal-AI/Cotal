@@ -62,6 +62,7 @@ import {
 } from "@cotal-ai/workspace";
 import { refreshOwnedCompletions } from "../lib/completion-install.js";
 import { legacyManagerReport, legacySeatLabel, type LegacyManagerReport } from "../lib/legacy-manager-report.js";
+import { recordedStackRemedy, type RecordedStackRemedy } from "../lib/recorded-stack-remedy.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
@@ -767,7 +768,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
-  printLegacyReport(report, target.space, undefined, console.log, on);
+  const remedy = typeof flags.creds === "string" ? undefined : recordedStackRemedy(target.root, target.space, target.server, (status.data ?? {}) as { instanceId?: unknown; lifecycleUid?: unknown });
+  printLegacyReport(report, target.space, undefined, console.log, on, remedy);
   return "legacy";
 }
 
@@ -780,11 +782,19 @@ export function printLegacyReport(
   _stop: string | undefined = undefined,
   out: (line: string) => void = console.log,
   manager?: string,
+  recorded?: RecordedStackRemedy,
 ): void {
   out(c.yellow("! legacy manager custody: PTY continuity is impossible; this update is not a hot update"));
   out(`  Manager ${manager ?? "(instance unavailable)"} in space ${JSON.stringify(space)}: ${report.seats.length} seats`);
   for (const seat of report.seats)
     out(c.dim(`  ${legacySeatLabel(seat)}: ${seat.continuity}`));
+  if (recorded) {
+    out(`  Recorded stack root: ${recorded.root}`);
+    out("  This is a manual cold update. The listed seats end and are not restarted. Nothing was stopped by this command.");
+    out("  Run these commands in order:");
+    for (const command of recorded.commands) out(`    ${command}`);
+    return;
+  }
   out("  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.");
   out("  Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.");
 }
