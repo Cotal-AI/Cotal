@@ -5,7 +5,7 @@ function once(source, anchor, replacement) {
   if (source.split(anchor).length !== 2) throw new Error(`Trace anchor is not singular: ${anchor}`);
   return source.replace(anchor, replacement);
 }
-let helper = readFileSync(`${directory}service-update.mjs`, 'utf8');
+let helper = readFileSync(`${directory}service-update.mjs`, 'utf8').replaceAll('\r\n', '\n');
 helper = once(helper, "import { existsSync,", "import { appendFileSync, existsSync,");
 helper = once(helper, "const stateFile =", `const trace = step => appendFileSync(join(directory, 'helper-trace.log'), JSON.stringify({ at: new Date().toISOString(), mode, step, pid: process.pid }) + '\\n');
 trace('entry');
@@ -23,7 +23,7 @@ for (const [anchor, replacement] of [
   ["} catch (error) {\n  const active", "} catch (error) {\n  trace('catch:' + error.message);\n  const active"],
 ]) helper = once(helper, anchor, replacement);
 writeFileSync(`${directory}traced-service-update.mjs`, helper);
-let hooks = readFileSync(`${directory}hooks.nsh`, 'utf8');
+let hooks = readFileSync(`${directory}hooks.nsh`, 'utf8').replaceAll('\r\n', '\n');
 hooks = once(hooks, 'Var CotalFresh', 'Var CotalFresh\nVar CotalTracePhase');
 hooks = once(hooks, 'Function CotalHelperExit\n', `Function CotalHelperExit
   Push $9
