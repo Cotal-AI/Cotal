@@ -55,6 +55,12 @@ test('published seat provenance uses pinned verified release tag, not optional n
  assert.match(input,/explicit CRLF normalization/);
  assert.match(input,/metadata\.dist\.integrity/);
 });
+test('Windows npm invocation uses the existing matrix node-adjacent CLI recipe, never cmd PATH guessing',()=>{
+ assert.match(source,/node_modules\/npm\/bin\/npm-cli\.js/);
+ assert.match(source,/const npm=process.execPath/);
+ assert.match(source,/key.toLowerCase\(\)==='path'/);
+ assert.doesNotMatch(source,/cmd\.exe/);
+});
 test('driver parses without any native execution',()=>{
  const result=spawnSync(process.execPath,['--check',fileURLToPath(file)],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
 });
