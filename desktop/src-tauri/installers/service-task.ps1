@@ -1,5 +1,8 @@
 param([Parameter(Mandatory=$true)][ValidateSet('inspect','disable','enable','start','census','recover')][string]$Action)
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Management
+Import-Module Microsoft.PowerShell.Utility
+Import-Module CimCmdlets
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $root = [IO.Path]::GetFullPath($env:COTAL_SETUP_ROOT).TrimEnd('\')
 $statePath = Join-Path $env:LOCALAPPDATA 'CotalSetup\service-update.json'

@@ -25,6 +25,8 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(hooks, /SetErrorLevel \$CotalCode/);
   assert.match(hooks, /setup-node\.exe/);
   assert.doesNotMatch(task, /Stop-Process|Stop-ScheduledTask|\/End|\.Stop\(/i);
+  assert.match(task, /Import-Module Microsoft.PowerShell.Management/);
+  assert.match(task, /Import-Module Microsoft.PowerShell.Utility/);
   assert.match(task, /\$task\.Enabled = \$false/);
   assert.match(task, /GetInstances\(0\)\.Count/);
   assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));
