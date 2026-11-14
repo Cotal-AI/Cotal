@@ -1,0 +1,44 @@
+name: Windows daemon shutdown measurement
+on:
+  push:
+    branches:
+      - measure/win-daemon-shutdown-probe
+permissions:
+  contents: read
+jobs:
+  published:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TELEMETRY: 'off'
+      COTAL_SKIP_CONNECTOR_SEED: '1'
+      SHUTDOWN_ROUNDS: '40'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.21.0'
+      - name: Install the unchanged published CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:RUNNER_TEMP 'published-cotal'
+          npm i -g cotal-ai@0.164.7 --prefix $prefix
+          if ($LASTEXITCODE -ne 0) { throw 'Published package installation failed' }
+          $package = Join-Path $prefix 'node_modules/cotal-ai'
+          "SHUTDOWN_PACKAGE_ROOT=$package" >> $env:GITHUB_ENV
+          Get-FileHash (Join-Path $package 'dist/daemon/client.js'), (Join-Path $package 'dist/daemon/install.js'), (Join-Path $package 'dist/daemon/server.js') -Algorithm SHA256 | Format-List
+      - name: Measure original stop probes and handle close ordering
+        shell: pwsh
+        run: |
+          node scripts/windows-shutdown-measure.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Measurement stopped before all rounds, inspect raw artifact' }
+      - name: Upload raw original-call records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-daemon-shutdown-published
+          path: scripts/shutdown-records
+          if-no-files-found: error
+          retention-days: 7
