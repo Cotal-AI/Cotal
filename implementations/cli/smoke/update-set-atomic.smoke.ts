@@ -49,5 +49,7 @@ assert.equal(repaired.status, 0, repaired.stderr);
 assert(!readFileSync(join(prefix, 'extensions.json'), 'utf8').includes('undefined'));
 for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readdirSync(join(prefix, 'node_modules/@cotal-ai', pkg)).includes('damage.txt'));
 console.log('whole-set successful update repairs every selected package');
+const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
+assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], 'file:../seed/store/0.164.8/claude');
 } finally { rmSync(root, { recursive: true, force: true }); }
 }
