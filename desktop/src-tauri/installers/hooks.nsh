@@ -106,7 +106,7 @@ FunctionEnd
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_VERSION", t "${VERSION}")'
   Call CotalClearPhaseResult
   StrCpy $CotalPhase "recover"
-  nsExec::ExecToStack /TIMEOUT=40000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action recover'
+  nsExec::ExecToStack /TIMEOUT=120000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action recover'
   Pop $CotalCode
   Pop $CotalMessage
   Call CotalHelperExit
