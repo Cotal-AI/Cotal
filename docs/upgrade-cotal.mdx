@@ -27,6 +27,8 @@ package manifest changes while it runs.
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
 It runs installed read-only checks and the target's declared pre-install checks first.
+Linux also reads the install-wide process census. macOS reads the daemon's hosted Managers,
+the selected target and registered spaces without invoking the Linux-only census.
 A refused check leaves the installed package and connector state unchanged.
 An unwritable installation refuses before staging and names the owning install command.
 
