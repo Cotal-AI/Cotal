@@ -1,0 +1,36 @@
+name: Measure self-update duration
+on:
+  push:
+    branches: [measure/win-update-duration]
+permissions:
+  contents: read
+jobs:
+  published:
+    name: published-${{ matrix.runner }}-${{ matrix.sample }}-${{ matrix.mode }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        runner: [windows-2022, ubuntu-24.04]
+        sample: [1, 2, 3]
+        mode: [passive, control]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Measure unchanged published update
+        env:
+          SAMPLE: ${{ matrix.sample }}
+          MODE: ${{ matrix.mode }}
+        run: node scripts/measure-update-duration.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: update-duration-${{ matrix.runner }}-${{ matrix.sample }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/update-duration-evidence
+          if-no-files-found: error
