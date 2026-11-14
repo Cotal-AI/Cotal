@@ -83,9 +83,6 @@ budget is30–70minutes for the bounded path plus runner queue time, not a measu
 builders need two waves and17 product cells need six waves at that limit. Per-job timeouts imply a
 much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
 timestamps so release owners can use measured durations instead of these estimates.
-Each call also records completed update step receipts as `steps`, with the step name and
-elapsed milliseconds. Connector and integration timings are nested within reconciliation;
-do not add them again to the total. Older releases that emit no receipts have an empty step list.
 
 ## Exclusions
 

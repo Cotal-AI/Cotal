@@ -11,7 +11,6 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
-import { updateStepTimings } from './update-step-timings.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
@@ -305,8 +304,7 @@ export async function matrixCell(options) {
       child.once('close', (exit, signal) => { clearTimeout(timer); resolveCall({ exit, signal, stdout, stderr, timeout: timeoutHit }); });
     });
     const finishedAt = new Date().toISOString();
-    const entry = { label, file, argv, startedAt, finishedAt, elapsedMs: Date.parse(finishedAt) - Date.parse(startedAt), ...result,
-      steps: updateStepTimings(`${result.stdout}\n${result.stderr}`) };
+    const entry = { label, file, argv, startedAt, finishedAt, elapsedMs: Date.parse(finishedAt) - Date.parse(startedAt), ...result };
     report.calls.push(entry);
     transcript.push(`$ ${file} ${argv.join(' ')}\n${result.stdout}${result.stderr}\n[exit ${result.exit}]\n`);
     writeFileSync(join(output, `${id}.log`), transcript.join('\n'), { mode: 0o600 });
