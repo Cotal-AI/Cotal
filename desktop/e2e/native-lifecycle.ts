@@ -30,7 +30,7 @@ export async function nativeLifecycle(binary: string, action: LifecycleAction, e
           const report = JSON.parse(out.trim());
           assert.ok(typeof report.ok === "boolean" && Array.isArray(report.candidates), "candidate census must report its outcome and complete array");
           appendFileSync(join(dirname(env.COTAL_DESKTOP_E2E_NATIVE_LOG), "windows-lifecycle-candidates.jsonl"),
-            `${JSON.stringify({ at: new Date().toISOString(), action, ok: report.ok, appPid, candidates: report.candidates, appCandidates: report.appCandidates, serviceLauncher: report.serviceLauncher })}\n`, { mode: 0o600 });
+            `${JSON.stringify({ at: new Date().toISOString(), action, ok: report.ok, appPid, candidates: report.candidates, appCandidates: report.appCandidates, serviceLauncher: report.serviceLauncher, diagnostics: report.diagnostics })}\n`, { mode: 0o600 });
         } catch (diagnosticError) {
           reject(new Error(`${action}: candidate evidence unavailable: ${diagnosticError}\n${error?.message ?? ""}\n${stderr}\n${out}`));
           return;

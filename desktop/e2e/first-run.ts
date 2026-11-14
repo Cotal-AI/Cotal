@@ -406,7 +406,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
         assert.ok(daemon?.start && daemon.pid === answering.pid && processBirth(daemon.pid) === daemon.start, "fresh answering daemon lifetime before app census");
         const census = await nativeLifecycle(binary, "describe", env, windowsAppPid, { pid: daemon.pid, start: daemon.start });
         writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action: "before-close-window", observation: census })}\n`, { flag: "a" });
-        check(`single app process before close-window: ${JSON.stringify(census.candidates)}`, census.appCandidates?.length === 1 && census.appCandidates[0].pid === windowsAppPid);
+        check(`single app process before close-window: appCandidates=${JSON.stringify(census.appCandidates)}, serviceLauncher=${JSON.stringify(census.serviceLauncher)}`, census.appCandidates?.length === 1 && census.appCandidates[0].pid === windowsAppPid);
       }
       observation = await nativeLifecycle(binary, action, env, process.platform === "win32" ? windowsAppPid : undefined);
     }
