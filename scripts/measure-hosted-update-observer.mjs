@@ -32,6 +32,20 @@ export async function fixtureUrl({ fixture, call, output }) {
   save(join(output, 'fixture-url.json'), { url, sha256: createHash('sha256').update(bytes).digest('hex') });
   return { url, close: () => new Promise(resolve => server.close(resolve)) };
 }
+export async function repairHostedUpdate(context) {
+  const { env, cli, project, output, cotalHome, report, cotal } = context;
+  assert.equal(JSON.parse(readFileSync(join(cotalHome, 'update-recovery.json'), 'utf8')).phase, 'paused', 'repair requires the real failed update state');
+  const repair = await cotal('repair actual paused installation', ['update', '--self'], 600000);
+  const status = await run(process.execPath, [cli, 'daemon', 'status', '--json'], env, project);
+  const observed = status.exit === 0 ? JSON.parse(status.stdout).result : undefined;
+  const result = { command: 'cotal update --self', repair, status, recoveryPresent: existsSync(join(cotalHome, 'update-recovery.json')), managerAnswers: observed?.managers?.find(m => m.space === report.managerHost.space)?.state === 'answering', automatic: observed?.update?.automatic };
+  save(join(output, 'single-command-repair.json'), result);
+  assert.equal(repair.exit, 0, repair.stderr);
+  assert.equal(result.recoveryPresent, false);
+  assert.equal(result.managerAnswers, true);
+  assert.equal(result.automatic, true);
+  return result;
+}
 export async function observeHostedUpdate({ env, pkg, cli, project, output, cotalHome, report }) {
   const startedAt = report.startedAt;
   let count = 0, busy = Promise.resolve(), stopped = false;

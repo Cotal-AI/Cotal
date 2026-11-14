@@ -126,10 +126,10 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        variant: [agent-local, agent-url, empty-manager, no-manager]
+        variant: [empty-manager, no-manager, hosted-scheduler, repair-paused]
         sample: [1, 2]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps: &measurement_steps
       - uses: actions/checkout@v6
         with:
