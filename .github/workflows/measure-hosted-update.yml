@@ -180,6 +180,55 @@ jobs:
           name: hosted-update-${{ matrix.variant }}-${{ matrix.sample }}
           path: ${{ runner.temp }}/hosted-update-evidence
           if-no-files-found: error
+  scope:
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        sample: [1, 2]
+        coordinate:
+          - { runner: ubuntu-24.04, source: '0.164.0' }
+          - { runner: ubuntu-24.04, source: '0.164.5' }
+          - { runner: ubuntu-24.04, source: '0.164.6' }
+          - { runner: macos-15, source: '0.164.7' }
+          - { runner: windows-2022, source: '0.164.7' }
+    runs-on: ${{ matrix.coordinate.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HARNESS_SOURCE }}
+          path: harness
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: harness
+      - if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Measure stock native manual update
+        shell: bash
+        env:
+          VARIANT: no-manager
+          SOURCE_VERSION: ${{ matrix.coordinate.source }}
+          SAMPLE: ${{ matrix.sample }}
+        run: node --import ./harness/node_modules/tsx/dist/loader.mjs scripts/measure-hosted-update.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scope-${{ matrix.coordinate.runner }}-${{ matrix.coordinate.source }}-${{ matrix.sample }}
+          path: ${{ runner.temp }}/hosted-update-evidence
+          if-no-files-found: error
   candidate:
     needs: pack
     strategy:

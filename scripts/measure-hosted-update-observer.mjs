@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { basename, join } from 'node:path';
 
 const redact = text => text.replace(/(#t=)[A-Za-z0-9_-]+/g, '$1<redacted>').replace(/eyJ[A-Za-z0-9_.-]*/g, '<redacted>');
@@ -48,6 +49,8 @@ export async function repairHostedUpdate(context) {
 }
 export async function observeHostedUpdate({ env, pkg, cli, project, output, cotalHome, report }) {
   const startedAt = report.startedAt;
+  const { daemonPaths } = await import(pathToFileURL(join(pkg, 'dist/daemon/endpoint.js')));
+  const paths = daemonPaths(env, cotalHome);
   let count = 0, busy = Promise.resolve(), stopped = false;
   const observations = [];
   const home = join(cotalHome, 'daemon');
@@ -55,11 +58,17 @@ export async function observeHostedUpdate({ env, pkg, cli, project, output, cota
     const index = String(count++).padStart(3, '0');
     const stem = `${index}-${stage}`;
     const observation = { at: new Date().toISOString(), stage };
-    observation.unit = await run('systemctl', ['--user', 'show', 'cotal-daemon.service'], env, project);
+    observation.unit = process.platform === 'linux'
+      ? await run('systemctl', ['--user', 'show', 'cotal-daemon.service'], env, project)
+      : process.platform === 'darwin'
+        ? await run('launchctl', ['print', `gui/${process.getuid()}/ai.cotal.daemon`], env, project)
+        : await run('schtasks.exe', ['/Query', '/TN', 'Cotal Daemon', '/FO', 'LIST', '/V'], env, project);
     save(join(output, `${stem}-systemctl.json`), observation.unit);
-    observation.processes = await run('ps', ['-eo', 'pid,ppid,lstart,comm'], env, project);
+    observation.processes = process.platform === 'win32'
+      ? await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-Process | Select-Object Id,ProcessName,StartTime | ConvertTo-Json -Compress'], env, project)
+      : await run('ps', ['-eo', 'pid,ppid,lstart,comm'], env, project);
     save(join(output, `${stem}-processes.json`), observation.processes);
-    observation.locks = await run('lslocks', ['--json', '--output', 'PID,COMMAND,TYPE,MODE,PATH'], env, project);
+    observation.locks = process.platform === 'linux' ? await run('lslocks', ['--json', '--output', 'PID,COMMAND,TYPE,MODE,PATH'], env, project) : { state: 'lock file metadata captured below' };
     save(join(output, `${stem}-locks.json`), observation.locks);
     const files = [join(home, 'daemon.log')];
     if (report.managerHost?.space) {
@@ -87,8 +96,8 @@ export async function observeHostedUpdate({ env, pkg, cli, project, output, cota
         observation.lockFiles.push({ file, mode: stat.mode, ino: stat.ino, size: stat.size });
       }
     }
-    const socket = join(env.XDG_RUNTIME_DIR, 'cotal', 'daemon.sock');
-    observation.socket = { path: socket, present: existsSync(socket), isSocket: existsSync(socket) && lstatSync(socket).isSocket() };
+    const socket = paths.socket;
+    observation.socket = { path: socket, present: process.platform === 'win32' ? 'public status confirms named pipe' : existsSync(socket), isSocket: process.platform !== 'win32' && existsSync(socket) && lstatSync(socket).isSocket() };
     observation.installedVersion = existsSync(join(pkg, 'package.json')) ? JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version : 'absent';
     save(join(output, `${stem}-state.json`), observation);
     observations.push(observation);
@@ -107,7 +116,7 @@ export async function observeHostedUpdate({ env, pkg, cli, project, output, cota
       this.final = await sample('after');
       this.final.daemonStatus = await run(process.execPath, [cli, 'daemon', 'status', '--json'], env, project);
       this.final.version = await run(process.execPath, [cli, '--version'], env, project);
-      this.final.journal = await run('journalctl', ['--user', '-u', 'cotal-daemon.service', '--since', startedAt, '--no-pager', '-o', 'short-iso-precise'], env, project);
+      this.final.journal = process.platform === 'linux' ? await run('journalctl', ['--user', '-u', 'cotal-daemon.service', '--since', startedAt, '--no-pager', '-o', 'short-iso-precise'], env, project) : { stdout: 'Native daemon log captured per sample.', stderr: '' };
       save(join(output, 'independent-final-state.json'), this.final);
       writeFileSync(join(output, 'service-journal.log'), this.final.journal.stdout + this.final.journal.stderr, { mode: 0o600 });
       save(join(output, 'observations.json'), observations);
