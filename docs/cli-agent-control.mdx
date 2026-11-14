@@ -557,6 +557,17 @@ because the agent is not running or the caller may not control it, its reply car
 reason on one line. A failure after an effect may have started, such as a terminal write the
 runtime rejected, stays `unknown` with exit 3, still shows the manager's reason, and is not retried.
 
+On Windows, stopping a `pty` seat pins its launched root process and takes an operating-system
+snapshot of the descendant subtree that exists when the stop is requested, before any cooperative
+shutdown grace. Every member of that cohort is pinned by its process handle and creation time. If
+a member disappears during capture or its identity is ambiguous, the stop refuses. After the grace
+window, any member that is still running is terminated through its retained handle, independent of
+terminal output. The stop succeeds only after every captured process has exited and the PTY has
+reported its exit; otherwise the manager reports outcome `unknown` (exit 3), keeps the seat's slot
+and never logs `seat reaped:`. This covers the process tree that exists at stop time; descendants
+that detached or were reparented earlier, and children created after the snapshot, are outside that
+claim.
+
 
 ### Managed restart policy
 
