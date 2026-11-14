@@ -6,7 +6,8 @@ permissions:
   contents: read
   actions: read
 env:
-  PRODUCT_SHA: bbee0ea5e74884fe633df223a319628c5d6a6215
+  PRODUCT_SHA: 5b263691de7137e0837542e8f1f9412043f37909
+  NATIVE_BUILD_SHA: bbee0ea5e74884fe633df223a319628c5d6a6215
   SHARED_SHA: d57044a3f5e8821d7ff4427352137d0af3e9b30e
   DO_NOT_TRACK: '1'
   COTAL_TELEMETRY: 'off'
@@ -102,7 +103,7 @@ jobs:
           node packages/seat/scripts/assert-shipped-natives.mjs
           node packages/workspace/scripts/assert-shipped-natives.mjs
         env:
-          NATIVE_SOURCE: ${{ env.PRODUCT_SHA }}
+          NATIVE_SOURCE: ${{ env.NATIVE_BUILD_SHA }}
           SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
           SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
