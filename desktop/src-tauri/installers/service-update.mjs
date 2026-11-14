@@ -13,6 +13,15 @@ process.env.COTAL_SKIP_CONNECTOR_SEED = '1';
 process.env.COTAL_TELEMETRY = 'off';
 const directory = join(process.env.LOCALAPPDATA, 'CotalSetup');
 mkdirSync(directory, { recursive: true });
+let lastStep = 'entry';
+process.on('exit', code => {
+  try {
+    const file = join(directory, 'helper.log');
+    const lines = existsSync(file) ? readFileSync(file, 'utf8').trimEnd().split('\n').slice(-199) : [];
+    lines.push(JSON.stringify({ mode, code, step: lastStep }));
+    writeFileSync(file, `${lines.join('\n')}\n`);
+  } catch { /* Diagnostics must not replace the helper's actual exit status. */ }
+});
 const stateFile = join(directory, 'service-update.json');
 const resultFile = join(directory, 'result.json');
 const messageFile = join(directory, 'message.txt');
@@ -23,6 +32,7 @@ const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0',
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: targetVersion };
 const write = (file, value) => { const temp = `${file}.${process.pid}.tmp`; writeFileSync(temp, `${JSON.stringify(value)}\n`); renameSync(temp, file); };
 const task = action => {
+  lastStep = `task:${action}`;
   try { return JSON.parse(execFileSync(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Action', action], { env, windowsHide: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024 })); }
   catch (error) { throw new Error(`The owned task could not complete ${action}: ${String(error.stderr ?? error.message).trim()}`); }
 };
@@ -33,6 +43,7 @@ let prepared = false;
 let committed = false;
 let paused = false;
 function outcome(code, message, name = code === 0 ? 'updated' : 'refused', activeAgents = 0) {
+  lastStep = `outcome:${code}`;
   message = message.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 1800);
   write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, completedAt: new Date().toISOString() });
   writeFileSync(messageFile, `${message}\r\n`);
@@ -40,6 +51,7 @@ function outcome(code, message, name = code === 0 ? 'updated' : 'refused', activ
   process.exitCode = code;
 }
 async function load() {
+  lastStep = 'load';
   process.argv = [process.execPath, join(root, 'runtime', 'dist', 'cotal.js')];
   process.execArgv = [];
   const get = name => import(pathToFileURL(join(root, 'runtime', 'dist', 'daemon', `${name}.js`)).href);
@@ -47,10 +59,12 @@ async function load() {
   return modules = { endpoint, client, lifetime, paths: endpoint.daemonPaths() };
 }
 async function request(op, commit = false) {
+  lastStep = `request:${op}:${commit}`;
   const id = randomUUID().replaceAll('-', '');
   const pending = modules.client.readLine(socket, op === 'daemon-stop' && !commit ? 70_000 : 25_000);
   socket.write(`${JSON.stringify({ v: 1, id, op, ...(commit ? { commit: true } : {}) })}\n`);
   const response = JSON.parse(await pending);
+  lastStep = `response:${op}:${commit}`;
   if (response.v !== 1 || response.id !== id || typeof response.ok !== 'boolean' || response.event) throw new Error('The pinned service returned an invalid reply.');
   if (!response.ok) {
     const error = new Error(response.error?.message ?? 'The service refused setup.');
@@ -60,10 +74,12 @@ async function request(op, commit = false) {
   return response.result;
 }
 async function absent() {
+  lastStep = 'absent';
   try { const probe = await modules.client.openVerified({ paths: modules.paths, timeoutMs: 1000 }); probe.destroy(); return false; }
   catch (error) { if (error instanceof modules.endpoint.EndpointRefusal && error.code === 'NOT_RUNNING') return true; throw error; }
 }
 async function waitDead() {
+  lastStep = 'wait-dead';
   const deadline = Date.now() + 130_000;
   do {
     // Never connect to a closing listener whose lifetime record may already be empty.
@@ -91,6 +107,7 @@ function census(servicePid) {
   if (foreign.length) throw new Error(`Close programs using this installation before retrying: ${foreign.map(row => `${row.name} (${row.pid})`).join(', ')}. No files were replaced.`);
 }
 async function finish(rollback = false) {
+  lastStep = rollback ? 'rollback' : 'finish';
   state = JSON.parse(readFileSync(stateFile, 'utf8'));
   if (state.schema !== 1 || state.installPath !== root || state.targetVersion !== targetVersion || !['preparing', 'copying', 'ready'].includes(state.phase)) throw new Error('The setup handover is missing, invalid or belongs to another installation. Run the installer again.');
   const native = task('inspect');

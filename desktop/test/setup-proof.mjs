@@ -198,7 +198,7 @@ try {
   }
 } catch (error) { report.failure = error.stack; report.failureObservation = error.observation; process.exitCode = 1; }
 finally {
-  for (const file of ['helper-trace.log', 'hook-trace.log', 'helper.log', 'service-update.json', 'result.json', 'message.txt']) {
+  for (const file of ['helper.log', 'service-update.json', 'result.json', 'message.txt']) {
     const path = join(setupHome, file);
     if (existsSync(path)) writeFileSync(join(output, `setup-${file}`), readFileSync(path));
   }
