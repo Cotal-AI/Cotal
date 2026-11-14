@@ -27,7 +27,11 @@ import {
   type InstalledExtension,
   targetFlags,
   resolveControlTarget,
+  recoveryDisposition,
+  recoveryProcessStartToken,
+  observeUnownedRecovery,
 } from "@cotal-ai/workspace";
+import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
@@ -92,6 +96,8 @@ export interface UpdateRuntime {
   readonly pid: number;
   readonly parentPid: number;
   readonly nodePath: string;
+  now?(): number;
+  recoveryOwnerStart?(pid: number): string | undefined;
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
@@ -234,39 +240,59 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
 }
 
 /** Resume an abandoned replacement before a command or daemon can activate its closure. */
-export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime): Promise<boolean> {
-  const record = readUpdateRecovery();
-  if (!record?.owner || childBinding(rt).kind === "bound") return false;
-  const start = processStartToken(record.owner.pid);
-  if (start !== undefined && start === record.owner.start) return false;
+export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime, startup = false): Promise<boolean> {
+  if (childBinding(rt).kind === "bound" || !readUpdateRecovery()) return false;
   const release = claimUpdateClosureAccess(true);
   try {
-    if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
-    writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
-    const snapshot = snapshotUpdateClosure(record.snapshot);
-    const prefix = rt.installPrefix();
-    const selected = rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
-    const root = selected.stdout.trim();
-    if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
-    const releaseGlobal = rt.claimGlobalUpdate(root);
+    const record = readUpdateRecovery();
+    if (!record) return false;
+    const now = rt.now?.() ?? Date.now();
+    let decision = recoveryDisposition(record, now, rt.recoveryOwnerStart ?? recoveryProcessStartToken);
+    if (decision.action === "wait") {
+      try { observeUnownedRecovery(now); }
+      catch (error) { throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${decision.instruction} Cannot save the first observation: ${message(error)}`, { remedy: "correct access to the Cotal home, then run `cotal update --self`" }); }
+      decision = recoveryDisposition(record, now, rt.recoveryOwnerStart ?? recoveryProcessStartToken);
+    }
+    if (decision.action === "retire") {
+      let retained;
+      try { retained = retainUnusableRecovery(record, now); }
+      catch (error) { throw new CommandFailure("refused", "CONFLICT", `${decision.instruction} Retention could not complete: ${message(error)}`, { remedy: "inspect the recovery records and retained folders in the Cotal home, correct access, then run `cotal update --self`" }); }
+      rt.out(`Retained unusable interrupted-update records in ${retained}; continuing the update.`);
+      return false;
+    }
+    if (startup && (decision.action === "wait" || decision.action === "active" || decision.action === "restore" && record.phase === "paused")) return false;
+    if (decision.action !== "restore") throw new CommandFailure("refused", decision.action === "active" ? "LIFECYCLE_BLOCKED" : decision.action === "wait" ? "CONFLICT" : "DEPENDENCY_UNAVAILABLE", decision.instruction, { remedy: "follow the recovery instruction above, then run `cotal update --self`" });
+    if (!record.owner) return false;
+    const start = processStartToken(record.owner.pid);
+    if (start !== undefined && start === record.owner.start) return false;
     try {
-      checkReleaseArchives(record.previous, rt);
-      const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
-      const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
-      if (installed.status !== 0) throw new Error(failure(installed));
-      const entry = rt.verifyGlobalEntry(root, record.previous);
-      snapshot.restore();
-      const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid) };
-      const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
-      if (reconciled.status !== 0) throw new Error(failure(reconciled));
-      snapshot.discard();
-      clearUpdateRecovery();
-      rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
-      return true;
-    } finally { releaseGlobal(); }
-  } catch (error) {
-    writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
-    throw error;
+      if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
+      writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
+      const snapshot = snapshotUpdateClosure(record.snapshot);
+      const prefix = rt.installPrefix();
+      const selected = rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
+      const root = selected.stdout.trim();
+      if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
+      const releaseGlobal = rt.claimGlobalUpdate(root);
+      try {
+        checkReleaseArchives(record.previous, rt);
+        const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
+        const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+        if (installed.status !== 0) throw new Error(failure(installed));
+        const entry = rt.verifyGlobalEntry(root, record.previous);
+        snapshot.restore();
+        const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid) };
+        const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
+        if (reconciled.status !== 0) throw new Error(failure(reconciled));
+        snapshot.discard();
+        clearUpdateRecovery();
+        rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
+        return true;
+      } finally { releaseGlobal(); }
+    } catch (error) {
+      writeUpdateRecovery({ ...readUpdateRecovery()!, phase: "paused", reason: `interrupted update restore failed: ${message(error)}` });
+      throw error;
+    }
   } finally { release(); }
 }
 

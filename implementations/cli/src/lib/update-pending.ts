@@ -1,4 +1,4 @@
-import { loadExtensionsManifest, readUpdateRecovery, type UpdateRecovery } from "@cotal-ai/workspace";
+import { loadExtensionsManifest, readUpdateRecovery, recoveryDisposition, type UpdateRecovery } from "@cotal-ai/workspace";
 
 const repair = "Run `cotal update --self` to reconcile this installation.";
 
@@ -16,7 +16,7 @@ export function readUpdatePending(current: string): UpdatePending {
   } catch (error) {
     return { kind: "unreadable", source: "receipt", error: error instanceof Error ? error.message : String(error), instruction: repair };
   }
-  if (recovery) return { kind: "receipt", recovery, instruction: `Reconciliation pending: ${repair}` };
+  if (recovery) return { kind: "receipt", recovery, instruction: `Reconciliation pending: ${recoveryDisposition(recovery).instruction}` };
   try {
     const extensions = loadExtensionsManifest().extensions
       .filter(entry => entry.pkg.startsWith("@cotal-ai/") && entry.version !== current)

@@ -461,10 +461,9 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 
 async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
-  // A paused update already failed its restoration and waits for `cotal update --self`. Trying it
-  // again on every service restart would stop the daemon each time. The daemon starts instead:
-  // status names the repair, and nothing activates or reconciles until the repair succeeds.
-  if (readUpdateRecovery()?.phase !== "paused" && await recoverInterruptedUpdate()) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
+  // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
+  if (await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;

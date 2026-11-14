@@ -31,6 +31,7 @@ export * from "./output.js";
 export * from "./local-write.js";
 export * from "./preferences.js";
 export * from "./updates.js";
+export * from "./update-recovery.js";
 export * from "./update-closure.js";
 export * from "./update-check.js";
 export * from "./chat-name.js";
