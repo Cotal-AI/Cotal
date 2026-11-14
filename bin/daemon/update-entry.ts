@@ -1,15 +1,16 @@
 /** The binary composes machine-daemon custody with the stock package updater. */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
-import { update, updateRuntime, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
+import { update, updateRuntime, localUpdateManagers, readManagerContinuity, updateManagerPin, updateInstalledEntry } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
+import { daemonServeArgv, installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
@@ -42,6 +43,33 @@ const composed: Command = { ...command, async run(args) {
   }, async preflightReplacement() {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
+  }, async targetPreinstall(entry, flags) {
+    const selectors = Object.fromEntries(Object.entries(flags).filter(([key, value]) => ["space", "server", "creds", "on"].includes(key) && typeof value === "string"));
+    const request = JSON.stringify({ v: 1, installedEntry: realpathSync(updateInstalledEntry()), daemonArgv: daemonServeArgv(undefined), flags: selectors });
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const child = spawn(process.execPath, [entry, request], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "", stderr = "", oversized = false;
+      const collect = (chunk: Buffer, stream: "stdout" | "stderr") => {
+        if (stream === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
+        if (stdout.length + stderr.length > 1024 * 1024) { oversized = true; child.kill("SIGTERM"); }
+      };
+      child.stdout.on("data", chunk => collect(chunk, "stdout"));
+      child.stderr.on("data", chunk => collect(chunk, "stderr"));
+      const timer = setTimeout(() => child.kill("SIGTERM"), 120_000);
+      child.once("error", error => { clearTimeout(timer); reject(error); });
+      child.once("close", status => { clearTimeout(timer); if (oversized) reject(new Error("target pre-install output exceeded its limit")); else resolve({ status, stdout, stderr }); });
+    });
+    const lines = result.stdout.split("\n");
+    const receipts = lines.filter(line => line.startsWith("COTAL_PREINSTALL_RESULT "));
+    const output = lines.filter(line => !line.startsWith("COTAL_PREINSTALL_RESULT ")).join("\n");
+    if (output) process.stdout.write(output);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.status !== 0) throw new Error("target pre-install checks refused");
+    if (receipts.length !== 1) throw new Error("target pre-install checks returned no unique result");
+    const evidence = JSON.parse(receipts[0]!.slice("COTAL_PREINSTALL_RESULT ".length)) as { v?: unknown; daemonObserved?: unknown; hostedSpaces?: unknown };
+    if (evidence.v !== 1 || typeof evidence.daemonObserved !== "boolean" || !Array.isArray(evidence.hostedSpaces) || evidence.hostedSpaces.some(space => typeof space !== "string")) throw new Error("target pre-install checks returned invalid evidence");
+    daemonObserved = evidence.daemonObserved;
+    hostedSpaces = evidence.hostedSpaces as string[];
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     if (!daemonObserved) return async () => {};
     const paths = daemonPaths();

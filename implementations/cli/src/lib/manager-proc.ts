@@ -149,10 +149,10 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
  *  variable names the space it serves, and one it reads for another space is not a manager of this one.
  *  A supervisor whose environment cannot be read or names no space counts, and a process table that
  *  cannot be listed proves nothing. */
-export function supervisorMayServe(space: string): boolean {
+export function supervisorMayServe(space: string, installedEntry?: string): boolean {
   const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
   if (ps.error || ps.status !== 0) return true;
-  const entry = thisCliEntry();
+  const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
   return ps.stdout.split("\n").some((line) => {
     const row = /^\s*(\d+)\s+(.*)$/.exec(line);
     if (!row || !commandIsCotalSupervisor(row[2]!)) return false;

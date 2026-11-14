@@ -98,7 +98,10 @@ function unprovenManagerEntry(pid: number, argv: readonly string[], cwd: string 
 }
 
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
-export function localUpdateManagers(flags: { space?: unknown; server?: unknown; on?: unknown } = {}): UpdateManager[] {
+export function localUpdateManagers(
+  flags: { space?: unknown; server?: unknown; on?: unknown } = {},
+  installedEntry: string = entryScript(),
+): UpdateManager[] {
   if (process.platform !== "linux") throw new Error("install-wide Manager process census is supported only on Linux");
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
@@ -153,7 +156,7 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
       if (commandIsCotalSupervisor(command) || /(?:^|\s)__machine-manager(?:\s|$)/.test(command)) pids.add(Number(entry));
     }
   }
-  const ownEntry = realpathSync(entryScript());
+  const ownEntry = realpathSync(installedEntry);
   const result = new Map<string, UpdateManager>();
   for (const pid of pids) {
     if (process.platform === "linux" && process.getuid) {

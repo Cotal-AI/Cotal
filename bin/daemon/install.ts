@@ -440,19 +440,19 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
 }
 
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
-export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string): boolean {
+export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): boolean {
   try { lstatSync(unitReceiptFile(paths)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  installedDaemonIdentity(paths, daemonHome);
+  installedDaemonIdentity(paths, daemonHome, expectedArgv);
   return true;
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; current: string } {
-  return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; current: string } {
+  return recordedDaemonIdentity(recordedUnit(paths, daemonHome), expectedArgv);
 }
 
-function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; current: string } {
+function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>, expectedArgv?: readonly string[]): { same: boolean; installed: string; current: string } {
   const bytes = readFileSync(receipt.unitPath);
   const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
   let argv: string[];
@@ -469,8 +469,8 @@ function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUni
     const args = decode(/<Arguments>([^<]*)<\/Arguments>/.exec(text)?.[1] ?? "");
     argv = [executable, ...[...args.matchAll(/"([^"]*)"|(\S+)/g)].map(match => match[1] ?? match[2]!)];
   }
-  const expected = daemonServeArgv(receipt.daemonHome);
-  const coordinate = (args: string[]) => {
+  const expected = expectedArgv ?? daemonServeArgv(receipt.daemonHome);
+  const coordinate = (args: readonly string[]) => {
     const daemon = args.indexOf("daemon");
     const entry = daemon >= 2 ? args[daemon - 1]! : args[0]!;
     return { executable: args[0], entry };

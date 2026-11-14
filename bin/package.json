@@ -26,6 +26,7 @@
     "directory": "bin"
   },
   "type": "module",
+  "cotalPreinstall": "./dist/update-preinstall.js",
   "bin": {
     "cotal": "./dist/cotal.js"
   },

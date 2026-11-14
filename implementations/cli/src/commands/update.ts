@@ -29,6 +29,7 @@ import {
   resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { readUpdatePending } from "../lib/update-pending.js";
+import { stageUpdateTarget } from "../lib/update-target-stage.js";
 import { snapshotUpdateClosure, type UpdateSnapshot } from "../lib/update-snapshot.js";
 import { EXT_UPDATE_PARENT_ENV } from "./ext.js";
 import { claimExtensionUpdatePass } from "../lib/ext-mutation.js";
@@ -62,6 +63,7 @@ import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
 import { localUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+export { entryScript as updateInstalledEntry } from "../seed/paths.js";
 export { localUpdateManagers } from "../lib/update-managers.js";
 export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
 import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
@@ -114,6 +116,8 @@ export interface UpdateRuntime {
   prepareReplacement?(): Promise<() => Promise<void>>;
   /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
   preflightReplacement?(): Promise<void>;
+  /** Run the verified staged target's read-only checks against this installed origin. */
+  targetPreinstall?(entry: string, flags: Record<string, unknown>): Promise<void>;
   claimGlobalUpdate(root: string): () => void;
   selfArgv(): string[];
   /** Whether this CLI runs from a source checkout, where `--self` installs a separate global copy. */
@@ -641,7 +645,7 @@ export async function reportRunningManagers(
   }
 }
 
-export async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+export async function readManagerContinuity(flags: Record<string, unknown>, installedEntry?: string): Promise<"none" | "legacy"> {
   // `--on` names the manager whose custody this install carries. An owner with several live
   // managers on a user-auth mesh (one per machine, say) gets the exchange's selection refusal
   // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,
@@ -660,8 +664,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     const server = typeof flags.server === "string" ? flags.server : undefined;
     let peek: MeshTarget | undefined;
     try {
-      offline = space ? [] : (await pruneStaleMeshes(server)).offline;
-      peek = resolveMeshTarget(process.cwd(), { server, space, offline });
+      offline = space || installedEntry !== undefined ? [] : (await pruneStaleMeshes(server)).offline;
+      peek = resolveMeshTarget(process.cwd(), { server, space, offline, ...(installedEntry === undefined ? {} : { readOnly: true }) });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
       // A space prepared here that never started (`cotal setup --configure-only`, `space create`)
@@ -686,7 +690,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     // install is untouched by replacing this one, so it is no custody here, the same as a manager
     // that runs on another machine.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
-      if (!supervisorMayServe(peek.space)) {
+      if (!supervisorMayServe(peek.space, installedEntry)) {
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }
@@ -861,6 +865,35 @@ function assertConfigAncestorProtected(): void {
 }
 
 async function upgradeAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>): Promise<number> {
+  let staged: ReturnType<typeof stageUpdateTarget>;
+  try { staged = stageUpdateTarget(targetVersion, rt); }
+  catch (error) {
+    recordUpdateDeferral(targetVersion, "waiting for verified target release", true);
+    rt.err(`target release staging refused: ${message(error)}; no global install was attempted`);
+    return 1;
+  }
+  try {
+    if (staged.entry !== undefined) {
+      rt.out(`pre-install checks: target cotal-ai@${targetVersion}`);
+      if (!rt.targetPreinstall) {
+        rt.err("target pre-install checks cannot run from this updater composition; no global install was attempted");
+        return 1;
+      }
+      try { await rt.targetPreinstall(staged.entry, target); }
+      catch (error) {
+        recordUpdateDeferral(targetVersion, "target pre-install checks refused");
+        rt.err(`target cotal-ai@${targetVersion} pre-install refused: ${refusal(error)}`);
+        return 1;
+      }
+    } else {
+      rt.out(`pre-install checks: installed cotal-ai@${current}; target cotal-ai@${targetVersion} declares no pre-install entry`);
+    }
+    return await replaceAndReconcile(targetVersion, current, rt, target, staged.entry !== undefined, staged.npmCache);
+  } finally { staged.dispose(); }
+}
+
+async function replaceAndReconcile(targetVersion: string, current: string, rt: UpdateRuntime, target: Record<string, unknown>, targetChecked: boolean, npmCache: string): Promise<number> {
+  if (!targetChecked) {
   try { await rt.preflightReplacement?.(); }
   catch (error) {
     recordUpdateDeferral(targetVersion, "installed daemon preflight refused");
@@ -874,9 +907,9 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
     return 1;
   }
+  }
 
   try {
-    checkReleaseArchives(targetVersion, rt);
     checkInstalledClosure(targetVersion, rt);
     // A previous generation must remain downloadable and verified before replacement begins.
     checkReleaseArchives(current, rt);
@@ -980,7 +1013,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
   recordUpdateReplacement(targetVersion);
   writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path });
-  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json"]);
+  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, "--offline", "--cache", npmCache, `cotal-ai@${targetVersion}`, "--json"]);
   const installed = await rt.spawnGlobal(
     root,
     "install",
