@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const base = new URL('../src-tauri/installers/', import.meta.url);
+test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
+  execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
+  const source = readFileSync(new URL('installer.nsi', base), 'utf8');
+  assert.ok(source.indexOf('; A newer installer owns service preparation') < source.indexOf('  reinst_uninstall:'));
+  assert.match(source, /\$WixMode <> 1\n  \$\{AndIf\} \$R0 = 1\n    Abort/);
+  const upstream = readFileSync(new URL('tauri-2.12.4.nsi', base), 'utf8');
+  assert.equal((source.match(/StrCpy \$UpdateMode 1/g) ?? []).length, (upstream.match(/StrCpy \$UpdateMode 1/g) ?? []).length);
+  const pre = source.indexOf('!insertmacro NSIS_HOOK_PREINSTALL');
+  assert.ok(pre < source.indexOf('!insertmacro CheckIfAppIsRunning', pre));
+  assert.ok(pre < source.indexOf('File "${MAINBINARYSRCPATH}"'));
+});
+test('setup owns task suppression without task termination and persists caller-readable results', () => {
+  const hooks = readFileSync(new URL('hooks.nsh', base), 'utf8');
+  const task = readFileSync(new URL('service-task.ps1', base), 'utf8');
+  const helper = readFileSync(new URL('service-update.mjs', base), 'utf8');
+  assert.match(hooks, /MB_RETRYCANCEL/);
+  assert.match(hooks, /SetErrorLevel \$CotalCode/);
+  assert.match(hooks, /setup-node\.exe/);
+  assert.doesNotMatch(task, /Stop-Process|Stop-ScheduledTask|\/End|\.Stop\(/i);
+  assert.match(task, /\$task\.Enabled = \$false/);
+  assert.match(task, /GetInstances\(0\)\.Count/);
+  assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));
+  assert.ok(helper.indexOf("task('disable')") < helper.indexOf("await request('daemon-stop', true)"));
+  assert.match(helper, /'started-unconfirmed'/);
+  for (const field of ['schema', 'outcome', 'code', 'message', 'activeAgents', 'fromVersion', 'toVersion', 'completedAt']) assert.ok(helper.includes(field));
+});

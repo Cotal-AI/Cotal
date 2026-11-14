@@ -1,0 +1,123 @@
+name: Windows setup service proof
+on:
+  push:
+    branches: [measure/win-setup-keeps-service]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Stamp disposable proof version
+        run: node desktop/test/setup-candidate-version.mjs
+      - name: Build stock Windows native bindings
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
+      - run: pnpm --filter cotal-ai seeded-connectors
+      - run: pnpm --dir desktop prepare:runtime
+      - run: pnpm --dir desktop check:runtime
+      - run: pnpm --dir desktop exec tauri build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-candidate
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+  native:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        cell: [running, occupied, stopped, absent, locker, early, interactive, occupied-ui, interrupted]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build stock bindings for fixture process
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup-candidate
+          path: candidate
+      - name: Verify published installers and fixture broker
+        shell: pwsh
+        env:
+          RELEASE_METADATA_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          foreach($version in @('0.164.7','0.157.0')) {
+            $name="Cotal_${version}_x64-setup.exe"
+            $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} "https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v$version"
+            $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+            if($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw 'Published asset digest unavailable'}
+            $expected=$Matches[1]
+            $path=Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest $asset[0].browser_download_url -OutFile $path
+            if((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected){throw 'Published installer digest mismatch'}
+          }
+          $version='2.12.2'
+          $zip=Join-Path $env:RUNNER_TEMP 'nats.zip'
+          Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $zip
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
+          (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
+          $candidate=@(Get-ChildItem candidate/*-setup.exe)
+          if($candidate.Count -ne 1){throw 'Candidate not singular'}
+          "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
+      - name: Exercise actual installed setup
+        run: node desktop/test/setup-proof.mjs ${{ matrix.cell }}
+      - name: Existing Windows service lifecycle suites
+        if: always() && matrix.cell == 'absent'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $suites=@('daemon-ownership-imports','daemon-ownership-win32','daemon-install-native','daemon-install-entry','daemon-owned-uninstall','daemon-transport','desktop-setup')
+          foreach($suite in $suites) {
+            pnpm exec tsx "bin/smoke/$suite.smoke.ts"
+            if($LASTEXITCODE -ne 0){throw "$suite failed"}
+          }
+          $env:COTAL_TEST_REAL_SERVICE='1'
+          node bin/smoke/daemon-install-real.smoke.mjs
+          if($LASTEXITCODE -ne 0){throw 'real installed service lifecycle failed'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: setup-proof-${{ matrix.cell }}
+          path: |
+            ${{ runner.temp }}/setup-proof/
+            ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error

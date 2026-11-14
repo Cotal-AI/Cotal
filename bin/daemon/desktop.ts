@@ -12,6 +12,7 @@ import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
 import { desktopApplicationPath } from "./desktop-path.js";
+import { assertDesktopSetupComplete } from "./desktop-setup.js";
 
 export type DesktopRequest =
   | { readonly op: "update-settings"; readonly auto?: boolean; readonly notify?: boolean }
@@ -119,6 +120,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       const assets = release.assets.filter((asset: { name?: unknown; browser_download_url?: unknown }) => typeof asset.name === "string" && typeof asset.browser_download_url === "string").map((asset: { name: string; browser_download_url: string }) => ({ name: asset.name, url: asset.browser_download_url }));
       emit({ v: 1, event: "result", ok: true, result: { assets } }); return;
     }
+    if (req.op === "status" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     const { paths, home } = opts.resolveTarget();
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
@@ -182,7 +184,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
-    const message = e instanceof CommandFailure && (req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
+    const message = e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
       : code === "NOT_RUNNING" ? "The daemon is not running. Install its background service first."
       : e instanceof CommandFailure && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING" ? "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use \`cotal daemon status\` for diagnostics."
       : code === "NO_RUNTIME_DIR" ? "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user."

@@ -67,7 +67,8 @@
       "nsis": {
         "installMode": "currentUser",
         "startMenuFolder": "Cotal",
-        "installerHooks": "installers/hooks.nsh"
+        "installerHooks": "installers/hooks.nsh",
+        "template": "installers/installer.nsi"
       },
       "wix": {
         "template": "installers/main.wxs"
