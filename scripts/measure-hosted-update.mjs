@@ -73,6 +73,7 @@ else if (variant !== 'no-manager') options['stop-agents'] = 'true';
 if (variant === 'agent-url') options['measure-url'] = 'true';
 if (variant === 'hosted-scheduler') options.method = 'scheduler';
 if (variant === 'repair-paused') options['measure-repair'] = 'true';
+if (process.env.FIXED_TARGET === '1') Object.assign(options, { candidate: join(process.env.RUNNER_TEMP, 'packed-target'), direction: 'B', 'expected-target': '0.164.9' });
 if (variant === 'main-candidate') Object.assign(options, { candidate: join(process.env.RUNNER_TEMP, 'packed-target'), direction: 'B', source: '0.164.8', 'expected-target': '0.164.9' });
 const report = await matrixCell(options);
 writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
