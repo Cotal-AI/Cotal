@@ -70,6 +70,31 @@ curl -fsSL https://get.cotal.ai | sh -s -- --version <target-version> --no-setup
 If the original installation used custom locations, supply those same locations again.
 See [Install Cotal](installation.mdx) for installer options and PATH checks.
 
+### Windows desktop installation
+
+Run the newer Windows setup program over the existing desktop installation. Setup refuses
+before replacing application files while its service hosts an agent or another program uses
+its bundled runtime. Stop those agents or close the named program, then choose Retry.
+The service's hosted launch fence stays held until shutdown, so another hosted agent cannot
+start between that check and the stop. Independently launched processes are only observed,
+not fenced against later launches.
+
+Setup disables the owned scheduled task during replacement. A service that was running is
+started from the new files and checked for readiness. An installed, stopped service stays
+stopped. Setup does not install a service when none existed. Silent setup returns nonzero
+when preparation is refused or startup is not confirmed. A readiness timeout means the files
+were updated and startup was requested, not that the update failed.
+
+The latest result is in `%LOCALAPPDATA%\CotalSetup\result.json`; its `message` is also written
+as one line in `message.txt` beside it. An interrupted replacement keeps the task disabled.
+Run the same setup program again to finish it. Start service refuses an unfinished replacement
+rather than loading mixed files. Early desktop services before 0.157.8 have no graceful stop
+request. After stopping their agents, use their bundled CLI's `cotal daemon uninstall --yes`,
+then run setup again and install the service if needed.
+
+The guarded route applies to a newer-version NSIS setup. Same-version maintenance, downgrades
+and MSI installation keep their existing behavior.
+
 ### npm installation
 
 For an npm installation, run:
