@@ -138,6 +138,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert.equal(workflow.jobs['scheduler-proof'].strategy, undefined, 'narrow proof is one runner, not a matrix');
   assert(workflow.jobs['scheduler-proof'].steps.some(step => step.run?.includes('--source 0.160.7 --layout installer --state daemon --method scheduler')));
   for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name === 'next-release-macos') { assert(job.if.startsWith("github.event_name == 'release'")); continue; }
     if (name !== 'scheduler-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[scheduler-only]')"), `${name} could run during scheduler proof`);
     if (name !== 'installer-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[installer-only]')"), `${name} could run during installer proof`);
   }
@@ -165,7 +166,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
     if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
-    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
+    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
     visiting.delete(name);
@@ -247,6 +248,47 @@ test('candidate registry configuration removes only unchanged owned bytes and pr
   const other = mkdtempSync('/var/tmp/upgrade-matrix/npmrc-link-');
   symlinkSync(file, join(other, '.npmrc'));
   assert.throws(() => baseline.configureCandidateRegistry(other, 'http://127.0.0.1:3'), /regular file/);
+});
+
+test('Windows policy registry exposes newer metadata but can never supply an installation', async () => {
+  const overlay = await baseline.policyRegistry('0.164.7');
+  try {
+    const value = await (await fetch(overlay.url + '/cotal-ai')).json();
+    assert.equal(value['dist-tags'].latest, '0.164.7');
+    assert.equal(value.versions['0.164.7'].dist, undefined);
+    assert.equal((await fetch(overlay.url + '/cotal-ai/-/cotal-ai-0.164.7.tgz')).status, 404);
+    assert.equal((await fetch(overlay.url + '/cotal-ai', { method: 'PUT' })).status, 405);
+  } finally { assert((await overlay.close()).length >= 3); }
+});
+
+test('real product cache refresh requires success checkedAt older than one day, not merely two hours', async () => {
+  const root = mkdtempSync('/var/tmp/upgrade-matrix/windows-tick-cache-');
+  const home = join(root, 'home'), cotal = join(home, '.cotal');
+  mkdirSync(cotal, { recursive: true, mode: 0o700 });
+  const overlay = await baseline.policyRegistry('0.164.7');
+  const script = `import {checkForUpdate} from ${JSON.stringify(new URL('../packages/workspace/dist/update-check.js', import.meta.url).href)};console.log(JSON.stringify(await checkForUpdate()));`;
+  const run = () => new Promise((resolve, reject) => {
+    const env = { ...process.env, HOME: home, COTAL_HOME: cotal, XDG_CONFIG_HOME: join(home, 'config'), npm_config_registry: overlay.url, npm_config_cache: join(root, 'cache') };
+    delete env.COTAL_NO_UPDATE_CHECK;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
+    child.once('error', reject); child.once('close', exit => { if (exit !== 0) reject(new Error(stderr)); else resolve(JSON.parse(stdout)); });
+  });
+  try {
+    const now = Date.now(), initial = { v: 1, latest: '0.164.7', checkedAt: now - 7200000, firstSeenAt: now - 7200000, attemptedAt: now - 7200000 };
+    writeFileSync(join(cotal, 'update-check.json'), JSON.stringify(initial));
+    assert.deepEqual(await run(), initial, 'two-hour success cache is intentionally reused');
+    writeFileSync(join(cotal, 'update-check.json'), JSON.stringify({ ...initial, checkedAt: now - 25 * 3600000 }));
+    const refreshed = await run();
+    assert.equal(refreshed.latest, '0.164.7'); assert(refreshed.attemptedAt >= now); assert(refreshed.checkedAt >= now);
+    assert.equal(refreshed.firstSeenAt, initial.firstSeenAt);
+  } finally { await overlay.close(); }
+});
+
+test('Windows baseline admission cannot run native code on persistent or non-Windows host', async () => {
+  if (process.platform === 'win32' && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted') return;
+  await assert.rejects(baseline.matrixCell({ source: '0.164.6', layout: 'npm', state: 'daemon', method: 'scheduler', 'windows-policy-baseline': 'true' }), /requires hosted published/);
 });
 
 test('published installer override requires explicit source/hash and cannot enter candidate tiers', async () => {

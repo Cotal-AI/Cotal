@@ -110,6 +110,29 @@ killed-before-result controls in separate disposable jobs, one at a time, with f
 disabled. It reuses a pinned candidate artifact and verifies its archive digest and source manifest
 without rebuilding. A failed control cannot suppress the other or share its native custody.
 
+## Observe Windows baseline facts
+
+`[windows-baseline-only]` admits one `windows-2022` job. It installs the unchanged published
+0.164.6 CLI and native daemon, enables automatic-update preferences, then observes a normal timer
+check and the recorded Windows refusal. A labelled loopback registry advertises 0.164.7 metadata
+only. It serves no package archive and cannot install that version. Clock sidecars and tick status
+show what the native daemon observed, rather than inferring a refusal from its initial status.
+
+Separate native probes record a demand-started one-shot task's action PID, creation identity,
+instance state and engine PID before and after termination, and after task deletion while its
+program runs. Another probe measures an inherited exclusive-lock handle while the runner dies
+and its child stays alive, then after the child exits. These are observed platform facts, not a
+claim that an updater can safely recover. Each probe acts only on its own identity-checked task
+or process. An earlier failed probe does not suppress the remaining cells.
+
+## Check the next published release
+
+On releases after 0.164.6, two isolated `macos-15` cells start from published 0.164.6. One installs
+the service and observes the next public version through launchd with `--published-launchd true`.
+The other upgrades through the script fetched from `https://get.cotal.ai` itself, with no script
+or candidate override. Both resolve the public target at run time. They do not run in a scoped
+Windows baseline push.
+
 ## Keep desktop custody separate
 
 The Linux desktop-beside-CLI job uses the existing v0.164.2 release workflow's desktop package,

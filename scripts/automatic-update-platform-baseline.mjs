@@ -124,6 +124,23 @@ export function configureCandidateRegistry(home, registry) {
     else unlinkSync(path);
   };
 }
+export async function policyRegistry(version) {
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  const requests = [];
+  const server = createServer(async (request, response) => {
+    try {
+      const path = new URL(request.url, 'http://localhost').pathname;
+      requests.push({ at: new Date().toISOString(), method: request.method, path });
+      if (request.method !== 'GET') { response.writeHead(405).end(); return; }
+      if (decodeURIComponent(path) === '/cotal-ai') {
+        const body = { name: 'cotal-ai', 'dist-tags': { latest: version }, versions: { [version]: { name: 'cotal-ai', version } } };
+        response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+      } else { response.writeHead(404).end('policy observation only; no package archive or installation is served'); }
+    } catch (error) { response.writeHead(500).end(String(error)); }
+  });
+  await new Promise((done, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', done); });
+  return { url: `http://127.0.0.1:${server.address().port}`, close: async () => { await new Promise(done => server.close(done)); return requests; } };
+}
 function npmCommand() {
   if (process.platform !== 'win32') return ['npm', []];
   const cli = join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
@@ -148,9 +165,13 @@ export async function matrixCell(options) {
   if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
   if (options['first-install'] === 'true') assert(publishedInstaller && options['installer-setup'] === 'true' && state === 'fresh' && source === 'latest', 'first install requires latest fresh fixed-script setup');
   const launchdProof = options['launchd-proof'];
-  if (launchdProof) assert(hosted && process.platform === 'darwin' && options.candidate && options.direction === 'A' && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A scheduler');
+  const publishedLaunchd = options['published-launchd'] === 'true';
+  const windowsPolicy = options['windows-policy-baseline'] === 'true';
+  if (publishedLaunchd) assert(!options.candidate && source === '0.164.6' && launchdProof === 'transition', 'published launchd proof requires released 0.164.6 transition');
+  if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && options.direction === 'A') && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A or published scheduler');
+  if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? ''].filter(Boolean).join('-');
+  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
   const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
   const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   const omit = exclusion({ layout, method, state });
@@ -246,6 +267,7 @@ export async function matrixCell(options) {
     report.target = JSON.parse(target.stdout);
     report.resolvedBeforeCell = report.target;
     report.source = source === 'latest' ? report.target : source;
+    if (publishedLaunchd) assert.notEqual(report.target, report.source, 'next published release is not available yet');
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
     if (options.candidate) {
       overlay = await candidateRegistry(resolve(options.candidate), options.direction ?? 'B', report.registry);
@@ -327,12 +349,22 @@ export async function matrixCell(options) {
         setTimeout(releaseHolder, 2500);
       }
     }
+    if (windowsPolicy) {
+      report.tier = 'published product; metadata-only newer-version policy probe';
+      report.policyBaseline = { installed: report.source, publicLatest: report.target, advertised: '0.164.7', registry: 'metadata-only newer visible; no candidate product or archive served' };
+      assert.equal(report.source, '0.164.6');
+      overlay = await policyRegistry(report.policyBaseline.advertised);
+      env.npm_config_registry = overlay.url;
+      restoreRegistry = configureCandidateRegistry(home, overlay.url);
+      report.policyBaseline.inventoryBefore = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)) };
+    }
     if (state === 'daemon') {
       const planned = ok(await daemon('native install plan', ['daemon', 'install', '--dry-run', '--json']), 'native plan');
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
       ok(await cotal('set automatic updates before native service', ['update', '--auto', launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      if (windowsPolicy) report.policyBaseline.settingsBeforeInstall = json(join(cotalHome, 'update-settings.json'));
       installedService = true;
       ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
       receipt = json(join(report.daemonHome, 'service-unit.json'));
@@ -366,7 +398,7 @@ export async function matrixCell(options) {
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
     report.targetBeforeAction = report.target;
     report.versionChanging = report.source !== report.target;
-    if (!options.candidate) {
+    if (!options.candidate && !windowsPolicy) {
       report.target = JSON.parse(ok(await npmCall('resolve public latest immediately before action', ['view', 'cotal-ai@latest', 'version', '--json']), 'latest before action').stdout);
       report.versionChanging = report.source !== report.target;
     }
@@ -383,18 +415,45 @@ export async function matrixCell(options) {
     else if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
     else if (method === 'installer') update = await installer(report.target, true);
     else {
-      if (launchdProof !== 'off-before-tick') assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
-      else check('automatic updates disabled before first native tick', report.daemonBefore.update.automatic === false, report.daemonBefore.update);
+      if (launchdProof !== 'off-before-tick' && !windowsPolicy) assert.equal(report.daemonBefore.update.automatic, true, report.daemonBefore.update.lastResult);
+      else if (launchdProof === 'off-before-tick') check('automatic updates disabled before first native tick', report.daemonBefore.update.automatic === false, report.daemonBefore.update);
       // Wait for the daemon's normal timer to populate the registry cache. Do not invoke an updater.
       for (let i = 0; i < 60 && !existsSync(join(cotalHome, 'update-check.json')); i++) await delay(1000);
       assert(existsSync(join(cotalHome, 'update-check.json')), 'daemon normal registry check created cache');
       for (const [name, fields] of [['update-check.json', ['checkedAt', 'firstSeenAt', 'attemptedAt']], ['update-attempt.json', ['next']]]) {
         const file = join(cotalHome, name), before = json(file), after = { ...before };
         for (const field of fields) after[field] = Date.now() - 7200000;
+        if (windowsPolicy && name === 'update-check.json') after.checkedAt = Date.now() - 25 * 3600000;
         save(join(output, `${id}-${name}-clock.json`), { before, after });
         save(file, after);
       }
-      if (launchdProof === 'off-before-tick') {
+      if (windowsPolicy) {
+        const agedAt = Date.now(), observations = [];
+        const deadline = Date.now() + 90000;
+        let tick;
+        do {
+          await delay(5000);
+          const cached = json(join(cotalHome, 'update-check.json'));
+          const observed = await daemon('Windows scheduler tick observation', ['daemon', 'status', '--json']);
+          observations.push({ at: new Date().toISOString(), cached, status: observed });
+          if (cached.attemptedAt >= agedAt && cached.latest === report.policyBaseline.advertised && observed.exit === 0) { tick = JSON.parse(observed.stdout).result; break; }
+        } while (Date.now() < deadline);
+        save(join(output, `${id}-tick-observations.json`), observations);
+        check('normal native scheduler tick refreshed newer registry cache', Boolean(tick), observations);
+        check('automatic preference enabled before native installation', report.policyBaseline.settingsBeforeInstall.auto === true, report.policyBaseline.settingsBeforeInstall);
+        check('recorded scheduler refusal names Windows', tick?.update?.automatic === false && /Automatic installation is unavailable on Windows/.test(tick?.update?.lastResult ?? ''), tick?.update);
+        check('native daemon remains ready at unchanged published generation', tick?.state === 'ready' && tick.version === report.source && tick.pid === report.daemonBefore.pid, tick);
+        check('published installation remains unchanged', json(join(pkg, 'package.json')).version === report.source, report.source);
+        const inventoryAfter = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)) };
+        check('published package and CLI bytes remain unchanged', JSON.stringify(inventoryAfter) === JSON.stringify(report.policyBaseline.inventoryBefore), { before: report.policyBaseline.inventoryBefore, after: inventoryAfter });
+        const publicStatus = await cotal('Windows baseline public status', ['status']);
+        check('public status succeeds after recorded policy refusal', publicStatus.exit === 0, publicStatus);
+        check('no paused recovery record', !existsSync(join(cotalHome, 'update-recovery.json')), null);
+        report.policyBaseline.observed = tick;
+        report.policyBaseline.refusal = tick?.update?.lastResult;
+        report.result = report.assertions.every(row => row.passed) ? 'passed' : 'failed';
+        return report;
+      } else if (launchdProof === 'off-before-tick') {
         await delay(70000);
         await launchdObserver.sample();
         const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };

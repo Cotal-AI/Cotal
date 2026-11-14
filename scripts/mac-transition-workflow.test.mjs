@@ -14,9 +14,9 @@ test('transition mode enables only the three focused jobs and excludes every old
   assert.deepEqual(Object.keys(workflow.jobs).filter(name => name.startsWith('transition-')), names);
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (names.includes(name)) {
-      assert.equal(job.if, "!contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
+      assert.equal(job.if, "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
     } else {
-      assert(job.if.includes("!contains(github.event.head_commit.message, '[mac-transition-only]')"), name);
+      assert(job.if.includes("!contains(github.event.head_commit.message, '[mac-transition-only]')") || name === 'next-release-macos' && job.if.startsWith("github.event_name == 'release'"), name);
     }
   }
   assert.equal(native.needs, undefined);
@@ -32,6 +32,7 @@ test('controls run only the two unfinished cells with independent disposable cus
   assert.equal(job.strategy['max-parallel'], 1);
   assert.deepEqual(job.strategy.matrix, { mode: ['off-before-tick', 'killed-before-result'] });
   for (const [name, other] of Object.entries(workflow.jobs)) {
+    if (name === 'next-release-macos') { assert(other.if.startsWith("github.event_name == 'release'")); continue; }
     assert(other.if.includes(name === 'mac-controls-proof'
       ? "contains(github.event.head_commit.message, '[mac-controls-only]')"
       : "!contains(github.event.head_commit.message, '[mac-controls-only]')"), name);
@@ -51,6 +52,34 @@ test('controls run only the two unfinished cells with independent disposable cus
   const upload = uses(job, 'actions/upload-artifact')[0];
   assert.equal(upload.if, 'always()');
   assert.equal(upload.with.name, 'mac-control-${{ matrix.mode }}');
+});
+
+test('Windows push admits only the three native baseline steps and next-release Mac cells cannot run on that push', () => {
+  const job = workflow.jobs['windows-baseline'];
+  assert.equal(job['runs-on'], 'windows-2022');
+  assert.equal(job.needs, undefined);
+  assert.equal(job.strategy, undefined);
+  for (const [name, other] of Object.entries(workflow.jobs)) {
+    if (name === 'windows-baseline') assert(other.if.includes("contains(github.event.head_commit.message, '[windows-baseline-only]')"));
+    else if (name === 'next-release-macos') assert(other.if.startsWith("github.event_name == 'release'"));
+    else assert(other.if.includes("!contains(github.event.head_commit.message, '[windows-baseline-only]')"), name);
+  }
+  const facts = job.steps.find(x => x.name === 'Native one-shot demand task lifecycle facts');
+  const policy = job.steps.find(x => x.name === 'Published Windows scheduler policy tick');
+  assert(facts.run.includes('windows-task-facts.ps1'));
+  assert(policy.run.includes('--source 0.164.6 --layout npm --state daemon --method scheduler --windows-policy-baseline true'));
+  assert.equal(policy.if, 'always() && !cancelled()');
+  const gate = job.steps.find(x => x.name === 'Native inherited lock lifetime facts');
+  assert.equal(gate.if, 'always() && !cancelled()');
+  assert(gate.run.includes('windows-gate-facts.ps1'));
+  assert(!commands(job).includes('--pack'));
+  const next = workflow.jobs['next-release-macos'];
+  assert.equal(next['runs-on'], 'macos-15');
+  assert.deepEqual(next.strategy.matrix.cell, ['launchd', 'public-installer']);
+  assert(commands(next).includes('--source 0.164.6 --layout installer --state daemon --method scheduler --published-launchd true --launchd-proof transition'));
+  const publicGet = next.steps.find(x => x.name === 'Upgrade through actual public installer host');
+  assert(publicGet.run.includes('--source 0.164.6 --layout installer --state configured --method installer'));
+  assert(!publicGet.run.includes('--published-installer') && !publicGet.run.includes('--candidate'));
 });
 
 test('six native builders compile the immutable product checkout with at most three workers', () => {
