@@ -460,6 +460,19 @@ try {
     r.calls.length = 0;
     service.start(receipt);
     check("starting an inactive owned task submits one Run", schtasks(r.calls) === `/Run /TN ${name}`);
+    r.calls.length = 0;
+    service.startEnabled(receipt);
+    check("update starts only the enabled owned idle task", schtasks(r.calls) === `/Run /TN ${name}`);
+    task = { ...task, instances: 1 };
+    r.calls.length = 0;
+    service.startEnabled(receipt);
+    check("update observes a native running instance without restarting it", schtasks(r.calls) === "");
+    for (const changed of [{ enabled: false, instances: 0 }, { execute: "foreign", instances: 0 }, { userId: "S-1-5-18", instances: 0 }, { instances: undefined }]) {
+      task = { present: true, ...security, state: "Ready", actions: 1, ...recorded, ...changed };
+      r.calls.length = 0;
+      check("update refuses disabled changed or unknown task without native mutation", code(() => service.startEnabled(receipt)) !== "none" && schtasks(r.calls) === "");
+    }
+    task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
 
     check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
 
