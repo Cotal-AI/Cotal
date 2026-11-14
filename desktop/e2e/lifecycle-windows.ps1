@@ -117,7 +117,11 @@ public static class LifecycleWindows {
         [LifecycleWindows]::Click($x, $y)
     }
     function Explorer-Surfaces {
-        $windows = @([LifecycleWindows]::Windows() | Where-Object { $_.visible -and $_.className -in @('Shell_TrayWnd', 'Shell_SecondaryTrayWnd', 'NotifyIconOverflowWindow', 'TopLevelWindowForOverflowXamlIsland') })
+        $trayWindows = @([LifecycleWindows]::Windows() | Where-Object { $_.className -in @('Shell_TrayWnd', 'Shell_SecondaryTrayWnd', 'NotifyIconOverflowWindow', 'TopLevelWindowForOverflowXamlIsland') })
+        $diagnostics.Add([ordered]@{ explorerSurfaces = @($trayWindows | ForEach-Object {
+            [ordered]@{ className = $_.className; hwnd = $_.hwnd; visible = $_.visible; pid = $_.pid }
+        }) })
+        $windows = @($trayWindows | Where-Object { $_.visible })
         foreach ($window in $windows) {
             $process = Get-Process -Id $window.pid
             $explorer = Join-Path $env:WINDIR 'explorer.exe'
@@ -125,10 +129,20 @@ public static class LifecycleWindows {
             [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$window.hwnd)
         }
     }
+    function Explorer-Children($surface) {
+        $row = [ordered]@{ explorerSurface = [ordered]@{
+            className = $surface.Current.ClassName; hwnd = $surface.Current.NativeWindowHandle
+            visible = !$surface.Current.IsOffscreen; pid = $surface.Current.ProcessId
+        }; descendantCount = $null }
+        $diagnostics.Add($row)
+        $elements = @(Children $surface)
+        $row['descendantCount'] = $elements.Count
+        $elements
+    }
     function Find-TrayIcon {
         $icons = @()
         foreach ($surface in @(Explorer-Surfaces)) {
-            foreach ($element in (Children $surface)) {
+            foreach ($element in (Explorer-Children $surface)) {
                 $name = $element.Current.Name
                 if ($name -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) {
                     $diagnostics.Add([ordered]@{ explorerButton = $name; automationId = $element.Current.AutomationId; className = $element.Current.ClassName; offscreen = $element.Current.IsOffscreen })
@@ -279,7 +293,7 @@ public static class LifecycleWindows {
             if ($null -eq $icon) {
                 $expanders = @()
                 foreach ($surface in @(Explorer-Surfaces)) {
-                    foreach ($element in (Children $surface)) {
+                    foreach ($element in (Explorer-Children $surface)) {
                         if ($element.Current.AutomationId -in @('SystemTrayIcon', 'NotificationChevron') -or $element.Current.Name -in @('Show hidden icons', 'Show Hidden Icons')) {
                             if (!$element.Current.IsOffscreen -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $expanders += $element }
                         }
