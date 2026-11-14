@@ -45,6 +45,9 @@ test('published seat provenance uses pinned verified release tag, not optional n
  assert.match(input,/b9f7c9b61b27965829f3a8840de1ed74f01cc2af/);
  assert.match(input,/public seat release tag moved/);
  assert.match(input,/unchanged seat native input/);
+ assert.match(input,/assert.deepEqual\(published,committed/);
+ assert.match(input,/HEAD:packages\/seat/);
+ assert.match(input,/explicit CRLF normalization/);
  assert.match(input,/metadata\.dist\.integrity/);
 });
 test('driver parses without any native execution',()=>{

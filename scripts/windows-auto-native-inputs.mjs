@@ -16,7 +16,9 @@ execFileSync('git',['fetch','--no-tags','--depth=1','origin',publishedSource],{c
 assert.equal(JSON.parse(execFileSync('git',['show',`${publishedSource}:packages/seat/package.json`],{cwd:root,encoding:'utf8'})).version,metadata.version);
 for(const file of ['native/peercred.c','scripts/build-native.mjs']){
  const published=execFileSync('git',['show',`${publishedSource}:packages/seat/${file}`],{cwd:root});
- assert.deepEqual(published,readFileSync(join(root,'packages/seat',file)),`unchanged seat native input ${file}`);
+ const committed=execFileSync('git',['show',`HEAD:packages/seat/${file}`],{cwd:root});
+ assert.deepEqual(published,committed,`unchanged seat native input ${file}`);
+ assert.equal(readFileSync(join(root,'packages/seat',file),'utf8').replaceAll('\r\n','\n'),committed.toString('utf8').replaceAll('\r\n','\n'),`checkout content matches native input ${file} after explicit CRLF normalization`);
 }
 const archive=Buffer.from(await (await fetch(metadata.dist.tarball)).arrayBuffer());
 const [algorithm,value]=metadata.dist.integrity.split('-');assert.equal(algorithm,'sha512');assert.equal(createHash(algorithm).update(archive).digest('base64'),value);
