@@ -162,7 +162,7 @@ function renderSettings(): void {
   text("settings-last-check", installerMessage ?? lastChecked(checkedAt));
   text("settings-spaces", disconnectSpaces(accountProvider()).map(space => shownSpaceLabel(accountSpaces.get(space)?.label, space)).join(", ") || "No observed spaces for this provider");
   const policy = updatePolicy(updateStatus?.channel, appPlatform);
-  text("update-preference-label", "Install updates automatically"); text("update-policy", appUpdate?.phase === "unconfigured" ? "This build needs the platform installer. Your automatic update preference is shared with the command line." : policy.description);
+  text("update-preference-label", "Install updates automatically"); text("update-policy", appUpdate?.phase === "unconfigured" ? "Shared with the command line. This build needs the installer." : policy.description);
   el<HTMLInputElement>("update-preference").checked = autoUpdates !== false;
   el<HTMLInputElement>("update-preference").disabled = autoUpdates === undefined || busy;
   const offered = offeredVersion();
