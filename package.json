@@ -9,6 +9,7 @@
     "node": ">=22.10"
   },
   "scripts": {
+    "smoke:update-extension-set": "tsx implementations/cli/smoke/extension-promotion.smoke.ts && tsx implementations/cli/smoke/extension-promotion-crash.smoke.ts && tsx implementations/cli/smoke/update-set-atomic.smoke.ts",
     "smoke:discovery-login": "tsx packages/workspace/smoke/discovery-login.smoke.ts && tsx bin/smoke/daemon-discovery-login.smoke.ts",
     "smoke:login-service-stores": "tsx implementations/auth/smoke/login-private-group.smoke.ts && tsx packages/workspace/smoke/service-login-stores.smoke.ts && tsx implementations/auth/smoke/service-session-isolation.smoke.ts && tsx implementations/auth/smoke/logout-session-race.smoke.ts && tsx implementations/auth/smoke/login-service-stores.smoke.ts",
     "smoke:cloud-login": "tsx packages/workspace/smoke/cloud-login.smoke.ts && tsx implementations/auth/smoke/cloud-login.smoke.ts && tsx bin/smoke/fresh-cloud-guidance.smoke.ts",
