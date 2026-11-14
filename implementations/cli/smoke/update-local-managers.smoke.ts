@@ -30,9 +30,16 @@ const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { spaceKey } = await import("@cotal-ai/workspace");
 const { readUpdateManagerIdentity } = await import("../src/lib/update-managers.js");
-const { isCliEntry } = await import("../src/lib/manager-proc.js");
+const { isCliEntry, supervisorInstallScope } = await import("../src/lib/manager-proc.js");
 const { fileURLToPath } = await import("node:url");
 assert.equal(isCliEntry(fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url))), true, "checkout entry remains attributable across bin/package.json");
+const ownEntry = (await import("node:fs")).realpathSync(process.argv[1]!);
+const uid = process.getuid!();
+assert.equal(supervisorInstallScope(process.pid, uid + 1, "node /unresolvable/foreign/cotal.js supervise", ownEntry), "foreign", "foreign user with no same-install entry is excluded");
+assert.equal(supervisorInstallScope(process.pid, uid + 1, `node ${ownEntry} supervise`, ownEntry), "local", "sudo supervisor of this installation still counts");
+assert.equal(supervisorInstallScope(process.pid, uid, `node ${ownEntry} supervise`, ownEntry), "local", "same-user supervisor of this installation still counts");
+assert.equal(supervisorInstallScope(process.pid, uid, "node cotal.js supervise", ownEntry), "unknown", "relative missing entry does not prove another installation");
+assert.equal(supervisorInstallScope(2147483647, uid, "node cotal.js supervise", ownEntry), "unknown", "unreadable namespace does not establish safety");
 const root = mkdtempSync(join(tmpdir(), "cotal-update-identity-"));
 try {
   mkdirSync(join(root, ".cotal", "auth"), { recursive: true });

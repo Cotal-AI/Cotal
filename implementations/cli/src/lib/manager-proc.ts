@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, fstatSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
@@ -143,22 +143,29 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
  *  A supervisor records its pid under whatever folder it was started from, so no one root's record
  *  can rule it out; the process table can. Replacing this install interrupts a supervisor only when
  *  one of its arguments resolves to this process's own CLI entry. A node binary, a loader, and any
- *  other absolute argument are not that entry. A command that names no resolvable entry still counts:
- *  an unreadable path is not proof of another install. One whose argv names no space serves what its
+ *  other absolute argument are not that entry. A foreign user counts only with a proven same entry.
+ *  A same-user unresolved entry refuses unless a different mount namespace proves it foreign.
+ *  One whose argv names no space serves what its
  *  environment or folder selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that
  *  variable names the space it serves, and one it reads for another space is not a manager of this one.
  *  A supervisor whose environment cannot be read or names no space counts, and a process table that
  *  cannot be listed proves nothing. */
-export function supervisorMayServe(space: string): boolean {
-  const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" });
-  if (ps.error || ps.status !== 0) return true;
-  const entry = thisCliEntry();
+export function supervisorMayServe(space: string, installedEntry?: string): boolean {
+  const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+  if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
+  const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
   return ps.stdout.split("\n").some((line) => {
-    const row = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!row || !commandIsCotalSupervisor(row[2]!)) return false;
-    if (entry !== undefined && !supervisorLoadedEntry(row[2]!, entry)) return false;
-    const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(row[2]!)?.[1] ?? environmentSpace(Number(row[1]));
-    return named === undefined || named === space;
+    const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!row || !commandIsCotalSupervisor(row[3]!)) return false;
+    const pid = Number(row[1]), uid = Number(row[2]), command = row[3]!;
+    const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
+    if (named !== undefined && named !== space) return false;
+    const scope = supervisorInstallScope(pid, uid, command, entry);
+    if (scope === "foreign") return false;
+    const selected = named ?? environmentSpace(pid);
+    if (selected !== undefined && selected !== space) return false;
+    if (scope === "unknown") throw new Error(`local Manager continuity cannot be established: supervise pid ${pid}, user ${uid} has no proven CLI entry for this installation; inspect this process, then stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; no Manager instance was guessed`);
+    return true;
   });
 }
 
@@ -172,10 +179,10 @@ function thisCliEntry(): string | undefined {
   }
 }
 
-/** Whether `command` loaded `entry`. The match is the argument that resolves to that file. A node
- *  binary, a loader, and a relative entry are not another install. Custody stays unless an argument
- *  resolves to a different install's CLI entry, so an identity that cannot be established still counts. */
-function supervisorLoadedEntry(command: string, entry: string): boolean {
+/** Attribute a supervisor using its absolute entry, numeric owner and mount namespace.
+ * A different namespace alone cannot exclude a bind-mounted installation. */
+export function supervisorInstallScope(pid: number, uid: number, command: string, entry: string | undefined): "local" | "foreign" | "unknown" {
+  let other = false;
   for (const word of command.trim().split(/\s+/)) {
     if (!isAbsolute(word)) continue;
     let resolved: string;
@@ -184,10 +191,18 @@ function supervisorLoadedEntry(command: string, entry: string): boolean {
     } catch {
       continue;
     }
-    if (resolved === entry) return true;
-    if (isCliEntry(resolved)) return false;
+    if (resolved === entry) return "local";
+    if (isCliEntry(resolved)) other = true;
   }
-  return true;
+  // A sudo supervisor can load this user's installation. UID alone cannot exclude that case.
+  if (process.getuid && uid !== process.getuid()) return "foreign";
+  if (other) return "foreign";
+  if (process.platform === "linux") {
+    try {
+      if (readlinkSync(`/proc/${pid}/ns/mnt`) !== readlinkSync("/proc/self/ns/mnt")) return "foreign";
+    } catch { /* An unreadable namespace is not proof of another installation. */ }
+  }
+  return "unknown";
 }
 
 /** Whether `path` is a CLI entry file: `cotal.js` under a package declaring that bin, or `cotal.ts`

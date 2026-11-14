@@ -288,7 +288,12 @@ holds when every recorded mesh is down and none is selected. A remote user mesh,
 `cotal supervise` process that loaded this install may be serving its space. A supervisor whose
 command names another install's CLI entry is untouched by replacing this one, so it is no custody
 here, the same as a manager that runs on another machine. A node binary or a loader argument does
-not name that entry. A supervisor started without `--space`
+not name that entry. A supervisor under another numeric user ID counts only when an absolute
+argument resolves to this installation's CLI entry. This keeps a supervisor launched through sudo
+against the same installation in the continuity check. For the same user, a different mount
+namespace excludes an unresolved entry, but a namespace difference alone never excludes a shared
+entry. Remaining uncertainty refuses before a remote Manager is selected and names the process
+ID, numeric user ID and its stop command. A supervisor started without `--space`
 serves the space its `COTAL_SPACE` names, so a service unit's manager for another mesh does not count
 as this one's. When such a process runs here, that
 manager is read like a local one, and a `legacy` verdict's `Next` line names

@@ -63,7 +63,7 @@ try {
   }
 
   // A service unit's supervisor passes no `--space`; its environment names the space it serves.
-  other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise"],
+  other = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", process.argv[1]!, "supervise"],
     { stdio: "ignore", env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_SPACE: `${space}-other` } });
   await once(other, "spawn");
   assert.equal(supervisorMayServe(space), baseline, "a space-less supervisor whose environment names another space is not a manager of this one");
@@ -72,7 +72,7 @@ try {
   other = undefined;
 
   // A process whose command line is a supervisor for this space, as `ps` reports it.
-  decoy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", "supervise", "--space", space], { stdio: "ignore" });
+  decoy = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)", process.argv[1]!, "supervise", "--space", space], { stdio: "ignore" });
   await once(decoy, "spawn");
   assert.equal(supervisorMayServe(space), true, "the decoy is seen as a supervisor that may serve the space");
   let outcome: string;
@@ -111,7 +111,6 @@ try {
     ["this process's entry", process.execPath, ["-e", idle, thisEntry, "supervise", "--space", space], true],
     ["this process's entry under another node binary", otherNode, ["-e", idle, thisEntry, "supervise", "--space", space], true],
     ["this process's entry behind a loader", process.execPath, ["--import", loader, "-e", idle, thisEntry, "supervise", "--space", space], true],
-    ["an entry that cannot be told apart", process.execPath, ["-e", idle, "cotal.js", "supervise", "--space", space], true],
   ];
   for (const [what, exe, args, expected] of cases) {
     decoy = spawn(exe, args, { stdio: "ignore", cwd: root });
@@ -121,6 +120,16 @@ try {
     await once(decoy, "exit");
     decoy = undefined;
   }
+  decoy = spawn(process.execPath, ["-e", idle, "cotal.js", "supervise", "--space", space], { stdio: "ignore", cwd: root });
+  await once(decoy, "spawn");
+  assert.throws(() => supervisorMayServe(space), error => {
+    const message = String(error);
+    return message.includes(`pid ${decoy!.pid}`) && message.includes(`user ${process.getuid!()}`)
+      && message.includes(`kill -TERM ${decoy!.pid}`) && !message.includes("manager-caller");
+  }, "an unresolved same-user entry refuses with pid, numeric user and process stop command before exchange");
+  decoy.kill("SIGKILL");
+  await once(decoy, "exit");
+  decoy = undefined;
   console.log(`update-remote-custody: ok (${outcome.slice(0, 160)})`);
   emitSentinel({ passed: cells(), failed: 0 });
 } finally {
