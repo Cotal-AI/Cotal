@@ -45,7 +45,7 @@ const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+const hostArgs = ["--import", import.meta.resolve("tsx"), host];
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
@@ -93,7 +93,7 @@ async function spawnHost(extra: NodeJS.ProcessEnv, controlSock: string): Promise
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "jcode-inbound-wedge-smoke-token", { mode: 0o600 });
-  const spawned = spawn(tsx, [host], {
+  const spawned = spawn(process.execPath, hostArgs, {
     cwd: root,
     detached: true,
     env: {

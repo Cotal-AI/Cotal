@@ -64,7 +64,11 @@ try {
     process.exit(0);
   }
   const base = launch({ space: "space", name: "seat", events: false });
-  check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
+  check(
+    "starts the host directly in Node with the source loader",
+    base.command === process.execPath && base.args.length === 3 && base.args[0] === "--import" && base.args[1] === import.meta.resolve("tsx") && /host-main\.ts$/.test(base.args[2]),
+    { command: base.command, args: base.args },
+  );
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
   check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === JCODE_READINESS_TIMEOUT_MS && JCODE_READINESS_TIMEOUT_MS === 180_000, jcodeConnector.readinessTimeoutMs);
   const here = dirname(fileURLToPath(import.meta.url));

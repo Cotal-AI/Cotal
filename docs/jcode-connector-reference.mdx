@@ -36,6 +36,8 @@ records, sends a bounded SIGTERM, escalates survivors to an exact-PID SIGKILL, a
 failed stop instead of a clean one if any recorded process survives. It never signals by name, so
 teardown can only ever reach the seat's own tree. SIGINT, SIGTERM and terminal SIGHUP all use
 this shutdown path, including a tmux window closed during self-despawn.
+Source-checkout launches run the host directly in Node with the TypeScript loader, so no
+command-line wrapper can interrupt its shutdown. Published installs continue to run the compiled host directly.
 
 A seat that dies without that teardown, from a manager restart or a kill past the grace window,
 leaves its Jcode server running. The server has a process group of its own and carries no

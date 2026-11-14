@@ -60,7 +60,7 @@ const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+const hostArgs = ["--import", import.meta.resolve("tsx"), host];
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
@@ -95,7 +95,7 @@ const inheritedJcodeHome = join(root, "source-jcode");
 
 function startHost(name: string, extra: NodeJS.ProcessEnv): HostRun {
   const log = join(root, `${name}.jsonl`);
-  const run = spawn(tsx, [host], {
+  const run = spawn(process.execPath, hostArgs, {
     cwd: root,
     env: {
       ...baseEnv,
