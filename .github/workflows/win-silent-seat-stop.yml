@@ -1,0 +1,72 @@
+name: Measure Windows silent seat stop
+on:
+  push:
+    branches: [measure/win-silent-seat-stop]
+permissions:
+  contents: read
+env:
+  DO_NOT_TRACK: '1'
+  COTAL_TELEMETRY: 'off'
+  PNPM_CONFIG_WORKSPACE_CONCURRENCY: '3'
+jobs:
+  native:
+    uses: ./.github/workflows/workspace-native.yml
+    with:
+      architectures: '["x64"]'
+      test_controls: false
+  observe:
+    needs: native
+    runs-on: windows-2022
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        mode: [silent, output]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: workspace-native-x64
+          path: packages/workspace/build/Release/win32-x64
+      - name: Install pinned dependencies and build unchanged source
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile --child-concurrency=2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --workspace-concurrency 3 build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install verified loopback broker
+        shell: pwsh
+        run: |
+          $Version = 'v2.12.12'
+          $Sha256 = '66e2ab6250083794321905e1f79db4f4ea53465d84ba0760e9b00d022133050e'
+          $Name = "nats-server-$Version-windows-amd64"
+          $Zip = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          Invoke-WebRequest -Uri "https://github.com/nats-io/nats-server/releases/download/$Version/$Name.zip" -OutFile $Zip
+          $Actual = (Get-FileHash $Zip -Algorithm SHA256).Hash
+          if ($Actual -ne $Sha256) { throw "broker checksum mismatch: $Actual" }
+          Expand-Archive -Path $Zip -DestinationPath $env:RUNNER_TEMP
+          "$env:RUNNER_TEMP\$Name" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Observe public stop and retained process identities
+        shell: pwsh
+        run: |
+          pnpm exec tsx scripts/silent-seat-probe/driver.mjs "$env:GITHUB_WORKSPACE" "$env:RUNNER_TEMP/silent-seat-evidence" '${{ matrix.mode }}'
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: silent-seat-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/silent-seat-evidence/*/result.json
+            ${{ runner.temp }}/silent-seat-evidence/*/manager.log
+            ${{ runner.temp }}/silent-seat-evidence/*/seat.log
+            ${{ runner.temp }}/silent-seat-evidence/*/terminal.bin
+            ${{ runner.temp }}/silent-seat-evidence/*/broker.log
+          if-no-files-found: warn
