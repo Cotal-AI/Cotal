@@ -3289,6 +3289,7 @@ export class MeshAgent extends EventEmitter {
     // A once seat holds its task and nothing else (the manager refuses it any other turn).
     const once = waiting.find((t) => t.once !== undefined);
     if (once !== undefined) return { text: renderOnceTask({ goalId: once.goalId, payload: once.payload, spawner: once.once?.spawner, deadlineAt: once.deadlineAt }), goalIds: [once.goalId], once: true };
+    let asked = false;
     const blocks = waiting.map((t) => {
       let context = t.payload;
       let ask = "";
@@ -3297,12 +3298,15 @@ export class MeshAgent extends EventEmitter {
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
         ask = renderAskRequest(p);
       } catch { /* opaque payload — surface it as it came */ }
+      if (ask !== "") asked = true;
       return `— turn ${t.goalId}${t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : ""}:\n${context}${ask}`;
     });
+    // The ask sentence only when a block above carries a route: a plain turn NAMED "ask"
+    // (`/turn:ask#0`) has none, and a seat told to answer one went looking for a question never sent.
     const text =
       `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
       `${blocks.join("\n")}\n` +
-      `(Do the work now with your own tools. An ask must be answered through its native route above before ending your host turn. ` +
+      `(Do the work now with your own tools. ${asked ? "An ask must be answered through its native route above before ending your host turn. " : ""}` +
       `For ordinary turns, ending your turn yields "done" automatically; call cotal_yield when blocked or handing off an ordinary turn.)`;
     return { text, goalIds: waiting.map((t) => t.goalId) };
   }
