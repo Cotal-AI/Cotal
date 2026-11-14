@@ -13,7 +13,7 @@ test('installed Windows failure preserves the original verdict and captures nati
   assert.match(failure, /"-Binary", binary!/);
   assert.match(failure, /"failure-details.json"/);
   assert.match(failure, /"failure-details.png"/);
-  assert.match(failure, /bridgeTrace.*unavailable/);
+  assert.doesNotMatch(failure, /bridgeTrace|CDP|remote-debugging/);
   assert.match(failure, /throw error;/);
   assert.doesNotMatch(failure, /outcome = "passed"|nativeLifecycle|NODE_OPTIONS|--features|daemon.*desktop/);
 });
@@ -29,7 +29,7 @@ test('Windows failure block retains failed native Details and never replaces the
     });
     assert.equal(report.outcome, 'failed');
     assert.equal(report.failure, String(original));
-    assert.equal(report.bridgeTrace.state, 'unavailable');
+    assert.equal(report.bridgeTrace, undefined);
     assert.equal(calls[0].args.at(-1), 'C:/owned/cotal-desktop.exe');
     assert.equal(calls[0].options.timeout, 20_000);
     if (diagnosticThrows) assert.match(report.detailsDiagnosticError, /diagnostic refused/);

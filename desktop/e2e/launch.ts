@@ -184,8 +184,6 @@ try {
   report.outcome = "failed"; report.failure = String(error);
   if (process.platform === "win32" && nativePid) {
     try {
-      // Release builds have no debug native request sink. Do not substitute a new CLI request.
-      report.bridgeTrace = { state: "unavailable", reason: "The installed release does not emit the debug-only native-errors.jsonl request trace." };
       const startedAt = new Date().toISOString();
       const started = performance.now();
       const details = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", join(repo, "desktop/e2e/windows-launch-details.ps1"), "-AppPid", String(nativePid), "-Binary", binary!], { env, encoding: "utf8", timeout: 20_000, maxBuffer: 512 * 1024 });
