@@ -205,6 +205,13 @@ export function supervisorInstallScope(pid: number, uid: number, command: string
   return "unknown";
 }
 
+/** The kernel-reported effective UID, unlike proc directory ownership which changes with dumpability. */
+export function supervisorProcessUid(pid: number): number {
+  const value = /^Uid:\s+\d+\s+(\d+)\s+/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+  if (value === undefined) throw new Error(`cannot read numeric user for supervise pid ${pid}`);
+  return Number(value);
+}
+
 /** Whether `path` is a CLI entry file: `cotal.js` under a package declaring that bin, or `cotal.ts`
  *  under the checkout package that ships `bin/cotal.ts`. A node binary and a loader are neither. */
 export function isCliEntry(path: string): boolean {

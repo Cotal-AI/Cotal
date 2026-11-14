@@ -88,7 +88,23 @@ if (process.platform === "linux") {
   } finally {
     relativeChild.kill();
     await once(relativeChild, "exit");
-    rmSync(relativeRoot, { recursive: true, force: true });
   }
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const binary = join(relativeRoot, "changing-entry");
+    const compiled = spawnSync("cc", [fileURLToPath(new URL("./fixtures/supervisor-dumpability.c", import.meta.url)), "-o", binary], { encoding: "utf8" });
+    assert.equal(compiled.status, 0, `native dumpability fixture compiles: ${compiled.stderr}`);
+    const changing = spawn("./changing-entry", ["supervise", "--space", "permission-proof", "--server", "nats://127.0.0.1:9", otherEntry], { cwd: relativeRoot, stdio: "ignore" });
+    try {
+      await once(changing, "spawn");
+      const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+      for (let attempt = 0; attempt < 50; attempt++) {
+        assert.throws(() => localUpdateManagers({ space: "permission-proof" }, binary), /local Manager continuity cannot be established/, "changing dumpability must refuse local custody, never silently exclude it");
+      }
+    } finally {
+      changing.kill();
+      await once(changing, "exit");
+    }
+  } finally { rmSync(relativeRoot, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

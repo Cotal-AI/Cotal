@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/workspace";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
-import { isCliEntry, supervisorInstallScope } from "./manager-proc.js";
+import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 
 export interface UpdateManager {
@@ -137,8 +137,8 @@ export function localUpdateManagers(
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "ESRCH") continue;
-        try { if (lstatSync(`/proc/${entry}`).uid !== process.getuid?.()) continue; }
-        catch { continue; }
+        try { if (supervisorProcessUid(Number(entry)) !== process.getuid?.()) continue; }
+        catch { blocked(`cannot read process owner for pid ${entry}, user unavailable`); }
         blocked(`cannot read the command of pid ${entry}`);
       }
       if (commandIsCotalSupervisor(command) || /(?:^|\s)__machine-manager(?:\s|$)/.test(command)) pids.add(Number(entry));
@@ -149,7 +149,7 @@ export function localUpdateManagers(
   for (const pid of pids) {
     if (process.platform === "linux" && process.getuid) {
       try {
-        const uid = lstatSync(`/proc/${pid}`).uid;
+        const uid = supervisorProcessUid(pid);
         if (uid !== process.getuid()) {
           const command = readProcessCommand(pid);
           if (command.kind === "gone") continue;
@@ -163,7 +163,7 @@ export function localUpdateManagers(
     if (command.kind === "gone") continue;
     if (command.kind !== "command") blocked(`cannot read argv for Manager pid ${pid}`);
     let uid: number;
-    try { uid = lstatSync(`/proc/${pid}`).uid; }
+    try { uid = supervisorProcessUid(pid); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       blocked(`cannot inspect process owner for Manager pid ${pid}, user unavailable; stop it through its original host before retrying`);
@@ -177,7 +177,6 @@ export function localUpdateManagers(
         env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(value => value.includes("=")).map(value => { const split = value.indexOf("="); return [value.slice(0, split), value.slice(split + 1)]; }));
       } catch {
         if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
-        if (supervisorInstallScope(pid, uid, command.command, ownEntry) === "foreign") continue;
         blocked(`cannot read launch coordinates for Manager pid ${pid}, user ${uid}, verb supervise; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying`);
       }
     }

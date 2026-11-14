@@ -293,7 +293,11 @@ argument resolves to this installation's CLI entry. This keeps a supervisor laun
 against the same installation in the continuity check. For the same user, a different mount
 namespace excludes an unresolved entry, but a namespace difference alone never excludes a shared
 entry. Remaining uncertainty refuses before a remote Manager is selected and names the process
-ID, numeric user ID and its stop command. A supervisor started without `--space`
+ID, numeric user ID and its stop command.
+The Linux census reads the effective user ID from kernel process status, not the ownership of its
+proc directory, which can change when a process becomes non-dumpable. A partial launch-coordinate
+read refuses rather than discarding a possible same-installation relative entry.
+A supervisor started without `--space`
 serves the space its `COTAL_SPACE` names, so a service unit's manager for another mesh does not count
 as this one's. When such a process runs here, that
 manager is read like a local one, and a `legacy` verdict's `Next` line names
