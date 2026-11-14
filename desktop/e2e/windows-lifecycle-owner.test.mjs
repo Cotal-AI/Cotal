@@ -36,11 +36,13 @@ test('actual lifecycle wrapper forwards launch PID and retains candidates even o
   const calls = [];
   const candidates = [{ pid: 42, birth: '2026-11-14T01:42:37.507Z', path: 'C:\\owned\\cotal-desktop.exe' },
     { pid: 43, birth: '2026-11-14T01:20:00.000Z', path: 'C:\\owned\\cotal-desktop.exe' }];
+  const diagnostics = [{ overflowMatches: [], count: 0 },
+    { explorerButton: 'synthetic button', automationId: '', className: 'Button', offscreen: false }];
   let refused = false;
   t.mock.method(childProcess, 'execFile', (file, args, options, callback) => {
     calls.push({ file, args, options });
     callback(refused ? new Error('native refusal') : null,
-      JSON.stringify({ ok: !refused, pid: 42, candidates, commandLine: 'NOT-RETAINED' }), '');
+      JSON.stringify({ ok: !refused, pid: 42, candidates, diagnostics, commandLine: 'NOT-RETAINED' }), '');
   });
   syncBuiltinESMExports();
   const root = mkdtempSync(join(tmpdir(), 'desktop-owner-'));
@@ -56,6 +58,7 @@ test('actual lifecycle wrapper forwards launch PID and retains candidates even o
     const rows = evidence.trim().split('\n').map(JSON.parse);
     assert.deepEqual(rows.map(row => row.ok), [true, false]);
     assert.ok(rows.every(row => row.appPid === 42 && row.candidates.length === 2));
+    assert.deepEqual(rows.map(row => row.diagnostics), [diagnostics, diagnostics], 'success and refusal must retain native diagnostics');
     assert.doesNotMatch(evidence, /NOT-RETAINED|commandLine/);
     for (const pid of [0, -1, 1.5, NaN]) await assert.rejects(nativeLifecycle(candidates[0].path, 'close-window', env, pid));
     assert.equal(calls.length, 2, 'invalid PID never reaches the native helper');
@@ -72,7 +75,7 @@ test('close-window receives launch-pinned PID only after separate duplicate-proc
   assert.match(caller, /windowsAppPid = .*\.pid/);
   const close = caller.slice(caller.indexOf('const lifecycle ='), caller.indexOf('let server:'));
   assert.match(close, /action === "close-window"[\s\S]*?nativeLifecycle\(binary, "describe", env, windowsAppPid, \{ pid: daemon.pid, start: daemon.start \}\)/);
-  assert.match(close, /check\(`single app process before close-window: \$\{JSON\.stringify\(census\.candidates\)\}`/);
+  assert.match(close, /check\(`single app process before close-window: appCandidates=\$\{JSON\.stringify\(census\.appCandidates\)\}, serviceLauncher=\$\{JSON\.stringify\(census\.serviceLauncher\)\}`/);
   assert.match(close, /census\.appCandidates\?\.length === 1 && census.appCandidates\[0\].pid === windowsAppPid/);
   assert.ok(close.indexOf('single app process before close-window') < close.indexOf('nativeLifecycle(binary, action, env,'));
   assert.match(close, /process.platform === "win32" \? windowsAppPid : undefined/);
@@ -86,4 +89,15 @@ test('app census excludes only the answering daemon parent with exact birth/path
   for (const marker of ['ToFileTimeUtc().ToString() -cne $DaemonStart', '$null = $daemonProcess.Handle', '$null = $launcher.Handle', '$launcher.Id -eq $AppPid', '$launcher.Path, $expected', '$launcher.StartTime -gt $daemonProcess.StartTime', '$matchingLauncher.Count -ne 1', '$daemonProcess.HasExited -or $launcher.HasExited']) assert.ok(census.includes(marker), marker);
   assert.match(census, /\$appCandidates = @\(\$candidates \| Where-Object \{ \$_.pid -ne \$serviceLauncher.pid \}\)/);
   assert.doesNotMatch(census, /\$candidates =/);
+});
+
+test('tray overflow records the matched native controls before refusing an ambiguous count', () => {
+  const tray = helper.slice(helper.indexOf('$expanders = @()'), helper.indexOf('Click-Element $expanders[0]'));
+  assert.match(tray, /overflowMatches = @\(\$expanders \| ForEach-Object/);
+  for (const field of ['name = $_.Current.Name', 'automationId = $_.Current.AutomationId', 'className = $_.Current.ClassName', 'offscreen = $_.Current.IsOffscreen']) assert.ok(tray.includes(field), field);
+  assert.ok(tray.indexOf('overflowMatches =') < tray.indexOf('if ($expanders.Count -ne 1)'));
+  assert.match(tray, /count = \$expanders.Count/);
+  assert.match(tray, /@\('SystemTrayIcon', 'NotificationChevron'\)/);
+  assert.match(tray, /@\('Show hidden icons', 'Show Hidden Icons'\)/);
+  assert.doesNotMatch(tray, /Notification Chevron/);
 });

@@ -131,7 +131,7 @@ public static class LifecycleWindows {
             foreach ($element in (Children $surface)) {
                 $name = $element.Current.Name
                 if ($name -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) {
-                    $diagnostics.Add([ordered]@{ explorerButton = $name; automationId = $element.Current.AutomationId; offscreen = $element.Current.IsOffscreen })
+                    $diagnostics.Add([ordered]@{ explorerButton = $name; automationId = $element.Current.AutomationId; className = $element.Current.ClassName; offscreen = $element.Current.IsOffscreen })
                 }
                 if ($name -ceq 'Cotal: connected' -or $name -ceq 'Cotal: not connected') {
                     if (!$element.Current.IsOffscreen -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $icons += $element }
@@ -285,6 +285,9 @@ public static class LifecycleWindows {
                         }
                     }
                 }
+                $diagnostics.Add([ordered]@{ overflowMatches = @($expanders | ForEach-Object {
+                    [ordered]@{ name = $_.Current.Name; automationId = $_.Current.AutomationId; className = $_.Current.ClassName; offscreen = $_.Current.IsOffscreen }
+                }); count = $expanders.Count })
                 if ($expanders.Count -ne 1) { throw 'Cotal icon is hidden and a unique Explorer overflow button is unavailable (English UI required for name-based discovery).' }
                 Click-Element $expanders[0]
                 Start-Sleep -Milliseconds 700
