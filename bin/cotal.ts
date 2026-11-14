@@ -147,7 +147,9 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
 }
 
 const executionStarted = Symbol.for("cotal.execution.started");
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) && !Reflect.get(globalThis, executionStarted)) {
+/** Explicit CLI delegation for a wrapper that imports the bootstrap rather than launching it. */
+export function startExecutionProgram(): void {
+  if (Reflect.get(globalThis, executionStarted)) return;
   Object.defineProperty(globalThis, executionStarted, { value: true });
   let selected: ReturnType<typeof selectExecutionProgram> | undefined;
   try { selected = selectExecutionProgram(resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..")); }
@@ -157,10 +159,11 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   }
   if (selected) {
     if (!import.meta.url.endsWith(".ts")) Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
-      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), launchEntry: resolve(process.argv[1]), loadedEntry: join(selected.root, "dist", "cotal.js") }),
+      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), launchEntry: process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) ? resolve(process.argv[1]) : fileURLToPath(import.meta.url), loadedEntry: join(selected.root, "dist", "cotal.js") }),
       configurable: false, writable: false,
     });
-    if (selected.retained) process.argv[1] = join(selected.root, "dist", "cotal.js");
+    if (selected.retained || !process.argv[1] || realpathSync(process.argv[1]) !== fileURLToPath(import.meta.url)) process.argv[1] = join(selected.root, "dist", "cotal.js");
     void import(pathToFileURL(selected.entry).href);
   }
 }
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) startExecutionProgram();

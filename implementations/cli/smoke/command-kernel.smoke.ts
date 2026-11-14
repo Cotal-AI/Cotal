@@ -100,6 +100,7 @@ function updateRuntime(opts: {
       const r = opts.npm?.(args, inherit) ?? { status: 0, stdout: '"0.13.1"' };
       return { stdout: "", stderr: "", ...r };
     },
+    npmAsync: async args => rt.npm(args),
     spawn: (file, args, env) => {
       events.push(`spawn:${file} ${args.join(" ")}`);
       const r = opts.spawn?.(file, args, env) ?? { status: 0 };
@@ -1231,9 +1232,11 @@ async function completionOut(positionals: string[]): Promise<string> {
         const requestedVersion = spec.slice(spec.lastIndexOf("@") + 1);
         assert.ok(Object.hasOwn(manifests, name), "only runtime first-party dependencies are queried");
         if (args[0] === "cache") {
-          downloaded.push(spec);
+          const specs = args.slice(2).filter(arg => !arg.startsWith("--"));
+          // --cache's directory is a value, not an archive spec.
+          downloaded.push(...specs.filter(spec => spec !== cache));
           assert.ok(args.includes("--ignore-scripts"));
-          if ((scenario === "root-404" && name === "cotal-ai") || (scenario === "transitive-404" && name === "@cotal-ai/core"))
+          if (specs.some(spec => (scenario === "root-404" && spec.startsWith("cotal-ai@")) || (scenario === "transitive-404" && spec.startsWith("@cotal-ai/core@"))))
             return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
@@ -1251,6 +1254,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.ok(caches.size === (scenario === "ready" ? 2 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
     if (scenario === "ready") {
       assert.deepEqual(downloaded, [version, "0.13.1"].flatMap(release => Object.keys(manifests).map(name => `${name}@${release}`)), "target and rollback transitive and optional archives are fetched once, despite peer cycles");
+      assert.equal(fixture.events.filter(event => event.startsWith("npm:cache add")).length, 2, "one bounded archive batch per four-package release replaces repeated npm startup");
       const lastFetch = fixture.events.findLastIndex(event => event.startsWith("npm:cache add"));
       assert.ok(lastFetch < fixture.events.findIndex(event => event.startsWith("claim-global:")), "readiness precedes global mutation custody");
     } else {
@@ -1275,6 +1279,33 @@ async function completionOut(positionals: string[]): Promise<string> {
   fixture.rt.prepareExecution = async () => ({ entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json", async preflight() {}, publish() {}, restore() {}, verify() {} });
   assert.equal(await executeUpdate(true, fixture.rt), 0);
   assert.ok(!fixture.events.some(event => event.startsWith("global:install:")), "npm must not reify the live package for staged publication");
+}
+
+// --- archive metadata overlaps only independent reads and preserves deterministic failure order ---
+{
+  const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  let active = 0, maximum = 0, completed = 0;
+  const caches = new Set<string>();
+  fixture.rt.npmAsync = async args => {
+    const cache = args[args.indexOf("--cache") + 1]!;
+    caches.add(cache);
+    active++; maximum = Math.max(maximum, active);
+    try {
+      const name = args[1]!.replace(/@0\.13\.2$/, "");
+      await new Promise(resolve => setTimeout(resolve, name.endsWith("first") ? 20 : 1));
+      assert.ok(existsSync(cache), "cache remains until every concurrent read ends");
+      completed++;
+      if (name !== "cotal-ai") return { status: 1, stdout: "", stderr: `unavailable ${name}` };
+      return { status: 0, stdout: JSON.stringify({ name, version: "0.13.2", dist: { tarball: "https://registry.example/root.tgz", integrity: "sha512-fixture" },
+        dependencies: { "@cotal-ai/first": "0.13.2", "@cotal-ai/second": "0.13.2", "@cotal-ai/third": "0.13.2" } }), stderr: "" };
+    } finally { active--; }
+  };
+  assert.equal(await executeUpdate(true, fixture.rt), 1);
+  assert.equal(maximum, 3, "metadata process concurrency is bounded at three");
+  assert.equal(completed, 4, "all in-flight requests settle before failure");
+  assert.ok(fixture.events.some(event => event.includes("metadata for @cotal-ai/first@0.13.2 is unavailable")), "first discovery-order failure wins, not fastest failure");
+  assert.ok([...caches].every(cache => !existsSync(cache)));
+  assert.ok(!fixture.events.some(event => event.startsWith("global:")));
 }
 
 // --- only the selected latest's structured npm ETARGET is a release deferral -------------------
