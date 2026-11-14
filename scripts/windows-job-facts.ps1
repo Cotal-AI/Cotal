@@ -39,6 +39,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Framework csc failed' }
     & $helper load-control $directory 2>&1 | Out-File (Join-Path $directory 'load-sharing-control.log')
     if ($LASTEXITCODE -ne 0) { throw 'Native setup JSON sharing control failed' }
+    & $helper wait-controls $directory 2>&1 | Out-File (Join-Path $directory 'wait-controls.log')
+    if ($LASTEXITCODE -ne 0) { throw 'Native kernel wait controls failed' }
     Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -119,6 +121,8 @@ Move-Item -LiteralPath ($Output+'.tmp') -Destination $Output
         $report.cases += $entry
         $registeredXml = $null
         $p = $null
+        $censusAgent = $null
+        $observer = $null
         try {
             $definition = $service.NewTask(0)
             $definition.RegistrationInfo.Description = $name
@@ -185,19 +189,42 @@ Move-Item -LiteralPath ($Output+'.tmp') -Destination $Output
             if ($p.HasExited) { throw 'Runner exited before contender readiness' }
             if ($folder.GetTask($name).Xml -cne $registeredXml) { throw 'Task ownership changed' }
             [IO.File]::WriteAllText((Join-Path $dir 'go'),'')
-            if (-not $observer.WaitForExit(30000)) { throw 'Observer timeout, retained custody for teardown' }
+            if (-not $observer.WaitForExit(45000)) { throw 'Observer timeout, retained custody for teardown' }
+            $observer.WaitForExit() # Drain redirected output after confirmed process exit.
             $entry.observation = Get-Content -Raw -LiteralPath (Join-Path $dir 'observation.json') | ConvertFrom-Json
-            $running.Refresh()
-            $entry.observations += @{ phase='after'; utc=[DateTime]::UtcNow.ToString('o'); taskState=[int]$task.State; instanceState=[int]$running.State; enginePid=$running.EnginePID }
+            try {
+                $running.Refresh()
+                $entry.observations += @{ phase='after'; utc=[DateTime]::UtcNow.ToString('o'); taskState=[int]$task.State; instanceState=[int]$running.State; enginePid=$running.EnginePID }
+            } catch {
+                $cause = $_.Exception
+                while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+                if ($cause.HResult -ne -2147216629) { throw } # SCHED_E_TASK_NOT_RUNNING 0x8004130B
+                $settledTask = $folder.GetTask($name)
+                $entry.observations += @{ phase='after'; utc=[DateTime]::UtcNow.ToString('o'); taskState=[int]$settledTask.State; instanceAbsent=$true; nativeError='0x8004130B' }
+            }
             if (-not $p.WaitForExit(10000)) { throw 'Runner not quiescent after measurement' }
             if ($observer.ExitCode -ne 0 -or -not $entry.observation.pass) { throw 'Native measurement falsified or incomplete, inspect every sample' }
             [IO.File]::WriteAllText((Join-Path $dir 'census-agent-stop'),'')
             if (-not $censusAgent.WaitForExit(10000) -or $censusAgent.ExitCode -ne 0) { throw 'Census agent failed or did not settle' }
-            if ($folder.GetTask($name).Xml -cne $registeredXml) { throw 'Task ownership changed before registration cleanup' }
+            $ownedTask = $folder.GetTask($name)
+            if ($ownedTask.Xml -cne $registeredXml) { throw 'Task ownership changed before registration cleanup' }
+            if ($ownedTask.GetInstances(0).Count -ne 0) { throw 'Owned task still has an instance after native quiescence' }
             $folder.DeleteTask($name,0)
             $entry.cleanup = 'Exact owned registration deleted after runner/descendants quiescent; evidence retained'
         } catch { $entry.error = $_.Exception.ToString() }
-        finally { if ($null -ne $p) { $p.Dispose() }; $pipe.Dispose() }
+        finally {
+            # Release only our diagnostic agent by its cooperative stop file and pinned Process.
+            # Never kill a task, manager or unclassified process to make evidence collection pass.
+            if ($null -ne $censusAgent) {
+                [IO.File]::WriteAllText((Join-Path $dir 'census-agent-stop'),'')
+                if (-not $censusAgent.WaitForExit(35000)) { $entry.error = 'Owned census agent did not settle; retained for disposable-host teardown' }
+                else { $censusAgent.WaitForExit() } # Flush redirected streams before hashing.
+                $censusAgent.Dispose()
+            }
+            if ($null -ne $observer) { $observer.Dispose() }
+            if ($null -ne $p) { $p.Dispose() }
+            $pipe.Dispose()
+        }
     }
     $report.mainPass = @($report.cases | Where-Object { $null -ne $_.error }).Count -eq 0
     $report.contextComparison = @()

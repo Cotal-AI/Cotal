@@ -22,6 +22,7 @@ public static class WindowsJobFacts {
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr h,out FT birth,out FT exit,out FT kernel,out FT user);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h,out uint code);
  [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h,uint ms);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForMultipleObjects(uint count,IntPtr[] handles,bool waitAll,uint ms);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr h,uint code);
  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr p,IntPtr job,out bool inside);
@@ -45,6 +46,22 @@ public static class WindowsJobFacts {
    byte[] bytes=Encoding.UTF8.GetBytes("{\"control\":true}"); writer.Write(bytes,0,bytes.Length); writer.Flush();
    var result=Load(dir,name); if(!(bool)result["control"])throw new Exception("Native shared-handle read control failed");
    Save(dir,"load-sharing-result.json",new {pass=true,writerHeldDuringRead=true,retry=false});
+  }
+ }
+ static bool AwaitCensus(List<IntPtr> handles,uint timeout,out object proof) {
+  if(handles.Count==0 || handles.Count>64)throw new Exception("Kernel wait census outside supported1..64 handles");
+  long before=Tick(); uint result=WaitForMultipleObjects((uint)handles.Count,handles.ToArray(),true,timeout); int error=result==0xffffffff?Marshal.GetLastWin32Error():0; long after=Tick();
+  bool admitted=result<(uint)handles.Count;
+  proof=new {before=before,after=after,result=result,error=error,timeoutMs=timeout,count=handles.Count,waitAll=true,admitted=admitted};
+  return admitted;
+ }
+ static void WaitControls(string dir) {
+  object timeoutProof,invalidProof;
+  using(var self=Process.GetCurrentProcess()) {
+   bool timeout=AwaitCensus(new List<IntPtr>{self.Handle},0,out timeoutProof);
+   bool invalid=AwaitCensus(new List<IntPtr>{IntPtr.Zero},0,out invalidProof);
+   Save(dir,"wait-controls.json",new {timeout=timeoutProof,invalid=invalidProof,gateAttempts=0,pass=!timeout&&!invalid});
+   if(timeout||invalid)throw new Exception("Fail-closed native wait controls admitted authority");
   }
  }
  static IntPtr Pin(Dictionary<string,object> id,bool kill) {
@@ -179,6 +196,14 @@ public static class WindowsJobFacts {
     if(mode=="kill") Check(TerminateProcess(runner,197),"TerminateProcess exact Node runner");
     else File.WriteAllText(Path.Combine(dir,"normal"),"");
     report["interventionAfter"]=Tick();
+    // Admission is the kernel wait plus lock, not raw LockFileEx availability.
+    // Every handle was pinned before intervention. One bounded wait, no timed sleep.
+    object barrier;
+    bool admitted=AwaitCensus(pinned,20000,out barrier);
+    report["admissionBarrier"]=barrier;
+    Save(dir,"admission-barrier.json",barrier);
+    if(!admitted)throw new Exception("Kernel census wait timeout/failed: authority NOT admitted, no gate attempt");
+    if(Array.Exists(States(pinned),state=>state))throw new Exception("Kernel wait returned but a pinned member is not signaled");
     deadline.Restart();
      while(deadline.ElapsedMilliseconds<20000) {
       long before=Tick(); bool[] liveBefore=States(pinned); bool got=Gate(h,out err); long acquired=Tick(); bool[] liveAfter=States(pinned); long after=Tick();
@@ -204,5 +229,5 @@ public static class WindowsJobFacts {
   finally { if(runner!=IntPtr.Zero)CloseHandle(runner);foreach(IntPtr handle in pinned)CloseHandle(handle); report["custody"]="No failure cleanup kills. Retained ambiguous or live custody belongs to disposable-host teardown."; Save(dir,"observation.json",report); }
   if(failed) Environment.ExitCode=1;
  }
- public static int Main(string[] a) { try { if(a[0]=="load-control")LoadControl(a[1]); else if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="census")Census(a[1]); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }
+ public static int Main(string[] a) { try { if(a[0]=="wait-controls")WaitControls(a[1]); else if(a[0]=="load-control")LoadControl(a[1]); else if(a[0]=="context")Context(a[1],Int32.Parse(a[2])); else if(a[0]=="breakaway")Breakaway(a); else if(a[0]=="census")Census(a[1]); else if(a[0]=="observe")Observe(a[1],a[2]); else throw new Exception("mode"); return Environment.ExitCode; } catch(Exception e) { Console.Error.WriteLine(e); return 1; } }
 }

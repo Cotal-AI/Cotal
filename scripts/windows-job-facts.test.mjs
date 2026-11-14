@@ -62,6 +62,28 @@ test('native setup reads allow rename-associated handles without a retry delay',
   assert.ok(ps.includes('& $helper load-control $directory'));
   assert.ok(js.includes('renameSync(p + \'.tmp\', p)'));
 });
+test('authority admission requires one all-process kernel wait before any post-intervention gate call', () => {
+  const observer = cs.slice(cs.indexOf('static void Observe('));
+  const intervention = observer.indexOf('TerminateProcess(runner,197)');
+  const wait = observer.indexOf('AwaitCensus(pinned,20000,out barrier)');
+  const gate = observer.indexOf('bool got=Gate(h,out err)');
+  assert.ok(intervention < wait && wait < gate);
+  assert.ok(observer.indexOf('if(!admitted)throw') < gate);
+  assert.ok(cs.includes('WaitForMultipleObjects((uint)handles.Count,handles.ToArray(),true,timeout)'));
+  assert.ok(cs.includes('handles.Count>64'));
+  assert.ok(cs.includes('new List<IntPtr>{self.Handle},0'));
+  assert.ok(cs.includes('new List<IntPtr>{IntPtr.Zero},0'));
+  assert.ok(ps.includes('& $helper wait-controls $directory'));
+  assert.doesNotMatch(cs, /Thread\.Sleep/);
+});
+test('post-measurement cleanup accepts only ended-task HRESULT and settles owned streams before hashes', () => {
+  assert.ok(ps.includes('$cause.HResult -ne -2147216629'));
+  assert.ok(ps.includes('while ($null -ne $cause.InnerException)'));
+  assert.ok(ps.includes('instanceAbsent=$true'));
+  assert.ok(ps.includes('$censusAgent.Dispose()'));
+  assert.ok(ps.indexOf('$censusAgent.Dispose()') < ps.indexOf("Save 'artifact-hashes.json'"));
+  assert.ok(ps.includes('$observer.WaitForExit()'));
+});
 test('worker JavaScript parses', () => { const r = spawnSync(process.execPath, ['--check', fileURLToPath(new URL('./windows-job-facts.mjs', import.meta.url))]); assert.equal(r.status, 0, String(r.stderr)); });
 test('only shipped launcher and gate APIs, one launch per runner', () => {
   assert.equal((js.match(/native\.launch\(/g) || []).length, 1);
