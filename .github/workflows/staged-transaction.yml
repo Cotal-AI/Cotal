@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 env:
-  PRODUCT_SOURCE: df7f45a8fa8d15b64da072d131a1692c504ba1e4
+  PRODUCT_SOURCE: 5032b322e8f16a54ebeb3be57e5e67461185e187
   pnpm_config_workspace_concurrency: 3
 jobs:
   workspace-native:
