@@ -3,14 +3,14 @@
 > **Project** (non-normative maintainer notes) · **For:** maintainers qualifying Cotal releases
 
 Cotal's upgrade matrix uses the same native harness for release checks and operator diagnostics.
-A passing cell requires the target CLI and every recorded extension, status exit0, no paused
+A passing cell requires the target CLI and every recorded extension, status exit 0, no paused
 recovery record, a preserved ready service when present, and no required repair step. Missing
 artifacts, skipped required cells and unsupported states are not passes.
 
 Each cell summary shows the update command's recorded `elapsedMs`, not the whole cell's duration.
 Scheduler cells say they are not direct update calls. A cell that fails before updating says no
-update call was recorded. Only Windows manual update commands, including a chain's second hop, have a temporary300000 ms
-bound for the slowness tracked in #6817. Restore its180000 ms bound when that issue is fixed.
+update call was recorded. Only Windows manual update commands, including a chain's second hop, have a temporary 300000 ms
+bound for the slowness tracked in #6817. Restore its 180000 ms bound when that issue is fixed.
 Other commands and platforms keep their existing bounds.
 
 ## Release triggers
@@ -44,19 +44,19 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs28 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 28 isolated
 product coordinates:
 
 | Coordinates | Count |
 |---|---:|
-| npm fresh, configured and stale-extension self-update on Ubuntu24.04, macOS15 and Windows2022 |9|
-| POSIX configured installer rerun and native daemon scheduler |4|
-| Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts |5|
-| Linux stand-in agent with public stop consent, separately daemon-hosted and standalone |2|
-| Linux paused record pointing to a real snapshot under another config home |1|
-| Linux host update with a foreign-UID container's bare `cotal supervise` |1|
-| The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms |3|
-| Permanently pinned source0.164.10 manual-service escape chains through the target to the synthetic next version |3|
+| npm fresh, configured and stale-extension self-update on Ubuntu 24.04, macOS 15 and Windows 2022 | 9 |
+| POSIX configured installer rerun and native daemon scheduler | 4 |
+| Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts | 5 |
+| Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
+| Linux paused record pointing to a real snapshot under another config home | 1 |
+| Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
+| The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
+| Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
@@ -68,15 +68,15 @@ These are separate from unattended scheduler cells. A failed manual service upda
 
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
 installed candidate's public manual updater. The synthetic target comes from the same immutable source,
-with the patch number increased by1000 before its distributions and seed payloads are built. Both
-complete24-package closures stay readable through a paired registry. The source entry and package
+with the patch number increased by 1000 before its distributions and seed payloads are built. Both
+complete 24-package closures stay readable through a paired registry. The source entry and package
 hashes, both archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
 
-Source0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
+Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
 and match only the measured platform-specific contract. On macOS, that contract records either
-the measured exit2 `LIFECYCLE_BLOCKED` trailer after target reconciliation or the measured180s
+the measured exit 2 `LIFECYCLE_BLOCKED` trailer after target reconciliation or the measured 180 s
 SIGTERM timeout. Before cleanup they must independently prove that the installed target and daemon
 agree, recovery is clear, updates are not paused and the
 generation fence is clear. The same machine must then complete a second manual update to the
@@ -85,7 +85,7 @@ chains retain this source after a newer predecessor becomes the default. Unknown
 blocked second hop fails.
 The consent chain also binds public daemon status and seat inventory to its prepared space and
 answering Manager before and after the second hop. A status question refused by the measured CLI
-actor connection limit is retried after its stated delay within the same180s observation bound.
+actor connection limit is retried after its stated delay within the same 180 s observation bound.
 Every question is retained. Other STARTING reasons fail. Both captures require the consented seats to
 have ended. The second hop must restore the Manager without setup or repair between hops.
 The explicitly owned local connector fixture keeps its recorded version, local path and immutable
@@ -112,11 +112,11 @@ truncated observations remain explicit. Diagnostics never turn an update failure
 The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
 is a product failure, not a known refusal.
 The standalone cell starts with `up --detach` and records its
-separate consent contract. Container shutdown uses `down --with-agents --yes`. When the bare supervisor is PID1, its clean exit
-can terminate the sibling `docker exec` with137. Only that observed case is accepted: the same
-container must exit0 between the command's start and the immediately following inspect call's
+separate consent contract. Container shutdown uses `down --with-agents --yes`. When the bare supervisor is PID 1, its clean exit
+can terminate the sibling `docker exec` with 137. Only that observed case is accepted: the same
+container must exit 0 between the command's start and the immediately following inspect call's
 start, without an OOM, with no process left. Both clocks are compared at millisecond precision.
-Other non-zero outcomes and unknown end states fail. Raw exit137 remains in the transcript. Owned Docker shutdown
+Other non-zero outcomes and unknown end states fail. Raw exit 137 remains in the transcript. Owned Docker shutdown
 and its final stopped-state check still run.
 
 The foreign snapshot cell keeps completed rename entries, a freshly recorded paused journal and
@@ -132,7 +132,7 @@ asserts the stock trust-policy refresh before a daemon-hosted Manager starts. Th
 guard is unchanged. The composed hosted container upgrade
 still needs its own original result before it can be called a reproduction or a passing fix.
 
-The packed phase builds the exact PR head's six native targets, assembles all24 fixed-group
+The packed phase builds the exact PR head's six native targets, assembles all 24 fixed-group
 packages and retains native, prepublish and prepack guards. Its read-only loopback registry serves
 the hash-verified candidate closure and installed-version metadata. Candidate version must be newer
 than public latest. Installer reruns use the candidate source's receipt-bound script.
@@ -141,7 +141,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all28 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 28 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the
@@ -172,17 +172,17 @@ the entry. Raw reports stay failed. The census reports expected refusals separat
 upgrade passes, with separate summary acceptance and full upgrade acceptance.
 
 The standalone consent entry names [#6802](https://github.com/Cotal-AI/Cotal/issues/6802). The container
-entry names [#6785](https://github.com/Cotal-AI/Cotal/issues/6785) and applies only to source0.164.6;
-source0.164.7 must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747).
+entry names [#6785](https://github.com/Cotal-AI/Cotal/issues/6785) and applies only to source 0.164.6;
+source 0.164.7 must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747).
 Entries with no released fix use `fixedIn: null`. Set the cutoff only when a release carries the fix,
 then remove stale entries when their listed source turns green. A packed target fix does not change
 which installed source executes the first update attempt.
 
 ## Run a published cell
 
-Use Node>=22.10. Native service and agent cells require a disposable hosted runner. On a persistent
-Linux host the harness refuses them and places other cells in private mode700 homes under
-`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require20GiB free before
+Use Node >= 22.10. Native service and agent cells require a disposable hosted runner. On a persistent
+Linux host the harness refuses them and places other cells in private mode 700 homes under
+`/var/tmp/upgrade-matrix`. It never uses the operator's Cotal state. Require 20 GiB free before
 installation or build. Do not run the container fixture on a workstation.
 
 ```sh
@@ -221,7 +221,7 @@ Never relabel an older archive or patch installed product bytes to manufacture a
 
 ## Observe native custody
 
-Mac scheduler transition cells require a stable source at least0.164.6 and a newer explicit target.
+Mac scheduler transition cells require a stable source at least 0.164.6 and a newer explicit target.
 They use `--published-launchd true --launchd-proof transition` for a published target and the same
 transition observer for candidate B. Snapshots retain receipt, plist bytes
 and digest, loaded job, runner creation identity, completion, exit, job/source retirement and daemon
@@ -229,7 +229,7 @@ generation. A terminal success alone does not establish custody cleanup. Unknown
 the service for disposable-runner teardown. Off-before-tick and killed-before-result modes remain
 available in the scoped candidate-A diagnostic campaign.
 
-The scheduler cells observe automatic-update eligibility for at most90seconds after the daemon
+The scheduler cells observe automatic-update eligibility for at most 90 seconds after the daemon
 answers, on Linux and macOS, before aging any clock or starting the upgrade observation. Readiness
 alone does not establish native ownership. The eligibility samples and deadline remain in the report;
 a deadline failure remains red and does not become an updater result.
