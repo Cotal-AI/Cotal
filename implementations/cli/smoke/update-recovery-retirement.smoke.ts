@@ -1,7 +1,7 @@
 import "./update-isolation.js";
 import strictAssert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartToken } from "@cotal-ai/workspace";
@@ -10,6 +10,7 @@ import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert;
 const root = mkdtempSync(join(tmpdir(), "update-recovery-retirement-"));
+process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 const fixture = join(import.meta.dirname, "update-recovery.fixture.ts");
 const now = Date.now();
 function cell(name: string) {
