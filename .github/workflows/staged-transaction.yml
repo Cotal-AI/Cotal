@@ -124,6 +124,9 @@ jobs:
           args=()
           if [ '${{ matrix.method }}' = scheduler ]; then args+=(--launchd-proof transition); fi
           node scripts/automatic-update-platform-baseline.mjs --source-candidate "$RUNNER_TEMP/candidates/candidate-A" --candidate "$RUNNER_TEMP/candidates/candidate-B" --direction B --source 0.164.9 --expected-target 0.164.10 --layout npm --state daemon --method '${{ matrix.method }}' "${args[@]}" --output "$RUNNER_TEMP/staged-evidence"
+      - name: Read final native ownership diagnostics
+        if: always()
+        run: node scripts/staged-native-diagnostics.mjs "$RUNNER_TEMP/staged-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
