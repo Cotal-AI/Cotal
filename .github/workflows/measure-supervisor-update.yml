@@ -1,0 +1,191 @@
+name: Prove interrupted update retirement
+on:
+  push:
+    branches: [measure/update-recovery]
+permissions:
+  contents: read
+  actions: read
+env:
+  PRODUCT_SHA: 67a44a314b756092dd0be76a52b1e5f7b6314375
+  NATIVE_BUILD_SHA: bbee0ea5e74884fe633df223a319628c5d6a6215
+  SHARED_SHA: d57044a3f5e8821d7ff4427352137d0af3e9b30e
+  DO_NOT_TRACK: '1'
+  COTAL_TELEMETRY: 'off'
+jobs:
+  native:
+    if: false
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-24.04 }
+          - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { platform: darwin, arch: x64, runner: macos-15-intel }
+          - { platform: darwin, arch: arm64, runner: macos-15 }
+          - { platform: win32, arch: x64, runner: windows-latest }
+          - { platform: win32, arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Compile Unix host primitives
+        if: matrix.platform != 'win32'
+        shell: bash
+        run: |
+          node packages/seat/scripts/build-native.mjs --host
+          if [ '${{ matrix.platform }}' = darwin ]; then node packages/workspace/scripts/build-native.mjs; fi
+      - name: Compile Windows host primitives
+        if: matrix.platform == 'win32'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-seat-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform != 'linux'
+        with:
+          name: release-workspace-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          path: product
+          persist-credentials: false
+      - name: Fetch exact native builder source for receipt comparison
+        working-directory: product
+        run: |
+          git fetch origin "$NATIVE_BUILD_SHA"
+          git cat-file -e "$NATIVE_BUILD_SHA:packages/workspace/native/win32-process.c"
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.21.0
+      - name: Require disk budget
+        run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-natives
+          run-id: 43545720192
+          github-token: ${{ github.token }}
+      - name: Assemble and guard complete native closure
+        working-directory: product
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ env.NATIVE_BUILD_SHA }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/release-natives/release-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/release-natives/release-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/release-natives/release-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
+      - name: Guarded full-closure candidate A and B packs
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/candidates"
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidates/A" --version 0.164.7 --source-root "$GITHUB_WORKSPACE/product"
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidates/B" --version 0.164.8 --source-root "$GITHUB_WORKSPACE/product"
+          node --input-type=module -e 'import fs from "node:fs";import assert from "node:assert/strict";for(const [label,version]of[["A","0.164.7"],["B","0.164.8"]]){const m=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/candidates/"+label+"/manifest.json"));assert.equal(m.source,process.env.PRODUCT_SHA);assert.equal(m.packages.length,24);assert(m.packages.every(p=>p.version===version));}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixed-candidates
+          path: ${{ runner.temp }}/candidates
+          if-no-files-found: error
+  prove:
+    needs: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        route: [bootstrap, self]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.21.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: fixed-candidates
+          path: ${{ runner.temp }}/candidates
+      - name: Private measurement environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          root="$RUNNER_TEMP/private-proof"
+          mkdir -m 700 "$root" "$root/home" "$root/cotal" "$root/config" "$root/tmp" "$RUNNER_TEMP/evidence"
+          for key in ${!COTAL_@}; do echo "$key=" >> "$GITHUB_ENV"; done
+          printf 'HOME=%s\nCOTAL_HOME=%s\nXDG_CONFIG_HOME=%s\nTMPDIR=%s\n' "$root/home" "$root/cotal" "$root/config" "$root/tmp" >> "$GITHUB_ENV"
+          printf 'COTAL_TELEMETRY=off\nCOTAL_SKIP_CONNECTOR_SEED=1\n' >> "$GITHUB_ENV"
+          git rev-parse HEAD > "$RUNNER_TEMP/evidence/measurement-head.txt"
+      - run: pnpm install --frozen-lockfile --prefer-offline
+      - run: pnpm --workspace-concurrency 3 build
+      - name: Install verified broker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUNNER_TEMP/nats"
+          cd "$RUNNER_TEMP/nats"
+          base=https://github.com/nats-io/nats-server/releases/download/v2.14.0
+          curl -fsSL "$base/nats-server-v2.14.0-linux-amd64.tar.gz" -o nats.tgz
+          echo '3d8b74dfad39af184c765a6dd120441ed1c648d6672eddf6b304f222661251b8  nats.tgz' | sha256sum -c -
+          tar -xzf nats.tgz
+          echo "$RUNNER_TEMP/nats/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+      - name: Prove fixed candidate route
+        env:
+          UPDATE_CANDIDATE_ROOT: ${{ runner.temp }}/candidates
+          UPDATE_MEASUREMENT_OUT: ${{ runner.temp }}/evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import tsx implementations/cli/smoke/update-recovery-installed-proof.ts '${{ matrix.route }}' 2>&1 | tee "$RUNNER_TEMP/evidence/driver.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovery-fixed-${{ matrix.route }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error

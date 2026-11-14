@@ -17,7 +17,7 @@ export const states = ['fresh', 'configured', 'daemon', 'agent', 'stale-extensio
 export const methods = ['self', 'scheduler', 'installer'];
 const hosted = process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
-export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output);
+export const requiresManualStep = output => /run `cotal|run cotal|manual (?:step|intervention)|interrupted update|OPERATION_UNKNOWN|Outcome unconfirmed|needs restoration|refused/i.test(output.split('\n').filter(line => !/^Retained unusable interrupted-update records in .+; continuing the update\.$/.test(line)).join('\n'));
 export function completionAdvisory(output) {
   const advisory = [], required = [];
   let completion = false;
@@ -301,14 +301,21 @@ export async function matrixCell(options) {
     report.source = source === 'latest' ? report.target : source;
     if (publishedLaunchd) assert.notEqual(report.target, report.source, 'next published release is not available yet');
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
+    if (options['source-candidate']) {
+      assert(options.candidate && options.direction === 'B' && layout === 'npm' && state === 'configured', 'source candidate requires configured npm candidate-B proof');
+      const sourceManifest = json(join(resolve(options['source-candidate']), 'manifest.json'));
+      report.source = sourceManifest.packages[0].version;
+      report.sourceCandidate = { source: sourceManifest.source, version: report.source, manifestSha256: digest(readFileSync(join(resolve(options['source-candidate']), 'manifest.json'))) };
+    }
     if (options.candidate) {
-      overlay = await candidateRegistry(resolve(options.candidate), options.direction ?? 'B', report.registry);
+      overlay = await candidateRegistry(resolve(options['source-candidate'] ?? options.candidate), options.direction ?? 'B', report.registry);
       report.candidate = overlay.identity;
       const numeric = value => value.split('.').map(Number);
       const compare = (a, b) => { const left = numeric(a), right = numeric(b); for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i] - right[i]; return 0; };
-      assert((options.direction ?? 'B') === 'B' ? compare(overlay.identity.version, report.source) > 0 : compare(report.target, overlay.identity.version) > 0, 'candidate ordering must permit a real version-changing stock update');
+      const targetVersion = options['source-candidate'] ? json(join(resolve(options.candidate), 'manifest.json')).packages[0].version : overlay.identity.version;
+      assert((options.direction ?? 'B') === 'B' ? compare(targetVersion, report.source) > 0 : compare(report.target, overlay.identity.version) > 0, 'candidate ordering must permit a real version-changing stock update');
       env.npm_config_registry = overlay.url;
-      if ((options.direction ?? 'B') === 'B') report.target = overlay.identity.version;
+      if ((options.direction ?? 'B') === 'B') report.target = targetVersion;
       else report.source = overlay.identity.version;
       if (expectedTarget) assert.equal(report.target, expectedTarget, 'packed target differs from frozen version PR head');
       // Native services read npm's normal per-account config, not the launching shell's registry env.
@@ -334,6 +341,17 @@ export async function matrixCell(options) {
     if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state)) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
+    }
+    if (options['source-candidate']) {
+      const sourceIdentity = overlay.identity;
+      restoreRegistry();
+      report.sourceRegistryRequests = await overlay.close();
+      overlay = await candidateRegistry(resolve(options.candidate), 'B', report.registry, resolve(options['source-candidate']));
+      assert.equal(overlay.identity.source, sourceIdentity.source, 'candidate A/B must come from the same source');
+      report.sourceCandidate = sourceIdentity;
+      report.candidate = overlay.identity;
+      env.npm_config_registry = overlay.url;
+      restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
     if (state === 'stale-extensions') {
       const old = options['stale-version'] ?? (report.source === '0.155.0' ? '0.154.0' : '0.155.0');
@@ -834,7 +852,7 @@ export async function packCandidate(output, version, sourceRoot) {
   }
 }
 
-export async function candidateRegistry(directory, direction, upstream) {
+export async function candidateRegistry(directory, direction, upstream, previousDirectory) {
   assert(['A', 'B'].includes(direction), 'candidate direction must be A or B');
   assert.equal(new URL(upstream).origin, 'https://registry.npmjs.org', 'overlay only proxies the public registry, never private registry credentials');
   const manifest = json(join(directory, 'manifest.json'));
@@ -860,6 +878,35 @@ export async function candidateRegistry(directory, direction, upstream) {
   assert.deepEqual([...entries.keys()].sort(), expected, 'overlay must carry every first-party package from the packed head');
   const versions = [...new Set(manifest.packages.map(pkg => pkg.version))];
   assert.equal(versions.length, 1, 'candidate closure is lockstep');
+  const previousEntries = new Map();
+  if (previousDirectory) {
+    const previous = json(join(previousDirectory, 'manifest.json'));
+    assert.equal(previous.source, manifest.source, 'previous candidate must match target source');
+    assert.deepEqual(previous.packages.map(pkg => pkg.name).sort(), expected, 'previous candidate closure must be complete');
+    const previousVersions = [...new Set(previous.packages.map(pkg => pkg.version))];
+    assert.equal(previousVersions.length, 1, 'previous candidate closure is lockstep');
+    assert.match(previousVersions[0], /^\d+\.\d+\.\d+$/);
+    const before = previousVersions[0].split('.').map(Number), after = versions[0].split('.').map(Number);
+    assert(before[0] < after[0] || before[0] === after[0] && (before[1] < after[1] || before[1] === after[1] && before[2] < after[2]), 'previous candidate must be older than target');
+    for (const pkg of previous.packages) {
+      assert(/^[^/\\]+\.tgz$/.test(pkg.archive), 'previous candidate archive path must be a basename');
+      assert(!archives.has(pkg.archive), 'candidate archive basenames must not collide');
+      const file = join(previousDirectory, pkg.archive), bytes = readFileSync(file);
+      assert.equal(digest(bytes), pkg.sha256, 'previous candidate archive hash');
+      let metadata;
+      await list({ file, strict: true, onReadEntry(entry) {
+        if (entry.path !== 'package/package.json') { entry.resume(); return; }
+        const chunks = [];
+        entry.on('data', chunk => chunks.push(chunk));
+        entry.on('end', () => { metadata = JSON.parse(Buffer.concat(chunks).toString('utf8')); });
+      } });
+      assert.equal(metadata?.name, pkg.name);
+      assert.equal(metadata?.version, pkg.version);
+      assert.notEqual(pkg.version, versions[0], 'previous and target versions must differ');
+      previousEntries.set(pkg.name, { pkg, bytes, metadata });
+      archives.set(pkg.archive, bytes);
+    }
+  }
   const version = versions[0], cache = new Map();
   let url;
   const server = createServer(async (request, response) => {
@@ -885,6 +932,11 @@ export async function candidateRegistry(directory, direction, upstream) {
       }
       const packument = structuredClone(cache.get(name));
       const local = entries.get(name);
+      const previous = previousEntries.get(name);
+      if (previous) {
+        const { pkg, bytes, metadata } = previous;
+        packument.versions[pkg.version] = { ...metadata, dist: { tarball: `${url}/__candidate/${pkg.archive}`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`, shasum: createHash('sha1').update(bytes).digest('hex') } };
+      }
       if (local) {
         const pkg = manifest.packages.find(pkg => pkg.name === name), bytes = archives.get(pkg.archive);
         packument.versions[version] = { ...local, dist: { tarball: `${url}/__candidate/${pkg.archive}`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`, shasum: createHash('sha1').update(bytes).digest('hex') } };
