@@ -2,15 +2,18 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { recoverExtensionPromotion, assertStageVerifier, stageExtensions } from "../src/lib/extension-stage.js";
 
 const originalConfig = process.env.XDG_CONFIG_HOME;
 const roots: string[] = [];
+let passed = 0;
 try {
 const forbidden = mkdtempSync(join(tmpdir(), "promotion-forged-"));
 roots.push(forbidden);
 assert.throws(() => assertStageVerifier(process.ppid, forbidden, "forged"), /no live prefix writer/);
 console.log("forged staged verifier has no mutation authority");
+passed++;
 
 if (process.platform !== "win32") {
   const root = mkdtempSync(join(tmpdir(), "promotion-linked-"));
@@ -27,6 +30,7 @@ if (process.platform !== "win32") {
     assert(!existsSync(join(linked, "cotal", ".extensions-promotion.json")));
   } finally { stage.discard(); }
   console.log("promotion through a private symlinked config root preserves its physical prefix");
+  passed++;
 }
 
 if (process.platform !== "win32") {
@@ -47,6 +51,7 @@ if (process.platform !== "win32") {
     } finally { process.umask(previous); }
   }
   console.log("a stage made under a umask of 0002 holds no group or other write, with and without a live prefix");
+  passed++;
 }
 
 for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
@@ -68,7 +73,9 @@ for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   assert(!existsSync(stage) && !existsSync(old));
   assert(!existsSync(join(config, ".extensions-promotion.json")));
   console.log(`promotion ${state}: complete verified new prefix recovered`);
+  passed++;
 }
+emitSentinel({ passed, failed: 0 });
 } finally {
   if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = originalConfig;
