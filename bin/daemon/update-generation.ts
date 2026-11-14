@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 import { queryDaemon } from "./client.js";
-import { daemonPaths, EndpointRefusal } from "./endpoint.js";
+import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { installedDaemonIdentity, unitReceiptFile } from "./install.js";
 import { daemonManagerIntentFile } from "./manager.js";
 
@@ -11,6 +11,10 @@ export interface GenerationWaitProbe {
   readonly installed?: () => boolean;
   readonly query?: typeof queryDaemon;
   readonly timeoutMs?: number;
+  readonly lifecycle?: (paths: DaemonPaths, deadline: number) => Promise<{
+    poll(remainingMs: number): Promise<void>;
+    close(): void;
+  }>;
 }
 
 export async function waitForInstalledDaemonGeneration(version: string, probe: GenerationWaitProbe = {}): Promise<void> {
@@ -27,13 +31,17 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
   console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
   const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
+  const lifecycle = await probe.lifecycle?.(paths, deadline);
+  try {
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `installed Cotal ${version} did not become ready within ${Math.round(bound / 1000)}s: ${waiting}; connector reconciliation was not started by this update. Read \`cotal daemon status\` and the recorded daemon user service, restore the daemon and its hosted Managers, then run \`cotal update\` again`, {
       remedy: "read \`cotal daemon status\` and the recorded daemon user service, restore the daemon and its hosted Managers, then run \`cotal update\` again",
     });
+    await lifecycle?.poll(remaining);
+    if (Date.now() >= deadline) continue;
     try {
-      const reply = await query({ paths, timeoutMs: Math.min(20_000, Math.max(1, remaining)) });
+      const reply = await query({ paths, timeoutMs: Math.min(20_000, Math.max(1, deadline - Date.now())) });
       // A daemon that cannot complete status while it stops or starts its hosted Managers is still
       // restarting. Its reason is kept for the deadline, and the wait goes on.
       if (!reply.ok) waiting = `the daemon could not answer status: ${reply.error.code} ${reply.error.message}`;
@@ -59,4 +67,5 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     }
     await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));
   }
+  } finally { lifecycle?.close(); }
 }
