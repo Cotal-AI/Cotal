@@ -299,9 +299,9 @@ mod configured {
                 return publish(&app, state);
             }
         };
-        let was_visible = windows(&app, false).await?;
-        if was_visible && !explicit { return publish(&app, state); }
-        let result = async {
+        let result: Result<UpdateView, String> = async {
+            let was_visible = windows(&app, false).await?;
+            if was_visible && !explicit { return publish(&app, state); }
             if !automatic(&app).await? {
                 with_pending(state, |pending| pending.view.reason = Some("Automatic updates are off. No app files were changed.".into()))?;
                 return publish(&app, state);
@@ -333,16 +333,20 @@ mod configured {
                 return Err(error.to_string());
             }
             receipt.phase = "installed".into();
-            if let Ok(show) = activity.take_show_request() { receipt.reopen |= show; }
-            else { receipt.reopen = true; }
-            // The installing receipt is enough to observe the target after a crash here.
-            // Never bring the old window back if the bundle already changed.
-            if let Err(reason) = write_receipt(&app, &receipt) {
-                eprintln!("The app was replaced but its update receipt could not be finalized: {reason}");
-            }
-            // Keep the activity claim across restart. No old window can reappear after replacement.
-            activity.restart().expect("The replacement must retain its restart admission");
-            app.restart();
+            let handle = app.clone();
+            app.run_on_main_thread(move || {
+                let activity = handle.state::<Activity>();
+                if let Ok(show) = activity.take_show_request() { receipt.reopen |= show; }
+                else { receipt.reopen = true; }
+                // The installing receipt is enough to observe the target after a crash here.
+                if let Err(reason) = write_receipt(&handle, &receipt) {
+                    eprintln!("The app was replaced but its update receipt could not be finalized: {reason}");
+                }
+                activity.restart().expect("The replacement must retain its restart admission");
+                handle.restart();
+            }).expect("The native event loop must complete the replacement restart");
+            // Keep admission until restart terminates this process. Never return to an old window.
+            std::future::pending::<Result<UpdateView, String>>().await
         }.await;
         drop(replacement);
         if let Err(reason) = &result {

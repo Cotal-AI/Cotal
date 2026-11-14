@@ -182,7 +182,9 @@ fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
 
 pub(crate) fn show_now(app: &AppHandle) {
     let activity = app.state::<crate::app_activity::Activity>();
-    let _ = activity.show(|| show_window(app));
+    if let Err(reason) = activity.show(|| show_window(app)) {
+        let _ = app.emit("desktop-presence-error", reason);
+    }
 }
 
 fn show_window(app: &AppHandle) {
@@ -280,13 +282,13 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
-            let mut open = !std::env::args().any(|arg| arg == "--background");
+            let open = !std::env::args().any(|arg| arg == "--background");
             #[cfg(all(cotal_updater, target_os = "macos"))]
-            match crate::updater::reopen(app.handle()) {
-                Ok(Some(reopen)) => open = reopen,
-                Ok(None) => {},
-                Err(reason) => { let _ = app.emit("desktop-presence-error", reason); },
-            }
+            let open = match crate::updater::reopen(app.handle()) {
+                Ok(Some(reopen)) => reopen,
+                Ok(None) => open,
+                Err(reason) => { let _ = app.emit("desktop-presence-error", reason); open },
+            };
             if open { show(app.handle()); }
             Ok(())
         })

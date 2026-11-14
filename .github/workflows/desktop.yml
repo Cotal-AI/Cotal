@@ -13,6 +13,14 @@ on:
         description: 'Compile configured and no-key updater branches with a disposable test key on macOS and Windows'
         type: boolean
         default: false
+      updater_apply:
+        description: 'Run debug N/N+1 Mac app updates with real launchd and an occupied fixture PTY'
+        type: boolean
+        default: false
+      updater_fixture_head:
+        description: 'Immutable reviewed source head containing the shared real-seat fixture'
+        type: string
+        default: ''
   schedule:
     - cron: '17 6 * * 1'
   pull_request:
@@ -336,6 +344,30 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.exe
           if-no-files-found: error
           retention-days: 7
+  updater-arm:
+    if: inputs.updater_apply
+    uses: ./.github/workflows/desktop-mac-updater.yml
+    with:
+      runner: macos-15
+      mode: explicit
+      fixture_head: ${{ inputs.updater_fixture_head }}
+  updater-followup:
+    if: inputs.updater_apply
+    needs: updater-arm
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: macos-15
+            mode: hidden
+          - runner: macos-15-intel
+            mode: explicit
+    uses: ./.github/workflows/desktop-mac-updater.yml
+    with:
+      runner: ${{ matrix.runner }}
+      mode: ${{ matrix.mode }}
+      fixture_head: ${{ inputs.updater_fixture_head }}
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: native-build

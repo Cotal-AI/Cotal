@@ -1,0 +1,63 @@
+name: Mac desktop updater acceptance
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+      fixture_head:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Build actual N and N+1 debug app bundles
+        run: pnpm exec node desktop/test/mac-updater-build.mjs
+      - name: Install fixture broker
+        run: brew install nats-server
+      - name: Prepare immutable shared fixture checkout
+        env:
+          FIXTURE_HEAD: ${{ inputs.fixture_head }}
+        run: |
+          set -euo pipefail
+          [[ "$FIXTURE_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          git fetch origin "$FIXTURE_HEAD"
+          git worktree add --detach "$RUNNER_TEMP/mac-updater-fixture" "$FIXTURE_HEAD"
+          cd "$RUNNER_TEMP/mac-updater-fixture"
+          pnpm install --frozen-lockfile
+          node packages/workspace/scripts/build-native.mjs
+          node packages/seat/scripts/build-native.mjs --host
+          pnpm --workspace-concurrency=2 --filter cotal-ai... build
+      - name: Exercise native app update, installed launchd and real occupied PTY
+        env:
+          APPLY_MODE: ${{ inputs.mode }}
+          COTAL_MAC_FIXTURE_ROOT: ${{ runner.temp }}/mac-updater-fixture
+        run: pnpm exec tsx desktop/test/mac-updater-proof.mjs "$APPLY_MODE"
+      - name: Upload native updater acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-updater-${{ inputs.runner }}-${{ inputs.mode }}
+          path: |
+            ${{ runner.temp }}/mac-updater-build/*.log
+            ${{ runner.temp }}/mac-updater-build/build-result.json
+            ${{ runner.temp }}/mac-updater-result/
+          if-no-files-found: error
+          retention-days: 7
