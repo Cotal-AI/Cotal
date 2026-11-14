@@ -29,6 +29,7 @@ export const homeRecordEntries: ReadonlySet<string> = new Set([
   "agent-skills.json", "app-identities", "catalog", "chat-sessions", "current-mesh", "idp-sessions.json", "idp-sessions.lock", "linear",
   "meshes", "onboarded.json", "prepared", "service-launchd", "services",
   "update-settings.json", "update-recovery.json", "update-check.json", "update-check.lock", "update-attempt.json", "update-attempt.log",
+  "update-launchd.json", "update-launchd-result.json",
 ]);
 
 /** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows
