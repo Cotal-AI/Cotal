@@ -83,6 +83,14 @@ Run `cotal version` and confirm that the selected binary is the target version b
 
 ## Reconcile the installation
 
+On versions 0.159.1 through 0.160.7, a home that was never configured can refuse `cotal update --self` with `update snapshot refused: ENOENT` because its configuration directory does not exist. Rerun the installer:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh -s -- --no-setup --no-modify-path
+```
+
+Then run `cotal version` and `cotal status` using the installer's launcher at `~/.local/bin/cotal`.
+
 From the prepared project folder, run the target version's command:
 
 ```bash
