@@ -22,8 +22,22 @@ with reinstall guidance rather than selecting another generation.
 A running command reports the release of its loaded implementation, even if the canonical
 package manifest changes while it runs.
 
-This entry and generation-store support does not change `cotal update --self` yet.
-The updater still uses its existing installation and recovery path.
+On a writable POSIX npm global installation, `cotal update --self` prepares a complete target
+package and its dependencies in retained storage before changing the selected execution.
+It runs installed read-only checks and the target's declared pre-install checks first.
+A refused check leaves the installed package and connector state unchanged.
+An unwritable installation refuses before staging and names the owning install command.
+
+Publication changes the bootstrap, manifest and bound descriptor. Original product code and
+dependencies stay in place for processes that loaded them. A standalone Manager can keep its
+loaded generation without stopping seats. New launches still enforce extension generation
+compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
+and consent checks.
+
+Current and previous execution generations are retained. Older generations remain when their
+holders cannot be proved absent. A later manual npm or pnpm replacement is outside this staged
+publication guarantee. The update that first installs this support still runs the older updater.
+Windows keeps its existing in-place update route and does not use retained publication.
 
 ## Plan the upgrade
 
