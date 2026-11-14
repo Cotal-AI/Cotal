@@ -4,7 +4,13 @@ import { CommandFailure } from "./output.js";
 
 export const LOCAL_INPUT_LIMIT = 256 * 1024;
 
-/** How local records are protected: POSIX descriptor/owner/mode checks or the existing Windows ACL model. */
+/**
+ * How local records are protected. `posix` checks the owner and the mode and refuses links, and
+ * opens without following a link or blocking. `windows-acl` is the model Cotal already uses for
+ * private files on Windows: a private file or directory gets an access list for this user, SYSTEM
+ * and Administrators when Cotal creates it (core `hardenPrivate`). Windows has no POSIX owner or
+ * mode, so that model checks neither and does not refuse a link.
+ */
 export type LocalRecordAccess = "posix" | "windows-acl";
 
 /** This platform's existing local-record protection model, or undefined when required POSIX primitives are unavailable. */

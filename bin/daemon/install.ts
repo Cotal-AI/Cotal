@@ -428,7 +428,7 @@ export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemo
 }
 
 function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; current: string } {
-  return recordedSourceIdentity(receipt, plan.mechanism, daemonServeArgv(receipt.daemonHome));
+  return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
 
 export interface DaemonOwnershipObservation {

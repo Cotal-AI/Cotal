@@ -650,7 +650,7 @@ try {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
     for (const available of [false, true]) {
-      const dir = join(root, available ? "preview-ready" : "preview-missing-loginctl");
+      const dir = join(root, available ? "preview-ready" : "preview-no-loginctl");
       mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "daemon", "config", "runtime", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
       const daemonHome = join(dir, "daemon");

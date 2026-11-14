@@ -11,7 +11,7 @@ export function recordedSourceMarked(receipt: UnitReceipt, mechanism: ServiceMec
 }
 
 /** Compare the verified source's executable and entry with the caller's immutable launch coordinates. */
-export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceMechanism, expected: readonly string[]): { same: boolean; installed: string; current: string } {
+export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceMechanism, expected: readonly string[] | (() => readonly string[])): { same: boolean; installed: string; current: string } {
   const bytes = readFileSync(receipt.unitPath);
   const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
   let argv: string[];
@@ -33,7 +33,7 @@ export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceM
     const entry = daemon >= 2 ? args[daemon - 1]! : args[0]!;
     return { executable: args[0], entry };
   };
-  const installed = coordinate(argv), current = coordinate(expected);
+  const installed = coordinate(argv), current = coordinate(typeof expected === "function" ? expected() : expected);
   if (mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
   if (mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
   if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
