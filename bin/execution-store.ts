@@ -17,7 +17,10 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
     if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()) throw new Error("execution package must be a real directory");
     protectedExecutionEntry(path);
   }
-  try { accessSync(dirname(dirname(installedRoot)), constants.W_OK); }
+  try {
+    accessSync(installedRoot, constants.W_OK);
+    accessSync(dirname(dirname(installedRoot)), constants.W_OK);
+  }
   catch { throw new Error(`installation is not writable; use the owning command: npm install -g --prefix ${dirname(dirname(dirname(installedRoot)))} cotal-ai@latest`); }
   const store = executionStore(installedRoot);
   if (!lstatSync(store, { throwIfNoEntry: false })) mkdirSync(store, { mode: 0o700 });

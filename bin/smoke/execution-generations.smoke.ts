@@ -56,6 +56,12 @@ try {
     });
     console.log(`execution generations: ${checks} checks passed; retained selection unavailable on this platform`);
   } else {
+  check("a non-writable package refuses before creating generation storage", () => {
+    chmodSync(root, 0o500);
+    try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; use the owning command/); }
+    finally { chmodSync(root, 0o700); }
+    assert.equal(existsSync(executionStore(root)), false);
+  });
   check("generation store refuses a non-writable installation before creating it", () => {
     const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
     try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; use the owning command/); }
