@@ -1,6 +1,6 @@
 import { decode, type Account, type Operator, Types } from "@nats-io/jwt";
 import { fromPublic, fromSeed, type KeyPair } from "@nats-io/nkeys";
-import type { SpaceAuth } from "./provision.js";
+import type { BrokerAuth, SpaceAccountAuth, SpaceAuth } from "./provision.js";
 import { token } from "./subjects.js";
 
 type RecordValue = Record<string, unknown>;
@@ -60,6 +60,38 @@ function claims<T>(jwt: string, field: string): ReturnType<typeof decode<T>> {
   }
 }
 
+interface AccountFields { pub: string; seed: string; jwt: string; signingSeed: string; signingPub: string }
+
+/** The account fields the chain checks read: each a non-empty string, each public key an account nkey. */
+function accountFields(account: RecordValue): AccountFields {
+  const pub = publicKey(string(account.pub, "account.pub"), "account.pub", "A");
+  const seed = string(account.seed, "account.seed");
+  const jwt = string(account.jwt, "account.jwt");
+  const signingSeed = string(account.signingSeed, "account.signingSeed");
+  const signingPub = publicKey(string(account.signingPub, "account.signingPub"), "account.signingPub", "A");
+  return { pub, seed, jwt, signingSeed, signingPub };
+}
+
+/** Each account seed is the private half of the public key recorded beside it. */
+function assertAccountSeeds(account: AccountFields): void {
+  if (seedPublicKey(account.seed, "account.seed", "A") !== account.pub)
+    throw new Error("validateSpaceAuth: account.seed does not match account.pub");
+  if (seedPublicKey(account.signingSeed, "account.signingSeed", "A") !== account.signingPub)
+    throw new Error("validateSpaceAuth: account.signingSeed does not match account.signingPub");
+}
+
+/** The claim is this account's, this operator issued it, it is named for the space, and it trusts
+ *  the active signing key. */
+function assertAccountClaims(accountClaims: ReturnType<typeof decode<Account>>, account: AccountFields, operatorPub: string, space: string): void {
+  if (accountClaims.nats?.type !== Types.Account || accountClaims.sub !== account.pub || accountClaims.iss !== operatorPub)
+    throw new Error("validateSpaceAuth: account JWT subject, issuer, or type does not match the operator/account keys");
+  if (accountClaims.name !== token(space))
+    throw new Error("validateSpaceAuth: account JWT name does not match space");
+  const signingKeys = accountClaims.nats.signing_keys;
+  if (!Array.isArray(signingKeys) || !signingKeys.includes(account.signingPub))
+    throw new Error("validateSpaceAuth: active account signing key is not trusted as an unscoped signer by account.jwt");
+}
+
 /** The `iat` (issued-at, seconds) a NATS JWT carries — the monotonic generation marker persistence
  *  uses to refuse rolling a trust record BACK to an older issue of the same authority (e.g. a stale
  *  pre-rotation system account). Read-only; fails loud on anything that does not decode as a NATS
@@ -93,21 +125,14 @@ export function validateSpaceAuth(auth: unknown, expectedSpace?: string): SpaceA
 
   const operatorSeed = string(operator.seed, "operator.seed");
   const operatorJwt = string(operator.jwt, "operator.jwt");
-  const accountPub = publicKey(string(account.pub, "account.pub"), "account.pub", "A");
-  const accountSeed = string(account.seed, "account.seed");
-  const accountJwt = string(account.jwt, "account.jwt");
-  const signingSeed = string(account.signingSeed, "account.signingSeed");
-  const signingPub = publicKey(string(account.signingPub, "account.signingPub"), "account.signingPub", "A");
+  const fields = accountFields(account);
   const sysPub = publicKey(string(sys.pub, "sys.pub"), "sys.pub", "A");
   const sysJwt = string(sys.jwt, "sys.jwt");
-  if (accountPub === sysPub || signingPub === sysPub)
+  if (fields.pub === sysPub || fields.signingPub === sysPub)
     throw new Error("validateSpaceAuth: data account identities and system account must use distinct nkeys");
 
   const operatorPub = seedPublicKey(operatorSeed, "operator.seed", "O");
-  if (seedPublicKey(accountSeed, "account.seed", "A") !== accountPub)
-    throw new Error("validateSpaceAuth: account.seed does not match account.pub");
-  if (seedPublicKey(signingSeed, "account.signingSeed", "A") !== signingPub)
-    throw new Error("validateSpaceAuth: account.signingSeed does not match account.signingPub");
+  assertAccountSeeds(fields);
   if (sys.signingSeed !== undefined) {
     const sysSigningSeed = string(sys.signingSeed, "sys.signingSeed");
     if (seedPublicKey(sysSigningSeed, "sys.signingSeed", "A") !== sysPub)
@@ -115,7 +140,7 @@ export function validateSpaceAuth(auth: unknown, expectedSpace?: string): SpaceA
   }
 
   const operatorClaims = claims<Operator>(operatorJwt, "operator.jwt");
-  const accountClaims = claims<Account>(accountJwt, "account.jwt");
+  const accountClaims = claims<Account>(fields.jwt, "account.jwt");
   const sysClaims = claims<Account>(sysJwt, "sys.jwt");
 
   publicKey(operatorClaims.sub, "operator JWT subject", "O");
@@ -126,19 +151,46 @@ export function validateSpaceAuth(auth: unknown, expectedSpace?: string): SpaceA
   if (operatorClaims.nats.system_account !== sysPub)
     throw new Error("validateSpaceAuth: operator JWT system account does not match sys.pub");
 
-  if (accountClaims.nats?.type !== Types.Account || accountClaims.sub !== accountPub || accountClaims.iss !== operatorPub)
-    throw new Error("validateSpaceAuth: account JWT subject, issuer, or type does not match the operator/account keys");
-  if (accountClaims.name !== token(space))
-    throw new Error("validateSpaceAuth: account JWT name does not match space");
-  const signingKeys = accountClaims.nats.signing_keys;
-  if (!Array.isArray(signingKeys) || !signingKeys.includes(signingPub))
-    throw new Error("validateSpaceAuth: active account signing key is not trusted as an unscoped signer by account.jwt");
+  assertAccountClaims(accountClaims, fields, operatorPub, space);
 
   if (sysClaims.nats?.type !== Types.Account || sysClaims.sub !== sysPub || sysClaims.iss !== operatorPub)
     throw new Error("validateSpaceAuth: system account JWT subject, issuer, or type does not match the operator/system keys");
   if (sysClaims.name !== "SYS")
     throw new Error("validateSpaceAuth: system account JWT name must be SYS");
   return auth as SpaceAuth;
+}
+
+/**
+ * Validate one space's account record against the broker that must have signed it: the checks
+ * {@link validateSpaceAuth} makes on the account, and none of its checks on the operator and system
+ * account JWTs. A broker names its operator once, for the first space it served, so the full
+ * validation accepts that space alone; this one holds for every space on the broker.
+ *
+ * The record must name a space, hold an account seed and a signing seed that match their public
+ * keys, and carry a currently valid claim that is this account's, was issued by the broker's
+ * operator, is named for the space and trusts the signing key. It does not validate the broker
+ * record beyond reading its operator seed and system account key.
+ *
+ * Read-only; returns the same validated object.
+ */
+export function validateSpaceAccountAuth(broker: BrokerAuth, spaceAccount: unknown, expectedSpace?: string): SpaceAccountAuth {
+  const root = record(spaceAccount, "space account");
+  const account = record(root.account, "account");
+  const space = string(root.space, "space");
+  if (!space.trim()) throw new Error("validateSpaceAccountAuth: space must not be blank");
+  if (expectedSpace !== undefined && space !== expectedSpace)
+    throw new Error(`validateSpaceAccountAuth: space "${space}" does not match expected space "${expectedSpace}"`);
+
+  const trust = record(broker, "broker");
+  const fields = accountFields(account);
+  const sysPub = publicKey(string(record(trust.sys, "sys").pub, "sys.pub"), "sys.pub", "A");
+  if (fields.pub === sysPub || fields.signingPub === sysPub)
+    throw new Error("validateSpaceAccountAuth: data account identities and system account must use distinct nkeys");
+
+  const operatorPub = seedPublicKey(string(record(trust.operator, "operator").seed, "operator.seed"), "operator.seed", "O");
+  assertAccountSeeds(fields);
+  assertAccountClaims(claims<Account>(fields.jwt, "account.jwt"), fields, operatorPub, space);
+  return spaceAccount as SpaceAccountAuth;
 }
 
 /**
