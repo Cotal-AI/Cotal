@@ -45,9 +45,20 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
         occupied += count as number;
       });
     }
-    for (const manager of localUpdateManagers(request.flags, request.installedEntry)) {
-      if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
-      await readOne({ ...request.flags, space: manager.space, server: manager.server, on: manager.instanceId });
+    if (process.platform === "linux") {
+      for (const manager of localUpdateManagers(request.flags, request.installedEntry)) {
+        if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
+        await readOne({ ...request.flags, space: manager.space, server: manager.server, on: manager.instanceId });
+      }
+    } else {
+      await reportRunningManagers(request.flags, readOne);
+      if (typeof request.flags.space !== "string" && typeof request.flags.creds !== "string") {
+        const { readMeshRegistry } = await import("@cotal-ai/workspace");
+        for (const entry of readMeshRegistry().entries) {
+          if (active.some(manager => manager.space === entry.space)) continue;
+          await readOne({ ...request.flags, space: entry.space });
+        }
+      }
     }
     if (processBirth(lifetime.pid) !== lifetime.start) throw new Error("machine daemon lifetime changed before pre-install receipt");
     return { daemon: { pid: lifetime.pid, start: lifetime.start }, hostedSpaces: active.map(manager => manager.space), occupied };
