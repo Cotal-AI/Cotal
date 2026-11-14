@@ -4,3 +4,4 @@ const source = readFileSync('desktop/src-tauri/installers/hooks.nsh', 'utf8');
 const anchor = '"$PLUGINSDIR\\setup-node.exe" "$PLUGINSDIR\\service-update.mjs" prepare';
 if (source.split(anchor).length !== 2) throw new Error('Prepare invocation is not singular.');
 writeFileSync('desktop/src-tauri/installers/invalid-helper.nsh', source.replace(anchor, '"$PLUGINSDIR\\nonexistent-helper.exe" "$PLUGINSDIR\\service-update.mjs" prepare'));
+writeFileSync('desktop/src-tauri/invalid-helper.json', JSON.stringify({ bundle: { windows: { nsis: { installerHooks: 'installers/invalid-helper.nsh' } } } }));
