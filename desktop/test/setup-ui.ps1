@@ -13,14 +13,16 @@ public static class SetupNative {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 }
 '@
-function Click-Control($Control,$Window) {
+function Click-Control($Control,$Window,[bool]$StartMenu=$false) {
   $dialog=[IntPtr]$Window.Current.NativeWindowHandle
   $activated=[SetupNative]::SetForegroundWindow($dialog)
   $handle=[IntPtr]$Control.Current.NativeWindowHandle
   if($handle -eq [IntPtr]::Zero){throw 'Installer control has no native window handle.'}
-  $posted=[SetupNative]::PostMessage($handle,0x00F5,[IntPtr]::Zero,[IntPtr]::Zero)
-  $script:observations+=@{at=[DateTime]::UtcNow.ToString('o');action='BM_CLICK';name=$Control.Current.Name;handle=$handle.ToInt64();dialog=$dialog.ToInt64();activated=$activated;foreground=[SetupNative]::GetForegroundWindow().ToInt64();posted=$posted}
-  if(!$posted){throw 'Native installer BM_CLICK failed.'}
+  if($StartMenu){$message=0x0111;$target=$dialog;$w=[IntPtr]1;$l=$handle;$action='WM_COMMAND:1'}
+  else {$message=0x00F5;$target=$handle;$w=[IntPtr]::Zero;$l=[IntPtr]::Zero;$action='BM_CLICK'}
+  $posted=[SetupNative]::PostMessage($target,$message,$w,$l)
+  $script:observations+=@{at=[DateTime]::UtcNow.ToString('o');action=$action;name=$Control.Current.Name;handle=$handle.ToInt64();dialog=$dialog.ToInt64();activated=$activated;foreground=[SetupNative]::GetForegroundWindow().ToInt64();posted=$posted}
+  if(!$posted){throw 'Native installer control message failed.'}
 }
 $process=Start-Process -FilePath $Installer -PassThru
 $deadline=[DateTime]::UtcNow.AddSeconds(240)
@@ -45,7 +47,7 @@ while (!$process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
       if($buttons[0].Current.Name -eq 'Finish') {
         foreach($check in @($elements | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::CheckBox -and $_.Current.Name -match 'Run Cotal'})) { $toggle=$check.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern); if($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On){$toggle.Toggle()} }
       }
-      Click-Control $buttons[0] $window
+      Click-Control $buttons[0] $window ($names -contains 'Choose Start Menu Folder')
     }
   }
   Start-Sleep -Milliseconds 400
