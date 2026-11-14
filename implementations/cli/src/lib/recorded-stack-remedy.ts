@@ -59,6 +59,9 @@ export function recordedStackRemedy(root: string | undefined, space: string, ser
       add("log-file", broker.logFile); add("logfile-size-limit", broker.logfileSizeLimit); add("logfile-max-num", broker.logfileMaxNum);
     }
     const policy = readBrokerPolicy(physical);
+    if (policy?.transport.kind === "tls-required") {
+      add("tls-cert", policy.transport.certFile); add("tls-key", policy.transport.keyFile);
+    }
     add("auth-timeout", policy?.authTimeout); add("max-payload", policy?.maxPayload); add("account-resolver", policy?.accountResolver);
     if (readStackJournal(physical)?.sha256 !== snapshot.sha256 || observed.some(row => instances.read(row.instance)?.record.revision !== row.revision || definitions.read(row.definition)?.record.revision !== row.definitionRevision)) return undefined;
     for (const member of journal.members) if (member.process && assertRecordIdentity(member.process).kind !== "match") return undefined;
