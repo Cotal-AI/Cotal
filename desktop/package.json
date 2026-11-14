@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
-    "build": "tsc --noEmit && vite build",
+    "build": "node scripts/prepare-installer.mjs && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "test:render": "pnpm build && node test/render/run.mjs",

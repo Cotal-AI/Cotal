@@ -89,6 +89,46 @@ curl -fsSL https://get.cotal.ai | sh -s -- --version <target-version> --no-setup
 If the original installation used custom locations, supply those same locations again.
 See [Install Cotal](installation.mdx) for installer options and PATH checks.
 
+### Windows desktop installation
+
+Run the newer Windows setup program over the existing desktop installation. Setup refuses
+before replacing application files while its service hosts an agent or another program uses
+its bundled runtime. Stop those agents or close the named program, then choose Retry.
+The service checks its hosted agent count before setup checks for other programs using the
+installation. Its hosted launch fence stays held until shutdown, so another hosted agent cannot
+start between that check and the stop. Independently launched processes are only observed,
+not fenced against later launches.
+
+Setup disables the owned scheduled task during replacement. A service that was running is
+started from the new files and checked for readiness. An installed, stopped service stays
+stopped. Setup does not install a service when none existed. Silent setup returns nonzero
+when preparation is refused or startup is not confirmed. A readiness timeout means the files
+were updated and startup was requested, not that the update failed.
+
+The latest result is in `%LOCALAPPDATA%\CotalSetup\result.json`; its `message` is also written
+as one line in `message.txt` beside it. If the helper cannot complete, `helperExit` records
+its raw exit status and `phase` names the setup phase. The adjacent `helper.log` keeps the
+last 200 diagnostic lines. Node helper summaries record the mode, exit code and last step.
+PowerShell entries record the action, fixed step name and milliseconds since that process
+started, including its startup and completion timings. A process that cannot be identified
+is reported with its parent PID and creation time when available. An interrupted replacement keeps the task disabled.
+Run a current setup program again to finish it. The app shows that setup was interrupted and
+links to the installer without offering Start service. A newer setup can replace a partial
+older update after verifying that the owned task is disabled and its old process has stopped.
+A verified update whose startup was not confirmed leaves no incomplete-copy handover.
+If the preparation helper dies while its old service is alive, its hosted launch fence can
+remain held until setup completes the service restart. Existing agents are not stopped by
+that fence. Run setup again to finish the transition.
+An invalid handover can be repaired when no installation process or owned task instance
+remains. Setup preserves the task state it can observe and does not infer prior running state.
+A service belonging to a separate command-line installation is left unchanged.
+Early desktop services before 0.157.8 have no graceful stop
+request. After stopping their agents, use their bundled CLI's `cotal daemon uninstall --yes`,
+then run setup again and install the service if needed.
+
+The guarded route applies to a newer-version NSIS setup. Same-version maintenance, downgrades
+and MSI installation keep their existing behavior.
+
 ### npm installation
 
 For an npm installation, run:
