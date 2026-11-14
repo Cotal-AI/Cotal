@@ -483,7 +483,7 @@ export async function matrixCell(options) {
         assert.equal(setup.manager?.state, 'answering');
         assert(setup.manager.instanceId, 'daemon setup must return answering Manager identity');
         report.managerHost.instanceId = setup.manager.instanceId;
-        report.managerHost.spawn = ok(await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', space]), 'hosted spawn');
+        report.managerHost.spawn = ok(await cotal('spawn real daemon-hosted agent', ['spawn', '--agent', 'upgrade-standin', '--on', setup.manager.instanceId, '--name', 'upgrade_proof_worker', '--detach', '--no-events', '--space', space]), 'hosted spawn');
         report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;
       } else if (state === 'agent') {
         report.managerHost = { mode: 'standalone', space: 'upgrade-proof' };
@@ -737,7 +737,7 @@ export async function matrixCell(options) {
       report.managerHost.instanceAfter = current.instanceId;
       const seats = await cotal('confirm consent stopped daemon-hosted seats', ['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']);
       report.managerHost.after = seats;
-      check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade-proof-worker'), seats);
+      check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade_proof_worker'), seats);
     }
     if (installedService) {
       let active = await daemon('native status after', ['daemon', 'status', '--json']);
