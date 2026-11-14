@@ -51,8 +51,11 @@ product coordinates:
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
 route. It must complete the update. The standalone cell starts with `up --detach` and records its
-separate consent contract. Container shutdown uses `down --with-agents --yes`; both that exit and the owned
-container's confirmed shutdown must pass, even when the upgrade has a known refusal.
+separate consent contract. Container shutdown uses `down --with-agents --yes`. When the bare supervisor is PID1, its clean exit
+can terminate the sibling `docker exec` with137. Only that observed case is accepted: the same
+container must exit0 during the command, without an OOM, with no process left. Other non-zero
+outcomes and unknown end states fail. Raw exit137 remains in the transcript. Owned Docker shutdown
+and its final stopped-state check still run.
 
 The foreign snapshot cell keeps completed rename entries, a freshly recorded paused journal and
 an old attempt clock. Its foreign directory and sentinel must remain untouched. The container
@@ -61,7 +64,10 @@ waits for `manager up`, records only that owned container's host PID/UID, and ch
 Manager survives the host upgrade. It stops the stock stack and its owned container before
 reporting. Before the container starts, a loopback signed-JWT IdP, broker and auth service prepare
 a selected remote user-sign-in mesh for the host updater, with no local Manager. That fixture's
-readiness and complete teardown are checked separately. The composed hosted container upgrade
+readiness and complete teardown are checked separately. Its owned loopback discovery front declares
+the test broker's plaintext transport. Registration consumes that fetched, validated document and
+asserts the stock trust-policy refresh before a daemon-hosted Manager starts. The production trust
+guard is unchanged. The composed hosted container upgrade
 still needs its own original result before it can be called a reproduction or a passing fix.
 
 The packed phase builds the exact PR head's six native targets, assembles all24 fixed-group
@@ -158,6 +164,11 @@ and digest, loaded job, runner creation identity, completion, exit, job/source r
 generation. A terminal success alone does not establish custody cleanup. Unknown custody retains
 the service for disposable-runner teardown. Off-before-tick and killed-before-result modes remain
 available in the scoped candidate-A diagnostic campaign.
+
+The scheduler cells observe automatic-update eligibility for at most90seconds after the daemon
+answers, on Linux and macOS, before aging any clock or starting the upgrade observation. Readiness
+alone does not establish native ownership. The eligibility samples and deadline remain in the report;
+a deadline failure remains red and does not become an updater result.
 
 Each candidate cell starts its own registry. After confirmed native removal, it restores unchanged
 owned npm configuration before stopping the registry. A changed configuration is retained. Native
