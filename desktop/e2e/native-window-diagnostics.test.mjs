@@ -7,6 +7,8 @@ test('Windows census records every same-PID visible window before unchanged Main
  assert.match(census,/pid != target \|\| !IsWindowVisible\(window\)/);
  for(const field of ['handle=window.ToInt64()', 'title=title.ToString()', 'windowClass=windowClass.ToString()', 'left=bounds.Left', 'bottom=bounds.Bottom'])assert.ok(census.includes(field));
  assert.match(census,/return true;\s*\}, IntPtr.Zero\)/);
+ assert.match(census,/if \(!EnumWindows\(/);
+ assert.match(census,/throw new InvalidOperationException\("EnumWindows failed/);
  assert.doesNotMatch(census,/ShowWindow\(|SetForegroundWindow\(|PostMessage\(/);
  const observation=source.indexOf('$windowCensus = @()');
  const selected=source.indexOf('$window = $app.MainWindowHandle');

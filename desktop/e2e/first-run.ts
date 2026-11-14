@@ -385,11 +385,15 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     } else {
       if (process.platform === "win32" && action === "close-window") {
         assert.ok(windowsAppPid, "close-window requires the launch-pinned Windows app PID");
-        const census = await nativeLifecycle(binary, "describe", env, windowsAppPid);
+        const answering = await status();
+        const { readLifetimeRecord, processBirth } = await import(pathToFileURL(join(repo, "bin/dist/daemon/lifetime.js")).href);
+        const daemon = readLifetimeRecord(join(daemonHome, "daemon.lock"));
+        assert.ok(daemon?.start && daemon.pid === answering.pid && processBirth(daemon.pid) === daemon.start, "fresh answering daemon lifetime before app census");
+        const census = await nativeLifecycle(binary, "describe", env, windowsAppPid, { pid: daemon.pid, start: daemon.start });
         writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action: "before-close-window", observation: census })}\n`, { flag: "a" });
-        check(`single app process before close-window: ${JSON.stringify(census.candidates)}`, census.candidates?.length === 1);
+        check(`single app process before close-window: ${JSON.stringify(census.candidates)}`, census.appCandidates?.length === 1 && census.appCandidates[0].pid === windowsAppPid);
       }
-      observation = await nativeLifecycle(binary, action, env, action === "close-window" ? windowsAppPid : undefined);
+      observation = await nativeLifecycle(binary, action, env, process.platform === "win32" ? windowsAppPid : undefined);
     }
     writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action, observation })}\n`, { flag: "a" });
     return observation;
@@ -479,7 +483,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await driver.openWindowsLink(binary, args[0], { env: guiEnv, cwd: home, receipts: join(output, "deep-link-receipts.jsonl") });
     } else await driver.open(binary, args);
     if (process.platform === "win32") {
-      const launched = await until("fresh native Windows app launch PID", async () => {
+      const launched = await until<{ pid: number } | undefined>("fresh native Windows app launch PID", async () => {
         if (!existsSync(launchReceipts)) return undefined;
         const rows = readFileSync(launchReceipts).subarray(launchOffset).toString("utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
         const starts = rows.filter(row => row.source === "process-argv" && row.atUnixMs >= launchStarted);
@@ -487,6 +491,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
         assert.ok(Number.isSafeInteger(starts[0].pid) && starts[0].pid > 0);
         return starts[0];
       }, Boolean, 30_000);
+      assert.ok(launched);
       windowsAppPid = launched.pid;
       writeFileSync(join(output, "windows-app-launches.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), pid: windowsAppPid, launchStarted })}\n`, { flag: "a", mode: 0o600 });
     }
@@ -663,6 +668,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       if (driver instanceof MacWindowDriver) await open(login.args);
       else {
         loginChild = spawn(login.path!, login.args, { env: guiEnv, cwd: home, stdio: "ignore" });
+        if (process.platform === "win32") windowsAppPid = loginChild.pid;
         let launchError: Error | undefined;
         loginChild.once("error", error => { launchError = error; });
         await until("native login app appears", async () => { assert.ifError(launchError); return lifecycle("describe"); }, value => value.pid === loginChild!.pid);

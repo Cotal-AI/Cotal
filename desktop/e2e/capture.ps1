@@ -28,7 +28,7 @@ public class CotalWindow {
   }
   public static Observation[] VisibleWindows(uint target) {
     var rows = new List<Observation>();
-    EnumWindows((window, data) => {
+    if (!EnumWindows((window, data) => {
       uint pid; GetWindowThreadProcessId(window, out pid);
       if (pid != target || !IsWindowVisible(window)) return true;
       var title = new StringBuilder(1024);
@@ -41,7 +41,7 @@ public class CotalWindow {
         windowClass=windowClass.ToString(), boundsRead=boundsRead,
         left=bounds.Left, top=bounds.Top, right=bounds.Right, bottom=bounds.Bottom });
       return true;
-    }, IntPtr.Zero);
+    }, IntPtr.Zero)) throw new InvalidOperationException("EnumWindows failed during passive census.");
     return rows.ToArray();
   }
 }
