@@ -2323,10 +2323,13 @@ closed `EvictionResult` per principal in request order; a garbled, foreign, miso
 contradictory result MUST NOT authorize. The participant never receives that credential. A
 `reconcile-registration` request MAY name another manager instance in the same space only to clear
 an abandoned governance-slot holder. The host MUST observe that target's frozen registration gate,
-prove the freeze-holder `gone` under a complete liveness sweep, run the normal registration repair
-with verified eviction, and refuse live, unknown, incomplete, unestablishable, or non-registration
-states. There is no force path. A participant credential still gains no direct authority over the
-target gate, records, family, or delivery-admin rail.
+prove both the freeze-holder and its distinct registration executor `gone` under complete liveness
+sweeps before any repair mutation, run the normal registration repair with verified eviction, and
+refuse live, unknown, incomplete, unestablishable, or non-registration states. The host MUST derive
+the executor principal from the target gate's owner and instance, never the requesting owner's
+identity. A complete sweep proves connection absence at observation time, not operating-system
+process death or exclusion of a later executor reconnect. There is no force path. A participant
+credential still gains no direct authority over the target gate, records, family, or delivery-admin rail.
 
 The bounded executor returned by `prepare` is renewable through `renew` for the same public nkey and
 current open registration. A remote manager MUST obtain a fresh executor before maintenance or clean

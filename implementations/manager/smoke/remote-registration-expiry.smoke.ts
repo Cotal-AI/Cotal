@@ -10,6 +10,7 @@ import {
   commitSiblingIssuance, createSpaceAuth, credentialIdOf, credsClaims, epAuthBucket,
   endpointRegistrationBarrier, isReachable, mintCreds, mintLifecycleUid, newIdentity,
   remoteManagerActors, serverConfig, serveIssuanceGateKv, setupSpaceStreams, standaloneConnectOpts,
+  mintMembershipObserverCreds, observePrincipalLiveness, MEMBERSHIP_INBOX_PREFIX,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
@@ -24,6 +25,7 @@ const space = `regexp${mintLifecycleUid().slice(0, 8)}`;
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const auth = await createSpaceAuth(space);
+const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
 const config = join(root, "server.conf");
 writeFileSync(config, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(root, "js") }));
 const broker = spawn("nats-server", ["-c", config], { stdio: "ignore" });
@@ -40,10 +42,14 @@ const logged: string[] = [];
 const originalError = console.error;
 console.error = (...args: unknown[]) => { logged.push(args.map(String).join(" ")); originalError(...args); };
 let observer: Awaited<ReturnType<typeof connect>> | undefined;
+let livenessObserver: Awaited<ReturnType<typeof connect>> | undefined;
+let sampling: Promise<void> | undefined;
+let sampleRunning = false;
 try {
   await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
   await setupSpaceStreams({ servers: server, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  observer = await connect({ servers: server, ...standaloneConnectOpts({ creds: await executorCreds(120), tls: false }), maxReconnectAttempts: 0 });
+  observer = await connect({ servers: server, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId } }), tls: false }), maxReconnectAttempts: 0 });
+  livenessObserver = await connect({ servers: server, ...standaloneConnectOpts({ creds: observerCreds, tls: false }), inboxPrefix: MEMBERSHIP_INBOX_PREFIX, maxReconnectAttempts: 0 });
   const authKv = await new Kvm(observer).open(epAuthBucket(space));
   const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
   const barrier = endpointRegistrationBarrier(authKv, space, { endpoint: "manager", instanceId, opId: instanceId });
@@ -67,14 +73,27 @@ try {
   const expiry = credsClaims(short).exp!;
   let evictions = 0, refreshes = 0;
   let frozenRevision: number | undefined;
+  const samples: { start: string; end: string; state: string; sweepComplete: boolean }[] = [];
+  const refreshClocks: { start?: string; end?: string } = {};
+  sampleRunning = true;
+  sampling = (async () => {
+    while (sampleRunning) {
+      const start = new Date().toISOString();
+      const result = await observePrincipalLiveness(livenessObserver!, auth.account.pub, `${owner}.${actors.executor}`, { settleMs: 0, maxWaitMs: 1000 });
+      samples.push({ start, end: new Date().toISOString(), state: result.state, sweepComplete: result.sweepComplete });
+    }
+  })();
   const registered = await registerRemoteManagerAuthority({ ...base, prepareCreds: short,
     refreshPrepareCreds: async () => {
+      refreshClocks.start = new Date().toISOString();
       refreshes++;
       const frozen = (await gate.observe())!;
       assert.equal(frozen.state, "frozen");
       assert.equal(frozen.revision, frozenRevision);
       assert.equal(frozen.processEpoch, first.processEpoch);
-      return executorCreds(60);
+      const refreshed = await executorCreds(60);
+      refreshClocks.end = new Date().toISOString();
+      return refreshed;
     },
     evict: async holders => {
       evictions++;
@@ -90,6 +109,21 @@ try {
       return holders.map(() => true);
     },
   });
+  sampleRunning = false;
+  await sampling;
+  const firstLiveIndex = samples.findIndex(sample => sample.state === "live");
+  const gapStartIndex = samples.findIndex((sample, index) => index > firstLiveIndex && Date.parse(sample.start) >= expiry * 1000 && sample.state === "gone" && sample.sweepComplete);
+  const gapEndOffset = gapStartIndex < 0 ? -1 : samples.slice(gapStartIndex).findIndex(sample => sample.state === "live");
+  const gapEndIndex = gapEndOffset < 0 ? -1 : gapStartIndex + gapEndOffset;
+  const gapSamples = gapStartIndex < 0 ? [] : samples.slice(gapStartIndex, gapEndIndex < 0 ? undefined : gapEndIndex);
+  console.log("EXECUTOR_REFRESH_INTERVAL", JSON.stringify({
+    credentialExpiry: new Date(expiry * 1000).toISOString(), refreshClocks,
+    sampleCount: samples.length, gapSampleCount: gapSamples.length,
+    lastLiveBeforeGap: samples[gapStartIndex - 1], firstGone: gapSamples[0], lastGone: gapSamples.at(-1),
+    firstLiveAfterGap: gapEndIndex < 0 ? undefined : samples[gapEndIndex],
+    observedGoneSpanMs: gapSamples.length ? Date.parse(gapSamples.at(-1)!.start) - Date.parse(gapSamples[0]!.end) : null,
+  }));
+  assert.ok(firstLiveIndex >= 0 && gapSamples.length > 0 && gapEndIndex >= 0, "live sampling must bracket the real disconnected expiry interval with live observations");
   assert.equal(refreshes, 1);
   assert.equal(evictions, 2);
   assert.equal(registered.processEpoch, first.processEpoch + 1);
@@ -125,6 +159,9 @@ try {
   console.log("  ✓ replacement authority must advance expiry and keep the same executor identity");
 } finally {
   console.error = originalError;
+  sampleRunning = false;
+  await sampling;
+  await livenessObserver?.close();
   await observer?.close();
   await killAndAwaitExit(broker);
   release();

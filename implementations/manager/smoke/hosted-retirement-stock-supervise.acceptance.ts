@@ -211,6 +211,11 @@ const check = (name: string, condition: boolean, extra?: unknown): void => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
 const wait = (ms: number) => new Promise((resolveWait) => setTimeout(resolveWait, ms));
+const privateEnv = (root: string): NodeJS.ProcessEnv => {
+  const paths = { HOME: join(root, "home"), COTAL_HOME: root, XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "runtime"), TMPDIR: join(root, "tmp") };
+  for (const path of Object.values(paths)) mkdirSync(path, { recursive: true, mode: 0o700 });
+  return paths;
+};
 const childEnv = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("COTAL_")) env[key] = value;
@@ -219,7 +224,8 @@ const childEnv = (values: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
 const cap = 32 * 1024;
 const redact = (value: string) => value
   .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted credential block]")
-  .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]");
+  .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted jwt]")
+  .replace(/(#t=)[a-f0-9]+/g, "$1[redacted console token]");
 const append = (current: string, chunk: Buffer | string): string => redact(`${current}${chunk.toString()}`).slice(-cap);
 const closed = new WeakSet<ChildProcess>();
 const exited = new WeakSet<ChildProcess>();
@@ -320,6 +326,11 @@ let adminAuthorizationRequests = 0;
 let retirementRequests = 0;
 let prepareRetirementRequests = 0;
 let maintenanceRequests = 0;
+let holdEviction = false;
+let releaseEviction: (() => void) | undefined;
+let overlapSupervisor: ChildProcess | undefined;
+let overlapHome: string | undefined;
+let overlapRoot: string | undefined;
 
 try {
   mkdirSync(join(hostRoot, ".cotal"), { recursive: true });
@@ -393,7 +404,7 @@ try {
   await hostStore.put(connectionEvictorCredsKey(space, hosted), await mintConnectionEvictorCreds(auth, newIdentity()));
   delivery = track("delivery", spawn(process.execPath, [...process.execArgv, self, "delivery"], {
     cwd: hostRoot,
-    env: childEnv({ COTAL_STOCK_HOST_ROOT: hostRoot, COTAL_SPACE: space, COTAL_SERVERS: server }),
+    env: childEnv({ ...privateEnv(join(hostRoot, "delivery-env")), COTAL_STOCK_HOST_ROOT: hostRoot, COTAL_SPACE: space, COTAL_SERVERS: server }),
     stdio: ["ignore", "pipe", "pipe"],
   }));
   delivery.stdout?.on("data", (chunk) => { deliveryOutput = append(deliveryOutput, chunk); });
@@ -405,7 +416,7 @@ try {
   })) throw new Error(`delivery did not become ready: ${deliveryOutput}`);
 
   authService = track("auth-service", spawn(process.execPath, [...process.execArgv, self, "auth-service", "--space", space, "--server", server, "--exchange-public-port", "0"], {
-    cwd: hostRoot, env: childEnv({ COTAL_HOME: home }), stdio: ["ignore", "pipe", "pipe"],
+    cwd: hostRoot, env: childEnv(privateEnv(join(hostRoot, "auth-env"))), stdio: ["ignore", "pipe", "pipe"],
   }));
   authService.stdout?.on("data", (chunk) => { authOutput = append(authOutput, chunk); });
   authService.stderr?.on("data", (chunk) => { authOutput = append(authOutput, chunk); });
@@ -453,12 +464,19 @@ try {
       }
       const upstreamUrl = new URL(service!.publicUrl!);
       const upstreamPath = req.url?.startsWith("/register/") ? "/register" : req.url;
-      const upstream = httpRequest({
-        host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: upstreamPath,
-        method: req.method, headers: { ...req.headers, host: upstreamUrl.host },
-      }, (response) => { res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res); });
-      upstream.on("error", (error) => { res.statusCode = 502; res.end(error.message); });
-      upstream.end(body);
+      const forward = () => {
+        const upstream = httpRequest({
+          host: upstreamUrl.hostname, port: Number(upstreamUrl.port), path: upstreamPath,
+          method: req.method, headers: { ...req.headers, host: upstreamUrl.host },
+        }, (response) => { res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res); });
+        upstream.on("error", (error) => { res.statusCode = 502; res.end(error.message); });
+        upstream.end(body);
+      };
+      const parsed = req.url?.endsWith("/manager-service-authority") ? JSON.parse(body.toString("utf8")) as { request?: { operation?: string } } : undefined;
+      if (holdEviction && parsed?.request?.operation === "evict-family-principal") {
+        if (releaseEviction) throw new Error("fixture already holds an eviction request");
+        releaseEviction = forward;
+      } else forward();
     });
   });
   await new Promise<void>((resolveListen) => exchangeProxy!.listen(0, "127.0.0.1", resolveListen));
@@ -582,7 +600,7 @@ registry.register({
 
   const supervisorEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) if (!key.startsWith("COTAL_")) supervisorEnv[key] = value;
-  supervisorEnv.COTAL_HOME = home;
+  Object.assign(supervisorEnv, privateEnv(home));
   supervisorEnv.COTAL_SKIP_CONNECTOR_SEED = "1";
   supervisorEnv.XDG_CONFIG_HOME = xdg;
   supervisorEnv.NODE_EXTRA_CA_CERTS = process.env.COTAL_STOCK_HTTPS_CA!;
@@ -835,7 +853,134 @@ registry.register({
 
   const secondXdg = join(secondHome, "xdg");
   mkdirSync(secondXdg, { recursive: true });
-  const foreignEnv = { ...supervisorEnv, COTAL_HOME: secondHome, XDG_CONFIG_HOME: secondXdg };
+  const foreignEnv = { ...supervisorEnv, ...privateEnv(secondHome), XDG_CONFIG_HOME: secondXdg };
+
+  // Hold a real restart's host eviction request in the owned transport proxy. Its executor
+  // stays connected while its gate and governance slot are frozen, before activate exists.
+  overlapHome = mkdtempSync(join(tmpdir(), "cotal-stock-overlap-home-"));
+  overlapRoot = realpathSync(mkdtempSync(join(tmpdir(), "cotal-stock-overlap-root-")));
+  process.env.COTAL_HOME = overlapHome;
+  await establishIdpSession({ dir: overlapHome, idpUrl, clientId, onPrompt: (prompt) => approve(prompt.userCode) });
+  const overlapOwner = await cotalAuthProvider.ownerForLogin({ store: hostStore, dir: hostDir, space });
+  persistRemoteUserEntry(space, server, overlapRoot, {
+    space, server, tlsRequired: false, userAuth: participantUserAuth, sentinelCreds: callout.sentinelCreds,
+  }, false, false);
+  const overlapEntry = findMesh(space);
+  if (!overlapEntry) throw new Error("overlap registry entry vanished");
+  recordMesh({ ...overlapEntry, policyCheckedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() });
+  process.env.COTAL_HOME = savedHome;
+  check("overlap contender is a distinct participant under the same owner", overlapOwner === owner);
+  const overlapEnv = { ...supervisorEnv, ...privateEnv(overlapHome) };
+  if (!await killUnclean(supervisor)) throw new Error("could not stop the owned manager before staged restart");
+  supervisor = undefined;
+  const firstContext = { root: participantRoot, space };
+  rmSync(canonicalLocalProcessPath(MANAGER_PIDFILE, firstContext), { force: true });
+  rmSync(canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, firstContext), { force: true });
+  holdEviction = true;
+  let activeOutput = "";
+  supervisor = track("active-registration", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+    cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  supervisor.stdout?.on("data", chunk => { activeOutput = append(activeOutput, chunk); });
+  supervisor.stderr?.on("data", chunk => { activeOutput = append(activeOutput, chunk); });
+  for (let tries = 0; tries < 600 && !releaseEviction; tries++) {
+    if (supervisor.exitCode !== null || supervisor.signalCode !== null) break;
+    await wait(100);
+  }
+  if (!releaseEviction) throw new Error(`stock restart did not reach staged eviction: ${activeOutput.slice(-1600)}`);
+  const activeGate = await observeGateRepair();
+  const activeRow = activeGate.gate?.json<{ state: string; generation: number; op?: { kind: string } }>();
+  const overlapOracle = makeDeliveryAdminPrincipalOracle({ space, server, dataAccount: auth.account, log: () => {} });
+  const activeExecutor = await overlapOracle(`${owner}.${remoteManagerActors(firstState.instanceId).executor}`);
+  const absentServe = await overlapOracle(`${owner}.${remoteManagerActors(firstState.instanceId).serve}`);
+  check("stock restart is frozen with a live executor and absent serve principal before activation",
+    activeRow?.state === "frozen" && activeRow.op?.kind === "registration" && activeExecutor.state === "live" && absentServe.state === "gone" && absentServe.sweepComplete === true,
+    { gateRevision: activeGate.gate?.revision, gate: activeRow, executor: activeExecutor, serve: absentServe });
+  console.log("REGISTRATION_OVERLAP_BEFORE", JSON.stringify({ gateRevision: activeGate.gate?.revision, gate: activeRow, executor: activeExecutor, serve: absentServe }));
+  const repairCli = track("participant-native-repair-refusal", spawn(process.execPath, [...process.execArgv, cli, "manager", "reconcile", "--space", space, "--instance", firstState.instanceId, "--yes", "--json"], {
+    cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  let repairCliOutput = "";
+  repairCli.stdout?.on("data", chunk => { repairCliOutput = append(repairCliOutput, chunk); });
+  repairCli.stderr?.on("data", chunk => { repairCliOutput = append(repairCliOutput, chunk); });
+  if (!await awaitClose(repairCli, 15_000)) throw new Error("participant native-repair refusal did not terminate");
+  const repairRefusalGate = await observeGateRepair();
+  check("remote participant cannot bypass host maintenance through native signer-only gate repair",
+    repairCli.exitCode !== 0 && /PERMISSION_DENIED|DEPENDENCY_UNAVAILABLE/.test(repairCliOutput) &&
+    /signing material/.test(repairCliOutput) && repairRefusalGate.gate?.revision === activeGate.gate?.revision,
+    { exitCode: repairCli.exitCode, output: repairCliOutput.slice(-1200), before: activeGate.gate?.revision, after: repairRefusalGate.gate?.revision });
+  const crossOwnerRequest = remoteManagerMaintenanceRequest(loadOrCreateRemoteManagerIdentity(secondRoot, space), "cli", "reconcile-registration", firstState.instanceId);
+  let crossOwnerRefusal = "";
+  process.env.COTAL_HOME = secondHome;
+  try {
+    await cotalAuthProvider.maintainRemoteManager!({ store: workspaceSecretStore(secondRoot), dir: userAuthStateDir(secondRoot, space), request: crossOwnerRequest });
+  } catch (error) {
+    crossOwnerRefusal = (error as Error).message;
+  } finally {
+    process.env.COTAL_HOME = savedHome;
+  }
+  const afterCrossOwner = await observeGateRepair();
+  check("a different owner cannot reconcile a live registration executor with no serving connection",
+    /registration executor.*(?:LIVE|not proven gone)/.test(crossOwnerRefusal) && afterCrossOwner.gate?.revision === activeGate.gate?.revision,
+    { refusal: crossOwnerRefusal, before: activeGate.gate?.revision, after: afterCrossOwner.gate?.revision });
+  const overlapMaintenanceBefore = maintenanceRequests;
+  let contenderOutput = "";
+  overlapSupervisor = track("same-owner-contender", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+    cwd: overlapRoot, env: overlapEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  overlapSupervisor.stdout?.on("data", chunk => { contenderOutput = append(contenderOutput, chunk); });
+  overlapSupervisor.stderr?.on("data", chunk => { contenderOutput = append(contenderOutput, chunk); });
+  for (let tries = 0; tries < 900 && !contenderOutput.includes("manager up"); tries++) {
+    if (overlapSupervisor.exitCode !== null || overlapSupervisor.signalCode !== null) break;
+    await wait(100);
+  }
+  const reconciledGate = await observeGateRepair();
+  const reconciledRow = reconciledGate.gate?.json<{ state: string; generation: number }>();
+  holdEviction = false;
+  releaseEviction();
+  releaseEviction = undefined;
+  for (let tries = 0; tries < 600 && supervisor.exitCode === null && supervisor.signalCode === null && !activeOutput.includes("manager up"); tries++) await wait(100);
+  console.log("REGISTRATION_OVERLAP_AFTER", JSON.stringify({
+    maintenanceRequestsBefore: overlapMaintenanceBefore, maintenanceRequestsAfter: maintenanceRequests,
+    gateRevision: reconciledGate.gate?.revision, gate: reconciledRow,
+    contenderReady: contenderOutput.includes("manager up"), contenderExit: overlapSupervisor.exitCode,
+    activeReady: activeOutput.includes("manager up"), activeExit: supervisor.exitCode,
+    activeOutput: activeOutput.slice(-2400), contenderOutput: contenderOutput.slice(-1600),
+  }));
+  check("an active registration is not reconciled and completes after transport resumes",
+    reconciledGate.gate?.revision === activeGate.gate?.revision && activeOutput.includes("manager up") &&
+    maintenanceRequests > overlapMaintenanceBefore && /registration executor.*(?:LIVE|not proven gone)/.test(contenderOutput),
+    { before: activeGate.gate?.revision, after: reconciledGate.gate?.revision, activeExit: supervisor.exitCode });
+  if (!await stop(overlapSupervisor)) throw new Error("could not stop overlap contender");
+  overlapSupervisor = undefined;
+  let serializedOutput = "";
+  overlapSupervisor = track("serialized-contender", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+    cwd: overlapRoot, env: overlapEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  overlapSupervisor.stdout?.on("data", chunk => { serializedOutput = append(serializedOutput, chunk); });
+  overlapSupervisor.stderr?.on("data", chunk => { serializedOutput = append(serializedOutput, chunk); });
+  for (let tries = 0; tries < 900 && !serializedOutput.includes("manager up"); tries++) {
+    if (overlapSupervisor.exitCode !== null || overlapSupervisor.signalCode !== null) break;
+    await wait(100);
+  }
+  check("serialized same-owner starts both reach readiness", activeOutput.includes("manager up") && supervisor.exitCode === null &&
+    serializedOutput.includes("manager up") && overlapSupervisor.exitCode === null, serializedOutput.slice(-1600));
+  if (!await stop(overlapSupervisor)) throw new Error("could not stop serialized contender");
+  overlapSupervisor = undefined;
+  if (!await stop(supervisor)) throw new Error("could not stop staged registrant");
+  supervisor = undefined;
+  let restoredOutput = "";
+  supervisor = track("serialized-restored", spawn(process.execPath, [...process.execArgv, cli, "supervise", "--space", space, "--server", server, "--runtime", "pty"], {
+    cwd: participantRoot, env: supervisorEnv, stdio: ["ignore", "pipe", "pipe"],
+  }));
+  supervisor.stdout?.on("data", chunk => { restoredOutput = append(restoredOutput, chunk); });
+  supervisor.stderr?.on("data", chunk => { restoredOutput = append(restoredOutput, chunk); });
+  for (let tries = 0; tries < 900 && !restoredOutput.includes("manager up"); tries++) {
+    if (supervisor.exitCode !== null || supervisor.signalCode !== null) break;
+    await wait(100);
+  }
+  check("serialized participant restart reaches readiness after the contender stops", restoredOutput.includes("manager up"), restoredOutput.slice(-1600));
+  if (!restoredOutput.includes("manager up")) throw new Error("serialized control failed");
 
   const freezeId = newIdentity();
   const freezeNc = await connect({
@@ -953,7 +1098,11 @@ registry.register({
   fail++;
   console.log("  ✗ FAIL: harness threw", error instanceof Error ? redact(error.stack ?? error.message) : String(error));
 } finally {
+  holdEviction = false;
+  releaseEviction?.();
+  releaseEviction = undefined;
   await endpoint?.stop().catch(() => {});
+  const overlapStopped = await stop(overlapSupervisor);
   const supervisorStopped = await stop(supervisor);
   exchangeProxy?.closeAllConnections();
   await new Promise<void>((resolveClose) => exchangeProxy ? exchangeProxy.close(() => resolveClose()) : resolveClose());
@@ -963,19 +1112,21 @@ registry.register({
   idpServer?.closeAllConnections();
   await new Promise<void>((resolveClose) => idpServer ? idpServer.close(() => resolveClose()) : resolveClose());
   check("teardown stops every owned process before deleting scratch state",
-    supervisorStopped && authStopped && deliveryStopped && brokerStopped,
-    { supervisorStopped, authStopped, deliveryStopped, brokerStopped });
+    overlapStopped && supervisorStopped && authStopped && deliveryStopped && brokerStopped,
+    { overlapStopped, supervisorStopped, authStopped, deliveryStopped, brokerStopped });
   console.log("  owned process identity summary", [...owned.values()].map(({ label, startTime, cgroupSha256 }) => ({
     label,
     startTimeSha256: createHash("sha256").update(startTime).digest("hex"),
     cgroupSha256,
   })));
-  if (supervisorStopped && authStopped && deliveryStopped && brokerStopped) {
+  if (overlapStopped && supervisorStopped && authStopped && deliveryStopped && brokerStopped) {
     rmSync(home, { recursive: true, force: true });
     rmSync(hostRoot, { recursive: true, force: true });
     rmSync(participantRoot, { recursive: true, force: true });
     if (secondHome) rmSync(secondHome, { recursive: true, force: true });
     if (secondRoot) rmSync(secondRoot, { recursive: true, force: true });
+    if (overlapHome) rmSync(overlapHome, { recursive: true, force: true });
+    if (overlapRoot) rmSync(overlapRoot, { recursive: true, force: true });
     if (storeDir) rmSync(storeDir, { recursive: true, force: true });
   }
   if (previousHome === undefined) delete process.env.COTAL_HOME;

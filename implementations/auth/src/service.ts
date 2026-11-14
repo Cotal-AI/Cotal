@@ -93,7 +93,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { deregisterUserEndpoint, type EndpointDeregisterGranter } from "./endpoint-deregister.js";
-import { parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
+import { parsePrincipalKey, parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
@@ -1670,6 +1670,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           probeHolder: async (principal) => {
             const result = await principalOracle(principal);
             return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };
+          },
+          probeRegistrationExecutor: async (holderPrincipal) => {
+            const target = parsePrincipalKey(holderPrincipal);
+            if (!target || holderPrincipal !== remoteManagerServePrincipal(target.owner, authorized.targetInstanceId))
+              return { state: "unestablishable", detail: "the target gate does not name its canonical remote Manager serve principal" };
+            const principal = principalKey(target.owner, remoteManagerActors(authorized.targetInstanceId).executor).key;
+            const result = await principalOracle(principal);
+            return { state: result.state, detail: `${principal}: ${result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}`}` };
           },
           evictHolders: async (holders) => (await evictHolders(holders)).map((e) => e.verifiedGone),
           log,
