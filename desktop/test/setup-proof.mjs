@@ -67,6 +67,18 @@ function compare(before, after) {
   check('Every shipped application file is unchanged on refusal', shipped.every(row => all.get(row.file) === row.sha256));
   report.mutableChanges = changed.filter(row => !shipped.includes(row)).map(row => row.file);
 }
+async function observeSeatStop(label) {
+  const result = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate); $ids=[Collections.Generic.HashSet[int]]::new(); $null=$ids.Add(${report.seat.pid}); ${[...new Set(report.seatProcessIds ?? [])].map(pid => `$null=$ids.Add(${pid});`).join(' ')} do { $changed=$false; foreach($row in $rows){if($ids.Contains([int]$row.ParentProcessId) -and $ids.Add([int]$row.ProcessId)){$changed=$true}} } while($changed); ConvertTo-Json -InputObject @($rows|Where-Object{$ids.Contains([int]$_.ProcessId)}|ForEach-Object{@{pid=$_.ProcessId;parentPid=$_.ParentProcessId;name=$_.Name;created=$(if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString('o')}else{$null})}}) -Compress`], 30_000);
+  report.seatStopObservations ??= [];
+  if (result.code === 0) {
+    const rows = JSON.parse(result.stdout);
+    report.seatProcessIds = [...new Set([...(report.seatProcessIds ?? []), ...rows.map(row => row.pid)])];
+  }
+  report.seatStopObservations.push({ label, observedAt: new Date().toISOString(), result });
+  const log = join(root, 'daemon', `space.${Buffer.from(fixture.space).toString('hex')}`, 'manager', 'manager.log');
+  for (const suffix of ['', '.1']) if (existsSync(log + suffix)) writeFileSync(join(output, `manager-${label}.log${suffix}`), readFileSync(log + suffix));
+  save();
+}
 let fixture, seat, locker, app;
 let serviceInstalled = false;
 let seatStopped = false;
@@ -185,9 +197,28 @@ try {
         const path = join(setupHome, file);
         if (existsSync(path)) writeFileSync(join(output, `refusal-${file}`), readFileSync(path));
       }
+      await observeSeatStop('before-stop');
       await seat.stop(report.manager.instanceId);
       seatStopped = true;
+      const stoppedAt = Date.now();
+      await observeSeatStop('after-stop');
       report.retry = await run(candidate, ['/S'], 420_000);
+      report.retryDiagnostic = JSON.parse(readFileSync(join(setupHome, 'result.json')));
+      await observeSeatStop('after-first-retry');
+      if (report.retry.code !== 0) {
+        report.delayedRetries = [];
+        for (const offsetMs of [15_000, 60_000]) {
+          await delay(Math.max(0, stoppedAt + offsetMs - Date.now()));
+          await observeSeatStop(`retry-${offsetMs}`);
+          const startedSinceStopMs = Date.now() - stoppedAt;
+          const result = await run(candidate, ['/S'], 420_000);
+          const diagnostic = JSON.parse(readFileSync(join(setupHome, 'result.json')));
+          report.delayedRetries.push({ offsetMs, startedSinceStopMs, sinceStopMs: Date.now() - stoppedAt, result, diagnostic });
+          await observeSeatStop(`after-retry-${offsetMs}`);
+          save();
+          if (result.code === 0) break;
+        }
+      }
       check('Setup completes after the real seat stops and the user retries', report.retry.code === 0);
       report.after = await ready('0.164.9');
       check('Retry confirms the new running service', report.after.version === '0.164.9');
