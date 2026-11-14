@@ -98,6 +98,10 @@ try {
     check('Disabled task remains empty under explicit launch challenge', native.enabled === false && native.instances === 0);
     // A real interrupted copy has overwritten the manifest but not completed runtime publication.
     writeFileSync(join(runtime, 'package.json'), '{"name":"cotal-ai","version":"0.164.9","type":"module"}');
+    if (existsSync(join(repo, 'desktop/src-tauri/target/release/cotal-desktop.exe'))) {
+      const guarded = await run(join(repo, 'desktop/src-tauri/target/release/cotal-desktop.exe'), ['--daemon']);
+      check('New native launcher refuses unfinished handover before Node launch', guarded.code !== 0);
+    }
     report.interrupted = true;
   }
   if (cell === 'locker') {

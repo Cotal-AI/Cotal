@@ -18,7 +18,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - name: Stamp disposable proof version
-        run: node desktop/test/setup-candidate-version.mjs
+        run: pnpm exec node desktop/test/setup-candidate-version.mjs
       - name: Build stock Windows native bindings
         shell: cmd
         run: |
