@@ -47,6 +47,15 @@ function directory(path) {
   if (process.getuid) assert.equal(stat.mode & 0o022, 0, 'writable root refused');
   return stat;
 }
+export function canonicalSocketPath(socket, parent, platform = process.platform) {
+  assert(socket.endsWith('/daemon.sock'), 'native socket leaf differs');
+  const original = dirname(socket);
+  if (parent === original) return socket;
+  assert(platform === 'darwin' && socket.startsWith('/var/folders/') && parent === '/private' + original,
+    'socket parent is not the native macOS /var alias');
+  return join(parent, 'daemon.sock');
+}
+
 function safePath(root, file) {
   directory(root);
   assert(file.startsWith(root + '/') || file.startsWith(root + '\\'), 'path escaped root');
@@ -151,7 +160,8 @@ async function capture(options) {
     const recorded = options.socket ? undefined : JSON.parse(bytes(options.daemonHome, join(options.daemonHome, 'daemon.lock')))?.socket;
     const socket = options.socket ?? recorded?.path;
     assert(typeof socket === 'string' && isAbsolute(socket), 'no socket supplied or recorded');
-    const stat = safePath(dirname(socket), socket);
+    const canonical = canonicalSocketPath(socket, realpathSync(dirname(socket)), options.platform ?? process.platform);
+    const stat = safePath(dirname(canonical), canonical);
     if (recorded) assert(stat.dev === recorded.dev && stat.ino === recorded.ino, 'recorded socket generation differs');
     assert(stat.isSocket(), 'endpoint is not a socket');
     return { state: 'archived', ...archive('socket', JSON.stringify({ source: options.socket ? 'explicit' : 'daemon.lock', dev: stat.dev, ino: stat.ino, uid: stat.uid, mode: stat.mode, mtimeMs: stat.mtimeMs })) };

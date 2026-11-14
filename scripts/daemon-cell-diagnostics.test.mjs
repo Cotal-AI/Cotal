@@ -6,7 +6,19 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { captureDaemonDiagnostics, daemonShowProperties } from './daemon-cell-diagnostics.mjs';
+import { captureDaemonDiagnostics, daemonShowProperties, canonicalSocketPath } from './daemon-cell-diagnostics.mjs';
+
+test('only the observed native macOS /var/folders alias is canonicalized', () => {
+  const socket = '/var/folders/2s/native/C/cotal/daemon.sock';
+  assert.equal(canonicalSocketPath(socket, '/private/var/folders/2s/native/C/cotal', 'darwin'), '/private' + socket);
+  assert.equal(canonicalSocketPath('/private' + socket, '/private/var/folders/2s/native/C/cotal', 'darwin'), '/private' + socket);
+  for (const [path, parent, platform] of [
+    [socket, '/private/var/folders/2s/native/C/cotal', 'linux'],
+    [socket, '/foreign/cotal', 'darwin'],
+    ['/var/other/daemon.sock', '/private/var/other', 'darwin'],
+    ['/var/folders/2s/native/C/cotal/other.sock', '/private/var/folders/2s/native/C/cotal', 'darwin'],
+  ]) assert.throws(() => canonicalSocketPath(path, parent, platform));
+});
 
 function fixture() {
   const home = mkdtempSync('/var/tmp/upgrade-matrix/daemon-diagnostics-');
