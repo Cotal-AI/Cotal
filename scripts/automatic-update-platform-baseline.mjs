@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mjs';
+import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
@@ -24,6 +25,31 @@ export function macTransitionSource(source, expectedTarget, kind) {
   return kind === 'transition' && /^\d+\.\d+\.\d+$/.test(source) && /^\d+\.\d+\.\d+$/.test(expectedTarget ?? '')
     && compareVersions(source, '0.164.6') >= 0 && compareVersions(source, expectedTarget) < 0;
 }
+export function needsSchedulerEligibility({ method, platform, launchdProof, windowsPolicy, policy }) {
+  return method === 'scheduler' && ['linux', 'darwin'].includes(platform)
+    && launchdProof !== 'off-before-tick' && !windowsPolicy && policy !== 'unsupported-scheduler';
+}
+
+export async function waitForSchedulerEligibility(report, readStatus, { now = Date.now, sleep = delay, timeoutMs = 90000, intervalMs = 1000 } = {}) {
+  const startedAt = now(), deadline = startedAt + timeoutMs;
+  const receipt = report.schedulerEligibility = { startedAt, deadline, source: report.source, observations: [] };
+  const observe = (status, exit) => {
+    receipt.observations.push({ attempt: receipt.observations.length + 1, observedAt: now(), exit, status });
+    return exit === 0 && status?.state === 'ready' && status.version === report.source && status.update?.automatic === true;
+  };
+  if (observe(report.daemonBefore, 0)) return;
+  while (now() < deadline) {
+    await sleep(Math.min(intervalMs, deadline - now()));
+    if (now() >= deadline) break;
+    const result = await readStatus(deadline - now());
+    const status = result.exit === 0 ? JSON.parse(result.stdout).result : undefined;
+    const eligible = observe(status, result.exit);
+    if (status) report.daemonBefore = status;
+    if (eligible && now() <= deadline) return;
+  }
+  assert.fail(`native scheduler eligibility timed out: ${JSON.stringify(receipt)}`);
+}
+
 export const hostedManagerCommand = space => ['daemon', 'setup', '--space', space, '--json'];
 export const foreignStackCleanupCommand = 'export HOME=/tmp/foreign-home COTAL_HOME=/tmp/foreign-home/.cotal XDG_CONFIG_HOME=/tmp/foreign-home/config; cd /tmp/project; cotal down --with-agents --yes';
 
@@ -286,7 +312,7 @@ export async function matrixCell(options) {
     return result;
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
-  const cotal = (label, argv) => layout === 'installer' ? call(label, launcher, argv) : call(label, process.execPath, [cli, ...argv]);
+  const cotal = (label, argv, timeout) => layout === 'installer' ? call(label, launcher, argv, timeout) : call(label, process.execPath, [cli, ...argv], timeout);
   const daemon = (label, argv) => desktopRuntime
     ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv])
     : cotal(label, argv);
@@ -404,6 +430,9 @@ export async function matrixCell(options) {
         await delay(1000);
       }
       assert(container.pid, 'stock foreign container reached manager up with an owned host PID');
+      report.foreignContainer.pid1 = ok(await call('pin foreign container first process', 'docker', ['exec', container.id, 'sh', '-c', 'test -r /proc/1/cmdline && tr "\\000" " " < /proc/1/cmdline']), 'container first process');
+      report.foreignContainer.pid1Supervise = /(?:^|\s)(?:[^ ]*\/)?cotal(?:\.js)? supervise\s*$/.test(report.foreignContainer.pid1.stdout);
+      assert(report.foreignContainer.pid1Supervise, 'owned container first process must be the bare supervisor under test');
       report.foreignContainer.hostProcesses = ok(await call('record owned foreign supervisor host identity', 'docker', ['top', container.id, '-eo', 'pid,uid,args']), 'owned container process identity').stdout;
       report.foreignContainer.imageIdentity = ok(await call('record foreign image identity', 'docker', ['image', 'inspect', tag]), 'image identity').stdout;
     }
@@ -511,13 +540,9 @@ export async function matrixCell(options) {
         assert.equal(report.daemonBefore.update.automatic, false);
         assert(readFileSync(plan.unitPath, 'utf8').includes(desktopRuntime), 'native service source must name actual released desktop runtime');
       }
-      if (method === 'scheduler' && process.platform === 'linux') {
+      if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
         // Native custody observation runs asynchronously after the socket first becomes ready.
-        for (let i = 0; i < 90 && !report.daemonBefore.update?.automatic; i++) {
-          await delay(1000);
-          const status = await cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json']);
-          if (status.exit === 0) report.daemonBefore = JSON.parse(status.stdout).result;
-        }
+        await waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining));
       }
     }
     report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
@@ -776,7 +801,13 @@ export async function matrixCell(options) {
         assert(current.State.Running, 'owned foreign container must remain running until stack cleanup');
         report.foreignStackStop = await call('stop stock stack inside owned foreign container', 'docker', ['exec', container.id, 'sh', '-c', foreignStackCleanupCommand], 60000);
         report.ownedStackCleanup = report.foreignStackStop;
-        check('owned local stack cleanup succeeds', report.foreignStackStop.exit === 0, report.foreignStackStop);
+        const ended = JSON.parse(ok(await call('observe container immediately after stock down', 'docker', ['inspect', container.id]), 'container end observation').stdout)[0];
+        const processCheck = await call('confirm no owned container process remains', 'docker', ['top', container.id, '-eo', 'pid,uid,args']);
+        const processRows = processCheck.stdout.trim().split('\n').filter(Boolean);
+        const noProcesses = processCheck.exit === 0 ? processRows.length <= 1 : processCheck.exit === 1 && processCheck.stdout.trim() === '' && /is not running/.test(processCheck.stderr);
+        const stackEnded = foreignStackEnded({ stop: report.calls.findLast(entry => entry.label === 'stop stock stack inside owned foreign container'), before: container, after: ended, noProcesses });
+        report.foreignStackEnd = { state: ended.State, noProcesses, processCheck, passed: stackEnded, pid1Exit137: report.foreignStackStop.exit === 137 && stackEnded };
+        check('owned local stack cleanup succeeds', stackEnded, report.foreignStackEnd);
         report.foreignContainerStop = ok(await call('stop owned foreign supervisor and broker', 'docker', ['stop', '--time', '20', container.id], 60000), 'foreign container stop');
         const stopped = JSON.parse(ok(await call('confirm owned foreign container stopped', 'docker', ['inspect', container.id]), 'container stop proof').stdout)[0];
         assert.equal(stopped.Id, container.id);
@@ -784,7 +815,7 @@ export async function matrixCell(options) {
         assert.equal(stopped.State.Running, false);
         report.foreignContainerCleanup = { exit: report.foreignContainerStop.exit, running: stopped.State.Running, retained: true };
         check('foreign container cleanup succeeds', report.foreignContainerCleanup.exit === 0 && !report.foreignContainerCleanup.running, report.foreignContainerCleanup);
-        ok(report.foreignStackStop, 'foreign stack cleanup');
+        assert(stackEnded, 'owned stock stack end was not confirmed');
       } catch (error) {
         if (!report.assertions.some(row => row.name === 'foreign container cleanup succeeds')) check('foreign container cleanup succeeds', false, error.message);
         report.cleanupFailure = error.message; report.result = 'failed';
@@ -839,7 +870,7 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!(stackStarted || container) || report.ownedStackCleanup?.exit === 0) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
