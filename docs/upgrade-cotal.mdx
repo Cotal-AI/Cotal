@@ -123,7 +123,12 @@ If it refuses, follow the reported remedy instead of removing credentials or rei
 It installs and restarts nothing, so it does not replace this reconciliation step.
 `cotal update --self` selects the validated latest release; use the pinned install commands above when you need a specific target.
 Before replacing the global binary, it checks the release's first-party package archives through
-npm. If the release is still reaching the registry, it refuses with retry guidance without starting
+npm. Metadata reads run in bounded parallel batches and npm verifies each archive's integrity.
+The command prints progress before release checks, the recovery snapshot, package installation,
+connector reconciliation and cleanup, and reports elapsed seconds to one decimal place for completed steps. Connector and extension installs still run serially under
+their existing locks. Every update reads and verifies its own package closure without reusing
+results from an earlier command.
+If the release is still reaching the registry, it refuses with retry guidance without starting
 the global install or connector reconciliation.
 If npm's install reports `ETARGET` for the selected latest `cotal-ai` version, the command
 reports that the release is still arriving and exits 0 without replacing packages or rolling back.
