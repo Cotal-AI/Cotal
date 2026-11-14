@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.164.10
+
+### Patch Changes
+
+- 44ce7f5: Keep a running command's release identity tied to the code it loaded during staged updates.
+  
+  Publishing a new canonical package manifest no longer makes an older bootstrapped CLI report or reconcile as the new release. Embedded API calls retain their entry package's version and provenance.
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+
 ## 0.164.9
 
 ### Patch Changes
