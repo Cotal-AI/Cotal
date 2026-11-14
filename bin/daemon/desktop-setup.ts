@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace/local-observation";
 
 /** An incomplete desktop replacement must never be started through the service controls. */
@@ -14,7 +14,10 @@ export function assertDesktopSetupComplete(executable = process.execPath, localA
   }
   const record = state && typeof state === "object" ? state as Record<string, unknown> : undefined;
   if (!record || record.schema !== 1 || typeof record.installPath !== "string") throw new CommandFailure("refused", "CONFLICT", "Setup was interrupted and its handover is invalid. Run the installer again before starting the service.");
-  if (resolve(record.installPath).toLowerCase() !== resolve(installPath).toLowerCase()) return;
+  let sameInstallation: boolean;
+  try { sameInstallation = realpathSync.native(record.installPath).toLowerCase() === realpathSync.native(installPath).toLowerCase(); }
+  catch { throw new CommandFailure("refused", "CONFLICT", "Setup was interrupted and its installation folder could not be identified. Run the installer again before starting the service."); }
+  if (!sameInstallation) return;
   if (record.phase === "ready") return;
   throw new CommandFailure("refused", "CONFLICT", "Setup was interrupted. Run the installer again before starting the service.");
 }

@@ -113,7 +113,11 @@ PowerShell entries record the action, fixed step name and milliseconds since tha
 started, including its startup and completion timings. A process that cannot be identified
 is reported with its parent PID and creation time when available. An interrupted replacement keeps the task disabled.
 Run a current setup program again to finish it. The app shows that setup was interrupted and
-links to the installer without offering Start service. A newer setup can replace a partial
+links to the installer without offering Start service. Both sides of the installation check use
+OS-resolved folder paths, so short Windows names, extended prefixes and trailing separators do
+not bypass the guard. A handover whose folder cannot be resolved refuses startup. Run the
+installer again to repair it. The interrupted app does not load the partial runtime or display
+unavailable computer details as measured values. A newer setup can replace a partial
 older update after verifying that the owned task is disabled and its old process has stopped.
 A verified update whose startup was not confirmed leaves no incomplete-copy handover.
 If the preparation helper dies while its old service is alive, its hosted launch fence can

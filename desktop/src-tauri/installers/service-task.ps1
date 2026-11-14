@@ -108,10 +108,16 @@ try {
     if (!(Test-Path -LiteralPath $statePath)) { 'none'; Write-SetupStep 'return'; exit 0 }
     $state=$null
     $damaged=$false
+    $recoveryMessage='An unreadable or invalid setup handover was repaired. Prior running state was unknown, so no service was started.'
     try {
       Write-SetupStep 'handover-read'
       $state=Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-      if ($state.schema -ne 1 -or ![string]::Equals($state.installPath,$root,[StringComparison]::OrdinalIgnoreCase) -or $state.phase -notin @('preparing','copying','ready')) { $damaged=$true }
+      if ($state.schema -ne 1 -or $state.phase -notin @('preparing','copying','ready') -or $state.installPath -isnot [string]) { $damaged=$true }
+      elseif (![string]::Equals($state.installPath,$root,[StringComparison]::OrdinalIgnoreCase)) {
+        $damaged=$true
+        if (!(Test-Path -LiteralPath $state.installPath -PathType Container)) { $recoveryMessage='The setup handover named an installation folder that no longer exists. It was repaired. Prior running state was unknown, so no service was started.' }
+        else { $recoveryMessage='The setup handover named another installation. It was repaired. Prior running state was unknown, so no service was started.' }
+      }
     } catch { $damaged=$true }
     if (!$damaged -and $state.phase -eq 'ready') {
       Write-SetupStep 'handover-remove-ready'
@@ -142,7 +148,7 @@ try {
     if ($live.Count -ne 0) { throw 'Another program still uses the interrupted installation or could not be identified. Close it before running setup again.' }
     if ($owned -and !$owned.foreign -and $owned.task.GetInstances(0).Count -ne 0) { throw 'The owned task still has a native instance. No replacement was authorized.' }
     if ($damaged) {
-      $state=@{schema=1;installPath=$root;targetVersion=$env:COTAL_SETUP_VERSION;oldVersion=$null;installed=[bool]($owned -and !$owned.foreign);foreign=[bool]($owned -and $owned.foreign);taskEnabled=[bool]($owned -and !$owned.foreign -and $owned.task.Enabled);running=$false;receiptDigest=$(if($owned -and !$owned.foreign){$owned.receiptDigest}else{$null});phase='copying';recoveryMessage='An unreadable setup handover was repaired. Prior running state was unknown, so no service was started.'}
+      $state=@{schema=1;installPath=$root;targetVersion=$env:COTAL_SETUP_VERSION;oldVersion=$null;installed=[bool]($owned -and !$owned.foreign);foreign=[bool]($owned -and $owned.foreign);taskEnabled=[bool]($owned -and !$owned.foreign -and $owned.task.Enabled);running=$false;receiptDigest=$(if($owned -and !$owned.foreign){$owned.receiptDigest}else{$null});phase='copying';recoveryMessage=$recoveryMessage}
     } else {
       if ($state.installed -and (!$owned -or $owned.foreign -or $owned.receiptDigest -cne $state.receiptDigest)) { throw 'The owned task changed during interrupted setup.' }
       $state.phase='copying'

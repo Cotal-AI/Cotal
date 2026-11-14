@@ -49,9 +49,6 @@ async fn daemon_request(
         Err(_) => return Ok(serde_json::json!({"v":1,"event":"result","ok":false,"error":{"code":"SETUP_INTERRUPTED","message":"Run the installer again to finish updating Cotal."}})),
     };
     if setup_interrupted {
-        if matches!(&request, DesktopRequest::About {}) {
-            return Ok(serde_json::json!({"v":1,"event":"result","ok":true,"result":{"version":app.package_info().version.to_string(),"platform":std::env::consts::OS,"arch":std::env::consts::ARCH}}));
-        }
         return Ok(serde_json::json!({"v":1,"event":"result","ok":false,"error":{"code":"SETUP_INTERRUPTED","message":"Run the installer again to finish updating Cotal."}}));
     }
     let entry = runtime.join("dist").join("cotal.js");

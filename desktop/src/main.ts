@@ -1090,7 +1090,10 @@ async function start(): Promise<void> {
       if (selectedSpace()) { if (!linked) showStage("connect"); await refresh(); }
       else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("connect");
     }
-  } catch (error) { refusal(error); }
+  } catch (error) {
+    if (error instanceof DaemonRefusal && error.code === "SETUP_INTERRUPTED") text("machine-details", "Computer information is unavailable while setup is incomplete.");
+    refusal(error);
+  }
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");

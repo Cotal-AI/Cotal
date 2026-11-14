@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -62,6 +62,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
       if (r.op === "update-check") return ok({ update });
       if (r.op === "update-release") return ok({ assets: [] });
       if (r.op === "about") {
+        if (options.interruptedAbout) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.loading) await new Promise(() => {});
         return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
@@ -216,6 +217,16 @@ test("interrupted setup shows installer recovery without offering Start service"
     await a.click("setup-installer");
     assert.equal(a.urls.at(-1), "https://github.com/Cotal-AI/Cotal/releases/latest");
     assert.equal(a.calls.some(call => call.op === "install"), false);
+  } finally { a.dom.window.close(); }
+});
+
+test("interrupted about shows truthful unavailable computer details", async () => {
+  const a = await app({ interruptedAbout: true });
+  try {
+    assert.equal(a.node("connection-title").textContent, "Setup was interrupted");
+    assert.equal(a.node("machine-details").textContent, "Computer information is unavailable while setup is incomplete.");
+    assert.ok(!/undefined|NaN/.test(a.doc.body.textContent ?? ""));
+    assert.equal(a.calls.some(call => call.op === "install" || call.op === "status"), false);
   } finally { a.dom.window.close(); }
 });
 

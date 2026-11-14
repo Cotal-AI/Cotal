@@ -72,7 +72,9 @@ test('setup owns task suppression without task termination and persists caller-r
   for (const field of ['helperExit', 'phase']) assert.ok(hooks.includes(field));
   assert.match(hooks, /TIMEOUT=360000[^\n]*finish/);
   assert.match(task, /'preparing','copying','ready'/);
-  assert.match(task, /An unreadable setup handover was repaired/);
+  assert.match(task, /An unreadable or invalid setup handover was repaired/);
+  assert.match(task, /installation folder that no longer exists/);
+  assert.match(task, /handover named another installation/);
   assert.match(hooks, /MB_ICONINFORMATION/);
   assert.match(hooks, /\$CotalFresh/);
   assert.match(helper, /'started-unconfirmed'/);

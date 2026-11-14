@@ -16,6 +16,8 @@ pub fn interrupted(install: &Path) -> Result<bool, String> {
         let state: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "Setup handover is invalid. Run the installer again.")?;
         let path = state["installPath"].as_str().ok_or("Setup handover has no installation path.")?;
         if state["schema"] != 1 { return Err("Setup handover version is unsupported. Run the installer again.".into()); }
-        Ok(path.eq_ignore_ascii_case(&install.to_string_lossy()) && state["phase"] != "ready")
+        let installed = std::fs::canonicalize(install).map_err(|_| "Setup installation folder could not be identified. Run the installer again.")?;
+        let recorded = std::fs::canonicalize(path).map_err(|_| "Setup handover installation folder could not be identified. Run the installer again.")?;
+        Ok(recorded.to_string_lossy().eq_ignore_ascii_case(&installed.to_string_lossy()) && state["phase"] != "ready")
     }
 }
