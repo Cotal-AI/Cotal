@@ -10,13 +10,29 @@ const [native, pack, proof] = names.map(name => workflow.jobs[name]);
 const uses = (job, action) => job.steps.filter(step => step.uses?.startsWith(`${action}@`));
 const commands = job => job.steps.map(step => step.run ?? '').join('\n');
 
+test('job-only push admits one Windows2022 falsifier and no other job', () => {
+  const job = workflow.jobs['windows-job-facts'];
+  assert.equal(job['runs-on'], 'windows-2022'); assert.equal(job.strategy, undefined); assert.equal(job.needs, undefined);
+  for (const [name, other] of Object.entries(workflow.jobs)) assert(other.if.includes(name === 'windows-job-facts'
+    ? "contains(github.event.head_commit.message, '[windows-job-only]')" : "!contains(github.event.head_commit.message, '[windows-job-only]')"), name);
+  const install = job.steps.find(x => x.name === 'Install unchanged published native bindings');
+  assert(install.run.includes('npm install -g --prefix $prefix cotal-ai@0.164.6'));
+  assert(install.run.includes('npm view cotal-ai@0.164.6 dist --json'));
+  assert(install.run.includes('20GB'));
+  const cell = job.steps.find(x => x.name === 'Scheduled task job-object mutator lifetime falsifier');
+  assert.equal(cell.shell, 'powershell'); assert(cell.run.includes('windows-job-facts.ps1 -Output'));
+  assert(cell.run.includes('-PackageRoot "$env:PUBLISHED_PACKAGE_ROOT" -Node'));
+  assert(!commands(job).includes('--pack') && !commands(job).includes('pnpm build'));
+  assert.equal(uses(job, 'actions/upload-artifact')[0].if, 'always()');
+});
+
 test('transition mode enables only the three focused jobs and excludes every old job', () => {
   assert.deepEqual(Object.keys(workflow.jobs).filter(name => name.startsWith('transition-')), names);
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (names.includes(name)) {
-      assert.equal(job.if, "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
+      assert.equal(job.if, "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')");
     } else {
-      assert(job.if.includes("!contains(github.event.head_commit.message, '[mac-transition-only]')") || name === 'next-release-macos' && job.if.startsWith("github.event_name == 'release'"), name);
+      assert(job.if.includes("!contains(github.event.head_commit.message, '[mac-transition-only]')") || name === 'next-release-macos' && job.if.includes("github.event_name == 'release'"), name);
     }
   }
   assert.equal(native.needs, undefined);
@@ -32,7 +48,7 @@ test('controls run only the two unfinished cells with independent disposable cus
   assert.equal(job.strategy['max-parallel'], 1);
   assert.deepEqual(job.strategy.matrix, { mode: ['off-before-tick', 'killed-before-result'] });
   for (const [name, other] of Object.entries(workflow.jobs)) {
-    if (name === 'next-release-macos') { assert(other.if.startsWith("github.event_name == 'release'")); continue; }
+    if (name === 'next-release-macos') { assert(other.if.includes("github.event_name == 'release'")); continue; }
     assert(other.if.includes(name === 'mac-controls-proof'
       ? "contains(github.event.head_commit.message, '[mac-controls-only]')"
       : "!contains(github.event.head_commit.message, '[mac-controls-only]')"), name);
@@ -61,7 +77,7 @@ test('Windows push admits only the three native baseline steps and next-release 
   assert.equal(job.strategy, undefined);
   for (const [name, other] of Object.entries(workflow.jobs)) {
     if (name === 'windows-baseline') assert(other.if.includes("contains(github.event.head_commit.message, '[windows-baseline-only]')"));
-    else if (name === 'next-release-macos') assert(other.if.startsWith("github.event_name == 'release'"));
+    else if (name === 'next-release-macos') assert(other.if.includes("github.event_name == 'release'"));
     else assert(other.if.includes("!contains(github.event.head_commit.message, '[windows-baseline-only]')"), name);
   }
   const facts = job.steps.find(x => x.name === 'Native one-shot demand task lifecycle facts');

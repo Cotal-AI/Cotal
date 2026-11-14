@@ -21,8 +21,45 @@ permissions:
 env:
   PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
+  windows-job-facts:
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install unchanged published native bindings
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((Get-PSDrive C).Free -lt 20GB) { throw 'Less than 20 GiB free before published installation' }
+          $evidence = Join-Path $env:RUNNER_TEMP 'upgrade-evidence'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $env:DO_NOT_TRACK = '1'
+          $env:COTAL_TELEMETRY = 'off'
+          $prefix = Join-Path $env:RUNNER_TEMP 'published-native'
+          npm view cotal-ai@0.164.6 dist --json | Out-File (Join-Path $evidence 'published-dist.json') -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Published metadata unavailable' }
+          npm install -g --prefix $prefix cotal-ai@0.164.6 --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'Published installation failed' }
+          $package = Join-Path $prefix 'node_modules/cotal-ai'
+          if ((Get-Content (Join-Path $package 'package.json') -Raw | ConvertFrom-Json).version -ne '0.164.6') { throw 'Unexpected installed product version' }
+          "PUBLISHED_PACKAGE_ROOT=$package" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Scheduled task job-object mutator lifetime falsifier
+        shell: powershell
+        run: ./scripts/windows-job-facts.ps1 -Output "$env:RUNNER_TEMP/upgrade-evidence" -PackageRoot "$env:PUBLISHED_PACKAGE_ROOT" -Node (Get-Command node).Source
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-job-object-facts
+          path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
   windows-baseline:
-    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -50,7 +87,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   next-release-macos:
-    if: "github.event_name == 'release' && github.event.release.tag_name != 'v0.164.6' && github.event.release.tag_name != '0.164.6'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && github.event_name == 'release' && github.event.release.tag_name != 'v0.164.6' && github.event.release.tag_name != '0.164.6'"
     runs-on: macos-15
     timeout-minutes: 25
     strategy:
@@ -83,7 +120,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   mac-controls-proof:
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: macos-15
     timeout-minutes: 25
     strategy:
@@ -163,7 +200,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   transition-native:
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -223,7 +260,7 @@ jobs:
           if-no-files-found: error
   transition-pack:
     needs: transition-native
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -277,7 +314,7 @@ jobs:
           if-no-files-found: error
   transition-mac-proof:
     needs: transition-pack
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: macos-15
     timeout-minutes: 40
     steps:
@@ -320,7 +357,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   scheduler-proof:
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -351,7 +388,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   installer-proof:
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[installer-only]') && !contains(github.event.head_commit.message, '[scheduler-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && github.event_name == 'push' && contains(github.event.head_commit.message, '[installer-only]') && !contains(github.event.head_commit.message, '[scheduler-only]')"
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -419,7 +456,7 @@ jobs:
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   priority:
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -482,7 +519,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: priority
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -520,13 +557,13 @@ jobs:
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
   seat-native:
     needs: workspace-native
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success'"
     strategy:
       max-parallel: 6
       fail-fast: false
@@ -555,7 +592,7 @@ jobs:
           if-no-files-found: error
   candidate-pack:
     needs: [workspace-native, seat-native]
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.workspace-native.result == 'success' && needs.seat-native.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -604,7 +641,7 @@ jobs:
           if-no-files-found: error
   candidate-B:
     needs: candidate-pack
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-pack.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
@@ -636,7 +673,7 @@ jobs:
           if-no-files-found: error
   candidate-B-expanded:
     needs: candidate-A
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-A.result == 'success'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -681,7 +718,7 @@ jobs:
           if-no-files-found: error
   candidate-native:
     needs: candidate-B-expanded
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -746,7 +783,7 @@ jobs:
           if-no-files-found: error
   candidate-A:
     needs: candidate-B
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && needs.candidate-B.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -772,7 +809,7 @@ jobs:
           if-no-files-found: error
   published:
     needs: candidate-native
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6
@@ -801,7 +838,7 @@ jobs:
           done
           exit "$failed"
       - name: Published installer rerun states
-        if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && matrix.layout == 'installer'"
+        if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && matrix.layout == 'installer'"
         shell: bash
         run: |
           failed=0
@@ -817,7 +854,7 @@ jobs:
           if-no-files-found: error
   native:
     needs: published
-    if: "!contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
+    if: "!contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && github.event_name != 'push'"
     strategy:
       fail-fast: false
       max-parallel: 6

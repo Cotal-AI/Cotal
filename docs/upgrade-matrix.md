@@ -125,6 +125,16 @@ and its child stays alive, then after the child exits. These are observed platfo
 claim that an updater can safely recover. Each probe acts only on its own identity-checked task
 or process. An earlier failed probe does not suppress the remaining cells.
 
+## Test Windows job containment
+
+`[windows-job-only]` runs one `windows-2022` cell against the published 0.164.6 workspace launcher.
+An owned demand-started task records its existing scheduler job and limits before nested launch.
+The gate owner launches a child tree through the shipped kill-on-close job binding. A contender
+starts before the owner is killed and records immediate gate acquisition with descendant liveness.
+Any grant while a mutating descendant lives, refused nested assignment or escaped breakaway fails
+the cell. A normal-exit control also checks quiescence before release. No wait masks an ordering
+failure. These observations qualify a platform boundary, not the complete Windows updater.
+
 ## Check the next published release
 
 On releases after 0.164.6, two isolated `macos-15` cells start from published 0.164.6. One installs

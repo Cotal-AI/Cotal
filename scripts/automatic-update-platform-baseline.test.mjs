@@ -138,7 +138,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
   assert.equal(workflow.jobs['scheduler-proof'].strategy, undefined, 'narrow proof is one runner, not a matrix');
   assert(workflow.jobs['scheduler-proof'].steps.some(step => step.run?.includes('--source 0.160.7 --layout installer --state daemon --method scheduler')));
   for (const [name, job] of Object.entries(workflow.jobs)) {
-    if (name === 'next-release-macos') { assert(job.if.startsWith("github.event_name == 'release'")); continue; }
+    if (name === 'next-release-macos') { assert(job.if.includes("github.event_name == 'release'")); continue; }
     if (name !== 'scheduler-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[scheduler-only]')"), `${name} could run during scheduler proof`);
     if (name !== 'installer-proof') assert(job.if.includes("!contains(github.event.head_commit.message, '[installer-only]')"), `${name} could run during installer proof`);
   }
@@ -166,7 +166,7 @@ test('workflow is priority-first, six-wide and cancels superseded branch runs', 
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
     if (job.strategy) assert(job.strategy['max-parallel'] <= 6, `${name} is not bounded to six`);
-    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
+    if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
     visiting.delete(name);
