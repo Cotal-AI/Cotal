@@ -28,6 +28,7 @@ const composed: Command = { ...command, async run(args) {
   let currentPackages = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
+  const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   await update(args, { ...updateRuntime,
@@ -107,7 +108,7 @@ const composed: Command = { ...command, async run(args) {
       daemonObserved = true;
       managers = reply.result.managers ?? [];
     } catch (error) {
-      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return targetReceipt ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
       throw error;
     }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.
@@ -116,7 +117,7 @@ const composed: Command = { ...command, async run(args) {
     }
     const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
-    if (!active.length) return targetReceipt ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+    if (!active.length) return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
@@ -173,7 +174,7 @@ const composed: Command = { ...command, async run(args) {
         if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
         if (on !== undefined && on !== manager.instanceId) continue;
         if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-        if (await (targetReceipt ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+        if (await (retainsExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
       }
     }
     if (process.platform !== "linux" && typeof flags.space !== "string") {
