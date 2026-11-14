@@ -31,13 +31,13 @@ if (role === 'descendant') {
     process.exitCode = 1;
   });
   const e = process.env;
+  assert(e.COTAL_MANAGER_INSTANCE && e.COTAL_LIFECYCLE_UID, 'managed fixture identity required');
   const ep = new CotalEndpoint({
     space: e.COTAL_SPACE,
     servers: e.COTAL_SERVERS,
     creds: readFileSync(e.COTAL_CREDS, 'utf8'),
-    card: { id: e.COTAL_ID, name: e.COTAL_NAME, kind: 'agent' },
+    card: { id: e.COTAL_ID, name: e.COTAL_NAME, kind: 'agent', meta: { 'ai.cotal.manager.instance': e.COTAL_MANAGER_INSTANCE } },
     lifecycleUid: e.COTAL_LIFECYCLE_UID,
-    managerInstanceId: e.COTAL_MANAGER_INSTANCE,
     channels: [],
     consume: false,
     registerPresence: true,

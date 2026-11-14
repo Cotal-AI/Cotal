@@ -82,6 +82,21 @@ const until = async (predicate, description, ms = 60000) => {
   while (performance.now() < deadline) { if (await predicate()) return; await delay(100); }
   throw new Error(`fixture setup did not reach ${description}`);
 };
+async function cleanupStep(name, action, timeoutMs = 15000) {
+  result.cleanupStage = name;
+  save();
+  let timer;
+  try {
+    await Promise.race([
+      Promise.resolve().then(action),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${name} exceeded ${timeoutMs}ms`)), timeoutMs); }),
+    ]);
+    result.cleanup.push({ stage: name, completed: true });
+  } catch (error) {
+    result.cleanup.push({ stage: name, error: String(error) });
+    process.exitCode = 1;
+  } finally { clearTimeout(timer); save(); }
+}
 async function cotal(args) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [tsxCli, join(root, 'bin/cotal.ts'), ...args], {
@@ -148,13 +163,17 @@ try {
     catch (error) { result.cleanup.push({ identity: pin.identity, error: String(error) }); process.exitCode = 1; }
   }
   unsubscribe?.();
-  try { await mgr.stop(); } catch (error) { result.managerCleanupError = String(error); process.exitCode = 1; }
-  await delivery?.stop();
-  await killAndAwaitExit(broker);
+  await cleanupStep('manager.stop', () => mgr.stop());
+  await cleanupStep('delivery.stop', () => delivery?.stop());
+  await cleanupStep('broker.exit', () => killAndAwaitExit(broker));
   if (broker.exitCode !== null || broker.signalCode !== null) releaseBroker();
   else { result.brokerCleanupError = 'broker exit was not proved; ownership registration retained'; process.exitCode = 1; }
   for (const pin of retained) pin.close();
   process.stderr.write = originalStderrWrite;
+  result.cleanupStage = 'finished';
   save();
 }
 console.log(JSON.stringify({ dir, productStopEndedTree: result.productStopEndedTree, error: result.error ?? null }));
+// The measurement owns this process. All external fixture lifetimes were observed
+// separately above. Do not let a leaked Manager timer consume the runner deadline.
+process.exit(process.exitCode ?? 0);
