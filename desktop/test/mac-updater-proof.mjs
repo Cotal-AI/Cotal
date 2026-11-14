@@ -64,11 +64,14 @@ const run = async (command, args, options = {}) => {
   return result.stdout;
 };
 const call = async (...args) => {
-  try { return JSON.parse(await run(node, [cli, ...args, '--json'])); }
+  let raw;
+  try { raw = await run(node, [cli, ...args, '--json']); }
   catch (error) {
-    if (typeof error.stdout === 'string' && error.stdout.trim()) return JSON.parse(error.stdout);
-    throw error;
+    if (typeof error.stdout === 'string' && error.stdout.trim()) raw = error.stdout;
+    else throw error;
   }
+  const envelope = JSON.parse(raw);
+  return { ...envelope, ok: envelope.outcome === 'ok' };
 };
 const ax = async (operation, ...args) => JSON.parse(await run('/usr/bin/swift', [driver, app, operation, ...args], { timeout: 30_000 }));
 async function until(name, observe, accept, timeout = 180_000) {
@@ -81,6 +84,11 @@ async function until(name, observe, accept, timeout = 180_000) {
   } while (Date.now() < deadline);
   throw new Error(`${name} did not complete: ${JSON.stringify(last)}`);
 }
+const quitApp = async name => {
+  const current = await ax('describe');
+  await ax('quit');
+  await until(name, () => { try { process.kill(current.pid, 0); return false; } catch { return true; } }, Boolean, 30_000);
+};
 const installed = () => JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version;
 let fixture, seat, manager;
 let serviceInstalled = false;
@@ -90,11 +98,29 @@ try {
   await run('/usr/bin/tar', ['-xzf', join(root, 'N.app.tar.gz'), '-C', '/Applications']);
   assert.equal(installed(), '0.164.8');
   const initial = await call('daemon', 'status');
-  assert.equal(initial.error?.code, 'NOT_RUNNING', 'Default native service must be absent');
+  record('initial daemon status', initial);
+  assert.equal(initial.ok, false, 'Default native service must be absent');
+  assert.equal(initial.outcome, 'refused', 'Default native service must be absent');
+  assert.equal(initial.error?.code, 'TARGET_UNAVAILABLE', 'Default native service must be absent');
+  assert.equal(initial.error?.cause?.code, 'NOT_RUNNING', 'Default native service must be absent');
   const installation = await call('daemon', 'install'); assert.equal(installation.ok, true, JSON.stringify(installation)); serviceInstalled = true;
   const before = await until('installed launchd service N', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.8');
   const lifetime = await import(pathToFileURL(join(runtime, 'dist/daemon/lifetime.js')).href);
   record('service N kernel lifetime', { pid: before.result.pid, birth: lifetime.processBirth(before.result.pid) });
+  // A real shared fixture is imported unchanged from its reviewed source checkout so Settings is reachable on a connected space.
+  assert.ok(process.env.COTAL_MAC_FIXTURE_ROOT, 'A reviewed shared-fixture checkout is required');
+  const fixtureRoot = resolve(process.env.COTAL_MAC_FIXTURE_ROOT);
+  assert.ok(fixtureRoot && existsSync(join(fixtureRoot, 'bin/smoke/_fixture-seat.mjs')), 'Shared fixture must exist at an explicit reviewed head');
+  const fixtureHead = (await execute('git', ['rev-parse', 'HEAD'], { cwd: fixtureRoot })).stdout.trim();
+  assert.match(fixtureHead, /^[a-f0-9]{40}$/);
+  record('shared fixture source', { head: fixtureHead });
+  const workspace = await import(pathToFileURL(join(runtime, 'node_modules/@cotal-ai/workspace/dist/index.js')).href);
+  const { createFixtureSpace } = await import(pathToFileURL(join(fixtureRoot, 'bin/smoke/_fixture-space.mjs')).href);
+  const { installFixtureSeat } = await import(pathToFileURL(join(fixtureRoot, 'bin/smoke/_fixture-seat.mjs')).href);
+  fixture = await createFixtureSpace({ root: join(root, 'occupied'), machineHome: workspace.homeCotalDir(), runtime, node, env });
+  seat = await installFixtureSeat({ root: join(root, 'occupied'), runtime, node, env, cwd: fixture.participant, space: fixture.space });
+  manager = await fixture.startManager();
+  await until('fixture Manager ready on service N', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.8' && reply.result.managers?.some(item => item.space === fixture.space && item.state === 'answering' && item.connectors?.some(connector => connector.state === 'available')));
   await run('/usr/bin/open', ['-n', app]);
   const firstApp = await until('visible N app', () => ax('describe'), value => value.visible);
   record('app N kernel lifetime', { ...firstApp, birth: lifetime.processBirth(firstApp.pid) });
@@ -106,19 +132,18 @@ try {
   assert.equal(installed(), '0.164.8');
   assert.equal(requests.filter(item => item.path === '/update.tar.gz').length, 0, 'A visible app does not repeatedly download');
   // Exercise shared preference through the actual public CLI, not a private settings fixture.
-  assert.equal((await call('update', '--auto', 'off')).ok, true);
-  await ax('quit');
-  await until('N app exited', () => { try { process.kill(firstApp.pid, 0); return false; } catch { return true; } }, Boolean, 30_000);
+  assert.equal((await run(node, [cli, 'update', '--auto', 'off'])).includes('Automatic updates: off'), true);
+  await quitApp('N app exited');
   await run('/usr/bin/open', ['-n', app, '--args', '--background']);
   await delay(5000);
   assert.equal(installed(), '0.164.8');
   assert.equal(requests.filter(item => item.path === '/update.tar.gz').length, 0);
   record('automatic off leaves N and no download', { version: installed() });
-  await ax('quit'); await delay(1500);
+  await quitApp('background N app exited');
   mode = 'publication';
   await run('/usr/bin/open', ['-n', app]);
   await until('N visible for invalid input controls', () => ax('describe'), value => value.visible);
-  assert.equal((await call('update', '--auto', 'on')).ok, true);
+  assert.equal((await run(node, [cli, 'update', '--auto', 'on'])).includes('Automatic updates: on'), true);
   await ax('settings');
   mode = 'slow';
   await ax('click', 'check-updates');
@@ -133,7 +158,7 @@ try {
   await until('Open during download leaves verified N ready', () => ax('text', 'settings-update-summary'), text => text.includes('downloaded and verified'), 60_000);
   assert.equal(installed(), '0.164.8');
   record('Open during slowed automatic download', { version: installed() });
-  await ax('quit'); await delay(1500);
+  await quitApp('N exited after slow download');
   mode = 'publication';
   await run('/usr/bin/open', ['-n', app]);
   await until('N visible before Quit download control', () => ax('describe'), value => value.visible);
@@ -204,30 +229,12 @@ try {
   mode = 'valid';
   await ax('click', 'check-updates');
   await until('valid manifest after controls', () => ax('text', 'settings-update-summary'), text => text.includes('Restart to update'));
-  assert.equal((await call('daemon', 'uninstall', '--yes')).ok, true);
-  serviceInstalled = false;
-  // A real shared fixture is imported unchanged from its reviewed source checkout.
-  assert.ok(process.env.COTAL_MAC_FIXTURE_ROOT, 'A reviewed shared-fixture checkout is required');
-  const fixtureRoot = resolve(process.env.COTAL_MAC_FIXTURE_ROOT);
-  assert.ok(fixtureRoot && existsSync(join(fixtureRoot, 'bin/smoke/_fixture-seat.mjs')), 'Shared fixture must exist at an explicit reviewed head');
-  const fixtureHead = (await execute('git', ['rev-parse', 'HEAD'], { cwd: fixtureRoot })).stdout.trim();
-  assert.match(fixtureHead, /^[a-f0-9]{40}$/);
-  record('shared fixture source', { head: fixtureHead });
-  const pnpm = process.env.npm_execpath;
-  assert.ok(pnpm, 'Run hosted proof through pnpm exec tsx');
-  await execute(process.execPath, [pnpm, '--workspace-concurrency=2', '--filter', 'cotal-ai...', 'build'], { cwd: fixtureRoot, env, timeout: 300_000, maxBuffer: 4 * 1024 * 1024 });
-  const workspace = await import(pathToFileURL(join(runtime, 'node_modules/@cotal-ai/workspace/dist/index.js')).href);
-  const { createFixtureSpace } = await import(pathToFileURL(join(fixtureRoot, 'bin/smoke/_fixture-space.mjs')).href);
-  const { installFixtureSeat } = await import(pathToFileURL(join(fixtureRoot, 'bin/smoke/_fixture-seat.mjs')).href);
-  assert.equal((await call('daemon', 'install')).ok, true); serviceInstalled = true;
-  fixture = await createFixtureSpace({ root: join(root, 'occupied'), machineHome: workspace.homeCotalDir(), runtime, node, env });
-  seat = await installFixtureSeat({ root: join(root, 'occupied'), runtime, node, env, cwd: fixture.participant, space: fixture.space });
-  manager = await fixture.startManager();
   const started = await seat.spawn(manager.instanceId); // A refusal here is a prerequisite failure, never a substituted seat.
   const seatBirth = lifetime.processBirth(started.pid);
   assert.ok(seatBirth, 'Actual PTY child birth must be readable');
   record('real joined PTY seat', { pid: started.pid, birth: seatBirth, name: started.name, manager: manager.instanceId });
   const occupiedDaemon = (await call('daemon', 'status')).result;
+  const preApplyApp = await ax('describe');
   await ax('settings');
   await until('Restart action', () => ax('text', 'settings-update-summary'), text => text.includes('Restart to update'));
   if (hiddenApply) await ax('close');
@@ -237,12 +244,12 @@ try {
   assert.equal(held.result.pid, occupiedDaemon.pid);
   assert.equal(lifetime.processBirth(started.pid), seatBirth);
   record('seat survives bundle replacement', { pid: started.pid, birth: seatBirth, daemon: held.result.pid, generation: held.result.generation });
-  await until('target app restored visibility', () => ax('describe'), value => value.visible === !hiddenApply && value.pid !== firstApp.pid);
+  await until('target app restored visibility', () => ax('describe'), value => value.visible === !hiddenApply && value.pid !== firstApp.pid && value.pid !== preApplyApp.pid);
   if (hiddenApply) { await run('/usr/bin/open', [app]); await until('target shown after requested reopen', () => ax('describe'), value => value.visible); }
   await seat.stop(manager.instanceId); seat = undefined;
   await until('target service and ready Manager', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.9' && reply.result.managers?.every(item => item.state === 'answering' && item.connectors?.some(connector => connector.state === 'available')));
   await until('app confirms updated target', () => ax('text', 'applied-update'), text => text === 'Updated to Cotal 0.164.9.');
-  await ax('quit'); await delay(1500);
+  await quitApp('first target app exited');
   await run('/usr/bin/open', ['-n', app]);
   await until('second target start visible', () => ax('describe'), value => value.visible);
   const secondResult = await ax('dump');

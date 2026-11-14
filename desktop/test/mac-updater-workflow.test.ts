@@ -51,4 +51,12 @@ test("hosted Mac proof is explicit, ARM first, and uses immutable shared fixture
   const guard = steps.findIndex(step => step.name === 'Verify compiled updater release inputs');
   const upload = steps.findIndex(step => step.name === 'Upload built desktop packages');
   assert.ok(guard >= 0 && upload > guard, 'actual executable production-config check precedes upload');
+  const proofDriver = readFileSync(new URL("mac-updater-proof.mjs", import.meta.url), "utf8");
+  assert.match(proofDriver, /record\('initial daemon status', initial\)/);
+  assert.match(proofDriver, /assert\.equal\(initial\.ok, false, 'Default native service must be absent'\)/);
+  assert.match(proofDriver, /assert\.equal\(initial\.error\?\.code, 'TARGET_UNAVAILABLE', 'Default native service must be absent'\)/);
+  assert.match(proofDriver, /assert\.equal\(initial\.error\?\.cause\?\.code, 'NOT_RUNNING', 'Default native service must be absent'\)/);
+  assert.ok(!proofDriver.includes("call('update', '--auto'"), 'update --auto refuses --json');
+  const swiftDriver = readFileSync(new URL("mac-updater-driver.swift", import.meta.url), "utf8");
+  assert.match(swiftDriver, /children\(element\)\.map\(text\)/);
 });

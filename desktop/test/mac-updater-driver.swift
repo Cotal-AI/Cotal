@@ -15,10 +15,34 @@ let pid = running.processIdentifier
 let app = AXUIElementCreateApplication(pid)
 AXUIElementSetMessagingTimeout(app, 5)
 func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? { var value: CFTypeRef?; return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil }
-func text(_ element: AXUIElement) -> String { (attribute(element, "AXValue") as? String) ?? (attribute(element, "AXTitle") as? String) ?? "" }
+func children(_ element: AXUIElement) -> [AXUIElement] { (attribute(element, "AXChildren") as? [AXUIElement]) ?? [] }
+func text(_ element: AXUIElement) -> String {
+    for name in ["AXValue", "AXTitle", "AXDescription"] {
+        if let value = attribute(element, name) as? String, !value.isEmpty { return value }
+    }
+    return children(element).map(text).filter { !$0.isEmpty }.joined(separator: " ")
+}
 func nodes(_ element: AXUIElement, _ depth: Int = 0) -> [AXUIElement] {
     guard depth < 40 else { fail("AX depth exceeded") }
-    return [element] + ((attribute(element, "AXChildren") as? [AXUIElement]) ?? []).flatMap { nodes($0, depth + 1) }
+    return [element] + children(element).flatMap { nodes($0, depth + 1) }
+}
+func bounds(_ element: AXUIElement) -> CGRect? {
+    guard let p = attribute(element, "AXPosition"), let s = attribute(element, "AXSize"),
+          CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
+    var point = CGPoint.zero, size = CGSize.zero
+    guard AXValueGetValue(p as! AXValue, .cgPoint, &point), AXValueGetValue(s as! AXValue, .cgSize, &size) else { return nil }
+    return CGRect(origin: point, size: size)
+}
+func clickBounds(_ element: AXUIElement) {
+    guard let rect = bounds(element), rect.width > 0, rect.height > 0 else { fail("control bounds unavailable") }
+    _ = running.activate(options: [.activateIgnoringOtherApps])
+    Thread.sleep(forTimeInterval: 0.15)
+    let point = CGPoint(x: rect.midX, y: rect.midY)
+    for kind in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point, mouseButton: .left) else { fail("cannot create mouse event") }
+        event.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.1)
+    }
 }
 func visible() -> Bool {
     let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as! [[String: Any]]
@@ -32,7 +56,7 @@ func element(_ id: String) -> AXUIElement {
 }
 func press(_ element: AXUIElement) {
     guard attribute(element, "AXEnabled") as? Bool == true else { fail("control is not enabled") }
-    guard AXUIElementPerformAction(element, kAXPressAction as CFString) == .success else { fail("AX press failed") }
+    if AXUIElementPerformAction(element, kAXPressAction as CFString) != .success { clickBounds(element) }
 }
 switch operation {
 case "describe":
@@ -59,12 +83,14 @@ case "settings":
     guard AXIsProcessTrusted() else { fail("Accessibility permission is required") }
     let bars = attribute(app, "AXExtrasMenuBar").map { [$0 as! AXUIElement] } ?? []
     guard bars.count == 1 else { fail("no unique extras bar") }
-    let extras = nodes(bars[0]).filter { attribute($0, "AXRole") as? String == "AXMenuBarItem" }
+    let extras = children(bars[0]).filter { attribute($0, "AXRole") as? String == "AXMenuBarItem" }
     guard extras.count == 1 else { fail("no unique status item") }
     press(extras[0]); Thread.sleep(forTimeInterval: 0.2)
-    let items = nodes(bars[0]).filter { attribute($0, "AXRole") as? String == "AXMenuItem" && text($0) == "Settings…" }
+    var items = nodes(bars[0]).filter { attribute($0, "AXRole") as? String == "AXMenuItem" && text($0) == "Settings…" }
+    if items.count != 1 { clickBounds(extras[0]); Thread.sleep(forTimeInterval: 0.2); items = nodes(bars[0]).filter { attribute($0, "AXRole") as? String == "AXMenuItem" && text($0) == "Settings…" } }
     guard items.count == 1 else { fail("no unique Settings menu") }
-    press(items[0]); output(true)
+    guard AXUIElementPerformAction(items[0], kAXPressAction as CFString) == .success else { fail("native menu action failed") }
+    output(true)
 case "quit": guard running.terminate() else { fail("native terminate request refused") }; output(true)
 case "dump":
     output(["pid": pid, "nodes": nodes(app).map { ["id": attribute($0, "AXDOMIdentifier") as? String ?? "", "text": text($0), "role": attribute($0, "AXRole") as? String ?? ""] }])
