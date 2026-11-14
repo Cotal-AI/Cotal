@@ -35,6 +35,16 @@ childProcess.spawnSync = function(file, args, options) {
         instrumented.push(stamp(`${name}-begin`), line, stamp(`${name}-end`));
       } else if (line.startsWith('$task = ')) {
         instrumented.push(stamp('task-read-begin'), line, stamp('task-read-end'));
+      } else if (line.startsWith('$actions = ')) {
+        instrumented.push(stamp('action-extraction-begin'), line, stamp('action-extraction-end'));
+      } else if (line.startsWith('$principal = ')) {
+        instrumented.push(stamp('principal-extraction-begin'), line, stamp('principal-extraction-end'));
+      } else if (line.startsWith('$principalSid = ')) {
+        instrumented.push(stamp('principal-sid-begin'), line, stamp('principal-sid-end'));
+      } else if (line.startsWith('if ($principalSid -notmatch ')) {
+        instrumented.push(stamp('principal-translation-begin'), line, stamp('principal-translation-end'));
+      } else if (line.startsWith('ConvertTo-Json ')) {
+        instrumented.push(stamp('json-result-begin'), line, stamp('json-result-end'));
       } else instrumented.push(line);
     }
     instrumented.push(stamp('script-end'));
