@@ -13,6 +13,7 @@ import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mj
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
 import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
+import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 
 export function daemonHostedManagerOptions(options, { hosted: disposable = hosted, platform = process.platform } = {}) {
@@ -49,6 +50,41 @@ export async function waitForSchedulerEligibility(report, readStatus, { now = Da
     if (eligible && now() <= deadline) return;
   }
   assert.fail(`native scheduler eligibility timed out: ${JSON.stringify(receipt)}`);
+}
+
+// Read-only diagnostic children have their own bound and never alter the update's outcome.
+export function runDiagnosticCommand(file, argv, { cwd, env, timeoutMs = 10000, maxBytes = 4 * 1024 * 1024 } = {}) {
+  const startedAt = new Date().toISOString();
+  return new Promise(resolveRun => {
+    let stdout = '', stderr = '', timeout = false, truncated = false, settled = false;
+    const child = spawn(file, argv, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+    const stopOwnedTree = () => {
+      if (!child.pid) return;
+      try {
+        if (process.platform === 'win32') execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 });
+        else process.kill(-child.pid, 'SIGKILL');
+      } catch (error) {
+        if (error.code !== 'ESRCH') child.kill('SIGKILL');
+      }
+    };
+    const timer = setTimeout(() => { timeout = true; stopOwnedTree(); }, timeoutMs);
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveRun({ startedAt, finishedAt: new Date().toISOString(), stdout, stderr, timeout, truncated, ...result });
+    };
+    const collect = (key, bytes) => {
+      const remaining = maxBytes - Buffer.byteLength(stdout) - Buffer.byteLength(stderr);
+      const text = bytes.subarray(0, Math.max(0, remaining)).toString();
+      if (key === 'stdout') stdout += text; else stderr += text;
+      if (bytes.length > remaining) { truncated = true; stopOwnedTree(); }
+    };
+    child.stdout.on('data', bytes => collect('stdout', bytes));
+    child.stderr.on('data', bytes => collect('stderr', bytes));
+    child.once('error', error => finish({ exit: null, signal: null, error: error.message }));
+    child.once('close', (exit, signal) => finish({ exit, signal }));
+  });
 }
 
 export const hostedManagerCommand = space => ['daemon', 'setup', '--space', space, '--json'];
@@ -289,6 +325,22 @@ export async function matrixCell(options) {
   const [npm, npmPrefix] = npmCommand();
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
+  async function captureServiceEvidence(stage) {
+    if (!installedService) return;
+    report.daemonDiagnostics ??= {};
+    try {
+      report.daemonDiagnostics[stage] = await captureDaemonDiagnostics({
+        cotalHome, daemonHome: report.daemonHome, config, output, id, stage, home, pkg,
+        plan: { ...plan, globalRoot: modules },
+        socket: process.platform === 'linux' && env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, 'cotal', 'daemon.sock') : undefined,
+        startedAt: report.startedAt, platform: process.platform,
+        cli: layout === 'installer' ? { file: launcher, args: [] } : { file: process.execPath, args: [cli] },
+        run: (file, argv, bounds) => runDiagnosticCommand(file, argv, { cwd: project, env, timeoutMs: bounds.timeoutMs, maxBytes: bounds.maxBuffer }),
+      });
+    } catch (error) {
+      report.daemonDiagnostics[stage] = { state: 'unreadable', error: error.message, observedAt: new Date().toISOString() };
+    }
+  }
   async function call(label, file, argv, timeout = callTimeout(label)) {
     if (/install|seed|upgrade under test/.test(label)) {
       const disk = statfsSync(root);
@@ -573,6 +625,7 @@ export async function matrixCell(options) {
       report.launchdProof = { kind: launchdProof, publicTarget: report.target };
       if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
     }
+    await captureServiceEvidence('before-update');
     let update;
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
@@ -799,6 +852,12 @@ export async function matrixCell(options) {
     }
     report.result = 'failed'; report.refusal = error.message;
   } finally {
+    if (installedService && !report.daemonDiagnostics?.['before-update']) {
+      report.daemonDiagnostics ??= {};
+      report.daemonDiagnostics['before-update'] = { state: 'not-reached', reason: 'setup failed before the update boundary', observedAt: new Date().toISOString() };
+    }
+    // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
+    await captureServiceEvidence('after-update');
     if (compositionCleanup && !daemonHostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
@@ -875,7 +934,12 @@ export async function matrixCell(options) {
       }
     }
     if (compositionCleanup && daemonHostedManager) {
-      try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped after hosted Manager removal'; }
+      try {
+        await compositionCleanup();
+        report.compositionCleanup = report.managerHost?.stop?.exit === 0
+          ? 'owned composition stopped after confirmed hosted Manager removal'
+          : 'owned composition stopped; hosted Manager removal not confirmed';
+      }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (restoreRegistry && !uncertain && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')) {

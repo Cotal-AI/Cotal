@@ -5,6 +5,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 import './hosted-consent-diagnostics.test.mjs';
 import './upgrade-matrix-durations.test.mjs';
+import './daemon-cell-diagnostics.test.mjs';
+import './daemon-cell-diagnostics-integration.test.mjs';
 import { spawnNameError } from '@cotal-ai/core';
 
 test('daemon-hosted fixture name satisfies the actual user-mode actor rule', () => {
