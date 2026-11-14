@@ -86,7 +86,9 @@ when preparation is refused or startup is not confirmed. A readiness timeout mea
 were updated and startup was requested, not that the update failed.
 
 The latest result is in `%LOCALAPPDATA%\CotalSetup\result.json`; its `message` is also written
-as one line in `message.txt` beside it. An interrupted replacement keeps the task disabled.
+as one line in `message.txt` beside it. If the helper cannot complete, `helperExit` records
+its raw exit status and `phase` names the setup phase. The adjacent `helper.log` keeps the
+last 200 helper runs, with each run's mode, exit code and last step. An interrupted replacement keeps the task disabled.
 Run a current setup program again to finish it. The app shows that setup was interrupted and
 links to the installer without offering Start service. A newer setup can replace a partial
 older update after verifying that the owned task is disabled and its old process has stopped.

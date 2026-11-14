@@ -8,6 +8,7 @@ Var CotalMessage
 Var CotalVersion
 Var CotalSetupMutex
 Var CotalFresh
+Var CotalPhase
 
 Function CotalSetupMessage
   FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" r
@@ -31,7 +32,7 @@ Function CotalHelperExit
   ${AndIf} $CotalCode != "23"
     CreateDirectory "$LOCALAPPDATA\CotalSetup"
     FileOpen $0 "$LOCALAPPDATA\CotalSetup\result.json" w
-    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"refused$\",$\"code$\":21,$\"message$\":$\"Setup helper did not complete. No success was confirmed. Run the installer again.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"$CotalVersion$\"}'
+    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"refused$\",$\"code$\":21,$\"message$\":$\"Setup helper did not complete. No success was confirmed. Run the installer again.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"$CotalVersion$\",$\"helperExit$\":$\"$CotalCode$\",$\"phase$\":$\"$CotalPhase$\"}'
     FileClose $0
     FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" w
     FileWrite $0 "Setup helper did not complete. No success was confirmed. Run the installer again.$\r$\n"
@@ -54,6 +55,7 @@ Function CotalSetupAbort
   ${If} $CotalPrepared = 1
   ${AndIf} $CotalCopying <> 1
     Call CotalClearPhaseResult
+    StrCpy $CotalPhase "abort"
     nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
     Pop $CotalCode
     Call CotalHelperExit
@@ -102,6 +104,7 @@ FunctionEnd
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_ROOT", t "$INSTDIR")'
   System::Call 'kernel32::SetEnvironmentVariable(t "COTAL_SETUP_VERSION", t "${VERSION}")'
   Call CotalClearPhaseResult
+  StrCpy $CotalPhase "recover"
   nsExec::ExecToStack /TIMEOUT=40000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action recover'
   Pop $CotalCode
   Pop $CotalMessage
@@ -121,6 +124,7 @@ FunctionEnd
   ${Else}
     cotal_prepare_retry:
     Call CotalClearPhaseResult
+    StrCpy $CotalPhase "prepare"
     nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\node.exe" "$PLUGINSDIR\service-update.mjs" prepare "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
     Call CotalHelperExit
@@ -149,6 +153,7 @@ FunctionEnd
     FileClose $0
   ${Else}
     Call CotalClearPhaseResult
+    StrCpy $CotalPhase "finish"
     nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\node.exe" "$PLUGINSDIR\service-update.mjs" finish "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
     Call CotalHelperExit
