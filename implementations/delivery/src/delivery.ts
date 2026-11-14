@@ -455,6 +455,14 @@ export interface DeliveryLaneOptions {
   kickAuthority?: KickAuthority;
 }
 
+/** A delivery lane, with the native bindings of its data-account connections. */
+export interface DeliveryLane extends SpaceLane {
+  /** The same inventory {@link DeliveryServiceHandle.nativeConnections} reports, for a context that
+   *  reads a workstation root: every data-account connection the lane holds now, none once it has
+   *  closed, and a throw while there is no settled answer. */
+  nativeConnections(): DeliveryNativeConnection[];
+}
+
 /**
  * Open one space's delivery context as a lane of a multi-space host. It reads what
  * `cotal deliver --space` reads, from one workstation root: the space's own credential, the
@@ -464,7 +472,7 @@ export interface DeliveryLaneOptions {
  * settles its `lost`; the other lanes of the process are untouched. Closing it quiesces Plane-3,
  * releases the lease and closes every connection the lane holds.
  */
-export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<SpaceLane> {
+export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<DeliveryLane> {
   const values: Values = { space: options.space, server: options.server, ...(options.rootNamed ? { root: options.root } : {}), ...(options.tls ? { tls: "" } : {}) };
   let releaseOnStartupFailure: (() => Promise<void>) | undefined;
   try {
@@ -476,7 +484,10 @@ export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<Sp
     );
     // A release the close could not confirm is reported, never thrown at the host: the bucket TTL
     // expires a row left behind, as it does for a single-space daemon.
-    return { space: options.space, lost: started.ended, close: () => started.close().catch((e: Error) => options.log.err(`! ${e.message}`)) };
+    return {
+      space: options.space, lost: started.ended, close: () => started.close().catch((e: Error) => options.log.err(`! ${e.message}`)),
+      nativeConnections: started.nativeConnections,
+    };
   } catch (error) {
     // The start-up fault is the report; a row the release left behind is the bucket TTL's to expire.
     await releaseOnStartupFailure?.().catch((e: Error) => options.log.err(`! ${e.message}`));

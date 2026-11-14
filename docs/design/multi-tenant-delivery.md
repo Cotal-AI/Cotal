@@ -99,7 +99,9 @@ rather than "is this hosted", so the hosted mode and the lane share one set of b
 `openDeliveryLane({ space, server, root, rootNamed, tls, log })` in `delivery.ts` returns a handle:
 the space, a `close()`, and a `lost` promise that settles with what the lane lost once it stops
 serving, by a deliberate close or by a fault. That is the shape of `CalloutLane` in
-`implementations/auth/src/callout-lane.ts`. A start-up failure after the lease acquire gives the
+`implementations/auth/src/callout-lane.ts`. The delivery handle also has `nativeConnections()`,
+the inventory of data-account connections a hosted context reports, so a host that must show a
+space's account holds no other connection can do so for a lane too. A start-up failure after the lease acquire gives the
 lease back before it rethrows, as `startDeliveryService` does.
 
 `runDeliveryHost({ manifest, server, root, rootNamed, tls })` holds a `Map<string, Lane>` and the
