@@ -687,14 +687,14 @@ importers:
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
       '@nats-io/kv':
-        specifier: ^3.4.0
-        version: 3.4.0
-      '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
 
@@ -744,6 +744,9 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
       '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/nats-core':
         specifier: ^3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
@@ -804,9 +807,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
-      '@nats-io/nats-core':
-        specifier: ^3.4.0
-        version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1

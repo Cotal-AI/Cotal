@@ -1186,7 +1186,7 @@
     "smoke:mutation-reproof-full-partition": "tsx bin/smoke/mutation-reproof-full-partition.smoke.ts",
     "smoke:mutation-reproof-full-workflow": "tsx bin/smoke/mutation-reproof-full-workflow.smoke.ts",
     "smoke:dep-pins": "tsx bin/smoke/dep-pins.smoke.ts",
-    "smoke:manager-runtime-deps": "tsx bin/smoke/manager-runtime-deps.smoke.ts",
+    "smoke:manager-runtime-deps": "tsx bin/smoke/manager-runtime-deps.smoke.ts && node --test scripts/check-runtime-dependencies.test.mjs && node scripts/check-runtime-dependencies.mjs",
     "smoke:inst-route-enforce": "tsx packages/core/smoke/inst-route-enforce.smoke.ts",
     "smoke:ps-operator-path": "tsx implementations/auth/smoke/ps-operator-path.smoke.ts",
     "smoke:ps-user-mode": "tsx implementations/auth/smoke/ps-user-mode.smoke.ts",

@@ -27,7 +27,8 @@
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
-    "@nats-io/jetstream": "^3.4.0"
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0"
   },
   "files": [
     "dist"
@@ -37,7 +38,6 @@
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*",
-    "@nats-io/kv": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0"
+    "@nats-io/kv": "^3.4.0"
   }
 }
