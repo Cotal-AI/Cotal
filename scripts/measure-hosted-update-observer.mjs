@@ -35,11 +35,32 @@ export async function fixtureUrl({ fixture, call, output }) {
 }
 export async function repairHostedUpdate(context) {
   const { env, cli, project, output, cotalHome, report, cotal } = context;
-  assert.equal(JSON.parse(readFileSync(join(cotalHome, 'update-recovery.json'), 'utf8')).phase, 'paused', 'repair requires the real failed update state');
+  if (!context.fixedInstalled) assert.equal(JSON.parse(readFileSync(join(cotalHome, 'update-recovery.json'), 'utf8')).phase, 'paused', 'repair requires the real failed update state');
+  if (process.env.REPAIR_FIXED_PACKAGE === '1' && !context.fixedInstalled) {
+    const { call, npmCall } = context;
+    const { candidateRegistry, configureCandidateRegistry } = await import(pathToFileURL(join(process.cwd(), 'harness/scripts/automatic-update-platform-baseline.mjs')));
+    const directory = join(process.env.RUNNER_TEMP, 'packed-target');
+    const registry = await candidateRegistry(directory, 'B', 'https://registry.npmjs.org');
+    env.npm_config_registry = registry.url;
+    const restore = configureCandidateRegistry(env.HOME, registry.url);
+    try {
+      if (process.env.REPAIR_ROUTE === 'installer') {
+        env.COTAL_INSTALL_DIR = env.npm_config_prefix;
+        env.COTAL_BIN_DIR = join(env.HOME, '.local/bin');
+        const installed = await call('fixed installer rerun on actual paused state', 'sh', [join(directory, 'installer.sh'), '--version', '0.164.9', '--no-setup', '--no-modify-path'], 600000);
+        save(join(output, 'fixed-paused-installer.json'), installed);
+        assert.equal(installed.exit, 0, installed.stderr);
+      } else {
+        const installed = await npmCall('install fixed package on actual paused state', ['install', '-g', '--prefix', env.npm_config_prefix, 'cotal-ai@0.164.9', '--no-audit', '--no-fund']);
+        assert.equal(installed.exit, 0, installed.stderr);
+      }
+      return await repairHostedUpdate({ ...context, fixedInstalled: true });
+    } finally { restore(); delete env.npm_config_registry; await registry.close(); }
+  }
   const repair = await cotal('repair actual paused installation', ['update', '--self'], 600000);
   const status = await run(process.execPath, [cli, 'daemon', 'status', '--json'], env, project);
   const observed = status.exit === 0 ? JSON.parse(status.stdout).result : undefined;
-  const result = { command: 'cotal update --self', repair, status, recoveryPresent: existsSync(join(cotalHome, 'update-recovery.json')), managerAnswers: observed?.managers?.find(m => m.space === report.managerHost.space)?.state === 'answering', automatic: observed?.update?.automatic };
+  const result = { command: 'cotal update --self', repair, status, recoveryPresent: existsSync(join(cotalHome, 'update-recovery.json')) && JSON.parse(readFileSync(join(cotalHome, 'update-recovery.json'), 'utf8')) !== null, managerAnswers: observed?.managers?.find(m => m.space === report.managerHost.space)?.state === 'answering', automatic: observed?.update?.automatic };
   save(join(output, 'single-command-repair.json'), result);
   assert.equal(repair.exit, 0, repair.stderr);
   assert.equal(result.recoveryPresent, false);
@@ -98,15 +119,16 @@ export async function observeHostedUpdate({ env, pkg, cli, project, output, cota
     }
     const socket = paths.socket;
     observation.socket = { path: socket, present: process.platform === 'win32' ? 'public status confirms named pipe' : existsSync(socket), isSocket: process.platform !== 'win32' && existsSync(socket) && lstatSync(socket).isSocket() };
-    observation.installedVersion = existsSync(join(pkg, 'package.json')) ? JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version : 'absent';
+    observation.installedVersion = 'unreadable';
+    try { observation.installedVersion = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version; }
+    catch (error) { observation.installedVersionReadError = { code: error.code, message: error.message }; }
     save(join(output, `${stem}-state.json`), observation);
     observations.push(observation);
     return observation;
   }
   const timer = setInterval(() => {
     if (stopped) return;
-    busy = busy.then(() => sample('during'));
-    busy.catch(error => { save(join(output, 'observer-error.json'), { error: error.message }); });
+    busy = busy.then(() => sample('during')).catch(error => { save(join(output, `observer-error-${count}.json`), { error: error.message }); });
   }, 10000);
   return {
     sample,

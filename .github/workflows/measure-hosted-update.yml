@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 env:
-  PRODUCT_SOURCE: 48c32c58417015b67841c417081b30ecbb17adce
+  PRODUCT_SOURCE: 21a7a1d9170995339ecd7c6d44eec2424956ded9
   HARNESS_SOURCE: 3dfaa3598d4bc75b03ab719aeea1e5139f4a59cb
   DO_NOT_TRACK: '1'
   COTAL_TELEMETRY: 'off'
@@ -165,7 +165,7 @@ jobs:
       - run: pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
         working-directory: harness
       - uses: actions/download-artifact@v4
-        if: matrix.variant == 'main-candidate' || env.FIXED_TARGET == '1'
+        if: matrix.variant == 'main-candidate' || env.FIXED_TARGET == '1' || env.REPAIR_FIXED_PACKAGE == '1'
         with:
           name: packed-unchanged-main
           path: ${{ runner.temp }}
@@ -177,7 +177,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: hosted-update-${{ matrix.variant }}-${{ matrix.source || 'baseline' }}-${{ matrix.sample }}
+          name: hosted-update-${{ matrix.variant }}-${{ matrix.route || matrix.source || 'baseline' }}-${{ matrix.sample }}
           path: ${{ runner.temp }}/hosted-update-evidence
           if-no-files-found: error
   scope:
@@ -243,6 +243,21 @@ jobs:
     env:
       FIXED_TARGET: '1'
       SOURCE_VERSION: ${{ matrix.source }}
+    steps: *measurement_steps
+  repair:
+    needs: pack
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        variant: [repair-paused]
+        route: [npm, installer]
+        sample: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      REPAIR_FIXED_PACKAGE: '1'
+      REPAIR_ROUTE: ${{ matrix.route }}
     steps: *measurement_steps
   candidate:
     needs: pack

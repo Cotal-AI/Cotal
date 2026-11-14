@@ -31,12 +31,13 @@ replace("        ok(await cotal('register daemon-hosted stand-in connector', ['e
         }`);
 replace("        report.managerHost.spawn = await cotal('spawn real daemon-hosted agent'", "        if (options['measure-empty'] !== 'true') {\n        report.managerHost.spawn = await cotal('spawn real daemon-hosted agent'");
 replace("        report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;", "        report.agentBefore = ok(await cotal('confirm daemon-hosted seat', ['ps', '--on', setup.manager.instanceId, '--space', space, '--json']), 'hosted ps').stdout;\n        }");
+if (process.env.REPAIR_FIXED_PACKAGE === '1') replace("version: report.target, type: 'module', main: 'index.js'", "version: report.source, type: 'module', main: 'index.js'");
 replace("  const omit = exclusion({ layout, method, state });", "  const omit = exclusion({ layout, method, state: method === 'scheduler' ? 'daemon' : state });");
 replace('    let update;\n', `    measurements = await observeHostedUpdate({ env, pkg, cli, project, output, cotalHome, report });
     await measurements.sample('before');
     if (options.method === 'scheduler') report.daemonBefore = JSON.parse(ok(await daemon('hosted scheduler initial status', ['daemon', 'status', '--json']), 'scheduler status').stdout).result;
     let update;\n`);
-replace('    if (releaseHolder) releaseHolder();', "    if (measurements) { await measurements.close(); report.independentFinalState = measurements.final; if (options['measure-repair'] === 'true') report.repairProof = await repairHostedUpdate({ env, pkg, cli, project, output, cotalHome, report, cotal }).catch(error => ({ error: error.message })); }\n    if (fixtureRegistry) await fixtureRegistry.close();\n    if (releaseHolder) releaseHolder();");
+replace('    if (releaseHolder) releaseHolder();', "    if (measurements) { await measurements.close(); report.independentFinalState = measurements.final; if (options['measure-repair'] === 'true') report.repairProof = await repairHostedUpdate({ env, pkg, cli, project, output, cotalHome, report, cotal, call, npmCall }).catch(error => ({ error: error.message })); }\n    if (fixtureRegistry) await fixtureRegistry.close();\n    if (releaseHolder) releaseHolder();");
 // Keep both unchanged-main source and target archives in the same real registry overlay.
 if (variant === 'main-candidate') {
   replace("  const entries = new Map(), archives = new Map(), requests = [];", "  const entries = new Map(), archives = new Map(), requests = [];\n  const previous = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'packed-source/manifest.json'), 'utf8'));\n  const previousEntries = new Map();");
@@ -78,4 +79,4 @@ if (variant === 'main-candidate') Object.assign(options, { candidate: join(proce
 const report = await matrixCell(options);
 writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
 // Red product results are evidence, never converted to an expected refusal.
-process.exitCode = report.result === 'passed' ? 0 : 1;
+process.exitCode = process.env.REPAIR_FIXED_PACKAGE === '1' ? report.repairProof?.repair?.exit === 0 && report.repairProof?.managerAnswers && report.repairProof?.automatic ? 0 : 1 : report.result === 'passed' ? 0 : 1;
