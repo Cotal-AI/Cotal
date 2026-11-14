@@ -28,6 +28,7 @@ const composed: Command = { ...command, async run(args) {
   let currentPackages = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
+  let targetAdmissionChecked = false;
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
@@ -58,15 +59,19 @@ const composed: Command = { ...command, async run(args) {
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
     const paths = daemonPaths();
-    if (targetReceipt) {
+    if (targetReceipt && !targetAdmissionChecked) {
       const lifetime = readLifetimeRecord(paths.lock);
       if (targetReceipt.daemon ? !lifetime?.start || lifetime.pid !== targetReceipt.daemon.pid || lifetime.start !== targetReceipt.daemon.start || processBirth(lifetime.pid) !== lifetime.start : lifetime !== undefined)
         throw new Error("machine daemon lifetime changed after target pre-install checks; retry the update");
     }
-    if (!daemonObserved) return async () => {};
+    if (!daemonObserved) {
+      targetAdmissionChecked = true;
+      return async () => {};
+    }
     try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }
     catch (error) { throw new Error(`daemon unavailable or refused update preparation: ${error instanceof Error ? error.message : String(error)}`); }
     preparedRestart = true;
+    targetAdmissionChecked = true;
     return async () => {
       try {
         const current = await queryDaemon({ paths });
