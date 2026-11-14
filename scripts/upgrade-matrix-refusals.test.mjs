@@ -43,6 +43,19 @@ function changeCommand(report, key, value) {
   report.update[key] = value;
   report.assertions.find(a => a.name === 'upgrade exits successfully').observed[key] = value;
 }
+test('Manager refusal IDs follow the core base36 padding range including the observed 30-character ID', () => {
+  const original = 'sdz0a0f5fxj1ct3pzd181eaqvdozem1';
+  for (const manager of ['ariq2ikye7ds69yt3kek8ez5pcwmx2', 'a'.repeat(26), 'b'.repeat(31)]) {
+    const {cell, report} = fixture(0);
+    changeCommand(report, 'stdout', report.update.stdout.replaceAll(original, manager));
+    assert.equal(matchKnownRefusal(cell, report), knownRefusals[0]);
+  }
+  for (const manager of ['a'.repeat(25), 'a'.repeat(32), 'A'.repeat(30)]) {
+    const {cell, report} = fixture(0);
+    changeCommand(report, 'stdout', report.update.stdout.replaceAll(original, manager));
+    assert.throws(() => matchKnownRefusal(cell, report), /changed refusal transcript/);
+  }
+});
 for (let i = 0; i < knownRefusals.length; i++) {
   test(`${knownRefusals[i].id}: exact refusal remains raw red`, () => {
     const {cell, report} = fixture(i), before = JSON.stringify(report);
