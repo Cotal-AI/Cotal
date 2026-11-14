@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1067,
+    "total": 1068,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 845
+    "non-render/control": 846
   },
   "renderers": [
     {
@@ -21,6 +21,13 @@
     }
   ],
   "entries": [
+    {
+      "path": "implementations/cli/src/commands/ext.ts",
+      "kind": "derived-output",
+      "anchor": "`extension set verification failed for ${request.pkg}: ${child.stderr || child.error?.message || child.status}`",
+      "class": "non-render/control",
+      "rationale": "Staged package verification failure reports the verifier child's stderr, launch error or numeric process exit status, not a peer's presence or work progress."
+    },
     {
       "path": "packages/workspace/src/chat/name.ts",
       "kind": "derived-output",

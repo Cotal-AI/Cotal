@@ -1,0 +1,3 @@
+# Filesystem auth/delivery workers expose directly owned native connections.
+# The hosted entry must still refuse a filesystem SecretStore.
+smoke:local-workers-native-connections

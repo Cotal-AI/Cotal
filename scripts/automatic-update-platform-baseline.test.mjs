@@ -45,6 +45,8 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
   assert.match(baseline.foreignStackCleanupCommand, /cotal down --with-agents --yes$/);
   assert(source.includes('const stackEnded = foreignStackEnded('));
+  assert(source.includes("const endObservation = ok(await call('observe container immediately after stock down'"));
+  assert(source.includes('observedAt: endObservation.startedAt'));
   assert(source.includes("assert(stackEnded, 'owned stock stack end was not confirmed')"));
   assert(source.indexOf("'observe container immediately after stock down'") < source.indexOf("'stop owned foreign supervisor and broker'"));
   for (const name of ['owned local stack cleanup succeeds', 'foreign container cleanup succeeds', 'source generation unchanged']) assert(source.includes(name));
