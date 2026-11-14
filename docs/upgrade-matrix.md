@@ -76,7 +76,11 @@ Every cell that installs a native daemon collects evidence before updating and a
 cleanup, including when the update fails or times out. It retains the service's own log, and on
 Linux the cell-scoped user journal and selected `systemctl --user show` properties. The final
 reading records public daemon status, socket metadata, installed version, update pause records
-and lock observations independently of the updater's output. Missing, unreadable, timed-out or
+and lock observations independently of the updater's output. The macOS socket observer accepts the
+native `/var/folders` alias only when it resolves to the matching `/private/var/folders` parent,
+then checks ownership, the socket leaf and its recorded inode without following a leaf symlink.
+The launchd disabled observer accepts native boolean or `enabled`/`disabled` states for the selected
+unit. Unknown or duplicate entries remain errors. Missing, unreadable, timed-out or
 truncated observations remain explicit. Diagnostics never turn an update failure into a pass.
 The daemon-hosted consent failure tracked in [#6822](https://github.com/Cotal-AI/Cotal/issues/6822)
 is a product failure, not a known refusal.
@@ -108,11 +112,11 @@ phase uses public npm and `https://get.cotal.ai` itself, with no script override
 resolutions must match the frozen target. If a newer release supersedes it, the cell fails rather
 than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner, at most3 product jobs concurrently. A planning
-budget is30–70minutes for the bounded path plus runner queue time, not a measured guarantee. Six
-builders need two waves and22 product cells need eight waves at that limit. Per-job timeouts imply a
-much larger worst-case ceiling; macOS queue delay has no fixed bound. Artifacts retain the actual
-timestamps so release owners can use measured durations instead of these estimates.
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all22 required
+product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
+or Windows. GitHub runner availability still controls when a job starts. The six native builders
+retain their separate concurrency limit. Artifact timestamps record actual durations; neither the
+workflow limit nor the per-job timeout is a publication-time guarantee.
 
 ## Exclusions
 
