@@ -10,5 +10,8 @@ if (createHash('sha256').update(source).digest('hex') !== 'd00089d3b1a2c4a30d7b6
 const anchor = '  ; Read the install choice header through $R5 so a custom language file that only';
 if (source.split(anchor).length !== 2) throw new Error('The NSIS upgrade routing anchor is not singular.');
 const guard = '  ; A newer installer owns service preparation before replacing any files.\n  ; Never run the installed uninstaller before that guard.\n  ${If} $WixMode <> 1\n  ${AndIf} $R0 = 1\n    Abort\n  ${EndIf}\n\n';
-writeFileSync(new URL('installer.nsi', base), source.replace(anchor, guard + anchor));
+const copyAnchor = '  ; Copy main executable\n  File "${MAINBINARYSRCPATH}"';
+if (source.split(copyAnchor).length !== 2) throw new Error('The NSIS file-copy anchor is not singular.');
+const patched = source.replace(anchor, guard + anchor).replace(copyAnchor, '  StrCpy $CotalCopying 1\n\n' + copyAnchor);
+writeFileSync(new URL('installer.nsi', base), patched);
 console.log(`Prepared guarded NSIS template: ${fileURLToPath(new URL('installer.nsi', base))}`);

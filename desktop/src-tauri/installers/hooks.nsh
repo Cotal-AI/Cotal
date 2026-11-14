@@ -6,6 +6,7 @@ Var CotalCopying
 Var CotalCode
 Var CotalMessage
 Var CotalVersion
+Var CotalSetupMutex
 
 Function CotalSetupMessage
   FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" r
@@ -29,13 +30,34 @@ FunctionEnd
 Function CotalSetupAbort
   ${If} $CotalPrepared = 1
   ${AndIf} $CotalCopying <> 1
-    nsExec::ExecToLog /TIMEOUT=240000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
+    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" abort "$INSTDIR" "$CotalVersion"'
     Pop $CotalCode
+    ${If} $CotalCode <> 0
+      Call CotalSetupMessage
+      DetailPrint "$CotalMessage"
+      SetErrorLevel $CotalCode
+    ${EndIf}
+    StrCpy $CotalPrepared 0
   ${EndIf}
+FunctionEnd
+
+Function .onInstFailed
+  Call CotalSetupAbort
 FunctionEnd
 
 !macro NSIS_HOOK_PREINSTALL
   InitPluginsDir
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\CotalDesktopSetup") p .r0 ?e'
+  StrCpy $CotalSetupMutex $0
+  Pop $1
+  ${If} $CotalSetupMutex = 0
+  ${OrIf} $1 = 183
+    SetErrorLevel 21
+    ${IfNot} ${Silent}
+      MessageBox MB_ICONSTOP|MB_OK "Another Cotal setup is running. Wait for it to finish, then retry."
+    ${EndIf}
+    Quit
+  ${EndIf}
   StrCpy $CotalVersion "${VERSION}"
   SetOutPath $PLUGINSDIR
   File /oname=service-update.mjs "${COTAL_HOOK_DIR}\service-update.mjs"
@@ -72,7 +94,7 @@ FunctionEnd
     StrCpy $CotalPrepared 1
   ${Else}
     cotal_prepare_retry:
-    nsExec::ExecToLog /TIMEOUT=240000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" prepare "$INSTDIR" "${VERSION}"'
+    nsExec::ExecToLog /TIMEOUT=360000 '"$PLUGINSDIR\setup-node.exe" "$PLUGINSDIR\service-update.mjs" prepare "$INSTDIR" "${VERSION}"'
     Pop $CotalCode
     ${If} $CotalCode = 20
     ${AndIfNot} ${Silent}
@@ -86,8 +108,6 @@ FunctionEnd
     ${EndIf}
     StrCpy $CotalPrepared 1
   ${EndIf}
-  ; From here a failed copy keeps the task disabled. Rerunning setup owns recovery.
-  StrCpy $CotalCopying 1
   SetOutPath $INSTDIR
 !macroend
 

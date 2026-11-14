@@ -59,6 +59,8 @@ try {
       $process = Get-Process -Id $state.oldPid -ErrorAction SilentlyContinue
       if ($process -and $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ceq $state.oldBirth) { throw 'The old service is still alive. No replacement was authorized.' }
     }
+    $live=@(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase) })
+    if ($live.Count -ne 0) { throw 'A process still uses the interrupted installation. Close it before running setup again.' }
     'recover'; exit 0
   }
   if (!$owned) {

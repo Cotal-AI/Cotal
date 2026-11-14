@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-const rows = JSON.parse(execFileSync('pnpm', ['list', '-r', '--depth', '-1', '--json'], { encoding: 'utf8' }));
+if (process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') throw new Error('Candidate version stamping requires a disposable hosted runner.');
+const pnpm = process.env.npm_execpath;
+if (!pnpm) throw new Error('Run candidate stamping through pnpm exec node.');
+const rows = JSON.parse(execFileSync(process.execPath, [pnpm, 'list', '-r', '--depth', '-1', '--json'], { encoding: 'utf8' }));
 for (const row of rows) {
   const file = join(row.path, 'package.json');
   const pkg = JSON.parse(readFileSync(file, 'utf8'));
