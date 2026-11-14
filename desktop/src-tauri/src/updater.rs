@@ -30,6 +30,22 @@ pub async fn app_update_check() -> Result<UpdateView, String> { Ok(UpdateView::d
 #[tauri::command]
 pub async fn app_update_download() -> Result<UpdateView, String> { Ok(UpdateView::disabled()) }
 
+#[cfg(all(test, any(not(cotal_updater), target_os = "linux")))]
+mod disabled_tests {
+    #[test]
+    fn no_key_commands_cannot_produce_a_candidate_or_download() {
+        let view = tauri::async_runtime::block_on(super::app_update_check()).unwrap();
+        assert_eq!(view.phase, "unconfigured");
+        assert!(view.version.is_none());
+        assert!(view.checked_at.is_none());
+        assert!(view.reason.unwrap().contains("cannot update itself"));
+        let downloaded = tauri::async_runtime::block_on(super::app_update_download()).unwrap();
+        assert_eq!(downloaded.phase, "unconfigured");
+        assert!(downloaded.version.is_none());
+        assert!(downloaded.downloaded.is_none());
+    }
+}
+
 #[cfg(all(cotal_updater, not(target_os = "linux")))]
 mod configured {
     use super::UpdateView;
