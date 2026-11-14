@@ -9,7 +9,7 @@ artifacts, skipped required cells and unsupported states are not passes.
 
 Each cell summary shows the update command's recorded `elapsedMs`, not the whole cell's duration.
 Scheduler cells say they are not direct update calls. A cell that fails before updating says no
-update call was recorded. Only the Windows `upgrade under test` command has a temporary300000 ms
+update call was recorded. Only Windows manual update commands, including a chain's second hop, have a temporary300000 ms
 bound for the slowness tracked in #6817. Restore its180000 ms bound when that issue is fixed.
 Other commands and platforms keep their existing bounds.
 
@@ -44,7 +44,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs22 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs28 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -55,6 +55,8 @@ product coordinates:
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone |2|
 | Linux paused record pointing to a real snapshot under another config home |1|
 | Linux host update with a foreign-UID container's bare `cotal supervise` |1|
+| The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms |3|
+| Permanently pinned source0.164.10 manual-service escape chains through the target to the synthetic next version |3|
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
@@ -63,6 +65,21 @@ are sampled independently before cleanup. The census verifies the archived obser
 rechecks the final state rather than trusting the updater's success output. A missing recovery record
 or its hash-verified JSON-null clear is healthy; a paused, unreadable or unobserved record is not.
 These are separate from unattended scheduler cells. A failed manual service update stays red until fixed.
+
+The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
+installed candidate's public manual updater. The synthetic target comes from the same immutable source,
+with the patch number increased by1000 before its distributions and seed payloads are built. Both
+complete24-package closures stay readable through a paired registry. The source entry and package
+hashes, both archive receipts, actual command and native before/after state are bound to the result.
+A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
+
+Source0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
+Its five manual-service layouts preserve the first hop's raw refusal and match only the measured
+platform-specific contract. Before cleanup they must independently prove that the installed target
+and daemon agree, recovery is clear, updates are not paused and the generation fence is clear. The
+same machine must then complete a second manual update to the synthetic next version without a
+repair, restart or reinstallation between hops. Three pinned npm chains retain this source after a
+newer predecessor becomes the default. Unknown refusal text or a blocked second hop fails.
 
 The daemon-hosted consent cell uses the signed-in participant fixture and the public daemon setup
 route. Its endpoint receives the existing user-mode sentinel path and bearer argv from the connector
@@ -107,12 +124,13 @@ still needs its own original result before it can be called a reproduction or a 
 The packed phase builds the exact PR head's six native targets, assembles all24 fixed-group
 packages and retains native, prepublish and prepack guards. Its read-only loopback registry serves
 the hash-verified candidate closure and installed-version metadata. Candidate version must be newer
-than public latest. Installer reruns use the candidate source's receipt-bound script. The published
-phase uses public npm and `https://get.cotal.ai` itself, with no script override. Both public latest
-resolutions must match the frozen target. If a newer release supersedes it, the cell fails rather
-than certifying the wrong version.
+than public latest. Installer reruns use the candidate source's receipt-bound script.
+The ordinary published routes use public npm and `https://get.cotal.ai` itself, with no script override.
+Both public latest resolutions must match the frozen target. The published next-hop routes use an
+explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
+the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all22 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all28 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the

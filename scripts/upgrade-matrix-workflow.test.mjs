@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { readFileSync, writeFileSync, copyFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -7,21 +7,51 @@ import test from 'node:test';
 import { parse } from 'yaml';
 import { planRelease } from './upgrade-matrix-plan.mjs';
 import { knownRefusals } from './upgrade-matrix-refusals.mjs';
+import { matchSource16410Refusal, source16410Refusals } from './source-16410-refusal.mjs';
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
 const summary = workflow.jobs['release-summary'].steps.find(s => s.name === 'Verify expected coordinate census and assertion contract').run;
 const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 22);
+  assert.equal(plan.matrix.include.length, 28);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
-  assert.deepEqual(cells.needs, ['select', 'release-pack']);
+  assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
   assert.equal(cells['runs-on'], '${{ matrix.runner }}');
   assert(plan.matrix.include.some(cell => cell.platform === 'darwin'));
   assert(plan.matrix.include.some(cell => cell.platform === 'linux'));
   assert(plan.matrix.include.some(cell => cell.platform === 'win32'));
   assert.equal(workflow.jobs['release-native'].strategy['max-parallel'], 3);
+});
+test('paired next-hop builders are explicit in both phases and stamp B before building', () => {
+  assert(!workflow.jobs['release-native'].if.includes("phase == 'candidate'"));
+  assert(!workflow.jobs['release-next'].if.includes("phase == 'candidate'"));
+  const pack = workflow.jobs['release-pack'];
+  const ordinary = pack.steps.find(step => step.name === 'Pack exact candidate version using the guarded harness packer');
+  assert.equal(ordinary.if, "needs.select.outputs.phase == 'candidate'");
+  const published = pack.steps.find(step => step.name === 'Fetch exact published A package closure without rebuilding');
+  assert.equal(published.if, "needs.select.outputs.phase == 'published'");
+  assert.equal(published.run, 'node scripts/fetch-published-candidate.mjs --version "$TARGET_VERSION" --source "$SOURCE_SHA" --source-root "$GITHUB_WORKSPACE/product" --output "$RUNNER_TEMP/release-candidate"');
+  const next = workflow.jobs['release-next'];
+  assert(next.steps.some(step => step.with?.path === 'product' && step.with.ref.includes('needs.select.outputs.source')));
+  assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
+  assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 28);
+  for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
+});
+test('paired routes preserve ordinary published arguments and bind both artifact receipts', () => {
+  const cells = workflow.jobs['release-cells'];
+  const run = cells.steps.find(step => step.name === 'Run one real product upgrade coordinate').run;
+  assert(run.includes("'source-0.164.10-daemon-self-chain': 'daemon'"));
+  assert(run.includes("'--next-hop-source', cell.chain ? '0.164.10' : 'candidate'"));
+  assert(run.includes("'--next-hop-phase', process.env.PHASE"));
+  assert(run.includes("'--next-hop-final-target', cell.finalTargetVersion"));
+  assert(run.includes("} else if (process.env.PHASE === 'candidate')"));
+  assert(run.includes('cell.finalTargetVersion ?? cell.targetVersion'));
+  const download = cells.steps.find(step => step.with?.['artifact-ids'] === '${{ needs.release-next.outputs.artifact }}');
+  assert(download.if.includes('matrix.chain == true'));
+  for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
 });
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
   const condition = workflow.jobs.priority.if;
@@ -65,6 +95,7 @@ function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '
   writeFileSync(join(root, 'upgrade-plan/plan.json'), JSON.stringify(plan));
   writeFileSync(join(directory, 'coordinate.json'), JSON.stringify(data.cell));
   writeFileSync(join(directory, 'candidate-origin.json'), JSON.stringify(data.origin));
+  if (data.nextOrigin) writeFileSync(join(directory, 'candidate-next-origin.json'), JSON.stringify(data.nextOrigin));
   writeFileSync(join(directory, data.report.id + '.json'), JSON.stringify(data.report));
   writeFileSync(join(directory, data.report.id + '.log'), 'recorded transcript\n');
   writeFileSync(join(directory, data.report.id + '.sha256'), [data.report.id + '.json', data.report.id + '.log'].map(name => `${digest(readFileSync(join(directory, name)))}  ${name}\n`).join(''));
@@ -72,8 +103,9 @@ function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '
   writeFileSync(join(root, 'summary.mjs'), program
     .replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href))
     .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href))
+    .replace("'./scripts/candidate-next-evidence.mjs'", JSON.stringify(new URL('./candidate-next-evidence.mjs', import.meta.url).href))
     .replace("'./scripts/daemon-manual-acceptance.mjs'", JSON.stringify(new URL('./daemon-manual-acceptance.mjs', import.meta.url).href)));
-  const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_HARNESS_SOURCE: harnessSource };
+  const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_NEXT_ARTIFACT: '43', EXPECTED_NEXT_DIGEST: 'sha256:next', EXPECTED_HARNESS_SOURCE: harnessSource };
   try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe', cwd: new URL('..', import.meta.url) }); return { exit: 0, root }; }
   catch (error) { return { exit: error.status, stderr: error.stderr.toString(), root }; }
 }
@@ -125,6 +157,143 @@ test('manual service route is daemon state, self method, native Linux preparatio
   assert(workflow.jobs['release-cells'].steps.find(step => step.name === 'Prepare disposable Linux user manager').if.includes("matrix.scenario == 'daemon-self'"));
   assert(run.includes("cell.platform === 'darwin' && method === 'scheduler'"));
   assert(program.includes('evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics'));
+});
+function archivePairManifests(data, directory, a, b) {
+  const names = JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat().sort();
+  for (const [side, filename, version] of [['source', 'candidate-source-manifest.json', a], ['target', 'candidate-next-manifest.json', b]]) {
+    const packages = names.map((name, index) => ({ name, version, archive: `package-${index}.tgz`, sha256: 'e'.repeat(64), files: { 'package.json': 'c'.repeat(64), 'dist/cotal.js': 'd'.repeat(64) } }));
+    const bytes = JSON.stringify({ source: data.cell.sourceSHA, packages });
+    writeFileSync(join(directory, filename), bytes, { mode: 0o600 });
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    data.nextOrigin[side + 'ManifestSha256'] = sha;
+    data.report.candidateNext[side + 'ManifestSha256'] = sha;
+    data.report.candidateNext[side + 'Packages'] = packages;
+    data.report.candidateNext[side + 'Archives'] = packages.map(({ name, sha256 }) => ({ name, sha256 }));
+  }
+}
+function freshNextEvidence(data, directory) {
+  const a = data.cell.sourceVersion, b = data.cell.targetVersion;
+  const sourceManifestSha256 = 'a'.repeat(64), targetManifestSha256 = 'b'.repeat(64);
+  data.report.source = a;
+  data.report.sourceRequested = a;
+  data.report.target = b;
+  data.report.candidate = { source: data.cell.sourceSHA, direction: 'A' };
+  data.report.candidateNext = { source: data.cell.sourceSHA, sourceVersion: a, targetVersion: b, sourceManifestSha256, targetManifestSha256, sourcePackages: [{ name: 'cotal-ai', files: { 'package.json': 'c'.repeat(64), 'dist/cotal.js': 'd'.repeat(64) } }] };
+  data.report.candidateSourceInvocation = { name: 'cotal-ai', version: a, sha256: 'd'.repeat(64), packageSha256: 'c'.repeat(64), argv: ['/owned/dist/cotal.js', 'update', '--self'] };
+  data.report.nextHop = { mode: 'candidate', sourceVersion: a, firstTargetVersion: a, finalTargetVersion: b, secondHop: { update: { exit: 0, timeout: false, signal: null } } };
+  data.nextOrigin = { source: data.cell.sourceSHA, artifact: '43', digest: 'sha256:next', sourceManifestSha256, targetManifestSha256 };
+  data.report.candidateSourceInvocation.loadedCli = { name: '@cotal-ai/cli', version: a, packageSha256: 'c'.repeat(64), sha256: 'd'.repeat(64), member: 'dist/cotal.js' };
+  archivePairManifests(data, directory, a, b);
+  manualServiceEvidence(data, directory);
+  Object.assign(data.report.calls.find(call => call.label === 'upgrade under test'), { argv: ['/owned/dist/cotal.js', 'update', '--self'], signal: null, timeout: false });
+}
+test('actual paired summary accepts candidate-owned B only with both receipts and independent final state', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(freshNextEvidence, { scenario: 'candidate-next-daemon-self', phase });
+    assert.equal(result.exit, 0, result.stderr);
+  }
+});
+test('paired summary rejects wrong B origin, entry hash, timeout, exit 3 and absent final capture', () => {
+  for (const mutate of [
+    data => { data.nextOrigin.artifact = 'foreign'; },
+    data => { data.nextOrigin.targetManifestSha256 = 'f'.repeat(64); },
+    data => { data.nextOrigin.targetManifestSha256 = data.report.candidateNext.targetManifestSha256 = 'f'.repeat(64); },
+    data => { data.report.candidateNext.sourcePackages.find(row => row.name === 'cotal-ai').files['dist/cotal.js'] = data.report.candidateSourceInvocation.sha256 = 'f'.repeat(64); },
+    data => { data.report.candidateSourceInvocation.sha256 = 'f'.repeat(64); },
+    data => { data.report.nextHop.secondHop.update.timeout = true; },
+    data => { data.report.nextHop.secondHop.update.exit = 3; },
+    data => { delete data.report.daemonDiagnostics; },
+  ]) {
+    const result = fixture((data, directory) => { freshNextEvidence(data, directory); mutate(data); }, { scenario: 'candidate-next-daemon-self' });
+    assert.notEqual(result.exit, 0);
+  }
+});
+function chainEvidence(data, directory) {
+  const a = data.cell.targetVersion, b = data.cell.finalTargetVersion;
+  freshNextEvidence(data, directory);
+  data.report.source = data.report.sourceRequested = '0.164.10';
+  data.report.target = b;
+  data.report.candidateNext.sourceVersion = a;
+  data.report.candidateNext.targetVersion = b;
+  data.report.candidateSourceInvocation.version = a;
+  data.report.candidateSourceInvocation.loadedCli.version = a;
+  archivePairManifests(data, directory, a, b);
+  // Keep separate archived native captures for A and B, including their hashes.
+  const middleDirectory = join(directory, 'middle');
+  mkdirSync(middleDirectory);
+  manualServiceEvidence(data, middleDirectory);
+  const middle = structuredClone(data.report.daemonDiagnostics['after-update']);
+  for (const row of middle.observations) if (row.artifact) {
+    const name = 'middle-' + row.artifact;
+    copyFileSync(join(middleDirectory, row.artifact), join(directory, name));
+    row.artifact = name;
+  }
+  // The final capture must describe B, not the first-hop target A.
+  const finalCell = { ...data.cell, targetVersion: b };
+  const originalCell = data.cell;
+  data.cell = finalCell;
+  manualServiceEvidence(data, directory);
+  data.cell = originalCell;
+  data.report.daemonDiagnostics['between-hops'] = middle;
+  const contract = source16410Refusals.find(row => row.platform === 'linux' && row.layout === 'npm');
+  const first = { exit: 2, signal: null, timeout: false, stdout: `synthetic fixture reconciliation progress\nthis 0.164.10 process remains loaded until the verified global copy takes over\nmachine daemon: waiting up to 120s for Cotal ${a} and its hosted Managers before the continuity check\n✓ cotal-ai@${a} installed globally and reconciled\n`, stderr: contract.trailer };
+  const refusal = matchSource16410Refusal({ platform: 'linux', layout: 'npm', sourceVersion: '0.164.10', targetVersion: a, update: first });
+  data.report.nextHop = { mode: 'source-0.164.10', sourceVersion: '0.164.10', firstTargetVersion: a, finalTargetVersion: b, firstHop: { update: first, refusal }, intermediate: { status: { exit: 0, stdout: JSON.stringify({ result: { state: 'ready', version: a, update: { lastResult: 'updated', restartEvidence: { prepared: false } } } }) }, updateCheck: { exit: 0, timeout: false, signal: null } }, secondHop: { update: { exit: 0, timeout: false, signal: null } } };
+  const commandBytes = JSON.stringify({ status: data.report.nextHop.intermediate.status, updateCheck: data.report.nextHop.intermediate.updateCheck });
+  writeFileSync(join(directory, 'between-commands.txt'), commandBytes, { mode: 0o600 });
+  data.report.nextHop.intermediate.commands = { artifact: 'between-commands.txt', bytes: Buffer.byteLength(commandBytes), sha256: createHash('sha256').update(commandBytes).digest('hex') };
+  data.report.assertions = [...new Map(data.report.assertions.map(row => [row.name, row])).values()];
+  Object.assign(data.report.calls.find(call => call.label === 'upgrade under test'), first, { finishedAt: '2026-11-14T10:59:59.000Z' });
+  data.report.calls.push({ label: 'candidate second hop under test', startedAt: '2026-11-14T11:00:01.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], exit: 0, signal: null, timeout: false });
+}
+test('actual summary counts complete source chain as genuine without waiving the raw first-hop refusal', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(chainEvidence, { scenario: 'source-0.164.10-daemon-self-chain', phase });
+    assert.equal(result.exit, 0, result.stderr);
+    const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
+    assert.equal(census.passed.length, 1);
+    assert.equal(census.knownRefusals.length, 0);
+    assert.equal(census.upgradeAcceptance, true);
+  }
+});
+test('chain summary rejects unhealthy intermediate machine and changed measured refusal or second hop', () => {
+  for (const mutate of [
+    data => { const status = JSON.parse(data.report.nextHop.intermediate.status.stdout); status.result.update.restartEvidence.prepared = true; data.report.nextHop.intermediate.status.stdout = JSON.stringify(status); },
+    data => { const status = JSON.parse(data.report.nextHop.intermediate.status.stdout); status.result.update.lastResult = 'paused'; data.report.nextHop.intermediate.status.stdout = JSON.stringify(status); },
+    data => { data.report.daemonDiagnostics['between-hops'].observations.find(row => row.kind === 'update-recovery.json').state = 'archived'; },
+    data => { delete data.report.nextHop.intermediate.updateCheck; },
+    data => { data.report.calls.find(call => call.label === 'candidate second hop under test').startedAt = '2026-11-14T10:59:00.000Z'; },
+    data => { data.report.calls.find(call => call.label === 'upgrade under test').stdout += 'different actual call'; },
+    data => { delete data.report.nextHop.intermediate.commands; },
+    data => { data.report.candidateSourceInvocation.loadedCli.sha256 = 'f'.repeat(64); },
+    data => { data.report.nextHop.firstHop.update.signal = 'SIGTERM'; },
+    data => { data.report.nextHop.firstHop.update.exit = 3; },
+    data => { data.report.nextHop.firstHop.update.stderr += 'extra trailer\n'; },
+    data => { data.report.nextHop.secondHop.update.timeout = true; data.report.calls.find(call => call.label === 'candidate second hop under test').timeout = true; },
+  ]) {
+    const result = fixture((data, directory) => { chainEvidence(data, directory); mutate(data); }, { scenario: 'source-0.164.10-daemon-self-chain' });
+    assert.notEqual(result.exit, 0);
+  }
+});
+test('paired summary cannot pass ordinary evidence relabelled as candidate-own-next in either phase', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(data => {
+      data.report.source = data.cell.sourceVersion;
+      data.report.sourceRequested = data.cell.sourceVersion;
+      data.report.target = data.cell.targetVersion;
+    }, { scenario: 'candidate-next-daemon-self', phase });
+    assert.notEqual(result.exit, 0);
+  }
+});
+test('pinned source chain cannot pass without second-hop and whole-machine evidence', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(data => {
+      data.report.source = data.cell.sourceVersion;
+      data.report.sourceRequested = data.cell.sourceVersion;
+      data.report.target = data.cell.finalTargetVersion;
+    }, { scenario: 'source-0.164.10-daemon-self-chain', phase });
+    assert.notEqual(result.exit, 0);
+  }
 });
 test('actual workflow census accepts precisely matching configured evidence', () => assert.equal(fixture().exit, 0));
 test('actual workflow census refuses fresh report relabelled configured', () => assert.notEqual(fixture(d => { d.report.state = 'fresh'; d.report.extensionsBefore = []; }).exit, 0));

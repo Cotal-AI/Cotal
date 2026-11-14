@@ -16,6 +16,23 @@ import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-cons
 import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
+import { candidateSourceIdentity, intermediateWholeMachine } from './candidate-next-evidence.mjs';
+import { matchSource16410Refusal } from './source-16410-refusal.mjs';
+
+export function candidateNextOptions(options, disposable = hosted) {
+  if (options['candidate-next'] === undefined) return undefined;
+  const mode = options['next-hop-source'];
+  assert(['candidate', '0.164.10'].includes(mode), 'candidate next source must be explicit');
+  assert(['candidate','published'].includes(options['next-hop-phase']), 'candidate next phase must be explicit');
+  assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && options.state === 'daemon' && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
+  if (mode === 'candidate') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
+  if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
+  return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
+}
+
+export function assertPublishedPairTarget(options, observed, frozen) {
+  if (options['candidate-next'] && options['next-hop-phase'] === 'published') assert.equal(observed,frozen,'public target changed before paired published action');
+}
 
 export function daemonHostedManagerOptions(options, { hosted: disposable = hosted, platform = process.platform } = {}) {
   if (options['daemon-hosted-manager'] === undefined) return false;
@@ -259,6 +276,7 @@ function safeRoot(output) {
 
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
+  const nextHopMode = candidateNextOptions(options);
   const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
@@ -280,8 +298,8 @@ export async function matrixCell(options) {
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
   const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
-  const id = `${options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
-  const report = { tier: options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
+  const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
+  const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
   const omit = exclusion({ layout, method, state });
   if (omit) {
@@ -343,7 +361,7 @@ export async function matrixCell(options) {
     }
   }
   async function call(label, file, argv, timeout = callTimeout(label)) {
-    if (/install|seed|upgrade under test/.test(label)) {
+    if (/install|seed|upgrade under test|candidate second hop under test/.test(label)) {
       const disk = statfsSync(root);
       assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation action');
     }
@@ -362,7 +380,13 @@ export async function matrixCell(options) {
     report.calls.push(entry);
     transcript.push(`$ ${file} ${argv.join(' ')}\n${result.stdout}${result.stderr}\n[exit ${result.exit}]\n`);
     writeFileSync(join(output, `${id}.log`), transcript.join('\n'), { mode: 0o600 });
-    if (result.exit === null || result.timeout || result.signal) { uncertain = true; throw new Error(`${label}: outcome unknown, retained for disposable runner teardown`); }
+    if (result.exit === null || result.timeout || result.signal) {
+      uncertain = true;
+      // Only the authenticated old-source postlude deadline may reach the between-hop proof.
+      // It remains uncertain unless that exact contract and the independent whole state pass.
+      if (nextHopMode === 'source-0.164.10' && label === 'upgrade under test' && process.platform === 'darwin' && result.exit === null && result.signal === 'SIGTERM' && result.timeout === true) return { ...result, elapsedMs: entry.elapsedMs };
+      throw new Error(`${label}: outcome unknown, retained for disposable runner teardown`);
+    }
     return result;
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
@@ -396,10 +420,23 @@ export async function matrixCell(options) {
     report.target = JSON.parse(target.stdout);
     if (expectedTarget && !options.candidate) assert.equal(report.target, expectedTarget, 'public target differs from frozen release; do not certify another version');
     report.resolvedBeforeCell = report.target;
+    if (nextHopMode) assertPublishedPairTarget(options, report.resolvedBeforeCell, json(join(options.candidate,'bootstrap.json')).version);
     report.source = source === 'latest' ? report.target : source;
     if (publishedLaunchd) assert.notEqual(report.target, report.source, 'next published release is not available yet');
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
-    if (options.candidate) {
+    if (nextHopMode) {
+      const { candidatePairRegistry } = await import('./candidate-pair-registry.mjs');
+      overlay = await candidatePairRegistry(resolve(options.candidate), resolve(options['candidate-next']), report.registry);
+      report.candidateNext = overlay.identity;
+      report.candidate = { source: overlay.identity.source, version: overlay.identity.sourceVersion, manifestSha256: overlay.identity.sourceManifestSha256, archives: overlay.identity.sourceArchives, direction: 'A' };
+      if (nextHopMode === 'candidate') assert.equal(report.source, overlay.identity.sourceVersion, 'installed updater must be the frozen candidate A');
+      report.target = nextHopMode === 'candidate' ? overlay.identity.targetVersion : overlay.identity.sourceVersion;
+      if (expectedTarget) assert.equal(report.target, expectedTarget, 'paired target differs from the frozen coordinate');
+      if (options['next-hop-final-target']) assert.equal(overlay.identity.targetVersion, options['next-hop-final-target']);
+      report.nextHop = { mode: nextHopMode, sourceVersion: report.source, firstTargetVersion: overlay.identity.sourceVersion, finalTargetVersion: overlay.identity.targetVersion };
+      env.npm_config_registry = overlay.url;
+      restoreRegistry = configureCandidateRegistry(home, overlay.url);
+    } else if (options.candidate) {
       overlay = await candidateRegistry(resolve(options.candidate), options.direction ?? 'B', report.registry);
       report.candidate = overlay.identity;
       const numeric = value => value.split('.').map(Number);
@@ -412,7 +449,7 @@ export async function matrixCell(options) {
       // Native services read npm's normal per-account config, not the launching shell's registry env.
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
-    const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall('install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
+    const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall(nextHopMode === 'candidate' ? 'install exact candidate source' : 'install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
     if (process.platform === 'win32') {
@@ -620,6 +657,11 @@ export async function matrixCell(options) {
     report.sourceInventoryBeforeAction = sourceInventory();
     report.targetBeforeAction = report.target;
     report.versionChanging = report.source !== report.target;
+    if (nextHopMode && options['next-hop-phase'] === 'published') {
+      const observed = ok(await npmCall('resolve frozen public A immediately before paired action', ['view','cotal-ai@latest','version','--json','--registry=https://registry.npmjs.org/']), 'public A before paired action');
+      report.publicPairTargetBeforeAction = JSON.parse(observed.stdout);
+      assertPublishedPairTarget(options, report.publicPairTargetBeforeAction, report.candidateNext.sourceVersion);
+    }
     if (!options.candidate && !windowsPolicy) {
       report.target = JSON.parse(ok(await npmCall('resolve public latest immediately before action', ['view', 'cotal-ai@latest', 'version', '--json']), 'latest before action').stdout);
       if (expectedTarget) assert.equal(report.target, expectedTarget, 'public target changed before action; do not certify another release');
@@ -634,9 +676,48 @@ export async function matrixCell(options) {
       if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
     }
     await captureServiceEvidence('before-update');
+    if (nextHopMode === 'candidate') {
+      report.candidateSourceInvocation = candidateSourceIdentity({ pkg, cli, identity: report.candidateNext, argv: [cli, 'update', '--self'] });
+      check('candidate source CLI matches packed artifact', true, report.candidateSourceInvocation);
+      overlay.activateTarget();
+    }
     let update;
     if (options['first-install'] === 'true') update = sourceInstall;
-    else if (method === 'self') update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
+    else if (method === 'self') {
+      update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
+      if (nextHopMode === 'source-0.164.10') {
+        const firstCall = report.calls.findLast(row => row.label === 'upgrade under test');
+        report.nextHop.firstHop = { update: { ...update, elapsedMs: firstCall.elapsedMs } };
+        // The complete failed-hop state is captured before matching, retrying or cleaning anything.
+        await captureServiceEvidence('between-hops');
+        const status = await daemon('between hops public daemon status', ['daemon', 'status', '--json']);
+        const updateCheck = await cotal('between hops public update check', ['update', '--check']);
+        const commandBytes = Buffer.from(JSON.stringify({status,updateCheck}));
+        const commands = {artifact:`${id}-between-hop-commands.txt`,bytes:commandBytes.length,sha256:digest(commandBytes)};
+        writeFileSync(join(output,commands.artifact),commandBytes,{flag:'wx',mode:0o600});
+        report.nextHop.intermediate = intermediateWholeMachine({ diagnostics: report.daemonDiagnostics['between-hops'], output, target: report.candidateNext.sourceVersion, platform: process.platform, status, updateCheck, commands });
+        report.nextHop.firstHop.refusal = matchSource16410Refusal({ platform: process.platform, layout, sourceVersion: report.source, targetVersion: report.candidateNext.sourceVersion, update: report.nextHop.firstHop.update });
+        check('source 0.164.10 matches measured postlude refusal', true, report.nextHop.firstHop.refusal);
+        check('source 0.164.10 refusal leaves a whole machine', report.nextHop.intermediate.passed, report.nextHop.intermediate);
+        assert(report.nextHop.intermediate.passed, 'source 0.164.10 refused hop did not independently leave a whole machine');
+        if (uncertain) {
+          const unknown = report.calls.filter(row => row.exit === null || row.timeout || row.signal);
+          assert(unknown.length === 1 && unknown[0] === firstCall, 'another unknown command cannot inherit the source deadline contract');
+          uncertain = false;
+        }
+        report.candidateSourceInvocation = candidateSourceIdentity({ pkg, cli, identity: report.candidateNext, argv: [cli, 'update', '--self'] });
+        check('candidate source CLI matches packed artifact', true, report.candidateSourceInvocation);
+        overlay.activateTarget();
+        report.target = report.candidateNext.targetVersion;
+        update = await cotal('candidate second hop under test', ['update', '--self']);
+      }
+      if (nextHopMode) {
+        report.nextHop.secondHop = { update };
+        report.nextHop.passed = update.exit === 0 && update.signal === null && update.timeout === false;
+        check('candidate next target matches packed artifact', report.target === report.candidateNext.targetVersion, report.target);
+        check('candidate next hop exits successfully', update.exit === 0 && update.signal === null && update.timeout === false, update);
+      }
+    }
     else if (method === 'installer') update = await installer(report.target, true);
     else if (policy === 'unsupported-scheduler') update = { attempted: false, exit: null, stdout: '', stderr: '', reason: 'source scheduler policy does not support automatic installation on this OS' };
     else {
@@ -870,6 +951,7 @@ export async function matrixCell(options) {
       report.manualServiceFinalState = evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output, target: report.target, platform: process.platform });
       check('independent manual service final state', report.manualServiceFinalState.passed, report.manualServiceFinalState);
       if (!report.manualServiceFinalState.passed) report.result = 'failed';
+      if (nextHopMode) report.nextHop.passed = report.nextHop.passed === true && report.manualServiceFinalState.passed && report.assertions.every(row => row.passed);
     }
     if (compositionCleanup && !daemonHostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
@@ -1109,7 +1191,7 @@ export async function candidateRegistry(directory, direction, upstream) {
     close: async () => { save(join(directory, `registry-requests-${process.pid}.json`), requests); await new Promise(done => server.close(done)); return requests; } };
 }
 
-export const callTimeout = (label, platform = process.platform) => label === 'upgrade under test' && platform === 'win32' ? 300000 : 180000;
+export const callTimeout = (label, platform = process.platform) => ['upgrade under test', 'candidate second hop under test'].includes(label) && platform === 'win32' ? 300000 : 180000;
 
 export function updateCallDuration(report) {
   if (report.method === 'scheduler') return 'scheduler: not a direct update call';

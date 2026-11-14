@@ -3,6 +3,40 @@ import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
+
+test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
+  const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
+  assert.equal(baseline.candidateNextOptions(options,true),'candidate');
+  assert.equal(baseline.candidateNextOptions({},false),undefined);
+  for(const change of [{candidate:undefined},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'latest'},{'next-hop-phase':undefined}]) assert.throws(()=>baseline.candidateNextOptions({...options,...change},true));
+  assert.throws(()=>baseline.candidateNextOptions(options,false));
+  assert.equal(baseline.candidateNextOptions({...options,source:'0.164.10',layout:'installer','next-hop-source':'0.164.10'},true),'source-0.164.10');
+  assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
+});
+
+test('next-hop driver captures refused source state before any second hop or cleanup', () => {
+  const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
+  const between=source.indexOf("await captureServiceEvidence('between-hops')");
+  const whole=source.indexOf('report.nextHop.intermediate = intermediateWholeMachine',between);
+  const refusal=source.indexOf('report.nextHop.firstHop.refusal = matchSource16410Refusal',between);
+  const second=source.indexOf("update = await cotal('candidate second hop under test'",between);
+  assert(between>0 && between<whole && whole<refusal && refusal<second);
+  assert(source.indexOf('assert(report.nextHop.intermediate.passed',between)<second);
+  assert(source.indexOf('report.candidateSourceInvocation = candidateSourceIdentity',between)<second);
+  assert(source.indexOf('overlay.activateTarget()',between)<second);
+  assert(second<source.indexOf("await captureServiceEvidence('after-update')",second));
+  assert(!source.slice(between,second).includes("['daemon', 'start'"));
+});
+test('published paired source refuses public latest supersession before either native action', () => {
+  const options={'candidate-next':'/B','next-hop-phase':'published'};
+  assert.doesNotThrow(()=>baseline.assertPublishedPairTarget(options,'0.164.11','0.164.11'));
+  assert.throws(()=>baseline.assertPublishedPairTarget(options,'0.164.12','0.164.11'),/public target changed/);
+  assert.doesNotThrow(()=>baseline.assertPublishedPairTarget({...options,'next-hop-phase':'candidate'},'0.164.10','0.164.11'));
+  const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
+  assert(source.includes('assertPublishedPairTarget(options, report.resolvedBeforeCell'));
+  assert(source.includes('assertPublishedPairTarget(options, report.publicPairTargetBeforeAction'));
+  assert(source.includes('--registry=https://registry.npmjs.org/'));
+});
 import { spawnNameError } from '@cotal-ai/core';
 
 test('daemon-hosted fixture name satisfies the actual user-mode actor rule', () => {
@@ -293,7 +327,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 22 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 28 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);

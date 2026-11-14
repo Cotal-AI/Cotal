@@ -11,6 +11,7 @@ test('only the Windows upgrade command gets the temporary five-minute bound', ()
   assert(recorded.timeout && recorded.elapsedMs > 180000);
   for (const platform of ['win32', 'linux', 'darwin']) {
     assert.equal(baseline.callTimeout('upgrade under test', platform), platform === 'win32' ? 300000 : 180000);
+    assert.equal(baseline.callTimeout('candidate second hop under test', platform), platform === 'win32' ? 300000 : 180000);
     for (const label of ['install published source', 'seed published connectors', 'public installer', 'native status after upgrade']) {
       assert.equal(baseline.callTimeout(label, platform), 180000);
     }
