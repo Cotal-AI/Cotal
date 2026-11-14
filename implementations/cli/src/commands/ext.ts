@@ -13,7 +13,7 @@ import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
 import { globalConfigDir } from "@cotal-ai/core";
-import { inspectLock } from "@cotal-ai/workspace";
+import { inspectLock, extensionNpmMutationPath } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
@@ -222,6 +222,9 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
   if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
   const stage = stageExtensions();
   const originalConfig = process.env.XDG_CONFIG_HOME;
+  let interrupted = false;
+  const interrupt = (): void => { interrupted = true; };
+  process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
     // Make all local dependency specs independent of the stage directory's later promotion.
     for (const name of ["package.json", "package-lock.json"]) {
@@ -235,7 +238,10 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
       if (packageNameFromSpec(request.spec, isPathSpec(request.spec)) !== request.pkg) throw new Error("extension set spec does not match its package");
       rmSync(join(stage.prefix, "node_modules", request.pkg), { recursive: true, force: true });
     }
+    const mutationPath = extensionNpmMutationPath();
     const result = await npm(["install", "--save", "--no-audit", "--no-fund", "--legacy-peer-deps", "--install-links", ...requests.map(request => request.spec)], stage.prefix);
+    if (existsSync(mutationPath)) stage.retain();
+    if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     if (result.status !== 0) throw new Error(`extension set npm install failed: ${npmInstallFailure(result.output)}`);
     process.env.XDG_CONFIG_HOME = stage.config;
     for (const request of requests) {
@@ -263,8 +269,10 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
     }
     if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = originalConfig;
+    if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     stage.promote();
   } finally {
+    process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt);
     if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = originalConfig;
     stage.discard();

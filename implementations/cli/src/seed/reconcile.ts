@@ -51,7 +51,7 @@ import {
   type Stamp,
 } from "./authority.js";
 import { gcSeedStore, stageSeedPayload } from "./store.js";
-import { prefixLockDiffers, seededInstallDiffers } from "./verify.js";
+import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
 
 /**
  * The connector seeding reconcile: makes the four first-party connectors present on a fresh install
@@ -464,7 +464,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
     const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
-    const operators = loadExtensionsManifest().extensions.filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg))
+    const operators = loadExtensionsManifest().extensions.filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && operatorInstallDiffers(entry, generation) !== undefined)
       .map(entry => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
     await installExtensionSet([...staged, ...operators]);
     for (const entry of staged) verifyInstalled(entry.name, generation);
