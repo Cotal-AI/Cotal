@@ -200,7 +200,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
       writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`, { flag: "wx", mode: 0o644 });
       provenance.wrote("extensions prefix", join(dir, "package.json"));
     }
-    await addTransaction(pkg, resolved, expectedPkg, seeding, announce);
+    if (seeding) await addTransaction(pkg, resolved, expectedPkg, true, announce);
+    else await installExtensionSet([{ pkg, spec: resolved }], announce);
   } finally {
     if (seeding) clearChildMarker();
     releaseMutation();
@@ -215,12 +216,14 @@ export interface ExtensionInstallRequest {
 }
 
 /** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
-export async function installExtensionSet(requests: readonly ExtensionInstallRequest[]): Promise<void> {
+export async function installExtensionSet(requests: readonly ExtensionInstallRequest[], announce: (line: string) => void = console.error): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = globalConfigDir();
   const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
   if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
   const stage = stageExtensions();
+  const manifestBefore = loadExtensionsManifest();
+  const closing: string[] = [];
   const originalConfig = process.env.XDG_CONFIG_HOME;
   let interrupted = false;
   const interrupt = (): void => { interrupted = true; };
@@ -247,15 +250,21 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
     for (const request of requests) {
       const meta = installedExtensionPackage(request.pkg);
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
+      if (!existsSync(join(extensionPackageDir(request.pkg), meta.main ?? "index.js"))) throw new Error(`extension set installed no main entry for ${request.pkg}`);
     }
-    const [file, ...argv] = selfArgv();
+    const invocation = requests.length > 1 ? selfArgv() : undefined;
     for (const request of requests) {
-      const child = spawnSync(file, [...argv, "ext", "__stage-verify", request.pkg, request.spec, ownerConfig, owner.owner.nonce, String(process.pid), request.source ?? "operator"], {
+      if (!invocation) {
+        closing.push(...await verifyCandidate(request.pkg, request.spec, stage.prefix, loadExtensionsManifest().extensions, request.source === "seeded", false, console.error));
+        continue;
+      }
+      const [file, ...argv] = invocation;
+      const child = spawnSync(file!, [...argv, "ext", "__stage-verify", request.pkg, request.spec, ownerConfig, owner.owner.nonce, String(process.pid), request.source ?? "operator"], {
         encoding: "utf8", env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" },
       });
       if (child.stderr) process.stderr.write(child.stderr);
       if (child.status !== 0) throw new Error(`extension set verification failed for ${request.pkg}: ${child.stderr || child.error?.message || child.status}`);
-      if (child.stdout) process.stderr.write(child.stdout);
+      if (child.stdout) closing.push(child.stdout.trimEnd());
     }
     // The verifiers wrote one complete inventory inside the stage. Rebind every retained package,
     // including packages not changed by this pass, just as each former individual add did.
@@ -267,10 +276,15 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
         typeof item === "string" && item.startsWith("file:") ? `file:${resolve(stage.prefix, item.slice(5))}` : item);
       writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
     }
+    const verified = loadExtensionsManifest();
+    const ordered = [...manifestBefore.extensions.map(entry => verified.extensions.find(candidate => candidate.pkg === entry.pkg)!).filter(Boolean),
+      ...verified.extensions.filter(entry => !manifestBefore.extensions.some(prior => prior.pkg === entry.pkg))];
+    saveExtensionsManifest({ extensions: ordered });
     if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = originalConfig;
     if (interrupted) throw new ExtensionAddInterrupted(requests[0]!.pkg);
     stage.promote();
+    for (const line of closing) announce(line);
   } finally {
     process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt);
     if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;

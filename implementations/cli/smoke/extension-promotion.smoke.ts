@@ -8,7 +8,7 @@ for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   const root = mkdtempSync(join(tmpdir(), "promotion-state-"));
   process.env.XDG_CONFIG_HOME = root;
   const config = join(root, "cotal"); mkdirSync(config, { mode: 0o700 });
-  const live = join(config, "extensions"), stage = join(config, ".extensions.stage-proof.ready"), old = join(config, ".extensions.previous-proof");
+  const live = join(config, "extensions"), stage = join(config, ".extensions.stage-proof.ready"), old = join(config, ".extensions.rollback-proof");
   mkdirSync(live); writeFileSync(join(live, "whole"), "old");
   mkdirSync(stage); writeFileSync(join(stage, "whole"), "new");
   const stat = lstatSync(stage);
