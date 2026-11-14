@@ -106,6 +106,16 @@ try {
     writeFileSync(join(root, executionDescriptorName), "{"); const result = run(); assert.equal(result.status, 1); assert.equal(result.stdout, "");
     writeExecutionDescriptor(root, descriptor);
   });
+  check("oversized descriptor is refused before parsing", () => {
+    writeFileSync(join(root, executionDescriptorName), " ".repeat(4 * 1024 * 1024 + 1));
+    assert.throws(() => selectExecutionProgram(root), /unsafe execution record/);
+    writeExecutionDescriptor(root, descriptor);
+  });
+  check("a group-writable descriptor cannot select retained code", () => {
+    const file = join(root, executionDescriptorName); chmodSync(file, 0o620);
+    try { assert.throws(() => selectExecutionProgram(root), /unprotected execution entry/); }
+    finally { chmodSync(file, 0o600); }
+  });
   check("descriptor symlink refuses without reading a foreign record", () => {
     const file = join(root, executionDescriptorName); rmSync(file); symlinkSync(join(scratch, "absent"), file);
     assert.throws(() => selectExecutionProgram(root), /unsafe execution record/); rmSync(file); writeExecutionDescriptor(root, descriptor);
