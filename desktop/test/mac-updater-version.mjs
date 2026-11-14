@@ -18,5 +18,8 @@ for (const row of rows) {
 }
 const endpoint = process.env.COTAL_UPDATER_TEST_ENDPOINT;
 if (!endpoint) throw new Error('Compile the job-local updater endpoint explicitly.');
-writeFileSync(resolve('desktop/src-tauri/updater-proof.json'), JSON.stringify({ bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: '-' } } }));
+const pubkey = process.env.COTAL_UPDATER_PROOF_CONFIG_PUBLIC_KEY?.trim();
+const fixtureKey = process.env.COTAL_UPDATER_PUBLIC_KEY?.trim();
+if (!pubkey || !fixtureKey || pubkey === fixtureKey) throw new Error('The proof config requires a distinct disposable public key.');
+writeFileSync(resolve('desktop/src-tauri/updater-proof.json'), JSON.stringify({ bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: '-' } }, plugins: { updater: { pubkey } } }));
 console.log(`Prepared debug updater bundle version ${version}.`);

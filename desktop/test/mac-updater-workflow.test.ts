@@ -2,7 +2,39 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
 const { parse } = createRequire(import.meta.url)("yaml");
+
+function proofConfig(configKey: string | undefined, fixtureKey = "fixture-public-key") {
+  const source = readFileSync(new URL("mac-updater-version.mjs", import.meta.url), "utf8").replace(/^import .*;\n/gm, "");
+  let overlay: Record<string, unknown> | undefined;
+  runInNewContext(source, {
+    process: { platform: "darwin", argv: ["node", "stamper", "0.164.8"], env: {
+      GITHUB_ACTIONS: "true", RUNNER_ENVIRONMENT: "github-hosted", npm_execpath: "pnpm",
+      COTAL_UPDATER_TEST_ENDPOINT: "http://127.0.0.1:43189/latest.json", COTAL_UPDATER_PUBLIC_KEY: fixtureKey,
+      COTAL_UPDATER_PROOF_CONFIG_PUBLIC_KEY: configKey,
+    }, execPath: "node" },
+    execFileSync: () => "[]", readFileSync: () => { throw new Error("Unexpected read"); },
+    writeFileSync: (_path: string, value: string) => { overlay = JSON.parse(value); },
+    resolve: (value: string) => value, join: (...values: string[]) => values.join("/"), console: { log() {} },
+  });
+  return overlay;
+}
+
+test("proof stamper supplies only a distinct inert bundler public key", () => {
+  const overlay = proofConfig("config-public-key");
+  assert.deepEqual(overlay, {
+    bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: "-" } },
+    plugins: { updater: { pubkey: "config-public-key" } },
+  });
+  assert.notEqual((overlay?.plugins as { updater: { pubkey: string } }).updater.pubkey, "fixture-public-key");
+});
+
+test("proof stamper refuses absent or matching config public keys", () => {
+  for (const key of [undefined, "", "fixture-public-key"]) {
+    assert.throws(() => proofConfig(key), /distinct disposable public key/);
+  }
+});
 
 test("hosted Mac proof is explicit, ARM first, and uses immutable shared fixture input", () => {
   const workflow = parse(readFileSync(new URL("../../.github/workflows/desktop.yml", import.meta.url), "utf8"));

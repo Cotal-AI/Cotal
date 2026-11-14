@@ -13,6 +13,14 @@ const root = join(process.env.RUNNER_TEMP, 'mac-updater-build');
 mkdirSync(root, { recursive: true, mode: 0o700 });
 const head = (await execute('git', ['rev-parse', 'HEAD'])).stdout.trim();
 const key = join(root, 'throwaway.key');
+const configKey = join(root, 'inert-config.key');
+const keyId = encoded => {
+  const lines = Buffer.from(encoded, 'base64').toString('utf8').trim().split(/\r?\n/);
+  const raw = Buffer.from(lines.at(-1), 'base64');
+  assert.equal(raw.length, 42, 'Expected a Tauri minisign public key');
+  return raw.subarray(2, 10).toString('hex');
+};
+const mismatchWarnings = [];
 const pnpm = process.env.npm_execpath;
 assert.ok(pnpm, 'Run through pnpm exec node');
 const run = (cwd, args, env, log) => new Promise((resolve, reject) => {
@@ -29,8 +37,15 @@ try {
   await run(repo, ['--dir', 'desktop', 'exec', 'tauri', 'signer', 'generate', '--ci', '--write-keys', key], env, join(root, 'private-signer.log'));
   chmodSync(key, 0o600); chmodSync(`${key}.pub`, 0o600);
   const trust = readFileSync(`${key}.pub`, 'utf8').trim();
+  await run(repo, ['--dir', 'desktop', 'exec', 'tauri', 'signer', 'generate', '--ci', '--write-keys', configKey], env, join(root, 'private-config-signer.log'));
+  chmodSync(configKey, 0o600); chmodSync(`${configKey}.pub`, 0o600);
+  const inertPubkey = readFileSync(`${configKey}.pub`, 'utf8').trim();
+  rmSync(configKey); rmSync(join(root, 'private-config-signer.log'));
+  const fixtureKeyId = keyId(trust);
+  const configKeyId = keyId(inertPubkey);
+  assert.notEqual(configKeyId, fixtureKeyId, 'Config key must not verify fixture signatures');
   const endpoint = 'http://127.0.0.1:43189/latest.json';
-  const proofEnv = { ...env, COTAL_UPDATER_PUBLIC_KEY: trust, COTAL_UPDATER_TEST_ENDPOINT: endpoint, TAURI_SIGNING_PRIVATE_KEY: key, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '' };
+  const proofEnv = { ...env, COTAL_UPDATER_PUBLIC_KEY: trust, COTAL_UPDATER_PROOF_CONFIG_PUBLIC_KEY: inertPubkey, COTAL_UPDATER_TEST_ENDPOINT: endpoint, TAURI_SIGNING_PRIVATE_KEY: key, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: '' };
   for (const [name, version] of [['N', '0.164.8'], ['target', '0.164.9']]) {
     const cwd = join(root, name);
     await execute('git', ['worktree', 'add', '--detach', cwd, head], { cwd: repo });
@@ -43,6 +58,9 @@ try {
     await run(cwd, ['--dir', 'desktop', 'prepare:runtime'], env, join(root, `${name}-runtime.log`));
     await run(cwd, ['--dir', 'desktop', 'check:runtime'], env, join(root, `${name}-runtime-check.log`));
     await run(cwd, ['--dir', 'desktop', 'exec', 'tauri', 'build', '--debug', '--features', 'updater-e2e', '--bundles', 'app', '--config', 'src-tauri/updater-proof.json'], proofEnv, join(root, `${name}-native.log`));
+    const warning = readFileSync(join(root, `${name}-native.log`), 'utf8').includes('does not match the public key from `plugins > updater > pubkey`');
+    assert.equal(warning, true, 'Bundler must report the deliberately mismatched config key');
+    mismatchWarnings.push({ build: name, observed: warning });
     const directory = join(cwd, 'desktop/src-tauri/target/debug/bundle/macos');
     const archives = readdirSync(directory).filter(file => file.endsWith('.app.tar.gz'));
     assert.equal(archives.length, 1, 'One actual Tauri updater bundle is required');
@@ -68,8 +86,8 @@ try {
   const invalidArchive = join(root, 'invalid-install.tar.gz');
   writeFileSync(invalidArchive, 'signed invalid updater archive, test-owned input\n');
   await run(repo, ['--dir', 'desktop', 'exec', 'tauri', 'signer', 'sign', '--app-version', '0.164.9', invalidArchive], proofEnv, join(root, 'invalid-install-sign.log'));
-  writeFileSync(join(root, 'build-result.json'), JSON.stringify({ schema: 1, source: head, versions: ['0.164.8', '0.164.9'], debug: true, endpoint: 'http://127.0.0.1:43189/latest.json', signing: 'disposable updater key and ad-hoc platform signatures' }, null, 2));
+  writeFileSync(join(root, 'build-result.json'), JSON.stringify({ schema: 1, source: head, versions: ['0.164.8', '0.164.9'], debug: true, endpoint: 'http://127.0.0.1:43189/latest.json', signing: 'disposable updater key and ad-hoc platform signatures', fixturePubkey: trust, fixtureKeyId, configPubkey: inertPubkey, configKeyId, configEndpoints: [], mismatchWarnings }, null, 2));
 } finally {
   // Keep build evidence, never the generated private material or signer output.
-  for (const file of [key, `${key}.pub`, join(root, 'private-signer.log')]) rmSync(file, { force: true });
+  for (const file of [key, `${key}.pub`, configKey, `${configKey}.pub`, join(root, 'private-signer.log'), join(root, 'private-config-signer.log')]) rmSync(file, { force: true });
 }
