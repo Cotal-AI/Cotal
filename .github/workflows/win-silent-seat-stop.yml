@@ -40,7 +40,9 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --child-concurrency=2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          pnpm --workspace-concurrency 3 build
+          pnpm --workspace-concurrency=1 --filter cotal-ai... build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm --filter @cotal-ai/seat build:native
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install verified loopback broker
         shell: pwsh
