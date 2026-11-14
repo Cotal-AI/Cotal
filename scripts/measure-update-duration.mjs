@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { prependPath } from './update-duration-environment.mjs';
 import { pathToFileURL } from 'node:url';
 
 assert.equal(process.env.GITHUB_ACTIONS, 'true', 'measurement requires GitHub Actions');
@@ -24,7 +25,7 @@ Object.assign(env, {
 });
 for (const dir of [home, prefix, project, env.TMPDIR, env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 mkdirSync(join(project, '.cotal'), { mode: 0o700 });
-env.PATH = [join(prefix, process.platform === 'win32' ? '' : 'bin'), env.PATH].join(delimiter);
+prependPath(env, join(prefix, process.platform === 'win32' ? '' : 'bin'));
 const npmCli = join(dirname(process.execPath), process.platform === 'win32' ? 'node_modules/npm/bin/npm-cli.js' : '../lib/node_modules/npm/bin/npm-cli.js');
 assert(existsSync(npmCli), `npm entry missing: ${npmCli}`);
 const pkg = join(prefix, ...(process.platform === 'win32' ? [] : ['lib']), 'node_modules/cotal-ai');

@@ -4,6 +4,18 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { delimiter } from 'node:path';
+import { prependPath } from './update-duration-environment.mjs';
+
+test('private prefix preserves inherited Windows Path and POSIX PATH', () => {
+  for (const key of ['Path', 'PATH', 'path']) {
+    const env = { [key]: '/node/bin', OTHER: 'unchanged' };
+    prependPath(env, '/private/bin');
+    assert.deepEqual(env, { PATH: ['/private/bin', '/node/bin'].join(delimiter), OTHER: 'unchanged' });
+  }
+  assert.throws(() => prependPath({}, '/private/bin'), /one inherited PATH/);
+  assert.throws(() => prependPath({ Path: '/one', PATH: '/two' }, '/private/bin'), /one inherited PATH/);
+});
 
 test('passive observer preserves output, child exit, filesystem calls and descendants', () => {
   const root = mkdtempSync(join(tmpdir(), 'update-duration-observer-'));
