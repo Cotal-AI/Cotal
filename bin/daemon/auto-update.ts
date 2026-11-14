@@ -48,7 +48,7 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       if (recovery) {
         const decision = recoveryDisposition(recovery);
         if (decision.action !== "retire") automatic = false;
-        reason = `automatic updates ${decision.action === "retire" ? "can resume" : "paused"}: installed ${recovery.installed}; ${decision.instruction}`;
+        reason = `automatic updates ${decision.action === "retire" ? "can resume" : "paused"}: installed ${recovery.installed}; ${recovery.reason}; ${decision.instruction}`;
       }
     } catch (error) { automatic = false; reason = `automatic updates paused: ${String(error)}`; }
     if (!["linux", "darwin"].includes(process.platform)) reason = `${reason}. Automatic installation is unavailable on ${process.platform === "win32" ? "Windows" : process.platform} in this release. Run \`cotal update --self\` here`;
