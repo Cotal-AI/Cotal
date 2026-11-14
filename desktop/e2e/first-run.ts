@@ -204,25 +204,40 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     for (const pipe of [helper.stdout, helper.stderr]) pipe?.on("data", bytes => writeFileSync(join(output, "windows-restart.log"), bytes, { flag: "a" }));
     try {
       if (recoveryCell === "before-poll") {
-        // This is the app's ordinary background poll during a real owned restart.
-        // No refresh, input, product timer or renderer state is forced.
-        evidence.restartStoppedPoll = await windowsPhase("cell-restart-stopped-poll", () => until("app poll sees the restarting service stopped", async () => {
+        // A restart may finish between ordinary app polls. Its stopped view is
+        // observation-only. No refresh, input, product timer or renderer state is forced.
+        evidence.stoppedView = { status: "not seen" };
+        const observeStoppedView = (value: any) => {
+          if (evidence.stoppedView.status === "not seen" && value.recoveryShown
+            && value.action === "install" && value.buttonText === "Start service") {
+            evidence.stoppedView = { status: "seen", atUnixMs: value.atUnixMs };
+            evidence.duringRestart = value;
+          }
+        };
+        await windowsPhase("cell-owned-restart-exit", () => until("owned restart helper exits", async () => {
           assert.ifError(helperError);
-          return rows().find(row => row.phase === "result" && ["status", "service-status"].includes(row.request?.op)
-            && row.ok === false && row.error?.code === "NOT_RUNNING" && row.atUnixMs >= evidence.restartStartedAtUnixMs);
-        }, Boolean, 90_000));
-        evidence.duringRestart = await windowsPhase("cell-restart-error-panel", () => until("native window displays the background-check error", () => snapshot("during-restart"),
-          value => value.recoveryShown && value.action === "install" && value.buttonText === "Start service", 10_000));
-        await windowsPhase("cell-owned-restart-exit", () => until("owned restart helper exits", async () => helperExited, Boolean, 180_000));
+          try { observeStoppedView(await snapshot("during-restart")); }
+          catch (error) { evidence.stoppedViewObservationError = String(error); }
+          save(); return helperExited;
+        }, Boolean, 180_000));
         assert.equal(await helperExit, 0);
         evidence.preparation = JSON.parse(readFileSync(restartArtifact, "utf8"));
         assert.equal(evidence.preparation.outcome, "passed");
-        evidence.healthyPoll = await windowsPhase("cell-restart-healthy-poll", () => until("app status succeeds after its stopped reply", async () =>
-          rows().find(row => row.phase === "result" && row.request?.op === "status" && row.ok === true && row.atUnixMs > evidence.restartStoppedPoll.atUnixMs), Boolean, 45_000));
-        evidence.after = await windowsPhase("cell-error-clears-without-input", () => until("background error clears and connected view returns without input", () => snapshot("after-restart"),
-          value => !value.recoveryShown && value.connectedShown && value.connectionTitle === "This computer is connected" && !value.notice, 45_000));
-        evidence.restartRecovery = restartRecovery(rows(), evidence.restartStartedAtUnixMs, evidence.preparation, evidence.after);
-        check("restart background error clears after a good poll without input", evidence.inputs.length === 0 && evidence.restartRecovery.passed);
+        const traceRows = (file: string) => {
+          const raw = readFileSync(file, "utf8");
+          assert.ok(raw === "" || raw.endsWith("\n"), "complete bridge trace snapshot required");
+          return raw.trimEnd().split("\n").filter(Boolean).map(line => JSON.parse(line));
+        };
+        evidence.after = await windowsPhase("cell-connected-fresh-peer-without-input", () => until("connected app status authenticates the new daemon lifetime without input", async () => {
+          const value = await snapshot("after-restart");
+          observeStoppedView(value);
+          evidence.restartRecovery = restartRecovery(rows(), evidence.restartStartedAtUnixMs, evidence.preparation, value,
+            traceRows(join(output, "windows-bridge-progress.jsonl")), traceRows(join(output, "windows-peer-identity.jsonl")), windowsAppPid);
+          save(); return value;
+        }, () => evidence.restartRecovery?.passed === true, 45_000));
+        evidence.healthyPoll = evidence.restartRecovery.healthy;
+        evidence.restartStoppedPoll = evidence.restartRecovery.stopped ?? null;
+        check("restart returns connected through a fresh app bridge peer without input", evidence.inputs.length === 0 && evidence.restartRecovery.passed);
       } else {
       await windowsPhase("cell-owned-preparation", () => until("owned helper prepared before native pause", async () => {
         assert.ifError(helperError);

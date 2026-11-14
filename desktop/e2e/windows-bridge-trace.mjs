@@ -38,6 +38,12 @@ if (process.argv[2] === "daemon" && process.argv[3] === "desktop") {
       const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
       let frame;
       try { frame = JSON.parse(line); } catch { continue; }
+      if (frame.event === "result") {
+        try {
+          record({ phase: "bridge-result", ok: frame.ok === true,
+            daemonPid: Number.isSafeInteger(frame.result?.pid) ? frame.result.pid : null });
+        } catch { /* Missing metadata cannot alter the client's result. */ }
+      }
       if (frame.event === "setup-progress") {
         record({ phase: "progress", path: process.env.PATH ?? "", pathExt: process.env.PATHEXT ?? null,
           diagnosticFixtureResolved: resolveOnPath("desktop-fixture-app") ?? null, frame });
