@@ -20,6 +20,8 @@ registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
+  let checkedLifetime: ReturnType<typeof readLifetimeRecord>;
+  let targetChecked = false;
   let preparedRestart = false;
   let absentRecoveryHost = false;
   let currentPackages = false;
@@ -46,18 +48,27 @@ const composed: Command = { ...command, async run(args) {
   }, async targetPreinstall(entry, flags) {
     const selectors = Object.fromEntries(Object.entries(flags).filter(([key, value]) => ["space", "server", "creds", "on"].includes(key) && typeof value === "string"));
     const request = JSON.stringify({ v: 1, installedEntry: realpathSync(updateInstalledEntry()), daemonArgv: daemonServeArgv(undefined), flags: selectors });
+    targetChecked = true;
+    checkedLifetime = readLifetimeRecord(daemonPaths().lock);
     const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
       const child = spawn(process.execPath, [entry, request], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = "", stderr = "", oversized = false;
+      let stdout = "", stderr = "", oversized = false, timedOut = false;
+      let escalation: ReturnType<typeof setTimeout> | undefined;
+      const terminate = () => {
+        child.kill("SIGTERM");
+        escalation ??= setTimeout(() => child.kill("SIGKILL"), 2000);
+      };
       const collect = (chunk: Buffer, stream: "stdout" | "stderr") => {
+        if (oversized) return;
         if (stream === "stdout") stdout += chunk.toString(); else stderr += chunk.toString();
-        if (stdout.length + stderr.length > 1024 * 1024) { oversized = true; child.kill("SIGTERM"); }
+        if (stdout.length + stderr.length > 1024 * 1024) { oversized = true; terminate(); }
       };
       child.stdout.on("data", chunk => collect(chunk, "stdout"));
       child.stderr.on("data", chunk => collect(chunk, "stderr"));
-      const timer = setTimeout(() => child.kill("SIGTERM"), 120_000);
-      child.once("error", error => { clearTimeout(timer); reject(error); });
-      child.once("close", status => { clearTimeout(timer); if (oversized) reject(new Error("target pre-install output exceeded its limit")); else resolve({ status, stdout, stderr }); });
+      const timer = setTimeout(() => { timedOut = true; terminate(); }, 120_000);
+      const clearTimers = () => { clearTimeout(timer); if (escalation) clearTimeout(escalation); };
+      child.once("error", error => { clearTimers(); reject(error); });
+      child.once("close", status => { clearTimers(); if (oversized || timedOut) reject(new Error(oversized ? "target pre-install output exceeded its limit" : "target pre-install checks timed out")); else resolve({ status, stdout, stderr }); });
     });
     const lines = result.stdout.split("\n");
     const receipts = lines.filter(line => line.startsWith("COTAL_PREINSTALL_RESULT "));
@@ -71,8 +82,16 @@ const composed: Command = { ...command, async run(args) {
     daemonObserved = evidence.daemonObserved;
     hostedSpaces = evidence.hostedSpaces as string[];
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    if (!daemonObserved) return async () => {};
     const paths = daemonPaths();
+    const freshLifetime = readLifetimeRecord(paths.lock);
+    if (targetChecked && (checkedLifetime !== undefined || daemonObserved)) {
+      if (!checkedLifetime || !freshLifetime || JSON.stringify(freshLifetime) !== JSON.stringify(checkedLifetime) || checkedLifetime.start === undefined || processBirth(checkedLifetime.pid) !== checkedLifetime.start) throw new Error("machine daemon lifetime changed during target pre-install checks; retry the update");
+      const fresh = await queryDaemon({ paths });
+      if (!fresh.ok || fresh.result.pid !== checkedLifetime.pid) throw new Error("machine daemon changed or vanished before update preparation; retry the update");
+    } else if (targetChecked && freshLifetime) {
+      throw new Error("machine daemon appeared during target pre-install checks; retry the update");
+    }
+    if (!daemonObserved) return async () => {};
     try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }
     catch (error) { throw new Error(`daemon unavailable or refused update preparation: ${error instanceof Error ? error.message : String(error)}`); }
     preparedRestart = true;
