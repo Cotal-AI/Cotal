@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 
@@ -77,7 +77,8 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
  *  still wins. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
-  return [node!, ...DAEMON_NODE_FLAGS, ...self];
+  const logical = logicalExecutionEntry();
+  return [node!, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */

@@ -12,6 +12,10 @@ import { managerViaDaemon, queryDaemon } from "./client.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
+import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate } from "./execution-update.js";
+import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
+import { logicalExecutionEntry } from "@cotal-ai/workspace";
+import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 
 const command = registry.resolve<Command>("command", "update");
@@ -23,7 +27,15 @@ const composed: Command = { ...command, async run(args) {
   let absentRecoveryHost = false;
   let currentPackages = false;
   let askedToStop = false;
-  await update(args, { ...updateRuntime, isCurrent() {
+  let targetReceipt: ExecutionPreinstallReceipt | undefined;
+  const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
+  const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
+  await update(args, { ...updateRuntime,
+    ...(process.platform === "linux" || process.platform === "darwin" ? {
+      preflightExecution: preflightExecutionUpdate,
+      prepareExecution: (version: string, root: string) => prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; }),
+      recoverExecution: recoverExecutionUpdate,
+    } : {}), isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {
@@ -43,8 +55,13 @@ const composed: Command = { ...command, async run(args) {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    if (!daemonObserved) return async () => {};
     const paths = daemonPaths();
+    if (targetReceipt) {
+      const lifetime = readLifetimeRecord(paths.lock);
+      if (targetReceipt.daemon ? !lifetime?.start || lifetime.pid !== targetReceipt.daemon.pid || lifetime.start !== targetReceipt.daemon.start || processBirth(lifetime.pid) !== lifetime.start : lifetime !== undefined)
+        throw new Error("machine daemon lifetime changed after target pre-install checks; retry the update");
+    }
+    if (!daemonObserved) return async () => {};
     try { await managerViaDaemon({ paths }, { op: "managers-prepare-restart" }); }
     catch (error) { throw new Error(`daemon unavailable or refused update preparation: ${error instanceof Error ? error.message : String(error)}`); }
     preparedRestart = true;
@@ -90,7 +107,7 @@ const composed: Command = { ...command, async run(args) {
       daemonObserved = true;
       managers = reply.result.managers ?? [];
     } catch (error) {
-      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return updateRuntime.reportRunningManager(flags);
+      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return targetReceipt ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
       throw error;
     }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.
@@ -99,7 +116,7 @@ const composed: Command = { ...command, async run(args) {
     }
     const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
-    if (!active.length) return updateRuntime.reportRunningManager(flags);
+    if (!active.length) return targetReceipt ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
@@ -156,7 +173,7 @@ const composed: Command = { ...command, async run(args) {
         if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
         if (on !== undefined && on !== manager.instanceId) continue;
         if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-        if (await readManagerContinuity({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+        if (await (targetReceipt ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
       }
     }
     if (process.platform !== "linux" && typeof flags.space !== "string") {

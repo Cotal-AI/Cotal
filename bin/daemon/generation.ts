@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { updateActivationBlocked } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { globalConfigDir } from "@cotal-ai/core";
 import { fileURLToPath } from "node:url";
 
@@ -33,6 +33,8 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
 }
 
 function packageFile(): string {
+  const logical = logicalExecutionEntry();
+  if (logical) return join(dirname(dirname(logical)), "package.json");
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 4; i++, dir = dirname(dir)) {
     const path = join(dir, "package.json");

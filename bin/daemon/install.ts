@@ -415,10 +415,13 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
 }
 
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
-export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string): boolean {
+export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): boolean {
   try { lstatSync(unitReceiptFile(paths)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  installedDaemonIdentity(paths, daemonHome);
+  if (expectedArgv) {
+    const { receipt, plan } = recordedUnit(paths, daemonHome);
+    recordedSourceIdentity(receipt, plan.mechanism, () => [...expectedArgv]);
+  } else installedDaemonIdentity(paths, daemonHome);
   return true;
 }
 

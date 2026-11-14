@@ -460,10 +460,11 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
-  const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
+  const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
+  const { recoverExecutionUpdate } = await import("./execution-update.js");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
-  if (await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  if (await recoverInterruptedUpdate({ ...updateRuntime, recoverExecution: recoverExecutionUpdate }, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
