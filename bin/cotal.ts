@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { setFlagsFromString } from "node:v8";
+
+setFlagsFromString("--no-maglev");
+setFlagsFromString("--no-concurrent-sparkplug");
 
 export interface ExecutionBinding { name: "cotal-ai"; version: string; bootstrapSha256: string }
 export interface ExecutionDescriptor {
@@ -23,10 +27,20 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 export function executionRecord(path: string): unknown {
-  const info = lstatSync(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size > MAX_RECORD_BYTES) throw new Error("unsafe execution record");
+  const before = lstatSync(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_RECORD_BYTES) throw new Error("unsafe execution record");
   protectedExecutionEntry(path);
-  return JSON.parse(readFileSync(path, "utf8")) as unknown;
+  const fd = openSync(path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+  try {
+    const current = fstatSync(fd);
+    if (!current.isFile() || current.size > MAX_RECORD_BYTES ||
+        (process.platform !== "win32" && ((current.mode & 0o022) !== 0 ||
+          typeof process.getuid !== "function" || (current.uid !== process.getuid() && current.uid !== 0))))
+      throw new Error("unsafe opened execution record");
+    const bytes = readFileSync(fd);
+    if (bytes.length > MAX_RECORD_BYTES) throw new Error("execution record exceeded its size limit");
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } finally { closeSync(fd); }
 }
 
 /** Read-only checks on a retained object. A missing or unreadable object is never a healthy generation. */
@@ -88,6 +102,7 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
   if (typeof generation.id !== "string" || !ID.test(generation.id) || typeof generation.version !== "string" ||
       typeof generation.inventorySha256 !== "string" || !HASH.test(generation.inventorySha256)) throw new Error("invalid retained execution identity");
   protectedExecutionEntry(installed);
+  for (const ancestor of [dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) protectedExecutionEntry(ancestor);
   const store = executionStore(installed), container = join(store, generation.id), selected = join(container, "cotal-ai");
   for (const path of [store, container, selected]) {
     const info = lstatSync(path);

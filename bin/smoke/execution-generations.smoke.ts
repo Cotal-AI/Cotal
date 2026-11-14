@@ -49,6 +49,13 @@ try {
     try { const result = run(); assert.equal(result.status, 0, result.stderr); } finally { chmodSync(root, 0o700); }
     assert.equal(existsSync(executionStore(root)), false);
   });
+  if (!["linux", "darwin"].includes(process.platform)) {
+    check("retained stores refuse unsupported platforms before mutation", () => {
+      assert.throws(() => retainExecutionGeneration(root, source), /unavailable on this platform/);
+      assert.equal(existsSync(executionStore(root)), false);
+    });
+    console.log(`execution generations: ${checks} checks passed; retained selection unavailable on this platform`);
+  } else {
   check("generation store refuses a non-writable installation before creating it", () => {
     const parent = join(scratch, "prefix/lib"); chmodSync(parent, 0o500);
     try { assert.throws(() => retainExecutionGeneration(root, source), /not writable; use the owning command/); }
@@ -119,4 +126,5 @@ try {
     assert.equal(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).bin.cotal, "./dist/cotal.js");
   });
   console.log(`execution generations: ${checks} checks passed`);
+  }
 } finally { rmSync(scratch, { recursive: true, force: true }); }
