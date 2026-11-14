@@ -104,7 +104,10 @@ export function cleanWindowsUpdate(): "absent" | "pending" | "paused" | "failed"
       if (!raw) throw new Error("Windows update attempt record is missing");
       const attempt = JSON.parse(raw.toString("utf8"));
       if (!Number.isSafeInteger(attempt.failures) || attempt.failures < 0) throw new Error("invalid Windows update failure count");
-      writeSecretFileAtomic(path, `${JSON.stringify({ ...attempt, failures: Math.max(attempt.failures, r.failures + 1), result: "Windows automatic updater was interrupted; retrying automatically", next: Date.now() + UPDATE_HOUR_MS })}\n`);
+      const result = attempt.failures > r.failures && typeof attempt.result === "string" && attempt.result.startsWith("Windows automatic update refused:")
+        ? attempt.result
+        : "Windows automatic updater was interrupted; retrying automatically";
+      writeSecretFileAtomic(path, `${JSON.stringify({ ...attempt, failures: Math.max(attempt.failures, r.failures + 1), result, next: Date.now() + UPDATE_HOUR_MS })}\n`);
     }
     writeSecretFileAtomic(pausePath(), "null\n");
     rmSync(receiptPath()); rmSync(r.source);

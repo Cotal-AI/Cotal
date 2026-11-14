@@ -23,8 +23,10 @@ const failed = (error: unknown) => {
   process.exitCode = 1;
 };
 try {
-  const prefix = windowsAutomaticPrefix(fileURLToPath(new URL("../cotal.js", import.meta.url)));
+  const cliEntry = fileURLToPath(new URL("../cotal.js", import.meta.url));
+  const prefix = windowsAutomaticPrefix(cliEntry);
   if (custody.receipt.env.npm_config_prefix !== prefix) throw new Error("Windows automatic update destination differs from its owned installation");
+  process.argv[1] = cliEntry;
   for (const key of Object.keys(process.env)) if (key.toLowerCase() === "npm_config_prefix") delete process.env[key];
   process.env.npm_config_prefix = prefix;
   if (!readUpdateSettings().auto || process.env.COTAL_NO_UPDATE_CHECK === "1") {
@@ -35,7 +37,7 @@ try {
     activation = await captureWindowsAutomaticActivation(custody.receipt.nonce);
     const logPath = join(home, "update-attempt.log");
     writeSecretFile(logPath, "");
-    const args = [fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"];
+    const args = [cliEntry, "update", "--self"];
     native.launch({ application: process.execPath, commandLine: windowsCommandLine(process.execPath, args), cwd: home,
       environment: windowsEnvironmentBlock({ ...process.env, COTAL_AUTO_UPDATE: "1", COTAL_NO_UPDATE_CHECK: "1" }), log: logPath });
     launched = true;
@@ -52,7 +54,8 @@ try {
     await activation.activate();
   }
 } catch (error) {
-  if (launched && !drainAttempted) {
+  if (!launched) drained = true;
+  else if (!drainAttempted) {
     drainAttempted = true;
     try { drained = native.drain(20_000) === "drained"; } catch { /* Completion stays unconfirmed and pauses on owner death. */ }
   }

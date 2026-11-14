@@ -91,8 +91,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
         windowsPending = false;
         if (custody === "paused") { state = { ...state, result: WINDOWS_INTERRUPTED_UPDATE, next: Number.MAX_SAFE_INTEGER }; persist(); return; }
         const recorded = JSON.parse(readFileSync(file, "utf8")) as Attempt;
-        state = recorded.next === Number.MAX_SAFE_INTEGER && recorded.result === WINDOWS_INTERRUPTED_UPDATE ? { ...recorded, next: 0, result: "Windows automatic update interruption cleared" } : recorded;
-        persist();
+        const cleared = recorded.next === Number.MAX_SAFE_INTEGER && recorded.result === WINDOWS_INTERRUPTED_UPDATE;
+        state = cleared ? { ...recorded, next: 0, result: "Windows automatic update interruption cleared" } : recorded;
+        if (cleared || custody !== "absent") persist();
       } catch (error) {
         state = { ...state, result: `Windows automatic update custody unresolved: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + UPDATE_HOUR_MS };
         persist(); host.report(state.result); return;

@@ -31,7 +31,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, posix } from "node:path";
 import { recordedSourceIdentity, recordedSourceMarked } from "./install-identity.js";
 import { nativeRun } from "./install-native-run.js";
@@ -45,7 +45,7 @@ import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource,
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { isStoppingLifetime, openVerified, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
-import { windowsUserSid } from "@cotal-ai/seat";
+import { lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
@@ -547,9 +547,12 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
   const before = readLifetimeRecord(paths.lock);
   let socket: Awaited<ReturnType<typeof openVerified>> | undefined;
   try { socket = await openVerified({ paths, timeoutMs: remaining(5000) }); }
-  catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+  catch (error) {
+    if (!(error instanceof EndpointRefusal && (error.code === "NOT_RUNNING" || ((startOnly || automatic) && error.code === "PEER_NOT_LOCK_OWNER")))) throw error;
+  }
   socket?.on("error", () => {});
   const owner = readLifetimeRecord(paths.lock);
+  const priorOwner = automatic ? { pid: automatic.pid, start: automatic.start } : startOnly ? undefined : owner;
   let phase = "prepare";
   let pauseAttempted = false;
   let stopCommitted = false;
@@ -557,27 +560,33 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
   const startedAt = Date.now();
   const heartbeat = setInterval(() => report?.(`${phase} (${Math.floor((Date.now() - startedAt) / 1000)}s elapsed)`), 5000);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
+  let startGate: number | undefined;
   const request = (op: "daemon-stop" | "status", commit = false) => requestInstalledDaemon(socket, op, commit, remaining(commit ? 5000 : 70_000));
   try {
     let version = expectedVersion;
-    if (socket) {
+    if (socket && (!startOnly || (owner?.start && before?.pid === owner.pid && before.start === owner.start && processBirth(owner.pid) === owner.start))) {
     if (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed while opening its endpoint");
     const initial = await request("status");
-    if (automatic && (owner.pid !== automatic.pid || owner.start !== automatic.start)) {
+    if (automatic && (owner!.pid !== automatic.pid || owner!.start !== automatic.start)) {
       if (!automatic.exited() || initial.version !== expectedVersion) throw new Error("another daemon lifetime replaced the captured generation");
       if (JSON.stringify(recorded().receipt) !== automatic.receipt) throw new Error("the installation changed while observing the replacement");
       const currentTask = task.inspect(receipt);
       if (!currentTask.present || currentTask.enabled !== true || currentTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
       return plan;
     }
-    if (startOnly) return plan;
+    if (startOnly) {
+      if (expectedVersion !== undefined && initial.version !== expectedVersion) throw new Error("replacement version or protocol did not match");
+      const currentTask = task.inspect(receipt);
+      if (!currentTask.present || currentTask.enabled !== true || currentTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
+      return plan;
+    }
     version ??= initial.version;
     await request("daemon-stop");
     progress("pausing the owned scheduled task and confirming native instances stopped");
     pauseAttempted = true;
     await task.pause(receipt);
     phase = "stop-commit";
-    if (processBirth(owner.pid) === owner.start) {
+    if (processBirth(owner!.pid) === owner!.start) {
       stopCommitted = true;
       try { await request("daemon-stop", true); }
       catch (error) {
@@ -593,29 +602,46 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(stopCommitted && isStoppingLifetime(error, owner))) throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(stopCommitted && isStoppingLifetime(error, owner)) && !(automatic && automatic.exited() && error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER")) throw error;
       }
-      if (absent && processBirth(owner.pid) !== owner.start) break;
+      if (processBirth(owner!.pid) !== owner!.start) {
+        if (absent) break;
+        if (automatic && automatic.exited()) {
+          const currentLock = readLifetimeRecord(paths.lock);
+          if (currentLock?.start && (currentLock.pid !== owner!.pid || currentLock.start !== owner!.start)) break;
+        }
+      }
       if (Date.now() >= deadline) throw new Error("old daemon death and endpoint absence were not confirmed within 130s");
       await delay(100);
     }
-    } else if (owner?.start && processBirth(owner.pid) === owner.start) {
+    } else if (!startOnly && !(automatic && automatic.exited()) && owner?.start && processBirth(owner.pid) === owner.start) {
       throw new Error("the recorded live daemon has no verified listener");
     }
     if (automatic && !automatic.exited()) throw new Error("the captured Windows daemon kernel lifetime has not ended");
-    exclusion = excludeLifetime(paths.lock);
-    progress("verifying the recorded installation and owned task before startup");
-    try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
-    catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
-    const current = recorded().receipt;
-    if (JSON.stringify(current) !== JSON.stringify(receipt)) throw new Error("the installation changed during shutdown");
-    const native = task.inspect(receipt);
-    if (!native.present || native.instances !== 0) throw new Error("the owned task is absent or still has native instances");
-    // The replacement must acquire the lock itself. Never Run while holding exclusion.
-    exclusion.release(); exclusion = undefined;
-    progress("enabling and starting the verified owned scheduled task");
-    if (automatic && !pauseAttempted) task.startEnabled(receipt);
-    else task.start(receipt);
+    startGate = openSync(unitReceiptFile(paths), constants.O_RDWR);
+    const startOwner = lockExclusiveNb(startGate);
+    if (!startOwner) {
+      closeSync(startGate); startGate = undefined;
+      if (!startOnly && !automatic) throw new Error("another Windows daemon start is already in progress");
+    } else {
+      progress("verifying the recorded installation and owned task before startup");
+      const current = recorded().receipt;
+      if (JSON.stringify(current) !== JSON.stringify(receipt)) throw new Error("the installation changed during shutdown");
+      const native = task.inspect(receipt);
+      if (!native.present) throw new Error("the owned task is absent or still has native instances");
+      if (native.instances === 0) {
+        exclusion = excludeLifetime(paths.lock);
+        try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
+        catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+        // The replacement must acquire the lock itself. Never Run while holding exclusion.
+        exclusion.release(); exclusion = undefined;
+        progress("enabling and starting the verified owned scheduled task");
+        if (automatic && !pauseAttempted) task.startEnabled(receipt);
+        else task.start(receipt);
+      } else if (!(startOnly || automatic) || native.instances !== 1 || native.enabled !== true) {
+        throw new Error("the owned task is absent or still has native instances");
+      }
+    }
     progress("waiting for a fresh daemon to answer (up to 60s)");
     const readyUntil = Date.now() + remaining(60_000);
     for (;;) {
@@ -624,14 +650,15 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         const fresh = await openVerified({ paths, timeoutMs: remaining(1000) });
         try {
           const lifetime = readLifetimeRecord(paths.lock);
-          if (!lifetime?.start || prior?.pid !== lifetime.pid || prior.start !== lifetime.start || (lifetime.pid === owner?.pid && lifetime.start === owner.start) || processBirth(lifetime.pid) !== lifetime.start) throw new Error("no fresh stable kernel lifetime");
+          if (!lifetime?.start || prior?.pid !== lifetime.pid || prior.start !== lifetime.start || (lifetime.pid === priorOwner?.pid && lifetime.start === priorOwner.start) || processBirth(lifetime.pid) !== lifetime.start) throw new Error("no fresh stable kernel lifetime");
           const id = randomUUID().replaceAll("-", "");
           fresh.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "status" }));
           const reply = JSON.parse(await readLine(fresh, remaining(20_000))) as DaemonResponse;
           if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || !reply.ok || "event" in reply || !("version" in reply.result) || (version !== undefined && reply.result.version !== version) || !("protocol" in reply.result) || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new Error("replacement version or protocol did not match");
           if (processBirth(lifetime.pid) !== lifetime.start) throw new Error("replacement exited during proof");
           if (JSON.stringify(recorded().receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed during replacement startup");
-          task.check(receipt);
+          const readyTask = task.inspect(receipt);
+          if (!readyTask.present || readyTask.enabled !== true || readyTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
           return plan;
         } finally { fresh.destroy(); }
       } catch (error) {
@@ -666,7 +693,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
-  } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); }
+  } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }
 
 /** Restart only the source and native job recorded for this daemon. */

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { windowsBootDisposition, readWindowsUpdatePause, clearWindowsUpdateAfterManualSuccess, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE } from "@cotal-ai/workspace";
 import { renderWindowsUpdateTask, windowsAutomaticPrefix } from "../daemon/update-windows.js";
+import { daemonServeArgv } from "../daemon/install.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const home = mkdtempSync(join(tmpdir(), "windows-auto-state-"));
@@ -76,5 +77,26 @@ try {
   assert.throws(() => windowsAutomaticPrefix(entry), /cannot identify/);
   assert.match(runner, /key.toLowerCase\(\) === "npm_config_prefix"/);
   assert.match(runner, /destination differs from its owned installation/);
+  const helperEntry = join(packageRoot, "dist", "daemon", "update-windows-runner.js");
+  mkdirSync(join(packageRoot, "dist", "daemon"), { recursive: true });
+  writeFileSync(helperEntry, "// fixture helper\n");
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
+  const savedArgv1 = process.argv[1], savedExecArgv = process.execArgv;
+  try {
+    process.execArgv = [];
+    process.argv[1] = helperEntry;
+    assert.throws(() => daemonServeArgv(undefined), /refusing to re-exec this process as `cotal`/);
+    process.argv[1] = entry;
+    assert.deepEqual(daemonServeArgv(undefined).slice(-3), [entry, "daemon", "serve"]);
+  } finally {
+    process.argv[1] = savedArgv1!;
+    process.execArgv = savedExecArgv;
+  }
+  assert.ok(runner.indexOf("admitWindowsUpdate(") < runner.indexOf("process.argv[1] ="));
+  assert.ok(runner.indexOf("process.argv[1] =") > 0 && runner.indexOf("process.argv[1] =") < runner.indexOf("captureWindowsAutomaticActivation("));
+  assert.match(runner, /if \(!launched\) drained = true;/);
+  const installSource = readFileSync(new URL("../daemon/install.ts", import.meta.url), "utf8");
+  assert.match(installSource, /startGate = openSync\(unitReceiptFile\(paths\), constants\.O_RDWR\)/);
+  assert.match(installSource, /lockExclusiveNb\(startGate\)/);
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { rmSync(home, { recursive: true, force: true }); }
