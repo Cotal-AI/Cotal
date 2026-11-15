@@ -670,8 +670,8 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await title("This computer is connected to your account");
       check("native tray Settings restores account Ready", (await lifecycle("describe")).visible && await driver.text("tray-label") === "Ready");
       await shot("04-settings-ready");
-      await proveWindowsRestart();
       await installApplication();
+      await proveWindowsRestart();
       await discoveryEvidence("before-account-enable");
       await fixture.account.enable();
       try { await until("enabled account space reads Connected", () => driver.text("tray-label"), value => value === "Connected", 120_000); }
