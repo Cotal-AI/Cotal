@@ -394,6 +394,7 @@ export async function matrixCell(options) {
   mkdirSync(env.TMPDIR, { mode: 0o700 });
   if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
   if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
+  if (options['desktop-runtime']) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
   report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
@@ -768,6 +769,16 @@ export async function matrixCell(options) {
         assert.equal(report.daemonBefore.update.channel, 'desktop');
         assert.equal(report.daemonBefore.update.automatic, false);
         assert(unitText.includes(desktopRuntime), 'native service source must name actual released desktop runtime');
+        if (options['stopped-daemon-before-update'] !== 'true' && report.participant?.space) {
+          const space = report.participant.space;
+          const desktopSetup = ok(await daemon('start desktop-hosted Manager before CLI update', hostedManagerCommand(space)), 'desktop Manager setup');
+          const setupResult = JSON.parse(desktopSetup.stdout).result;
+          assert.equal(setupResult.manager?.state, 'answering');
+          assert(setupResult.manager?.instanceId, 'desktop setup must return answering Manager identity');
+          report.desktop.hostedManager = { space, instanceId: setupResult.manager.instanceId, setup: desktopSetup };
+          const statusWithManager = ok(await daemon('native status with desktop Manager before', ['daemon', 'status', '--json']), 'native status with desktop Manager');
+          report.daemonBefore = JSON.parse(statusWithManager.stdout).result;
+        }
       }
       if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
         // Native custody observation runs asynchronously after the socket first becomes ready.
@@ -1298,6 +1309,33 @@ export async function matrixCell(options) {
           check('released desktop inventory unchanged', verifyDesktopRuntime(desktopRuntime).sha256 === desktopHash, desktopHash);
           const current = json(join(report.daemonHome, 'service-unit.json'));
           check('CLI update preserves original desktop service source', current.unit === receipt.unit && current.unitPath === receipt.unitPath && current.unitSha256 === receipt.unitSha256, current);
+          if (report.desktop.hostedManager) {
+            const { space, instanceId } = report.desktop.hostedManager;
+            const secondUpdate = await cotal('second cotal update beside desktop daemon', ['update']);
+            const secondSelfUpdate = await cotal('second cotal update --self beside desktop daemon', ['update', '--self']);
+            const statusAfterSecond = await daemon('native status after second CLI update', ['daemon', 'status', '--json']);
+            const afterSecond = statusAfterSecond.exit === 0 ? JSON.parse(statusAfterSecond.stdout).result : undefined;
+            const managerAfter = afterSecond?.managers?.find(row => row.space === space);
+            const modelsAfter = await cotal('models on desktop-hosted Manager after CLI updates', ['models', '--on', instanceId, '--space', space, '--json']);
+            const followUpBytes = Buffer.from(JSON.stringify({ firstAfter: after, secondUpdate, secondSelfUpdate, statusAfterSecond, modelsAfter }));
+            const followUpCommands = { artifact: `${id}-desktop-beside-cli-followup.txt`, bytes: followUpBytes.length, sha256: digest(followUpBytes) };
+            writeFileSync(join(output, followUpCommands.artifact), followUpBytes, { flag: 'wx', mode: 0o600 });
+            report.desktop.followUp = {
+              secondUpdate,
+              secondSelfUpdate,
+              statusAfterSecond,
+              modelsAfter,
+              commands: followUpCommands,
+              firstUpdateLeftNoFence: after?.update?.restartEvidence?.prepared === false,
+              secondUpdatePassed: secondUpdate.exit === 0 && secondUpdate.signal === null && secondUpdate.timeout === false,
+              secondSelfUpdatePassed: secondSelfUpdate.exit === 0 && secondSelfUpdate.signal === null && secondSelfUpdate.timeout === false,
+              managerStillAnswering: managerAfter?.state === 'answering' && managerAfter?.instanceId === instanceId && afterSecond?.update?.restartEvidence?.prepared === false && modelsAfter.exit === 0,
+            };
+            check('CLI update leaves no restart fence on foreign desktop daemon', report.desktop.followUp.firstUpdateLeftNoFence, after?.update?.restartEvidence);
+            check('second cotal update beside desktop daemon exits zero', report.desktop.followUp.secondUpdatePassed, secondUpdate);
+            check('second cotal update --self beside desktop daemon exits zero', report.desktop.followUp.secondSelfUpdatePassed, secondSelfUpdate);
+            check('desktop-hosted Manager still answers after CLI updates', report.desktop.followUp.managerStillAnswering, { managerAfter, restartEvidence: afterSecond?.update?.restartEvidence, modelsAfter });
+          }
         }
       }
     }
@@ -1354,7 +1392,7 @@ export async function matrixCell(options) {
     } else if (nextHopMode && (options['disabled-daemon-before-update'] === 'true' || Boolean(desktopRuntime))) {
       report.nextHop.passed = report.nextHop.passed === true && report.assertions.every(row => row.passed);
     }
-    if (compositionCleanup && !daemonHostedManager) {
+    if (compositionCleanup && !daemonHostedManager && !report.desktop?.hostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
@@ -1416,6 +1454,13 @@ export async function matrixCell(options) {
         report.managerHost.diagnosticsAfterStop = archiveHostedDiagnostics({ fixture: join(root, 'native-fixture'), cotalHome, space: report.managerHost.space, output, id, stage: 'after-stop' });
       } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
+    if (report.desktop?.hostedManager && !uncertain) {
+      try {
+        report.desktop.hostedManager.stop = await daemon('stop desktop-hosted Manager', ['daemon', 'service-disconnect', '--space', report.desktop.hostedManager.space, '--json']);
+        check('desktop-hosted Manager stop succeeds', report.desktop.hostedManager.stop.exit === 0, report.desktop.hostedManager.stop);
+        ok(report.desktop.hostedManager.stop, 'desktop Manager cleanup');
+      } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
     if (installedService) {
       report.cleanup = 'retained for disposable runner teardown';
       if (!uncertain && receipt && existsSync(join(report.daemonHome, 'service-unit.json'))) {
@@ -1430,10 +1475,10 @@ export async function matrixCell(options) {
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
     }
-    if (compositionCleanup && daemonHostedManager) {
+    if (compositionCleanup && (daemonHostedManager || report.desktop?.hostedManager)) {
       try {
         await compositionCleanup();
-        report.compositionCleanup = report.managerHost?.stop?.exit === 0
+        report.compositionCleanup = (report.managerHost?.stop?.exit === 0 || report.desktop?.hostedManager?.stop?.exit === 0)
           ? 'owned composition stopped after confirmed hosted Manager removal'
           : 'owned composition stopped; hosted Manager removal not confirmed';
       }
@@ -1444,7 +1489,7 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit ?? report.desktop?.hostedManager?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) && (!report.desktop?.hostedManager || report.desktop.hostedManager.stop?.exit === 0) };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
