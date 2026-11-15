@@ -7602,7 +7602,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": " !== 0) throw new Error(failure(reconciled));\n          snapshot.di",
+      "anchor": " !== 0) throw new Error(failure(reconciled));\n          if (!startu",
       "class": "non-render/control",
       "rationale": "Paused recovery formats a failed reconciliation process result as an error, not peer presence."
     },
@@ -7637,7 +7637,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": " !== 0) throw new Error(failure(reconciled));\n        snapshot.disc",
+      "anchor": " !== 0) throw new Error(failure(reconciled));\n        if (!startup ",
       "class": "non-render/control",
       "rationale": "Interrupted recovery checks reconciliation exit status before discarding its snapshot, not peer presence."
     },
@@ -7777,7 +7777,7 @@
     {
       "path": "implementations/cli/src/commands/update.ts",
       "kind": "derived-output",
-      "anchor": "nt(`reconcile failed: ${failure(child)}`, child.status ?? 1);\n",
+      "anchor": "nt(`reconcile failed: ${failure(child)}`, child.status ?? 1, r",
       "class": "non-render/control",
       "rationale": "Rollback receives the reconciliation failure reason and child exit code, not peer presence."
     }
