@@ -190,23 +190,25 @@ function copiesSharedWrite(): boolean {
   finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
 }
 
-/** The 0.164.16 and 0.164.17 updaters start the staged target once for its version line, copy it with
- *  `cpSync`, and refuse a copy with group-writable folders. Where {@link copiesSharedWrite} holds they
- *  refuse every attempt and leave each staged install behind. This target cannot change that process,
- *  so it names the one-time manual install, removes the staged installs and fails the version check.
- *  Returns whether it did. */
+/** The 0.164.16 and 0.164.17 updaters start the staged target once for its version line, then copy
+ *  it with `cpSync`, refuse a copy with group-writable folders, and read the daemon's paths, which
+ *  throws on Linux without `XDG_RUNTIME_DIR`. Where either holds they refuse every attempt and leave
+ *  what they staged behind. This target cannot change that process, so it names the one-time manual
+ *  install, removes the staged installs and fails the version check. Returns whether it did. */
 function refuseDoomedStagedCheck(root: string): boolean {
   if (process.platform === "win32" || process.argv.length !== 3 || process.argv[2] !== "--version" ||
       process.env.COTAL_SKIP_CONNECTOR_SEED !== "1" || process.env[executionCopyModesEnv] === "explicit") return false;
   const prefix = dirname(dirname(dirname(root))), store = dirname(prefix);
   if (basename(dirname(root)) !== "node_modules" || basename(dirname(dirname(root))) !== "lib" ||
       !/^\.installing-[A-Za-z0-9]{6}$/.test(basename(prefix)) || basename(store) !== ".cotal-generations") return false;
-  if (!copiesSharedWrite()) return false;
+  const reason = process.platform === "linux" && !process.env.XDG_RUNTIME_DIR ? "it needs XDG_RUNTIME_DIR, which this session does not set"
+    : copiesSharedWrite() ? "its Node copies the new version with group-writable folders under the current umask, then refuses its own copy" : undefined;
+  if (!reason) return false;
   const home = dirname(dirname(store));
   const remedy = existsSync(join(home, "nodebin"))
     ? "run the installer from get.cotal.ai again"
     : `run npm install -g --prefix ${home} cotal-ai@latest`;
-  process.stderr.write(`the installed Cotal updater cannot finish on this machine: its Node copies the new version with group-writable folders under the current umask, then refuses its own copy. Install the new version once by hand: ${remedy}. Later updates run on their own`);
+  process.stderr.write(`the installed Cotal updater cannot finish here: ${reason}. Install the new version once by hand: ${remedy}. Later updates run on their own`);
   for (const name of readdirSync(store)) {
     if (/^\.installing-[A-Za-z0-9]{6}$/.test(name)) try { rmSync(join(store, name), { recursive: true, force: true }); } catch { /* the next attempt removes it */ }
   }

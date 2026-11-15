@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { writeSecretFileAtomic } from "@cotal-ai/core";
 import { assertSystemdSource, createSystemdSource } from "@cotal-ai/cli";
 import { darwinLaunchdJob } from "@cotal-ai/seat";
-import { homeCotalDir, readLocalRecordSource, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { homeCotalDir, logicalExecutionEntry, readLocalRecordSource, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import { daemonStartedByOwnedService } from "./install.js";
 import { daemonPaths } from "./endpoint.js";
 import { processBirth } from "./lifetime.js";
@@ -127,7 +127,9 @@ export function startLaunchUpdate(failures: number): void {
   if (daemonStartedByOwnedService(daemonPaths()).state !== "owned") throw new Error("automatic update does not own the recorded launchd daemon");
   if (cleanLaunchUpdate() === "pending") throw new Error("previous launchd updater still has native custody");
   const label = `ai.cotal.update.${randomBytes(16).toString("hex")}`;
-  const argv = [process.execPath, fileURLToPath(new URL("./update-launchd-runner.js", import.meta.url)), label];
+  // The runner starts the updater at the installed entry, which a daemon loaded from a retained
+  // generation names here: that generation's own bootstrap is not an installation.
+  const argv = [process.execPath, fileURLToPath(new URL("./update-launchd-runner.js", import.meta.url)), label, logicalExecutionEntry() ?? fileURLToPath(new URL("../cotal.js", import.meta.url))];
   const source = join(homeCotalDir(), `${label}.plist`);
   const text = renderUpdateLaunchAgent(label, argv, process.env);
   const sha256 = createHash("sha256").update(text).digest("hex");

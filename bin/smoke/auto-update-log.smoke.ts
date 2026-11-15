@@ -3,7 +3,7 @@ import strictAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { automaticUpdates } from "../daemon/auto-update.js";
@@ -19,6 +19,32 @@ try {
  await new Promise(resolve=>setTimeout(resolve,31000));
  assert.equal(readFileSync(victim,"utf8"),"preserve-me","updater must refuse a symlink log without overwriting its target");
 } finally { await updater.close(); }
+// A daemon loaded from a retained generation starts the updater at the installed entry, and an
+// updater that ends without recording an outcome is counted and reported.
+const prefix = realpathSync(mkdtempSync(join(tmpdir(), "autoupd-entry-")));
+const entry = (root: string, body: string) => {
+ mkdirSync(join(root, "dist"), { recursive: true });
+ writeFileSync(join(root, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } }));
+ writeFileSync(join(root, "dist", "cotal.js"), body);
+ return join(root, "dist", "cotal.js");
+};
+const startedInstalled = join(home, "started-installed"), startedGeneration = join(home, "started-generation");
+const identity = Symbol.for("cotal.execution.identity");
+Reflect.set(globalThis, identity, Object.freeze({
+ logicalEntry: entry(join(prefix, "lib/node_modules/cotal-ai"), `require("node:fs").writeFileSync(${JSON.stringify(startedInstalled)}, process.argv.slice(2).join(" ")); console.error("refused here"); process.exit(3);`),
+ loadedEntry: entry(join(prefix, "lib/.cotal-generations", "0".repeat(32), "cotal-ai"), `require("node:fs").writeFileSync(${JSON.stringify(startedGeneration)}, "");`),
+}));
+rmSync(join(home, "update-attempt.log"));
+writeFileSync(join(home,"update-attempt.json"),JSON.stringify({version:"99.0.0",failures:0,result:"due",next:0}));
+const staged = automaticUpdates({version:"1.0.0",eligible:()=>true,prepare:async()=>{},abort:async()=>{},report:()=>{}});
+try {
+ await new Promise(resolve=>setTimeout(resolve,33000));
+ assert.equal(readFileSync(startedInstalled, "utf8"), "update --self", "the updater starts at the installed entry");
+ assert.equal(existsSync(startedGeneration), false, "the retained generation's own bootstrap is not started");
+ const ended = JSON.parse(readFileSync(join(home,"update-attempt.json"),"utf8"));
+ assert.match(ended.result, /^updater ended with 3: refused here$/);
+ assert.equal(ended.failures, 1, "an updater that records no outcome counts as a failure");
+} finally { await staged.close(); Reflect.deleteProperty(globalThis, identity); rmSync(prefix, { recursive: true, force: true }); }
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 let mac: ReturnType<typeof automaticUpdates> | undefined;
 try {

@@ -69,6 +69,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     },
     restore() { if (!journal) throw new Error("execution transaction has no rollback journal"); publishExecutionTransaction(installed, journal, true); },
     verify(expected) { verifySelected(installed, expected); },
+    discard() { if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true }); },
   };
 }
 

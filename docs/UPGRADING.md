@@ -45,8 +45,8 @@ its own, what does not, and the order of the steps.
 
 ## Self-update refused by 0.164.17
 
-`cotal update --self` in 0.164.16 and 0.164.17 refuses on two kinds of install, and the daemon's
-automatic update refuses with it.
+`cotal update --self` in 0.164.16 and 0.164.17 refuses on two kinds of install and in one kind of
+session, and the daemon's automatic update refuses with it.
 
 The first is an npm install whose package folder, or a folder above it, is group-writable. The
 Homebrew Node keeps `lib` that way, and npm under a umask of 0002 creates the package that way. The
@@ -58,6 +58,9 @@ pre-install check with `unprotected execution entry: <path>`. Each automatic att
 also leaves an `.installing-` folder of about 66 MB under `lib/.cotal-generations`, every 90
 seconds.
 
+The session is one on Linux that has no `XDG_RUNTIME_DIR`, such as a command run through `su` or
+`sudo -u`. The command reports a refused staged pre-install check because the variable is not set.
+
 Install the current version once by hand. An install from the installer runs it again:
 
 ```bash
@@ -67,6 +70,11 @@ curl -fsSL https://get.cotal.ai | sh
 An npm install runs `npm install -g cotal-ai@latest`. From 0.164.18 the update no longer depends on
 those modes, and automatic updates resume. A stuck 0.164.16 or 0.164.17 daemon that reaches a
 newer release prints the same instruction in `cotal daemon status` and removes the leftover folders.
+
+A machine that reached 0.164.16 or 0.164.17 through `cotal update --self` has a second fault. Its
+daemon's automatic update ends with `staged update requires an installed npm or pnpm package`, and
+`cotal daemon status` stays at `updating to <version>`. Run `cotal update --self` once. From 0.164.18
+the daemon starts its updater at the installed command and automatic updates continue.
 
 ## Memory-backed derived membership after 0.163.0
 

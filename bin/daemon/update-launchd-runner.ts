@@ -19,7 +19,7 @@ try {
     try {
       ftruncateSync(log, 0);
       code = await new Promise<number | null>((resolve, reject) => {
-        const child = spawn(process.execPath, [fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], {
+        const child = spawn(process.execPath, [process.argv[3] ?? fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], {
           env: { ...process.env, COTAL_AUTO_UPDATE: "1", COTAL_NO_UPDATE_CHECK: "1" }, stdio: ["ignore", log, log],
         });
         child.once("error", reject);
