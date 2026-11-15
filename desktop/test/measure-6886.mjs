@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFile, spawn } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { listenPipe, windowsUserSid } from '@cotal-ai/seat';
+import { adoptPipe, daemonPaths } from '../../bin/daemon/endpoint.ts';
+import { holdLifetime } from '../../bin/daemon/lifetime.ts';
 import { createFixtureSpace } from '../../bin/smoke/_fixture-space.mjs';
 import { installFixtureSeat } from '../../bin/smoke/_fixture-seat.mjs';
 
@@ -181,14 +184,29 @@ try {
   report.runnerSpec.freeMemoryEndMB = Math.round(freemem() / (1024 * 1024));
 
   check(
-    'Visible connected window recorded (2 minutes) with job accounting, Win32_ProcessStartTrace, and CPU counter',
+    'Visible connected window recorded (2 minutes) with <= 3 CPU s/min, 0 periodic node.exe starts, and persistent bridge private memory',
     measurement.connectedVisible?.visibleAtStart === true &&
       measurement.connectedVisible?.stillVisibleAtEnd === true &&
       measurement.connectedVisible?.appAliveAtEnd === true &&
       Array.isArray(measurement.connectedVisible?.minutes) &&
       measurement.connectedVisible.minutes.length === 2 &&
-      measurement.connectedVisible.summary?.totalNodeStarts > 0 &&
-      measurement.connectedVisible.summary?.totalJobProcessesDelta > 0
+      measurement.connectedVisible.summary?.totalNodeStarts === 0 &&
+      measurement.connectedVisible.summary?.jobCpuSecondsPerMinute <= 3 &&
+      measurement.connectedVisible.bridgeMemoryAtStart?.count === 1 &&
+      measurement.connectedVisible.bridgeMemoryAtEnd?.count === 1 &&
+      measurement.connectedVisible.bridgeMemoryAtStart?.bridge?.pid === measurement.connectedVisible.bridgeMemoryAtEnd?.bridge?.pid
+  );
+  check(
+    'Minimized connected window recorded (2 minutes) with <= 1 CPU s/min, 0 periodic node.exe starts, and persistent bridge private memory',
+    measurement.connectedMinimized?.minimizedAtStart === true &&
+      measurement.connectedMinimized?.stillMinimizedAtEnd === true &&
+      measurement.connectedMinimized?.appAliveAtEnd === true &&
+      Array.isArray(measurement.connectedMinimized?.minutes) &&
+      measurement.connectedMinimized.minutes.length === 2 &&
+      measurement.connectedMinimized.summary?.totalNodeStarts === 0 &&
+      measurement.connectedMinimized.summary?.jobCpuSecondsPerMinute <= 1 &&
+      measurement.connectedMinimized.bridgeMemoryAtStart?.count === 1 &&
+      measurement.connectedMinimized.bridgeMemoryAtEnd?.count === 1
   );
   check(
     'App launched in Windows job object, connected, and hid to tray for 10 minutes',
@@ -197,12 +215,14 @@ try {
       measurement.connectedIdleTray?.appAliveAtEnd === true
   );
   check(
-    'Connected idle tray window completed 10 minutes (600 s) with <= 3 CPU seconds per minute in the app job',
+    'Connected idle tray window completed 10 minutes (600 s) with <= 1 CPU s/min, 0 periodic node.exe starts, and persistent bridge private memory',
     Array.isArray(measurement.connectedIdleTray?.minutes) &&
       measurement.connectedIdleTray.minutes.length === 10 &&
-      measurement.connectedIdleTray.summary?.totalNodeStarts > 0 &&
-      measurement.connectedIdleTray.summary?.totalJobProcessesDelta > 0 &&
-      measurement.connectedIdleTray.summary?.jobCpuSecondsPerMinute <= 3
+      measurement.connectedIdleTray.summary?.totalNodeStarts === 0 &&
+      measurement.connectedIdleTray.summary?.totalJobProcessesDelta === 0 &&
+      measurement.connectedIdleTray.summary?.jobCpuSecondsPerMinute <= 1 &&
+      measurement.connectedIdleTray.bridgeMemoryAtStart?.count === 1 &&
+      measurement.connectedIdleTray.bridgeMemoryAtEnd?.count === 1
   );
   check(
     'Quit window completed 10 minutes (600 s) after app job drained to 0 active processes',
@@ -219,6 +239,164 @@ try {
       report.daemonStatusAfter?.account?.hostSupport === 'supported' &&
       report.daemonStatusAfter?.managers?.some(m => m.space === fixture.space && m.state === 'answering')
   );
+
+  // Uninstall the candidate daemon service before running the version-skew pipe cell.
+  const preSkewUninstall = await run(node, [cli, 'daemon', 'uninstall', '--yes', '--json'], baseEnv, 180_000);
+  assert.equal(preSkewUninstall.code, 0, preSkewUninstall.stderr || preSkewUninstall.stdout);
+  serviceInstalled = false;
+
+  // Version-skew cell: older pre-status-watch daemon replies UNKNOWN_OP to status-watch,
+  // bridge emits VERSION_MISMATCH with watchMode="refused-unknown-op", and real cotal-desktop.exe
+  // repeats one status request at 60 s and opens status-watch automatically once the daemon version matches.
+  const paths = daemonPaths(baseEnv, root);
+  const lock = holdLifetime(paths.lock);
+  const ownSid = windowsUserSid();
+  const pipeListener = listenPipe(paths.socket);
+  const skewOps = [];
+  let skewed = true;
+  let pipeClosing = false;
+  const pipeSockets = new Set();
+  const pipeAcceptTask = (async () => {
+    for (;;) {
+      let peer;
+      try {
+        peer = await pipeListener.accept();
+      } catch {
+        if (!pipeClosing) pipeListener.close();
+        return;
+      }
+      if ('refused' in peer) continue;
+      if (peer.user !== ownSid) {
+        closeSync(peer.fd);
+        continue;
+      }
+      let sock;
+      try {
+        sock = adoptPipe(peer.fd);
+      } catch {
+        continue;
+      }
+      pipeSockets.add(sock);
+      sock.once('close', () => pipeSockets.delete(sock));
+      sock.setEncoding('utf8');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk;
+        for (;;) {
+          const nl = buf.indexOf('\n');
+          if (nl < 0) break;
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          if (!line.trim()) continue;
+          const req = JSON.parse(line);
+          const curVersion = skewed ? '0.164.15' : installedVersion;
+          skewOps.push({ op: req.op, skewed, daemonVersion: curVersion, atMs: Date.now() });
+          const statusPayload = {
+            state: 'ready',
+            protocol: 1,
+            version: curVersion,
+            pid: process.pid,
+            startedAt: new Date().toISOString(),
+            uptimeMs: 100,
+            managers: [],
+            agents: [],
+            account: { mode: 'account', hostSupport: 'supported', spaces: [] },
+          };
+          if (req.op === 'status') {
+            sock.write(`${JSON.stringify({ v: 1, id: req.id, ok: true, result: statusPayload })}\n`);
+          } else if (req.op === 'spaces') {
+            sock.write(`${JSON.stringify({ v: 1, id: req.id, ok: true, result: { kind: 'spaces', refresh: 'not-requested', unreadable: 0, collisions: 0, signedInProviders: [], spaces: [] } })}\n`);
+          } else if (req.op === 'status-watch') {
+            if (skewed) {
+              sock.write(`${JSON.stringify({ v: 1, id: req.id, ok: false, error: { code: 'UNKNOWN_OP', message: 'unknown op "status-watch"' } })}\n`);
+            } else {
+              sock.write(`${JSON.stringify({ v: 1, id: req.id, ok: true, event: 'status', result: statusPayload })}\n`);
+            }
+          }
+        }
+      });
+      sock.resume();
+    }
+  })();
+
+  let skewApp = null;
+  try {
+    // 1. Direct bridge receipt check against UNKNOWN_OP
+    const bridgeSkewReceipt = await new Promise((resolve, reject) => {
+      const child = spawn(node, [cli, 'daemon', 'desktop'], {
+        env: { ...baseEnv, COTAL_HOME: root },
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', c => { stdout += c; });
+      child.once('error', reject);
+      child.once('close', () => {
+        resolve(JSON.parse(stdout.trim()));
+      });
+      child.stdin.end('{"op":"status-watch"}\n');
+    });
+
+    // 2. Real cotal-desktop.exe automatic recovery from UNKNOWN_OP after 60 s without a click
+    skewOps.length = 0;
+    const skewAppStartMs = Date.now();
+    skewApp = spawn(appExe, ['--background'], {
+      cwd: root,
+      env: baseEnv,
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    const initialWatchDeadline = Date.now() + 25_000;
+    while (Date.now() < initialWatchDeadline) {
+      if (skewOps.some(o => o.op === 'status-watch' && o.skewed === true)) break;
+      await delay(250);
+    }
+    const initialRefusedWatchSeen = skewOps.some(o => o.op === 'status-watch' && o.skewed === true);
+    const opsAfterInitialRefusal = skewOps.length;
+    await delay(5000);
+    const quietBeforeUpgradeOps = skewOps.length - opsAfterInitialRefusal;
+
+    // Another process upgrades the daemon to the matching version; wait for the 60 s recheck to recover to status-watch without a click.
+    skewed = false;
+    const upgradeFlippedAtMs = Date.now();
+    const recoveryDeadline = Date.now() + 80_000;
+    while (Date.now() < recoveryDeadline) {
+      if (skewOps.some(o => o.op === 'status-watch' && o.skewed === false)) break;
+      await delay(500);
+    }
+    const recoveredWatch = skewOps.find(o => o.op === 'status-watch' && o.skewed === false) ?? null;
+    report.versionSkew = {
+      refusalReceipt: bridgeSkewReceipt,
+      initialRefusedWatchSeen,
+      quietBeforeUpgradeOps,
+      recoveredWithoutClick: Boolean(recoveredWatch),
+      elapsedFromAppStartToRecoveryMs: recoveredWatch ? recoveredWatch.atMs - skewAppStartMs : null,
+      elapsedFromUpgradeToRecoveryMs: recoveredWatch ? recoveredWatch.atMs - upgradeFlippedAtMs : null,
+      observedOps: skewOps,
+    };
+    check(
+      'Version-skew cell: UNKNOWN_OP refusal receipt and automatic 60 s recovery to status-watch without a click',
+      bridgeSkewReceipt?.ok === false &&
+        bridgeSkewReceipt?.error?.code === 'VERSION_MISMATCH' &&
+        bridgeSkewReceipt?.error?.native?.code === 'UNKNOWN_OP' &&
+        bridgeSkewReceipt?.error?.native?.detail?.watchMode === 'refused-unknown-op' &&
+        bridgeSkewReceipt?.error?.native?.detail?.appVersion === installedVersion &&
+        bridgeSkewReceipt?.error?.native?.detail?.daemonVersion === '0.164.15' &&
+        initialRefusedWatchSeen === true &&
+        quietBeforeUpgradeOps === 0 &&
+        Boolean(recoveredWatch)
+    );
+  } finally {
+    if (skewApp && skewApp.exitCode === null) {
+      try { skewApp.kill(); } catch {}
+    }
+    pipeClosing = true;
+    for (const s of pipeSockets) s.destroy();
+    pipeListener.close();
+    await pipeAcceptTask.catch(() => {});
+    lock.release();
+  }
   save();
 } finally {
   if (serviceInstalled) {

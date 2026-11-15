@@ -157,6 +157,12 @@ public static class Measure6886Native {
   public static extern bool IsWindowVisible(IntPtr hWnd);
 
   [DllImport("user32.dll")]
+  public static extern bool IsIconic(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+  [DllImport("user32.dll")]
   public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
   [DllImport("user32.dll")]
@@ -369,19 +375,54 @@ try {
     throw "Cotal desktop main window did not become visible for PID $appPid within 40s"
   }
 
-  # Let the app complete initial about + status + spaces + status startup requests
+  # Let the app complete initial about + status + spaces + status-watch startup requests
   Start-Sleep -Seconds 8
+  $startupEvents = @($tracker.Drain())
+  $startupAppNodeStarts = @($startupEvents | Where-Object { $_.IsAppPackagedNode }).Count
+  $startupAcc = [Measure6886Native]::ReadJobAccounting($hJob)
+  if ($startupAppNodeStarts -le 0 -or $startupAcc.TotalProcesses -le 1) {
+    throw "Initial startup did not observe packaged Node starts (startupAppNodeStarts=$startupAppNodeStarts, totalProcesses=$($startupAcc.TotalProcesses))"
+  }
 
-  # 5-second pre-check while visible to verify both the Job Object and Win32_ProcessStartTrace observe the 1s poll
-  $null = $tracker.Drain()
+  # 5-second pre-check while visible to verify status-watch is open and 0 new node.exe processes are spawned
   $preStartAcc = [Measure6886Native]::ReadJobAccounting($hJob)
   Start-Sleep -Seconds 5
   $preEndAcc = [Measure6886Native]::ReadJobAccounting($hJob)
   $preEvents = @($tracker.Drain())
   $preAppNodeStarts = @($preEvents | Where-Object { $_.IsAppPackagedNode }).Count
   $preJobProcDelta = [int]($preEndAcc.TotalProcesses - $preStartAcc.TotalProcesses)
-  if ($preAppNodeStarts -le 0 -or $preJobProcDelta -le 0) {
-    throw "5s visible pre-check did not observe packaged Node starts (preAppNodeStarts=$preAppNodeStarts, preJobProcDelta=$preJobProcDelta)"
+
+  function Read-BridgeProcessMemory {
+    $rows = @()
+    foreach ($gp in @(Get-Process -Name 'node' -ErrorAction SilentlyContinue)) {
+      $inJob = $false
+      $hProc = [Measure6886Native]::OpenProcess(0x1000, $false, [int]$gp.Id)
+      if ($hProc -ne [IntPtr]::Zero) {
+        try {
+          $member = $false
+          if ([Measure6886Native]::IsProcessInJob($hProc, $hJob, [ref]$member)) {
+            $inJob = $member
+          }
+        } finally {
+          [Measure6886Native]::CloseHandle($hProc) | Out-Null
+        }
+      }
+      if ($inJob) {
+        $rows += @{
+          pid = [int]$gp.Id
+          privateMemoryBytes = [long]$gp.PrivateMemorySize64
+          privateMemoryMiB = [Math]::Round($gp.PrivateMemorySize64 / 1048576.0, 2)
+          workingSetBytes = [long]$gp.WorkingSet64
+          workingSetMiB = [Math]::Round($gp.WorkingSet64 / 1048576.0, 2)
+          cpuSeconds = [Math]::Round($gp.TotalProcessorTime.TotalSeconds, 4)
+        }
+      }
+    }
+    return @{
+      count = $rows.Count
+      bridge = if ($rows.Count -ge 1) { $rows[0] } else { $null }
+      processes = $rows
+    }
   }
 
   function Read-IdpCounts {
@@ -398,6 +439,7 @@ try {
     $null = $cpuCounter.NextValue()
     $startedAt = [DateTime]::UtcNow.ToString('o')
     $idpStart = Read-IdpCounts
+    $bridgeStart = Read-BridgeProcessMemory
     $startAcc = [Measure6886Native]::ReadJobAccounting($hJob)
     $prevAcc = $startAcc
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -462,6 +504,7 @@ try {
 
     $endedAt = [DateTime]::UtcNow.ToString('o')
     $idpEnd = Read-IdpCounts
+    $bridgeEnd = Read-BridgeProcessMemory
     $idpDelta = if ($idpStart -and $idpEnd) {
       @{
         machinePuts = [int]($idpEnd.machinePuts - $idpStart.machinePuts)
@@ -485,6 +528,8 @@ try {
       idpCountsAtStart = $idpStart
       idpCountsAtEnd = $idpEnd
       idpCountsDelta = $idpDelta
+      bridgeMemoryAtStart = $bridgeStart
+      bridgeMemoryAtEnd = $bridgeEnd
       startAccounting = (Convert-Accounting $startAcc)
       endAccounting = (Convert-Accounting $endAcc)
       minutes = $minuteRows
@@ -516,6 +561,20 @@ try {
   $window0.visibleAtStart = $visibleAtStart
   $window0.stillVisibleAtEnd = $stillVisibleAfterWindow0
   $window0.appAliveAtEnd = $appAliveAfterWindow0
+
+  # Window 0b: Minimized window connected to one space ($VisibleMinutes minutes)
+  [Measure6886Native]::ShowWindow($hwnd, 6) | Out-Null
+  Start-Sleep -Seconds 2
+  $minimizedAtStart = [Measure6886Native]::IsIconic($hwnd)
+  $windowMinimized = Measure-Window -Name 'connected-minimized-window' -DurationMinutes $VisibleMinutes
+  $stillMinimizedAtEnd = [Measure6886Native]::IsIconic($hwnd)
+  $appAliveAfterMinimized = ([Measure6886Native]::WaitForSingleObject($hAppProc, 0) -eq 258)
+  $windowMinimized.appPid = $appPid
+  $windowMinimized.minimizedAtStart = $minimizedAtStart
+  $windowMinimized.stillMinimizedAtEnd = $stillMinimizedAtEnd
+  $windowMinimized.appAliveAtEnd = $appAliveAfterMinimized
+  [Measure6886Native]::ShowWindow($hwnd, 9) | Out-Null
+  Start-Sleep -Seconds 2
 
   # Close the window to the tray (first WM_CLOSE explains tray behavior, second hides the window)
   for ($attempt = 0; $attempt -lt 6; $attempt++) {
@@ -562,12 +621,18 @@ try {
   $outputObj = @{
     appPid = $appPid
     packagedNodePath = $NodePath
+    startup = @{
+      appNodeStarts = $startupAppNodeStarts
+      totalJobProcesses = [int]$startupAcc.TotalProcesses
+      activeJobProcesses = [int]$startupAcc.ActiveProcesses
+    }
     preCheck = @{
       durationSeconds = 5
       appNodeStarts = $preAppNodeStarts
       jobProcessesDelta = $preJobProcDelta
     }
     connectedVisible = $window0
+    connectedMinimized = $windowMinimized
     connectedIdleTray = $window1
     appQuit = $window2
   }
