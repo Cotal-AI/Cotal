@@ -6,7 +6,7 @@ import { cpus, freemem, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { listenPipe, windowsUserSid } from '@cotal-ai/seat';
+import { listenPipe, windowsUserSid } from '../../packages/seat/dist/index.js';
 import { adoptPipe, daemonPaths } from '../../bin/daemon/endpoint.ts';
 import { holdLifetime } from '../../bin/daemon/lifetime.ts';
 import { createFixtureSpace } from '../../bin/smoke/_fixture-space.mjs';
