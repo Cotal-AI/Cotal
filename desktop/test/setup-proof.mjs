@@ -669,8 +669,15 @@ finally {
   }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
   if (serviceInstalled) {
+    const uninstallVersion = report.foreignCli ? (report.before?.version ?? null) : (existsSync(join(runtime, 'package.json')) ? JSON.parse(readText(join(runtime, 'package.json'))).version : null);
+    const verMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(uninstallVersion ?? '');
+    const isPre01649 = Boolean(verMatch && (Number(verMatch[1]) < 0 || (Number(verMatch[1]) === 0 && (Number(verMatch[2]) < 164 || (Number(verMatch[2]) === 164 && Number(verMatch[3]) < 9)))));
+    const uninstallStartedAt = new Date().toISOString();
+    const uninstallStartedMs = Date.now();
     const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes');
-    report.cleanup = result;
+    const uninstallEndedAt = new Date().toISOString();
+    const uninstallEndedMs = Date.now();
+    report.cleanup = { ...result, uninstallVersion, uninstallStartedAt, uninstallEndedAt };
     if (result.code !== 0) {
       const atRefusal = await observeDaemonLockState('atRefusal', report.before?.pid);
       const daemonLogPath = join(root, 'daemon', 'daemon.log');
@@ -684,14 +691,50 @@ finally {
         `$procs=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | Where-Object { $_.Name -in @('cotal-desktop.exe','node.exe') -or ($_.ExecutablePath -and $_.ExecutablePath -like '*\\Cotal\\*') } | ForEach-Object { $gp=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;name=$_.Name;executablePath=$_.ExecutablePath;commandLine=$_.CommandLine;birth=$(if($gp){$gp.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}else{$null})} }); ` +
         `@{pipeName=$pipeName;pipeServerPid=$pipeServerPid;pipeError=$pipeErr;processes=$procs} | ConvertTo-Json -Depth 5 -Compress`,
       ], 30_000);
+      const pipeAndProcesses = obs.code === 0 ? JSON.parse(obs.stdout) : { code: obs.code, stderr: obs.stderr };
+      let parsedCleanup = null;
+      try { parsedCleanup = JSON.parse(result.stdout); } catch {}
+      const whenSetupReturns = report.daemonLockBracket?.whenSetupReturns;
+      const afterPostSetupStatus = report.daemonLockBracket?.afterPostSetupStatus;
+      const priorPoint = afterPostSetupStatus ?? whenSetupReturns;
+      const emptiedMs = Date.parse(atRefusal.lock.mtime ?? '');
+      const isKnown6820 = isPre01649 &&
+        parsedCleanup?.error?.code === 'OPERATION_UNKNOWN' &&
+        typeof parsedCleanup?.error?.message === 'string' &&
+        /^the process answering at .+ is not the daemon holding .+; nothing was sent$/.test(parsedCleanup.error.message) &&
+        whenSetupReturns?.lock?.exists === true &&
+        whenSetupReturns.lock.size > 0 &&
+        whenSetupReturns.statusPidAlive === true &&
+        priorPoint?.lock?.exists === true &&
+        priorPoint.lock.size > 0 &&
+        priorPoint.statusPidAlive === true &&
+        atRefusal.lock.exists === true &&
+        atRefusal.lock.size === 0 &&
+        atRefusal.lock.bytes === '' &&
+        Number.isFinite(emptiedMs) &&
+        emptiedMs > Date.parse(priorPoint.observedAt) &&
+        emptiedMs >= uninstallStartedMs - 100 &&
+        emptiedMs <= uninstallEndedMs + 100 &&
+        atRefusal.statusPidAlive === false &&
+        pipeAndProcesses?.pipeServerPid === null;
       report.cleanupRefusalObservation = {
+        outcome: isKnown6820 ? `#6820 in published ${uninstallVersion}` : 'unexpected-cleanup-refusal',
+        uninstallVersion,
+        uninstallStartedAt,
+        uninstallEndedAt,
         lockRecord: atRefusal.lock.bytes,
         lockState: atRefusal,
         bracket: report.daemonLockBracket ?? null,
         daemonLogTail: existsSync(daemonLogPath) ? readText(daemonLogPath).split('\n').slice(-40).join('\n') : null,
-        pipeAndProcesses: obs.code === 0 ? JSON.parse(obs.stdout) : { code: obs.code, stderr: obs.stderr },
+        pipeAndProcesses,
       };
-      process.exitCode = 1;
+      if (isKnown6820) {
+        report.cleanupOutcome = `#6820 in published ${uninstallVersion}`;
+      } else {
+        process.exitCode = 1;
+      }
+    } else {
+      report.cleanupOutcome = 'ok';
     }
   }
   const events = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $start=[DateTime]::Parse('${proofStartedAt}').ToUniversalTime(); $events=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000;StartTime=$start} -ErrorAction SilentlyContinue); ConvertTo-Json -InputObject @($events|ForEach-Object{@{time=$_.TimeCreated.ToUniversalTime().ToString('o');id=$_.Id;message=$_.Message}}) -Compress`], 30_000);
