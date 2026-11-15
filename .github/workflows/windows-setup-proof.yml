@@ -326,6 +326,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: setup-proof-*
+          path: proof-artifacts
       - name: Require every planned job and cell to complete with success
         uses: actions/github-script@v8
         env:
@@ -336,6 +340,22 @@ jobs:
         with:
           script: |
             const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const path = require('node:path');
+            if (fs.existsSync('proof-artifacts')) {
+              for (const artifactDir of fs.readdirSync('proof-artifacts').sort()) {
+                const proofRoot = path.join('proof-artifacts', artifactDir, 'setup-proof');
+                if (!fs.existsSync(proofRoot)) continue;
+                for (const cellName of fs.readdirSync(proofRoot).sort()) {
+                  const resPath = path.join(proofRoot, cellName, 'result.json');
+                  if (!fs.existsSync(resPath)) continue;
+                  const rep = JSON.parse(fs.readFileSync(resPath, 'utf8'));
+                  const checks = Array.isArray(rep.checks) ? rep.checks : [];
+                  const passed = checks.filter(c => c.passed).length;
+                  console.log(`${artifactDir} (${rep.cell ?? cellName}): checks=${passed}/${checks.length}, cleanup: ${rep.cleanupOutcome ?? 'n/a'}`);
+                }
+              }
+            }
             assert.equal(process.env.BUILD_RESULT, 'success', `build job result was ${process.env.BUILD_RESULT}`);
             assert.equal(process.env.NATIVE_RESULT, 'success', `native matrix result was ${process.env.NATIVE_RESULT}`);
             assert.equal(process.env.CONTROL_RESULT, 'success', `stock-ui-control job result was ${process.env.CONTROL_RESULT}`);

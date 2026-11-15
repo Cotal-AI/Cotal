@@ -669,7 +669,10 @@ finally {
   }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
   if (serviceInstalled) {
-    const uninstallVersion = report.foreignCli ? (report.before?.version ?? null) : (existsSync(join(runtime, 'package.json')) ? JSON.parse(readText(join(runtime, 'package.json'))).version : null);
+    const runtimePkgPath = report.foreignCli
+      ? join(process.env.RUNNER_TEMP, 'cli-service', 'node_modules', 'cotal-ai', 'package.json')
+      : join(runtime, 'package.json');
+    const uninstallVersion = existsSync(runtimePkgPath) ? JSON.parse(readText(runtimePkgPath)).version : null;
     const verMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(uninstallVersion ?? '');
     const isPre01649 = Boolean(verMatch && (Number(verMatch[1]) < 0 || (Number(verMatch[1]) === 0 && (Number(verMatch[2]) < 164 || (Number(verMatch[2]) === 164 && Number(verMatch[3]) < 9)))));
     const uninstallStartedAt = new Date().toISOString();
@@ -694,25 +697,31 @@ finally {
       const pipeAndProcesses = obs.code === 0 ? JSON.parse(obs.stdout) : { code: obs.code, stderr: obs.stderr };
       let parsedCleanup = null;
       try { parsedCleanup = JSON.parse(result.stdout); } catch {}
+      const matchesHeldDaemonLock = point => {
+        if (!point?.lock?.exists || !(point.lock.size > 0) || point.statusPidAlive !== true || !point.statusPid || !point.statusPidBirth) return false;
+        try {
+          const rec = JSON.parse(point.lock.bytes);
+          return rec.pid === point.statusPid && rec.start === point.statusPidBirth;
+        } catch {
+          return false;
+        }
+      };
       const whenSetupReturns = report.daemonLockBracket?.whenSetupReturns;
       const afterPostSetupStatus = report.daemonLockBracket?.afterPostSetupStatus;
-      const priorPoint = afterPostSetupStatus ?? whenSetupReturns;
       const emptiedMs = Date.parse(atRefusal.lock.mtime ?? '');
       const isKnown6820 = isPre01649 &&
         parsedCleanup?.error?.code === 'OPERATION_UNKNOWN' &&
         typeof parsedCleanup?.error?.message === 'string' &&
         /^the process answering at .+ is not the daemon holding .+; nothing was sent$/.test(parsedCleanup.error.message) &&
-        whenSetupReturns?.lock?.exists === true &&
-        whenSetupReturns.lock.size > 0 &&
-        whenSetupReturns.statusPidAlive === true &&
-        priorPoint?.lock?.exists === true &&
-        priorPoint.lock.size > 0 &&
-        priorPoint.statusPidAlive === true &&
+        matchesHeldDaemonLock(whenSetupReturns) &&
+        matchesHeldDaemonLock(afterPostSetupStatus) &&
+        whenSetupReturns.statusPid === afterPostSetupStatus.statusPid &&
+        whenSetupReturns.statusPidBirth === afterPostSetupStatus.statusPidBirth &&
         atRefusal.lock.exists === true &&
         atRefusal.lock.size === 0 &&
         atRefusal.lock.bytes === '' &&
         Number.isFinite(emptiedMs) &&
-        emptiedMs > Date.parse(priorPoint.observedAt) &&
+        emptiedMs > Date.parse(afterPostSetupStatus.observedAt) &&
         emptiedMs >= uninstallStartedMs - 100 &&
         emptiedMs <= uninstallEndedMs + 100 &&
         atRefusal.statusPidAlive === false &&
@@ -741,5 +750,5 @@ finally {
   writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));
   await fixture?.close();
   save();
-  console.log(JSON.stringify({ cell, failure: report.failure, checks: report.checks, output }, null, 2));
+  console.log(JSON.stringify({ cell, failure: report.failure, cleanup: report.cleanupOutcome ?? null, checks: report.checks, output }, null, 2));
 }
