@@ -81,9 +81,12 @@ the patch number increased by 2000: two run a second `cotal update --self`, two 
 installer script on the installer layout. The manual npm cell records two observation points: first,
 after `npm i -g` and a plain `cotal --version` with no update command (requiring the CLI at the second
 synthetic version with exit 0, the in-place route, the daemon at the second synthetic version after its
-restart bound, no recovery record, and every extension either at the second synthetic version or named by
-the CLI with its reconciliation remedy so a silently stale extension fails); second, after
-`cotal update --self`, requiring everything at the second synthetic version. The manual npm and
+restart bound, no recovery record, every extension either at the second synthetic version or named by
+the CLI with its reconciliation remedy so a silently stale extension fails, the launch gate refusing
+with `cotal update --self` when an operator-installed official extension cannot be fetched, and the
+launch gate bringing all installed extensions current when it can); second, after the daemon's
+scheduled check finishes a pending extension reconciliation at the second synthetic version and
+`cotal update --self` completes, requiring everything at the second synthetic version. The manual npm and
 installer follow-on cells must finish on
 the in-place route at the second synthetic version. All
 complete 24-package closures stay readable through a paired registry. The source entry and package

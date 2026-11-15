@@ -192,6 +192,10 @@ cotal update
 ```
 
 This reconciles installed extensions and connector integrations with the running CLI's release.
+After a manual `npm install -g`, the first command that runs the launch gate also brings installed
+first-party extensions to the running CLI's release, or refuses with `cotal update --self` if an
+extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check
+finishes a pending extension reconciliation even when the CLI is already at the latest release.
 It checks running-manager continuity before installation repair.
 On Linux, a supervisor in another user's installation or an isolated container does not add local
 custody. A supervisor that resolves to this installation still counts, including one launched

@@ -438,11 +438,12 @@ The generation is the `cotal-ai` version. On each run, the reconcile handles eac
 record:
 
 - It seeds a built-in that was never seeded.
-- It refreshes a still-installed built-in that it seeded (`source: "seeded"`) when the version
-  bumps (a semver compare) or under `--force`. It also refreshes one whose cached connector metadata
-  predates the setup ref.
-- It leaves an operator-managed official entry untouched on upgrade. That entry is a manual
-  `ext add` at a chosen version, with no seeded marker.
+- It refreshes a still-installed built-in when the version bumps (a semver compare), when its
+  manifest entry has a different version or no `seeded` marker, when its cached connector metadata
+  predates the setup ref, or under `--force`.
+- It brings any still-installed first-party operator extension (`@cotal-ai/*`) to the running
+  generation through the staged prefix installer, and refuses with `cotal update --self` if that
+  install cannot complete.
 - It leaves a deliberately removed built-in removed.
 
 `cotal update` runs the verify mode instead of `--force`:

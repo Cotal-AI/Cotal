@@ -216,7 +216,11 @@ export interface ExtensionInstallRequest {
 }
 
 /** Install a verified set off-line from readers, then promote its complete prefix once. Caller owns writer. */
-export async function installExtensionSet(requests: readonly ExtensionInstallRequest[], announce: (line: string) => void = console.error): Promise<void> {
+export async function installExtensionSet(
+  requests: readonly ExtensionInstallRequest[],
+  announce: (line: string) => void = console.error,
+  opts?: { isolate?: boolean },
+): Promise<void> {
   if (!requests.length) return;
   const ownerConfig = globalConfigDir();
   const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
@@ -252,7 +256,7 @@ export async function installExtensionSet(requests: readonly ExtensionInstallReq
       if (!meta || request.version !== undefined && meta.version !== request.version) throw new Error(`extension set installed an unexpected version of ${request.pkg}`);
       if (!existsSync(join(extensionPackageDir(request.pkg), meta.main ?? "index.js"))) throw new Error(`extension set installed no main entry for ${request.pkg}`);
     }
-    const invocation = requests.length > 1 ? selfArgv() : undefined;
+    const invocation = requests.length > 1 || opts?.isolate ? selfArgv() : undefined;
     for (const request of requests) {
       if (!invocation) {
         closing.push(...await verifyCandidate(request.pkg, request.spec, stage.prefix, loadExtensionsManifest().extensions, request.source === "seeded", false, console.error));
