@@ -570,7 +570,7 @@ export async function matrixCell(options) {
       report.refusal = "Published 0.155.0 has no automatic-update settings (--auto is unknown), so this state cannot be constructed through its CLI.";
       return report;
     }
-    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state)) {
+    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state) && !(desktopRuntime && options['stopped-daemon-before-update'] !== 'true')) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
     }
@@ -734,7 +734,16 @@ export async function matrixCell(options) {
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
-      report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', method === 'self' || launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      const priorAutoSkip = env.COTAL_SKIP_CONNECTOR_SEED;
+      if (desktopRuntime) env.COTAL_SKIP_CONNECTOR_SEED = '1';
+      try {
+        report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', method === 'self' || launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      } finally {
+        if (desktopRuntime) {
+          if (priorAutoSkip === undefined) delete env.COTAL_SKIP_CONNECTOR_SEED;
+          else env.COTAL_SKIP_CONNECTOR_SEED = priorAutoSkip;
+        }
+      }
       if (windowsPolicy) report.policyBaseline.settingsBeforeInstall = json(join(cotalHome, 'update-settings.json'));
       installedService = true;
       ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
@@ -778,6 +787,15 @@ export async function matrixCell(options) {
           report.desktop.hostedManager = { space, instanceId: setupResult.manager.instanceId, setup: desktopSetup };
           const statusWithManager = ok(await daemon('native status with desktop Manager before', ['daemon', 'status', '--json']), 'native status with desktop Manager');
           report.daemonBefore = JSON.parse(statusWithManager.stdout).result;
+          const priorSkip = env.COTAL_SKIP_CONNECTOR_SEED;
+          env.COTAL_SKIP_CONNECTOR_SEED = '1';
+          try {
+            ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
+          } finally {
+            if (priorSkip === undefined) delete env.COTAL_SKIP_CONNECTOR_SEED;
+            else env.COTAL_SKIP_CONNECTOR_SEED = priorSkip;
+          }
+          report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
         }
       }
       if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
