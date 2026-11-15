@@ -21,6 +21,7 @@ import {
   bindExtensionPeers,
   claimGlobalNpmUpdateLock,
   launcherInstallRoot,
+  logicalExecutionEntry,
   loadExtensionsManifest,
   provenance,
   SEEDED_EXTENSIONS,
@@ -93,6 +94,15 @@ interface CommandResult {
   readonly error?: string;
 }
 
+export interface ExecutionReplacement {
+  readonly entry: string;
+  readonly journal: string;
+  preflight(target: Record<string, unknown>): Promise<void>;
+  publish(): void;
+  restore(): void;
+  verify(version: string): void;
+}
+
 export interface UpdateRuntime {
   readonly env: NodeJS.ProcessEnv;
   readonly pid: number;
@@ -100,6 +110,13 @@ export interface UpdateRuntime {
   readonly nodePath: string;
   now?(): number;
   recoveryOwnerStart?(pid: number): string | undefined;
+  /** Refuse unsupported or unwritable execution destinations before any persistent writes. */
+  preflightExecution?(): void;
+  executionGlobalRoot?(): string;
+  /** Prepare a complete retained target under the held global root lock, without publication. */
+  prepareExecution?(version: string, root: string): Promise<ExecutionReplacement>;
+  /** Reopen only a journal already validated against this logical installation. */
+  recoverExecution?(journal: string): ExecutionReplacement;
   version(): string;
   /** Read package consistency only, without refreshing external harness integrations. */
   isCurrent?(): boolean;
@@ -184,7 +201,10 @@ export const updateRuntime: UpdateRuntime = {
   claimGlobalUpdate: (root) => claimGlobalNpmUpdateLock(root),
   selfArgv,
   checkout: () => seedWriterKind() === "checkout",
-  installPrefix: () => installedUpdatePrefix(cliPackageRoot(), entryScript()),
+  installPrefix: () => {
+    const logical = logicalExecutionEntry();
+    return installedUpdatePrefix(logical ? dirname(dirname(logical)) : cliPackageRoot(), logical ?? entryScript());
+  },
   npm: runNpm,
   npmAsync: runNpmAsync,
   spawn: runProcess,
@@ -217,6 +237,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
+  if (args.values.self === true) rt.preflightExecution?.();
   if (await recoverInterruptedUpdate(rt)) return;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
@@ -232,7 +253,7 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
   // manager reads, so their modes are repaired before the continuity check rather than only when the
   // reconcile is allowed to run.
   const install = launcherInstallRoot();
-  for (const { what, root } of [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
+  for (const { what, root } of args.values.self === true && rt.prepareExecution ? [] : [...(install ? [{ what: "install", root: install }] : []), { what: "config", root: globalConfigDir() }]) {
     const repaired = repairInstallModes(root);
     if (repaired) rt.out(c.green(`✓ removed group and other write from ${repaired} ${repaired === 1 ? "entry" : "entries"} in Cotal's ${what} at ${root}`));
   }
@@ -281,10 +302,10 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
       if (!record.snapshot) throw new Error("interrupted update has no closure snapshot");
       writeUpdateRecovery({ ...record, owner: updateClosureOwner(), phase: "restoring" });
       const snapshot = snapshotUpdateClosure(record.snapshot);
-      const completedRollback = !startup && record.phase === "paused" && record.installed === record.previous
+      const completedRollback = !record.execution && !startup && record.phase === "paused" && record.installed === record.previous
         && record.renames !== undefined && record.renames.length > 0 && record.renames.every(entry => entry.done);
       const prefix = rt.installPrefix();
-      const selected = rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
+      const selected = record.execution && rt.executionGlobalRoot ? { status: 0, stdout: rt.executionGlobalRoot(), stderr: "" } : rt.npm(["root", "-g", ...(prefix ? ["--prefix", prefix] : [])]);
       const root = selected.stdout.trim();
       if (selected.status !== 0 || !isAbsolute(root) || /[\r\n]/.test(root)) throw new Error("cannot identify interrupted update installation");
       const releaseGlobal = rt.claimGlobalUpdate(root);
@@ -303,11 +324,20 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           rt.out(`Repaired the paused installation with cotal-ai@${version}; the machine service and its hosted Managers were verified.`);
           return true;
         }
-        checkReleaseArchives(record.previous, rt);
-        const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
-        const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
-        if (installed.status !== 0) throw new Error(failure(installed));
-        const entry = rt.verifyGlobalEntry(root, record.previous);
+        let entry: string;
+        if (record.execution) {
+          if (!rt.recoverExecution) throw new Error("this binary cannot recover a staged execution transaction; rerun its installer");
+          const execution = rt.recoverExecution(record.execution);
+          execution.restore();
+          execution.verify(record.previous);
+          entry = execution.entry;
+        } else {
+          await checkReleaseArchives(record.previous, rt);
+          const command = cmdSpawnSpec("npm", ["install", "-g", ...(prefix ? ["--prefix", prefix] : []), `cotal-ai@${record.previous}`]);
+          const installed = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+          if (installed.status !== 0) throw new Error(failure(installed));
+          entry = rt.verifyGlobalEntry(root, record.previous);
+        }
         snapshot.restore();
         const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid) };
         const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
@@ -699,7 +729,7 @@ export async function reportRunningManagers(
   }
 }
 
-export async function readManagerContinuity(flags: Record<string, unknown>): Promise<"none" | "legacy"> {
+export async function readManagerContinuity(flags: Record<string, unknown>, options: { readOnly?: boolean; retainGraph?: boolean; installedEntry?: string } = {}): Promise<"none" | "legacy"> {
   // `--on` names the manager whose custody this install carries. An owner with several live
   // managers on a user-auth mesh (one per machine, say) gets the exchange's selection refusal
   // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,
@@ -718,7 +748,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     const server = typeof flags.server === "string" ? flags.server : undefined;
     let peek: MeshTarget | undefined;
     try {
-      offline = space ? [] : (await pruneStaleMeshes(server)).offline;
+      offline = space || options.readOnly ? [] : (await pruneStaleMeshes(server)).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
@@ -744,7 +774,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
     // install is untouched by replacing this one, so it is no custody here, the same as a manager
     // that runs on another machine.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
-      if (!supervisorMayServe(peek.space)) {
+      if (!supervisorMayServe(peek.space, options.installedEntry)) {
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }
@@ -800,6 +830,10 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       : [],
   );
   if (!report) return "none";
+  if (options.retainGraph) {
+    console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation; no restart or seat stop is requested. New launches remain subject to the extension generation check.`);
+    return "none";
+  }
   const remedy = typeof flags.creds === "string" ? undefined : recordedStackRemedy(target.root, target.space, target.server, (status.data ?? {}) as { instanceId?: unknown; lifecycleUid?: unknown });
   printLegacyReport(report, target.space, undefined, console.log, on, remedy);
   return "legacy";
@@ -948,7 +982,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
   try {
-    if (await rt.reportRunningManager(target) === "legacy") { recordUpdateDeferral(targetVersion, "waiting for agents to stop"); return 1; }
+    if (!rt.prepareExecution && await rt.reportRunningManager(target) === "legacy") { recordUpdateDeferral(targetVersion, "waiting for agents to stop"); return 1; }
   } catch (e) {
     recordUpdateDeferral(targetVersion, "waiting for agents to stop");
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
@@ -961,9 +995,11 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     await checkReleaseArchives(targetVersion, rt);
     rt.out(`Checking installed extension dependencies for ${targetVersion}`);
     checkInstalledClosure(targetVersion, rt);
-    // A previous generation must remain downloadable and verified before replacement begins.
-    rt.out(`Checking cotal-ai@${current} recovery archives`);
-    await checkReleaseArchives(current, rt);
+    // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
+    if (!rt.prepareExecution) {
+      rt.out(`Checking cotal-ai@${current} recovery archives`);
+      await checkReleaseArchives(current, rt);
+    }
     rt.out(`✓ release archives checked (${((Date.now() - releaseChecksStarted) / 1000).toFixed(1)} s)`);
   } catch (e) {
     recordUpdateDeferral(targetVersion, "waiting for registry or extension closure availability", true);
@@ -985,7 +1021,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
   const prefixArgs = prefix ? ["--prefix", prefix] : [];
-  const rootResult = rt.npm(["root", "-g", ...prefixArgs]);
+  const rootResult = rt.executionGlobalRoot ? { status: 0, stdout: rt.executionGlobalRoot(), stderr: "" } : rt.npm(["root", "-g", ...prefixArgs]);
   if (rootResult.status !== 0) {
     rt.err(c.red(`✗ could not resolve npm's global root before install: ${failure(rootResult)}`));
     return 1;
@@ -1025,6 +1061,25 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     return 1;
   }
 
+  let execution: ExecutionReplacement | undefined;
+  let stagedExecution = false;
+  if (rt.prepareExecution) {
+    stagedExecution = true;
+    const prepareStarted = Date.now();
+    try {
+      rt.out(c.bold("cotal-ai binary"));
+      rt.out(c.dim(`installing cotal-ai@${targetVersion} beside the running version; this ${current} process stays loaded until the new version is verified`));
+      execution = await rt.prepareExecution(targetVersion, root);
+      await execution.preflight(target);
+      if (await rt.reportRunningManager(target) === "legacy") throw new Error("running Manager requires a restart that cannot preserve its agents");
+      rt.out(`✓ new version installed and verified (${((Date.now() - prepareStarted) / 1000).toFixed(1)} s)`);
+    } catch (error) {
+      releaseGlobal();
+      recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
+      rt.err(`staged pre-install check refused: ${message(error)}; no installed packages or connector state were changed`);
+      return 1;
+    }
+  }
   let releaseAdmission: (() => Promise<void>) | undefined;
   try {
     releaseAdmission = await rt.prepareReplacement?.();
@@ -1064,13 +1119,20 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   process.on("SIGINT", onInt);
   process.on("SIGTERM", onTerm);
   try {
-  rt.out(c.bold("cotal-ai binary"));
-  rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
+  if (execution) {
+    rt.out(`Switching to cotal-ai@${targetVersion}`);
+  } else {
+    rt.out(c.bold("cotal-ai binary"));
+    rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
+  }
   recordUpdateReplacement(targetVersion);
-  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path });
+  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path, ...(execution ? { execution: execution.journal } : {}) });
   const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json"]);
   const installStarted = Date.now();
-  const installed = await rt.spawnGlobal(
+  const installed: CommandResult = execution ? (() => {
+    execution.publish();
+    return { status: 0, stdout: "", stderr: "" };
+  })() : await rt.spawnGlobal(
     root,
     "install",
     npmInstall.file,
@@ -1079,7 +1141,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     false,
     npmInstall.windowsVerbatimArguments,
   );
-  rt.out(`✓ global package install finished (${((Date.now() - installStarted) / 1000).toFixed(1)} s)`);
+  if (!execution) rt.out(`✓ global package install finished (${((Date.now() - installStarted) / 1000).toFixed(1)} s)`);
   if (latestNotAvailable(installed, targetVersion)) {
     // npm resolves the requested version before reifying the global tree. This refusal
     // did not replace packages, so neither rollback nor a failed-attempt charge applies.
@@ -1099,7 +1161,8 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   rt.out("Verifying installed global entry");
   let entry: string;
   try {
-    entry = rt.verifyGlobalEntry(root, targetVersion);
+    if (execution) { execution.verify(targetVersion); entry = execution.entry; }
+    else entry = rt.verifyGlobalEntry(root, targetVersion);
   } catch (e) {
     rt.err(c.red(`✗ installed global cotal-ai could not be verified: ${message(e)}`));
     return await repairReplacement(`installed entry verification failed: ${message(e)}`);
@@ -1125,11 +1188,12 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   snapshot.discard();
   clearUpdateRecovery();
   recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
-  rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
+  if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
+  else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
   return interrupted;
 
   async function reconcileVersion(version: string): Promise<boolean> {
-    const verified = rt.verifyGlobalEntry(root, version);
+    const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);
     const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
     delete repairEnv[EXT_UPDATE_PARENT_ENV];
     const result = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [verified, "update", ...targetArgv(target)], repairEnv, true);
@@ -1154,12 +1218,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       const recovery = readUpdateRecovery();
       if (!recovery) throw new Error("update recovery journal is missing");
       writeUpdateRecovery({ ...recovery, phase: "restoring" });
-      await checkReleaseArchives(current, rt);
-      const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
-      const restored = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
-      if (restored.status !== 0) throw new Error(failure(restored));
-      rt.verifyGlobalEntry(root, current);
+      if (execution) {
+        execution.restore();
+      } else {
+        await checkReleaseArchives(current, rt);
+        const command = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${current}`]);
+        const restored = await rt.spawnGlobal(root, "install", command.file, command.args, rt.env, true, command.windowsVerbatimArguments);
+        if (restored.status !== 0) throw new Error(failure(restored));
+        rt.verifyGlobalEntry(root, current);
+      }
       snapshot.restore();
+      if (execution) execution.verify(current);
       await releaseAdmission?.();
       releaseAdmission = await rt.prepareReplacement?.();
       if (!await reconcileVersion(current)) throw new Error("previous generation reconciliation failed");

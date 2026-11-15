@@ -271,7 +271,8 @@ test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and f
   const stagedPkg = join(genRoot, 'cotal-ai');
   const stagedDist = join(stagedPkg, 'dist');
   mkdirSync(stagedDist, { recursive: true, mode: 0o700 });
-  const inventoryRaw = JSON.stringify({ v: 1, version: '0.164.1013' });
+  const inventoryRaw = JSON.stringify({ v: 1, version: '0.164.1013', entries: Array.from({ length: 4000 }, (_, i) => ({ path: `node_modules/pkg-${i}/index.js`, sha256: 'a'.repeat(64) })) });
+  assert(Buffer.byteLength(inventoryRaw) > 256 * 1024);
   const inventorySha256 = createHash('sha256').update(inventoryRaw).digest('hex');
   writeFileSync(join(genRoot, 'inventory.json'), inventoryRaw, { mode: 0o600 });
   writeFileSync(join(stagedPkg, 'package.json'), JSON.stringify({ name: 'cotal-ai', version: '0.164.1013' }), { mode: 0o600 });

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { redactDiagnostic } from './hosted-consent-diagnostics.mjs';
 
 const LIMIT = 256 * 1024;
+const INVENTORY_LIMIT = 4 * 1024 * 1024;
 export const daemonShowProperties = Object.freeze(['Id', 'LoadState', 'UnitFileState', 'ControlGroup', 'ActiveState', 'SubState', 'Result', 'MainPID', 'ExecMainPID', 'ExecMainCode', 'ExecMainStatus', 'NRestarts', 'ActiveEnterTimestamp', 'InactiveEnterTimestamp', 'InvocationID']);
 const fields = new Set(['restartEvidence', 'prepared', 'fenced', 'v', 'hash', 'firstObservedAt', 'current', 'latest', 'nextAttempt', 'snapshot', 'code', 'message', 'reason', 'remedy', 'outcome', 'pid', 'start', 'startedAt', 'recordedAt', 'phase', 'previous', 'target', 'installed', 'preparedRestart', 'version', 'failures', 'result', 'next', 'deferred', 'automatic', 'auto', 'notify', 'owner', 'socket', 'path', 'dev', 'ino', 'ts', 'done', 'state', 'uptime', 'uptimeMs', 'update', 'lastResult', 'lastCheck', 'nextCheck', 'label', 'sha256']);
 function project(value, depth = 0) {
@@ -66,7 +67,7 @@ function safePath(root, file) {
   assert(!stat.isSymbolicLink(), 'symlink refused');
   return stat;
 }
-function bytes(root, file) {
+function bytes(root, file, limit = LIMIT) {
   const before = safePath(root, file);
   assert(before.isFile() && before.nlink === 1, 'not an exclusive regular file');
   if (process.getuid) assert.equal(before.mode & 0o022, 0, 'writable file refused');
@@ -74,10 +75,10 @@ function bytes(root, file) {
   try {
     const stat = fstatSync(fd);
     assert(stat.isFile() && stat.ino === before.ino && stat.dev === before.dev, 'source changed');
-    assert(stat.size <= LIMIT, 'source exceeds byte limit');
-    const buffer = Buffer.alloc(LIMIT + 1);
+    assert(stat.size <= limit, 'source exceeds byte limit');
+    const buffer = Buffer.alloc(limit + 1);
     const count = readSync(fd, buffer, 0, buffer.length, 0);
-    assert(count <= LIMIT, 'source exceeds byte limit');
+    assert(count <= limit, 'source exceeds byte limit');
     const after = safePath(root, file);
     assert(after.ino === stat.ino && after.dev === stat.dev, 'source changed');
     return buffer.subarray(0, count).toString('utf8');
@@ -138,7 +139,7 @@ export function inspectInstalledUpdateRoute(pkg, platform = process.platform) {
   assert.match(inventorySha256 ?? '', /^[a-f0-9]{64}$/, 'invalid active generation inventory hash');
   const generationRoot = join(storeRoot, generationId);
   directory(generationRoot);
-  const inventoryRaw = bytes(generationRoot, join(generationRoot, 'inventory.json'));
+  const inventoryRaw = bytes(generationRoot, join(generationRoot, 'inventory.json'), INVENTORY_LIMIT);
   assert.equal(createHash('sha256').update(inventoryRaw).digest('hex'), inventorySha256, 'staged generation inventory hash mismatch');
   const stagedPkgRoot = join(generationRoot, 'cotal-ai');
   directory(stagedPkgRoot);

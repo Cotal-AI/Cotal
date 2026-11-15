@@ -7,5 +7,5 @@
     "declarationMap": false,
     "sourceMap": false
   },
-  "include": ["cotal.ts", "cotal-program.ts", "execution-store.ts", "run.ts", "docs.ts", "startup-interrupt.ts", "daemon-cwd.ts", "daemon-native.ts", "daemon/*.ts"]
+  "include": ["cotal.ts", "cotal-program.ts", "execution-store.ts", "execution-transaction.ts", "execution-preinstall.ts", "run.ts", "docs.ts", "startup-interrupt.ts", "daemon-cwd.ts", "daemon-native.ts", "daemon/*.ts"]
 }

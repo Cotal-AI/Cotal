@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setFlagsFromString } from "node:v8";
@@ -66,7 +66,7 @@ export function executionStore(root: string): string {
 
 /** Enumerate the whole package, including dependencies, without following a link outside it. */
 export function executionInventory(root: string): ExecutionInventoryEntry[] {
-  const physical = realpathSync(root);
+  const physical = realpathSync.native(root);
   const rows: ExecutionInventoryEntry[] = [];
   const walk = (directory: string, prefix: string): void => {
     protectedExecutionEntry(directory);
@@ -75,7 +75,7 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
       protectedExecutionEntry(path);
       if (entry.isDirectory()) walk(path, name);
       else if (entry.isSymbolicLink()) {
-        const target = readlinkSync(path), resolved = realpathSync(path), suffix = relative(physical, resolved);
+        const target = readlinkSync(path), resolved = realpathSync.native(path), suffix = relative(physical, resolved);
         if (isAbsolute(target) || suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix))
           throw new Error(`execution inventory link escapes its package: ${name}`);
         rows.push({ path: name, link: target });
@@ -88,9 +88,10 @@ export function executionInventory(root: string): ExecutionInventoryEntry[] {
 }
 
 export function executionLaunchBinding(root: string, entry: string): NonNullable<ExecutionDescriptor["launch"]> {
-  const logical = resolve(entry), physical = realpathSync(logical);
-  if (physical !== join(realpathSync(root), "dist", "cotal.js")) throw new Error("execution launch route does not resolve to this bootstrap");
-  let path = join(realpathSync(root), "package.json");
+  const logical = resolve(entry), physical = realpathSync.native(logical);
+  const canonicalRoot = realpathSync.native(root);
+  if (physical !== join(canonicalRoot, "dist", "cotal.js")) throw new Error("execution launch route does not resolve to this bootstrap");
+  let path = join(canonicalRoot, "package.json");
   for (let current = dirname(logical); current !== dirname(current); current = dirname(current)) {
     if (lstatSync(current).isSymbolicLink()) { path = current; break; }
   }
@@ -99,14 +100,19 @@ export function executionLaunchBinding(root: string, entry: string): NonNullable
 }
 
 export function executionDescriptorPath(root: string): string {
-  return join(executionStore(root), `.active-${executionSha256(realpathSync(root))}.json`);
+  return join(executionStore(root), `.active-${executionSha256(realpathSync.native(root))}.json`);
 }
 
 /** Select a verified program, or the installed first generation when no matching descriptor exists. */
 export function selectExecutionProgram(root: string): { root: string; entry: string; retained: boolean } {
-  const installed = realpathSync(root), descriptorPath = executionDescriptorPath(installed);
-  const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === dirname(fileURLToPath(import.meta.url))
+  const installed = realpathSync.native(root), descriptorPath = executionDescriptorPath(installed);
+  const initial = () => ({ root: installed, entry: import.meta.url.endsWith(".ts") && installed === realpathSync.native(dirname(fileURLToPath(import.meta.url)))
     ? join(installed, "cotal-program.ts") : join(installed, "dist", "cotal-program.js"), retained: false });
+  if (existsSync(join(installed, "desktop-runtime.json"))) {
+    if (existsSync(descriptorPath) || existsSync(executionStore(installed)))
+      throw new Error("retained execution generations are unavailable on the desktop runtime");
+    return initial();
+  }
   let value: unknown;
   try { value = executionRecord(descriptorPath); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return initial(); throw error; }
@@ -138,12 +144,13 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe execution generation directory");
     protectedExecutionEntry(path);
   }
+  const canonicalSelected = realpathSync.native(selected);
   const inventory = executionRecord(join(container, "inventory.json"));
   if (!Array.isArray(inventory) || executionSha256(JSON.stringify(inventory)) !== generation.inventorySha256 ||
-      JSON.stringify(executionInventory(selected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
-  const meta = object(JSON.parse(readFileSync(join(selected, "package.json"), "utf8")));
+      JSON.stringify(executionInventory(canonicalSelected)) !== JSON.stringify(inventory)) throw new Error("retained execution inventory differs");
+  const meta = object(JSON.parse(readFileSync(join(canonicalSelected, "package.json"), "utf8")));
   if (meta.name !== "cotal-ai" || meta.version !== generation.version) throw new Error("retained execution manifest differs");
-  return { root: selected, entry: join(selected, "dist", "cotal-program.js"), retained: true };
+  return { root: canonicalSelected, entry: join(canonicalSelected, "dist", "cotal-program.js"), retained: true };
 }
 
 const executionStarted = Symbol.for("cotal.execution.started");
@@ -166,10 +173,15 @@ export function startExecutionProgram(): void {
   }
   if (selected) {
     const direct = startedHere();
-    if (!import.meta.url.endsWith(".ts")) Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
-      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), launchEntry: direct ? resolve(process.argv[1]!) : fileURLToPath(import.meta.url), loadedEntry: join(selected.root, "dist", "cotal.js") }),
-      configurable: false, writable: false,
-    });
+    if (!import.meta.url.endsWith(".ts")) {
+      const logicalEntry = realpathSync.native(fileURLToPath(import.meta.url));
+      const loadedEntry = realpathSync.native(join(selected.root, "dist", "cotal.js"));
+      const launchEntry = direct ? resolve(process.argv[1]!) : logicalEntry;
+      Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
+        value: Object.freeze({ logicalEntry, launchEntry, loadedEntry }),
+        configurable: false, writable: false,
+      });
+    }
     if (selected.retained || !direct) process.argv[1] = join(selected.root, "dist", "cotal.js");
     void import(pathToFileURL(selected.entry).href);
   }

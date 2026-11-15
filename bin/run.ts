@@ -61,6 +61,13 @@ registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
 const { commandWord, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
+const { executionIdentity } = await import("@cotal-ai/workspace");
+const identity = executionIdentity();
+if (identity && identity.logicalEntry === identity.loadedEntry) {
+  const { retireSupersededExecutionDescriptor } = await import("./execution-transaction.js");
+  const { dirname } = await import("node:path");
+  retireSupersededExecutionDescriptor(dirname(dirname(identity.logicalEntry)));
+}
 const argv = process.argv.slice(2);
 const { readFileSync } = await import("node:fs");
 const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
