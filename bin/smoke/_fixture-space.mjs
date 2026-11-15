@@ -22,7 +22,7 @@ class MemoryStore {
   async create(key, value) { if (this.values.has(key)) return false; this.values.set(key, value); return true; }
   async delete(key) { this.values.delete(key); }
 }
-export async function createFixtureSpace({ root, machineHome, runtime, node, env }) {
+export async function createFixtureSpace({ root, machineHome, runtime, node, env, accountSupport = false }) {
   const space = 'desktop-upgrade-fixture';
   const participant = join(root, 'participant');
   const authState = join(root, 'authority');
@@ -32,12 +32,38 @@ export async function createFixtureSpace({ root, machineHome, runtime, node, env
   const jwk = { ...await exportJWK(key.publicKey), kid: 'fixture' };
   const session = 'disposable-desktop-upgrade-session';
   let origin;
+  let machinePuts = 0;
+  let machineGets = 0;
+  let tokenGets = 0;
   const idp = createServer(async (req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (accountSupport && req.url === '/__counts') { res.end(JSON.stringify({ machinePuts, machineGets, tokenGets })); return; }
     if (req.url === '/api/auth/jwks') { res.end(JSON.stringify({ keys: [jwk] })); return; }
     if (req.url === '/api/auth/token' && req.headers.authorization === `Bearer ${session}`) {
-      const token = await new SignJWT({ email: 'fixture@example.test' }).setProtectedHeader({ alg: 'EdDSA', kid: 'fixture' }).setIssuer(origin).setAudience(origin).setSubject('fixture-owner').setIssuedAt().setExpirationTime('1h').sign(key.privateKey);
+      tokenGets++;
+      const token = await new SignJWT({ email: 'fixture@example.test' }).setProtectedHeader({ alg: 'EdDSA', kid: 'fixture' }).setIssuer(origin).setAudience(origin).setSubject('fixture-owner').setIssuedAt().setExpirationTime('2h').sign(key.privateKey);
       res.end(JSON.stringify({ token })); return;
+    }
+    const machineMatch = accountSupport ? req.url?.match(/^\/api\/cli\/machines\/([0-9a-f-]+)(\/spaces)?$/) : null;
+    if (machineMatch && req.headers.authorization === `Bearer ${session}`) {
+      const machineId = machineMatch[1];
+      if (req.method === 'PUT' && !machineMatch[2]) {
+        for await (const _chunk of req) { /* drain body */ }
+        machinePuts++;
+        res.end(JSON.stringify({ v: 1, machine: { id: machineId, lastSeenAt: new Date().toISOString(), revision: 1 } }));
+        return;
+      }
+      if (req.method === 'GET' && machineMatch[2] === '/spaces') {
+        machineGets++;
+        if (req.headers['if-none-match'] === '"1"') {
+          res.writeHead(304, { etag: '"1"' });
+          res.end();
+          return;
+        }
+        res.setHeader('etag', '"1"');
+        res.end(JSON.stringify({ v: 1, machineId, revision: 1, bindingRevisions: {}, account: { idpUrl: `${origin}/api/auth`, issuer: origin, sub: 'fixture-owner' }, spaces: [] }));
+        return;
+      }
     }
     res.writeHead(404); res.end('{}');
   });
@@ -84,8 +110,8 @@ export async function createFixtureSpace({ root, machineHome, runtime, node, env
     const discovery = await (await fetch(`${service.publicUrl.replace(/\/$/, '')}/.well-known/cotal-mesh`)).json();
     const state = userAuthStateDir(participant, space); mkSecretDir(state);
     const sentinel = join(state, 'sentinel.creds'); writeFileSync(sentinel, discovery.sentinelCreds, { mode: 0o600 });
-    recordMesh({ space, server: servers, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 3600_000).toISOString(), root: participant, mode: 'user', origin: 'manual', userAuth: { ...discovery.userAuth, remote: true, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });
-    saveIdpSession(machineHome, idpUrl, { token: session, expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: 'fixture-owner' });
+    recordMesh({ space, server: servers, tlsRequired: false, policyCheckedAt: new Date(Date.now() + 7200_000).toISOString(), root: participant, mode: 'user', origin: 'manual', userAuth: { ...discovery.userAuth, remote: true, sentinelCredsPath: sentinel }, ts: new Date().toISOString() });
+    saveIdpSession(machineHome, idpUrl, { token: session, expiresAt: Math.floor(Date.now() / 1000) + 7200, sub: 'fixture-owner' });
     const seed = join(globalConfigDir(), 'seed'); mkdirSync(seed, { recursive: true });
     const version = JSON.parse(readText(join(runtime, 'package.json'))).version;
     for (const file of ['authority.json', 'authority.bak.json']) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web'] }));
@@ -93,7 +119,7 @@ export async function createFixtureSpace({ root, machineHome, runtime, node, env
     writeFileSync(join(seed, 'stamp.json'), JSON.stringify({ generation: version }));
     const cli = join(runtime, 'dist', 'cotal.js');
     const call = args => new Promise((resolve, reject) => execFile(node, [cli, ...args], { env, cwd: participant, timeout: 120_000, windowsHide: true }, (error, stdout, stderr) => error ? reject(new Error(stderr || stdout || error.message)) : resolve(JSON.parse(stdout))));
-    return { space, participant, close, async startManager() {
+    return { space, participant, close, countsUrl: `${origin}/__counts`, counts: () => ({ machinePuts, machineGets, tokenGets }), async startManager() {
       const { pathToFileURL } = await import('node:url');
       const { openVerified, readLine } = await import(pathToFileURL(join(runtime, 'dist', 'daemon', 'client.js')).href);
       const { daemonPaths } = await import(pathToFileURL(join(runtime, 'dist', 'daemon', 'endpoint.js')).href);
