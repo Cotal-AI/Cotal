@@ -1,5 +1,23 @@
 # @cotal-ai/connector-core
 
+## 0.164.12
+
+### Patch Changes
+
+- 152dceb: A surfaced run turn tells the seat to answer an ask through its native route only when a block above carries one. A plain `turn`, including one named `ask`, gets only the ordinary-turn footer, so a seat no longer goes looking for a question, schema or answer route that was never sent.
+
+## 0.164.11
+
+No changes in this release.
+
+## 0.164.10
+
+No changes in this release.
+
+## 0.164.9
+
+No changes in this release.
+
 ## 0.164.8
 
 No changes in this release.

@@ -17,7 +17,7 @@ import * as auth from "../../auth/dist/index.js";
 // The browser is `COTAL_SMOKE_BROWSER`, or the first Chromium-family binary on PATH. There is no
 // substitute for a real browser here, so a host without one refuses.
 if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href);
+  (await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href)).startExecutionProgram();
 } else {
   await main();
 }

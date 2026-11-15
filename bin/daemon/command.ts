@@ -41,6 +41,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -59,20 +60,15 @@ export const daemonFlags = [
   { name: "space", short: "s", type: "string", value: "<s>", description: "target space (required except for status, where it selects one hosted Manager)" },
 ] as const satisfies readonly FlagSpec[];
 
-/** This binary's own version: the nearest package.json above this module (bin/ in a source run). */
-export function binVersion(): string {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 4; i++) {
-    try {
-      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
-      if (pkg.name === "cotal-ai" && typeof pkg.version === "string") return pkg.version;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-    dir = dirname(dir);
-  }
-  throw new Error("cannot determine the cotal-ai version: no cotal-ai package.json above the daemon module");
-}
+const loadedBinVersion = (() => {
+  const root = dirname(dirname(fileURLToPath(import.meta.resolve("@cotal-ai/cli"))));
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+  if (pkg.name !== "@cotal-ai/cli" || typeof pkg.version !== "string" || !pkg.version) throw new Error("cannot determine the loaded daemon version");
+  return pkg.version;
+})();
+
+/** The daemon's captured loaded release, independent of canonical metadata publication. */
+export function binVersion(): string { return loadedBinVersion; }
 
 const peerUid = defaultPeerUid;
 const peerPid = defaultPeerPid;
@@ -463,6 +459,8 @@ async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
+  const deferredRecovery = readUpdateRecovery();
+  const observedLiveUpdater = deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   if (await recoverInterruptedUpdate(undefined, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
@@ -504,6 +502,34 @@ async function serve(args: ParsedArgs): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let closed = false;
     let stopWatching = () => {};
+    let recoveryTimer: ReturnType<typeof setInterval> | undefined;
+    let recoveryBusy = false;
+    if (observedLiveUpdater) {
+      recoveryTimer = setInterval(() => {
+        if (closed || recoveryBusy) return;
+        const record = readUpdateRecovery();
+        if (!record) { clearInterval(recoveryTimer); return; }
+        if (liveUpdateClosureOwner(record)) return;
+        recoveryBusy = true;
+        clearInterval(recoveryTimer);
+        process.stderr.write("daemon: observed updater ended; checking guarded interrupted-update recovery\n");
+        void running.prepareGenerationRestart().then(() => recoverInterruptedUpdate(undefined, true)).then(async restored => {
+          if (restored) {
+            process.stderr.write("daemon: interrupted update restored the previous installation; restarting the recorded service\n");
+            await updates?.close();
+            await running.close();
+            resolve();
+          } else if (readUpdateRecovery()) {
+            process.stderr.write("daemon: interrupted update remains paused; read daemon status and run `cotal update --self`\n");
+          } else process.stderr.write("daemon: updater completed; no interrupted-update recovery remains\n");
+        }).catch((error: unknown) => {
+          process.stderr.write(`daemon: guarded interrupted-update recovery refused: ${error instanceof Error ? error.message : String(error)}; run \`cotal update --self\`\n`);
+        }).finally(() => running.abortGenerationRestart().catch((error: unknown) => {
+          process.stderr.write(`daemon: interrupted-update admission release refused: ${error instanceof Error ? error.message : String(error)}\n`);
+        }));
+      }, 1000);
+      recoveryTimer.unref();
+    }
     void ownership.then(observation => {
       if (closed) return;
       const verified = observation.state === "owned";
@@ -525,7 +551,7 @@ async function serve(args: ParsedArgs): Promise<void> {
         resolve();
       }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
     });
-    const stop = () => { closed = true; provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
+    const stop = () => { closed = true; clearInterval(recoveryTimer); provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
     void running.stopped.then(stop, reject);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

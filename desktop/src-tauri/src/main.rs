@@ -17,6 +17,9 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     let directory = executable
         .parent()
         .ok_or("the application has no directory")?;
+    if cotal_desktop::setup_state::interrupted(directory)? {
+        return Err("setup was interrupted, run the installer again".into());
+    }
     let node = directory.join(format!("{}.exe", cotal_desktop::NODE_SIDECAR));
     let runtime = directory.join("runtime");
     let entry = runtime.join("dist").join("daemon-native.js");

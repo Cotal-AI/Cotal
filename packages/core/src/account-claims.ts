@@ -1,15 +1,23 @@
 import type { NatsConnection } from "@nats-io/transport-node";
 import { decode, encodeAccount, Types, type Account, type ClaimsData } from "@nats-io/jwt";
-import { fromPublic } from "@nats-io/nkeys";
+import { createAccount, fromPublic, fromSeed } from "@nats-io/nkeys";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
-import type { BrokerAuth } from "./provision.js";
+import type { BrokerAuth, SpaceAuth } from "./provision.js";
 
 type AccountClaim = ClaimsData<Account>;
+type ClaimOperation = "hibernateAccountClaim" | "wakeAccountClaim" | "rotateDataAccountSigningKey";
+
+/** Sleep and wake re-sign a saved active template at a second the caller chose. A signing-key
+ *  rotation re-issues the claim as it stands, whatever its state, at the second it is signed. */
+const fromTemplate = (operation: ClaimOperation): boolean => operation !== "rotateDataAccountSigningKey";
+
+/** Every top-level field an account claim re-issue writes. `iat` and `jti` are written anew. */
+const REISSUED_FIELDS: ReadonlySet<string> = new Set(["aud", "exp", "iat", "iss", "jti", "name", "nats", "nbf", "sub"]);
 
 function accountTemplate(
-  operation: "hibernateAccountClaim" | "wakeAccountClaim",
-  broker: BrokerAuth,
+  operation: ClaimOperation,
+  broker: Pick<BrokerAuth, "operator">,
   accountJwt: string,
   iat: number,
 ): { claims: AccountClaim; signer: ReturnType<typeof nativeNkeySigner> } {
@@ -34,7 +42,7 @@ function accountTemplate(
         (claims.exp !== undefined && (!Number.isSafeInteger(claims.exp) || claims.exp <= now)) ||
         (claims.nbf !== undefined && (!Number.isSafeInteger(claims.nbf) || claims.nbf > now)))
       throw new Error("the account template is not currently valid");
-    if (iat <= claims.iat)
+    if (fromTemplate(operation) && iat <= claims.iat)
       throw new Error(`iat ${iat} must be newer than the template iat ${claims.iat}`);
     const limits = claims.nats.limits;
     const tiered = Object.values(limits?.tiered_limits ?? {});
@@ -52,7 +60,7 @@ function accountTemplate(
       authorization.allowed_accounts.every((key) => isAccountNkey(key)) &&
       new Set(authorization.allowed_accounts).size === authorization.allowed_accounts.length &&
       typeof authorization.xkey === "string" && /^X[A-Z2-7]{55}$/.test(authorization.xkey);
-    if ((!hasJetStreamLimits && !isCalloutAccount) || limits?.conn === 0)
+    if (fromTemplate(operation) && ((!hasJetStreamLimits && !isCalloutAccount) || limits?.conn === 0))
       throw new Error("the account template is not an active data or auth-callout account claim");
     for (const [key, revokedAt] of Object.entries(claims.nats.revocations ?? {})) {
       if ((key !== "*" && !isUserNkey(key)) || !Number.isSafeInteger(revokedAt) || revokedAt <= 0)
@@ -67,7 +75,7 @@ function accountTemplate(
 }
 
 async function signAccountClaim(
-  operation: "hibernateAccountClaim" | "wakeAccountClaim",
+  operation: ClaimOperation,
   claims: AccountClaim,
   signer: ReturnType<typeof nativeNkeySigner>,
   nats: Partial<Account>,
@@ -75,7 +83,7 @@ async function signAccountClaim(
 ): Promise<string> {
   const account = fromPublic(claims.sub);
   try {
-    if (Math.floor(Date.now() / 1000) !== iat)
+    if (fromTemplate(operation) && Math.floor(Date.now() / 1000) !== iat)
       throw new Error(`${operation}: iat must equal the current Unix second when the claim is signed`);
     const jwt = await encodeAccount(claims.name, account, nats, {
       signer,
@@ -83,7 +91,7 @@ async function signAccountClaim(
       ...(claims.nbf === undefined ? {} : { nbf: claims.nbf }),
       ...(claims.aud === "NATS" ? {} : { aud: claims.aud }),
     });
-    if (decodeNatsJwt<AccountClaim>(jwt).iat !== iat)
+    if (fromTemplate(operation) && decodeNatsJwt<AccountClaim>(jwt).iat !== iat)
       throw new Error(`${operation}: the Unix second changed while the claim was signed; retry with a newer iat`);
     return jwt;
   } finally {
@@ -121,6 +129,48 @@ export async function wakeAccountClaim(
 ): Promise<string> {
   const { claims, signer } = accountTemplate("wakeAccountClaim", broker, activeTemplateJwt, iat);
   return signAccountClaim("wakeAccountClaim", claims, signer, claims.nats, iat);
+}
+
+/** Rotate the DATA-account signing key: re-issue the account claim in `auth` with one fresh signing
+ * key as its whole signing-key set, so the broker trusts no earlier data signer once it loads the
+ * returned auth. Everything else in the claim is kept as it stands: subject, issuer, name, expiry,
+ * limits (connections, leaf nodes, JetStream), every revocation, imports, exports and any other
+ * account field. This does NOT rotate the system account (that is {@link rotateSystemAccount}):
+ * persisted `membership-observer` creds stay valid.
+ *
+ * A claim that cannot be re-issued whole refuses, and `auth` is left as it was: one this broker's
+ * operator did not sign, one for another account than `auth.account.seed`, an expired or not yet
+ * valid one, an invalid revocation map, a top-level JWT field outside the registered ones, and a
+ * scoped signing key, whose permission template would leave with it. A user the account's own
+ * identity key signed is not a signing-key user, so a rotation does not end it. */
+export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<SpaceAuth> {
+  const operation = "rotateDataAccountSigningKey";
+  if (!auth.operator.seed || !auth.account.seed)
+    throw new Error(`${operation}: full operator/account seed material is required (a stripped signer cannot rotate trust)`);
+  const accountKey = fromSeed(new TextEncoder().encode(auth.account.seed));
+  const accountPub = accountKey.getPublicKey();
+  accountKey.clear();
+  const now = Math.floor(Date.now() / 1000);
+  const { claims, signer } = accountTemplate(operation, auth, auth.account.jwt, now);
+  try {
+    if (claims.sub !== accountPub || auth.account.pub !== accountPub)
+      throw new Error(`${operation}: the account claim is not for the account whose seed this auth holds`);
+    const extra = Object.keys(claims).filter((field) => !REISSUED_FIELDS.has(field));
+    if (extra.length > 0)
+      throw new Error(`${operation}: the account claim has top-level fields a re-issue cannot carry: ${extra.sort().join(", ")}`);
+    if ((claims.nats.signing_keys ?? []).some((key) => typeof key !== "string"))
+      throw new Error(`${operation}: the account claim has a scoped signing key, and replacing the signing keys would drop its permission template`);
+  } catch (error) {
+    signer.clear();
+    throw error;
+  }
+  const signingKey = createAccount();
+  const signingPub = signingKey.getPublicKey();
+  const jwt = await signAccountClaim(operation, claims, signer, { ...claims.nats, signing_keys: [signingPub] }, now);
+  return {
+    ...auth,
+    account: { ...auth.account, jwt, signingSeed: new TextDecoder().decode(signingKey.getSeed()), signingPub },
+  };
 }
 
 /** Push one operator-signed account JWT over a system-account connection and wait until every

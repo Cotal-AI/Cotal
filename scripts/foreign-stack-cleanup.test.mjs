@@ -6,12 +6,40 @@ const fixture = () => ({
   stop: { exit: 137, signal: null, timeout: false, startedAt: '2026-11-14T06:45:37.952Z', finishedAt: '2026-11-14T06:45:38.669Z' },
   after: { Id: 'owned', Config: { Labels: { 'cotal.upgrade.cell': 'cell' } }, State: { Running: false, Pid: 0, ExitCode: 0, OOMKilled: false, StartedAt: '2026-11-14T06:44:51Z', FinishedAt: '2026-11-14T06:45:38.667841852Z' } },
   noProcesses: true,
+  observedAt: '2026-11-14T06:45:38.670Z',
 });
-test('PID1 shutdown exec137 requires observed clean same-incarnation end during command', () => {
+test('Docker finish just after the exec clock is bounded by the immediate inspect start', () => {
+  const f = fixture();
+  f.stop.startedAt = '2026-11-14T16:06:54.260Z';
+  f.stop.finishedAt = '2026-11-14T16:06:55.035Z';
+  f.after.State.FinishedAt = '2026-11-14T16:06:55.036366009Z';
+  f.observedAt = '2026-11-14T16:06:55.036Z';
+  assert.equal(foreignStackEnded(f), true);
+  f.observedAt = f.stop.finishedAt;
+  assert.equal(foreignStackEnded(f), false);
+});
+test('the inspect boundary must be present, ordered and no earlier than the container finish', () => {
+  const f0 = fixture();
+  f0.stop.startedAt = '2026-11-14T21:10:03.081Z';
+  f0.stop.finishedAt = '2026-11-14T21:10:04.065Z';
+  f0.after.State.FinishedAt = '2026-11-14T21:10:04.06311167Z';
+  f0.observedAt = '2026-11-14T21:10:04.066Z';
+  assert.equal(foreignStackEnded(f0), true);
+  assert.equal(foreignStackEnded({ ...f0, observedAt: undefined }), false);
+  for (const observedAt of [undefined, 'unknown', '2026-11-14T06:45:38.668Z']) {
+    const f = fixture(); f.observedAt = observedAt;
+    assert.equal(foreignStackEnded(f), false);
+  }
+  const f = fixture(); f.after.State.FinishedAt = '2026-11-14T06:45:38.671Z';
+  assert.equal(foreignStackEnded(f), false);
+  f.after.State.FinishedAt = '2026-11-14T06:45:37.951Z';
+  assert.equal(foreignStackEnded(f), false);
+});
+test('PID 1 shutdown exec 137 requires observed clean same-incarnation end by the inspect', () => {
   assert.equal(foreignStackEnded(fixture()), true);
   const zero = fixture(); zero.stop.exit = 0; assert.equal(foreignStackEnded(zero), true);
 });
-test('other failures and uncertain cleanup never inherit the PID1 allowance', () => {
+test('other failures and uncertain cleanup never inherit the PID 1 allowance', () => {
   for (const mutate of [f => { f.stop.exit = 1; }, f => { f.stop.exit = 143; }, f => { f.stop.timeout = true; }, f => { f.stop.signal = 'SIGTERM'; }, f => { f.before.pid1Supervise = false; }, f => { f.noProcesses = false; }, f => { f.after.State.Running = true; }, f => { f.after.State.Pid = 42; }, f => { f.after.State.ExitCode = 137; }, f => { f.after.State.OOMKilled = true; }, f => { f.after.State.FinishedAt = '2026-11-14T06:45:40Z'; }, f => { f.after.State.FinishedAt = 'unknown'; }]) {
     const f = fixture(); mutate(f); assert.equal(foreignStackEnded(f), false);
   }

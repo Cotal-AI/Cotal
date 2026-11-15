@@ -7,6 +7,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { checkDiscoveryDocument, discoveryDocumentUrl, findMesh, getCurrent, recordMesh, refreshRegistrationPolicy, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { deriveOwnerForIdpSubject, grantActor, loadOwnerSecret, saveIdpSession, startAuthService } from "../src/index.js";
+import { bootDeliveryDaemon } from "../../manager/smoke/_boot-delivery.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
 export interface UpdateParticipantContext {
@@ -27,23 +28,27 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
   let idp: Server | undefined;
   let exchange: Server | undefined;
   let service: Awaited<ReturnType<typeof startAuthService>> | undefined;
+  let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
   let tokenReads = 0;
   const close = async () => {
     report.participant = { ...report.participant as object, tokenReads, localManagerStarted: false };
     try { await service?.close(); }
     finally {
-      try {
+      try { await delivery?.stop(); }
+      finally {
         try {
-          if (exchange?.listening) await new Promise<void>((resolve, reject) => exchange!.close(error => error ? reject(error) : resolve()));
+          try {
+            if (exchange?.listening) await new Promise<void>((resolve, reject) => exchange!.close(error => error ? reject(error) : resolve()));
+          } finally {
+            if (idp?.listening) await new Promise<void>((resolve, reject) => idp!.close(error => error ? reject(error) : resolve()));
+          }
         } finally {
-          if (idp?.listening) await new Promise<void>((resolve, reject) => idp!.close(error => error ? reject(error) : resolve()));
-        }
-      } finally {
-        try { await fixture?.close(); }
-        finally {
-          for (const key of pathKeys) {
-            if (prior[key] === undefined) delete process.env[key];
-            else process.env[key] = prior[key];
+          try { await fixture?.close(); }
+          finally {
+            for (const key of pathKeys) {
+              if (prior[key] === undefined) delete process.env[key];
+              else process.env[key] = prior[key];
+            }
           }
         }
       }
@@ -78,6 +83,8 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
     grantActor(account.stateDir, { owner, actor: "cli", lifecycleUid: mintLifecycleUid(), scope: ["admin", "spawn", "supervise"], allowSubscribe: [">"], allowPublish: [">"] });
     const provisioner = await mintCreds(account.auth, newIdentity(), "provisioner");
     await setupSpaceStreams({ servers: fixture.servers, space: account.space, creds: provisioner });
+    delivery = await bootDeliveryDaemon({ space: account.space, servers: fixture.servers, auth: account.auth, reloadStoreIdentity: account.store.identity });
+    report.deliveryFixture = { kind: "real delivery-admin and Plane-3 endpoint", ready: true };
     // This test broker is plaintext on loopback. Its own discovery must say so, while the
     // production public face deliberately advertises TLS. All auth routes still use that face.
     let upstream: string | undefined;

@@ -484,33 +484,6 @@ export function stripSpaceAuth(auth: SpaceAuth): SpaceAuth {
   };
 }
 
-/** Rotate the DATA-account signing key and re-issue the data-account JWT so the old data signer is no
- * longer trusted by the broker once it loads the returned auth. This does NOT rotate the system account
- * (that is {@link rotateSystemAccount}): persisted `membership-observer` creds stay valid. */
-export async function rotateDataAccountSigningKey(auth: SpaceAuth): Promise<SpaceAuth> {
-  if (!auth.operator.seed || !auth.account.seed)
-    throw new Error("rotateDataAccountSigningKey: full operator/account seed material is required (a stripped signer cannot rotate trust)");
-  const okp = fromSeed(new TextEncoder().encode(auth.operator.seed));
-  const akp = fromSeed(new TextEncoder().encode(auth.account.seed));
-  const askp = createAccount();
-  const signingPub = askp.getPublicKey();
-  const accountJwt = await encodeAccount(
-    token(auth.space),
-    akp,
-    { signing_keys: [signingPub], limits: DATA_LIMITS },
-    { signer: okp },
-  );
-  return {
-    ...auth,
-    account: {
-      ...auth.account,
-      jwt: accountJwt,
-      signingSeed: new TextDecoder().decode(askp.getSeed()),
-      signingPub,
-    },
-  };
-}
-
 /** The user public keys a data-account JWT revokes, each with the Unix second it was revoked at. The
  *  broker refuses a user JWT for that key issued at or before that second. */
 export function accountRevocations(accountJwt: string): Record<string, number> {

@@ -2,6 +2,7 @@
 #define _WIN32_WINNT 0x0A00
 #define NAPI_VERSION 8
 #include <windows.h>
+#include <tlhelp32.h>
 #include <sddl.h>
 #include <node_api.h>
 #include <math.h>
@@ -61,6 +62,192 @@ static napi_value creation_token(napi_env env, napi_callback_info info) {
   CloseHandle(process);
   if (!ok) return unreadable(env);
   return filetime_token(env, creation);
+}
+
+typedef struct { HANDLE handle; } process_pin;
+
+static void finalize_pin(napi_env env, void *data, void *hint) {
+  (void)env; (void)hint;
+  process_pin *pin = data;
+  if (pin->handle != NULL) CloseHandle(pin->handle);
+  HeapFree(GetProcessHeap(), 0, pin);
+}
+
+static process_pin *pin_receiver(napi_env env, napi_callback_info info) {
+  napi_value self;
+  process_pin *pin = NULL;
+  if (napi_get_cb_info(env, info, NULL, NULL, &self, NULL) != napi_ok ||
+      napi_unwrap(env, self, (void **)&pin) != napi_ok || pin == NULL) {
+    napi_throw_error(env, NULL, "invalid retained process pin");
+    return NULL;
+  }
+  return pin;
+}
+
+static napi_value pin_exited(napi_env env, napi_callback_info info) {
+  process_pin *pin = pin_receiver(env, info);
+  if (pin == NULL) return NULL;
+  if (pin->handle == NULL) return refuse(env, "the retained process pin is closed");
+  DWORD result = WaitForSingleObject(pin->handle, 0);
+  if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT) return fail(env, "WaitForSingleObject retained process");
+  napi_value value;
+  if (napi_get_boolean(env, result == WAIT_OBJECT_0, &value) != napi_ok) return NULL;
+  return value;
+}
+
+static napi_value pin_close(napi_env env, napi_callback_info info) {
+  process_pin *pin = pin_receiver(env, info);
+  if (pin == NULL) return NULL;
+  if (pin->handle != NULL) {
+    if (!CloseHandle(pin->handle)) return fail(env, "CloseHandle retained process");
+    pin->handle = NULL;
+  }
+  return unreadable(env);
+}
+
+static napi_value pin_terminate(napi_env env, napi_callback_info info) {
+  process_pin *pin = pin_receiver(env, info);
+  if (pin == NULL) return NULL;
+  if (pin->handle == NULL) return refuse(env, "the retained process pin is closed");
+  DWORD wait = WaitForSingleObject(pin->handle, 0);
+  if (wait == WAIT_OBJECT_0) return unreadable(env);
+  if (wait != WAIT_TIMEOUT) return fail(env, "WaitForSingleObject before termination");
+  if (!TerminateProcess(pin->handle, 1)) return fail(env, "TerminateProcess retained tree member");
+  return unreadable(env);
+}
+
+// A read-only handle pins one kernel process object even after PID reuse. It is never inherited.
+static napi_value pin_process(napi_env env, napi_callback_info info) {
+  DWORD pid;
+  if (!pid_arg(env, info, &pid)) return refuse(env, "pinProcess takes one positive PID");
+  HANDLE handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+  if (handle == NULL) return fail(env, "OpenProcess retained process");
+  FILETIME creation, exit_time, kernel_time, user_time;
+  if (!GetProcessTimes(handle, &creation, &exit_time, &kernel_time, &user_time)) {
+    DWORD error = GetLastError(); CloseHandle(handle); SetLastError(error);
+    return fail(env, "GetProcessTimes retained process");
+  }
+  process_pin *pin = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(process_pin));
+  if (pin == NULL) { CloseHandle(handle); return refuse(env, "retained process allocation failed"); }
+  pin->handle = handle;
+  napi_value result, token;
+  if (napi_create_object(env, &result) != napi_ok || (token = filetime_token(env, creation)) == NULL ||
+      napi_set_named_property(env, result, "token", token) != napi_ok ||
+      napi_wrap(env, result, pin, finalize_pin, NULL, NULL) != napi_ok) {
+    finalize_pin(env, pin, NULL); return NULL;
+  }
+  napi_property_descriptor properties[] = {
+    { "exited", NULL, pin_exited, NULL, NULL, NULL, napi_default, NULL },
+    { "close", NULL, pin_close, NULL, NULL, NULL, napi_default, NULL },
+  };
+  if (napi_define_properties(env, result, 2, properties) != napi_ok) {
+    CloseHandle(pin->handle); pin->handle = NULL;
+    return NULL;
+  }
+  return result;
+}
+
+// Snapshot only the subtree that exists now. Retained handles keep these kernel
+// objects alive across PID reuse. Parent creation order rejects stale ancestry.
+static napi_value process_tree(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2], result = NULL;
+  uint32_t root_pid = 0;
+  char expected[21] = {0}; size_t length = 0;
+  if (napi_get_cb_info(env, info, &argc, args, NULL, NULL) != napi_ok || argc != 2 ||
+      napi_get_value_uint32(env, args[0], &root_pid) != napi_ok || root_pid == 0 ||
+      napi_get_value_string_utf8(env, args[1], expected, sizeof(expected), &length) != napi_ok || length == 0 || length >= sizeof(expected))
+    return refuse(env, "processTree requires a PID and creation token");
+  FILETIME cutoff;
+  GetSystemTimePreciseAsFileTime(&cutoff);
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return fail(env, "CreateToolhelp32Snapshot");
+  typedef struct { DWORD pid, parent; HANDLE handle; FILETIME birth; process_pin *pin; } tree_member;
+  DWORD capacity = 64, count = 0;
+  tree_member *members = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, capacity * sizeof(tree_member));
+  if (members == NULL) { CloseHandle(snapshot); return refuse(env, "process tree allocation failed"); }
+  HANDLE root_handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_TERMINATE, FALSE, root_pid);
+  const char *error = NULL; DWORD code = 0;
+  FILETIME birth, exited, kernel, user;
+  if (root_handle == NULL || !GetProcessTimes(root_handle, &birth, &exited, &kernel, &user)) { error = "OpenProcess tree root"; goto done; }
+  char actual[21];
+  snprintf(actual, sizeof(actual), "%llu", (unsigned long long)(((uint64_t)birth.dwHighDateTime << 32) | birth.dwLowDateTime));
+  if (strcmp(actual, expected) != 0) { SetLastError(ERROR_INVALID_DATA); error = "process tree root identity"; goto done; }
+  members[count++] = (tree_member){ root_pid, 0, root_handle, birth, NULL }; root_handle = NULL;
+  // Each pass adds children of pinned members from this one snapshot. A member
+  // disappearing before pinning or born after the cut is unknown, never proved gone.
+  for (BOOL changed = TRUE; changed;) {
+    changed = FALSE;
+    PROCESSENTRY32W entry = {0}; entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) { error = "Process32FirstW"; goto done; }
+    do {
+      DWORD parent = count; BOOL known = FALSE;
+      for (DWORD i = 0; i < count; i++) {
+        if (members[i].pid == entry.th32ProcessID) known = TRUE;
+        if (members[i].pid == entry.th32ParentProcessID) parent = i;
+      }
+      if (known || parent == count) continue;
+      HANDLE query = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+      if (query == NULL) {
+        error = "OpenProcess tree descendant"; goto done;
+      }
+      FILETIME child_birth;
+      if (!GetProcessTimes(query, &child_birth, &exited, &kernel, &user)) { code = GetLastError(); CloseHandle(query); SetLastError(code); error = "GetProcessTimes tree descendant"; goto done; }
+      if (CompareFileTime(&child_birth, &members[parent].birth) < 0) { CloseHandle(query); continue; }
+      DWORD parent_wait = WaitForSingleObject(members[parent].handle, 0);
+      if (parent_wait != WAIT_OBJECT_0 && parent_wait != WAIT_TIMEOUT) { code = GetLastError(); CloseHandle(query); SetLastError(code); error = "WaitForSingleObject tree parent"; goto done; }
+      if (parent_wait == WAIT_OBJECT_0) {
+        FILETIME parent_birth, parent_exit;
+        if (!GetProcessTimes(members[parent].handle, &parent_birth, &parent_exit, &kernel, &user)) { code = GetLastError(); CloseHandle(query); SetLastError(code); error = "GetProcessTimes tree parent"; goto done; }
+        if (CompareFileTime(&child_birth, &parent_exit) > 0) { CloseHandle(query); SetLastError(ERROR_INVALID_DATA); error = "process tree parent identity"; goto done; }
+      }
+      if (CompareFileTime(&child_birth, &cutoff) > 0) { CloseHandle(query); SetLastError(ERROR_INVALID_DATA); error = "process tree changed during capture"; goto done; }
+      HANDLE child = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | PROCESS_TERMINATE, FALSE, entry.th32ProcessID);
+      code = GetLastError();
+      CloseHandle(query);
+      if (child == NULL) { SetLastError(code); error = "OpenProcess tree descendant"; goto done; }
+      if (count == capacity) {
+        if (capacity >= 65536) { CloseHandle(child); SetLastError(ERROR_NOT_ENOUGH_MEMORY); error = "process tree limit"; goto done; }
+        tree_member *grown = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, members, capacity * 2 * sizeof(tree_member));
+        if (grown == NULL) { CloseHandle(child); SetLastError(ERROR_NOT_ENOUGH_MEMORY); error = "process tree allocation"; goto done; }
+        members = grown; capacity *= 2;
+      }
+      members[count++] = (tree_member){ entry.th32ProcessID, entry.th32ParentProcessID, child, child_birth, NULL };
+      changed = TRUE;
+    } while (Process32NextW(snapshot, &entry));
+    if (GetLastError() != ERROR_NO_MORE_FILES) { error = "Process32NextW"; goto done; }
+  }
+  if (napi_create_array_with_length(env, count, &result) != napi_ok) { error = "process tree result"; goto done; }
+  for (DWORD i = 0; i < count; i++) {
+    process_pin *pin = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(process_pin));
+    if (pin == NULL) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); error = "process tree pin allocation"; goto done; }
+    pin->handle = members[i].handle; members[i].handle = NULL;
+    napi_value value, pid, token;
+    if (napi_create_object(env, &value) != napi_ok || napi_create_uint32(env, members[i].pid, &pid) != napi_ok ||
+        (token = filetime_token(env, members[i].birth)) == NULL ||
+        napi_set_named_property(env, value, "pid", pid) != napi_ok || napi_set_named_property(env, value, "token", token) != napi_ok ||
+        napi_wrap(env, value, pin, finalize_pin, NULL, NULL) != napi_ok) { finalize_pin(env, pin, NULL); error = "process tree pin result"; goto done; }
+    members[i].pin = pin;
+    napi_property_descriptor props[] = {
+      { "exited", NULL, pin_exited, NULL, NULL, NULL, napi_default, NULL },
+      { "close", NULL, pin_close, NULL, NULL, NULL, napi_default, NULL },
+      { "terminate", NULL, pin_terminate, NULL, NULL, NULL, napi_default, NULL },
+    };
+    if (napi_define_properties(env, value, 3, props) != napi_ok || napi_set_element(env, result, i, value) != napi_ok) { error = "process tree pin methods"; goto done; }
+  }
+done:
+  code = GetLastError();
+  if (root_handle != NULL) CloseHandle(root_handle);
+  for (DWORD i = 0; i < count; i++) {
+    if (members[i].handle != NULL) CloseHandle(members[i].handle);
+    if (error != NULL && members[i].pin != NULL && members[i].pin->handle != NULL) {
+      CloseHandle(members[i].pin->handle);
+      members[i].pin->handle = NULL;
+    }
+  }
+  HeapFree(GetProcessHeap(), 0, members); CloseHandle(snapshot);
+  if (error != NULL) { SetLastError(code); return fail(env, error); }
+  return result;
 }
 
 // The account this process runs as, as its string SID.
@@ -335,6 +522,8 @@ static napi_value terminate(napi_env env, napi_callback_info info) {
 NAPI_MODULE_INIT() {
   napi_property_descriptor properties[] = {
     { "creationToken", NULL, creation_token, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "pinProcess", NULL, pin_process, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "processTree", NULL, process_tree, NULL, NULL, NULL, napi_enumerable, NULL },
     { "userSid", NULL, user_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "systemId", NULL, system_id, NULL, NULL, NULL, napi_enumerable, NULL },
     { "launch", NULL, launch, NULL, NULL, NULL, napi_enumerable, NULL },

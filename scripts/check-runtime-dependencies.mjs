@@ -38,6 +38,7 @@ export function packageName(specifier) {
 
 // These are file/native/plugin boundaries, not missing npm dependencies. New expressions refuse.
 const COMPUTED_LOADS = new Map([
+  ['cotal-ai/dist/cotal.js/pathToFileURL(selected.entry).href', 'inventory-validated retained or installed execution program'],
   ['cotal-ai/dist/daemon-cwd.js/entry.href', 'adjacent CLI file URL'],
   ['cotal-ai/dist/daemon-native.js/entry.href', 'adjacent CLI file URL'],
   ['@cotal-ai/lang/dist/engine/worker-entry.js/module', 'host-provided workflow effect module'],

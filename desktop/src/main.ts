@@ -498,6 +498,7 @@ function showStage(next: Stage, focus = false): void {
   const recovery = issue ? refusalView(issue, applications) : undefined;
   if (recovery) { title = recovery.title; description = recovery.description; }
   el("recovery-panel").hidden = !recovery;
+  el("setup-installer").hidden = issue !== "SETUP_INTERRUPTED";
   if (recovery) {
     for (const id of ["sign-in-panel", "space-panel", "connect-panel", "setup-progress", "connected-panel", "preferences", "refresh"]) el(id).hidden = true;
     text("recover", recovery.label); el("recover").dataset.action = recovery.action;
@@ -1058,6 +1059,7 @@ el("update-preference").addEventListener("change", () => {
   void settingsAction(appUpdaterConfigured() ? { op: "update-policy", auto: enabled } : { op: "update-settings", ...(policy.label === "Install updates automatically" ? { auto: enabled } : { notify: enabled }) });
 });
 el("update-download").addEventListener("click", () => void openInstaller());
+el("setup-installer").addEventListener("click", event => { event.preventDefault(); void invoke("open_browser", { url: el<HTMLAnchorElement>("setup-installer").href }).catch(refusal); });
 el("settings-download").addEventListener("click", () => void openInstaller());
 el("open-settings").addEventListener("click", () => { if (busy) return; if (settingsOpen) { if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); } else openSettings(); });
 el("settings-back").addEventListener("click", () => { if (busy) return; if (nameEditing) closeNameEditor(); pendingAccountAction = undefined; settingsOpen = false; showStage(stage); renderSettings(); el("open-settings").focus(); });
@@ -1117,7 +1119,10 @@ async function start(): Promise<void> {
       if (selectedSpace()) { if (!linked) showStage("connect"); await refresh(); }
       else if (!linked && el<HTMLSelectElement>("space").options.length > 1) showStage("connect");
     }
-  } catch (error) { refusal(error); }
+  } catch (error) {
+    if (error instanceof DaemonRefusal && error.code === "SETUP_INTERRUPTED") text("machine-details", "Computer information is unavailable while setup is incomplete.");
+    refusal(error);
+  }
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");

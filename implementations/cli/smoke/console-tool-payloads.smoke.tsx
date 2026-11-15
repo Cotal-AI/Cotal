@@ -42,7 +42,7 @@ stdin.isTTY = true;
 stdin.setRawMode = () => stdin;
 stdin.ref = () => stdin;
 stdin.unref = () => stdin;
-const app = render(<ToolCalls ep={ep} owner="owner" actor="actor" width={110} height={32} />, { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+const app = render(<ToolCalls ep={ep} owner="owner" actor="actor" width={110} height={32} />, { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
 const wait = async (text: string) => {
   const deadline = Date.now() + 3000;
   while (!output.includes(text) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));

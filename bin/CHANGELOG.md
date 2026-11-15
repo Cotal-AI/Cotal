@@ -1,5 +1,95 @@
 # cotal-ai
 
+## 0.164.12
+
+### Patch Changes
+
+- 959b278: Fix the Windows desktop app's first screen. In 0.164.10 and 0.164.11 the bundled CLI did nothing when Node was given its script through an extended-length (`\\?\`) path, which is how the app starts it, so every request from the app ended in "This operation could not finish". Installing the 0.164.12 app repairs it; the `cotal` command installed with npm was not affected.
+- Updated dependencies [9ac390d]
+- Updated dependencies [4bc2211]
+- Updated dependencies [152dceb]
+- Updated dependencies [201785c]
+  - @cotal-ai/delivery@0.164.12
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/connector-core@0.164.12
+  - @cotal-ai/cli@0.164.12
+  - @cotal-ai/manager@0.164.12
+  - @cotal-ai/auth@0.164.12
+  - @cotal-ai/runtime@0.164.12
+  - @cotal-ai/registry@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/seat@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- 5fce3ef: Fix the closing step of `cotal update --self` on a machine with the service installed. Since 0.164.10 that step compared the restarted daemon with the release that started the update instead of the release now installed. On Windows the update ended with exit 3 and "Outcome unconfirmed" although the new release was installed and reconciled. The closing step compares the daemon with the installed release again, as it did up to 0.164.9. Scheduled updates were not affected.
+- Updated dependencies [5fce3ef]
+  - @cotal-ai/cli@0.164.11
+  - @cotal-ai/connector-core@0.164.11
+  - @cotal-ai/auth@0.164.11
+  - @cotal-ai/delivery@0.164.11
+  - @cotal-ai/manager@0.164.11
+  - @cotal-ai/registry@0.164.11
+  - @cotal-ai/runtime@0.164.11
+  - @cotal-ai/core@0.164.11
+  - @cotal-ai/seat@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- 4359750: The desktop app's Details no longer tells you to install the background service when it is already installed and stopped. It now says the service is stopped and that Start service starts it. A computer with no installed service keeps the install sentence.
+- 44ce7f5: Add verified execution generations to the CLI entry without changing the update transaction.
+  
+  The built-ins-only bootstrap accepts an artifact-bound descriptor, validates the retained package inventory and runs the selected generation. Fresh installations run their installed tree without copying it or writing startup state. Invalid matching descriptors refuse with reinstall guidance.
+- 1ad9989: Keep the installed Windows background service running after a manual update.
+  
+  The replacement updater starts only its verified enabled scheduled task after the old daemon exits, and checks target readiness under the existing deadline. Windows updater ownership uses retained process creation identity, including guarded compatibility with published records that lack a start token.
+- Updated dependencies [44ce7f5]
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/cli@0.164.10
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/connector-core@0.164.10
+  - @cotal-ai/auth@0.164.10
+  - @cotal-ai/delivery@0.164.10
+  - @cotal-ai/manager@0.164.10
+  - @cotal-ai/registry@0.164.10
+  - @cotal-ai/runtime@0.164.10
+  - @cotal-ai/seat@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- 322ce33: The desktop app shares the command line's automatic-update preference and can verify signed update downloads when its build has an updater key. Builds without a key keep their release summary, notification preference and platform installer path. Configured builds check the manifest again when Check now is pressed, while automatic checks stay daily. Release preparation stays in Settings without a main-view error. This change does not install downloaded updates or add automatic rollback.
+- 35db3ae: Keep the machine service responsive during manual updates.
+  
+  Daemon startup checks the updater's full closure identity before taking restoration ownership, so it can answer readiness without waiting on the updater's installation lock. If that updater ends without finishing, the running daemon performs the existing guarded recovery or reports why recovery remains paused. A paused installation whose rollback completed can reconcile through the newly installed CLI after acquiring fresh hosted-Manager admission, without reinstalling the older defective updater.
+- 483e348: Windows daemon uninstall and restart wait for the daemon they stopped to finish shutting down.
+  
+  A probe that reaches the same kernel process lifetime after its record becomes empty remains pending without sending a request. Other ownership refusals stay unchanged, and completion still requires endpoint absence and process exit.
+- Updated dependencies [cf93466]
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [082d0e6]
+- Updated dependencies [0bf357b]
+- Updated dependencies [a926514]
+  - @cotal-ai/auth@0.164.9
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/delivery@0.164.9
+  - @cotal-ai/cli@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/connector-core@0.164.9
+  - @cotal-ai/manager@0.164.9
+  - @cotal-ai/registry@0.164.9
+  - @cotal-ai/runtime@0.164.9
+  - @cotal-ai/seat@0.164.9
+
 ## 0.164.8
 
 ### Patch Changes

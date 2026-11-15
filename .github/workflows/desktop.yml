@@ -26,6 +26,7 @@ on:
   pull_request:
     paths:
       - 'desktop/**'
+      - 'bin/cotal.ts'
       - 'bin/daemon/**'
       - 'bin/smoke/daemon-install-*.smoke.*'
       - 'packages/seat/**'

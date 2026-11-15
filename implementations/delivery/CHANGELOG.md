@@ -1,5 +1,41 @@
 # @cotal-ai/delivery
 
+## 0.164.12
+
+### Patch Changes
+
+- 9ac390d: `openDeliveryLane` now returns a `DeliveryLane`, which adds `nativeConnections()` to the lane: the server id and client id of each data-account connection the lane holds, as `startDeliveryService` already reports for a hosted context. A host that runs delivery from a workstation root can compare the list with the account's native census. Existing callers are unaffected.
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- 3664f96: Expose the native bindings of a hosted delivery context's data-account connections. `startDeliveryService` now returns a `DeliveryServiceHandle` whose `nativeConnections()` lists the server id and client id of the endpoint, membership-rw and timer-writer connections, so a host can compare them with the account's native census. It throws while a connection is down, redialing or adopting a credential, and reports none only after a successful close. `CotalEndpoint.nativeConnections()` and `MembershipFeedHandle.nativeDataConnections()` give the same bindings for one endpoint or one feed. No credential or connection object is returned.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+
 ## 0.164.8
 
 ### Patch Changes

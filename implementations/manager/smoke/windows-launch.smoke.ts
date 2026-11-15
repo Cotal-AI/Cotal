@@ -36,6 +36,8 @@ import { launchEnv, controlEndpoint, startControlServer, type MeshAgent } from "
 import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
 import { controlShutdown } from "../src/control-shutdown.js";
 import { controlSession } from "../src/control-session.js";
+import { WindowsSeatStop } from "../src/runtime/windows-stop.js";
+import type { Win32ProcessPin, Win32TreePin } from "@cotal-ai/workspace";
 import { createRuntime } from "../src/index.js";
 
 const isWin = process.platform === "win32";
@@ -544,6 +546,123 @@ if (isWin) {
   });
   check("DoS: a slow-loris (dribbled bytes, no newline) is dropped at the absolute auth deadline", loris === "closed");
   server.close();
+}
+
+// =================================================================================================
+// I. WindowsSeatStop — stop-time cohort pinning, delayed ConPTY PID capture, cooperative grace,
+//    reverse-order handle termination, and fail-closed refusal on capture or exit failure.
+// =================================================================================================
+{
+  // I1: ConPTY reports pid 0 at spawn and sets pid > 0 asynchronously; an immediate force stop
+  // waits for the launch PID, pins the cohort, terminates leaves-first, and closes every pin.
+  let currentPid = 0;
+  let rootClosed = 0;
+  const terminatedOrder: number[] = [];
+  const closedPids: number[] = [];
+  const exitedSet = new Set<number>();
+  const makeTreePin = (pid: number, token: string): Win32TreePin => ({
+    pid,
+    token,
+    exited: () => exitedSet.has(pid),
+    terminate: () => {
+      terminatedOrder.push(pid);
+      exitedSet.add(pid);
+    },
+    close: () => {
+      closedPids.push(pid);
+    },
+  });
+  const stopper1 = new WindowsSeatStop(
+    () => currentPid,
+    () => ({
+      pinProcess: (pid): Win32ProcessPin => ({
+        token: `tok-${pid}`,
+        exited: () => exitedSet.has(pid),
+        close: () => {
+          rootClosed++;
+        },
+      }),
+      processTree: (pid, token) => {
+        eq("I1: processTree receives pinned root pid", pid, 100);
+        eq("I1: processTree receives pinned root token", token, "tok-100");
+        return [makeTreePin(100, "tok-100"), makeTreePin(200, "tok-200"), makeTreePin(300, "tok-300")];
+      },
+    }),
+  );
+  setTimeout(() => {
+    currentPid = 100;
+  }, 15);
+  await stopper1.stop(0, 1000, async () => {});
+  eq("I1: cohort terminated in reverse (grandchild, child, root)", terminatedOrder, [300, 200, 100]);
+  eq("I1: every tree pin closed after stop", closedPids, [100, 200, 300]);
+  eq("I1: root pin closed after verified stop", rootClosed, 1);
+
+  // I2: Cooperative root exit during grace does not exempt a surviving captured descendant.
+  const exited2 = new Set<number>();
+  const terminated2: number[] = [];
+  const stopper2 = new WindowsSeatStop(
+    () => 500,
+    () => ({
+      pinProcess: (): Win32ProcessPin => ({ token: "tok-500", exited: () => exited2.has(500), close: () => {} }),
+      processTree: () => [
+        { pid: 500, token: "tok-500", exited: () => exited2.has(500), terminate: () => { terminated2.push(500); exited2.add(500); }, close: () => {} },
+        { pid: 501, token: "tok-501", exited: () => exited2.has(501), terminate: () => { terminated2.push(501); exited2.add(501); }, close: () => {} },
+      ],
+    }),
+  );
+  setTimeout(() => exited2.add(500), 10);
+  await stopper2.stop(60, 1000, async () => {});
+  eq("I2: surviving descendant terminated after grace when root exited early", terminated2, [501]);
+
+  // I3: Capture failure rejects and keeps the root pin so a retry can succeed.
+  let attempts3 = 0;
+  let rootClosed3 = 0;
+  const exited3 = new Set<number>();
+  const stopper3 = new WindowsSeatStop(
+    () => 700,
+    () => ({
+      pinProcess: (): Win32ProcessPin => ({ token: "tok-700", exited: () => exited3.has(700), close: () => { rootClosed3++; } }),
+      processTree: () => {
+        attempts3++;
+        if (attempts3 === 1) throw new Error("OpenProcess tree descendant failed (Windows error 5)");
+        return [{ pid: 700, token: "tok-700", exited: () => exited3.has(700), terminate: () => { exited3.add(700); }, close: () => {} }];
+      },
+    }),
+  );
+  let err3 = "";
+  try {
+    await stopper3.stop(0, 500, async () => {});
+  } catch (e) {
+    err3 = (e as Error).message;
+  }
+  check("I3: capture refusal rejects loud", /OpenProcess tree descendant failed/.test(err3));
+  eq("I3: root pin retained after failed stop for retry", rootClosed3, 0);
+  await stopper3.stop(0, 500, async () => {});
+  eq("I3: retry succeeds and closes root pin", rootClosed3, 1);
+
+  // I4: Exit before launch PID is pinned fails closed and never opens a stale PID later.
+  let latePid = 0;
+  let pinCalled4 = false;
+  const stopper4 = new WindowsSeatStop(
+    () => latePid,
+    () => ({
+      pinProcess: (): Win32ProcessPin => {
+        pinCalled4 = true;
+        return { token: "stale", exited: () => true, close: () => {} };
+      },
+      processTree: () => [],
+    }),
+  );
+  stopper4.onProcessExit();
+  latePid = 999;
+  let err4 = "";
+  try {
+    await stopper4.stop(0, 200, async () => {});
+  } catch (e) {
+    err4 = (e as Error).message;
+  }
+  check("I4: exit before PID pin fails closed", /exited before its launch process identity could be pinned/.test(err4));
+  eq("I4: late PID is never opened after exit", pinCalled4, false);
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");

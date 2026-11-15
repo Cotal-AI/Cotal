@@ -1,5 +1,44 @@
 # @cotal-ai/auth
 
+## 0.164.12
+
+### Patch Changes
+
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/lang@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/lang@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/lang@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- cf93466: Expose native connection custody for a standalone auth authority plane. Hosts can compare tracked server/connection IDs with the broker's account census and await terminal connection closure, without receiving credentials or raw connection objects from that inventory.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/lang@0.164.9
+
 ## 0.164.8
 
 ### Patch Changes

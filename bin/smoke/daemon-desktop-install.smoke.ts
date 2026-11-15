@@ -112,6 +112,8 @@ try {
   const alreadyRunning = await request(control, "install");
   assert.equal(alreadyRunning.ok, true);
   assert.deepEqual(operations(control.calls).slice(before.length), ["directory-read"], "an answering installation receives no native start");
+  const answering = await request(control, "status");
+  assert.equal(answering.ok, true, "status answers while the installed daemon runs");
   console.log("positive control: fresh install and already-answering install passed");
 } finally {
   if (daemon && daemon.exitCode === null && daemon.signalCode === null) {
@@ -121,6 +123,15 @@ try {
   }
   await installing.catch(() => {});
 }
+
+// An installed service whose daemon stopped is not a missing installation.
+checkInstallation(control);
+const beforeStatus = operations(control.calls);
+const stopped = await request(control, "status");
+assert.equal(stopped.error?.code, "NOT_RUNNING");
+assert.equal(stopped.error?.message, "The background service is installed but stopped. Choose Start service to start it.");
+assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
+console.log("installed and stopped: status names the stopped service, not a missing installation");
 
 // The same timeout classification applies after a fresh install and a recorded-service start.
 for (const target of [isolated("timeout"), control]) {

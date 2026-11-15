@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -24,7 +24,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   let autoUpdates = options.autoUpdates ?? true;
   const callbacks = new Map<number, (frame: unknown) => void>(); let next = 0;
   const listeners = new Map<string, number>();
-  let installed = options.installed ?? false, connected = options.connected ?? false;
+  let installed = options.installed ?? false, stopped = false, connected = options.connected ?? false;
   let releaseLogin: (() => void) | undefined, releaseSetup: (() => void) | undefined;
   const manager = { space: "team", state: "answering", instanceId: "instance", connectors: [{ state: "available" }] };
   let tick: (() => Promise<void>) | undefined;
@@ -64,12 +64,15 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
       if (r.op === "update-check") return ok({ update });
       if (r.op === "update-release") return ok({ assets: [] });
       if (r.op === "about") {
+        if (options.interruptedAbout) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.loading) await new Promise(() => {});
         return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
-      if (r.op === "install") { installed = true; return ok({ installed: true }); }
+      if (r.op === "install") { installed = true; stopped = false; return ok({ installed: true }); }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
+      if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
       if (r.op === "status") {
+        if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
         return ok({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : "test", update: update ?? (options.registryLatest ? { channel: "desktop", current: "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
       }
@@ -106,7 +109,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; }, stop: () => { installed = false; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -248,6 +251,30 @@ test("Settings timestamps the desktop manifest check, not an absent registry che
   } finally { a.dom.window.close(); }
 });
 
+test("interrupted setup shows installer recovery without offering Start service", async () => {
+  const a = await app({ installed: true, interrupted: true });
+  try {
+    assert.equal(a.node("connection-title").textContent, "Setup was interrupted");
+    assert.equal(a.node("connection-description").textContent, "Run the installer again to finish updating Cotal.");
+    assert.equal(a.node("recover").textContent, "Check again");
+    assert.equal(a.node("setup-installer").hidden, false);
+    assert.match(a.node<HTMLAnchorElement>("setup-installer").href, /github.com\/Cotal-AI\/Cotal\/releases\/latest/);
+    await a.click("setup-installer");
+    assert.equal(a.urls.at(-1), "https://github.com/Cotal-AI/Cotal/releases/latest");
+    assert.equal(a.calls.some(call => call.op === "install"), false);
+  } finally { a.dom.window.close(); }
+});
+
+test("interrupted about shows truthful unavailable computer details", async () => {
+  const a = await app({ interruptedAbout: true });
+  try {
+    assert.equal(a.node("connection-title").textContent, "Setup was interrupted");
+    assert.equal(a.node("machine-details").textContent, "Computer information is unavailable while setup is incomplete.");
+    assert.ok(!/undefined|NaN/.test(a.doc.body.textContent ?? ""));
+    assert.equal(a.calls.some(call => call.op === "install" || call.op === "status"), false);
+  } finally { a.dom.window.close(); }
+});
+
 test("computer name edits save, cancel and reject invalid input before request", async () => {
   const a = await app({ installed: true });
   try {
@@ -309,6 +336,7 @@ test("Start service starts a stopped background service and leaves no notice", a
     await a.tick();
     assert.equal(a.node("recover").textContent, "Start service");
     assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
+    assert.equal(a.node("refusal-detail").textContent, "The background service is installed but stopped. Choose Start service to start it.");
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, true);
     const from = a.calls.length;
     await a.click("recover");

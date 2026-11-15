@@ -1,5 +1,26 @@
 # @cotal-ai/core
 
+## 0.164.12
+
+No changes in this release.
+
+## 0.164.11
+
+No changes in this release.
+
+## 0.164.10
+
+### Patch Changes
+
+- 2a4d8fa: A host can replace one space's account record without rewriting the broker record every space shares. `replaceSpaceAccountAuth(store, record)` in `@cotal-ai/workspace` puts that space's account record through a `SecretStore` and writes no other key, for persisting a data signing-key rotation or rolling one back. It replaces an existing record only: it refuses when the broker record or the account record is missing, blank or outside the broker's chain, and when the replacement is another account, was issued by another operator, or holds a signing seed its claim does not trust. A record equal to the stored one is not written again, and after a write the record is read back. It is not atomic across keys, so the host must keep other writers of the space's trust records out for the call. `validateSpaceAccountAuth(broker, record, space?)` in `@cotal-ai/core` is the check it uses: the account checks of `validateSpaceAuth` for any space on a broker, where `validateSpaceAuth` accepts only the space the operator is named for.
+
+## 0.164.9
+
+### Patch Changes
+
+- 3664f96: Expose the native bindings of a hosted delivery context's data-account connections. `startDeliveryService` now returns a `DeliveryServiceHandle` whose `nativeConnections()` lists the server id and client id of the endpoint, membership-rw and timer-writer connections, so a host can compare them with the account's native census. It throws while a connection is down, redialing or adopting a credential, and reports none only after a successful close. `CotalEndpoint.nativeConnections()` and `MembershipFeedHandle.nativeDataConnections()` give the same bindings for one endpoint or one feed. No credential or connection object is returned.
+- a926514: `rotateDataAccountSigningKey` now keeps the account's policy. It used to re-issue the data-account claim from the stock defaults, so a rotation removed the account's connection limit, its leaf-node limit, every per-user revocation and its expiry. It now re-issues the claim as it stands with one new signing key as the whole signing-key set: subject, issuer, name, expiry, limits, revocations, imports and exports are kept, and a hibernated or retired claim stays hibernated or retired. A claim that cannot be re-issued whole refuses instead of losing something: one another operator signed, one for another account than the auth's account seed, an expired or not yet valid one, an invalid revocation map, a top-level JWT field outside the registered ones, and a scoped signing key. Callers that relied on a rotation to reset an account's limits or clear its revocations must now change the claim themselves.
+
 ## 0.164.8
 
 No changes in this release.

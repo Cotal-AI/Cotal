@@ -22,7 +22,7 @@ export const knownRefusals = Object.freeze([
     failedAssertions: commonFailures, requiredAssertions: [...commonSafety, 'no paused recovery record',
       'host selected remote user-sign-in mesh before upgrade', 'foreign container Manager remains running and untouched',
       'owned local stack cleanup succeeds', 'foreign container cleanup succeeds']},
-  {id: 'linux-npm-foreign-config-recovery', phases: Object.freeze(['candidate', 'published']), since: '0.0.0', fixedIn: null,
+  {id: 'linux-npm-foreign-config-recovery', phases: Object.freeze(['candidate', 'published']), since: '0.0.0', fixedIn: '0.164.8',
     issue: 'https://github.com/Cotal-AI/Cotal/issues/6747', exit: 3, stdout: '',
     stderr: 'Outcome unconfirmed\n  invalid update snapshot directory\n  Outcome: unknown\n  Code:    OPERATION_UNKNOWN\n',
     failedAssertions: ['upgrade exits successfully', 'CLI version is target', 'selected CLI reports target',
@@ -52,7 +52,7 @@ export function knownRefusalFor(cell, entries = knownRefusals) {
   return matches[0] ?? null;
 }
 const normalize = value => value.replace(/\r\n/g, '\n');
-const types = {space: '[a-zA-Z0-9_-]+', manager: '[a-z0-9]{31}', pid: '[1-9][0-9]*', owner: 'u_[a-z0-9]+'};
+const types = {space: '[a-zA-Z0-9_-]+', manager: '[a-z0-9]{26,31}', pid: '[1-9][0-9]*', owner: 'u_[a-z0-9]+'};
 function templateMatches(template, actual) {
   const seen = new Set();
   const escaped = normalize(template).split(/(\{\{\w+\}\})/).map(part => {

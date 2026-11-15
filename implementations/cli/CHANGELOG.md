@@ -1,5 +1,54 @@
 # @cotal-ai/cli
 
+## 0.164.12
+
+### Patch Changes
+
+- 201785c: Reconcile update extensions in one staged prefix transaction.
+  
+  Install compatible changed packages together, retain every package and registration check, and promote the complete verified prefix once. Failed package installation or validation leaves the live prefix unchanged. A protected promotion journal recovers interrupted directory swaps before extension declarations are read.
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- 5fce3ef: Fix the closing step of `cotal update --self` on a machine with the service installed. Since 0.164.10 that step compared the restarted daemon with the release that started the update instead of the release now installed. On Windows the update ended with exit 3 and "Outcome unconfirmed" although the new release was installed and reconciled. The closing step compares the daemon with the installed release again, as it did up to 0.164.9. Scheduled updates were not affected.
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- 44ce7f5: Keep a running command's release identity tied to the code it loaded during staged updates.
+  
+  Publishing a new canonical package manifest no longer makes an older bootstrapped CLI report or reconcile as the new release. Embedded API calls retain their entry package's version and provenance.
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- 35db3ae: Keep the machine service responsive during manual updates.
+  
+  Daemon startup checks the updater's full closure identity before taking restoration ownership, so it can answer readiness without waiting on the updater's installation lock. If that updater ends without finishing, the running daemon performs the existing guarded recovery or reports why recovery remains paused. A paused installation whose rollback completed can reconcile through the newly installed CLI after acquiring fresh hosted-Manager admission, without reinstalling the older defective updater.
+- 082d0e6: Restore passing terminal coverage for persona control-character escaping.
+  Prepare the catalog's space before showing its source, and check the unprepared-folder refusal separately.
+- 0bf357b: Reduce self-update registry verification time and show progress before long update steps.
+  
+  Read independent package metadata in bounded batches and ask npm to verify several archives per invocation. Keep all package, version, dependency, recovery and lock checks, with a private cache for each command.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+
 ## 0.164.8
 
 ### Patch Changes

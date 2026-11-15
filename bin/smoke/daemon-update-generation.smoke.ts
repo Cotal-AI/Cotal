@@ -133,4 +133,22 @@ for (const self of [true, false]) {
   }
 }
 
+// Platform lifecycle observation shares the existing wait deadline and always releases its pin.
+for (const fail of [false, true]) {
+  const order: string[] = [];
+  const started = Date.now();
+  const waiting = waitForInstalledDaemonGeneration("2.0.0", {
+    installed: () => true, timeoutMs: 1000,
+    lifecycle: async (paths, deadline) => {
+      assert.ok(paths.socket);
+      assert.ok(deadline >= started && deadline <= Date.now() + 1000);
+      return { async poll(remaining) { order.push("poll"); assert.ok(remaining > 0 && remaining <= 1000); if (fail) throw new Error("native lifecycle refused"); }, close() { order.push("close"); } };
+    },
+    query: (async () => { order.push("query"); return status("2.0.0"); }) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+  });
+  if (fail) await assert.rejects(waiting, /native lifecycle refused/);
+  else await waiting;
+  assert.deepEqual(order, fail ? ["poll", "close"] : ["poll", "query", "close"]);
+}
+
 emitSentinel({ passed: counted.cells(), failed: 0 });
