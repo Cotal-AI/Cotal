@@ -52,7 +52,7 @@ export function knownRefusalFor(cell, entries = knownRefusals) {
   return matches[0] ?? null;
 }
 const normalize = value => value.replace(/\r\n/g, '\n');
-const types = {space: '[a-zA-Z0-9_-]+', manager: '[a-z0-9]{31}', pid: '[1-9][0-9]*', owner: 'u_[a-z0-9]+'};
+const types = {space: '[a-zA-Z0-9_-]+', manager: '[a-z0-9]{26,31}', pid: '[1-9][0-9]*', owner: 'u_[a-z0-9]+'};
 function templateMatches(template, actual) {
   const seen = new Set();
   const escaped = normalize(template).split(/(\{\{\w+\}\})/).map(part => {

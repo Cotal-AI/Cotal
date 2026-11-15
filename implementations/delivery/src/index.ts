@@ -8,7 +8,7 @@
 import { deprecatedDaemonEntry, deprecatedDaemonEntrySummary, jsonFlag, warnDeprecatedDaemonEntry } from "@cotal-ai/workspace";
 import { feedbackIntakePreset, feedbackIntakeProcess, runNativeFeedbackIntake, validateNativeIntakeArguments } from "./feedback-intake-service.js";
 import { registry, type Command } from "@cotal-ai/core";
-import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle } from "./delivery.js";
+import { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLane, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle } from "./delivery.js";
 import { runFeedbackIntake } from "./feedback-intake.js";
 import { runDeliveryHost } from "./delivery-host.js";
 import { deliveryPreset, deliveryService, nativeDeliveryCommand } from "./delivery-service.js";
@@ -104,7 +104,7 @@ const daemonDeliver = deliveryCommands.find((command) => command.name === "__dae
 const deliver = deprecatedDaemonEntry("deliver", daemonDeliver, (args) => args.positionals[0] === "pending" ? "deliver pending" : "deliver");
 registry.register(...commands, deliver, nativeIntake, feedbackIntakePreset, feedbackIntakeProcess, nativeDeliveryCommand, deliveryPreset, deliveryService);
 
-export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle };
+export { assertUninjectedCredsSharesCwdRoot, DELIVERY_CREDS_KIND, deliveryCredsKey, openDeliveryLane, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, runDelivery, startDeliveryService, type DeliveryLane, type DeliveryLaneOptions, type DeliveryLog, type DeliveryNativeConnection, type DeliveryServiceHandle };
 export { runDeliveryHost } from "./delivery-host.js";
 export { hostKickAuthority, type KickAuthority, type KickRequest } from "./kick-authority.js";
 export { retainedBrokerSeed, type RetainedBrokerSeed } from "./sys-creds.js";

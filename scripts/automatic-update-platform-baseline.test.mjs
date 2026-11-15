@@ -3,6 +3,134 @@ import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
+
+test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
+  const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
+  const extensions = [before[0], {...before[1], version: '0.164.1011'}];
+  const fixture = { ...before[0], path: '/config/node_modules/cotal-upgrade-native-fixture', realpath: '/owned/native-fixture', files: {'package.json': 'package-hash', 'index.js': 'entry-hash', 'seat.mjs': 'seat-hash', 'record-seat.mjs': 'recorder-hash'} };
+  const installed = extensions.map(entry => ({pkg: entry.pkg, path: '/config/node_modules/' + entry.pkg, realpath: entry.pkg === fixture.pkg ? fixture.realpath : '/config/node_modules/' + entry.pkg, version: entry.version, files: entry.pkg === fixture.pkg ? {...fixture.files} : {}}));
+  const args = {extensions, before, target: '0.164.1011', fixture, installed};
+  assert.deepEqual(baseline.extensionVersionChecks(args), {recorded: true, installed: true});
+  for (const change of [
+    v => { v.extensions[1].version = '0.164.11'; },
+    v => { v.installed[1].version = '0.164.11'; },
+    v => { v.extensions[0].spec = '/foreign/fixture'; },
+    v => { v.extensions[0].version = '0.164.1011'; },
+    v => { v.fixture.pkg = '@cotal-ai/tmux'; },
+    v => { v.fixture.spec = '/foreign/fixture'; },
+    v => { v.installed[0].path = '/foreign/installed'; },
+    v => { v.installed[0].realpath = '/foreign/resolved'; },
+    v => { v.extensions.shift(); },
+    v => { v.installed[0].files['index.js'] = 'changed'; },
+    v => { delete v.installed[0].files['package.json']; },
+    v => { v.before = []; },
+    v => { v.extensions.push({...v.extensions[0]}); },
+    v => { v.extensions.push({pkg: 'unknown-local', version: '0.164.11', spec: '/other'}); v.installed.push({pkg: 'unknown-local', version: '0.164.11'}); },
+  ]) {
+    const changed = structuredClone(args); change(changed);
+    const result = baseline.extensionVersionChecks(changed);
+    assert.equal(result.recorded && result.installed, false);
+  }
+  assert.deepEqual(baseline.extensionVersionChecks({...args, fixture: undefined}), {recorded: false, installed: false});
+});
+
+test('owned fixture invariant uses real immutable file bytes and the driver records both inventories', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'fixture-invariant-')));
+  const path = join(root, 'fixture');
+  mkdirSync(path);
+  const source = {'package.json': JSON.stringify({name: 'cotal-upgrade-native-fixture', version: '0.164.11'}), 'index.js': 'export const fixture = true;', 'seat.mjs': 'setInterval(() => {}, 1000);', 'record-seat.mjs': '// owned recorder'};
+  for (const [name, bytes] of Object.entries(source)) writeFileSync(join(path, name), bytes);
+  const files = () => Object.fromEntries(Object.keys(source).map(name => [name, createHash('sha256').update(readFileSync(join(path, name))).digest('hex')]));
+  const entry = {pkg: 'cotal-upgrade-native-fixture', spec: path, version: '0.164.11'};
+  const fixture = {...entry, path, realpath: realpathSync(path), files: files()};
+  const installed = () => [{...entry, path, realpath: realpathSync(path), files: files()}];
+  const args = {extensions: [entry], before: [entry], target: '0.164.1011', fixture};
+  assert.deepEqual(baseline.extensionVersionChecks({...args, installed: installed()}), {recorded: true, installed: true});
+  writeFileSync(join(path, 'seat.mjs'), '// altered fixture');
+  assert.deepEqual(baseline.extensionVersionChecks({...args, installed: installed()}), {recorded: true, installed: false});
+  const driver = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(driver.indexOf('report.ownedLocalFixture =') > driver.indexOf("ok(await cotal('register daemon-hosted stand-in connector'"));
+  assert(driver.includes('fixture: report.ownedLocalFixture, installed: installedExtensions'));
+  assert(driver.includes("check('every recorded extension is at target', versions.recorded"));
+  assert(driver.includes("check('recorded extension package versions match target', versions.installed"));
+});
+
+test('hosted Manager observation retries only the explicit rate refusal within its original bound', async () => {
+  let now = 0, reads = 0;
+  const reply = state => ({exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {managers: [{space: 'space', instanceId: 'manager', state, reason: '✗ actor cli of owner u_qdvahusrmtf2a7iyw3oyzwk45q is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors'}]}})});
+  const observations = [];
+  const result = await baseline.observeHostedManager({space: 'space', timeoutMs: 3000, observations, now: () => now, sleep: async ms => { now += ms; }, read: async () => { reads++; return reply(reads === 1 ? 'starting' : 'answering'); }});
+  assert.equal(result.status.exit, 0); assert.equal(reads, 2); assert.equal(now, 1000); assert.equal(observations.length, 2);
+  for (const reason of ['not answering', 'actor other is over its limit of 60 connects a minute - retry in 1s', 'actor cli of owner u_owner is over its limit of 60 connects a minute - retry in 0s']) {
+    const value = reply('starting'); const body = JSON.parse(value.stdout); body.result.managers[0].reason = reason; value.stdout = JSON.stringify(body);
+    const rejected = [];
+    await assert.rejects(baseline.observeHostedManager({space: 'space', timeoutMs: 3000, observations: rejected, now: () => 0, sleep: async () => {}, read: async () => value}));
+    assert.equal(rejected.length, 1);
+    assert.deepEqual(rejected[0].status, value);
+  }
+  now = 0; reads = 0;
+  await assert.rejects(baseline.observeHostedManager({space: 'space', timeoutMs: 1000, observations: [], now: () => now, sleep: async ms => { now += ms; }, read: async () => { reads++; return reply('starting'); }}));
+  assert.equal(reads, 1); assert.equal(now, 0);
+});
+
+test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
+  const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
+  assert.equal(baseline.candidateNextOptions(options,true),'candidate');
+  assert.equal(baseline.candidateNextOptions({},false),undefined);
+  for(const change of [{candidate:undefined},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'latest'},{'next-hop-phase':undefined}]) assert.throws(()=>baseline.candidateNextOptions({...options,...change},true));
+  assert.throws(()=>baseline.candidateNextOptions(options,false));
+  assert.equal(baseline.candidateNextOptions({...options,source:'0.164.10',layout:'installer','next-hop-source':'0.164.10'},true),'source-0.164.10');
+  assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
+});
+
+function hostedChainOptions() {
+  return { candidate: '/A', 'candidate-next': '/B', 'next-hop-source': '0.164.10', 'next-hop-phase': 'candidate', source: '0.164.10', layout: 'npm', state: 'agent', method: 'self', 'daemon-hosted-manager': 'true', 'stop-agents': 'true', prepare() {} };
+}
+
+test('source 0.164.10 admits explicitly authorized disposable Linux npm hosted consent chain', { skip: process.platform !== 'linux' }, () => {
+  for (const phase of ['candidate', 'published']) {
+    assert.equal(baseline.candidateNextOptions({ ...hostedChainOptions(), 'next-hop-phase': phase }, true), 'source-0.164.10');
+  }
+});
+
+test('hosted consent next hop rejects every missing authorization and unsupported agent layout', () => {
+  const options = hostedChainOptions();
+  for (const change of [
+    { 'next-hop-source': 'candidate' }, { source: '0.164.11' },
+    { 'daemon-hosted-manager': undefined }, { 'daemon-hosted-manager': 'false' },
+    { 'stop-agents': undefined }, { 'stop-agents': 'false' },
+    { prepare: undefined }, { prepare: true }, { layout: 'installer' },
+    { method: 'scheduler' }, { candidate: undefined }, { 'next-hop-phase': undefined },
+  ]) assert.throws(() => baseline.candidateNextOptions({ ...options, ...change }, true), JSON.stringify(change));
+  assert.throws(() => baseline.candidateNextOptions(options, false));
+  for (const platform of ['darwin', 'win32']) {
+    assert.throws(() => baseline.daemonHostedManagerOptions(options, { hosted: true, platform }));
+  }
+});
+
+test('next-hop driver captures refused source state before any second hop or cleanup', () => {
+  const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
+  const between=source.indexOf("await captureServiceEvidence('between-hops')");
+  const whole=source.indexOf('report.nextHop.intermediate = intermediateWholeMachine',between);
+  const refusal=source.indexOf('report.nextHop.firstHop.refusal = matchSource16410Refusal',between);
+  const second=source.indexOf("update = await cotal('candidate second hop under test'",between);
+  assert(between>0 && between<whole && whole<refusal && refusal<second);
+  assert(source.indexOf('assert(report.nextHop.intermediate.passed',between)<second);
+  assert(source.indexOf('report.candidateSourceInvocation = candidateSourceIdentity',between)<second);
+  assert(source.indexOf('overlay.activateTarget()',between)<second);
+  assert(second<source.indexOf("await captureServiceEvidence('after-update')",second));
+  assert(!source.slice(between,second).includes("['daemon', 'start'"));
+});
+test('published paired source refuses public latest supersession before either native action', () => {
+  const options={'candidate-next':'/B','next-hop-phase':'published'};
+  assert.doesNotThrow(()=>baseline.assertPublishedPairTarget(options,'0.164.11','0.164.11'));
+  assert.throws(()=>baseline.assertPublishedPairTarget(options,'0.164.12','0.164.11'),/public target changed/);
+  assert.doesNotThrow(()=>baseline.assertPublishedPairTarget({...options,'next-hop-phase':'candidate'},'0.164.10','0.164.11'));
+  const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
+  assert(source.includes('assertPublishedPairTarget(options, report.resolvedBeforeCell'));
+  assert(source.includes('assertPublishedPairTarget(options, report.publicPairTargetBeforeAction'));
+  assert(source.includes('--registry=https://registry.npmjs.org/'));
+});
 import { spawnNameError } from '@cotal-ai/core';
 
 test('daemon-hosted fixture name satisfies the actual user-mode actor rule', () => {
@@ -45,6 +173,8 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
   assert.match(baseline.foreignStackCleanupCommand, /cotal down --with-agents --yes$/);
   assert(source.includes('const stackEnded = foreignStackEnded('));
+  assert(source.includes("const endObservation = ok(await call('observe container immediately after stock down'"));
+  assert(source.includes("observedAt: report.calls.findLast(entry => entry.label === 'observe container immediately after stock down').startedAt"));
   assert(source.includes("assert(stackEnded, 'owned stock stack end was not confirmed')"));
   assert(source.indexOf("'observe container immediately after stock down'") < source.indexOf("'stop owned foreign supervisor and broker'"));
   for (const name of ['owned local stack cleanup succeeds', 'foreign container cleanup succeeds', 'source generation unchanged']) assert(source.includes(name));
@@ -193,7 +323,8 @@ test('source-root refuses non-repositories and untracked product inputs', () => 
   const outside = mkdtempSync(join('/var/tmp/upgrade-matrix', 'not-git-'));
   assert.throws(() => baseline.resolveCandidateSourceRoot(outside));
 });
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { create } from 'tar';
 import { parse as parseYaml } from 'yaml';
@@ -293,7 +424,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 22 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 28 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);

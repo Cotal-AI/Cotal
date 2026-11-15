@@ -1,5 +1,25 @@
 # cotal-ai
 
+## 0.164.12
+
+### Patch Changes
+
+- 959b278: Fix the Windows desktop app's first screen. In 0.164.10 and 0.164.11 the bundled CLI did nothing when Node was given its script through an extended-length (`\\?\`) path, which is how the app starts it, so every request from the app ended in "This operation could not finish". Installing the 0.164.12 app repairs it; the `cotal` command installed with npm was not affected.
+- Updated dependencies [9ac390d]
+- Updated dependencies [4bc2211]
+- Updated dependencies [152dceb]
+- Updated dependencies [201785c]
+  - @cotal-ai/delivery@0.164.12
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/connector-core@0.164.12
+  - @cotal-ai/cli@0.164.12
+  - @cotal-ai/manager@0.164.12
+  - @cotal-ai/auth@0.164.12
+  - @cotal-ai/runtime@0.164.12
+  - @cotal-ai/registry@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/seat@0.164.12
+
 ## 0.164.11
 
 ### Patch Changes

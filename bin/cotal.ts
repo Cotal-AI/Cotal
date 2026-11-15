@@ -147,6 +147,13 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
 }
 
 const executionStarted = Symbol.for("cotal.execution.started");
+/** Whether Node was started on this file. Both sides go through the native canonical path, because
+ *  Node keeps a Windows extended-length (`\\?\`) or short-name spelling in `argv[1]` and not in the
+ *  module URL. */
+function startedHere(): boolean {
+  return !!process.argv[1] && realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
+}
+
 /** Explicit CLI delegation for a wrapper that imports the bootstrap rather than launching it. */
 export function startExecutionProgram(): void {
   if (Reflect.get(globalThis, executionStarted)) return;
@@ -158,12 +165,13 @@ export function startExecutionProgram(): void {
     process.exitCode = 1;
   }
   if (selected) {
+    const direct = startedHere();
     if (!import.meta.url.endsWith(".ts")) Object.defineProperty(globalThis, Symbol.for("cotal.execution.identity"), {
-      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), launchEntry: process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url) ? resolve(process.argv[1]) : fileURLToPath(import.meta.url), loadedEntry: join(selected.root, "dist", "cotal.js") }),
+      value: Object.freeze({ logicalEntry: fileURLToPath(import.meta.url), launchEntry: direct ? resolve(process.argv[1]!) : fileURLToPath(import.meta.url), loadedEntry: join(selected.root, "dist", "cotal.js") }),
       configurable: false, writable: false,
     });
-    if (selected.retained || !process.argv[1] || realpathSync(process.argv[1]) !== fileURLToPath(import.meta.url)) process.argv[1] = join(selected.root, "dist", "cotal.js");
+    if (selected.retained || !direct) process.argv[1] = join(selected.root, "dist", "cotal.js");
     void import(pathToFileURL(selected.entry).href);
   }
 }
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) startExecutionProgram();
+if (startedHere()) startExecutionProgram();

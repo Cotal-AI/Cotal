@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, cpSync, readFileSync, readdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, cpSync, readFileSync, readdirSync, realpathSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -28,6 +28,12 @@ try {
   console.log('PASS relocated stock CLI reports its pinned version');
   const about = run(['daemon', 'desktop'], '{"op":"about"}\n'); assert.equal(about.status, 0); assert.equal(JSON.parse(about.stdout).result.version, manifest.version);
   console.log('PASS relocated desktop bridge runs with bundled Node');
+  if (process.platform === 'win32') {
+    // The app passes Tauri's resource path, which carries the extended-length prefix.
+    const extended = spawnSync(node, [`\\\\?\\${realpathSync.native(cli)}`, 'daemon', 'desktop'], { cwd: scratch, env, input: '{"op":"about"}\n', encoding: 'utf8', timeout: 30000 });
+    assert.equal(extended.status, 0); assert.equal(JSON.parse(extended.stdout).result.version, manifest.version);
+    console.log('PASS desktop bridge runs through an extended-length runtime path');
+  }
   const status = run(['daemon', 'desktop'], '{"op":"status"}\n'); assert.equal(status.status, 0); assert.equal(JSON.parse(status.stdout).ok, false);
   assert.equal(existsSync(join(env.XDG_RUNTIME_DIR, 'cotal/daemon.sock')), false);
   console.log('PASS missing daemon remains unavailable; no service started');

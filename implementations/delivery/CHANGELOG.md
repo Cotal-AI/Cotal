@@ -1,5 +1,14 @@
 # @cotal-ai/delivery
 
+## 0.164.12
+
+### Patch Changes
+
+- 9ac390d: `openDeliveryLane` now returns a `DeliveryLane`, which adds `nativeConnections()` to the lane: the server id and client id of each data-account connection the lane holds, as `startDeliveryService` already reports for a hosted context. A host that runs delivery from a workstation root can compare the list with the account's native census. Existing callers are unaffected.
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+
 ## 0.164.11
 
 ### Patch Changes
