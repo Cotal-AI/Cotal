@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.164.16
+
+### Patch Changes
+
+- 9c68b92: The desktop app now checks background service status every 60 seconds while its window is hidden instead of every second, and refreshes immediately when the window is shown. Tray icon click events also request an immediate refresh where the platform delivers them, while on Linux the system panel renders the tray menu from `dbusmenu` without emitting tray icon click events, so the hidden tray menu can reflect state up to 60 seconds old until the window is opened.
+- e433bee: Reconcile installed extensions automatically after a manual `npm install -g` upgrade. When automatic updates are on, the background service's scheduled check finishes any pending extension reconciliation even when the CLI is already at the latest release, and the CLI launch gate brings operator-installed official extensions current alongside the built-in connectors or refuses with `cotal update --self` if it cannot.
+- f305af8: Stage complete execution generations before switching the installed CLI during updates.
+  
+  The updater checks the retained target before publication, keeps the original execution graph intact for running commands, refuses staged generation retention inside bundled desktop runtimes, normalizes execution identity paths with native realpaths across platforms, retires superseded active descriptors when an in-place global install takes over, and reports retained-generation provenance under `cotal status --verbose` and `--json`. Retained execution journals restore the previous selection without reinstalling the live package, while interrupted records from earlier releases keep their existing recovery path.
+- ae15dac: Start a stopped owned daemon service during manual `cotal update --self` across Linux, macOS, and Windows and require the daemon to answer at the target version before completing the update. When no daemon is running before a manual update, the updater checks that the recorded service belongs to this installation and is enabled before starting the systemd user service, LaunchAgent, or Windows scheduled task, leaving disabled or foreign-owned services stopped and waiting for readiness on enabled owned services instead of accepting a reconciliation child exit code alone.
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+- Updated dependencies [ae15dac]
+  - @cotal-ai/cli@0.164.16
+  - @cotal-ai/manager@0.164.16
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/auth@0.164.16
+  - @cotal-ai/delivery@0.164.16
+  - @cotal-ai/runtime@0.164.16
+  - @cotal-ai/connector-core@0.164.16
+  - @cotal-ai/registry@0.164.16
+  - @cotal-ai/core@0.164.16
+  - @cotal-ai/seat@0.164.16
+
 ## 0.164.15
 
 ### Patch Changes
