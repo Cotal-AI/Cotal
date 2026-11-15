@@ -7,7 +7,7 @@ import { updateNotice, updatePolicy, updateSummary, newerVersion, releaseUrl, in
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { refreshPresence, setLoginPreference, startPresence } from "./presence";
-import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
+import { canonicalProvider, activeComputerAccount, catalogRefreshNotice, keptCredentialsNotice, type ComputerAccount, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, COTAL_CLOUD_IDP, isCotalCloudIdp, DaemonRefusal, initialSpace, computerSpaces, computerSpaceState, computerSummary, shownSpaceLabel, shownSpaceKind, shownAccountLabel, statusPollDelayMs, type ComputerSpace, type AccountSpace, type Frame, type Request } from "./model";
 import { icon, type Icon } from "./icons";
 import { reportFirstPaint } from "./first-paint";
 import "./style.css";
@@ -339,6 +339,9 @@ let editing = false;
 let completedSetup = false;
 let observedReadySpaces: string[] = [];
 let poll: ReturnType<typeof setTimeout> | undefined;
+let windowHidden = false;
+let tickRunning = false;
+let lastTickAt = 0;
 let connection: { space: string; state: string } | undefined;
 let refreshGeneration = 0;
 const accountSpaces = new Map<string, AccountSpace>();
@@ -1098,6 +1101,26 @@ async function start(): Promise<void> {
     notice("Browser preview only. Native controls are unavailable here. No connection is simulated.");
     el<HTMLInputElement>("autostart").disabled = true; document.querySelector(".app")!.classList.remove("loading"); return;
   }
+  const schedulePoll = () => {
+    if (poll) clearTimeout(poll);
+    poll = setTimeout(() => void tick(), statusPollDelayMs(windowHidden, computerAccount?.hostSupport));
+  };
+  const tick = async () => {
+    if (tickRunning) return;
+    if (poll) { clearTimeout(poll); poll = undefined; }
+    tickRunning = true;
+    try {
+      if (!busy && !appApplyRunning) {
+        lastTickAt = Date.now();
+        await refresh();
+        void checkAppUpdates();
+        if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(false, true);
+      }
+    } finally {
+      tickRunning = false;
+      if (initialized) schedulePoll();
+    }
+  };
   try {
     await startPresence(notice, { settings: openSettings, dashboard: openDashboard });
     await onOpenUrl(receiveLinks); const initialLinks = await getCurrent(); if (initialLinks?.length) receiveLinks(initialLinks);
@@ -1112,7 +1135,19 @@ async function start(): Promise<void> {
       if (appUpdate.phase === "downloading" || appUpdate.phase === "installing") appliedUpdate = undefined;
       renderSettings();
     });
-    await listen("desktop-hidden", () => void applyAppUpdate());
+    await listen("desktop-hidden", () => {
+      windowHidden = true;
+      if (initialized && !tickRunning) schedulePoll();
+      void applyAppUpdate();
+    });
+    await listen("desktop-shown", () => {
+      const wasHidden = windowHidden;
+      windowHidden = false;
+      if (wasHidden && initialized && !tickRunning) void tick();
+    });
+    await listen("desktop-tray-open", () => {
+      if (windowHidden && initialized && !tickRunning && Date.now() - lastTickAt >= 1000) void tick();
+    });
     try { appliedUpdate = await invoke<AppUpdateReceipt | undefined>("app_update_receipt") ?? undefined; }
     catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
     void checkAppUpdates();
@@ -1127,10 +1162,10 @@ async function start(): Promise<void> {
     refusal(error);
   }
   initialized = true;
+  lastTickAt = Date.now();
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
-  const tick = async () => { if (!busy && !appApplyRunning) { await refresh(); void checkAppUpdates(); if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(false, true); } poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
-  poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000);
+  schedulePoll();
 }
 document.querySelector(".connection-card")!.addEventListener("transitionend", event => {
   if ((event as TransitionEvent).propertyName !== "height") return;
@@ -1166,6 +1201,6 @@ document.addEventListener("keydown", event => {
 });
 window.addEventListener("beforeunload", () => { if (poll) clearTimeout(poll); if (countdown) clearInterval(countdown); });
 if (isTauri()) {
-  void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke("first_paint"))
-    .then(start, error => { notice(String(error), true); return start(); });
+  void reportFirstPaint(document.querySelector<HTMLImageElement>(".brand-mark")!, document.querySelector<HTMLElement>(".sidebar")!, () => invoke<boolean | null>("first_paint"))
+    .then(visible => { if (visible === false) windowHidden = true; return start(); }, error => { notice(String(error), true); return start(); });
 } else void start();
