@@ -22,7 +22,7 @@ try {
  assert.equal(updater.status().automatic, false);
  assert.match(updater.status().lastResult, /installed 2.0.0.*repair failed/);
  clearUpdateRecovery();
- assert.equal(updater.status().automatic, ["linux", "darwin"].includes(process.platform) && process.env.COTAL_NO_UPDATE_CHECK !== "1");
+ assert.equal(updater.status().automatic, ["linux", "darwin", "win32"].includes(process.platform) && process.env.COTAL_NO_UPDATE_CHECK !== "1");
  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
  try {
   Object.defineProperty(process, "platform", { value: "darwin" });
@@ -64,10 +64,12 @@ try {
   assert.equal(launchUpdateFailureCount(2, 1), 2, "replacement already counted the attempt");
   assert.throws(() => launchUpdateFailureCount(-1, 0));
   if (process.platform !== "darwin") assert.throws(() => startLaunchUpdate(0), /requires macOS/);
-  for (const value of ["win32", "freebsd"]) {
+  Object.defineProperty(process, "platform", { value: "win32" });
+  assert.equal(updater.status().automatic, true, "Windows schedules through its one-shot owned task");
+  for (const value of ["freebsd"]) {
    Object.defineProperty(process, "platform", { value });
    assert.equal(updater.status().automatic, false, `${value} must not install automatically`);
-   assert.match(updater.status().lastResult, /Automatic installation is unavailable on (Windows|freebsd) in this release\. Run `cotal update --self` here/);
+   assert.match(updater.status().lastResult, /Automatic installation is unavailable on freebsd in this release\. Run `cotal update --self` here/);
   }
  } finally { Object.defineProperty(process, "platform", platform); }
  emitSentinel({ passed: counted.cells(), failed: 0 });

@@ -1,3 +1,4 @@
+import { readWindowsUpdatePause, WINDOWS_INTERRUPTED_UPDATE } from "./update-windows-state.js";
 import { readUpdateRecovery } from "./updates.js";
 import { recoveryDisposition } from "./update-recovery.js";
 import { spawn } from "node:child_process";
@@ -71,6 +72,7 @@ export function newerUpdate(latest: string, current: string): boolean {
 
 export function cachedUpdateSummary(current: string): string {
   try {
+    if (process.platform === "win32" && readWindowsUpdatePause()) return WINDOWS_INTERRUPTED_UPDATE;
     const recovery = readUpdateRecovery();
     if (recovery) return `update needs repair: installed ${recovery.installed}; ${recoveryDisposition(recovery).instruction}`;
   } catch { return "update state unreadable; automatic updates paused"; }
