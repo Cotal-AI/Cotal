@@ -44,7 +44,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 45 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 47 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -62,6 +62,7 @@ product coordinates:
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Candidate manual update followed by the staged daemon's scheduler to a second synthetic release, on Linux npm/installer under umask `0002` and macOS npm | 3 |
 | Linux updater session without `XDG_RUNTIME_DIR`, with a live daemon (safe refusal) and without a daemon (successful update) | 2 |
+| Published 0.164.16 and 0.164.17 target-check escape notices with two scheduler failures and an unchanged-budget waiting observation | 2 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
@@ -182,7 +183,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all 45 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 47 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the

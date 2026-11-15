@@ -228,6 +228,11 @@ export function boundedCells(plan) {
       expectedNoRuntimeRefusal: nativeState === 'daemon',
       requiredAssertions: nativeState === 'daemon' ? ['runtime-directory-refusal', 'source-daemon-unchanged', 'no-staging-created', 'no-recovery', 'owned-native-cleanup'] : ['target-version', 'extension-versions', 'inventory-preserved', 'status-healthy', 'no-recovery', 'no-manual-intervention', 'candidate-source-identity', 'candidate-next-target', 'next-hop-success', 'runtime-directory-omitted', 'no-native-service', 'generation-store-protected'],
     });
+    for (const sourceVersion of ['0.164.16', '0.164.17']) add('linux', 'installer', `source-${sourceVersion}-staged-refusal`, null, {
+      sourceVersion, sourceKind: 'npm-exact-source', targetVersion: plan.targetVersion,
+      targetSource: plan.targetSource, nodeVersion: '24.18.0', serviceUmask: '0002', publishedStagedRefusal: true,
+      requiredAssertions: ['published-staged-refusal', 'unchanged-failure-budget', 'source-unchanged', 'generation-store-protected', 'no-recovery', 'owned-native-cleanup'],
+    });
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,

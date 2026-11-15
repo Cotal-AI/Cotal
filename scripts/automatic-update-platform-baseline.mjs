@@ -923,6 +923,10 @@ export async function matrixCell(options) {
         }
         check('published scheduler preserves two-failure budget and leaves no staging',publishedSchedulerBudget(report.publishedSchedulerObservations),report.publishedSchedulerObservations);
         const selected=inspectInstalledUpdateRoute(pkg,process.platform);
+        const bytes=Buffer.from(JSON.stringify({update,observations:report.publishedSchedulerObservations,selected}));
+        const artifact=`${id}-published-refusal.txt`;
+        writeFileSync(join(output,artifact),bytes,{flag:'wx',mode:0o600});
+        report.publishedRefusal={selected,receipt:{artifact,bytes:bytes.length,sha256:digest(bytes)}};
         check('published refusal keeps original CLI selected',selected.selectedCliVersion===report.source,selected);
         report.expectedRefusal={kind:'published target-check escape notice',passed:report.assertions.every(row=>row.passed)};
         report.result='failed';
@@ -1456,7 +1460,7 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
-    if (process.platform !== 'win32' && (nextHopMode || options['generation-store-census'] === 'true')) {
+    if (process.platform !== 'win32' && (oldSourceRefusal || nextHopMode || options['generation-store-census'] === 'true')) {
       report.generationStore = inspectGenerationStore(join(prefix, 'lib', '.cotal-generations'), { required: report.result === 'passed' && !desktopRuntime && !['npm', 'installer'].includes(options['follow-on-action']) });
       check('generation store is settled and protected', report.generationStore.passed, report.generationStore);
       if (!report.generationStore.passed) report.result = 'failed';
