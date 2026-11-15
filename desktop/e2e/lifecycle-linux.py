@@ -454,6 +454,11 @@ def parse_dbus_monitor_messages(lines, service, menu_path):
             if member == 'AboutToShow':
                 open_calls.append({'member': member, 'sender': sender_name,
                                    'destination': dest_name, 'serial': serial, 'header': header})
+            elif member == 'AboutToShowGroup':
+                ids = [int(m) for m in re.findall(r'^\s*int32\s+(-?\d+)', body, re.MULTILINE)]
+                if 0 in ids:
+                    open_calls.append({'member': member, 'ids': ids, 'sender': sender_name,
+                                       'destination': dest_name, 'serial': serial, 'header': header})
             elif member == 'GetLayout':
                 open_calls.append({'member': member, 'sender': sender_name,
                                    'destination': dest_name, 'serial': serial, 'header': header})
@@ -469,9 +474,22 @@ def parse_dbus_monitor_messages(lines, service, menu_path):
                                        'sender': sender_name, 'destination': dest_name,
                                        'serial': serial, 'header': header})
                 elif event_kind == 'clicked':
-                    clicked_events.append({'id': event_id, 'event': 'clicked',
+                    clicked_events.append({'member': 'Event', 'id': event_id, 'event': 'clicked',
                                            'sender': sender_name, 'destination': dest_name,
                                            'serial': serial, 'header': header})
+            elif member == 'EventGroup':
+                for int_val, str_val in re.findall(
+                        r'struct\s*\{\s*int32\s+(-?\d+)\s+string\s+"([^"]*)"', body):
+                    event_id = int(int_val)
+                    if str_val == 'opened':
+                        open_calls.append({'member': 'EventGroup', 'event': 'opened', 'id': event_id,
+                                           'sender': sender_name, 'destination': dest_name,
+                                           'serial': serial, 'header': header})
+                    elif str_val == 'clicked':
+                        clicked_events.append({'member': 'EventGroup', 'id': event_id,
+                                               'event': 'clicked', 'sender': sender_name,
+                                               'destination': dest_name, 'serial': serial,
+                                               'header': header})
         elif header.startswith('method return ') and sender_name == service:
             reply_match = re.search(r'reply_serial=(\d+)', header)
             reply_serial = reply_match.group(1) if reply_match else ''
@@ -883,11 +901,14 @@ try:
             raise RuntimeError('Expected the owned xfce4-panel native AppIndicator host')
         report['indicator'] = owned_indicator()
         snapshot_watch, stop_watch = start_dbus_menu_watch(report['indicator'])
+        right_clicked = False
+        menu_selected = False
         try:
             # Locate the tray item as the single child of the panel's depth-3 plugin
             # container by its bounds in this run, then watch dbus-monitor and navigate
             # the opened menu with keyboard Down/Return.
             report['indicatorClick'] = click_panel_tray_item(button=3)
+            right_clicked = True
             time.sleep(0.4)
             report['menu'] = save('menu', snapshot())
             display = args.diagnostics / f'{stamp}-menu-display.png'
@@ -900,6 +921,14 @@ try:
                                            if row.get('role') in {'menu item', 'check menu item'}]
             label = 'Settings…' if args.action == 'settings' else 'Quit app (computer stays connected)'
             report['menuClick'] = select_open_menu_item(label, report['indicator'], snapshot_watch)
+            menu_selected = True
+        except Exception:
+            if right_clicked and not menu_selected:
+                try:
+                    command('xdotool', 'key', 'Escape')
+                except Exception:
+                    pass
+            raise
         finally:
             final_watch = stop_watch()
             if 'menuWatch' not in report:

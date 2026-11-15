@@ -556,6 +556,46 @@ class MenuWatchTests(unittest.TestCase):
         self.assertEqual(result['layoutObservation'], 'no layout fetch observed')
         self.assertEqual(result['openCalls'][0]['senderRole'], 'panel')
 
+    def test_about_to_show_group_and_event_group_are_counted_with_sender_checks(self):
+        keys = []
+        env = self.environment(keys)
+        lines = [
+            'method call time=1.0 sender=:1.6 -> destination=:1.40 serial=58 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=AboutToShowGroup',
+            '   array [',
+            '      int32 0',
+            '   ]',
+            'method call time=1.1 sender=:1.6 -> destination=:1.40 serial=59 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=EventGroup',
+            '   array [',
+            '      struct {',
+            '         int32 0',
+            '         string "opened"',
+            '         variant             int32 0',
+            '         uint32 0',
+            '      }',
+            '      struct {',
+            '         int32 5',
+            '         string "clicked"',
+            '         variant             int32 0',
+            '         uint32 0',
+            '      }',
+            '   ]',
+        ]
+        parsed = env['parse_dbus_monitor_messages'](
+            lines, ':1.40', '/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu')
+        self.assertEqual([c['member'] for c in parsed['openCalls']], ['AboutToShowGroup', 'EventGroup'])
+        self.assertEqual(parsed['clickedEvents'][0]['member'], 'EventGroup')
+        self.assertEqual(parsed['clickedEvents'][0]['id'], 5)
+        result = env['select_open_menu_item'](
+            'Quit app (computer stays connected)', deepcopy(ConnectedViewTests.indicator),
+            lambda: deepcopy(parsed))
+        self.assertEqual(result['id'], 5)
+        self.assertEqual(result['downSteps'], 3)
+        self.assertEqual(result['openCalls'][0]['senderRole'], 'panel-wrapper')
+        self.assertEqual(result['clickedEvents'][0]['senderRole'], 'panel-wrapper')
+        self.assertEqual(keys, [
+            ['xdotool', 'key', 'Down'], ['xdotool', 'key', 'Down'],
+            ['xdotool', 'key', 'Down'], ['xdotool', 'key', 'Return']])
+
     def test_foreign_sender_pid_refuses_menu_watch(self):
         keys = []
         env = self.environment(keys, sender_pid=999, sender_parent=1,
