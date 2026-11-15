@@ -223,9 +223,12 @@ extra failures and listed cells that turn green fail the summary. A green listed
 the entry. Raw reports stay failed. The census reports expected refusals separately from genuine
 upgrade passes, with separate summary acceptance and full upgrade acceptance.
 
-The standalone consent entry names [#6802](https://github.com/Cotal-AI/Cotal/issues/6802). The container
+All 40 required cells have no active known refusal on current releases. The standalone consent entry
+for [#6802](https://github.com/Cotal-AI/Cotal/issues/6802) is retired now that the staged updater
+preserves a running standalone Manager's loaded execution generation across the update. The container
 entry names [#6785](https://github.com/Cotal-AI/Cotal/issues/6785) and applies only to source 0.164.6;
-source 0.164.7 must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747).
+source 0.164.7 and later must pass. The recovery entry names [#6747](https://github.com/Cotal-AI/Cotal/issues/6747)
+and is capped at `fixedIn: "0.164.8"`.
 Entries with no released fix use `fixedIn: null`. Set the cutoff only when a release carries the fix,
 then remove stale entries when their listed source turns green. A packed target fix does not change
 which installed source executes the first update attempt.
