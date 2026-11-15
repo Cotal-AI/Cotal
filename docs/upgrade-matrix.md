@@ -75,6 +75,11 @@ rechecks the final state rather than trusting the updater's success output. A mi
 or its hash-verified JSON-null clear is healthy; a paused, unreadable or unobserved record is not.
 These are separate from unattended scheduler cells. A failed manual service update stays red until fixed.
 
+POSIX paired-update cells inspect the generation store before cleanup, including after a failed update.
+A transient `.installing-` or `.preparing-` entry, a group- or other-writable regular file or directory,
+an unreadable entry, or a census that exceeds its bound fails the cell. Child symbolic links are recorded
+without following them. A successful staged route requires the store to exist.
+
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
 installed candidate's public manual updater. The synthetic target comes from the same immutable source,
 with the patch number increased by 1000 before its distributions and seed payloads are built. Six POSIX

@@ -20,6 +20,7 @@ import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
+import { inspectGenerationStore } from './generation-store-census.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -1340,6 +1341,11 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
+    if (process.platform !== 'win32' && (nextHopMode || options['generation-store-census'] === 'true')) {
+      report.generationStore = inspectGenerationStore(join(prefix, 'lib', '.cotal-generations'), { required: report.result === 'passed' && !desktopRuntime && !['npm', 'installer'].includes(options['follow-on-action']) });
+      check('generation store is settled and protected', report.generationStore.passed, report.generationStore);
+      if (!report.generationStore.passed) report.result = 'failed';
+    }
     if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
       const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
         ? report.target
