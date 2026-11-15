@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -64,6 +64,37 @@ export function executionLocation(path: string): void {
     throw new Error(`execution location belongs to another account: ${path}`);
 }
 
+/** Whether accounts other than the owner run this installation: they can read and search its
+ *  package folder. The generation store beside it is then as readable as the package, and never
+ *  writable by them. */
+export function executionShared(installed: string): boolean {
+  return process.platform !== "win32" && (lstatSync(installed).mode & 0o005) === 0o005;
+}
+
+const PUBLISHED = /\n\/\/ cotal execution publication [a-f0-9]{32}\n$/;
+
+/** 0.164.16 and 0.164.17 kept the store, its records and the published bootstrap private to the
+ *  updating account, which locked every other account out of a system-wide installation. The
+ *  store's owner opens them for reading here. */
+function shareExecutionStore(installed: string): void {
+  try {
+    if (typeof process.getuid !== "function" || !executionShared(installed)) return;
+    const store = executionStore(installed), info = lstatSync(store, { throwIfNoEntry: false });
+    if (!info?.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o005) === 0o005) return;
+    const open = (path: string, directory: boolean): void => {
+      const entry = lstatSync(path, { throwIfNoEntry: false });
+      if (entry && (directory ? entry.isDirectory() : entry.isFile())) chmodSync(path, directory ? 0o755 : 0o644);
+    };
+    for (const name of readdirSync(store)) {
+      if (ID.test(name)) { open(join(store, name), true); open(join(store, name, "inventory.json"), false); }
+      else if (/^\.active-[a-f0-9]{64}\.json$/.test(name)) open(join(store, name), false);
+    }
+    const bootstrap = join(installed, "dist", "cotal.js");
+    if (PUBLISHED.test(readFileSync(bootstrap, "utf8"))) chmodSync(bootstrap, 0o755);
+    chmodSync(store, 0o755);
+  } catch { /* the store stays private to its owner, as it was */ }
+}
+
 export function executionBinding(root: string): ExecutionBinding {
   const meta = object(JSON.parse(readFileSync(join(root, "package.json"), "utf8")));
   if (meta.name !== "cotal-ai" || typeof meta.version !== "string" || !meta.version)
@@ -124,9 +155,17 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
       throw new Error("retained execution generations are unavailable on the desktop runtime");
     return initial();
   }
+  shareExecutionStore(installed);
   let value: unknown;
   try { value = executionRecord(descriptorPath); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return initial(); throw error; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return initial();
+    // Another account's store that this account cannot read. A bootstrap the package manager
+    // installed carries no publication line, and no descriptor selects a generation for it.
+    if ((code === "EACCES" || code === "EPERM") && !PUBLISHED.test(readFileSync(join(installed, "dist", "cotal.js"), "utf8"))) return initial();
+    throw error;
+  }
   const descriptor = object(value), binding = object(descriptor.binding), current = executionBinding(installed);
   if (typeof binding.name !== "string" || typeof binding.version !== "string" || !binding.version ||
       typeof binding.bootstrapSha256 !== "string" || !HASH.test(binding.bootstrapSha256)) throw new Error("invalid execution artifact binding");

@@ -71,6 +71,13 @@ An npm install runs `npm install -g cotal-ai@latest`. From 0.164.18 the update n
 those modes, and automatic updates resume. A stuck 0.164.16 or 0.164.17 daemon that reaches a
 newer release prints the same instruction in `cotal daemon status` and removes the leftover folders.
 
+A system-wide installation, one that root owns and other accounts run, has a further fault. After
+root runs `cotal update --self` there, the other accounts can no longer start `cotal`: the shell
+reports that permission is denied, or the command ends with an access error for a file under
+`lib/.cotal-generations`. Root installs the current version once with
+`npm install -g cotal-ai@latest`. From 0.164.18 the update keeps such an installation readable by
+the accounts that run it.
+
 A machine that reached 0.164.16 or 0.164.17 through `cotal update --self` has a second fault. Its
 daemon's automatic update ends with `staged update requires an installed npm or pnpm package`, and
 `cotal daemon status` stays at `updating to <version>`. Install the current version once by hand

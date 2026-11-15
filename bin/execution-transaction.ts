@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
+import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
 import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
 
 interface ExecutionTransaction {
@@ -33,6 +33,7 @@ function atomicFile(path: string, bytes: string | Buffer, mode: number): void {
   const temporary = `${path}.${randomBytes(16).toString("hex")}`;
   try {
     writeFileSync(temporary, bytes, { flag: "wx", mode });
+    chmodSync(temporary, mode);
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
 }
@@ -86,7 +87,7 @@ export function publishExecutionTransaction(installed: string, path: string, res
     ] };
     writeExecutionDescriptor(installed, transitional);
   }
-  atomicFile(join(installed, "dist/cotal.js"), bootstrap, 0o700);
+  atomicFile(join(installed, "dist/cotal.js"), bootstrap, executionShared(installed) ? 0o755 : 0o700);
   if (descriptor) writeExecutionDescriptor(installed, descriptor);
   else rmSync(executionDescriptorPath(installed), { force: true });
   selectExecutionProgram(installed);
@@ -98,7 +99,7 @@ export function publishExecutionTransaction(installed: string, path: string, res
 export function executionStagingPrefix(installed: string): string {
   assertExecutionDestination(installed);
   const store = executionStore(installed);
-  if (!lstatSync(store, { throwIfNoEntry: false })) mkdirSync(store, { mode: 0o700 });
+  if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (executionShared(installed)) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
   protectedExecutionEntry(store);
   for (const name of readdirSync(store)) {

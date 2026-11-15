@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
@@ -38,6 +38,8 @@ if (["linux", "darwin"].includes(process.platform)) {
     publishExecutionTransaction(installed, journal);
     assert.equal(selectExecutionProgram(installed).root, generation.root);
     assert.equal(retireSupersededExecutionDescriptor(installed), false, "active matching descriptor is never retired");
+    for (const [path, mode] of [[join(installed, "dist/cotal.js"), 0o755], [store, 0o755], [executionDescriptorPath(installed), 0o644]] as const)
+      assert.equal(lstatSync(path).mode & 0o777, mode, `${path} stays readable by the other accounts that run this package`);
     assert.equal(readFileSync(join(installed, "package.json"), "utf8"), oldManifest, "npm record is never rewritten by staged publication");
     assert.equal(readFileSync(join(installed, "dist/cotal-program.js"), "utf8"), oldProgram);
     const nextSource = join(scratch, "next/cotal-ai");

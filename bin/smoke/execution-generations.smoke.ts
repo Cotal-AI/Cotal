@@ -262,6 +262,36 @@ try {
     } else { assert.equal(session.status, 0, session.stderr); }
     console.log(`  this Node ${refuses ? "applies" : "does not apply"} the umask to copied folders`);
   });
+  check("a package other accounts run gets a store they can read, and its owner opens one an earlier version kept private", () => {
+    const shared = join(scratch, "shared/lib/node_modules/cotal-ai"), next = join(scratch, "shared-source/cotal-ai");
+    packageAt(shared, "0.1.0", "shared initial"); packageAt(next, "0.2.0", "shared retained");
+    chmodSync(shared, 0o755);
+    const previous = process.umask(0o077);
+    let kept: ReturnType<typeof retainExecutionGeneration>;
+    try { kept = retainExecutionGeneration(shared, next); writeExecutionDescriptor(shared, describeExecutionGeneration(shared, kept)); }
+    finally { process.umask(previous); }
+    const store = executionStore(shared), container = join(store, kept.id), inventory = join(container, "inventory.json"), record = executionDescriptorPath(shared);
+    const modes = (...paths: string[]) => paths.map(path => (lstatSync(path).mode & 0o777).toString(8));
+    assert.deepEqual(modes(store, container, inventory, record, kept.root, join(kept.root, "dist"), join(kept.root, "package.json")), ["755", "755", "644", "644", "755", "755", "644"]);
+    assert.equal(selectExecutionProgram(shared).root, kept.root);
+    chmodSync(record, 0o600); chmodSync(inventory, 0o600); chmodSync(container, 0o700); chmodSync(store, 0o700);
+    assert.equal(selectExecutionProgram(shared).root, kept.root);
+    assert.deepEqual(modes(store, container, inventory, record), ["755", "755", "644", "644"]);
+  });
+  check("an account that cannot read another account's store runs the package its package manager installed", () => {
+    if (typeof process.getuid !== "function" || process.getuid() === 0) return;
+    const lone = join(scratch, "lone/lib/node_modules/cotal-ai"), next = join(scratch, "lone-source/cotal-ai");
+    packageAt(lone, "0.1.0", "lone initial"); packageAt(next, "0.2.0", "lone retained");
+    const kept = retainExecutionGeneration(lone, next); writeExecutionDescriptor(lone, describeExecutionGeneration(lone, kept));
+    assert.equal(selectExecutionProgram(lone).root, kept.root);
+    const store = executionStore(lone), bootstrap = join(lone, "dist/cotal.js"), installed = readFileSync(bootstrap);
+    chmodSync(store, 0);
+    try {
+      assert.equal(selectExecutionProgram(lone).retained, false);
+      writeFileSync(bootstrap, `${installed.toString("utf8")}\n// cotal execution publication ${"a".repeat(32)}\n`);
+      assert.throws(() => selectExecutionProgram(lone), /EACCES/);
+    } finally { writeFileSync(bootstrap, installed); chmodSync(store, 0o700); }
+  });
   check("binding still names the unchanged declared executable", () => {
     assert.deepEqual(descriptor.binding, executionBinding(root));
     assert.equal(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).bin.cotal, "./dist/cotal.js");
