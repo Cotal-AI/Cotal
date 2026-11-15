@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { executionBinding, executionDescriptorPath, executionInventory, executionSha256, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
@@ -12,6 +12,8 @@ export interface RetainedExecutionGeneration {
 
 /** Prepare one complete, caller-verified package. Does not change the active artifact or run npm. */
 export function retainExecutionGeneration(installedRoot: string, verifiedSource: string): RetainedExecutionGeneration {
+  if (existsSync(join(installedRoot, "desktop-runtime.json")) || existsSync(join(verifiedSource, "desktop-runtime.json")))
+    throw new Error("retained execution generations are unavailable on the desktop runtime");
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("retained execution generations are unavailable on this platform");
   for (const path of [installedRoot, verifiedSource]) {
     if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()) throw new Error("execution package must be a real directory");
@@ -57,6 +59,8 @@ export function describeExecutionGeneration(installedRoot: string, generation: R
 
 /** Test and operator-building primitive. The updater must hold its existing lock before calling it. */
 export function writeExecutionDescriptor(installedRoot: string, descriptor: ExecutionDescriptor): void {
+  if (existsSync(join(installedRoot, "desktop-runtime.json")))
+    throw new Error("retained execution generations are unavailable on the desktop runtime");
   protectedExecutionEntry(installedRoot);
   const path = executionDescriptorPath(installedRoot);
   const temporary = `${path}.${randomBytes(16).toString("hex")}`;

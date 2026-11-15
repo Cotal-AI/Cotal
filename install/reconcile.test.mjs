@@ -25,4 +25,16 @@ printf 'completed\\n'
   }
 }
 assert.match(source.trimEnd(), /\{ main "\$@"; exit \$\?; \}$/);
+const readInstalledFn = source.match(/read_installed_version\(\) \{[\s\S]*?\n\}/)[0];
+{
+  const runRead = (versionLine, pkgVersion) => spawnSync('sh', ['-c', `
+INSTALL_DIR=/tmp/nonexistent-cotal-install-test
+COTAL_PKG=cotal-ai
+NODE_BIN=node
+${readInstalledFn.replace('[ -f "$_entry" ]', '[ -n "${TEST_ENTRY:-}" ]').replace('[ -f "$_pkg" ]', '[ -n "${TEST_PKG:-}" ]').replace('"$NODE_BIN" "$_entry" --version', 'printf "%s\\n" "$TEST_ENTRY"').replace('"$NODE_BIN" -e', 'printf "%s" "$TEST_PKG" #')}
+read_installed_version
+`], { encoding: 'utf8', env: { ...process.env, ...(versionLine ? { TEST_ENTRY: versionLine } : {}), ...(pkgVersion ? { TEST_PKG: pkgVersion } : {}) } });
+  assert.equal(runRead('cotal-ai 0.164.1013', '0.164.13').stdout, '0.164.1013', 'prefers active CLI version in use over npm package.json');
+  assert.equal(runRead('', '0.164.13').stdout, '0.164.13', 'falls back to npm package.json when entry --version is unavailable');
+}
 console.log('installer reconciliation: 3 paths passed');

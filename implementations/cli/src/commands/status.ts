@@ -1639,7 +1639,7 @@ function brokerExecutable(m: StatusResult["machine"]): string {
 function machineSection(m: StatusResult["machine"]): Section {
   const tone = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
   const rows: [string, Cell][] = [
-    ["cotal-ai", cell(`v${m.version} (${m.install.kind === "source" ? "source checkout" : m.install.kind}: ${m.install.root})`, "ok")],
+    ["cotal-ai", cell(`v${m.version} (${m.install.kind === "source" ? "source checkout" : m.install.kind}: ${m.install.root}${m.install.note ? ` · ${m.install.note}` : ""})`, "ok")],
     ["NATS", m.nats === "missing" ? cell("missing", "failed") : cell(brokerExecutable(m), m.natsProblem ? "failed" : "ok")],
     ...m.integrations.map((r): [string, Cell] => [r.name, cell(r.text, tone[r.state])]),
   ];

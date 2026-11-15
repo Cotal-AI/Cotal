@@ -1,16 +1,18 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
-import { cliPackageRoot } from "../seed/paths.js";
+import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
+import { cliPackageRoot, cliVersion, installedCliVersion } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
 /** This binary's own published version. Re-exported here so the version surfaces (`cotal version` and
  *  `cotal status`) have a single import for all version reporting. */
-export { cliVersion, installedCliVersion } from "../seed/paths.js";
+export { cliVersion, installedCliVersion };
 
 export interface CliProvenance {
   kind: "source" | "installed" | "npx";
   root: string;
+  npmVersion?: string;
+  note?: string;
 }
 
 /** The running CLI artifact, resolved through the same package root used for its version. */
@@ -18,9 +20,20 @@ export function cliProvenance(): CliProvenance {
   const packageRoot = cliPackageRoot();
   if (isNpx()) return { kind: "npx", root: packageRoot };
   const source = basename(packageRoot) === "bin" && existsSync(join(packageRoot, "..", "implementations"));
-  return source
-    ? { kind: "source", root: dirname(packageRoot) }
+  if (source) return { kind: "source", root: dirname(packageRoot) };
+  const npmVersion = npmRecordedVersion();
+  const inUse = cliVersion();
+  return npmVersion && npmVersion !== inUse
+    ? { kind: "installed", root: packageRoot, npmVersion, note: `npm lists ${npmVersion}; in use ${inUse}` }
     : { kind: "installed", root: packageRoot };
+}
+
+export function npmRecordedVersion(): string | undefined {
+  const entry = logicalExecutionEntry();
+  if (!entry) return undefined;
+  const meta = JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+  if (meta.name !== "cotal-ai" || typeof meta.version !== "string") throw new Error("npm installation record is unreadable");
+  return meta.version;
 }
 
 export interface ExtensionVersion {
