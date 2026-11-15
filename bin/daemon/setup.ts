@@ -90,7 +90,7 @@ async function waitForDaemon(opts: InstallOptions, seconds: number): Promise<voi
     if (Date.now() >= deadline) {
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the daemon did not answer ${opts.paths.socket} within ${seconds}s of being started; nothing was registered`, {
         remedy: "read its unit with systemctl --user status, then run this again",
-        ...(notAnswering ? { native: { code: "NOT_ANSWERING" } } : {}),
+        ...(notAnswering ? { native: { code: "NOT_ANSWERING", detail: { waitSeconds: seconds } } } : {}),
       });
     }
     await sleep(250);

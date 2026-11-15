@@ -208,7 +208,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
           return;
         } catch (e) {
           if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code)) throw e;
-          if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the installed daemon did not answer within 15s of being started", { native: { code: "NOT_ANSWERING" } });
+          if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the installed daemon did not answer within 15 seconds of being started", { native: { code: "NOT_ANSWERING", detail: { waitSeconds: 15 } } });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
@@ -237,8 +237,9 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
     const notAnswering = e instanceof CommandFailure && (req.op === "setup" || req.op === "install") && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING";
     const refusal = notAnswering && target && startedAt !== undefined ? attemptStartupRefusal(target.paths.state, startedAt) : undefined;
-    const waitSeconds = notAnswering ? (/within (\d+)s\b/.exec(e.message)?.[1] ?? "15") : undefined;
-    const message = notAnswering ? `Cotal asked the background service on this computer to start, and it did not answer within ${waitSeconds} seconds.${refusal ? ` It refused to start: ${refusal}` : ""}`
+    const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
+    const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
+    const message = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
       : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
       : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
         ? "The background service is installed but stopped. Choose Start service to start it."
