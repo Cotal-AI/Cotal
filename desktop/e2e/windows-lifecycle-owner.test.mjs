@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { tsImport } from 'tsx/esm/api';
 const { nativeLifecycle } = await tsImport('./native-lifecycle.ts', import.meta.url);
-const read = name => readFileSync(new URL(name, import.meta.url), 'utf8');
+const read = name => readFileSync(new URL(name, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const helper = read('./lifecycle-windows.ps1');
 const caller = read('./first-run.ts');
 const wrapper = read('./native-lifecycle.ts');
@@ -129,7 +129,7 @@ test('tray icon lookup probes uID 1..16 on owned tray_icon_app requiring one S_O
   assert.match(tray, /menuOwnerPid =/);
   assert.match(tray, /hasSettingsItem =/);
   assert.match(tray, /'Settings' \+ \[char\]0x2026/);
-  assert.ok(tray.indexOf('hasSettingsItem') < tray.indexOf('Click-Element $menuItem'));
+  assert.ok(tray.indexOf('hasSettingsItem') < tray.indexOf('GetMenuItemRect'));
 });
 
 test('raw tray diagnostics walk every verified surface including hidden overflow without selecting them', () => {

@@ -37,11 +37,14 @@ public static class LifecycleWindows {
     [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll", SetLastError=true)] public static extern int GetMenuItemCount(IntPtr hMenu);
     [DllImport("user32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)] static extern bool GetMenuItemInfoW(IntPtr hMenu, uint item, bool byPosition, ref MENUITEMINFOW info);
+    [DllImport("user32.dll", ExactSpelling=true, SetLastError=true)] public static extern bool GetMenuItemRect(IntPtr hWnd, IntPtr hMenu, uint uItem, out RECT lprcItem);
+    [DllImport("user32.dll", ExactSpelling=true)] public static extern IntPtr WindowFromPoint(POINT Point);
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CommandLineToArgvW(string command, out int count);
     [DllImport("shell32.dll", ExactSpelling=true)] public static extern int Shell_NotifyIconGetRect([In] ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct NOTIFYICONIDENTIFIER {
         public uint cbSize; public IntPtr hWnd; public uint uID; public Guid guidItem;
@@ -528,7 +531,7 @@ public static class LifecycleWindows {
             [LifecycleWindows]::Click($iconTarget.x, $iconTarget.y)
             $settingsLabel = 'Settings' + [char]0x2026
             $label = if ($Action -eq 'settings') { $settingsLabel } else { 'Quit app (computer stays connected)' }
-            $menuItem = $null
+            $menuTarget = $null
             $lastMenuObservation = $null
             for ($i = 0; $i -lt 30; $i++) {
                 $allMenus = @([LifecycleWindows]::Windows() | Where-Object { $_.visible -and $_.className -eq '#32768' })
@@ -553,13 +556,19 @@ public static class LifecycleWindows {
                         if ($item.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem) {
                             $items += [ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd }
                             $diagnostics.Add([ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd })
-                            if ([int]$menuOwnerPid -eq $script:ownerPid -and $item.Current.ProcessId -eq $script:ownerPid) {
-                                if ($item.Current.Name -ceq $settingsLabel) { $settingsFound += $item }
-                                if ($item.Current.Name -ceq $label) { $found += $item }
-                            }
                         }
                     }
                     $win32Menu = [LifecycleWindows]::ReadMenu([IntPtr]$menu.hwnd)
+                    foreach ($wItem in $win32Menu.items) {
+                        if ([int]$menuOwnerPid -eq $script:ownerPid -and $wItem.ok -and $wItem.type -eq 0 -and ($wItem.state -band 3) -eq 0) {
+                            if ($wItem.stringValue -ceq $settingsLabel) {
+                                $settingsFound += [pscustomobject]@{ menuHwnd = $menu.hwnd; menuOwnerPid = [int]$menuOwnerPid; hmenu = $win32Menu.hmenu; index = $wItem.index; id = $wItem.id; type = $wItem.type; state = $wItem.state; string = $wItem.stringValue }
+                            }
+                            if ($wItem.stringValue -ceq $label) {
+                                $found += [pscustomobject]@{ menuHwnd = $menu.hwnd; menuOwnerPid = [int]$menuOwnerPid; hmenu = $win32Menu.hmenu; index = $wItem.index; id = $wItem.id; type = $wItem.type; state = $wItem.state; string = $wItem.stringValue }
+                            }
+                        }
+                    }
                     $observedMenus += [ordered]@{
                         menuHwnd = $menu.hwnd; menuOwnerPid = [int]$menuOwnerPid; items = $items
                         uiaDescendants = $uiaDescendants
@@ -586,15 +595,42 @@ public static class LifecycleWindows {
                     throw 'Ambiguous native menu item.'
                 }
                 if ($observedMenus.Count -eq 1 -and $observedMenus[0].menuOwnerPid -eq $script:ownerPid -and $settingsFound.Count -eq 1 -and $found.Count -eq 1) {
-                    $menuItem = $found[0]
+                    $menuTarget = $found[0]
                     break
                 }
                 Start-Sleep -Milliseconds 100
             }
             $diagnostics.Add([ordered]@{ menuObservation = $lastMenuObservation })
-            if ($null -eq $menuItem) { throw 'Exact native tray menu item was not exposed by the selected app PID.' }
+            if ($null -eq $menuTarget) { throw 'Exact native tray menu item was not exposed by the selected app PID.' }
+            $itemRect = New-Object LifecycleWindows+RECT
+            $rectOk = [LifecycleWindows]::GetMenuItemRect([IntPtr]::Zero, [IntPtr]$menuTarget.hmenu, [uint32]$menuTarget.index, [ref]$itemRect)
+            $rectErr = if ($rectOk) { 0 } else { [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+            $itemWidth = $itemRect.right - $itemRect.left
+            $itemHeight = $itemRect.bottom - $itemRect.top
+            $itemEmpty = (!$rectOk -or $itemWidth -le 0 -or $itemHeight -le 0)
+            $mx = if ($itemEmpty) { 0.0 } else { $itemRect.left + $itemWidth / 2.0 }
+            $my = if ($itemEmpty) { 0.0 } else { $itemRect.top + $itemHeight / 2.0 }
+            $pt = New-Object LifecycleWindows+POINT
+            $pt.x = [int]$mx
+            $pt.y = [int]$my
+            $pointHwnd = if ($itemEmpty) { [IntPtr]::Zero } else { [LifecycleWindows]::WindowFromPoint($pt) }
+            [uint32]$pointPid = 0
+            if ($pointHwnd -ne [IntPtr]::Zero) { [LifecycleWindows]::GetWindowThreadProcessId($pointHwnd, [ref]$pointPid) | Out-Null }
+            $diagnostics.Add([ordered]@{
+                menuItemHitTest = [ordered]@{
+                    menuHwnd = $menuTarget.menuHwnd; hmenu = $menuTarget.hmenu; index = $menuTarget.index
+                    id = $menuTarget.id; label = $menuTarget.string; rectOk = $rectOk; win32Error = $rectErr
+                    rect = [ordered]@{ empty = $itemEmpty; left = $itemRect.left; top = $itemRect.top; right = $itemRect.right; bottom = $itemRect.bottom; width = $itemWidth; height = $itemHeight }
+                    point = if ($itemEmpty) { $null } else { [ordered]@{ x = $pt.x; y = $pt.y } }
+                    windowFromPointHwnd = $pointHwnd.ToInt64(); windowFromPointPid = [int]$pointPid
+                }
+            })
+            if ($itemEmpty) { throw 'Win32 menu item has no clickable screen rectangle.' }
+            if ($pointHwnd.ToInt64() -ne $menuTarget.menuHwnd -or [int]$pointPid -ne $script:ownerPid) {
+                throw 'Menu item centre hit-test did not land on the owned #32768 menu window.'
+            }
             Assert-Owner
-            Click-Element $menuItem
+            [LifecycleWindows]::Click($mx, $my)
             for ($i = 0; $i -lt 40; $i++) {
                 $current = Snapshot
                 if ($Action -eq 'quit') {
