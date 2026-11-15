@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { windowsBootDisposition, readWindowsUpdatePause, clearWindowsUpdateAfterManualSuccess, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE } from "@cotal-ai/workspace";
-import { renderWindowsUpdateTask, startWindowsUpdate, windowsAutomaticPrefix } from "../daemon/update-windows.js";
+import { renderWindowsUpdateTask, windowsAutomaticPrefix } from "../daemon/update-windows.js";
 import { daemonServeArgv } from "../daemon/install.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -116,33 +116,37 @@ try {
   writeFileSync(join(desktopRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
   writeFileSync(join(desktopRoot, "desktop-runtime.json"), JSON.stringify({ schema: 1, version: "0.0.0-desktop" }));
   assert.throws(() => windowsAutomaticPrefix(desktopEntry), /desktop app runtime/);
-  assert.throws(() => startWindowsUpdate(0, desktopEntry), /desktop app runtime/);
-  const runDesktopStart = spawnSync(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
+  const runRelocatedStart = () => {
+    const result = spawnSync(
+      process.execPath,
       [
-        `const { startWindowsUpdate } = await import(${JSON.stringify(pathToFileURL(join(desktopRoot, "dist", "daemon", "update-windows.js")).href)});`,
-        'Object.defineProperty(process, "platform", { value: "win32" });',
-        "try { startWindowsUpdate(0); console.log(JSON.stringify({ refused: false })); }",
-        "catch (e) { console.log(JSON.stringify({ refused: true, message: e instanceof Error ? e.message : String(e) })); }",
-      ].join("\n"),
-    ],
-    {
-      cwd: desktopRoot,
-      env: { ...process.env, COTAL_HOME: desktopHome, SystemRoot: fakeSysRoot, COTAL_SCHTASKS_LOG: schtasksLog, COTAL_DAEMON_NATIVE_SERVICE: "1" },
-      encoding: "utf8",
-    },
-  );
-  assert.equal(runDesktopStart.status, 0, runDesktopStart.stderr || runDesktopStart.stdout);
-  const desktopOutcome = JSON.parse(runDesktopStart.stdout.trim()) as { refused: boolean; message?: string };
+        "--input-type=module",
+        "-e",
+        [
+          `const { startWindowsUpdate } = await import(${JSON.stringify(pathToFileURL(join(desktopRoot, "dist", "daemon", "update-windows.js")).href)});`,
+          'Object.defineProperty(process, "platform", { value: "win32" });',
+          "try { startWindowsUpdate(0); console.log(JSON.stringify({ refused: false })); }",
+          "catch (e) { console.log(JSON.stringify({ refused: true, message: e instanceof Error ? e.message : String(e) })); }",
+        ].join("\n"),
+      ],
+      {
+        cwd: desktopRoot,
+        env: { ...process.env, COTAL_HOME: desktopHome, SystemRoot: fakeSysRoot, COTAL_SCHTASKS_LOG: schtasksLog, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    return JSON.parse(result.stdout.trim()) as { refused: boolean; message?: string };
+  };
+  const desktopOutcome = runRelocatedStart();
   assert.equal(desktopOutcome.refused, true);
   assert.match(desktopOutcome.message ?? "", /desktop app runtime/);
   assert.equal(readdirSync(desktopHome).length, 0, "desktop runtime refusal must write zero files");
   assert.equal(existsSync(schtasksLog), false, "desktop runtime refusal must create zero tasks");
   rmSync(join(desktopRoot, "desktop-runtime.json"));
-  assert.throws(() => startWindowsUpdate(0, desktopEntry), /cannot identify its installed global CLI prefix/);
+  const noMarkerOutcome = runRelocatedStart();
+  assert.equal(noMarkerOutcome.refused, true);
+  assert.match(noMarkerOutcome.message ?? "", /cannot identify its installed global CLI prefix/);
   assert.equal(readdirSync(desktopHome).length, 0, "prefix refusal must write zero files before any XML or receipt");
   assert.equal(existsSync(schtasksLog), false, "prefix refusal must create zero tasks");
   emitSentinel({ passed: counted.cells(), failed: 0 });

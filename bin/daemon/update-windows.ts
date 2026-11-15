@@ -148,10 +148,10 @@ export function windowsAutomaticPrefix(entry: string): string {
   return realpathSync(dirname(modules));
 }
 
-export function startWindowsUpdate(failures: number, cliEntry = fileURLToPath(new URL("../cotal.js", import.meta.url))): void {
-  if (existsSync(join(dirname(dirname(cliEntry)), "desktop-runtime.json")) || existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url))))
+export function startWindowsUpdate(failures: number): void {
+  if (existsSync(fileURLToPath(new URL("../../desktop-runtime.json", import.meta.url))))
     throw new Error("Windows automatic update cannot run on the desktop app runtime");
-  const prefix = windowsAutomaticPrefix(cliEntry);
+  const prefix = windowsAutomaticPrefix(fileURLToPath(new URL("../cotal.js", import.meta.url)));
   if (process.platform !== "win32" || daemonStartedByOwnedService(daemonPaths()).state !== "owned") throw new Error("Windows automatic update does not own its native daemon service");
   if (!["absent", "completed", "failed"].includes(cleanWindowsUpdate())) throw new Error(WINDOWS_INTERRUPTED_UPDATE);
   const nonce = randomBytes(16).toString("hex"), name = `cotal-update-${nonce}`;
