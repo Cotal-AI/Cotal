@@ -1,6 +1,8 @@
 name: Desktop apps
 on:
   push:
+    branches:
+      - measure/staged-transaction
     tags:
       - 'v*'
   workflow_dispatch:
