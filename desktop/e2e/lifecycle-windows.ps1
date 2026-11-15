@@ -44,6 +44,11 @@ public static class LifecycleWindows {
     [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CommandLineToArgvW(string command, out int count);
     [DllImport("shell32.dll", ExactSpelling=true)] public static extern int Shell_NotifyIconGetRect([In] ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("advapi32.dll", ExactSpelling=true, SetLastError=true)] static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+    [DllImport("advapi32.dll", ExactSpelling=true, SetLastError=true)] static extern bool GetTokenInformation(IntPtr TokenHandle, int TokenInformationClass, IntPtr TokenInformation, int TokenInformationLength, out int ReturnLength);
+    [DllImport("advapi32.dll", ExactSpelling=true)] static extern IntPtr GetSidSubAuthorityCount(IntPtr pSid);
+    [DllImport("advapi32.dll", ExactSpelling=true)] static extern IntPtr GetSidSubAuthority(IntPtr pSid, uint nSubAuthority);
+    [DllImport("kernel32.dll", ExactSpelling=true)] static extern bool CloseHandle(IntPtr hObject);
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct NOTIFYICONIDENTIFIER {
@@ -90,6 +95,33 @@ public static class LifecycleWindows {
             rows.Add(new Win32MenuItem { index = i, id = info.wID, type = info.fType, state = info.fState, stringValue = text, ok = ok, win32Error = err });
         }
         return new Win32MenuRead { hmenu = hmenu.ToInt64(), itemCount = count, win32Error = countErr, items = rows.ToArray() };
+    }
+    public sealed class ProcessIntegrity {
+        public bool ok; public uint rid; public string level; public int win32Error;
+    }
+    public static ProcessIntegrity GetProcessIntegrity(IntPtr processHandle) {
+        IntPtr token;
+        if (!OpenProcessToken(processHandle, 0x0008, out token)) {
+            return new ProcessIntegrity { ok = false, rid = 0, level = "unknown", win32Error = Marshal.GetLastWin32Error() };
+        }
+        try {
+            int length = 0;
+            GetTokenInformation(token, 25, IntPtr.Zero, 0, out length);
+            if (length <= 0) {
+                return new ProcessIntegrity { ok = false, rid = 0, level = "unknown", win32Error = Marshal.GetLastWin32Error() };
+            }
+            IntPtr buffer = Marshal.AllocHGlobal(length);
+            try {
+                if (!GetTokenInformation(token, 25, buffer, length, out length)) {
+                    return new ProcessIntegrity { ok = false, rid = 0, level = "unknown", win32Error = Marshal.GetLastWin32Error() };
+                }
+                IntPtr sid = Marshal.ReadIntPtr(buffer);
+                byte count = Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+                uint rid = (uint)Marshal.ReadInt32(GetSidSubAuthority(sid, (uint)(count - 1)));
+                string label = rid < 0x1000 ? "Untrusted" : rid < 0x2000 ? "Low" : rid < 0x3000 ? "Medium" : rid < 0x4000 ? "High" : "System";
+                return new ProcessIntegrity { ok = true, rid = rid, level = label, win32Error = 0 };
+            } finally { Marshal.FreeHGlobal(buffer); }
+        } finally { CloseHandle(token); }
     }
     public sealed class Window {
         public int pid; public long hwnd; public bool visible; public string title; public string className;
@@ -252,19 +284,59 @@ public static class LifecycleWindows {
         $appCandidates = @($candidates | Where-Object { $_.pid -ne $serviceLauncher.pid })
     }
     if ($Action -eq 'login-entry') {
-        # Open read-only and request only the exact Cotal value. Do not enumerate other login entries.
+        # Open read-only and request only the exact Cotal value in HKCU and HKLM. Do not enumerate other login entries.
+        function Read-RunEntry([Microsoft.Win32.RegistryKey]$rootKey) {
+            $subKey = $rootKey.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $false)
+            try {
+                $raw = if ($null -ne $subKey) { $subKey.GetValue('Cotal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
+                if ($null -eq $raw) {
+                    return [ordered]@{ present = $false }
+                }
+                if ($raw -isnot [string]) {
+                    return [ordered]@{ present = $true; kind = $raw.GetType().FullName }
+                }
+                $parsedArgs = @([LifecycleWindows]::Arguments($raw))
+                $matchesExpected = ($parsedArgs.Count -eq 2 -and $parsedArgs[1] -ceq '--background' -and [string]::Equals($parsedArgs[0], $expected, [StringComparison]::OrdinalIgnoreCase))
+                return [ordered]@{
+                    present = $true
+                    matchesExpected = $matchesExpected
+                    path = if ($parsedArgs.Count -ge 1) { $parsedArgs[0] } else { $null }
+                    args = if ($parsedArgs.Count -gt 1) { @($parsedArgs[1..($parsedArgs.Count - 1)]) } else { @() }
+                }
+            } finally { if ($null -ne $subKey) { $subKey.Dispose() } }
+        }
+        $hkcuEntry = Read-RunEntry ([Microsoft.Win32.Registry]::CurrentUser)
+        $hklmEntry = Read-RunEntry ([Microsoft.Win32.Registry]::LocalMachine)
+        $appIntegrity = $null
+        if ($AppPid) {
+            $appOwners = @(Owned-Processes | Where-Object { $_.Id -eq $AppPid })
+            if ($appOwners.Count -eq 1) {
+                $integrity = [LifecycleWindows]::GetProcessIntegrity($appOwners[0].Handle)
+                $appIntegrity = [ordered]@{
+                    pid = $AppPid; ok = $integrity.ok; rid = ('0x' + $integrity.rid.ToString('X4'))
+                    level = $integrity.level; win32Error = $integrity.win32Error
+                }
+            }
+        }
+        $diagnostics.Add([ordered]@{
+            loginEntryObservation = [ordered]@{
+                hkcu = $hkcuEntry
+                hklm = $hklmEntry
+                appIntegrity = $appIntegrity
+            }
+        })
         $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $false)
         try {
             $value = if ($null -ne $key) { $key.GetValue('Cotal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
             if ($null -eq $value) {
-                $result = [ordered]@{ present = $false }
+                $result = [ordered]@{ present = $false; hkcu = $hkcuEntry; hklm = $hklmEntry; appIntegrity = $appIntegrity }
             } else {
                 if ($value -isnot [string]) { throw 'Cotal login value is not a string.' }
                 $loginArgs = [LifecycleWindows]::Arguments($value)
                 if ($loginArgs.Count -ne 2 -or $loginArgs[1] -cne '--background' -or ![string]::Equals($loginArgs[0], $expected, [StringComparison]::OrdinalIgnoreCase)) {
                     throw 'Cotal login value must contain only the exact expected executable and --background.'
                 }
-                $result = [ordered]@{ present = $true; path = $expected; args = @('--background') }
+                $result = [ordered]@{ present = $true; path = $expected; args = @('--background'); hkcu = $hkcuEntry; hklm = $hklmEntry; appIntegrity = $appIntegrity }
             }
         } finally { if ($null -ne $key) { $key.Dispose() } }
     } elseif ($Action -eq 'describe') {
