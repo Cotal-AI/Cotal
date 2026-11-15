@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { chmodSync, closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setFlagsFromString } from "node:v8";
 
@@ -51,6 +52,47 @@ export function protectedExecutionEntry(path: string): void {
   if (process.platform !== "win32" && ((!info.isSymbolicLink() && (info.mode & 0o022) !== 0) ||
       typeof process.getuid !== "function" || (info.uid !== process.getuid() && info.uid !== 0)))
     throw new Error(`unprotected execution entry: ${path}`);
+}
+
+/** The installed package folder and the folders above it belong to the package manager. An account
+ *  that can write one of them can already replace this bootstrap, so their modes are no boundary:
+ *  Homebrew keeps `lib` group-writable, and npm under a umask of 0002 creates the package
+ *  group-writable. Only another account's ownership is refused. */
+export function executionLocation(path: string): void {
+  const info = lstatSync(path);
+  if (process.platform !== "win32" && (typeof process.getuid !== "function" || (info.uid !== process.getuid() && info.uid !== 0)))
+    throw new Error(`execution location belongs to another account: ${path}`);
+}
+
+/** Whether accounts other than the owner run this installation: they can read and search its
+ *  package folder. The generation store beside it is then as readable as the package, and never
+ *  writable by them. */
+export function executionShared(installed: string): boolean {
+  return process.platform !== "win32" && (lstatSync(installed).mode & 0o005) === 0o005;
+}
+
+const PUBLISHED = /\n\/\/ cotal execution publication [a-f0-9]{32}\n$/;
+
+/** 0.164.16 and 0.164.17 kept the store, its records and the published bootstrap private to the
+ *  updating account, which locked every other account out of a system-wide installation. The
+ *  store's owner opens them for reading here. */
+function shareExecutionStore(installed: string): void {
+  try {
+    if (typeof process.getuid !== "function" || !executionShared(installed)) return;
+    const store = executionStore(installed), info = lstatSync(store, { throwIfNoEntry: false });
+    if (!info?.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o005) === 0o005) return;
+    const open = (path: string, directory: boolean): void => {
+      const entry = lstatSync(path, { throwIfNoEntry: false });
+      if (entry && (directory ? entry.isDirectory() : entry.isFile())) chmodSync(path, directory ? 0o755 : 0o644);
+    };
+    for (const name of readdirSync(store)) {
+      if (ID.test(name)) { open(join(store, name), true); open(join(store, name, "inventory.json"), false); }
+      else if (/^\.active-[a-f0-9]{64}\.json$/.test(name)) open(join(store, name), false);
+    }
+    const bootstrap = join(installed, "dist", "cotal.js");
+    if (PUBLISHED.test(readFileSync(bootstrap, "utf8"))) chmodSync(bootstrap, 0o755);
+    chmodSync(store, 0o755);
+  } catch { /* the store stays private to its owner, as it was */ }
 }
 
 export function executionBinding(root: string): ExecutionBinding {
@@ -113,9 +155,17 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
       throw new Error("retained execution generations are unavailable on the desktop runtime");
     return initial();
   }
+  shareExecutionStore(installed);
   let value: unknown;
   try { value = executionRecord(descriptorPath); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return initial(); throw error; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return initial();
+    // Another account's store that this account cannot read. A bootstrap the package manager
+    // installed carries no publication line, and no descriptor selects a generation for it.
+    if ((code === "EACCES" || code === "EPERM") && !PUBLISHED.test(readFileSync(join(installed, "dist", "cotal.js"), "utf8"))) return initial();
+    throw error;
+  }
   const descriptor = object(value), binding = object(descriptor.binding), current = executionBinding(installed);
   if (typeof binding.name !== "string" || typeof binding.version !== "string" || !binding.version ||
       typeof binding.bootstrapSha256 !== "string" || !HASH.test(binding.bootstrapSha256)) throw new Error("invalid execution artifact binding");
@@ -136,8 +186,7 @@ export function selectExecutionProgram(root: string): { root: string; entry: str
   const generation = object(descriptor.generation);
   if (typeof generation.id !== "string" || !ID.test(generation.id) || typeof generation.version !== "string" ||
       typeof generation.inventorySha256 !== "string" || !HASH.test(generation.inventorySha256)) throw new Error("invalid retained execution identity");
-  protectedExecutionEntry(installed);
-  for (const ancestor of [dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) protectedExecutionEntry(ancestor);
+  for (const path of [installed, dirname(installed), dirname(dirname(installed)), dirname(dirname(dirname(installed)))]) executionLocation(path);
   const store = executionStore(installed), container = join(store, generation.id), selected = join(container, "cotal-ai");
   for (const path of [store, container, selected]) {
     const info = lstatSync(path);
@@ -161,12 +210,59 @@ function startedHere(): boolean {
   return !!process.argv[1] && realpathSync.native(process.argv[1]) === realpathSync.native(fileURLToPath(import.meta.url));
 }
 
+/** Set by an updater that gives its retained copy explicit modes. */
+export const executionCopyModesEnv = "COTAL_EXECUTION_COPY_MODES";
+
+/** Whether this Node applies the process umask to the folders a recursive `cpSync` creates, as Node
+ *  before 24.22 does, and that umask leaves group or other write. */
+function copiesSharedWrite(): boolean {
+  const umask = process.umask(0o022);
+  process.umask(umask);
+  if ((umask & 0o022) === 0o022) return false;
+  let scratch: string | undefined;
+  try {
+    scratch = mkdtempSync(join(tmpdir(), "cotal-copy-probe-"));
+    mkdirSync(join(scratch, "from"), { mode: 0o700 });
+    cpSync(join(scratch, "from"), join(scratch, "to"), { recursive: true });
+    return (lstatSync(join(scratch, "to")).mode & 0o022) !== 0;
+  } catch { return false; }
+  finally { if (scratch) rmSync(scratch, { recursive: true, force: true }); }
+}
+
+/** The 0.164.16 and 0.164.17 updaters start the staged target once for its version line, then copy
+ *  it with `cpSync`, refuse a copy with group-writable folders, and read the daemon's paths, which
+ *  throws on Linux without `XDG_RUNTIME_DIR`. Where either holds they refuse every attempt and leave
+ *  what they staged behind. This target cannot change that process, so it names the one-time manual
+ *  install, removes the staged installs and fails the version check. Returns whether it did. */
+function refuseDoomedStagedCheck(root: string): boolean {
+  if (process.platform === "win32" || process.argv.length !== 3 || process.argv[2] !== "--version" ||
+      process.env.COTAL_SKIP_CONNECTOR_SEED !== "1" || process.env[executionCopyModesEnv] === "explicit") return false;
+  const prefix = dirname(dirname(dirname(root))), store = dirname(prefix);
+  if (basename(dirname(root)) !== "node_modules" || basename(dirname(dirname(root))) !== "lib" ||
+      !/^\.installing-[A-Za-z0-9]{6}$/.test(basename(prefix)) || basename(store) !== ".cotal-generations") return false;
+  const reason = process.platform === "linux" && !process.env.XDG_RUNTIME_DIR ? "it needs XDG_RUNTIME_DIR, which this session does not set"
+    : copiesSharedWrite() ? "its Node copies the new version with group-writable folders under the current umask, then refuses its own copy" : undefined;
+  if (!reason) return false;
+  const home = dirname(dirname(store));
+  const remedy = existsSync(join(home, "nodebin"))
+    ? "run the installer from get.cotal.ai again"
+    : `run npm install -g --prefix ${home} cotal-ai@latest`;
+  process.stderr.write(`the installed Cotal updater cannot finish here: ${reason}. Install the new version once by hand: ${remedy}. Later updates run on their own`);
+  for (const name of readdirSync(store)) {
+    if (/^\.installing-[A-Za-z0-9]{6}$/.test(name)) try { rmSync(join(store, name), { recursive: true, force: true }); } catch { /* the next attempt removes it */ }
+  }
+  process.exitCode = 1;
+  return true;
+}
+
 /** Explicit CLI delegation for a wrapper that imports the bootstrap rather than launching it. */
 export function startExecutionProgram(): void {
   if (Reflect.get(globalThis, executionStarted)) return;
   Object.defineProperty(globalThis, executionStarted, { value: true });
   let selected: ReturnType<typeof selectExecutionProgram> | undefined;
-  try { selected = selectExecutionProgram(resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..")); }
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), import.meta.url.endsWith(".ts") ? "." : "..");
+  if (startedHere() && refuseDoomedStagedCheck(realpathSync.native(packageRoot))) return;
+  try { selected = selectExecutionProgram(packageRoot); }
   catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}; reinstall with npm install -g cotal-ai@latest\n`);
     process.exitCode = 1;

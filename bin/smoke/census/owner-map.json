@@ -1262,6 +1262,7 @@
   "env:COTAL_EVENTS_REQUIRED": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_EVENTS_TEST_POST_START_HOLD_MS": "internal:test hook",
   "env:COTAL_EVENTS_TEST_START_DELAY_MS": "internal:test hook",
+  "env:COTAL_EXECUTION_COPY_MODES": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_EXT_SEEDING": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_EXT_SEEDING_PARENT": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_EXT_UPDATE_PARENT": "internal:handoff between a Cotal process and the child it starts",

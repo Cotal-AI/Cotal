@@ -48,6 +48,15 @@ async function posixGenerationLifecycle(paths: DaemonPaths): Promise<{ poll(): P
   };
 }
 
+/** Refuse a session that has no runtime directory while this account's daemon runs: its socket cannot be named from here. */
+function assertDaemonReachable(): void {
+  try { daemonPaths(); return; }
+  catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
+  const lifetime = readLifetimeRecord(join(homeCotalDir(), "daemon", "daemon.lock"));
+  if (lifetime?.start && processBirth(lifetime.pid) === lifetime.start)
+    throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
@@ -69,6 +78,7 @@ const composed: Command = { ...command, async run(args) {
       preflightExecution: preflightExecutionUpdate,
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       prepareExecution: async (version: string, root: string) => {
+        assertDaemonReachable();
         const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; });
         replacementVersion = version;
         return execution;
@@ -94,13 +104,16 @@ const composed: Command = { ...command, async run(args) {
     await updateRuntime.preflightReplacement?.();
     preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });
   }, adoptUpdateChild: adoptAutomaticUpdateChild, preparedRestart: () => preparedRestart, async prepareReplacement() {
-    const paths = daemonPaths();
+    let paths: DaemonPaths | undefined;
+    try { paths = daemonPaths(); }
+    catch (error) { if (!(error instanceof EndpointRefusal) || error.code !== "NO_RUNTIME_DIR") throw error; }
     if (targetReceipt && !targetAdmissionChecked) {
-      const lifetime = readLifetimeRecord(paths.lock);
+      // The lifetime record lives under the home, so it is readable in a session with no runtime directory.
+      const lifetime = readLifetimeRecord(paths?.lock ?? join(homeCotalDir(), "daemon", "daemon.lock"));
       if (targetReceipt.daemon ? !lifetime?.start || lifetime.pid !== targetReceipt.daemon.pid || lifetime.start !== targetReceipt.daemon.start || processBirth(lifetime.pid) !== lifetime.start : lifetime !== undefined)
         throw new Error("machine daemon lifetime changed after target pre-install checks; retry the update");
     }
-    if (!daemonObserved) {
+    if (!daemonObserved || !paths) {
       targetAdmissionChecked = true;
       return async () => {};
     }

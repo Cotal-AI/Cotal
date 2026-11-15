@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { recoverExtensionPromotion, assertStageVerifier, stageExtensions } from "../src/lib/extension-stage.js";
@@ -27,6 +27,26 @@ if (process.platform !== "win32") {
     assert(!existsSync(join(linked, "cotal", ".extensions-promotion.json")));
   } finally { stage.discard(); }
   console.log("promotion through a private symlinked config root preserves its physical prefix");
+}
+
+if (process.platform !== "win32") {
+  const shared = (path: string): string[] => {
+    const info = lstatSync(path);
+    if (info.isSymbolicLink()) return [];
+    return [...((info.mode & 0o022) !== 0 ? [path] : []), ...(info.isDirectory() ? readdirSync(path).flatMap(name => shared(join(path, name))) : [])];
+  };
+  for (const existing of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), "promotion-umask-"));
+    roots.push(root);
+    process.env.XDG_CONFIG_HOME = root;
+    if (existing) { mkdirSync(join(root, "cotal", "extensions", "node_modules"), { recursive: true, mode: 0o755 }); writeFileSync(join(root, "cotal", "extensions", "package.json"), "{}", { mode: 0o644 }); }
+    const previous = process.umask(0o002);
+    try {
+      const stage = stageExtensions();
+      try { assert.deepEqual(shared(stage.prefix), []); } finally { stage.discard(); }
+    } finally { process.umask(previous); }
+  }
+  console.log("a stage made under a umask of 0002 holds no group or other write, with and without a live prefix");
 }
 
 for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {

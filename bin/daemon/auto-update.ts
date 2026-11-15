@@ -3,7 +3,7 @@ import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { checkForUpdate, homeCotalDir, loadExtensionsManifest, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { checkForUpdate, homeCotalDir, loadExtensionsManifest, logicalExecutionEntry, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanWindowsUpdate, startWindowsUpdate } from "./update-windows.js";
 import { WINDOWS_INTERRUPTED_UPDATE, readWindowsUpdatePause } from "@cotal-ai/workspace";
@@ -148,11 +148,14 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
         }
         return;
       }
-      await new Promise<{ code: number | null; output: string }>(resolve => {
+      const updating = state.result;
+      const ended = await new Promise<{ code: number | null; output: string }>(resolve => {
         const logPath = join(homeCotalDir(), "update-attempt.log");
         const outputFd = openPrivateAppend(logPath);
         ftruncateSync(outputFd, 0);
-        child = spawn(process.execPath, [fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], { env: { ...process.env, COTAL_NO_UPDATE_CHECK: "1", COTAL_AUTO_UPDATE: "1" }, stdio: ["ignore", outputFd, outputFd], detached: true, windowsHide: true });
+        // A daemon loaded from a retained generation starts the updater at the installed entry: the
+        // generation's own bootstrap is not an installation, and its updater refuses to stage from it.
+        child = spawn(process.execPath, [logicalExecutionEntry() ?? fileURLToPath(new URL("../cotal.js", import.meta.url)), "update", "--self"], { env: { ...process.env, COTAL_NO_UPDATE_CHECK: "1", COTAL_AUTO_UPDATE: "1" }, stdio: ["ignore", outputFd, outputFd], detached: true, windowsHide: true });
         closeSync(outputFd);
         const readOutput = () => { try { return readFileSync(logPath, "utf8").slice(-4000); } catch { return "update log unavailable"; } };
         child.once("error", error => resolve({ code: null, output: error.message }));
@@ -160,7 +163,10 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       });
       child = undefined;
       const recorded = JSON.parse(readFileSync(join(homeCotalDir(), "update-attempt.json"), "utf8")) as Attempt;
-      state = recorded;
+      // An updater that ended without recording an outcome did not update: say so and count it.
+      state = ended.code !== 0 && recorded.result === updating
+        ? { ...recorded, failures: recorded.failures + 1, result: `updater ended with ${ended.code ?? "a signal"}: ${ended.output.trim().split("\n").filter(Boolean).slice(-3).join(" ").slice(0, 400)}`, next: Date.now() + UPDATE_HOUR_MS }
+        : recorded;
       persist(); host.report(state.result);
     } finally { if (!closed) await host.abort(); }
   };

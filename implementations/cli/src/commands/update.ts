@@ -101,6 +101,8 @@ export interface ExecutionReplacement {
   publish(): void;
   restore(): void;
   verify(version: string): void;
+  /** Remove a retained target that was never published. */
+  discard?(): void;
 }
 
 export interface UpdateRuntime {
@@ -1101,6 +1103,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       if (await rt.reportRunningManager(target) === "legacy") throw new Error("running Manager requires a restart that cannot preserve its agents");
       rt.out(`✓ new version installed and verified (${((Date.now() - prepareStarted) / 1000).toFixed(1)} s)`);
     } catch (error) {
+      try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
       releaseGlobal();
       recordUpdateDeferral(targetVersion, `staged pre-install check refused: ${preflightDetail(error)}`);
       rt.err(`staged pre-install check refused: ${message(error)}; no installed packages or connector state were changed`);
@@ -1111,6 +1114,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   try {
     releaseAdmission = await rt.prepareReplacement?.();
   } catch (error) {
+    try { execution?.discard?.(); } catch { /* an unpublished copy left behind selects nothing */ }
     releaseGlobal();
     recordUpdateDeferral(targetVersion, "waiting for agents to stop");
     rt.err(`update admission refused: ${message(error)}`);

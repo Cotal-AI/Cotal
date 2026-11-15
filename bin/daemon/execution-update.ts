@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { logicalExecutionEntry, executionIdentity, cmdSpawnSpec } from "@cotal-ai/workspace";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
-import { executionInventory, executionSha256 } from "../cotal.js";
+import { executionCopyModesEnv, executionInventory, executionSha256 } from "../cotal.js";
 import { daemonServeArgv } from "./install.js";
 import { readExecutionPreinstall } from "./execution-preinstall.js";
 import { targetExecutionPreinstall, type ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
@@ -24,7 +24,7 @@ export function preflightExecutionUpdate(): void {
 
 function verifySelected(root: string, version: string): void {
   const entry = join(root, "dist/cotal.js");
-  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 30_000 });
+  const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout: 30_000 });
   if (result.status !== 0 || result.stdout.split(/\r?\n/, 1)[0] !== `cotal-ai ${version}`)
     throw new Error(`selected execution did not confirm cotal-ai@${version}: ${result.stderr}`);
 }
@@ -34,13 +34,16 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   const installed = executionInstallRoot();
   if (realpathSync.native(join(globalRoot, "cotal-ai")) !== installed) throw new Error("staged update global root differs from logical installation");
   const staging = executionStagingPrefix(installed);
-  const npm = cmdSpawnSpec("npm", ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=0", "--fetch-timeout=15000"]);
-  const result = await updateRuntime.spawnGlobal(globalRoot, "install", npm.file, npm.args, process.env, false, npm.windowsVerbatimArguments);
-  if (result.status !== 0) throw new Error(`target staging failed: ${result.error ?? result.stderr ?? result.stdout}`);
-  const source = join(staging, "lib/node_modules/cotal-ai");
-  verifyGlobalEntry(join(staging, "lib/node_modules"), version);
-  verifySelected(source, version);
-  const generation = retainExecutionGeneration(installed, source);
+  let generation: ReturnType<typeof retainExecutionGeneration>;
+  try {
+    const npm = cmdSpawnSpec("npm", ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=0", "--fetch-timeout=15000"]);
+    const result = await updateRuntime.spawnGlobal(globalRoot, "install", npm.file, npm.args, process.env, false, npm.windowsVerbatimArguments);
+    if (result.status !== 0) throw new Error(`target staging failed: ${result.error ?? result.stderr ?? result.stdout}`);
+    const source = join(staging, "lib/node_modules/cotal-ai");
+    verifyGlobalEntry(join(staging, "lib/node_modules"), version);
+    verifySelected(source, version);
+    generation = retainExecutionGeneration(installed, source);
+  } finally { rmSync(staging, { recursive: true, force: true }); }
   let journal: string | undefined;
   let accepted = false;
   const getJournal = () => {
@@ -66,6 +69,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     },
     restore() { if (!journal) throw new Error("execution transaction has no rollback journal"); publishExecutionTransaction(installed, journal, true); },
     verify(expected) { verifySelected(installed, expected); },
+    discard() { if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true }); },
   };
 }
 
