@@ -282,10 +282,49 @@ public static class LifecycleWindows {
         if ($Action -in @('connected-view', 'settings-back', 'disable-login')) {
             $windows = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $script:ownerPid -and $_.visible -and $_.title -ceq 'Cotal' })
             if ($windows.Count -ne 1) { throw 'Expected one visible owned Cotal window for native UIAutomation.' }
-            $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$windows[0].hwnd)
+            $windowHwnd = $windows[0].hwnd
+            $rootElement = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$windowHwnd)
             function Exact-Control([string]$id) {
                 $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $id)
-                $controls = @($rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+                $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $samples = @()
+                $controls = @()
+                $descendants = @()
+                for ($sampleIndex = 0; $sampleIndex -lt 30; $sampleIndex++) {
+                    $sampleWatch = [System.Diagnostics.Stopwatch]::StartNew()
+                    $descendants = @(Children $rootElement)
+                    $controls = @($rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, $condition))
+                    $sampleWatch.Stop()
+                    $offscreen = if ($controls.Count -eq 1) { $controls[0].Current.IsOffscreen } else { $null }
+                    $samples += [ordered]@{
+                        sample = $sampleIndex
+                        elapsedMs = [int]$stopwatch.ElapsedMilliseconds
+                        sampleMs = [int]$sampleWatch.ElapsedMilliseconds
+                        descendantCount = $descendants.Count
+                        matchCount = $controls.Count
+                        offscreen = $offscreen
+                    }
+                    if ($controls.Count -gt 1) { break }
+                    if ($controls.Count -eq 1 -and !$offscreen) {
+                        $diagnostics.Add([ordered]@{ exactControl = [ordered]@{ id = $id; windowHwnd = $windowHwnd; samples = $samples } })
+                        return $controls[0]
+                    }
+                    if ($sampleIndex -lt 29) { Start-Sleep -Milliseconds 100 }
+                }
+                $uiaDescendants = @($descendants | ForEach-Object {
+                    [ordered]@{
+                        controlType = $_.Current.ControlType.ProgrammaticName
+                        name = $_.Current.Name
+                        automationId = $_.Current.AutomationId
+                        className = $_.Current.ClassName
+                        frameworkId = $_.Current.FrameworkId
+                    }
+                })
+                $diagnostics.Add([ordered]@{
+                    exactControl = [ordered]@{
+                        id = $id; windowHwnd = $windowHwnd; samples = $samples; uiaDescendants = $uiaDescendants
+                    }
+                })
                 if ($controls.Count -ne 1) { throw "Exact AutomationId '$id' unavailable or ambiguous in owned window. WebView2 accessibility support required." }
                 if ($controls[0].Current.IsOffscreen) { throw "Exact AutomationId '$id' is offscreen." }
                 return $controls[0]
