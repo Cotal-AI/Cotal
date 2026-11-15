@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
-import { filterDesktopApplicationPath } from "../daemon/desktop-path.js";
+import { filterDesktopApplicationPath, windowsApplicationPath } from "../daemon/desktop-path.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { excludeLifetime } from "../daemon/lifetime.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -102,6 +102,46 @@ assert.equal(refusedPath.error?.remedy, "check that your login shell starts succ
 assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
 assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
 console.log("install PATH refusal preserves its message/remedy without service effects");
+
+// A Windows non-timeout PATH read refusal never mentions a login shell.
+const winRoot = join(root, "win-system-root");
+const winPsDir = join(winRoot, "System32", "WindowsPowerShell", "v1.0");
+mkdirSync(winPsDir, { recursive: true, mode: 0o700 });
+writeFileSync(join(winPsDir, "powershell.exe"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+const prevSystemRoot = process.env.SystemRoot;
+process.env.SystemRoot = winRoot;
+try {
+  await assert.rejects(
+    () => windowsApplicationPath(),
+    (err: { code?: string; message?: string; remedy?: string }) => {
+      assert.equal(err.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(err.message, "the account's application PATH could not be read; no service was changed");
+      assert.equal(err.remedy, "choose Try again, or run cotal daemon install in a terminal for diagnostics");
+      assert.ok(!String(err.remedy).includes("login shell"), "Windows remedy must not mention a login shell");
+      return true;
+    },
+  );
+} finally {
+  if (prevSystemRoot === undefined) delete process.env.SystemRoot;
+  else process.env.SystemRoot = prevSystemRoot;
+}
+console.log("windowsApplicationPath non-timeout refusal omits login-shell wording");
+
+// A slow PATH read that exceeds the 30-second bound reports a timeout and never blames the login shell.
+const slowShell = isolated("slow-shell");
+for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(slowShell.dir, "home", profile), "trap 'exit 143' TERM\nsleep 35 >/dev/null 2>&1 &\nwait\n", { mode: 0o600 });
+const slowStart = Date.now();
+const timedOutPath = await request(slowShell, "install", 45_000);
+const slowElapsed = Date.now() - slowStart;
+assert.ok(slowElapsed >= 29_000, `expected 30 s PATH read bound, got ${slowElapsed} ms`);
+assert.equal(timedOutPath.ok, false);
+assert.equal(timedOutPath.error?.code, "DEPENDENCY_UNAVAILABLE");
+assert.equal(timedOutPath.error?.message, "reading the account's application PATH timed out after 30 seconds; no service was changed");
+assert.equal(timedOutPath.error?.remedy, "wait a moment and choose Try again");
+assert.ok(!String(timedOutPath.error?.remedy).includes("login shell"), "timeout remedy must not mention a login shell");
+assert.deepEqual(operations(slowShell.calls), [], "PATH timeout precedes service-manager calls");
+assert.ok(!existsSync(slowShell.receipt) && !existsSync(slowShell.unit), "PATH timeout creates no installation");
+console.log("install PATH timeout enforces 30 s bound and reports timeout without login-shell wording");
 
 // Filter keeps absolute entries and deduplicates left-out relative entries in login-shell order.
 assert.deepEqual(
