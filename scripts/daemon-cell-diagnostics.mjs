@@ -6,7 +6,7 @@ import { redactDiagnostic } from './hosted-consent-diagnostics.mjs';
 
 const LIMIT = 256 * 1024;
 export const daemonShowProperties = Object.freeze(['Id', 'LoadState', 'UnitFileState', 'ControlGroup', 'ActiveState', 'SubState', 'Result', 'MainPID', 'ExecMainPID', 'ExecMainCode', 'ExecMainStatus', 'NRestarts', 'ActiveEnterTimestamp', 'InactiveEnterTimestamp', 'InvocationID']);
-const fields = new Set(['v', 'hash', 'firstObservedAt', 'current', 'latest', 'nextAttempt', 'snapshot', 'code', 'message', 'reason', 'remedy', 'outcome', 'pid', 'start', 'startedAt', 'recordedAt', 'phase', 'previous', 'target', 'installed', 'preparedRestart', 'version', 'failures', 'result', 'next', 'deferred', 'automatic', 'auto', 'notify', 'owner', 'socket', 'path', 'dev', 'ino', 'ts', 'done', 'state', 'uptime', 'uptimeMs', 'update', 'lastResult', 'lastCheck', 'nextCheck', 'label', 'sha256']);
+const fields = new Set(['restartEvidence', 'prepared', 'fenced', 'v', 'hash', 'firstObservedAt', 'current', 'latest', 'nextAttempt', 'snapshot', 'code', 'message', 'reason', 'remedy', 'outcome', 'pid', 'start', 'startedAt', 'recordedAt', 'phase', 'previous', 'target', 'installed', 'preparedRestart', 'version', 'failures', 'result', 'next', 'deferred', 'automatic', 'auto', 'notify', 'owner', 'socket', 'path', 'dev', 'ino', 'ts', 'done', 'state', 'uptime', 'uptimeMs', 'update', 'lastResult', 'lastCheck', 'nextCheck', 'label', 'sha256']);
 function project(value, depth = 0) {
   if (depth > 6) return '<depth-limit>';
   if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) return value;

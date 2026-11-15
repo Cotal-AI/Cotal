@@ -19,6 +19,13 @@ test('Docker finish just after the exec clock is bounded by the immediate inspec
   assert.equal(foreignStackEnded(f), false);
 });
 test('the inspect boundary must be present, ordered and no earlier than the container finish', () => {
+  const f0 = fixture();
+  f0.stop.startedAt = '2026-11-14T21:10:03.081Z';
+  f0.stop.finishedAt = '2026-11-14T21:10:04.065Z';
+  f0.after.State.FinishedAt = '2026-11-14T21:10:04.06311167Z';
+  f0.observedAt = '2026-11-14T21:10:04.066Z';
+  assert.equal(foreignStackEnded(f0), true);
+  assert.equal(foreignStackEnded({ ...f0, observedAt: undefined }), false);
   for (const observedAt of [undefined, 'unknown', '2026-11-14T06:45:38.668Z']) {
     const f = fixture(); f.observedAt = observedAt;
     assert.equal(foreignStackEnded(f), false);

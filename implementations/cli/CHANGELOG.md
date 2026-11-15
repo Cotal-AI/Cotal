@@ -1,5 +1,16 @@
 # @cotal-ai/cli
 
+## 0.164.12
+
+### Patch Changes
+
+- 201785c: Reconcile update extensions in one staged prefix transaction.
+  
+  Install compatible changed packages together, retain every package and registration check, and promote the complete verified prefix once. Failed package installation or validation leaves the live prefix unchanged. A protected promotion journal recovers interrupted directory swaps before extension declarations are read.
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+
 ## 0.164.11
 
 ### Patch Changes

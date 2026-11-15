@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
 import { cliPackageRoot } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
@@ -21,6 +21,14 @@ export function cliProvenance(): CliProvenance {
   return source
     ? { kind: "source", root: dirname(packageRoot) }
     : { kind: "installed", root: packageRoot };
+}
+
+export function npmRecordedVersion(): string | undefined {
+  const entry = logicalExecutionEntry();
+  if (!entry) return undefined;
+  const meta = JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+  if (meta.name !== "cotal-ai" || typeof meta.version !== "string") throw new Error("npm installation record is unreadable");
+  return meta.version;
 }
 
 export interface ExtensionVersion {

@@ -1,6 +1,6 @@
 {
   "name": "cotal-ai",
-  "version": "0.164.11",
+  "version": "0.164.12",
   "description": "Cotal — lateral agent coordination over NATS. Run `npx cotal-ai` for the CLI.",
   "license": "Apache-2.0",
   "keywords": [
@@ -26,6 +26,7 @@
     "directory": "bin"
   },
   "type": "module",
+  "cotalPreinstall": { "v": 1, "entry": "./dist/execution-preinstall.js" },
   "bin": {
     "cotal": "./dist/cotal.js"
   },
