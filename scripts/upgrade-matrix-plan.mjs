@@ -221,6 +221,13 @@ export function boundedCells(plan) {
         requiredAssertions: [...followOnAssertions, 'native-scheduler', 'scheduler-from-staged-generation', 'generation-store-protected', ...(platform === 'linux' ? ['install-umask-observed', 'service-umask-observed'] : []), ...(channel === 'installer' ? ['installer-source-receipt'] : [])],
       });
     }
+    for (const nativeState of ['daemon', 'fresh']) add('linux', 'npm', `candidate-next-no-runtime-${nativeState}`, null, {
+      sourceVersion: plan.targetVersion, sourceKind: plan.phase === 'published' ? 'npm-exact-A' : 'packed-candidate-A',
+      targetVersion, targetSource: 'packed-next-B', targetSourceSHA: plan.sourceSHA, syntheticVersionRule: 'candidate.patch+1000',
+      nodeVersion: '24.18.0', withoutRuntimeDir: true, nativeState, noDaemonBeforeUpdate: nativeState === 'fresh',
+      expectedNoRuntimeRefusal: nativeState === 'daemon',
+      requiredAssertions: nativeState === 'daemon' ? ['runtime-directory-refusal', 'source-daemon-unchanged', 'no-staging-created', 'no-recovery', 'owned-native-cleanup'] : ['target-version', 'extension-versions', 'inventory-preserved', 'status-healthy', 'no-recovery', 'no-manual-intervention', 'candidate-source-identity', 'candidate-next-target', 'next-hop-success', 'runtime-directory-omitted', 'no-native-service', 'generation-store-protected'],
+    });
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,

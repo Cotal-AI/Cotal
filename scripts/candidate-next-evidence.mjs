@@ -188,13 +188,14 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
   assert.equal(command.timeout, update?.timeout, 'candidate hop timeout differs from actual command');
   assert.equal(command.stdout,update?.stdout,'candidate hop stdout differs from actual command');
   assert.equal(command.stderr,update?.stderr,'candidate hop stderr differs from actual command');
+  if (cell.noDaemonBeforeUpdate) assert.equal(report.environment?.nativeServiceRequested, false, 'no-daemon coordinate must not install a service');
   const nextHopSuccess = update?.exit === 0 && update.signal === null && update.timeout === false;
   const expectedFinalPackageManagerVersion = ['npm', 'installer'].includes(followOnAction)
     ? pair.followOnVersion
     : hop.mode === 'source-0.164.10'
       ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? pair.sourceVersion
       : pair.sourceVersion;
-  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli)
+  const final = (cell.noDaemonBeforeUpdate || cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli)
     ? {passed: true}
     : evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
   if (['npm', 'installer'].includes(followOnAction)) {
