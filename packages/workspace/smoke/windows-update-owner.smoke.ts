@@ -36,6 +36,39 @@ if (process.platform === "win32") {
     pin.close(); pin.close();
     assert.throws(() => pin.exited(), /closed/); passed++;
   } finally { pin.close(); child.kill(); }
+  const treeScript = `const { spawn } = require("node:child_process");
+    const sub = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", windowsHide: true });
+    console.log(String(sub.pid));
+    setInterval(()=>{},1000);`;
+  const treeRoot = spawn(process.execPath, ["-e", treeScript], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+  const rootPin = binding.pinProcess(treeRoot.pid!);
+  try {
+    const subPid = await new Promise<number>((resolve, reject) => {
+      let out = "";
+      const timer = setTimeout(() => reject(new Error("tree child did not report grandchild pid")), 5000);
+      treeRoot.stdout.on("data", (d: Buffer) => {
+        out += d.toString("utf8");
+        const line = out.trim();
+        if (/^\d+$/.test(line)) { clearTimeout(timer); resolve(Number(line)); }
+      });
+    });
+    assert.throws(() => binding.processTree(0, rootPin.token), /processTree requires a PID and creation token/); passed++;
+    assert.throws(() => binding.processTree(treeRoot.pid!, `${rootPin.token}0`), /process tree root identity/); passed++;
+    const tree = binding.processTree(treeRoot.pid!, rootPin.token);
+    try {
+      check(tree.some((m) => m.pid === treeRoot.pid! && m.token === rootPin.token));
+      check(tree.some((m) => m.pid === subPid && m.token === binding.creationToken(subPid)));
+      for (const m of [...tree].reverse()) m.terminate();
+      const deadline = Date.now() + 5000;
+      while (!tree.every((m) => m.exited()) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+      check(tree.every((m) => m.exited()));
+    } finally {
+      for (const m of tree) m.close();
+    }
+  } finally {
+    rootPin.close();
+    treeRoot.kill();
+  }
   const held = acquireLock(path);
   try {
     const original = readFileSync(path, "utf8");

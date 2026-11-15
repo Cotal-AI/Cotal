@@ -3772,8 +3772,10 @@ export class Manager {
       // has left the process group keeps running after `cotal down`. The runtime still escalates to
       // SIGKILL after its grace.
       this.recordContinuityAtStop(a, "shutdown");
-      this.agents.delete(a.name);
-      this.dropSeatRecord(a);
+      if (process.platform !== "win32" || a.handle.kind !== "pty") {
+        this.agents.delete(a.name);
+        this.dropSeatRecord(a);
+      }
       const refused = this.stopHandle(a, true);
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
@@ -3788,6 +3790,10 @@ export class Manager {
     await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
+        if (process.platform === "win32" && a.handle.kind === "pty") {
+          this.agents.delete(a.name);
+          this.dropSeatRecord(a);
+        }
         this.logSeatReaped(a, { kind: "stopped-shutdown" });
       } catch (e) {
         failures.push(`${a.name}: ${rejectionText(e)}`);
@@ -4926,7 +4932,7 @@ export class Manager {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
+        return unwrap(await this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -4980,7 +4986,7 @@ export class Manager {
       // The reserved goal cancel (SPEC 13.6 item 4), served for the relay: the goal ref is the
       // authenticated caller's own, so a run withdraws only the turns it submitted.
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
-      stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
+      stopSelf: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller))),
       removePersona: (ctx) => this.serveGated(ctx, () => {
         const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
@@ -5180,11 +5186,14 @@ export class Manager {
    *  per spawn + non-forgeable in auth mode), never a peer — so it's structurally incapable of
    *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
    *  no match and get a loud error, not a silent no-op. */
-  private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply {
+  private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply | Promise<ControlReply> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
+    if (process.platform === "win32" && target.handle.kind === "pty") {
+      return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
+    }
     this.stopHandle(target, graceful);
     this.trackStoppedHandle(target, true, { kind: "stopped-self" });
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
@@ -5213,16 +5222,38 @@ export class Manager {
     // durable terminal begins.
     a.terminalizing = true;
     try {
-      if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
       // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
       // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
       // close; the free path's own teardown joins the same flight.
       if (a.handedOff) this.trackDeprovision(this.teardownTarget(a));
       else a.handle.stop({ graceful });
+      // The runtime captured its cohort synchronously before the cooperative
+      // request can let a root exit and orphan its already-running children.
+      if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
     } catch (e) {
       const failure = rejectionText(e);
       console.error(`stop ${a.name} (${a.id}): ${failure}`);
       return failure;
+    }
+  }
+
+  /** Windows PTY stops release their name only after the captured process cohort and PTY exited. */
+  private async stopWindowsSeat(a: ManagedAgent, graceful: boolean, floor: boolean, cause: FreeSlotStopCause): Promise<void> {
+    if (a.once) a.once.stopReason ??= onceStopReason(cause);
+    const failure = this.stopHandle(a, graceful);
+    this.lifecycleInFlight++;
+    try {
+      if (failure !== undefined) throw new Error(failure);
+      await this.awaitHandleExit(a.handle);
+      this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
+      this.freeSlot(a, floor, cause, true);
+    } catch (error) {
+      const detail = `Windows stop could not prove the captured process tree exited: ${rejectionText(error)}`;
+      this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
+      this.unverifiedStops.push({ name: a.name, id: a.id, handle: a.handle, authoritative: true, error: detail });
+      throw new EpEnvelopeError("unavailable", detail, undefined, "unknown");
+    } finally {
+      this.releaseLifecycle();
     }
   }
 
@@ -5237,9 +5268,10 @@ export class Manager {
    * slot lingering. A recursive reap (`requireAuthoritativeExit`) instead keeps the slot until the
    * wait proves exit: nobody asked for those children to be gone, so they stay managed until the
    * runtime says otherwise, and a runtime that cannot prove exit records an unverified stop. */
-  private trackStoppedHandle(a: ManagedAgent, floor: boolean, cause: FreeSlotStopCause, requireAuthoritativeExit = false): void {
+  private trackStoppedHandle(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, requireAuthoritativeExit = false): void {
+    if (process.platform === "win32" && a.handle.kind === "pty") requireAuthoritativeExit = true;
     // What a once seat's task is cancelled with if this stop ends it before the task has a terminal.
-    if (a.once) a.once.stopReason ??= onceStopReason(cause);
+    if (a.once && typeof cause !== "string") a.once.stopReason ??= onceStopReason(cause);
     if (!a.handle.waitForExit) {
       // Preserve ordinary external-runtime stop behavior, but retain enough evidence for a later
       // maintenance prepare to fail if that runtime still cannot prove the surface disappeared.
@@ -5259,8 +5291,12 @@ export class Manager {
     if (!requireAuthoritativeExit) this.freeSlot(a, floor, cause, true);
     this.lifecycleInFlight++;
     void this.awaitHandleExit(a.handle)
-      .then(() => this.freeSlot(a, floor, cause, true)) // no-op once an accepted stop already freed it
+      .then(() => {
+        this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
+        this.freeSlot(a, floor, cause, true);
+      }) // no-op once an accepted stop already freed it
       .catch((e) => {
+        this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
         this.unverifiedStops.push({
           name: a.name,
           id: a.id,
@@ -6271,7 +6307,7 @@ export class Manager {
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
     this.stopHandle(a, false);
-    this.freeSlot(a, true, "carried-fork-refused");
+    this.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
   private readManagedSession(a: ManagedAgent): string {
@@ -6512,6 +6548,9 @@ export class Manager {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
     if (this.maintenanceState !== "active") return;
+    // A Windows stop owns the exit proof and its truthful reap cause. The raw
+    // terminal event must not release a slot while cohort verification is pending.
+    if (process.platform === "win32" && a.handle.kind === "pty" && a.terminalizing) return;
     // A replacement is proving readiness under this row. Its own wait owns a failed
     // relaunch; treating that exit as a seat death would free the slot mid-recovery.
     if (a.restart?.recovering && !a.terminalizing) return;
@@ -8300,7 +8339,7 @@ export class Manager {
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
           this.stopHandle(managed, false);
-          this.freeSlot(managed, true, "carried-fork-refused");
+          this.trackStoppedHandle(managed, true, "carried-fork-refused");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
           return { ok: false, error: refused };
         }
@@ -8323,7 +8362,7 @@ export class Manager {
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
             this.stopHandle(managed, false);
-            this.freeSlot(managed, true, "session-bind-failed");
+            this.trackStoppedHandle(managed, true, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -8336,7 +8375,7 @@ export class Manager {
           } catch (error) {
             const detail = `${managed.name} joined, but supervise cannot cover a manager restart for it: ${rejectionText(error)}`;
             this.stopHandle(managed, false);
-            this.freeSlot(managed, true, "supervise-record-failed");
+            this.trackStoppedHandle(managed, true, "supervise-record-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -9425,7 +9464,11 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    return this.despawnCore(a, caller, admin, args.graceful !== false);
+    try {
+      return await this.despawnCore(a, caller, admin, args.graceful !== false);
+    } catch (error) {
+      return { ok: false, error: rejectionText(error) };
+    }
   }
 
   /** The ONE named-terminal core both doors share: the ctl named `stop`
@@ -9443,7 +9486,13 @@ export class Manager {
    *  `trackStoppedHandle(a, !admin)` disposition. The reap line names `caller` — the AUTHENTICATED
    *  wire principal the door already resolved — so an operator reading the log can tell one peer's
    * despawn from another's. */
-  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply {
+  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply | Promise<ControlReply> {
+    if (process.platform === "win32" && a.handle.kind === "pty") {
+      return this.stopWindowsSeat(a, graceful, trackNonAdmin, { kind: "stopped-requested", requester: caller }).then(() => {
+        void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate");
+        return { ok: true, data: { name: a.name, stopped: true, graceful } };
+      });
+    }
     this.stopHandle(a, graceful);
     this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // Cancel a live spawn goal
@@ -9484,7 +9533,7 @@ export class Manager {
       // The host's retirement closed this UID's provider handle before its barrier, so the stop only
       // reaps the slot, and its hold clears with the confirmation.
       const slot = this.agents.get(name);
-      if (slot?.lifecycleUid === target.lifecycleUid) this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
+      if (slot?.lifecycleUid === target.lifecycleUid) await this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
       // The host owns the grant and the footprint, but the secret family enrollUserAgent wrote here
       // is this participant's, and no teardown arm of a delegated seat removes it.
       const unshredded: CleanupFailure[] = [];
