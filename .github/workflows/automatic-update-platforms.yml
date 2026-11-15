@@ -17,6 +17,10 @@ on:
       source_sha:
         type: string
         required: true
+      desktop_only:
+        type: boolean
+        default: false
+        required: false
       profile:
         type: choice
         options: [bounded, extended]
@@ -45,6 +49,7 @@ jobs:
       target: ${{ steps.plan.outputs.target }}
       profile: ${{ steps.plan.outputs.profile }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      desktop-only: ${{ steps.plan.outputs.desktop-only }}
     steps:
       # On workflow_run this is the trusted default-branch workflow revision, never PR code.
       - uses: actions/checkout@v6
@@ -156,6 +161,7 @@ jobs:
             if (ownershipMeasure) assert.equal(cells.length, 9);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
+            core.setOutput('desktop-only', String(ownershipMeasure && event.inputs.desktop_only === 'true'));
             core.setOutput('applicable', String(plan.status === 'planned'));
             for (const [key, value] of Object.entries({ phase: plan.phase, source: plan.sourceSHA, target: plan.targetVersion, profile: plan.profile, matrix: JSON.stringify(jobsMatrix(cells)) })) core.setOutput(key, value ?? '');
             await core.summary.addHeading('Upgrade matrix selection').addRaw(plan.status === 'skipped' ? `Not applicable: ${plan.reason}` : `${plan.phase}: ${plan.sourceVersion} to ${plan.targetVersion} from ${plan.sourceSHA}, ${cells.filter(c => c.required).length} isolated cells`).write();
@@ -377,7 +383,7 @@ jobs:
           if-no-files-found: error
   release-cells:
     needs: [select, release-pack, release-next]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.select.outputs.desktop-only != 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -579,7 +585,7 @@ jobs:
           if-no-files-found: error
   release-summary:
     needs: [select, release-native, release-pack, release-next, release-cells]
-    if: always() && needs.select.outputs.applicable == 'true'
+    if: always() && needs.select.outputs.applicable == 'true' && needs.select.outputs.desktop-only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -1312,7 +1318,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: [release-pack, release-next]
-    if: "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-foreign-daemon-fence' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
+    if: "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-foreign-daemon-fence' && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1370,7 +1376,7 @@ jobs:
       - name: Real released desktop daemon beside separate CLI
         shell: bash
         run: |
-          node --import tsx --input-type=module - --source 0.164.18 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --expected-target 0.164.1018 --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence" <<'NODE'
+          node --import tsx --input-type=module - --source 0.164.18 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --running-desktop-beside-cli true --expected-target 0.164.1018 --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence" <<'NODE'
           import { pathToFileURL } from 'node:url';
           const { matrixCell, cellExitCode } = await import(pathToFileURL(process.cwd() + '/scripts/automatic-update-platform-baseline.mjs'));
           const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));

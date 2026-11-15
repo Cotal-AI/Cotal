@@ -92,6 +92,15 @@ test('candidate-owned next hop admission requires explicit paired hosted manual 
   assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
 });
 
+test('running desktop neighbor requires explicit complete paired coordinate', { skip: process.platform !== 'linux' }, () => {
+  const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.18', layout:'npm',state:'daemon',method:'self', 'desktop-runtime':'/desktop/runtime', 'desktop-node':'/desktop/node', 'running-desktop-beside-cli':'true', prepare() {}};
+  assert.equal(baseline.candidateNextOptions(options,true),'candidate');
+  for (const change of [{'running-desktop-beside-cli':undefined},{'running-desktop-beside-cli':'false'},{candidate:undefined},{'candidate-next':undefined},{'desktop-runtime':undefined},{'desktop-node':undefined},{prepare:undefined},{prepare:'fixture'},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'0.164.10'},{'next-hop-phase':undefined},{'stopped-daemon-before-update':'true'},{'disabled-daemon-before-update':'true'},{'follow-on-action':'self'}]) {
+    assert.throws(()=>baseline.candidateNextOptions({...options,...change},true),JSON.stringify(change));
+  }
+  assert.throws(()=>baseline.candidateNextOptions(options,false));
+});
+
 function hostedChainOptions() {
   return { candidate: '/A', 'candidate-next': '/B', 'next-hop-source': '0.164.10', 'next-hop-phase': 'candidate', source: '0.164.10', layout: 'npm', state: 'agent', method: 'self', 'daemon-hosted-manager': 'true', 'stop-agents': 'true', prepare() {} };
 }

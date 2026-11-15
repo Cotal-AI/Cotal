@@ -22,6 +22,11 @@ import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
+  const runningDesktop = options['running-desktop-beside-cli'] !== undefined;
+  if (runningDesktop) {
+    assert.equal(options['running-desktop-beside-cli'], 'true', 'running-desktop-beside-cli accepts only true');
+    assert(disposable && process.platform === 'linux' && options.candidate && options['candidate-next'] && options['desktop-runtime'] && options['desktop-node'] && typeof options.prepare === 'function' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && options['next-hop-source'] === 'candidate' && options['stopped-daemon-before-update'] === undefined && options['disabled-daemon-before-update'] === undefined && options['follow-on-action'] === undefined, 'running-desktop-beside-cli requires disposable Linux paired npm daemon self, released desktop Node and real participant preparation without stop, disable or follow-on');
+  }
   if (options['candidate-next'] === undefined) {
     if (options['stopped-daemon-before-update'] !== undefined) {
       assert.equal(options['stopped-daemon-before-update'], 'true', 'stopped-daemon-before-update accepts only true');
@@ -45,7 +50,7 @@ export function candidateNextOptions(options, disposable = hosted) {
     assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && followOnAction === undefined && options['disabled-daemon-before-update'] === undefined, 'stopped-daemon-before-update requires candidate next hop, npm layout, daemon state and self method without follow-on action');
   }
   if (options['desktop-runtime'] !== undefined) {
-    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && options['stopped-daemon-before-update'] === 'true' && process.platform === 'linux', 'candidate-next desktop-runtime requires Linux stopped-daemon-before-update');
+    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && (options['stopped-daemon-before-update'] === 'true' || runningDesktop) && process.platform === 'linux', 'candidate-next desktop-runtime requires Linux stopped-daemon-before-update or explicit running-desktop-beside-cli');
   }
   if (options['disabled-daemon-before-update'] !== undefined) {
     assert.equal(options['disabled-daemon-before-update'], 'true', 'disabled-daemon-before-update accepts only true');
