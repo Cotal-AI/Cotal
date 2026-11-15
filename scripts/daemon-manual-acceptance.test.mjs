@@ -142,3 +142,43 @@ test('Darwin archived socket generation matches public peer lifetime owner', asy
   const f = await fixture(t, { platform: 'darwin' });
   assert.equal(f.evaluate().passed, true, JSON.stringify(f.evaluate()));
 });
+
+test('staged route acceptance binds selectedCliVersion to target and packageManagerRecordVersion to expected npm record', async t => {
+  const f = await fixture(t, { platform: 'linux' });
+  const obs = f.diagnostics.observations.find(r => r.kind === 'installed-version');
+  const writeObs = record => {
+    const bytes = Buffer.from(JSON.stringify(record));
+    writeFileSync(join(f.dirs.output, obs.artifact), bytes, { mode: 0o600 });
+    obs.bytes = bytes.length;
+    obs.sha256 = createHash('sha256').update(bytes).digest('hex');
+    obs.version = record.version;
+    obs.selectedCliVersion = record.selectedCliVersion;
+    obs.packageManagerRecordVersion = record.packageManagerRecordVersion;
+    obs.updateRoute = record.updateRoute;
+  };
+  const validStaged = {
+    name: 'cotal-ai',
+    version: '1.2.3',
+    selectedCliVersion: '1.2.3',
+    packageManagerRecordVersion: '1.2.2',
+    updateRoute: 'staged',
+    generationId: 'gen-1.2.3',
+    inventorySha256: '1'.repeat(64),
+    activeDescriptorSha256: '2'.repeat(64),
+    stagedProgramSha256: '3'.repeat(64),
+  };
+  writeObs(validStaged);
+  f.args.expectedPackageManagerVersion = '1.2.2';
+  const result = f.evaluate();
+  assert.equal(result.passed, true, JSON.stringify(result));
+  assert.equal(result.updateRoute, 'staged');
+  assert.equal(result.selectedCliVersion, '1.2.3');
+  assert.equal(result.packageManagerRecordVersion, '1.2.2');
+
+  f.args.expectedPackageManagerVersion = '1.2.1';
+  assert.equal(f.evaluate().passed, false);
+  f.args.expectedPackageManagerVersion = '1.2.2';
+
+  writeObs({ ...validStaged, updateRoute: 'in-place' });
+  assert.equal(f.evaluate().passed, false, 'in-place route must reject packageManagerRecordVersion !== target');
+});

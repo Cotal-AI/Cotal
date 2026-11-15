@@ -9,14 +9,14 @@ import { candidatePairRegistry } from './candidate-pair-registry.mjs';
 
 const names = JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat();
 const hash = (bytes, algorithm = 'sha256', encoding = 'hex') => createHash(algorithm).update(bytes).digest(encoding);
-async function fixture() {
+async function fixture(count = 2) {
   const root = mkdtempSync(join(tmpdir(), 'candidate-pair-'));
   const cleanup = () => rmSync(root, { recursive: true, force: true });
-  const dirs = [join(root, 'a'), join(root, 'b')];
+  const dirs = ['a', 'b', ...(count === 3 ? ['c'] : [])].map(name => join(root, name));
   const manifests = [];
   for (const [index, dir] of dirs.entries()) {
     mkdirSync(dir);
-    const version = index ? '0.164.1010' : '0.164.10';
+    const version = index === 2 ? '0.164.2010' : index === 1 ? '0.164.1010' : '0.164.10';
     const manifest = { source: 'a'.repeat(40), packages: [] };
     for (const [i, name] of names.entries()) {
       const staging = join(dir, String(i));
@@ -34,8 +34,8 @@ async function fixture() {
   return { dirs, manifests, cleanup };
 }
 
-test('real public metadata plus 48 original archives, explicit recovery selectors and controlled latest', { timeout: 180000 }, async t => {
-  const { dirs, manifests, cleanup } = await fixture();
+test('real public metadata plus 48 or 72 original archives, explicit recovery selectors and controlled latest', { timeout: 180000 }, async t => {
+  const { dirs, manifests, cleanup } = await fixture(3);
   // The composed registry deliberately refuses local upstreams. This is a real
   // public npm metadata test, not an offline network substitute or native proof.
   let registry;
@@ -53,8 +53,12 @@ test('real public metadata plus 48 original archives, explicit recovery selector
     sourceArchives: manifests[0].packages.map(({ name, sha256 }) => ({ name, sha256 })),
     targetArchives: manifests[1].packages.map(({ name, sha256 }) => ({ name, sha256 })),
     sourcePackages: manifests[0].packages, targetPackages: manifests[1].packages,
+    followOnVersion: '0.164.2010',
+    followOnManifestSha256: hash(readFileSync(join(dirs[2], 'manifest.json'))),
+    followOnArchives: manifests[2].packages.map(({ name, sha256 }) => ({ name, sha256 })),
+    followOnPackages: manifests[2].packages,
   });
-  for (const active of ['0.164.10', '0.164.1010']) {
+  for (const active of ['0.164.10', '0.164.1010', '0.164.2010']) {
     for (const name of names) {
       const path = encodeURIComponent(name), metadata = await get(path);
       assert.equal(metadata['dist-tags'].latest, active);
@@ -74,36 +78,43 @@ test('real public metadata plus 48 original archives, explicit recovery selector
         assert.equal(selected.dist.shasum, hash(bytes, 'sha1'));
       }
     }
-    for (const selector of ['0.0.999999', 'A', 'B']) {
+    for (const selector of ['0.0.999999', 'A', 'B', 'C']) {
       assert.equal((await fetch(`${registry.url}/cotal-ai/${selector}`)).status, 404);
     }
-    registry.activateTarget();
+    if (active === '0.164.10') registry.activateTarget();
+    else if (active === '0.164.1010') registry.activateFollowOn();
   }
   assert.equal((await fetch(`${registry.url}/cotal-ai/0.0.999999`)).status, 404);
   assert.equal((await fetch(`${registry.url}/cotal-ai`, { method: 'PUT', body: '{}' })).status, 405);
   assert(registry.requests.some(row => row.path === 'cotal-ai/0.164.10'));
+  assert(registry.requests.some(row => row.path === 'cotal-ai/0.164.2010'));
   await registry.close();
   await registry.close();
   assert.throws(() => registry.activateTarget(), /closing/);
+  assert.throws(() => registry.activateFollowOn(), /closing/);
 });
 
 test('rejects source, census, ordering, version, archive hash and nonpublic upstream mismatches', async t => {
-  const { dirs, manifests, cleanup } = await fixture();
+  const { dirs, manifests, cleanup } = await fixture(3);
   t.after(cleanup);
   const original = structuredClone(manifests[1]);
-  async function reject(change, pattern) {
-    const value = structuredClone(original);
+  const originalFollowOn = structuredClone(manifests[2]);
+  async function reject(change, pattern, targetIndex = 1) {
+    const value = structuredClone(targetIndex === 2 ? originalFollowOn : original);
     change(value);
-    writeFileSync(join(dirs[1], 'manifest.json'), JSON.stringify(value));
+    writeFileSync(join(dirs[targetIndex], 'manifest.json'), JSON.stringify(value));
     await assert.rejects(candidatePairRegistry(...dirs), pattern);
+    writeFileSync(join(dirs[targetIndex], 'manifest.json'), JSON.stringify(targetIndex === 2 ? originalFollowOn : original));
   }
   await reject(m => { m.source = 'b'.repeat(40); }, /share source/);
+  await reject(m => { m.source = 'b'.repeat(40); }, /share source/, 2);
   await reject(m => { m.packages.pop(); }, /census/);
   await reject(m => { m.packages[0] = m.packages[1]; }, /census/);
   await reject(m => { m.packages[0].version = '0.164.1011'; }, /lockstep/);
   await reject(m => { for (const p of m.packages) p.version = '0.164.9'; }, /patch\+1000/);
   await reject(m => { for (const p of m.packages) p.version = '0.164.11'; }, /patch\+1000/);
+  await reject(m => { for (const p of m.packages) p.version = '0.164.1010'; }, /patch\+2000/, 2);
   await reject(m => { m.packages[0].sha256 = '0'.repeat(64); }, /archive hash/);
-  writeFileSync(join(dirs[1], 'manifest.json'), JSON.stringify(original));
-  await assert.rejects(candidatePairRegistry(...dirs, 'http://127.0.0.1:1/'), /public registry/);
+  await assert.rejects(candidatePairRegistry(dirs[0], dirs[1], 'http://127.0.0.1:1/'), /public registry/);
+  await assert.rejects(candidatePairRegistry(dirs[0], dirs[1], dirs[2], 'http://127.0.0.1:1/'), /public registry/);
 });

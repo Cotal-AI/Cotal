@@ -13,23 +13,31 @@ import { observeMacHandoff, handoffEvidence } from './mac-transition-observer.mj
 import { foreignStackEnded } from './foreign-stack-cleanup.mjs';
 import { createPreResultKill } from './mac-pre-result-kill.mjs';
 import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
-import { captureDaemonDiagnostics } from './daemon-cell-diagnostics.mjs';
+import { captureDaemonDiagnostics, inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
 import { evaluateManualDaemonState } from './daemon-manual-acceptance.mjs';
 import { compareVersions } from './upgrade-matrix-plan.mjs';
 import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter, intermediateWholeMachine } from './candidate-next-evidence.mjs';
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
+import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) return undefined;
   const mode = options['next-hop-source'];
   assert(['candidate', '0.164.10'].includes(mode), 'candidate next source must be explicit');
   assert(['candidate','published'].includes(options['next-hop-phase']), 'candidate next phase must be explicit');
+  const followOnAction = options['follow-on-action'];
+  if (followOnAction !== undefined) {
+    assert(['self', 'npm', 'installer'].includes(followOnAction), 'follow-on-action must be self, npm or installer');
+    assert(mode === 'candidate' && options['candidate-follow-on'] && options.state === 'daemon' && options.method === 'self', 'follow-on action requires candidate next hop, daemon state, self method and follow-on closure');
+    if (followOnAction === 'installer') assert(options.layout === 'installer' && options['candidate-follow-on-installer'], 'installer follow-on action requires installer layout and follow-on installer script');
+    else assert.equal(options.layout, 'npm', 'self and npm follow-on actions require npm layout');
+  }
   const hostedConsent = mode === '0.164.10' && options.state === 'agent' && options.layout === 'npm'
     && options['daemon-hosted-manager'] === 'true' && options['stop-agents'] === 'true'
     && daemonHostedManagerOptions(options, {hosted: disposable});
   assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && (options.state === 'daemon' || hostedConsent) && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
-  if (mode === 'candidate') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
+  if (mode === 'candidate' && followOnAction !== 'installer') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
   if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
 }
@@ -344,7 +352,7 @@ export async function matrixCell(options) {
   if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && macTransitionSource(source, expectedTarget, launchdProof))) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['first-install'] === 'true' ? 'first-install' : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
+  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
   const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
   const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
@@ -408,7 +416,7 @@ export async function matrixCell(options) {
     }
   }
   async function call(label, file, argv, timeout = callTimeout(label)) {
-    if (/install|seed|upgrade under test|candidate second hop under test/.test(label)) {
+    if (/install|seed|upgrade under test|candidate second hop under test|candidate follow-on|manual npm/.test(label)) {
       const disk = statfsSync(root);
       assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation action');
     }
@@ -471,7 +479,12 @@ export async function matrixCell(options) {
       report.publishedInstaller = verifyPublishedInstaller({ ...options, layout, method });
       script = report.publishedInstaller.path;
       label = 'receipt-bound published installer';
-    } else if (candidateTarget && options['candidate-installer']) {
+    } else if (candidateTarget === 'follow-on') {
+      assert(options['candidate-follow-on'] && options['candidate-follow-on-installer'], 'follow-on installer requires follow-on closure and script');
+      script = resolve(options['candidate-follow-on-installer']);
+      report.candidateInstaller = verifyCandidateInstaller(resolve(options['candidate-follow-on']), script);
+      label = 'candidate follow-on source installer';
+    } else if ((candidateTarget || nextHopMode === 'candidate') && options['candidate-installer']) {
       assert(options.candidate, 'candidate installer is forbidden in published tier');
       script = resolve(options['candidate-installer']);
       report.candidateInstaller = verifyCandidateInstaller(resolve(options.candidate), script);
@@ -495,14 +508,17 @@ export async function matrixCell(options) {
     report.registry = ok(await npmCall('record npm registry', ['config', 'get', 'registry']), 'registry').stdout.trim();
     if (nextHopMode) {
       const { candidatePairRegistry } = await import('./candidate-pair-registry.mjs');
-      overlay = await candidatePairRegistry(resolve(options.candidate), resolve(options['candidate-next']), report.registry);
+      overlay = options['candidate-follow-on']
+        ? await candidatePairRegistry(resolve(options.candidate), resolve(options['candidate-next']), resolve(options['candidate-follow-on']), report.registry)
+        : await candidatePairRegistry(resolve(options.candidate), resolve(options['candidate-next']), report.registry);
       report.candidateNext = overlay.identity;
       report.candidate = { source: overlay.identity.source, version: overlay.identity.sourceVersion, manifestSha256: overlay.identity.sourceManifestSha256, archives: overlay.identity.sourceArchives, direction: 'A' };
       if (nextHopMode === 'candidate') assert.equal(report.source, overlay.identity.sourceVersion, 'installed updater must be the frozen candidate A');
       report.target = nextHopMode === 'candidate' ? overlay.identity.targetVersion : overlay.identity.sourceVersion;
       if (expectedTarget) assert.equal(report.target, expectedTarget, 'paired target differs from the frozen coordinate');
-      if (options['next-hop-final-target']) assert.equal(overlay.identity.targetVersion, options['next-hop-final-target']);
-      report.nextHop = { mode: nextHopMode, sourceVersion: report.source, firstTargetVersion: overlay.identity.sourceVersion, finalTargetVersion: overlay.identity.targetVersion };
+      const finalTargetVersion = options['follow-on-action'] ? overlay.identity.followOnVersion : overlay.identity.targetVersion;
+      if (options['next-hop-final-target']) assert.equal(finalTargetVersion, options['next-hop-final-target']);
+      report.nextHop = { mode: nextHopMode, sourceVersion: report.source, firstTargetVersion: overlay.identity.sourceVersion, finalTargetVersion };
       env.npm_config_registry = overlay.url;
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
     } else if (options.candidate) {
@@ -800,6 +816,70 @@ export async function matrixCell(options) {
         report.nextHop.passed = update.exit === 0 && update.signal === null && update.timeout === false;
         check('candidate next target matches packed artifact', report.target === report.candidateNext.targetVersion, report.target);
         check('candidate next hop exits successfully', update.exit === 0 && update.signal === null && update.timeout === false, update);
+        if (options['follow-on-action']) {
+          const followOnAction = options['follow-on-action'];
+          await captureServiceEvidence('between-hops');
+          const status = await daemon('between hops public daemon status', ['daemon', 'status', '--json']);
+          const updateCheck = await cotal('between hops public update check', ['update', '--check']);
+          const commandBytes = Buffer.from(JSON.stringify({ status, updateCheck }));
+          const commands = { artifact: `${id}-between-hop-commands.txt`, bytes: commandBytes.length, sha256: digest(commandBytes) };
+          writeFileSync(join(output, commands.artifact), commandBytes, { flag: 'wx', mode: 0o600 });
+          report.nextHop.intermediate = intermediateWholeMachine({ diagnostics: report.daemonDiagnostics['between-hops'], output, target: report.candidateNext.targetVersion, platform: process.platform, expectedPackageManagerVersion: report.candidateNext.sourceVersion, status, updateCheck, commands });
+          check('candidate first hop leaves a whole machine', report.nextHop.intermediate.passed, report.nextHop.intermediate);
+          assert(report.nextHop.intermediate.passed, 'candidate first hop did not independently leave a whole machine before follow-on action');
+          overlay.activateFollowOn();
+          report.target = report.candidateNext.followOnVersion;
+          let npmInstall, bareNpmObservation;
+          if (followOnAction === 'self') {
+            update = await cotal('candidate follow-on self update under test', ['update', '--self']);
+          } else if (followOnAction === 'npm') {
+            npmInstall = ok(await npmCall('manual npm install follow-on target', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.target}`, '--no-audit', '--no-fund']), 'manual npm follow-on install');
+            const bareVersion = await cotal('bare manual npm CLI version observation', ['--version']);
+            const bareRoute = inspectInstalledUpdateRoute(pkg, process.platform);
+            const bareManifest = join(config, 'extensions/extensions.json');
+            const bareExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const bareInstalledExtensions = bareExtensions.map(entry => {
+              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
+              return { pkg: entry.pkg, version: metadata?.version };
+            });
+            const bareRecovery = existsSync(join(cotalHome, 'update-recovery.json')) ? json(join(cotalHome, 'update-recovery.json')) : null;
+            let bareDaemonStatus = await daemon('bare manual npm daemon status', ['daemon', 'status', '--json']);
+            for (let i = 0; i < 60; i++) {
+              if (bareDaemonStatus.exit === 0 && nativeGenerationReady(JSON.parse(bareDaemonStatus.stdout).result, report.target)) break;
+              await delay(1000);
+              bareDaemonStatus = await daemon('wait for bare manual npm daemon generation', ['daemon', 'status', '--json']);
+            }
+            const bareDaemon = bareDaemonStatus.exit === 0 ? JSON.parse(bareDaemonStatus.stdout).result : undefined;
+            const remedyPresent = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(bareVersion.stdout);
+            const bareExtensionsAccounted = bareExtensions.length >= 8 && bareExtensions.every(entry => {
+              const installed = bareInstalledExtensions.find(row => row.pkg === entry.pkg);
+              if (!installed || installed.version !== entry.version) return false;
+              if (entry.version === report.target) return true;
+              return entry.version === report.candidateNext.targetVersion && remedyPresent;
+            });
+            const bareChecks = {
+              cliAtTargetWithExitZero: bareVersion.exit === 0 && bareVersion.signal === null && bareVersion.timeout === false && cliReportsVersion(bareVersion.stdout, report.target) && bareRoute.selectedCliVersion === report.target && bareRoute.packageManagerRecordVersion === report.target,
+              routeInPlace: bareRoute.updateRoute === 'in-place',
+              daemonAtTarget: bareDaemonStatus.exit === 0 && nativeGenerationReady(bareDaemon, report.target),
+              noRecoveryRecord: bareRecovery === null,
+              extensionsAtTargetOrNamedWithRemedy: bareExtensionsAccounted,
+            };
+            const bareBytes = Buffer.from(JSON.stringify({ version: bareVersion, daemonStatus: bareDaemonStatus, route: bareRoute, recovery: bareRecovery, extensions: bareExtensions, installedExtensions: bareInstalledExtensions, checks: bareChecks }));
+            const bareCommands = { artifact: `${id}-bare-manual-npm.txt`, bytes: bareBytes.length, sha256: digest(bareBytes) };
+            writeFileSync(join(output, bareCommands.artifact), bareBytes, { flag: 'wx', mode: 0o600 });
+            bareNpmObservation = { passed: Object.values(bareChecks).every(Boolean), selectedCliVersion: bareRoute.selectedCliVersion, packageManagerRecordVersion: bareRoute.packageManagerRecordVersion, updateRoute: bareRoute.updateRoute, daemonVersion: bareDaemon?.version, recovery: bareRecovery, extensions: bareExtensions, installedExtensions: bareInstalledExtensions, remedyPresent, versionCommand: bareVersion, daemonStatusCommand: bareDaemonStatus, checks: bareChecks, commands: bareCommands };
+            check('bare manual npm install reaches target in-place and names any pending extension reconciliation', bareNpmObservation.passed, bareNpmObservation);
+            update = await cotal('reconcile manual npm follow-on target', ['update', '--self']);
+          } else {
+            update = await installer(report.target, 'follow-on');
+          }
+          report.nextHop.followOn = { action: followOnAction, targetVersion: report.target, ...(npmInstall ? { npmInstall } : {}), ...(bareNpmObservation ? { bareNpmObservation } : {}), update };
+          const followOnPassed = update.exit === 0 && update.signal === null && update.timeout === false && (!npmInstall || (npmInstall.exit === 0 && npmInstall.signal === null && npmInstall.timeout === false)) && (!bareNpmObservation || bareNpmObservation.passed);
+          report.nextHop.passed = report.nextHop.passed && followOnPassed;
+          check('follow-on target matches packed artifact', report.target === report.candidateNext.followOnVersion, report.target);
+          check('follow-on action exits successfully', followOnPassed, report.nextHop.followOn);
+        }
       }
     }
     else if (method === 'installer') update = await installer(report.target, true);
@@ -861,9 +941,10 @@ export async function matrixCell(options) {
           report.schedulerReplacementObserved = true;
           continue;
         }
-        let installedVersion;
-        try { installedVersion = json(join(pkg, 'package.json')).version; }
+        let installedState;
+        try { installedState = inspectInstalledUpdateRoute(pkg, process.platform); }
         catch (error) { if (error.code === 'ENOENT') { report.schedulerReplacementObserved = true; continue; } throw error; }
+        const installedVersion = installedState.selectedCliVersion;
         const status = await cotal('scheduler observation', ['daemon', 'status', '--json']);
         report.schedulerLastStatus = status;
         if (launchdObserver?.status().failure) throw new Error(launchdObserver.status().failure);
@@ -878,7 +959,8 @@ export async function matrixCell(options) {
         uncertain = true;
         throw new Error(`scheduler outcome unknown after observation deadline: ${attempt.result}; native service retained for runner teardown`);
       }
-      check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : json(join(pkg, 'package.json')).version === report.target && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
+      const postSchedulerRoute = inspectInstalledUpdateRoute(pkg, process.platform);
+      check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : postSchedulerRoute.selectedCliVersion === report.target && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
       update = { exit: 0, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
@@ -935,7 +1017,19 @@ export async function matrixCell(options) {
     report.updaterSelectedVersions = selectedVersions;
     report.updaterSelectedVersion = selectedVersions[0];
     check('upgrade exits successfully', update.exit === 0, update);
-    check('CLI version is target', json(join(pkg, 'package.json')).version === expectedVersion, json(join(pkg, 'package.json')).version);
+    const installedRoute = inspectInstalledUpdateRoute(pkg, process.platform);
+    report.updateRoute = installedRoute.updateRoute;
+    report.selectedCliVersion = installedRoute.selectedCliVersion;
+    report.packageManagerRecordVersion = installedRoute.packageManagerRecordVersion;
+    const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action']) || method === 'installer' || options['first-install'] === 'true'
+      ? expectedVersion
+      : nextHopMode === 'source-0.164.10'
+        ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? report.candidateNext.sourceVersion
+        : report.source;
+    const routeMatches = installedRoute.selectedCliVersion === expectedVersion && (installedRoute.updateRoute === 'in-place'
+      ? installedRoute.packageManagerRecordVersion === expectedVersion
+      : !['npm', 'installer'].includes(options['follow-on-action']) && method !== 'installer' && options['first-install'] !== 'true' && installedRoute.packageManagerRecordVersion === expectedPackageManagerVersion);
+    check('CLI version is target', routeMatches, installedRoute.selectedCliVersion);
     const manifest = join(config, 'extensions/extensions.json');
     const extensions = existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
@@ -1041,7 +1135,13 @@ export async function matrixCell(options) {
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
     if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime) {
-      report.manualServiceFinalState = evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output, target: report.target, platform: process.platform });
+      const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
+        ? report.target
+        : nextHopMode === 'source-0.164.10'
+          ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? report.candidateNext.sourceVersion
+          : report.source;
+      report.manualServiceFinalState = evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output, target: report.target, platform: process.platform, expectedPackageManagerVersion });
+      if (['npm', 'installer'].includes(options['follow-on-action']) && report.manualServiceFinalState.updateRoute !== 'in-place') report.manualServiceFinalState.passed = false;
       check('independent manual service final state', report.manualServiceFinalState.passed, report.manualServiceFinalState);
       if (!report.manualServiceFinalState.passed) report.result = 'failed';
       if (nextHopMode) report.nextHop.passed = report.nextHop.passed === true && report.manualServiceFinalState.passed && report.assertions.every(row => row.passed);
@@ -1301,12 +1401,22 @@ export function updateCallDuration(report) {
 export function summarize(directory) {
   const admissions = [];
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
-    const row = json(join(directory, name));
+    const file = join(directory, name);
+    const row = json(file);
     if (String(name).endsWith('runner-admission.json')) {
       assert(['admitted', 'unrun'].includes(row.result) && typeof row.runner === 'string', 'invalid runner admission receipt');
       admissions.push(row);
     }
-    return row.id && row.tier && row.result ? [row] : [];
+    if (!(row.id && row.tier && row.result)) return [];
+    const coordFile = join(dirname(file), 'coordinate.json');
+    let knownRefusal = null;
+    if (existsSync(coordFile)) {
+      const cell = json(coordFile);
+      if (cell && !cell.chain && typeof cell.id === 'string' && typeof cell.phase === 'string' && typeof cell.sourceVersion === 'string') {
+        try { knownRefusal = matchKnownRefusal(cell, row); } catch { knownRefusal = null; }
+      }
+    }
+    return [{ ...row, ...(knownRefusal ? { knownRefusal: { id: knownRefusal.id, issue: knownRefusal.issue } } : {}) }];
   });
   assert(reports.length > 0 || admissions.length > 0, 'no upgrade cell or runner admission evidence found');
   const escape = value => String(value ?? '').replaceAll('|', '\\|').replaceAll('\n', '<br>');
@@ -1314,7 +1424,7 @@ export function summarize(directory) {
     ...reports.map(row => `| ${[row.tier, row.id, row.source, row.target, row.result, updateCallDuration(row), row.refusal].map(escape).join(' | ')} |`)];
   if (admissions.length) table.push('', '| Runner | Admission | Reason |', '|---|---|---|', ...admissions.map(row => `| ${[row.runner, row.result, row.reason].map(escape).join(' | ')} |`));
   const counts = reports.reduce((counts, row) => ({ ...counts, [row.result]: (counts[row.result] ?? 0) + 1 }), {});
-  const summary = { counts, unexpectedFailures: reports.filter(row => cellExitCode(row) !== 0).length, admissions, cells: reports.map(row => { const { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape } = row; return { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, targetUpgradeAcceptance, installerEscape, updateCallDuration: updateCallDuration(row) }; }) };
+  const summary = { counts, unexpectedFailures: reports.filter(row => !row.knownRefusal && cellExitCode(row) !== 0).length, admissions, cells: reports.map(row => { const { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, knownRefusal, targetUpgradeAcceptance, installerEscape } = row; return { tier, id, result, target, harnessSource, harnessSha256, refusal, expectedRefusal, ...(knownRefusal ? { knownRefusal } : {}), targetUpgradeAcceptance, installerEscape, updateCallDuration: updateCallDuration(row) }; }) };
   save(join(directory, 'summary.json'), summary);
   writeFileSync(join(directory, 'summary.md'), table.join('\n') + '\n');
   console.log(table.join('\n'));
