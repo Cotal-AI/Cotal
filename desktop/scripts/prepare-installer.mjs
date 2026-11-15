@@ -12,6 +12,17 @@ if (source.split(anchor).length !== 2) throw new Error('The NSIS upgrade routing
 const guard = '  ; A newer installer owns service preparation before replacing any files.\n  ; Never run the installed uninstaller before that guard.\n  ${If} $WixMode <> 1\n  ${AndIf} $R0 = 1\n    Abort\n  ${EndIf}\n\n';
 const copyAnchor = '  ; Copy main executable\n  File "${MAINBINARYSRCPATH}"';
 if (source.split(copyAnchor).length !== 2) throw new Error('The NSIS file-copy anchor is not singular.');
-const patched = source.replace(anchor, guard + anchor).replace(copyAnchor, '  StrCpy $CotalCopying 1\n\n' + copyAnchor);
+const hooksAnchor = '{{#if installer_hooks}}\n!include "{{installer_hooks}}"\n{{/if}}';
+const pluginDefine = '!define ADDITIONALPLUGINSPATH "{{additional_plugins_path}}"\n';
+const pluginDir = '# additional plugins\n!addplugindir "${ADDITIONALPLUGINSPATH}"\n\n';
+if (source.split(hooksAnchor).length !== 2 || source.split(pluginDefine).length !== 2 || source.split(pluginDir).length !== 2) {
+  throw new Error('The NSIS hooks or additional-plugins anchor is not singular.');
+}
+const patched = source
+  .replace(pluginDefine, '')
+  .replace(pluginDir, '')
+  .replace(hooksAnchor, `${pluginDefine}${pluginDir}${hooksAnchor}`)
+  .replace(anchor, guard + anchor)
+  .replace(copyAnchor, '  StrCpy $CotalCopying 1\n\n' + copyAnchor);
 writeFileSync(new URL('installer.nsi', base), patched);
 console.log(`Prepared guarded NSIS template: ${fileURLToPath(new URL('installer.nsi', base))}`);

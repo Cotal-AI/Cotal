@@ -249,7 +249,7 @@ pub fn run() {
             crate::updater::app_update_receipt
         ])
         .setup(|app| {
-            #[cfg(all(cotal_updater, target_os = "macos"))]
+            #[cfg(all(cotal_updater, not(target_os = "linux")))]
             {
                 app.handle().plugin(tauri_plugin_updater::Builder::new()
                     .pubkey(env!("COTAL_UPDATER_PUBLIC_KEY")).build())?;
@@ -301,7 +301,7 @@ pub fn run() {
                 })
                 .build(app)?;
             let open = !std::env::args().any(|arg| arg == "--background");
-            #[cfg(all(cotal_updater, target_os = "macos"))]
+            #[cfg(all(cotal_updater, not(target_os = "linux")))]
             let open = match crate::updater::reopen(app.handle()) {
                 Ok(Some(reopen)) => reopen,
                 Ok(None) => open,

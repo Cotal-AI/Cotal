@@ -42,6 +42,16 @@ pub(crate) fn updater_location(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(source)
 }
 
+#[cfg(all(cotal_updater, target_os = "windows"))]
+pub(crate) fn updater_location(_app: &AppHandle) -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let directory = executable.parent().ok_or_else(|| "Run the installed Cotal application to update it.".to_string())?;
+    if !directory.join("uninstall.exe").is_file() || !directory.join("runtime").join("desktop-runtime.json").is_file() {
+        return Err("Run the installed Cotal application to update it.".into());
+    }
+    Ok(directory.to_path_buf())
+}
+
 fn transient(app: &AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {

@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(cotal_updater)");
+    println!("cargo:rerun-if-changed=../../bin/package.json");
     for key in ["COTAL_UPDATER_PUBLIC_KEY", "COTAL_UPDATER_TEST_ENDPOINT", "COTAL_UPDATER_INSECURE"] {
         println!("cargo:rerun-if-env-changed={key}");
     }

@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
       updater_apply:
-        description: 'Run debug N/N+1 Mac app updates with real launchd and an occupied fixture PTY'
+        description: 'Run debug Mac and Windows app updates with real native services and an occupied fixture PTY'
         type: boolean
         default: false
       updater_fixture_head:
@@ -369,6 +369,59 @@ jobs:
       runner: ${{ matrix.runner }}
       mode: ${{ matrix.mode }}
       fixture_head: ${{ inputs.updater_fixture_head }}
+  updater-windows:
+    if: inputs.updater_apply
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows native bindings and debug N, N+1 and N+2 NSIS bundles
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+          call pnpm --workspace-concurrency=3 --filter cotal-ai... build
+          if errorlevel 1 exit /b 1
+          call pnpm exec node desktop/test/win-updater-build.mjs
+          if errorlevel 1 exit /b 1
+      - name: Install fixture broker
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $version='2.12.2'
+          $zip=Join-Path $env:RUNNER_TEMP 'nats.zip'
+          Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $zip
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
+          (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
+      - name: Exercise 2-hop native Windows app update, Scheduled Task service and real occupied PTY
+        run: pnpm exec tsx desktop/test/win-updater-proof.mjs
+      - name: Upload Windows native updater acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-updater-windows-2022
+          path: |
+            ${{ runner.temp }}/win-updater-build/*.log
+            ${{ runner.temp }}/win-updater-build/build-result.json
+            ${{ runner.temp }}/win-updater-result/
+          if-no-files-found: error
+          retention-days: 7
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: native-build

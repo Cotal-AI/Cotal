@@ -182,17 +182,19 @@ test("desktop updates wait while visible and use the manifest answer", async () 
   } finally { a.dom.window.close(); }
 });
 
-test("Mac restart is an explicit native admission request and hidden notification is automatic", async () => {
-  const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" } });
-  try {
-    await a.emit("desktop-open-settings");
-    assert.equal(a.node("restart-update").hidden, false);
-    await a.click("restart-update");
-    assert.equal(a.applyArgs.at(-1)!.explicit, true);
-    await a.emit("desktop-hidden");
-    assert.equal(a.applyArgs.at(-1)!.explicit, false);
-    assert.ok(!a.nativeCalls.includes("app_update_download"), "download only happens inside native install admission");
-  } finally { a.dom.window.close(); }
+test("Mac and Windows restart are explicit native admission requests and hidden notification is automatic", async () => {
+  for (const platform of ["darwin", "win32"] as const) {
+    const a = await app({ installed: true, connected: true, platform, appUpdate: { phase: "available", version: "0.165.0" } });
+    try {
+      await a.emit("desktop-open-settings");
+      assert.equal(a.node("restart-update").hidden, false);
+      await a.click("restart-update");
+      assert.equal(a.applyArgs.at(-1)!.explicit, true);
+      await a.emit("desktop-hidden");
+      assert.equal(a.applyArgs.at(-1)!.explicit, false);
+      assert.ok(!a.nativeCalls.includes("app_update_download"), "download only happens inside native install admission");
+    } finally { a.dom.window.close(); }
+  }
 });
 
 test("automatic tick retries wait ten minutes but hide, fresh check and button are immediate", async () => {
@@ -213,8 +215,31 @@ test("automatic tick retries wait ten minutes but hide, fresh check and button a
   } finally { a.dom.window.close(); }
 });
 
-test("auto off and installer-only Windows never request app replacement", async () => {
-  for (const options of [{ autoUpdates: false }, { platform: "win32" }]) {
+test("relaunch after a refused Windows setup shows code 20 in Settings without immediately re-running apply", async () => {
+  const reason = "Setup code 20: 1 agent(s) are running. Stop them and choose Retry.";
+  const a = await app({
+    installed: true,
+    connected: true,
+    platform: "win32",
+    appReceipt: { schema: 1, from: "0.164.8", target: "0.165.0", phase: "failed", reopen: true, reason },
+    appUpdate: { phase: "available", version: "0.165.0", reason },
+  });
+  try {
+    assert.equal(a.applyArgs.length, 0, "post-refusal relaunch must not immediately re-invoke apply on startup");
+    assert.match(a.node("applied-update").textContent!, /Setup code 20: 1 agent\(s\) are running/);
+    for (let i = 0; i < 30; i++) { a.advance(1000); await a.tick(); }
+    assert.equal(a.applyArgs.length, 0, "tick cooldown holds after a refused setup relaunch");
+    await a.emit("desktop-open-settings");
+    assert.match(a.node("settings-update-summary").textContent!, /Version 0\.165\.0 is available\. Setup code 20: 1 agent\(s\) are running/);
+    assert.equal(a.node("restart-update").hidden, false);
+    await a.click("restart-update");
+    assert.equal(a.applyArgs.length, 1);
+    assert.equal(a.applyArgs[0]!.explicit, true);
+  } finally { a.dom.window.close(); }
+});
+
+test("auto off and Linux deb/rpm builds never request app replacement", async () => {
+  for (const options of [{ autoUpdates: false }, { platform: "linux" }]) {
     const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" }, ...options });
     try {
       await a.emit("desktop-open-settings");
