@@ -525,23 +525,23 @@ public static class FilteredAppLauncher {
             # Cell (c): plant owned HKLM value, launch app under a filtered Medium-integrity token, open Settings, and read #login-error and #autostart.
             Set-HklmRunValue $ownedValue
             $workDir = Split-Path -Parent $expected
-            $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, $ownedValue, $workDir)
+            $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, "`"$expected`"", $workDir)
             $filteredProc = Get-Process -Id $filteredPid
             $null = $filteredProc.Handle
             for ($waitIdx = 0; $waitIdx -lt 40; $waitIdx++) {
-                $trayWins = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $filteredPid -and $_.className -ceq 'tray_icon_app' })
-                if ($trayWins.Count -eq 1) { break }
+                $mainWins = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $filteredPid -and $_.visible -and $_.title -ceq 'Cotal' })
+                if ($mainWins.Count -eq 1) { break }
                 Start-Sleep -Milliseconds 250
             }
-            if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not create its tray_icon_app window.' }
-            $null = Invoke-Self 'settings' $filteredPid
+            if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not show its Cotal window.' }
             $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
             $filteredEntries = Invoke-Self 'login-entry' $filteredPid
             $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.'
             if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $false -or $filteredSettings.result.loginError -cne $expectedError) {
                 throw "Cell (c) failed: integrity=$($filteredEntries.result.appIntegrity.level) hklm=$($filteredEntries.result.hklm.present) hkcu=$($filteredEntries.result.hkcu.present) checked=$($filteredSettings.result.checked) loginError=$($filteredSettings.result.loginError)"
             }
-            $null = Invoke-Self 'quit' $filteredPid
+            $filteredProc.Refresh()
+            if (!$filteredProc.HasExited) { $filteredProc.Kill(); $filteredProc.WaitForExit(10000) | Out-Null }
             $filteredProc = $null
             $cellsProgress['cellC'] = [ordered]@{
                 appIntegrity = $filteredEntries.result.appIntegrity
@@ -692,6 +692,19 @@ public static class FilteredAppLauncher {
                 $result = [ordered]@{ checked = $true; present = $true }
             } elseif ($Action -eq 'read-login-settings') {
                 Assert-Owner
+                $openSettingsBtn = Exact-Control 'open-settings'
+                if ($openSettingsBtn.Current.Name -ceq 'Settings') {
+                    for ($waitBtn = 0; $waitBtn -lt 30; $waitBtn++) {
+                        if ($openSettingsBtn.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $openSettingsBtn.Current.IsEnabled -and !$openSettingsBtn.Current.IsOffscreen) { break }
+                        Start-Sleep -Milliseconds 100
+                        $openSettingsBtn = Exact-Control 'open-settings'
+                    }
+                    if ($openSettingsBtn.Current.ControlType -ne [System.Windows.Automation.ControlType]::Button -or !$openSettingsBtn.Current.IsEnabled) {
+                        throw 'Expected enabled open-settings button.'
+                    }
+                    Assert-Owner
+                    Click-Element $openSettingsBtn
+                }
                 $heading = Exact-Control 'settings-title'
                 if ($heading.Current.Name -cne 'Settings') { throw 'Expected exact Settings heading.' }
                 $checkbox = Exact-Control 'autostart'
