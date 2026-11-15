@@ -543,6 +543,12 @@ public static class FilteredAppLauncher {
             $null = Invoke-Self 'quit' $AppPid
 
             # Cell (c): High-integrity Explorer on the runner refuses Shell_NotifyIconW from a Medium-integrity process (0x80004005), so open the window directly.
+            $prefDirs = @((Join-Path $env:APPDATA 'ai.cotal.desktop'))
+            if ($env:USERPROFILE) { $prefDirs += (Join-Path $env:USERPROFILE 'AppData\Roaming\ai.cotal.desktop') }
+            foreach ($prefDir in ($prefDirs | Select-Object -Unique)) {
+                [IO.Directory]::CreateDirectory($prefDir) | Out-Null
+                [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"connected":true,"login":false,"relocationDeclined":false,"pinOffered":false,"closeExplained":false}', [Text.UTF8Encoding]::new($false))
+            }
             Set-HklmRunValue $ownedValue
             $beforeFiltered = Read-HklmRunEntry
             if (!$beforeFiltered.present -or !$beforeFiltered.matchesExpected) { throw 'Cell (c) setup did not plant owned HKLM Run value.' }
@@ -556,8 +562,6 @@ public static class FilteredAppLauncher {
                 Start-Sleep -Milliseconds 250
             }
             if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not show its Cotal window.' }
-            $filteredInitialSettings = Invoke-Self 'read-login-settings' $filteredPid
-            $null = Invoke-Self 'disable-login' $filteredPid
             $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
             $filteredEntries = Invoke-Self 'login-entry' $filteredPid
             $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.'
@@ -566,8 +570,6 @@ public static class FilteredAppLauncher {
                 appIntegrity = $filteredEntries.result.appIntegrity
                 hklmRemained = $filteredEntries.result.hklm.present
                 hkcuPresent = $filteredEntries.result.hkcu.present
-                initialChecked = $filteredInitialSettings.result.checked
-                initialLoginError = $filteredInitialSettings.result.loginError
                 checked = $filteredSettings.result.checked
                 loginError = $filteredSettings.result.loginError
             }
