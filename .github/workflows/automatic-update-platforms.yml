@@ -23,7 +23,7 @@ on:
         default: bounded
         required: true
   push:
-    branches: [test/upgrade-matrix]
+    branches: [test/upgrade-matrix, measure/upgrade-matrix-staged-routes]
     paths:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
@@ -79,6 +79,11 @@ jobs:
             } else if (context.eventName === 'workflow_dispatch') {
               source = event.inputs.source_sha;
               phase = event.inputs.phase;
+            } else if (context.eventName === 'push' && context.ref === 'refs/heads/measure/upgrade-matrix-staged-routes') {
+              source = context.sha;
+              phase = 'candidate';
+              metadata.eventName = 'workflow_dispatch';
+              event.inputs = { phase: 'candidate', source_sha: source, target_version: '0.164.17', profile: 'bounded' };
             } else if (context.eventName === 'workflow_run') {
               const run = event.workflow_run;
               if (event.action === 'completed' && run.status === 'completed' && run.head_branch === 'main' && run.head_repository?.full_name === repository && event.repository.full_name === repository) {
@@ -129,12 +134,18 @@ jobs:
               const { data } = await github.rest.repos.getContent({ ...context.repo, path: 'bin/package.json', ref: source });
               assert.equal(data.type, 'file');
               metadata.packageManifest = JSON.parse(Buffer.from(data.content, 'base64').toString());
-              metadata.targetVersion = metadata.packageManifest.version;
-              if (publication) assert.equal(publication.version, metadata.targetVersion);
-              if (context.eventName === 'workflow_dispatch') assert.equal(event.inputs.target_version, metadata.targetVersion, 'manual target must match the immutable source manifest');
               const response = await fetch('https://registry.npmjs.org/cotal-ai');
               assert(response.ok, 'public npm metadata unavailable');
               const registry = await response.json();
+              if (context.eventName === 'push' && context.ref === 'refs/heads/measure/upgrade-matrix-staged-routes') {
+                const parts = registry['dist-tags'].latest.split('.').map(Number);
+                metadata.targetVersion = `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+                event.inputs.target_version = metadata.targetVersion;
+              } else {
+                metadata.targetVersion = metadata.packageManifest.version;
+              }
+              if (publication) assert.equal(publication.version, metadata.targetVersion);
+              if (context.eventName === 'workflow_dispatch') assert.equal(event.inputs.target_version, metadata.targetVersion, 'manual target must match the immutable source manifest');
               metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
               metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
               if (phase === 'candidate') assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
@@ -143,6 +154,16 @@ jobs:
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
             const cells = boundedCells(plan);
+            if (context.eventName === 'push' && context.ref === 'refs/heads/measure/upgrade-matrix-staged-routes') {
+              for (const c of cells) {
+                if (!['agent-stop-consent', 'standalone-stop-consent'].includes(c.scenario)) {
+                  c.required = false;
+                  c.disposition = 'excluded';
+                  c.reason = 'measure branch runs the two stop-consent cells only';
+                  c.requiredAssertions = [];
+                }
+              }
+            }
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
@@ -1301,7 +1322,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: priority
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
+    if: "github.event_name == 'push' && github.ref != 'refs/heads/measure/upgrade-matrix-staged-routes' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1339,7 +1360,7 @@ jobs:
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
+    if: "github.event_name == 'push' && github.ref != 'refs/heads/measure/upgrade-matrix-staged-routes' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
@@ -1500,7 +1521,7 @@ jobs:
           if-no-files-found: error
   candidate-native:
     needs: candidate-B-expanded
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
+    if: "github.event_name == 'push' && github.ref != 'refs/heads/measure/upgrade-matrix-staged-routes' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.candidate-B-expanded.result == 'success' || needs.candidate-B-expanded.result == 'failure')"
     strategy:
       fail-fast: false
       max-parallel: 6
