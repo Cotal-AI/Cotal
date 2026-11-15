@@ -26,7 +26,6 @@
     "directory": "bin"
   },
   "type": "module",
-  "cotalPreinstall": { "v": 1, "entry": "./dist/execution-preinstall.js" },
   "bin": {
     "cotal": "./dist/cotal.js"
   },
