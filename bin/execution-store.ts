@@ -1,13 +1,23 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { executionBinding, executionDescriptorPath, executionInventory, executionSha256, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
+import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionSha256, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
 export interface RetainedExecutionGeneration {
   id: string;
   root: string;
   version: string;
   inventorySha256: string;
+}
+
+/** Remove group and other write from a tree this process just created. Node before 24.22 applies the
+ *  process umask to the folders a recursive `cpSync` creates, not the source modes, so a umask of 0002
+ *  leaves them group-writable. */
+function withoutSharedWrite(path: string): void {
+  const info = lstatSync(path);
+  if (info.isSymbolicLink()) return;
+  if ((info.mode & 0o022) !== 0) chmodSync(path, info.mode & 0o7755);
+  if (info.isDirectory()) for (const name of readdirSync(path)) withoutSharedWrite(join(path, name));
 }
 
 /** Prepare one complete, caller-verified package. Does not change the active artifact or run npm. */
@@ -17,8 +27,9 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   if (process.platform !== "linux" && process.platform !== "darwin") throw new Error("retained execution generations are unavailable on this platform");
   for (const path of [installedRoot, verifiedSource]) {
     if (!lstatSync(path).isDirectory() || lstatSync(path).isSymbolicLink()) throw new Error("execution package must be a real directory");
-    protectedExecutionEntry(path);
   }
+  executionLocation(installedRoot);
+  protectedExecutionEntry(verifiedSource);
   try {
     accessSync(installedRoot, constants.W_OK);
     accessSync(dirname(dirname(installedRoot)), constants.W_OK);
@@ -33,6 +44,7 @@ export function retainExecutionGeneration(installedRoot: string, verifiedSource:
   try {
     const root = join(staging, "cotal-ai");
     cpSync(verifiedSource, root, { recursive: true, dereference: false, verbatimSymlinks: true });
+    withoutSharedWrite(root);
     if (JSON.stringify(before) !== JSON.stringify(executionInventory(root)) ||
         JSON.stringify(before) !== JSON.stringify(executionInventory(verifiedSource))) throw new Error("verified execution source changed during retention");
     const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
@@ -61,7 +73,7 @@ export function describeExecutionGeneration(installedRoot: string, generation: R
 export function writeExecutionDescriptor(installedRoot: string, descriptor: ExecutionDescriptor): void {
   if (existsSync(join(installedRoot, "desktop-runtime.json")))
     throw new Error("retained execution generations are unavailable on the desktop runtime");
-  protectedExecutionEntry(installedRoot);
+  executionLocation(installedRoot);
   const path = executionDescriptorPath(installedRoot);
   const temporary = `${path}.${randomBytes(16).toString("hex")}`;
   try {

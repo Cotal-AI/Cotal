@@ -8,6 +8,9 @@ import ts from "typescript";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionDescriptor } from "../execution-store.js";
 
+// Fixtures get the modes a package manager gives its files under the usual umask; the checks that
+// need a umask of 0002 set it themselves.
+process.umask(0o022);
 const repo = join(import.meta.dirname, "../..");
 const scratch = mkdtempSync(join(tmpdir(), "execution-generation-"));
 const root = join(scratch, "prefix/lib/node_modules/cotal-ai"), source = join(scratch, "source/cotal-ai");
@@ -17,6 +20,7 @@ const packageAt = (directory: string, version: string, message: string): void =>
   mkdirSync(join(directory, "dist"), { recursive: true, mode: 0o700 });
   writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "cotal-ai", version, type: "module", bin: { cotal: "./dist/cotal.js" } }));
   cpSync(join(repo, "bin/dist/cotal.js"), join(directory, "dist/cotal.js"));
+  chmodSync(join(directory, "dist/cotal.js"), 0o644);
   writeFileSync(join(directory, "dist/cotal-program.js"), `console.log(${JSON.stringify(message)});`);
 };
 const run = () => spawnSync(process.execPath, [join(root, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 10_000 });
@@ -102,7 +106,21 @@ try {
     finally { chmodSync(parent, 0o700); }
     assert.equal(existsSync(executionStore(root)), false);
   });
-  const generation = retainExecutionGeneration(root, source);
+  // Homebrew keeps `lib` group-writable and npm under a umask of 0002 creates the package that way.
+  const managed = [root, join(scratch, "prefix/lib/node_modules"), join(scratch, "prefix/lib")];
+  for (const path of managed) chmodSync(path, 0o775);
+  process.umask(0o002);
+  let generation: ReturnType<typeof retainExecutionGeneration>;
+  try { generation = retainExecutionGeneration(root, source); } finally { process.umask(0o022); }
+  check("retention under a umask of 0002 leaves no group or other write in the copy", () => {
+    const walk = (path: string): void => {
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) return;
+      assert.equal(info.mode & 0o022, 0, path);
+      if (info.isDirectory()) for (const name of readdirSync(path)) walk(join(path, name));
+    };
+    walk(executionStore(root));
+  });
   check("retention copies a complete graph and creates no active descriptor", () => {
     assert.equal(readFileSync(join(generation.root, "dist/cotal-program.js"), "utf8"), readFileSync(join(source, "dist/cotal-program.js"), "utf8"));
     assert.equal(existsSync(executionDescriptorPath(root)), false);
@@ -211,6 +229,33 @@ try {
     const container = join(store, "e".repeat(32)); symlinkSync(other, container);
     writeExecutionDescriptor(root, { ...descriptor, generation: { ...descriptor.generation, id: "e".repeat(32) } });
     assert.throws(() => selectExecutionProgram(root), /unsafe execution generation/); rmSync(container); writeExecutionDescriptor(root, descriptor);
+  });
+  check("the package manager's group-writable folders are used and keep their modes", () => {
+    assert.equal(selectExecutionProgram(root).root, generation.root);
+    for (const path of managed) assert.equal(lstatSync(path).mode & 0o777, 0o775, path);
+  });
+  check("a version check from a 0.164.16 or 0.164.17 updater that will refuse its own copy names the manual install and leaves no staging", () => {
+    const store = join(scratch, "stuck/lib/.cotal-generations"), staged = join(store, ".installing-AbC123/lib/node_modules/cotal-ai"), abandoned = join(store, ".installing-Zz9999");
+    const stage = (): void => { packageAt(staged, "0.3.0", "staged target"); mkdirSync(abandoned, { recursive: true }); writeFileSync(join(abandoned, "left"), "x"); };
+    const under = (umask: string, env: NodeJS.ProcessEnv) => spawnSync("sh", ["-c", `umask ${umask}; exec "$0" "$1" --version`, process.execPath, join(staged, "dist/cotal.js")], { env: { ...process.env, ...env }, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    const probe = spawnSync("sh", ["-c", `umask 002; exec "$0" -e 'const fs=require("fs");fs.mkdirSync("from",{mode:0o700});fs.cpSync("from","to",{recursive:true});process.stdout.write(String(fs.lstatSync("to").mode&0o022))'`, process.execPath], { cwd: mkdtempSync(join(scratch, "probe-")), encoding: "utf8", timeout: 10_000 });
+    assert.equal(probe.status, 0, probe.stderr);
+    const refuses = probe.stdout !== "0";
+    stage();
+    const old = under("002", { COTAL_SKIP_CONNECTOR_SEED: "1" });
+    if (refuses) {
+      assert.equal(old.status, 1); assert.equal(old.stdout, "");
+      assert.match(old.stderr, /Install the new version once by hand, run: npm install -g --prefix .*stuck cotal-ai@latest\. Later updates run on their own/);
+      assert.deepEqual(readdirSync(store), []);
+      stage(); mkdirSync(join(scratch, "stuck/nodebin"));
+      assert.match(under("002", { COTAL_SKIP_CONNECTOR_SEED: "1" }).stderr, /run the installer again: curl -fsSL https:\/\/get\.cotal\.ai \| sh\. Later/);
+      stage();
+    } else { assert.equal(old.status, 0, old.stderr); assert.equal(old.stdout.trim(), "staged target"); }
+    for (const result of [under("002", { COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_EXECUTION_COPY_MODES: "explicit" }), under("022", { COTAL_SKIP_CONNECTOR_SEED: "1" }), under("002", { COTAL_SKIP_CONNECTOR_SEED: "" })]) {
+      assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), "staged target");
+    }
+    assert.deepEqual(readdirSync(store).sort(), [".installing-AbC123", ".installing-Zz9999"]);
+    console.log(`  this Node ${refuses ? "applies" : "does not apply"} the umask to copied folders`);
   });
   check("binding still names the unchanged declared executable", () => {
     assert.deepEqual(descriptor.binding, executionBinding(root));
