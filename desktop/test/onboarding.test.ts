@@ -20,6 +20,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
   const calls: Request[] = [], urls: string[] = [], nativeCalls: string[] = [], checkArgs: { manual?: boolean }[] = [], applyArgs: { explicit?: boolean }[] = [];
+  const realTimeout = setTimeout;
   let update = options.update;
   let autoUpdates = options.autoUpdates ?? true;
   const callbacks = new Map<number, (frame: unknown) => void>(); let next = 0;
@@ -142,7 +143,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; return new Promise(resolve => realTimeout(resolve, 0)); }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -357,7 +358,7 @@ test("a later status check clears a daemon-not-running error", async () => {
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    a.stop();
+    await a.stop();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service is not running");
     assert.equal(a.node("details").hidden, false);
@@ -373,7 +374,7 @@ test("a later status check keeps an error the status check did not raise", async
   const a = await app({ installed: true });
   try {
     await a.click("login"); await a.login();
-    a.stop();
+    await a.stop();
     await a.tick();
     a.arm();
     await a.emit("deep-link://new-url", ["cotal://one", "cotal://two"]);
@@ -390,7 +391,7 @@ test("Start service starts a stopped background service and leaves no notice", a
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    a.stop();
+    await a.stop();
     await a.tick();
     assert.equal(a.node("recover").textContent, "Start service");
     assert.equal(a.node("connection-description").textContent, "Start it again to continue.");
@@ -414,7 +415,7 @@ test("a service start that does not answer within 15 seconds keeps its refusal a
   try {
     await a.click("login"); await a.login();
     const before = a.node("connection-title").textContent;
-    a.stop();
+    await a.stop();
     await a.tick();
     assert.equal(a.node("connection-title").textContent, "The background service is not running");
     assert.equal(a.node("recover").textContent, "Start service");
