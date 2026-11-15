@@ -186,6 +186,83 @@ function archivePairManifests(data, directory, a, b, c) {
     data.report.candidateNext[side + 'Archives'] = packages.map(({ name, sha256 }) => ({ name, sha256 }));
   }
 }
+function specialCellEvidence(data, directory, change = () => {}) {
+  const { cell } = data;
+  const clean = { exit: 0, signal: null, timeout: false, stdout: '', stderr: '' };
+  const call = (label, extra = {}) => ({ ...clean, label, ...extra });
+  data.nextOrigin = { artifact: '43', digest: 'sha256:next', followOnArtifact: '44', followOnDigest: 'sha256:follow' };
+  data.report = { passed: true, source: cell.sourceSHA, sourceVersion: cell.sourceVersion, targetVersion: cell.targetVersion, candidateNext: {}, calls: [], observations: [] };
+  archivePairManifests(data, directory, cell.sourceVersion, cell.targetVersion, cell.rootOwned ? cell.visibleFollowOnVersion : undefined);
+  if (cell.rootOwned) {
+    for (const side of ['source', 'target', 'followOn']) data.report[side + 'ManifestSha256'] = data.nextOrigin[side + 'ManifestSha256'];
+    data.report.cleanup = { owner: 'disposable hosted runner teardown', commandOutcomesKnown: true };
+    data.report.calls = [
+      call('root candidate public updater to next', { root: true }),
+      ...[cell.sourceVersion, cell.targetVersion].map(version => call(`normal account version ${version}`, { root: false, stdout: `cotal-ai ${version}\n` })),
+      call('normal account own updater refusal', { root: false, exit: 1, stderr: 'owning command: npm install -g --prefix /usr/local cotal-ai@latest' }),
+    ];
+    data.report.observations = [
+      { ownership: { uid: 0, path: '/usr/local/bin/node' } },
+      { installed: { uid: 0, version: cell.sourceVersion } },
+      { store: { passed: true }, modes: { passed: true, entries: [
+        { path: '/usr/local/lib/.cotal-generations', uid: 0, mode: 0o755 },
+        { path: '/usr/local/lib/node_modules/cotal-ai/dist/cotal.js', uid: 0, mode: 0o755 },
+        { path: '/usr/local/lib/.cotal-generations/generation/inventory.json', uid: 0, mode: 0o644 },
+        { path: `/usr/local/lib/.cotal-generations/.active-${'a'.repeat(64)}.json`, uid: 0, mode: 0o644 },
+        { path: '/usr/local/lib/.cotal-generations/.transaction-test/journal.json', kind: 'file', uid: 0, mode: 0o600 },
+      ] } },
+    ];
+    if (cell.oldVersion) data.report.calls.push(
+      call(`normal account after ${cell.oldVersion} attempt`, { root: false, exit: 126, stderr: 'Permission denied', finishedAt: '2026-11-15T23:00:00.000Z' }),
+      call(`root npm install ${cell.sourceVersion}`, { root: true, startedAt: '2026-11-15T23:00:01.000Z' }),
+    );
+  } else {
+    data.report.layout = cell.layoutProbe;
+    data.report.pnpmVersion = '11.28.2';
+    data.report.installation = { prefix: '/owned/.nvm/versions/node/v24.18.0' };
+    data.report.prefixAfter = data.report.installation.prefix;
+    data.report.calls = [
+      call('installed source public version', { stdout: `cotal-ai ${cell.sourceVersion}\n` }),
+      call('package-manager installed public updater'),
+      call('installed target public version', { stdout: `cotal-ai ${cell.targetVersion}\n` }),
+      call('installed target public status'), call('pnpm global list after'),
+    ];
+    data.report.assertions = [{ name: 'recorded extensions reach target', observed: Array.from({ length: 8 }, () => ({ recorded: cell.targetVersion, installed: cell.targetVersion })) }];
+    data.report.route = { selectedCliVersion: cell.targetVersion };
+    data.report.store = { passed: true };
+  }
+  change(data);
+  const name = cell.rootOwned ? 'root-owned' : 'package-layout';
+  const bytes = JSON.stringify(data.report);
+  writeFileSync(join(directory, name + '.json'), bytes);
+  writeFileSync(join(directory, name + '.sha256'), `${createHash('sha256').update(bytes).digest('hex')}  ${name}.json\n`);
+  // The fixture also writes an ordinary report. It must not bypass the special branch.
+  data.report.id = 'unused-ordinary-report';
+}
+test('actual summary accepts root-owned recovery and actual package-layout evidence in both phases', () => {
+  for (const phase of ['candidate', 'published']) for (const [scenario, channel] of [
+    ['root-owned-candidate-next', 'npm'], ['root-owned-source-0.164.16-recovery', 'npm'], ['root-owned-source-0.164.17-recovery', 'npm'],
+    ['candidate-next-pnpm-layout', 'pnpm'], ['candidate-next-nvm-layout', 'npm'],
+  ]) {
+    const result = fixture(specialCellEvidence, { phase, scenario, channel });
+    assert.equal(result.exit, 0, result.stderr);
+  }
+});
+test('special summary rejects mismatched receipts and failed observable commands', () => {
+  for (const [scenario, channel] of [['root-owned-candidate-next', 'npm'], ['candidate-next-pnpm-layout', 'pnpm'], ['candidate-next-nvm-layout', 'npm']]) {
+    for (const change of [
+      data => { data.nextOrigin.artifact = 'foreign'; },
+      data => { data.nextOrigin.targetManifestSha256 = 'f'.repeat(64); },
+      data => { data.report.source = 'f'.repeat(40); },
+      data => { data.report.calls[0].exit = 1; },
+      data => { data.report.calls[0].timeout = true; },
+      data => { data.report.passed = false; },
+    ]) {
+      const result = fixture((data, directory) => specialCellEvidence(data, directory, change), { scenario, channel });
+      assert.notEqual(result.exit, 0, `${scenario}: invalid evidence must fail closed`);
+    }
+  }
+});
 function freshNextEvidence(data, directory) {
   const a = data.cell.sourceVersion, b = data.cell.targetVersion;
   const sourceManifestSha256 = 'a'.repeat(64), targetManifestSha256 = 'b'.repeat(64);
