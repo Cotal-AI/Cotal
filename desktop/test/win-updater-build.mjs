@@ -53,7 +53,7 @@ try {
     rmSync(join(cwd, 'desktop/src-tauri/runtime'), { recursive: true, force: true });
     rmSync(join(cwd, 'desktop/src-tauri/binaries/node-x86_64-pc-windows-msvc.exe'), { force: true });
     rmSync(join(cwd, 'desktop/src-tauri/target/debug/bundle/nsis'), { recursive: true, force: true });
-    await run(cwd, ['exec', 'node', 'desktop/test/mac-updater-version.mjs', version], proofEnv, join(root, `${name}-version.log`));
+    await run(cwd, ['exec', 'node', 'desktop/test/mac-updater-version.mjs', version, ...(name === 'N1' ? ['--fault-daemon-serve', '--extra-preference'] : [])], proofEnv, join(root, `${name}-version.log`));
     const now = new Date();
     utimesSync(join(cwd, 'desktop/src-tauri/tauri.conf.json'), now, now);
     await run(cwd, ['--workspace-concurrency=3', '--filter', 'cotal-ai...', 'build'], env, join(root, `${name}-build.log`));

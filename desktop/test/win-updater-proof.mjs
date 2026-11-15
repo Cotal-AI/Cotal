@@ -329,41 +329,38 @@ try {
   seatStarted = false;
   await until('occupied seat cleared in daemon status', () => call('daemon', 'status'), reply => reply.ok && reply.result.agents?.every(row => row.state === 'read' && row.agents.length === 0));
 
-  // Hop 1 (0.164.8 -> 0.164.9): hidden automatic apply preserves hidden tray state across relaunch.
+  // Hop 1 (0.164.8 -> 0.164.9): N+1's bundled daemon throws before it binds, so setup restores N.
   await ui('close');
-  await until('Hop 1 N1 installed on disk', async () => installed(), version => version === '0.164.9');
-  const hop1Setup = await until('Hop 1 setup result updated to 0.164.9', async () => readSetupResult(), value => value && value.toVersion === '0.164.9' && value.outcome === 'updated' && value.code === 0);
-  assert.equal(hop1Setup.fromVersion, '0.164.8');
-  const hop1HiddenApp = await until('Hop 1 relaunched 0.164.9 app stays hidden in tray', () => ui('describe'), value => value.pid !== postOccupiedApp.pid && value.birth !== postOccupiedApp.birth && value.visible === false);
-  record('Hop 1 hidden automatic relaunch', { app: hop1HiddenApp, setup: hop1Setup });
+  const rolledBack = await until('Hop 1 setup rolled back to 0.164.8', async () => readSetupResult(), value => value && value.toVersion === '0.164.9' && value.outcome === 'rolled-back' && value.code === 23);
+  assert.equal(rolledBack.fromVersion, '0.164.8');
+  assert.equal(await installed(), '0.164.8');
+  const restored = await until('Hop 1 service and Manager ready again on 0.164.8', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.8' && reply.result.state === 'ready');
+  const previousGone = !existsSync(join(dirname(installDir), 'CotalSetup-previous'));
+  record('Hop 1 rolled back', { setup: rolledBack, servicePid: restored.result.pid, previousRemoved: previousGone });
 
   launchApp();
-  await until('Hop 1 0.164.9 shown on single-instance reopen', () => ui('describe'), value => value.pid === hop1HiddenApp.pid && value.visible === true);
-  const hop1Service = await until('Hop 1 service and Manager ready on 0.164.9', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.9' && reply.result.state === 'ready' && reply.result.managers?.every(item => item.state === 'answering' && item.connectors?.some(connector => connector.state === 'available')));
-  await until('Hop 1 app confirms Updated to Cotal 0.164.9.', () => ui('text', 'applied-update'), text => text === 'Updated to Cotal 0.164.9.');
-  record('Hop 1 completed', { version: installed(), servicePid: hop1Service.result.pid });
+  const restoredApp = await until('Hop 1 restored 0.164.8 opens its window', () => ui('describe'), value => value.visible === true);
+  const reasonText = await ui('text', 'connection-description');
+  assert.match(reasonText, /running again/, 'The restored window shows the rollback reason');
+  record('Hop 1 window shows the reason', { pid: restoredApp.pid, reasonText });
 
-  await quitApp('first 0.164.9 app exited');
-  // Start 0.164.9 with --background, then show via single-instance so Hop 2 tests Restart to update overriding --background on relaunch.
+  await quitApp('restored 0.164.8 app exited');
   launchApp(['--background']);
-  await until('second 0.164.9 background start', () => ui('describe'), value => value.visible === false && value.commandLine.includes('--background'));
+  await until('second 0.164.8 background start', () => ui('describe'), value => value.visible === false && value.commandLine.includes('--background'));
   launchApp();
-  const secondN1App = await until('second 0.164.9 start visible', () => ui('describe'), value => value.visible === true);
-  const secondDump = await ui('dump');
-  assert.ok(!secondDump.nodes.some(item => (item.name ?? '').includes('Updated to Cotal 0.164.9.')), 'The result line is first-session only');
-  record('Hop 1 second start result retired', { version: installed(), pid: secondN1App.pid });
+  const secondApp = await until('second 0.164.8 start visible', () => ui('describe'), value => value.visible === true);
 
-  // Hop 2 (0.164.9 -> 0.164.10): explicit Restart to update proves N1's own updater as the old side.
+  // Hop 2 (0.164.8 -> 0.164.10): the rolled-back version is skipped and a good newer version installs.
   targetHop = 'N2';
   mode = 'valid';
   await ui('settings');
   await ui('click', 'check-updates');
-  await until('Hop 2 N2 candidate in 0.164.9 Settings', () => ui('text', 'settings-update-summary'), text => text.includes('0.164.10') && text.includes('Restart to update'));
+  await until('Hop 2 N2 candidate in restored Settings', () => ui('text', 'settings-update-summary'), text => text.includes('0.164.10') && text.includes('Restart to update'));
   await ui('click', 'restart-update');
   await until('Hop 2 N2 installed on disk', async () => installed(), version => version === '0.164.10');
   const hop2Setup = await until('Hop 2 setup result updated to 0.164.10', async () => readSetupResult(), value => value && value.toVersion === '0.164.10' && value.outcome === 'updated' && value.code === 0);
-  assert.equal(hop2Setup.fromVersion, '0.164.9');
-  const hop2VisibleApp = await until('Hop 2 relaunched 0.164.10 app opens visible automatically', () => ui('describe'), value => value.pid !== secondN1App.pid && value.birth !== secondN1App.birth && value.visible === true);
+  assert.equal(hop2Setup.fromVersion, '0.164.8');
+  const hop2VisibleApp = await until('Hop 2 relaunched 0.164.10 app opens visible automatically', () => ui('describe'), value => value.pid !== secondApp.pid && value.birth !== secondApp.birth && value.visible === true);
   const hop2Service = await until('Hop 2 service and Manager ready on 0.164.10', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.10' && reply.result.state === 'ready' && reply.result.managers?.every(item => item.state === 'answering' && item.connectors?.some(connector => connector.state === 'available')));
   await until('Hop 2 app confirms Updated to Cotal 0.164.10.', () => ui('text', 'applied-update'), text => text === 'Updated to Cotal 0.164.10.');
   record('Hop 2 explicit restart completed', { app: hop2VisibleApp, setup: hop2Setup, servicePid: hop2Service.result.pid });
@@ -392,7 +389,7 @@ try {
     realScheduledTask: true,
     realFixturePty: true,
     publication: false,
-    hops: ['0.164.8->0.164.9 (hidden-automatic)', '0.164.9->0.164.10 (explicit-restart)'],
+    hops: ['0.164.8->0.164.9 (rolled-back)', '0.164.8->0.164.10 (good-after-rollback)'],
     controls: [
       'visible-waits',
       'off',
@@ -404,9 +401,9 @@ try {
       'install-error',
       'occupied-seat-automatic-waits',
       'occupied-seat-code-20',
-      'hidden-automatic-hop1',
-      'second-start-result-retired',
-      'explicit-restart-hop2',
+      'rollback-hop1',
+      'rollback-reason-visible',
+      'good-n2-after-rollback',
       'target-service-and-manager-ready',
     ],
   }, null, 2));
