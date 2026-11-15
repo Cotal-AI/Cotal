@@ -12,8 +12,12 @@ import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
+<<<<<<< HEAD
 import { desktopApplicationPath } from "./desktop-path.js";
 import { assertDesktopSetupComplete } from "./desktop-setup.js";
+=======
+import { discoverDesktopApplicationPath } from "./desktop-path.js";
+>>>>>>> 3308e10631 (fix(desktop): leave relative entries out of login-shell PATH (#6862))
 
 export type DesktopRequest =
   | { readonly op: "update-policy"; readonly auto?: boolean }
@@ -142,6 +146,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
   }
   let target: ReturnType<DesktopBridgeOptions["resolveTarget"]> | undefined;
   let startedAt: number | undefined;
+  let omittedRelativePathEntries: readonly string[] = [];
   try {
     if (req.op === "update-policy") {
       const settings = req.auto === undefined ? readUpdateSettings() : setUpdateSetting("auto", req.auto);
@@ -172,14 +177,23 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     target = opts.resolveTarget();
     const { paths, home } = target;
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
-    if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
+    if (req.op === "install" || req.op === "setup") {
+      const discovered = await discoverDesktopApplicationPath();
+      process.env.PATH = discovered.path;
+      omittedRelativePathEntries = discovered.omittedRelativeEntries;
+      if (omittedRelativePathEntries.length) {
+        const detail = `left out relative PATH entries: ${omittedRelativePathEntries.join(", ")}`;
+        emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } });
+      }
+    }
+    const omittedResult = omittedRelativePathEntries.length ? { omittedRelativePathEntries } : {};
     if (req.op === "setup") {
       startedAt = Date.now();
-      const result = await runSetup({ ...client, daemonHome: home, space: req.space, idp: req.idp, version: opts.version, waitSeconds: 0,
+      const result = await runSetup({ ...client, daemonHome: home, space: req.space, idp: req.idp, version: opts.version, waitSeconds: 0, ...omittedResult,
         report: (line, progress) => emit({ v: 1, event: "setup-progress", line, progress }),
         onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }),
       });
-      emit({ v: 1, event: "result", ok: true, result });
+      emit({ v: 1, event: "result", ok: true, result: { ...result, ...omittedResult } });
       return;
     }
     if (req.op === "install") {
@@ -192,19 +206,19 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       if (answering !== undefined) {
         if (!existing) throw new CommandFailure("refused", "CONFLICT", "an unowned daemon is already running; no service was installed");
         if (!answering.ok || answering.result.version !== opts.version) throw new CommandFailure("refused", "CONFLICT", "the installed daemon does not match this app; no service was started");
-        emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
+        emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result, ...omittedResult } });
         return;
       }
       startedAt = Date.now();
       if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }));
-      else applyInstall(paths, home);
+      else applyInstall(paths, home, omittedRelativePathEntries);
       const deadline = Date.now() + 15_000;
       for (;;) {
         try {
           const status = await queryDaemon(client);
           if (!status.ok) throw new Error("daemon refused status");
           if (status.result.version !== opts.version) throw new Error("daemon version mismatch");
-          emit({ v: 1, event: "result", ok: true, result: { installed: true, status: status.result } });
+          emit({ v: 1, event: "result", ok: true, result: { installed: true, status: status.result, ...omittedResult } });
           return;
         } catch (e) {
           if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code)) throw e;
@@ -239,7 +253,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const refusal = notAnswering && target && startedAt !== undefined ? attemptStartupRefusal(target.paths.state, startedAt) : undefined;
     const rawWait = notAnswering && e.native?.detail && typeof e.native.detail === "object" ? (e.native.detail as { waitSeconds?: unknown }).waitSeconds : undefined;
     const waitSeconds = typeof rawWait === "number" && Number.isInteger(rawWait) && rawWait > 0 ? rawWait : undefined;
-    const message = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
+    const baseMessage = notAnswering ? `Cotal asked the background service on this computer to start, and it ${waitSeconds !== undefined ? `did not answer within ${waitSeconds} seconds.` : "has not answered."}${refusal ? ` It refused to start: ${refusal}` : ""}`
       : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
       : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
         ? "The background service is installed but stopped. Choose Start service to start it."
@@ -248,6 +262,9 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       : code === "UNSUPPORTED_PLATFORM" ? "This platform does not have the required native daemon support."
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
       : "The operation could not be completed. Use the matching `cotal daemon` command for diagnostics; no success is assumed.";
+    const message = (req.op === "setup" || req.op === "install") && omittedRelativePathEntries.length
+      ? `${baseMessage}${baseMessage.endsWith(".") ? "" : "."} Left out relative PATH entries: ${omittedRelativePathEntries.join(", ")}.`
+      : baseMessage;
     emit({ v: 1, event: "result", ok: false, error: { code, message,
       ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: notAnswering ? "choose Check status." : e.remedy, native: e.native } : {}),
     } });

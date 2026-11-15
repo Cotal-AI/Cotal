@@ -69,6 +69,7 @@ export interface UnitReceipt {
   readonly unitSha256: string;
   readonly installedAt: string;
   readonly daemonHome?: string;
+  readonly omittedRelativePathEntries?: readonly string[];
 }
 
 import { readReceipt, unitReceiptFile } from "./install-receipt.js";
@@ -292,6 +293,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
 export interface InstallResult extends InstallPlan {
   /** systemd only: linger is on once the install returns. */
   readonly lingerEnabled?: boolean;
+  readonly omittedRelativePathEntries?: readonly string[];
   readonly state: "installed";
 }
 
@@ -303,16 +305,17 @@ export interface InstallResult extends InstallPlan {
  * is the first change the operator would have to undo. So a failure anywhere after that still
  * leaves a unit `uninstall` can find and remove, never an enabled unit nothing records.
  */
-export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined): InstallResult {
+export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined, omittedRelativePathEntries?: readonly string[]): InstallResult {
+  const omitted = omittedRelativePathEntries?.length ? { omittedRelativePathEntries } : {};
   const service = nativeService();
   if (service) {
     const plan = nativeInstallPlan(service, paths, daemonHome);
     mkSecretDir(paths.state);
     service.publish(plan);
-    writeReceipt(paths, { v: 1, mechanism: plan.mechanism, unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) });
+    writeReceipt(paths, { v: 1, mechanism: plan.mechanism, unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     service.register(plan);
     const { mechanism, unit, unitPath, sha256, user, restart, wantedBy } = plan;
-    return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), state: "installed" };
+    return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted, state: "installed" };
   }
   const plan = planInstall(paths, daemonHome);
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
@@ -323,7 +326,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
   const unitDir = join(rendered.unitPath, "..");
   mkdirSync(unitDir, { recursive: true, mode: 0o700 });
   createSystemdSource(rendered.unitPath, rendered.bytes, rendered.sha256);
-  writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) });
+  writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
   if (!plan.lingerAlready) {
     const enabled = loginctl(["enable-linger", plan.user]);
     if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
@@ -332,7 +335,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);
-  return { ...plan, lingerEnabled: true, state: "installed" };
+  return { ...plan, lingerEnabled: true, ...omitted, state: "installed" };
 }
 
 export interface UninstallPlan {
