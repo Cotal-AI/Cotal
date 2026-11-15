@@ -41,6 +41,8 @@ pub enum DesktopRequest {
     About {},
     #[serde(rename = "status")]
     Status {},
+    #[serde(rename = "status-watch")]
+    StatusWatch {},
     #[serde(rename = "install")]
     Install {},
     #[serde(rename = "name")]
@@ -109,6 +111,10 @@ impl DesktopRequest {
             Self::ConnectCheck { space: space.clone() }.validate()?;
         }
         Ok(())
+    }
+
+    pub fn is_watch(&self) -> bool {
+        matches!(self, Self::StatusWatch {})
     }
 
     pub fn timeout_seconds(&self) -> u64 {
@@ -192,10 +198,14 @@ mod tests {
     }
     #[test]
     fn only_closed_requests_are_admitted() {
-        assert!(serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).is_ok());
+        let status = serde_json::from_str::<DesktopRequest>(r#"{"op":"status"}"#).unwrap();
+        assert!(!status.is_watch());
+        let watch = serde_json::from_str::<DesktopRequest>(r#"{"op":"status-watch"}"#).unwrap();
+        assert!(watch.is_watch());
         for input in [
             r#"{"op":"exec","command":"sh"}"#,
             r#"{"op":"status","args":[]}"#,
+            r#"{"op":"status-watch","args":[]}"#,
             r#"{"op":"install","path":"/tmp/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","PATH":"/foreign"}"#,
             r#"{"op":"setup","space":"team","idp":"https://example.com","command":"sh"}"#,

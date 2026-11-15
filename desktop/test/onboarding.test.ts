@@ -26,6 +26,8 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   const listeners = new Map<string, number>();
   let installed = options.installed ?? false, stopped = false, connected = options.connected ?? false;
   let releaseLogin: (() => void) | undefined, releaseSetup: (() => void) | undefined;
+  let closeWatch: ((frame: Frame) => void) | undefined;
+  let pushWatchStatus: (() => void) | undefined;
   const manager = { space: "team", state: "answering", instanceId: "instance", connectors: [{ state: "available" }] };
   let tick: (() => Promise<void>) | undefined;
   let clock: (() => void) | undefined;
@@ -80,10 +82,32 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
       }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
+      const statusPayload = () => ({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : (options.appVersion ?? "test"), update: update ?? (options.registryLatest ? { channel: "desktop", current: options.appVersion ?? "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
+      if (r.op === "status-watch") {
+        if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
+        if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
+        if (options.mismatch) {
+          return {
+            v: 1,
+            event: "result",
+            ok: false,
+            error: {
+              code: "VERSION_MISMATCH",
+              message: "The running daemon and this app have different versions. Update them together before making changes.",
+              native: { code: "UNKNOWN_OP", detail: { watchMode: "refused-unknown-op", appVersion: options.appVersion ?? "test", daemonVersion: "old" } },
+            },
+            result: { status: statusPayload() },
+          } satisfies Frame;
+        }
+        let watchIndex = 0;
+        pushWatchStatus = () => send({ v: 1, event: "status", ok: true, watchMode: "push", result: statusPayload() }, watchIndex++);
+        pushWatchStatus();
+        return await new Promise<Frame>(resolve => { closeWatch = resolve; });
+      }
       if (r.op === "status") {
         if (options.interrupted) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.statusError) return { v: 1, event: "result", ok: false, error: { code: "NOT_ANSWERING", message: "The service did not answer." } };
-        return ok({ account: options.account ? { idpUrl: COTAL_CLOUD_IDP, sub: "user-1", mode: "static", hostSupport: "none", spaces: [], ...options.account } : undefined, state: "ready", version: options.mismatch ? "old" : "test", update: update ?? (options.registryLatest ? { channel: "desktop", current: "test", latest: options.registryLatest, automatic: false, notify: true, lastResult: "available" } : undefined), managers: connected ? [manager] : [] });
+        return ok(statusPayload());
       }
       if (r.op === "spaces") return ok({ ...((options.otherProviderFailed || options.ownProviderFailed || options.oldDaemon) && r.refresh ? { refresh: "partial", ...(options.oldDaemon ? {} : { failedProviders: [options.ownProviderFailed ? COTAL_CLOUD_IDP : "https://hack.cotal.ai/api/auth"] }) } : {}), spaces: Array.from({ length: options.count ?? 1 }, (_, i) => ({ space: i ? "other" : "team", catalogId: i ? "sp_other" : "sp_team", label: i ? "Other team" : options.label ?? "My team", kind: !i && options.kind !== undefined ? options.kind : options.personal && !i ? "personal" : "team", role: "owner", mode: "user", idp: options.provider ?? COTAL_CLOUD_IDP })) });
       if (r.op === "name") return ok({ computer: r.name ?? "My computer" });
@@ -118,7 +142,7 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; pushWatchStatus = undefined; closeWatch?.({ v: 1, event: "result", ok: true, result: { closed: true, watchMode: "push" } }); closeWatch = undefined; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { pushWatchStatus?.(); await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -480,7 +504,8 @@ test("tray Settings returns to Ready and dashboard retains the verified target w
     Object.defineProperty(a.doc, "hidden", { configurable: true, value: true });
     const before = a.calls.filter(r => r.op === "status").length;
     await a.tick();
-    assert.ok(a.calls.filter(r => r.op === "status").length > before);
+    assert.equal(a.calls.filter(r => r.op === "status").length, before, "status-watch replaces periodic status polling");
+    assert.equal(a.calls.filter(r => r.op === "status-watch").length, 1);
   } finally { a.dom.window.close(); }
 });
 

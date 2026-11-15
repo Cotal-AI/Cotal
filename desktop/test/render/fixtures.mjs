@@ -49,8 +49,28 @@ export function nativeStub(scenario) {
         state.installed = true; return ok({ installed: true });
       }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) }); }
+      const statusPayload = () => ({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if ((request.op === "status" || request.op === "status-watch") && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
+      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok(statusPayload()); }
+      if (request.op === "status-watch") {
+        state.statusWatchRequests = (state.statusWatchRequests ?? 0) + 1;
+        if (state.version && state.version !== "0.156.0") {
+          return {
+            v: 1,
+            event: "result",
+            ok: false,
+            error: {
+              code: "VERSION_MISMATCH",
+              message: "The running daemon and this app have different versions. Update them together before making changes.",
+              native: { code: "UNKNOWN_OP", detail: { watchMode: "refused-unknown-op", appVersion: "0.156.0", daemonVersion: state.version } },
+            },
+            result: { status: statusPayload() },
+          };
+        }
+        window.__pushStatus = () => send({ v: 1, event: "status", ok: true, watchMode: "push", result: statusPayload() });
+        window.__pushStatus();
+        return await new Promise(resolve => { window.__closeStatusWatch = resolve; });
+      }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -575,15 +595,14 @@ export const scenarios = [
   { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
   { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.watchMode), "push");
+    assert.equal(await page.evaluate(() => window.__renderState.statusWatchRequests), 1);
+    const afterStart = await page.evaluate(() => window.__renderState.statusRequests);
     await page.evaluate(() => window.__emitTauri("desktop-hidden", null));
-    const afterHide = await page.evaluate(() => window.__renderState.statusRequests);
     await page.waitForTimeout(1500);
-    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterHide, "hidden window does not run the 1 s status poll");
     await page.evaluate(() => window.__emitTauri("desktop-tray-open", null));
-    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterHide);
-    const afterTray = await page.evaluate(() => window.__renderState.statusRequests);
     await page.evaluate(() => window.__emitTauri("desktop-shown", null));
-    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterTray);
+    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterStart, "status-watch stays open across hide, tray open, and show without polling status");
   } },
 ];
 

@@ -5,10 +5,10 @@ export function isCotalCloudIdp(provider: string | undefined): boolean {
   return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
 }
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
-export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
+export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress" | "status"; watchMode?: string; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: Record<string, unknown> } }; code?: string; message?: string }
 
 export class DaemonRefusal extends Error {
-  constructor(readonly code: string, message: string, readonly native?: string, readonly remedy?: string) { super(message); }
+  constructor(readonly code: string, message: string, readonly native?: string, readonly remedy?: string, readonly detail?: Record<string, unknown>, readonly result?: Record<string, unknown>) { super(message); }
 }
 
 export function launchReady(manager: unknown): boolean {
@@ -184,7 +184,7 @@ export function approvalUrl(value: unknown): string {
 }
 
 export function requireResult(frame: Frame): Record<string, unknown> {
-  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", frame.error?.remedy ? `Next: ${frame.error.remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, frame.error?.remedy);
+  if (frame.v !== 1 || frame.event !== "result" || frame.ok !== true) throw new DaemonRefusal(frame.error?.code ?? "OPERATION_FAILED", [frame.error?.message ?? frame.message ?? "The daemon did not confirm this operation.", frame.error?.remedy ? `Next: ${frame.error.remedy}` : ""].filter(Boolean).join("\n"), frame.error?.native?.code, frame.error?.remedy, frame.error?.native?.detail, frame.result);
   if (!frame.result || typeof frame.result !== "object" || Array.isArray(frame.result)) throw new Error("The daemon returned an unsupported result.");
   return frame.result;
 }
