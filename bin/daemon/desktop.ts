@@ -12,6 +12,7 @@ import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
 import { desktopApplicationPath } from "./desktop-path.js";
+import { assertDesktopSetupComplete } from "./desktop-setup.js";
 
 export type DesktopRequest =
   | { readonly op: "update-policy"; readonly auto?: boolean }
@@ -136,6 +137,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       const assets = release.assets.filter((asset: { name?: unknown; browser_download_url?: unknown }) => typeof asset.name === "string" && typeof asset.browser_download_url === "string").map((asset: { name: string; browser_download_url: string }) => ({ name: asset.name, url: asset.browser_download_url }));
       emit({ v: 1, event: "result", ok: true, result: { assets } }); return;
     }
+    if (req.op === "status" || req.op === "install" || req.op === "setup") assertDesktopSetupComplete();
     target = opts.resolveTarget();
     const { paths, home } = target;
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
@@ -200,7 +202,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
-    const message = e instanceof CommandFailure && (req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
+    const message = e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || (req.op === "install" && e.native?.code !== "NOT_ANSWERING")) ? e.message
       : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")
