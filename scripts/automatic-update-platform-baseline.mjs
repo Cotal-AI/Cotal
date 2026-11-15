@@ -22,6 +22,7 @@ import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
 import { machineShapeOptions, machineShapeCommand, runtimeDirectoryRefusal } from './update-machine-shape.mjs';
+import { publishedStagedRefusal, publishedSchedulerBudget } from './published-update-refusal.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -353,6 +354,8 @@ export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   const nextHopMode = candidateNextOptions(options);
   const shape = machineShapeOptions(options, { disposable: hosted, platform: process.platform });
+  const oldSourceRefusal = options['published-staged-refusal'] === 'true';
+  if (oldSourceRefusal) assert(hosted && process.platform === 'linux' && state === 'daemon' && method === 'self' && ['0.164.16','0.164.17'].includes(source) && shape.serviceUmask === '0002' && !shape.installUmask, 'published refusal requires unchanged supported old source, safe install modes, native0002 service');
   const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
@@ -443,7 +446,7 @@ export async function matrixCell(options) {
     }
     const startedAt = new Date().toISOString();
     const result = await new Promise(resolveCall => {
-      const command = machineShapeCommand(file, argv, shape.installUmask);
+      const command = machineShapeCommand(file, argv, shape.installUmask ?? (oldSourceRefusal && label === 'upgrade under test' ? '0002' : undefined));
       const child = spawn(command.file, command.argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '', stderr = '', timeoutHit = false;
       const timer = setTimeout(() => { timeoutHit = true; child.kill(); }, timeout);
@@ -890,6 +893,41 @@ export async function matrixCell(options) {
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') {
       update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
+      if (oldSourceRefusal) {
+        report.update = update;
+        assert(publishedStagedRefusal(update), 'published source did not reach target escape notice');
+        check('published updater names one-time manual installation', true, update);
+        ok(await cotal('enable published scheduler refusal observation', ['update','--auto','on']), 'published scheduler settings');
+        report.publishedSchedulerObservations = [];
+        for (let number = 1; number <= 3; number++) {
+          for (let i=0;i<60&&!existsSync(join(cotalHome,'update-check.json'));i++) await delay(1000);
+          for (const [name, fields] of [['update-check.json',['checkedAt','firstSeenAt','attemptedAt']],['update-attempt.json',['next']]]) {
+            const file=join(cotalHome,name), before=json(file), after={...before};
+            for(const field of fields) after[field]=Date.now()-7200000;
+            save(join(output,`${id}-budget-${number}-${name}`),{before,after});
+            save(file,after);
+          }
+          const stimulusAt=Date.now(), deadline=stimulusAt+180000;
+          let attempt,text;
+          do {
+            await delay(5000);
+            // status makes the daemon observe the aged attempt record, without running an updater.
+            report.publishedLastStatus=await daemon('published scheduler budget status',['daemon','status','--json']);
+            attempt=json(join(cotalHome,'update-attempt.json'));
+            text=existsSync(join(cotalHome,'update-attempt.log'))?readFileSync(join(cotalHome,'update-attempt.log'),'utf8'):'';
+            if(attempt.next>stimulusAt&&!/^updating to /.test(attempt.result)&&(number===3?/failed twice; waiting/.test(attempt.result):/Install the new version once by hand/.test(text))) break;
+          } while(Date.now()<deadline);
+          if(/^updating to /.test(attempt?.result??'')){uncertain=true;throw new Error('published scheduler outcome unknown');}
+          const store=inspectGenerationStore(join(prefix,'lib/.cotal-generations'),{required:false});
+          report.publishedSchedulerObservations.push({number,stimulusAt,attempt,text,store,status:report.publishedLastStatus,logSha256:digest(text??'')});
+        }
+        check('published scheduler preserves two-failure budget and leaves no staging',publishedSchedulerBudget(report.publishedSchedulerObservations),report.publishedSchedulerObservations);
+        const selected=inspectInstalledUpdateRoute(pkg,process.platform);
+        check('published refusal keeps original CLI selected',selected.selectedCliVersion===report.source,selected);
+        report.expectedRefusal={kind:'published target-check escape notice',passed:report.assertions.every(row=>row.passed)};
+        report.result='failed';
+        return report;
+      }
       if (shape.withoutRuntimeDir && installedService) {
         report.update = update;
         const daemonStatus = ok(await daemon('source daemon after runtime-directory refusal', ['daemon', 'status', '--json']), 'source daemon still answers');
@@ -1423,7 +1461,7 @@ export async function matrixCell(options) {
       check('generation store is settled and protected', report.generationStore.passed, report.generationStore);
       if (!report.generationStore.passed) report.result = 'failed';
     }
-    if (installedService && !report.runtimeDirectoryRefusal && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
+    if (installedService && !oldSourceRefusal && !report.runtimeDirectoryRefusal && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
       const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
         ? report.target
         : nextHopMode === 'source-0.164.10'
@@ -1538,7 +1576,7 @@ export async function matrixCell(options) {
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
-    if (report.expectedRefusal && report.runtimeDirectoryRefusal) report.expectedRefusal.passed = report.expectedRefusal.passed && report.assertions.every(row => row.passed) && report.cleanupSafety.passed;
+    if (report.expectedRefusal && (report.runtimeDirectoryRefusal || oldSourceRefusal)) report.expectedRefusal.passed = report.expectedRefusal.passed && report.assertions.every(row => row.passed) && report.cleanupSafety.passed;
     report.root = root;
     report.finishedAt = new Date().toISOString();
     report.retentionOwner = hosted ? 'disposable runner teardown' : 'lane owner after process quiescence';
