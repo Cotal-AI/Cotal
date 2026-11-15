@@ -473,19 +473,29 @@ class PointerTests(unittest.TestCase):
 
 
 class MenuWatchTests(unittest.TestCase):
-    def test_passive_watch_verifies_labels_and_selects_item_with_keyboard(self):
+    def environment(self, keys, sender_pid=21, sender_parent=20,
+                    sender_exe='/usr/lib/x86_64-linux-gnu/xfce4/panel/wrapper-2.0'):
         source = ast.parse(Path(__file__).with_name('lifecycle-linux.py').read_text())
         functions = ast.Module(body=[n for n in source.body if isinstance(n, ast.FunctionDef)],
                                type_ignores=[])
-        keys = []
-        env = {'re': __import__('re'), 'time': SimpleNamespace(sleep=lambda _: None),
+        env = {'re': __import__('re'), 'Path': Path,
+               'time': SimpleNamespace(sleep=lambda _: None),
                'args': SimpleNamespace(pid=10, start_time='a', panel_pid=20, panel_start_time='b'),
                'report': {}}
         exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
         env.update(verify=Mock(), save=lambda name, value: value,
+                   bus_connection_pid=Mock(return_value=sender_pid),
+                   process_info=Mock(return_value={'pid': sender_pid, 'parentPid': sender_parent,
+                                                   'state': 'S', 'startTime': '99',
+                                                   'exe': sender_exe}),
                    owned_indicator=Mock(return_value=deepcopy(ConnectedViewTests.indicator)),
                    wait_for=lambda _, fn: self.assertTrue(fn()),
                    command=lambda *argv: keys.append(list(argv)) or '')
+        return env
+
+    def test_passive_watch_verifies_labels_and_selects_item_with_keyboard(self):
+        keys = []
+        env = self.environment(keys)
         lines = [
             'method call time=1.0 sender=:1.9 -> destination=:1.40 serial=7 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=AboutToShow',
             '   int32 0',
@@ -514,20 +524,15 @@ class MenuWatchTests(unittest.TestCase):
         self.assertEqual(result['wireLabels'], [
             'Connected', 'No desktop update', 'Settings…', 'Open dashboard',
             'Quit app (computer stays connected)'])
+        self.assertEqual(result['openCalls'][0]['senderPid'], 21)
+        self.assertEqual(result['openCalls'][0]['senderRole'], 'panel-wrapper')
+        self.assertEqual(result['clickedEvents'][0]['senderPid'], 21)
         self.assertEqual(keys, [['xdotool', 'key', 'Down'], ['xdotool', 'key', 'Return']])
 
     def test_open_without_get_layout_records_no_layout_fetch_observed(self):
-        source = ast.parse(Path(__file__).with_name('lifecycle-linux.py').read_text())
-        functions = ast.Module(body=[n for n in source.body if isinstance(n, ast.FunctionDef)],
-                               type_ignores=[])
         keys = []
-        env = {'re': __import__('re'), 'time': SimpleNamespace(sleep=lambda _: None),
-               'args': SimpleNamespace(pid=10, start_time='a', panel_pid=20, panel_start_time='b'),
-               'report': {}}
-        exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
-        env.update(verify=Mock(), save=lambda name, value: value,
-                   wait_for=lambda _, fn: self.assertTrue(fn()),
-                   command=lambda *argv: keys.append(list(argv)) or '')
+        env = self.environment(keys, sender_pid=20, sender_parent=1,
+                               sender_exe='/usr/bin/xfce4-panel')
         lines = [
             'method call time=1.0 sender=:1.9 -> destination=:1.99 serial=5 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=AboutToShow',
             '   int32 0',
@@ -549,6 +554,23 @@ class MenuWatchTests(unittest.TestCase):
         self.assertEqual(result['downSteps'], 3)
         self.assertIsNone(result['wireLabels'])
         self.assertEqual(result['layoutObservation'], 'no layout fetch observed')
+        self.assertEqual(result['openCalls'][0]['senderRole'], 'panel')
+
+    def test_foreign_sender_pid_refuses_menu_watch(self):
+        keys = []
+        env = self.environment(keys, sender_pid=999, sender_parent=1,
+                               sender_exe='/usr/bin/python3')
+        lines = [
+            'method call time=1.1 sender=:1.9 -> destination=:1.40 serial=7 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=Event',
+            '   int32 0',
+            '   string "opened"',
+        ]
+        parsed = env['parse_dbus_monitor_messages'](
+            lines, ':1.40', '/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu')
+        with self.assertRaisesRegex(RuntimeError, 'neither owned xfce4-panel'):
+            env['select_open_menu_item'](
+                'Settings…', deepcopy(ConnectedViewTests.indicator), lambda: deepcopy(parsed))
+        self.assertEqual(keys, [])
 
 
 class MissingControlDiagnosticsTests(unittest.TestCase):

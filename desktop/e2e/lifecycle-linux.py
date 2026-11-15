@@ -391,6 +391,37 @@ def navigable_menu_items(exported_layout):
     return items
 
 
+def bus_connection_pid(service_name):
+    from gi.repository import Gio, GLib
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    return int(bus.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus',
+                             'org.freedesktop.DBus', 'GetConnectionUnixProcessID',
+                             GLib.Variant('(s)', (service_name,)), None,
+                             Gio.DBusCallFlags.NONE, 5000, None).unpack()[0])
+
+
+def verify_panel_sender(sender_name, cache):
+    if not sender_name or not sender_name.startswith(':'):
+        raise RuntimeError(f'D-Bus menu call sender {sender_name!r} is not a unique bus connection')
+    if sender_name not in cache:
+        verify(args.panel_pid, args.panel_start_time)
+        sender_pid = bus_connection_pid(sender_name)
+        info = process_info(sender_pid)
+        exe_name = Path(info['exe']).name
+        if sender_pid == args.panel_pid and exe_name == 'xfce4-panel':
+            role = 'panel'
+        elif info['parentPid'] == args.panel_pid and exe_name == 'wrapper-2.0':
+            role = 'panel-wrapper'
+        else:
+            raise RuntimeError(
+                f'D-Bus menu call sender {sender_name} (PID {sender_pid}, parent {info["parentPid"]}, exe {info["exe"]}) '
+                f'is neither owned xfce4-panel ({args.panel_pid}) nor its wrapper-2.0 child')
+        cache[sender_name] = {'sender': sender_name, 'senderPid': sender_pid,
+                              'senderParentPid': info['parentPid'], 'senderExe': info['exe'],
+                              'senderRole': role}
+    return cache[sender_name]
+
+
 def parse_dbus_monitor_messages(lines, service, menu_path):
     blocks = []
     current = []
@@ -421,11 +452,11 @@ def parse_dbus_monitor_messages(lines, service, menu_path):
             member = member_match.group(1) if member_match else ''
             serial = serial_match.group(1) if serial_match else ''
             if member == 'AboutToShow':
-                open_calls.append({'member': member, 'destination': dest_name,
-                                   'serial': serial, 'header': header})
+                open_calls.append({'member': member, 'sender': sender_name,
+                                   'destination': dest_name, 'serial': serial, 'header': header})
             elif member == 'GetLayout':
-                open_calls.append({'member': member, 'destination': dest_name,
-                                   'serial': serial, 'header': header})
+                open_calls.append({'member': member, 'sender': sender_name,
+                                   'destination': dest_name, 'serial': serial, 'header': header})
                 if serial:
                     get_layout_serials.add(serial)
             elif member == 'Event':
@@ -435,10 +466,12 @@ def parse_dbus_monitor_messages(lines, service, menu_path):
                 event_kind = str_match.group(1) if str_match else None
                 if event_kind == 'opened':
                     open_calls.append({'member': 'Event', 'event': 'opened', 'id': event_id,
-                                       'destination': dest_name, 'serial': serial, 'header': header})
+                                       'sender': sender_name, 'destination': dest_name,
+                                       'serial': serial, 'header': header})
                 elif event_kind == 'clicked':
                     clicked_events.append({'id': event_id, 'event': 'clicked',
-                                           'destination': dest_name, 'serial': serial, 'header': header})
+                                           'sender': sender_name, 'destination': dest_name,
+                                           'serial': serial, 'header': header})
         elif header.startswith('method return ') and sender_name == service:
             reply_match = re.search(r'reply_serial=(\d+)', header)
             reply_serial = reply_match.group(1) if reply_match else ''
@@ -483,8 +516,6 @@ def start_dbus_menu_watch(indicator):
     t_err = threading.Thread(target=read_stderr, daemon=True)
     t_out.start()
     t_err.start()
-    ready.wait(timeout=2.0)
-    time.sleep(0.05)
     def snapshot_watch():
         with lock:
             current_lines = list(lines)
@@ -504,6 +535,16 @@ def start_dbus_menu_watch(indicator):
         t_out.join(timeout=1)
         t_err.join(timeout=1)
         return snapshot_watch()
+    is_ready = ready.wait(timeout=2.0)
+    exit_code = proc.poll()
+    if not is_ready or exit_code is not None:
+        failed_watch = stop_watch()
+        failed_watch.update(ready=is_ready, exitCode=exit_code)
+        report['menuWatch'] = save('menu-watch', failed_watch)
+        raise RuntimeError(
+            f'dbus-monitor failed to become an active session monitor (ready={is_ready}, exit={exit_code}): '
+            f'{failed_watch["stderrLines"]}')
+    time.sleep(0.05)
     return snapshot_watch, stop_watch
 
 
@@ -519,6 +560,7 @@ def select_open_menu_item(label, indicator, snapshot_watch):
     if len(matches) != 1:
         raise RuntimeError(f'Expected one enabled visible exported menu item {label}, found {len(matches)}')
     down_steps, target_id = matches[0]
+    sender_cache = {}
     def menu_opened():
         observed = snapshot_watch()
         if not observed['openCalls']:
@@ -537,6 +579,14 @@ def select_open_menu_item(label, indicator, snapshot_watch):
     verify(args.pid, args.start_time)
     verify(args.panel_pid, args.panel_start_time)
     observed = snapshot_watch()
+    try:
+        for call in observed['openCalls']:
+            call.update(verify_panel_sender(call['sender'], sender_cache))
+    except Exception:
+        observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
+                        expectedLabels=expected_labels)
+        report['menuWatch'] = save('menu-watch', observed)
+        raise
     if observed['layoutReplies']:
         wire_labels = observed['layoutReplies'][-1]['labels']
         if wire_labels != expected_labels:
@@ -573,6 +623,17 @@ def select_open_menu_item(label, indicator, snapshot_watch):
         report['menuWatch'] = save('menu-watch', observed)
         raise
     observed = snapshot_watch()
+    try:
+        for call in observed['openCalls']:
+            call.update(verify_panel_sender(call['sender'], sender_cache))
+        for event in observed['clickedEvents']:
+            event.update(verify_panel_sender(event['sender'], sender_cache))
+    except Exception:
+        observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
+                        expectedLabels=expected_labels, wireLabels=wire_labels,
+                        layoutObservation=layout_observation, keyInputs=key_inputs)
+        report['menuWatch'] = save('menu-watch', observed)
+        raise
     observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
                     expectedLabels=expected_labels, wireLabels=wire_labels,
                     layoutObservation=layout_observation, keyInputs=key_inputs)
