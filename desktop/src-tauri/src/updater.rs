@@ -81,24 +81,24 @@ mod configured {
 
     use super::ENDPOINT;
     const DAY: u64 = 86_400_000;
-    struct Pending { view: UpdateView, update: Option<Update>, bytes: Option<Vec<u8>> }
+    struct Pending { view: UpdateView, update: Option<Update>, bytes: Option<Vec<u8>>, failed_version: Option<String> }
     pub struct Updates { gate: AsyncMutex<()>, pending: Mutex<Pending>, receipt: Mutex<Option<Result<Receipt, String>>> }
     impl Default for Updates {
         fn default() -> Self {
             Self { gate: AsyncMutex::new(()), pending: Mutex::new(Pending {
-                view: UpdateView { phase: "idle", reason: None, ..UpdateView::disabled() }, update: None, bytes: None,
+                view: UpdateView { phase: "idle", reason: None, ..UpdateView::disabled() }, update: None, bytes: None, failed_version: None,
             }), receipt: Mutex::new(None) }
         }
     }
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
-    struct Cache { v: u8, checked_at: u64, phase: String, reason: Option<String>, release: Option<serde_json::Value> }
-    fn read_cache(app: &AppHandle) -> Result<Updates, String> {
+    struct Cache { v: u8, checked_at: u64, phase: String, reason: Option<String>, release: Option<serde_json::Value>, #[serde(default, skip_serializing_if = "Option::is_none")] failed_version: Option<String> }
+    fn read_cache(app: &AppHandle) -> Result<(Updates, Option<String>), String> {
         let state = Updates::default();
         let path = app.path().app_config_dir().map_err(|error| error.to_string())?.join("desktop-update.json");
         let file = match fs::File::open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(state),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((state, None)),
             Err(error) => return Err(error.to_string()),
         };
         let mut bytes = Vec::new();
@@ -122,21 +122,24 @@ mod configured {
             pending.view.checked_at = Some(cache.checked_at);
             pending.update = restored;
         })?;
-        Ok(state)
+        Ok((state, cache.failed_version))
     }
     pub fn load(app: &AppHandle) -> Updates {
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }
-        let state = match read_cache(app) {
-            Ok(state) => state,
+        let (state, failed_version) = match read_cache(app) {
+            Ok(loaded) => loaded,
             Err(reason) => {
                 let state = Updates::default();
                 // Cache damage is visible in Settings but must not keep the app window from starting.
                 if let Ok(mut pending) = state.pending.lock() { pending.view.phase = "failed"; pending.view.reason = Some(reason); }
-                state
+                (state, None)
             }
         };
+        if let Some(version) = failed_version {
+            if let Ok(mut pending) = state.pending.lock() { pending.failed_version = Some(version); }
+        }
         let saved = match receipt_path(app).and_then(|path| crate::update_receipt::take_session(&path)) {
             Ok(Some(receipt)) => {
                 #[cfg(target_os = "windows")]
@@ -156,6 +159,7 @@ mod configured {
                                 pending.update = None;
                                 pending.bytes = None;
                             }
+                            if let Some(version) = receipt.failed_version.clone() { pending.failed_version = Some(version); }
                             pending.view.reason = Some(reason);
                         }
                         if let Err(save_error) = save(app, &state) {
@@ -176,7 +180,7 @@ mod configured {
         state
     }
     fn save(app: &AppHandle, state: &Updates) -> Result<(), String> {
-        let cache = with_pending(state, |pending| Cache { v: 1, checked_at: pending.view.checked_at.unwrap_or(0), phase: pending.view.phase.into(), reason: pending.view.reason.clone(), release: pending.update.as_ref().map(|update| update.raw_json.clone()) })?;
+        let cache = with_pending(state, |pending| Cache { v: 1, checked_at: pending.view.checked_at.unwrap_or(0), phase: pending.view.phase.into(), reason: pending.view.reason.clone(), release: pending.update.as_ref().map(|update| update.raw_json.clone()), failed_version: pending.failed_version.clone() })?;
         let path = app.path().app_config_dir().map_err(|error| error.to_string())?.join("desktop-update.json");
         fs::create_dir_all(path.parent().ok_or("Desktop update cache directory is unavailable.")?).map_err(|error| error.to_string())?;
         let temporary = path.with_extension(format!("{}.{}.new", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_nanos()));
@@ -220,12 +224,20 @@ mod configured {
                 Ok(Some(update)) => {
                     let same = pending.update.as_ref().is_some_and(|held| held.version == update.version && held.signature == update.signature && held.download_url == update.download_url);
                     if !same { pending.bytes = None; }
-                    pending.view.phase = if pending.bytes.is_some() { "ready" } else { "available" };
-                    pending.view.version = Some(update.version.clone());
-                    pending.view.reason = None;
+                    if pending.failed_version.as_deref() == Some(update.version.as_str()) && !manual {
+                        pending.view.phase = "available";
+                        pending.view.version = Some(update.version.clone());
+                        pending.view.reason = Some(format!("Cotal {} did not start its background service and was rolled back. Automatic update will wait for a newer version, or choose Restart to update.", update.version));
+                    } else {
+                        if pending.failed_version.as_deref().is_some_and(|failed| failed != update.version) { pending.failed_version = None; }
+                        pending.view.phase = if pending.bytes.is_some() { "ready" } else { "available" };
+                        pending.view.version = Some(update.version.clone());
+                        pending.view.reason = None;
+                    }
                     pending.update = Some(update);
                 }
                 Ok(None) => {
+                    pending.failed_version = None;
                     pending.view.phase = "current"; pending.view.version = None; pending.view.reason = None;
                     pending.update = None; pending.bytes = None;
                 }
@@ -306,7 +318,8 @@ mod configured {
     #[cfg(target_os = "windows")]
     async fn windows_active_agents(app: &AppHandle) -> Result<Option<String>, String> {
         let slots = app.state::<RequestSlots>();
-        let frame = crate::app::run_request(app, &slots, DesktopRequest::Status {}, None).await?;
+        let frame = tokio::time::timeout(Duration::from_secs(2), crate::app::run_request(app, &slots, DesktopRequest::Status {}, None)).await
+            .map_err(|_| "status-timeout".to_string())??;
         crate::update_receipt::active_agents_reason(&frame)
     }
     pub fn reopen(app: &AppHandle) -> Result<Option<bool>, String> {
@@ -384,6 +397,9 @@ mod configured {
             Err(_) => return waiting(&app, state, "A desktop update check or download is running. Try Restart to update when it finishes."),
         };
         if !with_pending(state, |pending| pending.update.is_some())? { return with_pending(state, |pending| pending.view.clone()); }
+        if !explicit && with_pending(state, |pending| pending.failed_version.is_some() && pending.failed_version == pending.update.as_ref().map(|update| update.version.clone()))? {
+            return waiting(&app, state, "This version did not start its background service and was rolled back. Automatic update will wait for a newer version.");
+        }
         if !explicit && windows(&app, false).await? { return with_pending(state, |pending| pending.view.clone()); }
         if let Err(reason) = crate::native_presence::updater_location(&app) { return waiting(&app, state, &reason); }
         if !explicit && !unprivileged_replacement(&app)? {
@@ -424,10 +440,11 @@ mod configured {
             if !enabled { return waiting(&app, state, "Automatic updates are off. No app files were changed."); }
             #[cfg(target_os = "windows")]
             if !explicit {
-                let reason = tokio::time::timeout(Duration::from_secs(5), windows_active_agents(&app)).await
-                    .map_err(|_| "The background service status did not answer within five seconds. No app files were changed.".to_string())??;
-                if let Some(reason) = reason {
-                    return waiting(&app, state, &reason);
+                match windows_active_agents(&app).await {
+                    Ok(Some(reason)) => return waiting(&app, state, &reason),
+                    Ok(None) => {},
+                    Err(reason) if reason == "status-timeout" => return Err("The background service status did not answer within five seconds. No app files were changed.".into()),
+                    Err(reason) => return Err(reason),
                 }
             }
             crate::native_presence::updater_location(&app)?;
@@ -438,7 +455,7 @@ mod configured {
             let (update, bytes) = with_pending(state, |pending| {
                 Ok::<_, String>((pending.update.clone().ok_or("The verified update is unavailable.")?, pending.bytes.take().ok_or("The verified download is unavailable.")?))
             })??;
-            let mut receipt = Receipt { schema: 1, from: app.package_info().version.to_string(), target: update.version.clone(), phase: "installing".into(), reopen: explicit || activity.take_show_request()?, relaunch_pending: true, reason: None };
+            let mut receipt = Receipt { schema: 1, from: app.package_info().version.to_string(), target: update.version.clone(), phase: "installing".into(), reopen: explicit || activity.take_show_request()?, relaunch_pending: true, reason: None, failed_version: None };
             #[cfg(target_os = "windows")]
             let update = {
                 let quit = activity.finish()?;

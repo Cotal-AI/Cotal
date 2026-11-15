@@ -49,10 +49,11 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(hooks, /SetEnvironmentVariable\(t "PSModulePath", p 0\)/);
   assert.match(task, /\$task\.Enabled = \$false/);
   assert.match(task, /GetInstances\(0\)\.Count/);
-  assert.ok(helper.indexOf('prepared = true;') < helper.indexOf("await request('managers-prepare-restart')"));
-  assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf('census(status.pid)'));
+  const prepare = helper.indexOf("await request('managers-prepare-restart')");
+  assert.ok(helper.indexOf('prepared = true;') < prepare);
+  assert.ok(prepare < helper.indexOf('census(status.pid)'));
   assert.ok(helper.indexOf('census(status.pid)') < helper.indexOf("await request('daemon-stop')"));
-  assert.ok(helper.indexOf("await request('managers-prepare-restart')") < helper.indexOf("task('disable')"));
+  assert.ok(prepare < helper.indexOf("task('disable')", prepare));
   assert.match(helper, /if \(prepared && !committed && socket\) await request\('managers-abort-restart'\)/);
   assert.ok(helper.indexOf("task('disable')") < helper.indexOf("await request('daemon-stop', true)"));
   assert.match(helper, /rmSync\(stateFile\);\n    outcome\(23/);
@@ -84,6 +85,10 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(hooks, /\$\{If\} \$CotalUpdateMode = 1[\s\S]*nsis_tauri_utils::RunAsUser "\$INSTDIR\\cotal-desktop\.exe" "\$0"/);
   assert.doesNotMatch(hooks.slice(0, hooks.indexOf('Function CotalSetupAbort')), /\$CotalCopying/);
   assert.match(helper, /'started-unconfirmed'/);
+  assert.match(helper, /'rolled-back'/);
+  assert.match(helper, /'rollback-unconfirmed'/);
+  assert.match(helper, /previousKept/);
+  assert.match(hooks, /Rename "\$INSTDIR\\cotal-desktop\.exe" "\$INSTDIR\\\.\.\\CotalSetup-previous\\cotal-desktop\.exe"/);
   for (const field of ['schema', 'outcome', 'code', 'message', 'activeAgents', 'fromVersion', 'toVersion', 'completedAt']) assert.ok(helper.includes(field));
 });
 

@@ -215,6 +215,23 @@ test("automatic tick retries wait ten minutes but hide, fresh check and button a
   } finally { a.dom.window.close(); }
 });
 
+test("a rolled-back Windows update shows its reason on the welcome card and opens Settings", async () => {
+  const reason = "Setup code 23: Cotal 0.164.9 did not start its background service. Cotal 0.164.8 is running again.";
+  const a = await app({
+    platform: "win32",
+    appReceipt: { schema: 1, from: "0.164.8", target: "0.164.9", phase: "failed", reopen: true, reason },
+    appUpdate: { phase: "available", version: "0.164.9", reason },
+  });
+  try {
+    assert.equal(a.node("connection-title").textContent, "Welcome to Cotal");
+    assert.match(a.node("connection-description").textContent!, /running again/);
+    assert.equal(a.node("open-settings").hidden, false);
+    await a.click("open-settings");
+    assert.equal(a.node("settings-panel").hidden, false);
+    assert.match(a.node("settings-update-summary").textContent!, /Setup code 23/);
+  } finally { a.dom.window.close(); }
+});
+
 test("relaunch after a refused Windows setup shows code 20 in Settings without immediately re-running apply", async () => {
   const reason = "Setup code 20: 1 agent(s) are running. Stop them and choose Retry.";
   const a = await app({

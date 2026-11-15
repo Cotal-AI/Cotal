@@ -155,7 +155,7 @@ const preferencesHome = el("preferences").parentElement!;
 preferencesHome.insertBefore(el("update-banner"), el("connection-icon"));
 function renderSettings(): void {
   requestAnimationFrame(() => { sizeSpaceList(); requestAnimationFrame(sizeSpaceList); });
-  const configured = stage === "finished" && !setupActive;
+  const configured = (stage === "finished" && !setupActive) || Boolean(appliedUpdate?.reason);
   el("open-settings").hidden = !configured;
   text("open-settings", settingsOpen ? "Back" : "Settings");
   el("settings-panel").hidden = !settingsOpen;
@@ -483,7 +483,7 @@ function showStage(next: Stage, focus = false): void {
   el("step-caption").hidden = finished;
   if (finished) el("details").hidden = true;
   let title: string, description: string;
-  if (next === "welcome") { title = "Welcome to Cotal"; description = welcome; }
+  if (next === "welcome") { title = "Welcome to Cotal"; description = appliedUpdate?.reason ?? welcome; }
   else if (next === "sign-in") { title = loginActive ? approval ? "Approve sign-in in your browser" : "Preparing your sign-in" : "Sign in to Cotal"; description = "Approve this computer in your browser. We will continue here automatically."; }
   else if (finished && computerAccount?.mode === "sign-in-required") { title = "Sign in to keep this computer connected"; description = "Approve this computer in your browser to keep managing its spaces."; }
   else if (finished && computerAccount?.hostSupport === "supported") {
@@ -1026,6 +1026,9 @@ function openSettings(): void {
   const select = el<HTMLSelectElement>("space");
   for (const option of select.options) option.hidden = false;
   if (!connections.has(select.value)) select.value = connections.keys().next().value ?? select.value;
+  if (appliedUpdate?.reason && !(connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported")) {
+    settingsOpen = true; renderSettings(); el("settings-title").focus(); return;
+  }
   if (connections.size || completedSetup || listOpened || computerAccount?.hostSupport === "supported") {
     listOpened = true; showStage("finished");
     settingsOpen = true; renderSettings(); el("settings-title").focus();

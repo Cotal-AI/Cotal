@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -8,11 +8,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 const [mode, rawRoot, targetVersion] = process.argv.slice(2);
 if (process.platform !== 'win32' || !['prepare', 'finish', 'abort'].includes(mode) || !rawRoot || !/^\d+\.\d+\.\d+$/.test(targetVersion ?? '')) throw new Error('Unsupported installer service invocation.');
 const root = resolve(rawRoot);
+const previousDir = join(root, '..', 'CotalSetup-previous');
 for (const key of Object.keys(process.env)) if (key.startsWith('COTAL_')) delete process.env[key];
 process.env.COTAL_SKIP_CONNECTOR_SEED = '1';
 process.env.COTAL_TELEMETRY = 'off';
 const directory = join(process.env.LOCALAPPDATA, 'CotalSetup');
 mkdirSync(directory, { recursive: true });
+const previousNames = ['cotal-desktop.exe', 'node.exe', 'runtime'];
 let lastStep = 'entry';
 process.on('exit', code => {
   try {
@@ -93,6 +95,44 @@ async function waitDead() {
   } while (Date.now() < deadline);
   throw new Error('The old service did not confirm shutdown within 130 seconds. Run cotal daemon start before retrying setup.');
 }
+function sameVolume(left, right) {
+  const volume = path => { try { return realpathSync.native(path); } catch { return resolve(path); } };
+  const [a, b] = [volume(left), volume(right)];
+  const prefix = value => { const match = /^(\\\\[^\\]+\\[^\\]+|[A-Za-z]:)/.exec(value); return match ? match[1].toLowerCase() : ''; };
+  return prefix(a) !== '' && prefix(a) === prefix(b);
+}
+function movePreviousBack() {
+  if (!sameVolume(previousDir, root)) throw new Error('The previous Cotal generation is not on the same volume. No files were restored.');
+  for (const name of ['cotal-desktop.exe', 'runtime']) {
+    if (!existsSync(join(previousDir, name))) throw new Error(`The previous Cotal generation is missing ${name}. No files were restored.`);
+  }
+  for (const name of previousNames) {
+    const from = join(previousDir, name);
+    if (!existsSync(from)) continue;
+    const to = join(root, name);
+    rmSync(to, { recursive: true, force: true });
+    renameSync(from, to);
+  }
+  rmSync(previousDir, { recursive: true, force: true });
+}
+function removePrevious() {
+  rmSync(previousDir, { recursive: true, force: true });
+}
+async function restorePrevious() {
+  lastStep = 'rollback';
+  task('disable');
+  movePreviousBack();
+  state.running = true;
+  state.phase = 'ready';
+  write(stateFile, state);
+  await finish(true);
+  const restored = JSON.parse(readFileSync(resultFile, 'utf8'));
+  if (restored.outcome !== 'cancelled' || restored.code !== 0) {
+    outcome(23, `Cotal ${state.oldVersion ?? 'previous'} could not be confirmed after rolling back ${targetVersion}. Run the installer again.`, 'rollback-unconfirmed');
+    return;
+  }
+  outcome(23, `Cotal ${targetVersion} did not start its background service. Cotal ${state.oldVersion} is running again.`, 'rolled-back');
+}
 function census(servicePid) {
   const scan = task('census');
   if (!Array.isArray(scan?.processes) || !Array.isArray(scan?.skipped) || !Array.isArray(scan?.executableNames)) throw new Error('The owned task returned an invalid census response.');
@@ -124,6 +164,7 @@ async function finish(rollback = false) {
   if (Boolean(native.installed) !== state.installed || state.installed && native.receiptDigest !== state.receiptDigest) throw new Error('The owned installation changed during setup. No task was started.');
   const version = JSON.parse(readFileSync(join(root, 'runtime', 'package.json'), 'utf8')).version;
   if (version !== (rollback ? state.oldVersion : targetVersion)) throw new Error('The installed version does not match the setup handover. Run the installer again.');
+  state.previousKept = !rollback && existsSync(join(previousDir, 'cotal-desktop.exe')) && existsSync(join(previousDir, 'runtime'));
   if (!rollback) {
     const manifest = JSON.parse(readFileSync(join(root, 'runtime', 'desktop-runtime.json'), 'utf8'));
     if (manifest.version !== targetVersion || !Array.isArray(manifest.files) || manifest.files.length === 0) throw new Error('The replacement runtime inventory is invalid. Run the installer again.');
@@ -146,6 +187,7 @@ async function finish(rollback = false) {
       try {
         const reply = await modules.client.queryDaemon({ paths: modules.paths, timeoutMs: 1000 });
         if (reply.ok && reply.result.version === version && reply.result.state === 'ready') {
+          if (!rollback) removePrevious();
           rmSync(stateFile);
           outcome(0, rollback ? 'Setup cancelled. The previous background service is running.' : `Cotal ${version} is installed and its background service is running.`, rollback ? 'cancelled' : 'updated');
           return;
@@ -155,8 +197,15 @@ async function finish(rollback = false) {
       }
       await delay(500);
     } while (Date.now() < deadline);
+    if (!rollback && state.previousKept) {
+      await restorePrevious();
+      return;
+    }
     rmSync(stateFile);
-    outcome(23, `Cotal ${version} is installed and service startup was requested, but readiness was not confirmed within 60 seconds. Check cotal daemon status.`, 'started-unconfirmed');
+    outcome(23, rollback
+      ? `Cotal ${state.oldVersion ?? version} could not be confirmed after rolling back ${targetVersion}. Run the installer again.`
+      : `Cotal ${version} is installed and service startup was requested, but readiness was not confirmed within 60 seconds. Check cotal daemon status.`,
+      rollback ? 'rollback-unconfirmed' : 'started-unconfirmed');
     return;
   }
   rmSync(stateFile);

@@ -12,6 +12,8 @@ pub struct Receipt {
     #[serde(default)]
     pub relaunch_pending: bool,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub failed_version: Option<String>,
 }
 fn unique() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -87,6 +89,20 @@ pub fn reconcile_setup(mut receipt: Receipt, app_version: &str, setup_result: Re
         receipt.reason = None;
         return (receipt, Some(reason));
     }
+    if outcome == "rolled-back" && code == 23 && app_version == receipt.from {
+        let reason = format!("Setup code 23: {message}");
+        receipt.phase = "failed".into();
+        receipt.reason = Some(reason.clone());
+        receipt.failed_version = Some(receipt.target.clone());
+        return (receipt, Some(reason));
+    }
+    if outcome == "rollback-unconfirmed" && code == 23 {
+        let reason = format!("Setup code 23: {message}");
+        receipt.phase = "failed".into();
+        receipt.reason = Some(reason.clone());
+        receipt.failed_version = Some(receipt.target.clone());
+        return (receipt, Some(reason));
+    }
     let reason = format!("Setup code {code}: {message}");
     receipt.phase = "failed".into();
     receipt.reason = Some(reason.clone());
@@ -146,7 +162,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cotal-result-{}", unique()));
         fs::create_dir(&root).unwrap();
         let path = root.join("desktop-apply.json");
-        let receipt = Receipt { schema: 1, from: "0.164.8".into(), target: "0.164.9".into(), phase: "installed".into(), reopen: true, relaunch_pending: true, reason: None };
+        let receipt = Receipt { schema: 1, from: "0.164.8".into(), target: "0.164.9".into(), phase: "installed".into(), reopen: true, relaunch_pending: true, reason: None, failed_version: None };
         write(&path, &receipt).unwrap();
         assert_eq!(take_session(&path).unwrap().unwrap().target, "0.164.9");
         assert!(take_session(&path).unwrap().is_none());
@@ -161,14 +177,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cotal-result-{}", unique()));
         fs::create_dir(&root).unwrap();
         let path = root.join("desktop-apply.json");
-        let mut receipt = Receipt { schema: 1, from: "0.164.8".into(), target: "0.164.9".into(), phase: "failed".into(), reopen: false, relaunch_pending: false, reason: Some("test".into()) };
+        let mut receipt = Receipt { schema: 1, from: "0.164.8".into(), target: "0.164.9".into(), phase: "failed".into(), reopen: false, relaunch_pending: false, reason: Some("test".into()), failed_version: None };
         write(&path, &receipt).unwrap(); clear_failed(&path).unwrap(); assert!(!path.exists());
         receipt.phase = "installed".into(); write(&path, &receipt).unwrap(); clear_failed(&path).unwrap(); assert!(path.exists());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn windows_setup_result_reconciles_installed_and_refused_receipts() {
-        let base = Receipt { schema: 1, from: "0.164.8".into(), target: "0.164.9".into(), phase: "installing".into(), reopen: false, relaunch_pending: true, reason: None };
+        let base = Receipt { schema: 1, from: "0.164.8".into(), target: "0.164.9".into(), phase: "installing".into(), reopen: false, relaunch_pending: true, reason: None, failed_version: None };
         let updated = serde_json::json!({"schema":1,"outcome":"updated","code":0,"message":"Cotal 0.164.9 is installed and its background service is running.","toVersion":"0.164.9"});
         let (installed, reason) = reconcile_setup(base.clone(), "0.164.9", Ok(Some(&updated)));
         assert_eq!(installed.phase, "installed");
@@ -193,9 +209,18 @@ mod tests {
         let (mismatched, reason) = reconcile_setup(base.clone(), "0.164.9", Ok(Some(&wrong_target)));
         assert_eq!(mismatched.phase, "failed");
         assert_eq!(reason.as_deref(), Some("The installer did not report a result for 0.164.9"));
-        let (parse_err, reason) = reconcile_setup(base, "0.164.9", Err("Setup result is invalid JSON: expected value at line 1 column 1"));
+        let (parse_err, reason) = reconcile_setup(base.clone(), "0.164.9", Err("Setup result is invalid JSON: expected value at line 1 column 1"));
         assert_eq!(parse_err.phase, "failed");
         assert_eq!(reason.as_deref(), Some("Setup result is invalid JSON: expected value at line 1 column 1"));
+        let rolled = serde_json::json!({"schema":1,"outcome":"rolled-back","code":23,"message":"Cotal 0.164.9 did not start its background service. Cotal 0.164.8 is running again.","fromVersion":"0.164.8","toVersion":"0.164.9"});
+        let (rolled_back, reason) = reconcile_setup(base.clone(), "0.164.8", Ok(Some(&rolled)));
+        assert_eq!(rolled_back.phase, "failed");
+        assert_eq!(rolled_back.failed_version.as_deref(), Some("0.164.9"));
+        assert_eq!(reason.as_deref(), Some("Setup code 23: Cotal 0.164.9 did not start its background service. Cotal 0.164.8 is running again."));
+        let rollback_unconfirmed = serde_json::json!({"schema":1,"outcome":"rollback-unconfirmed","code":23,"message":"Cotal 0.164.8 could not be confirmed after rolling back 0.164.9. Run the installer again.","toVersion":"0.164.9"});
+        let (stopped, reason) = reconcile_setup(base, "0.164.9", Ok(Some(&rollback_unconfirmed)));
+        assert_eq!(stopped.phase, "failed");
+        assert!(reason.unwrap().contains("could not be confirmed"));
     }
     #[test]
     fn active_agents_reason_blocks_automatic_handoff_when_agents_run_or_are_unreadable() {

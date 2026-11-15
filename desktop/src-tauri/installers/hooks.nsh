@@ -153,6 +153,20 @@ FunctionEnd
     StrCpy $CotalPrepared 1
   ${EndIf}
   cotal_prepared:
+  ${If} $CotalUpdateMode = 1
+  ${AndIf} ${FileExists} "$INSTDIR\cotal-desktop.exe"
+    CreateDirectory "$INSTDIR\..\CotalSetup-previous"
+    RMDir /r "$INSTDIR\..\CotalSetup-previous\runtime"
+    Delete "$INSTDIR\..\CotalSetup-previous\cotal-desktop.exe"
+    Delete "$INSTDIR\..\CotalSetup-previous\node.exe"
+    Rename "$INSTDIR\cotal-desktop.exe" "$INSTDIR\..\CotalSetup-previous\cotal-desktop.exe"
+    ${If} ${FileExists} "$INSTDIR\node.exe"
+      Rename "$INSTDIR\node.exe" "$INSTDIR\..\CotalSetup-previous\node.exe"
+    ${EndIf}
+    ${If} ${FileExists} "$INSTDIR\runtime"
+      Rename "$INSTDIR\runtime" "$INSTDIR\..\CotalSetup-previous\runtime"
+    ${EndIf}
+  ${EndIf}
   SetOutPath $INSTDIR
 !macroend
 
