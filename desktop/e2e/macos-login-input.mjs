@@ -39,15 +39,25 @@ function snapshot(path) {
     return { dev: after.dev, ino: after.ino, size: bytes.length, prefix: bytes.toString('base64'), rows };
   } finally { closeSync(fd); }
 }
-export function baseline(context, pid) {
+const sleepMs = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export function baseline(context, pid, startedAt = Date.now() - 2000, timeoutMs = 10_000) {
+  if (!Number.isSafeInteger(startedAt) || startedAt <= 0 || !Number.isSafeInteger(timeoutMs) || timeoutMs < 0) throw Error('invalid baseline start time');
   const { traceHome } = JSON.parse(readFileSync(context, 'utf8'));
   if (typeof traceHome !== 'string' || !isAbsolute(traceHome)) throw Error('invalid native traceHome');
   const path = join(traceHome, 'login-preference-receipts.jsonl');
-  const s = snapshot(path);
-  if (!s.rows.some(r => r.pid === pid && r.stage === 'api-is-enabled' && r.source === 'presence-view' && r.ok === true && r.observed === true)) throw Error('missing owned initial poll');
-  const last = s.rows.at(-1);
-  if (last.pid !== pid || last.stage !== 'api-is-enabled' || last.source !== 'presence-view' || last.ok !== true || last.observed !== true || Date.now() - last.atUnixMs > 2000 || last.atUnixMs > Date.now()) throw Error('no fresh owned baseline poll');
-  return { path, pid, dev: s.dev, ino: s.ino, size: s.size, digest: createHash('sha256').update(Buffer.from(s.prefix, 'base64')).digest('hex'), count: s.rows.length, at: last.atUnixMs };
+  const waitStarted = Date.now();
+  const deadline = waitStarted + timeoutMs;
+  while (true) {
+    const s = snapshot(path);
+    if (!s.rows.some(r => r.pid === pid && r.stage === 'api-is-enabled' && r.source === 'presence-view' && r.ok === true && r.observed === true)) throw Error('missing owned initial poll');
+    const last = s.rows.at(-1);
+    const now = Date.now();
+    if (last.pid === pid && last.stage === 'api-is-enabled' && last.source === 'presence-view' && last.ok === true && last.observed === true && last.atUnixMs >= startedAt && last.atUnixMs <= now) {
+      return { path, pid, dev: s.dev, ino: s.ino, size: s.size, digest: createHash('sha256').update(Buffer.from(s.prefix, 'base64')).digest('hex'), count: s.rows.length, at: last.atUnixMs, startedAt, waitMs: now - waitStarted };
+    }
+    if (now >= deadline) throw Error('no fresh owned baseline poll');
+    sleepMs(Math.min(50, Math.max(1, deadline - now)));
+  }
 }
 export function redelivery(cursor, firstPost, now = Date.now()) {
   if (!Number.isSafeInteger(firstPost) || firstPost <= cursor.at || firstPost > now) throw Error('ambiguous first post time');
@@ -58,13 +68,13 @@ export function redelivery(cursor, firstPost, now = Date.now()) {
   if (rows.some(r => r.stage === 'dom-change' || r.source === 'trusted-input' || r.source === 'untrusted-input' || r.source === 'preference')) throw Error('input receipt with unchanged AXValue');
   if (rows.some(r => r.stage !== 'api-is-enabled' || !['presence-view', 'connection-observation'].includes(r.source) || r.ok !== true || r.observed !== true || (r.source === 'connection-observation' && r.requested !== true))) throw Error('intervening input or contradictory receipt');
   const last = rows.at(-1);
-  if (!last || last.stage !== 'api-is-enabled' || last.source !== 'presence-view' || last.ok !== true || last.observed !== true || now - last.atUnixMs > 2000) throw Error('no fresh unchanged owned poll');
+  if (!last || last.stage !== 'api-is-enabled' || last.source !== 'presence-view' || last.ok !== true || last.observed !== true || last.atUnixMs <= firstPost || last.atUnixMs > now) throw Error('no fresh unchanged owned poll');
   return true;
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    const [mode, value, time] = process.argv.slice(2);
-    if (mode === 'baseline') console.log(JSON.stringify(baseline(value, Number(time))));
+    const [mode, value, time, started] = process.argv.slice(2);
+    if (mode === 'baseline') console.log(JSON.stringify(baseline(value, Number(time), started !== undefined ? Number(started) : undefined)));
     else if (mode === 'check') console.log(JSON.stringify(redelivery(JSON.parse(value), Number(time))));
     else throw Error('unsupported receipt operation');
   } catch { console.error('owned login receipt policy refused'); process.exitCode = 1; }

@@ -29,7 +29,7 @@ export function nativeStub(scenario) {
       if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return state.startedHidden ? false : true; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
-      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
+      if (command === "desktop_presence") return { loginEnabled: state.loginEnabled ?? true, ...(state.presenceLoginError ? { loginError: state.presenceLoginError } : {}), relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
       if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
       if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
       if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
@@ -266,6 +266,10 @@ export const scenarios = [
   { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
   { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
   { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
+  { name: "audit-login-error", state: { installed: true, signedIn: true, connected: true, loginEnabled: false, presenceLoginError: "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator." }, act: page => page.click("#open-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-startup > #login-error").textContent(), "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.");
+    assert.equal(await page.locator("#autostart").isChecked(), false);
+  } },
   ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {
     await page.locator("#dashboard").scrollIntoViewIfNeeded();
     assert.ok(await page.locator("#dashboard").evaluate(el => { const box = el.getBoundingClientRect(); const card = el.closest(".connection-card").getBoundingClientRect(); return box.top >= card.top && box.bottom <= card.bottom && box.bottom <= innerHeight; }), "dashboard stays fully reachable inside the connection card");

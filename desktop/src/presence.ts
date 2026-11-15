@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 
-type Presence = { loginEnabled: boolean; relocationOffer: boolean; pinOffer: boolean; pinMessage: string };
+type Presence = { loginEnabled: boolean; loginError?: string; relocationOffer: boolean; pinOffer: boolean; pinMessage: string };
 let offerShown = false;
 let relocationShown = false;
 let working = false;
@@ -31,6 +31,20 @@ export async function refreshPresence(connected = false): Promise<void> {
     const p = await invoke<Presence>("desktop_presence");
     const checkbox = document.getElementById("autostart") as HTMLInputElement;
     checkbox.checked = p.loginEnabled;
+    let loginError = document.getElementById("login-error");
+    if (p.loginError) {
+      if (!loginError) {
+        loginError = document.createElement("p");
+        loginError.id = "login-error";
+        loginError.setAttribute("role", "alert");
+        const startup = document.getElementById("settings-startup");
+        if (startup) startup.insertBefore(loginError, document.getElementById("pin-offer") ?? document.getElementById("pin-availability"));
+      }
+      loginError.textContent = p.loginError;
+      report(p.loginError, true);
+    } else if (loginError) {
+      loginError.remove();
+    }
     if (p.relocationOffer && !relocationShown) {
       relocationShown = true;
       offer("move-offer", "Move Cotal to Applications so its Dock icon and Open at login use a permanent location. Cotal will reopen there. An existing installation will not be replaced.", "Move to Applications", () => invoke("move_to_applications"), () => invoke("dismiss_presence_offer", { offer: "relocation" }));

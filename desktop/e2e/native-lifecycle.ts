@@ -4,9 +4,9 @@ import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type LifecycleAction = "describe" | "close-window" | "settings" | "quit" | "login-entry" | "connected-view" | "settings-back" | "disable-login";
+export type LifecycleAction = "describe" | "close-window" | "settings" | "quit" | "login-entry" | "connected-view" | "settings-back" | "disable-login" | "prove-login-cells";
 export interface NativeProcessCandidate { pid: number; birth: string; path: string }
-export interface NativeObservation { pid: number; visible: boolean; path?: string; args?: string[]; title?: string; label?: string; candidates?: NativeProcessCandidate[]; appCandidates?: NativeProcessCandidate[]; serviceLauncher?: NativeProcessCandidate | null }
+export interface NativeObservation { pid: number; visible: boolean; path?: string; args?: string[]; title?: string; label?: string; hkcu?: { present: boolean; matchesExpected?: boolean; path?: string | null; args?: string[] }; hklm?: { present: boolean; matchesExpected?: boolean; path?: string | null; args?: string[] }; appIntegrity?: { pid: number; ok: boolean; rid: string; level: string; win32Error: number } | null; result?: Record<string, any>; candidates?: NativeProcessCandidate[]; appCandidates?: NativeProcessCandidate[]; serviceLauncher?: NativeProcessCandidate | null }
 
 /** Run native desktop automation asynchronously so the fixture provider keeps answering. */
 export async function nativeLifecycle(binary: string, action: LifecycleAction, env: NodeJS.ProcessEnv, appPid?: number, daemon?: { pid: number; start: string }): Promise<NativeObservation> {
@@ -24,7 +24,7 @@ export async function nativeLifecycle(binary: string, action: LifecycleAction, e
     args.push("-DaemonPid", String(daemon.pid), "-DaemonStart", daemon.start);
   }
   const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(command, args, { env, encoding: "utf8", windowsHide: true, timeout: 45_000, maxBuffer: 512 * 1024 }, (error, out, stderr) => {
+    execFile(command, args, { env, encoding: "utf8", windowsHide: true, timeout: action === "prove-login-cells" ? 180_000 : 45_000, maxBuffer: 512 * 1024 }, (error, out, stderr) => {
       if (windows && env.COTAL_DESKTOP_E2E_NATIVE_LOG) {
         try {
           const report = JSON.parse(out.trim());

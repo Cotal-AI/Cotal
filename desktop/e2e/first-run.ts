@@ -397,7 +397,10 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     let observation: NativeObservation;
     if (driver instanceof MacWindowDriver) {
       if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("tray-label") };
-      else observation = await driver.native(action);
+      else {
+        assert.notEqual(action, "prove-login-cells", "prove-login-cells is Windows-only");
+        observation = await driver.native(action);
+      }
     } else {
       let windowsDaemon: { pid: number; start: string } | undefined;
       if (process.platform === "win32") {
@@ -681,7 +684,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       check("dashboard-enabled space is connected and launch-ready", connected.account?.spaces?.some((row: any) => row.space === fixture.space && row.observed === "connected") && manager?.state === "answering" && manager.connectors?.some((row: any) => row.state === "available"));
       await shot("05-account-connected");
       const login = await lifecycle("login-entry");
-      check("connected app creates native login entry for exact executable", login.path === binary && login.args?.includes("--background"));
+      check("connected app creates native login entry for exact executable", login.path === binary && login.args?.includes("--background") && (process.platform !== "win32" || login.hklm?.present === false));
       await lifecycle("close-window"); await lifecycle("settings");
       const connectedSettings = await lifecycle("settings-back");
       check("connected native Settings panel returns through Back", connectedSettings.title === "Settings" && connectedSettings.label === "Back" && connectedSettings.visible);
@@ -730,7 +733,23 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await lifecycle("settings");
       await lifecycle("disable-login");
       loginDisabled = true;
-      await lifecycle("quit");
+      if (process.platform === "win32") {
+        const loginCells = await lifecycle("prove-login-cells");
+        writeFileSync(join(output, "windows-login-cells.json"), JSON.stringify(loginCells.result, null, 2));
+        check("elevated Windows app removes owned HKLM Run entry on enable and disable, filtered token reports administrator requirement with true HKCU state, and foreign HKLM entry stays untouched",
+          loginCells.result?.cellB?.enableRemovedOwnedHklm === true &&
+          loginCells.result?.cellB?.disableRemovedOwnedHklm === true &&
+          loginCells.result?.cellC?.appIntegrity?.level === "Medium" &&
+          loginCells.result?.cellC?.hklmRemained === true &&
+          loginCells.result?.cellC?.hkcuPresent === false &&
+          loginCells.result?.cellC?.checked === false &&
+          loginCells.result?.cellC?.loginError === "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator." &&
+          loginCells.result?.cellD?.preservedOnEnable === true &&
+          loginCells.result?.cellD?.preservedOnDisable === true);
+        await until("owned login-launched app exits", async () => loginChild!.exitCode !== null || loginChild!.signalCode !== null, Boolean, 15_000);
+      } else {
+        await lifecycle("quit");
+      }
       return;
     }
     await until("account connect stage", () => driver.displayed("connect-panel"), Boolean);

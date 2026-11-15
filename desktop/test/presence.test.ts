@@ -99,3 +99,47 @@ test("presence events report close explanation, presence errors and taskbar pin 
     assert.equal(doc.querySelector("#pin-availability")?.textContent, "Cotal is pinned to your taskbar.");
   } finally { dom.window.close(); }
 });
+
+test("Windows leftover machine-wide login entry is reported on the existing error surface while keeping the current-user switch state", async () => {
+  const output = await build({ logLevel: "silent", configFile: false, build: { write: false, lib: { entry: fileURLToPath(new URL("../src/presence.ts", import.meta.url)), formats: ["iife"], name: "presence" } } });
+  const result = Array.isArray(output) ? output[0] : output;
+  assert.ok("output" in result);
+  const chunk = result.output.find(file => file.type === "chunk"); assert.ok(chunk && "code" in chunk);
+  const dom = new JSDOM('<main><div class="connection-card"></div><div id="settings-startup"></div><section id="preferences"><input id="autostart" type="checkbox"></section></main>', { runScripts: "outside-only", url: "http://localhost" });
+  const doc = dom.window.document as Document;
+  const notices: { message: string; error: boolean }[] = [];
+  const leftoverMessage = "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.";
+  let currentUserEnabled = false;
+  dom.window.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    async invoke(cmd: string, args: { enabled?: boolean } = {}) {
+      if (cmd === "plugin:event|listen") return 1;
+      if (cmd === "desktop_presence") {
+        return { loginEnabled: currentUserEnabled, loginError: leftoverMessage, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      }
+      if (cmd === "set_login_preference") {
+        currentUserEnabled = args.enabled === true;
+        throw new Error(leftoverMessage);
+      }
+      throw new Error(`Unexpected command ${cmd}`);
+    },
+  };
+  try {
+    dom.window.eval(chunk.code + ";globalThis.presence = presence;");
+    const api = dom.window.presence;
+    await api.startPresence((message: string, error = false) => notices.push({ message, error }));
+    assert.equal(doc.querySelector<HTMLInputElement>("#autostart")!.checked, false);
+    assert.equal(doc.querySelector("#login-error")?.textContent, leftoverMessage);
+    assert.deepEqual(notices, [{ message: leftoverMessage, error: true }]);
+    await assert.rejects(() => api.setLoginPreference(true), new RegExp(leftoverMessage));
+    assert.equal(doc.querySelector<HTMLInputElement>("#autostart")!.checked, true, "toggle reflects true HKCU state even when HKLM removal is denied");
+    assert.equal(doc.querySelector("#login-error")?.textContent, leftoverMessage);
+    const originalInvoke = dom.window.__TAURI_INTERNALS__.invoke;
+    dom.window.__TAURI_INTERNALS__.invoke = async (cmd: string) => {
+      if (cmd === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
+      return originalInvoke(cmd);
+    };
+    await api.refreshPresence(true);
+    assert.equal(doc.querySelector("#login-error"), null, "login-error hides when loginError is cleared");
+  } finally { dom.window.close(); }
+});

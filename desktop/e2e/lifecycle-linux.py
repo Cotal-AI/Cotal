@@ -926,8 +926,9 @@ try:
             if right_clicked and not menu_selected:
                 try:
                     command('xdotool', 'key', 'Escape')
-                except Exception:
-                    pass
+                    report['escapeDismiss'] = {'ok': True}
+                except Exception as escape_error:
+                    report['escapeDismiss'] = {'ok': False, 'error': str(escape_error)}
             raise
         finally:
             final_watch = stop_watch()

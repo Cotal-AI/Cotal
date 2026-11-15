@@ -59,15 +59,20 @@ test('requires a post-time fresh poll and rejects ambiguous time', t => {
   assert.throws(() => redelivery(f.cursor, f.post, f.now));
   appendFileSync(f.path, row(f.now));
   assert.throws(() => redelivery(f.cursor, f.cursor.at, f.now));
-  assert.throws(() => redelivery(f.cursor, f.post, f.now + 2001));
+  assert.throws(() => redelivery(f.cursor, f.post, f.now - 1));
 });
-test('baseline requires a fresh same PID successful unchanged poll', t => {
+test('baseline requires a fresh same PID successful unchanged poll after invocation start', t => {
   const f = fixture(t);
   const context = join(f.path, '..', 'context.json');
-  for (const extra of [{ pid: 99 }, { ok: false }, { observed: false }, { source: 'other' }, { atUnixMs: Date.now() - 3000 }]) {
-    writeFileSync(f.path, row(Date.now(), extra));
-    assert.throws(() => baseline(context, 42));
+  const now = Date.now();
+  for (const extra of [{ pid: 99 }, { ok: false }, { observed: false }, { source: 'other' }, { atUnixMs: now - 3000 }]) {
+    writeFileSync(f.path, row(now - 3000) + row(now, extra));
+    assert.throws(() => baseline(context, 42, now - 1000, 0));
   }
+  writeFileSync(f.path, row(now - 3000) + row(now - 500));
+  const cursor = baseline(context, 42, now - 1000, 0);
+  assert.equal(cursor.at, now - 500);
+  assert.equal(typeof cursor.waitMs, 'number');
 });
 test('unreadable by policy and symlink files are refused', t => {
   const f = fixture(t);

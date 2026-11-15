@@ -6,6 +6,7 @@ import ApplicationServices
 var windowSelectionContext: [String: Any]?
 var loginDiagnosticContext: [String: Any]?
 let loginDiagnosticInvocation = UUID().uuidString
+let loginInvocationStartedUnixMs = Int64(Date().timeIntervalSince1970 * 1000)
 func loginReceipt(_ phase: String, _ fields: [String: Any] = [:]) {
     var record = fields
     record["phase"] = phase
@@ -148,17 +149,19 @@ func activate() {
 var loginDelivery = "initial"
 var firstLoginPost: Int64 = 0
 var loginCursor = ""
-func receiptPolicy(_ mode: String, _ value: String, _ time: String) -> String {
+func receiptPolicy(_ mode: String, _ value: String, _ time: String, _ extra: String? = nil) -> String {
     let env = ProcessInfo.processInfo.environment
     guard let node = env["COTAL_MAC_LOGIN_NODE"], let policy = env["COTAL_MAC_LOGIN_POLICY"] else { fail("missing receipt policy") }
     let process = Process()
     let pipe = Pipe()
     process.executableURL = URL(fileURLWithPath: node)
-    process.arguments = [policy, mode, value, time]
+    var arguments = [policy, mode, value, time]
+    if let extra = extra { arguments.append(extra) }
+    process.arguments = arguments
     process.standardOutput = pipe
     process.standardError = FileHandle.nullDevice
     do { try process.run() } catch { fail("cannot run owned receipt policy") }
-    let deadline = Date().addingTimeInterval(2)
+    let deadline = Date().addingTimeInterval(mode == "baseline" ? 12 : 2)
     while process.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
     if process.isRunning {
         process.terminate()
@@ -239,7 +242,16 @@ func press(_ element: AXUIElement) {
             _ = receiptPolicy("check", loginCursor, String(firstLoginPost))
         } else {
             guard let context = ProcessInfo.processInfo.environment["COTAL_DESKTOP_E2E_CONTEXT"] else { fail("missing native context") }
-            loginCursor = receiptPolicy("baseline", context, String(pid))
+            loginCursor = receiptPolicy("baseline", context, String(pid), String(loginInvocationStartedUnixMs))
+            if let data = loginCursor.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                loginReceipt("baseline-wait", [
+                    "pid": pid,
+                    "invocationStartedUnixMs": loginInvocationStartedUnixMs,
+                    "receiptUnixMs": parsed["at"] ?? 0,
+                    "waitMs": parsed["waitMs"] ?? 0
+                ])
+            }
             firstLoginPost = Int64(Date().timeIntervalSince1970 * 1000)
         }
         let finalState = loginCheckboxState()

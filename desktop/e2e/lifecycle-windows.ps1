@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
-    [Parameter(Mandatory = $true)][ValidateSet('describe', 'close-window', 'settings', 'quit', 'login-entry', 'connected-view', 'settings-back', 'disable-login')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('describe', 'close-window', 'settings', 'quit', 'login-entry', 'connected-view', 'settings-back', 'disable-login', 'enable-login', 'read-login-settings', 'prove-login-cells')][string]$Action,
     [ValidateRange(1, 2147483647)][int]$AppPid,
     [ValidateRange(1, 2147483647)][int]$DaemonPid,
     [string]$DaemonStart
@@ -339,6 +339,208 @@ public static class LifecycleWindows {
                 $result = [ordered]@{ present = $true; path = $expected; args = @('--background'); hkcu = $hkcuEntry; hklm = $hklmEntry; appIntegrity = $appIntegrity }
             }
         } finally { if ($null -ne $key) { $key.Dispose() } }
+    } elseif ($Action -eq 'prove-login-cells') {
+        # Prove cells (b), (c), and (d) for #6882 while restoring any original HKLM Run Cotal value in finally.
+        Add-Type @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class FilteredAppLauncher {
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool SaferCreateLevel(uint scopeId, uint levelId, uint openFlags, out IntPtr levelHandle, IntPtr reserved);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool SaferComputeTokenFromLevel(IntPtr levelHandle, IntPtr inAccessToken, out IntPtr outAccessToken, uint dwFlags, IntPtr lpReserved);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool SaferCloseLevel(IntPtr levelHandle);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertStringSidToSidW(string stringSid, out IntPtr pSid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern uint GetLengthSid(IntPtr pSid);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool SetTokenInformation(IntPtr tokenHandle, int tokenInformationClass, IntPtr tokenInformation, uint tokenInformationLength);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool CreateProcessAsUserW(
+        IntPtr hToken, string lpApplicationName, string lpCommandLine,
+        IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles,
+        uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool CreateProcessWithTokenW(
+        IntPtr hToken, uint dwLogonFlags, string lpApplicationName, string lpCommandLine,
+        uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr hObject);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr LocalFree(IntPtr hMem);
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct STARTUPINFO {
+        public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+        public int dwX; public int dwY; public int dwXSize; public int dwYSize;
+        public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute;
+        public int dwFlags; public short wShowWindow; public short cbReserved2;
+        public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_INFORMATION {
+        public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId;
+    }
+    public static int StartFiltered(string application, string commandLine, string workingDirectory) {
+        IntPtr hLevel;
+        if (!SaferCreateLevel(1, 0x20000, 1, out hLevel, IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "SaferCreateLevel failed");
+        try {
+            IntPtr hToken;
+            if (!SaferComputeTokenFromLevel(hLevel, IntPtr.Zero, out hToken, 0, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "SaferComputeTokenFromLevel failed");
+            try {
+                IntPtr pSid;
+                if (!ConvertStringSidToSidW("S-1-16-8192", out pSid))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "ConvertStringSidToSidW failed");
+                try {
+                    TOKEN_MANDATORY_LABEL tml = new TOKEN_MANDATORY_LABEL();
+                    tml.Label.Sid = pSid;
+                    tml.Label.Attributes = 0x20;
+                    uint tmlSize = (uint)(Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + GetLengthSid(pSid));
+                    IntPtr pTml = Marshal.AllocHGlobal((int)tmlSize);
+                    try {
+                        Marshal.StructureToPtr(tml, pTml, false);
+                        if (!SetTokenInformation(hToken, 25, pTml, tmlSize))
+                            throw new Win32Exception(Marshal.GetLastWin32Error(), "SetTokenInformation(TokenIntegrityLevel) failed");
+                    } finally { Marshal.FreeHGlobal(pTml); }
+                } finally { LocalFree(pSid); }
+                STARTUPINFO si = new STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+                PROCESS_INFORMATION pi;
+                if (!CreateProcessAsUserW(hToken, application, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, workingDirectory, ref si, out pi)) {
+                    int firstErr = Marshal.GetLastWin32Error();
+                    if (!CreateProcessWithTokenW(hToken, 0, application, commandLine, 0, IntPtr.Zero, workingDirectory, ref si, out pi))
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessAsUserW (" + firstErr + ") and CreateProcessWithTokenW failed");
+                }
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+                return pi.dwProcessId;
+            } finally { CloseHandle(hToken); }
+        } finally { SaferCloseLevel(hLevel); }
+    }
+}
+'@
+        $runSubKey = 'Software\Microsoft\Windows\CurrentVersion\Run'
+        $hklmRead = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($runSubKey, $false)
+        $priorHklm = $null
+        $priorHklmKind = $null
+        try {
+            if ($null -ne $hklmRead) {
+                $priorHklm = $hklmRead.GetValue('Cotal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                if ($null -ne $priorHklm) { $priorHklmKind = $hklmRead.GetValueKind('Cotal') }
+            }
+        } finally { if ($null -ne $hklmRead) { $hklmRead.Dispose() } }
+        function Set-HklmRunValue([string]$val) {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($runSubKey, $true)
+            if ($null -eq $k) { throw 'HKLM Run key could not be opened for proof setup.' }
+            try { $k.SetValue('Cotal', $val, [Microsoft.Win32.RegistryValueKind]::String) }
+            finally { $k.Dispose() }
+        }
+        function Remove-HklmRunValue {
+            $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($runSubKey, $true)
+            if ($null -ne $k) {
+                try { $k.DeleteValue('Cotal', $false) }
+                finally { $k.Dispose() }
+            }
+        }
+        function Invoke-Self([string]$subAction, [int]$targetPid) {
+            $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $subArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-Binary', $expected, '-Action', $subAction)
+            if ($targetPid -gt 0) { $subArgs += @('-AppPid', [string]$targetPid) }
+            if ($DaemonPid -gt 0) { $subArgs += @('-DaemonPid', [string]$DaemonPid, '-DaemonStart', $DaemonStart) }
+            $subOut = & $psExe @subArgs
+            if ($LASTEXITCODE -ne 0) { throw "Sub-action $subAction failed ($LASTEXITCODE): $subOut" }
+            return ($subOut | ConvertFrom-Json)
+        }
+        $filteredProc = $null
+        try {
+            if (!$AppPid) { throw 'prove-login-cells requires AppPid of the running elevated app.' }
+            $ownedValue = "`"$expected`" --background"
+            $foreignExe = Join-Path (Split-Path -Parent $expected) 'node.exe'
+            if (!(Test-Path -LiteralPath $foreignExe -PathType Leaf)) { throw 'Expected sibling node.exe for foreign HKLM proof cell.' }
+            $foreignValue = "`"$foreignExe`" --background"
+
+            # Cell (b): plant owned HKLM value while Open at login is off, then turn Open at login ON in the elevated app.
+            Set-HklmRunValue $ownedValue
+            $beforeEnable = Invoke-Self 'login-entry' $AppPid
+            if (!$beforeEnable.result.hklm.present -or !$beforeEnable.result.hklm.matchesExpected) { throw 'Cell (b) setup did not plant owned HKLM Run value.' }
+            $enabledObs = Invoke-Self 'enable-login' $AppPid
+            $afterEnable = Invoke-Self 'login-entry' $AppPid
+            if (!$afterEnable.result.hkcu.present -or !$afterEnable.result.hkcu.matchesExpected -or $afterEnable.result.hklm.present) {
+                throw 'Cell (b) failed: enabling Open at login in elevated app did not write HKCU and remove owned HKLM Run value.'
+            }
+            # Also verify turning Open at login OFF removes HKCU and any re-planted owned HKLM value.
+            Set-HklmRunValue $ownedValue
+            $disabledObs = Invoke-Self 'disable-login' $AppPid
+            $afterDisable = Invoke-Self 'login-entry' $AppPid
+            if ($afterDisable.result.hkcu.present -or $afterDisable.result.hklm.present) {
+                throw 'Cell (b) disable check failed: disabling Open at login in elevated app did not clear HKCU and owned HKLM.'
+            }
+
+            # Cell (d): plant foreign HKLM value and verify elevated app leaves it untouched.
+            Set-HklmRunValue $foreignValue
+            $null = Invoke-Self 'enable-login' $AppPid
+            $afterForeignEnable = Invoke-Self 'login-entry' $AppPid
+            $null = Invoke-Self 'disable-login' $AppPid
+            $afterForeignDisable = Invoke-Self 'login-entry' $AppPid
+            if (!$afterForeignEnable.result.hklm.present -or $afterForeignEnable.result.hklm.path -cne $foreignExe -or !$afterForeignDisable.result.hklm.present -or $afterForeignDisable.result.hklm.path -cne $foreignExe) {
+                throw 'Cell (d) failed: elevated app modified or removed a foreign HKLM Run value.'
+            }
+            Remove-HklmRunValue
+
+            # Quit the elevated app before launching the filtered Medium-integrity app for cell (c).
+            $null = Invoke-Self 'quit' $AppPid
+
+            # Cell (c): plant owned HKLM value, launch app under a filtered Medium-integrity token, open Settings, and read #login-error and #autostart.
+            Set-HklmRunValue $ownedValue
+            $workDir = Split-Path -Parent $expected
+            $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, $ownedValue, $workDir)
+            $filteredProc = Get-Process -Id $filteredPid
+            $null = $filteredProc.Handle
+            for ($waitIdx = 0; $waitIdx -lt 40; $waitIdx++) {
+                $trayWins = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $filteredPid -and $_.className -ceq 'tray_icon_app' })
+                if ($trayWins.Count -eq 1) { break }
+                Start-Sleep -Milliseconds 250
+            }
+            if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not create its tray_icon_app window.' }
+            $null = Invoke-Self 'settings' $filteredPid
+            $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
+            $filteredEntries = Invoke-Self 'login-entry' $filteredPid
+            $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.'
+            if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $false -or $filteredSettings.result.loginError -cne $expectedError) {
+                throw "Cell (c) failed: integrity=$($filteredEntries.result.appIntegrity.level) hklm=$($filteredEntries.result.hklm.present) hkcu=$($filteredEntries.result.hkcu.present) checked=$($filteredSettings.result.checked) loginError=$($filteredSettings.result.loginError)"
+            }
+            $null = Invoke-Self 'quit' $filteredPid
+            $filteredProc = $null
+            $result = [ordered]@{
+                cellB = [ordered]@{ enableRemovedOwnedHklm = (!$afterEnable.result.hklm.present -and $afterEnable.result.hkcu.present); disableRemovedOwnedHklm = (!$afterDisable.result.hklm.present -and !$afterDisable.result.hkcu.present); enabledResult = $enabledObs.result; disabledResult = $disabledObs.result }
+                cellC = [ordered]@{ appIntegrity = $filteredEntries.result.appIntegrity; hklmRemained = $filteredEntries.result.hklm.present; hkcuPresent = $filteredEntries.result.hkcu.present; checked = $filteredSettings.result.checked; loginError = $filteredSettings.result.loginError }
+                cellD = [ordered]@{ foreignPath = $foreignExe; preservedOnEnable = ($afterForeignEnable.result.hklm.present -and $afterForeignEnable.result.hklm.path -ceq $foreignExe); preservedOnDisable = ($afterForeignDisable.result.hklm.present -and $afterForeignDisable.result.hklm.path -ceq $foreignExe) }
+            }
+        } finally {
+            if ($null -ne $filteredProc) {
+                try {
+                    $filteredProc.Refresh()
+                    if (!$filteredProc.HasExited) { $filteredProc.Kill(); $filteredProc.WaitForExit(10000) | Out-Null }
+                } catch {}
+            }
+            $restoreKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($runSubKey, $true)
+            if ($null -ne $restoreKey) {
+                try {
+                    if ($null -eq $priorHklm) { $restoreKey.DeleteValue('Cotal', $false) }
+                    else { $restoreKey.SetValue('Cotal', $priorHklm, $priorHklmKind) }
+                } finally { $restoreKey.Dispose() }
+            }
+        }
     } elseif ($Action -eq 'describe') {
         $result = Snapshot
         if ($AppPid -and @($result.processes | Where-Object { $_.pid -eq $AppPid }).Count -ne 1) { throw 'AppPid does not own the expected binary.' }
@@ -351,7 +553,7 @@ public static class LifecycleWindows {
         $null = $originalProcess.Handle # Retain an OS handle so PID reuse cannot satisfy the exit check.
         $script:ownerPid = $originalProcess.Id
         $diagnostics.Add((Snapshot))
-        if ($Action -in @('connected-view', 'settings-back', 'disable-login')) {
+        if ($Action -in @('connected-view', 'settings-back', 'disable-login', 'enable-login', 'read-login-settings')) {
             $windows = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $script:ownerPid -and $_.visible -and $_.title -ceq 'Cotal' })
             if ($windows.Count -ne 1) { throw 'Expected one visible owned Cotal window for native UIAutomation.' }
             $windowHwnd = $windows[0].hwnd
@@ -426,6 +628,46 @@ public static class LifecycleWindows {
                     Start-Sleep -Milliseconds 250
                 }
                 if ($i -eq 40 -or ![LifecycleWindows]::IsWindowVisible([IntPtr]$windows[0].hwnd)) { throw 'Back did not hide Settings and reveal the owned connection view.' }
+            } elseif ($Action -eq 'enable-login') {
+                $checkbox = Exact-Control 'autostart'
+                if ($checkbox.Current.ControlType -ne [System.Windows.Automation.ControlType]::CheckBox) { throw 'Exact autostart control is not a native accessibility checkbox.' }
+                $toggle = $null
+                if (!$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) { throw 'Exact autostart checkbox exposes no TogglePattern.' }
+                if ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Indeterminate) { throw 'Autostart checkbox state is indeterminate.' }
+                if ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::Off) {
+                    Assert-Owner
+                    Click-Element $checkbox $true
+                }
+                for ($i = 0; $i -lt 40; $i++) {
+                    $checkbox = Exact-Control 'autostart'
+                    $toggle = $null
+                    if (!$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) { throw 'Autostart checkbox lost TogglePattern.' }
+                    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run', $false)
+                    try { $entry = if ($null -ne $key) { $key.GetValue('Cotal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null } }
+                    finally { if ($null -ne $key) { $key.Dispose() } }
+                    if ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On -and $null -ne $entry) { break }
+                    Start-Sleep -Milliseconds 250
+                }
+                if ($i -eq 40) { throw 'Native preference did not become checked with the Cotal HKCU Run value present.' }
+                $result = [ordered]@{ checked = $true; present = $true }
+            } elseif ($Action -eq 'read-login-settings') {
+                Assert-Owner
+                $heading = Exact-Control 'settings-title'
+                if ($heading.Current.Name -cne 'Settings') { throw 'Expected exact Settings heading.' }
+                $checkbox = Exact-Control 'autostart'
+                $toggle = $null
+                if (!$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) { throw 'Exact autostart checkbox exposes no TogglePattern.' }
+                $errEl = Exact-Control 'login-error'
+                $errText = $errEl.Current.Name
+                if (!$errText) {
+                    foreach ($child in @(Children $errEl)) {
+                        if ($child.Current.Name) { $errText = $child.Current.Name; break }
+                    }
+                }
+                $result = [ordered]@{
+                    checked = ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)
+                    loginError = $errText
+                }
             } else {
                 $checkbox = Exact-Control 'autostart'
                 if ($checkbox.Current.ControlType -ne [System.Windows.Automation.ControlType]::CheckBox) { throw 'Exact autostart control is not a native accessibility checkbox.' }
@@ -758,13 +1000,18 @@ public static class LifecycleWindows {
     $summary = Snapshot
     $selected = @($summary.processes)
     if ($AppPid) { $selected = @($selected | Where-Object { $_.pid -eq $AppPid }) }
-    $reportedPid = if ($Action -eq 'login-entry') { 0 } elseif ($Action -in @('quit', 'settings', 'close-window', 'connected-view', 'settings-back', 'disable-login')) { $script:ownerPid } elseif ($selected.Count -eq 1) { $selected[0].pid } else { 0 }
+    $reportedPid = if ($Action -in @('login-entry', 'prove-login-cells')) { 0 } elseif ($Action -in @('quit', 'settings', 'close-window', 'connected-view', 'settings-back', 'disable-login', 'enable-login', 'read-login-settings')) { $script:ownerPid } elseif ($selected.Count -eq 1) { $selected[0].pid } else { 0 }
     $visible = @($summary.windows | Where-Object { $_.pid -eq $reportedPid -and $_.visible -and $_.title -ceq 'Cotal' }).Count -gt 0
     $output = [ordered]@{ ok = $true; action = $Action; pid = $reportedPid; visible = $visible; candidates = @($candidates); appCandidates = @($appCandidates); serviceLauncher = $serviceLauncher; result = $result; diagnostics = @($diagnostics.ToArray()) }
     if ($Action -in @('connected-view', 'settings-back')) { $output['title'] = $result.title; $output['label'] = $result.label }
     if ($Action -eq 'disable-login') { $output['checked'] = $false; $output['present'] = $false }
+    if ($Action -eq 'enable-login') { $output['checked'] = $true; $output['present'] = $true }
+    if ($Action -eq 'read-login-settings') { $output['checked'] = $result.checked; $output['loginError'] = $result.loginError }
     if ($Action -eq 'login-entry') {
         $output['present'] = $result.present
+        $output['hkcu'] = $result.hkcu
+        $output['hklm'] = $result.hklm
+        $output['appIntegrity'] = $result.appIntegrity
         if ($result.present) { $output['path'] = $result.path; $output['args'] = $result.args }
     }
     $output | ConvertTo-Json -Depth 10 -Compress

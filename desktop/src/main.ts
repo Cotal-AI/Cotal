@@ -144,7 +144,7 @@ function renderSettings(): void {
   el("account-outcome-back").hidden = !accountOutcomeOpen;
   el("account-outcome").hidden = !accountOutcomeOpen;
   el("preferences").hidden = !settingsOpen;
-  if (settingsOpen) { el("settings-startup").insertBefore(el("preferences"), document.getElementById("pin-offer") ?? document.getElementById("pin-availability")); el("preferences").hidden = false; }
+  if (settingsOpen) { el("settings-startup").insertBefore(el("preferences"), document.getElementById("login-error") ?? document.getElementById("pin-offer") ?? document.getElementById("pin-availability")); el("preferences").hidden = false; }
   else if (el("preferences").parentElement !== preferencesHome) preferencesHome.append(el("preferences"));
 }
 type AccountAction = { kind: "logout" | "disconnect"; provider: string; spaces: string[]; trigger: string };
