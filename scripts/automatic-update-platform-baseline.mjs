@@ -780,6 +780,20 @@ export async function matrixCell(options) {
         assert(unitText.includes(desktopRuntime), 'native service source must name actual released desktop runtime');
         if (options['stopped-daemon-before-update'] !== 'true' && report.participant?.space) {
           const space = report.participant.space;
+          const desktopFixture = join(root, 'desktop-standin');
+          mkdirSync(desktopFixture, { mode: 0o700 });
+          const core = pathToFileURL(join(desktopRuntime, 'node_modules/@cotal-ai/core/dist/index.js')).href;
+          save(join(desktopFixture, 'package.json'), { name: 'cotal-upgrade-native-fixture', version: report.target, type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } });
+          writeFileSync(join(desktopFixture, 'seat.mjs'), 'setInterval(()=>{},1000);\n');
+          writeFileSync(join(desktopFixture, 'record-seat.mjs'), 'export {};\n');
+          writeFileSync(join(desktopFixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};registry.register({kind:'connector',name:'desktop-standin',requires:['node'],buildLaunch:()=>({command:process.execPath,args:['-e','setInterval(()=>{},1000)']})});`);
+          ok(await daemon('seed desktop runtime connectors before Manager setup', ['ext', 'seed']), 'desktop connector seed');
+          ok(await daemon('register desktop stand-in connector', ['ext', 'add', desktopFixture]), 'desktop stand-in registration');
+          const fixturePath = join(config, 'extensions/node_modules/cotal-upgrade-native-fixture');
+          const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
+          const fixtureMetadata = json(join(fixturePath, 'package.json'));
+          const files = Object.fromEntries(fixtureFiles.map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
+          report.ownedLocalFixture = { pkg: fixtureMetadata.name, spec: desktopFixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files };
           const desktopSetup = ok(await daemon('start desktop-hosted Manager before CLI update', hostedManagerCommand(space)), 'desktop Manager setup');
           const setupResult = JSON.parse(desktopSetup.stdout).result;
           assert.equal(setupResult.manager?.state, 'answering');
