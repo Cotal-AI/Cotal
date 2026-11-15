@@ -21,6 +21,8 @@ export interface UpdateRecovery {
   readonly owner?: { readonly pid: number; readonly start: string; readonly nonce: string };
   readonly preparedRestart?: boolean;
   readonly snapshot?: string;
+  /** Protected execution journal for staged publication. Absent on published in-place records. */
+  readonly execution?: string;
   readonly renames?: readonly { readonly from: string; readonly to: string; readonly done: boolean }[];
   readonly reason: string;
   readonly recordedAt: string;
@@ -63,6 +65,7 @@ export function readUpdateRecovery(): UpdateRecovery | undefined {
       ![record.previous, record.target, record.installed, record.reason, record.recordedAt].every(field => typeof field === "string")) throw new Error("invalid update recovery record in update-recovery.json");
   if (record.preparedRestart !== undefined && typeof record.preparedRestart !== "boolean") throw new Error("invalid prepared restart evidence");
   if (record.snapshot !== undefined && typeof record.snapshot !== "string") throw new Error("invalid update snapshot path");
+  if (record.execution !== undefined && typeof record.execution !== "string") throw new Error("invalid update execution journal path");
   if (record.renames !== undefined && (!Array.isArray(record.renames) || record.renames.some(entry => !entry || typeof entry.from !== "string" || typeof entry.to !== "string" || typeof entry.done !== "boolean"))) throw new Error("invalid update rename journal");
   if (record.owner && !recoveryOwner(record) && !recoverySnapshotProblem(record)) throw new Error("invalid update transaction owner");
   return record;

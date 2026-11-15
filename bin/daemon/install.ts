@@ -40,7 +40,7 @@ import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { codeSpan, CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { isStoppingLifetime, openVerified, readLine } from "./client.js";
@@ -415,10 +415,13 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
 }
 
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
-export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string): boolean {
+export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): boolean {
   try { lstatSync(unitReceiptFile(paths)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  installedDaemonIdentity(paths, daemonHome);
+  if (expectedArgv) {
+    const { receipt, plan } = recordedUnit(paths, daemonHome);
+    recordedSourceIdentity(receipt, plan.mechanism, () => [...expectedArgv]);
+  } else installedDaemonIdentity(paths, daemonHome);
   return true;
 }
 
@@ -478,8 +481,9 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
       const { parentPort, workerData } = require('node:worker_threads');
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
+      if (workerData.execution) Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze(workerData.execution) });
       import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
-    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv }, stdout: true, stderr: true });
+    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
     const finish = (observation: DaemonOwnershipObservation) => {

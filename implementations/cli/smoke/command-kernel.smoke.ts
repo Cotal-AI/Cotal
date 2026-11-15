@@ -6,7 +6,7 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -1263,6 +1263,51 @@ async function completionOut(positionals: string[]): Promise<string> {
       assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
       assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
     }
+  }
+}
+
+// A staged rollback already retains the complete previous graph and needs no registry copy.
+{
+  const fixture = updateRuntime({
+    npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    releaseNpm: args => {
+      const spec = args[0] === "view" ? args[1] : args[2];
+      assert.ok(!spec.endsWith("@0.13.1"), "retained rollback must not request previous archives");
+      return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "0.13.2", dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+    },
+  });
+  fixture.rt.prepareExecution = async () => ({ entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json", async preflight() {}, publish() {}, restore() {}, verify() {} });
+  assert.equal(await executeUpdate(true, fixture.rt), 0);
+  assert.ok(!fixture.events.some(event => event.startsWith("global:install:")), "npm must not reify the live package for staged publication");
+}
+
+// Staged verification loads the live extension config, so rollback restores its snapshot first.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-config-rollback-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const extensions = join(xdg, "cotal", "extensions");
+  mkdirSync(extensions, { recursive: true });
+  const manifest = join(extensions, "extensions.json"), original = '{"extensions":[]}';
+  writeFileSync(manifest, original);
+  try {
+    const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+    fixture.rt.prepareExecution = async () => ({
+      entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+      async preflight() {},
+      publish() { writeFileSync(manifest, "{"); },
+      restore() {},
+      verify() { JSON.parse(readFileSync(manifest, "utf8")); },
+    });
+    assert.equal(await executeUpdate(true, fixture.rt), 1);
+    assert.equal(readFileSync(manifest, "utf8"), original, "captured config is restored before previous-generation verification");
+    assert.equal(readUpdateRecovery(), undefined, "successful rollback clears recovery");
+    assert.ok(fixture.events.some(event => event.includes("was restored and reconciled")));
+  } finally {
+    clearUpdateRecovery();
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
   }
 }
 

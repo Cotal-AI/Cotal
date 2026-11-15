@@ -109,6 +109,24 @@ try {
   writeFileSync(unitPath, foreign);
   writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(foreign).digest("hex"), installedAt: new Date().toISOString() }));
   assert.deepEqual(await observeDaemonOwnedService(paths), { state: "not-owned", reason: "identity-differs" }, "foreign installation refuses activation authority");
+  const logicalRoot = join(root, "retained-prefix/lib/node_modules/cotal-ai");
+  const loadedRoot = join(root, "retained-prefix/lib/.cotal-generations", "a".repeat(32), "cotal-ai");
+  for (const packageRoot of [logicalRoot, loadedRoot]) {
+    mkdirSync(join(packageRoot, "dist"), { recursive: true });
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } }));
+    writeFileSync(join(packageRoot, "dist/cotal.js"), "");
+  }
+  const logicalEntry = join(logicalRoot, "dist/cotal.js");
+  const loadedEntry = join(loadedRoot, "dist/cotal.js");
+  const logicalSource = source.replace(entry, logicalEntry);
+  writeFileSync(unitPath, logicalSource);
+  writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(logicalSource).digest("hex"), installedAt: new Date().toISOString() }));
+  process.argv = [process.execPath, loadedEntry];
+  Reflect.set(globalThis, Symbol.for("cotal.execution.identity"), Object.freeze({ logicalEntry, loadedEntry }));
+  try {
+    assert.deepEqual(await observeDaemonOwnedService(paths), { state: "owned", reason: "verified" }, "worker preserves the validated logical entry rather than matching retained argv to the native source");
+    console.log("PASS retained ownership worker keeps validated logical installation identity");
+  } finally { Reflect.deleteProperty(globalThis, Symbol.for("cotal.execution.identity")); }
   const stop = new AbortController(); stop.abort();
   assert.equal((await observeDaemonOwnedService(paths, undefined, stop.signal)).state, "unknown", "cancelled observation grants no authority");
   console.log("PASS foreground, changed source, foreign installation and cancellation refuse authority");

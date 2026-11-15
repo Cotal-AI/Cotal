@@ -122,6 +122,16 @@ try {
     check("directory is carried by the bootstrap's arguments", text.includes(`<string>${xmlText(bootstrap)}</string><string>/Users/a</string><string>daemon</string><string>serve</string>`));
     const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
     check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
+    const logicalRoot = join(root, "logical/cotal-ai");
+    mkdirSync(join(logicalRoot, "dist"), { recursive: true });
+    writeFileSync(join(logicalRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } }));
+    const logicalEntry = join(logicalRoot, "dist/cotal.js");
+    writeFileSync(logicalEntry, "");
+    Reflect.set(globalThis, Symbol.for("cotal.execution.identity"), Object.freeze({ logicalEntry, loadedEntry: logicalEntry }));
+    try {
+      const retained = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, logicalEntry, "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
+      check("a retained process pins the validated logical installation wrapper", retained.text.includes(`<string>${xmlText(join(logicalRoot, "dist/daemon-cwd.js"))}</string>`) && !retained.text.includes(`<string>${xmlText(bootstrap)}</string>`));
+    } finally { Reflect.deleteProperty(globalThis, Symbol.for("cotal.execution.identity")); }
     check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
     check("LaunchAgent allows bounded Manager retirement", text.includes("<key>ExitTimeOut</key><integer>90</integer>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));

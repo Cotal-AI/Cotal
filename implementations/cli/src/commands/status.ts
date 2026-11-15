@@ -116,7 +116,7 @@ import {
   resolveControlTarget,
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
-import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
+import { cliVersion, cliProvenance, npmRecordedVersion, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
@@ -626,6 +626,8 @@ function readOwnedServices(selected: Selected, gaps: Gaps): OwnedServiceStatus {
 
 async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Promise<StatusResult["machine"]> {
   const m = await machineStatus();
+  const npmVersion = npmRecordedVersion();
+  if (npmVersion && npmVersion !== cliVersion()) hints.push(`npm records cotal-ai ${npmVersion}; this command runs retained generation ${cliVersion()}. A manual npm install replaces the npm-owned package.`);
   let defaults: StatusResult["machine"]["defaults"] = null;
   try {
     const context = { preferences: cachedPreferences(), space: selected.ok ? selected.target.space : undefined };
