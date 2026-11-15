@@ -19,6 +19,7 @@ import { compareVersions } from './upgrade-matrix-plan.mjs';
 import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter, intermediateWholeMachine } from './candidate-next-evidence.mjs';
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
+import { homebrewOptions, homebrewInstallation, archiveHomebrewState, verifyHomebrewEvidence } from './homebrew-upgrade-evidence.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
@@ -350,6 +351,7 @@ function safeRoot(output) {
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   const nextHopMode = candidateNextOptions(options);
+  const homebrew = homebrewOptions(options, { hosted }) ? homebrewInstallation(cleanEnvironment()) : undefined;
   const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
@@ -385,7 +387,7 @@ export async function matrixCell(options) {
   assert(hosted || !['daemon', 'agent'].includes(state), 'REFUSED: native services and agent stacks require a disposable hosted runner');
   const root = safeRoot(output);
   const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir() : join(root, 'home');
-  const prefix = layout === 'installer' ? (launchdProof ? join(root, 'installer') : join(home, '.local/share/cotal')) : join(root, 'prefix');
+  const prefix = homebrew?.prefix ?? (layout === 'installer' ? (launchdProof ? join(root, 'installer') : join(home, '.local/share/cotal')) : join(root, 'prefix'));
   const project = join(root, 'project');
   for (const dir of [home, project, prefix]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(join(project, '.cotal'), { mode: 0o700 });
@@ -414,6 +416,10 @@ export async function matrixCell(options) {
     report.environment.installerPrefix = 'per-cell custom prefix; native daemon uses normal runner HOME';
   }
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
+  if (homebrew) report.homebrew = { installation: homebrew, observations: {} };
+  const observeHomebrew = stage => {
+    if (homebrew) report.homebrew.observations[stage] = archiveHomebrewState({ prefix, stage, output, id });
+  };
   const [npm, npmPrefix] = npmCommand();
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
@@ -552,8 +558,10 @@ export async function matrixCell(options) {
       // Native services read npm's normal per-account config, not the launching shell's registry env.
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
+    observeHomebrew('before-install');
     const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall(nextHopMode === 'candidate' ? 'install exact candidate source' : 'install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
+    observeHomebrew('candidate');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
     if (process.platform === 'win32') {
       const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
@@ -903,6 +911,7 @@ export async function matrixCell(options) {
           report.nextHop.intermediate = intermediateWholeMachine({ diagnostics: report.daemonDiagnostics['between-hops'], output, target: report.candidateNext.targetVersion, platform: process.platform, expectedPackageManagerVersion: report.candidateNext.sourceVersion, status, updateCheck, commands });
           check('candidate first hop leaves a whole machine', report.nextHop.intermediate.passed, report.nextHop.intermediate);
           assert(report.nextHop.intermediate.passed, 'candidate first hop did not independently leave a whole machine before follow-on action');
+          observeHomebrew('next');
           overlay.activateFollowOn();
           report.target = report.candidateNext.followOnVersion;
           let npmInstall, bareNpmObservation;
@@ -1173,6 +1182,10 @@ export async function matrixCell(options) {
       report.expectedRefusal = { kind: policy, passed: report.assertions.every(row => row.passed) };
       report.refusal = report.assertions.filter(row => !row.passed).map(row => row.name).join('\n') || report.targetUpgradeAcceptance;
       return report;
+    }
+    if (homebrew) {
+      observeHomebrew('follow-on');
+      check('Homebrew prefix and generation store remain safe across both hops', verifyHomebrewEvidence({ report, cell: { nodeDistribution: 'homebrew', platform: 'darwin', followOnAction: 'self', sourceVersion: report.source }, output }), report.homebrew);
     }
     const expectedVersion = launchdProof === 'off-before-tick' ? report.source : report.target;
     report.expectedVersion = expectedVersion;

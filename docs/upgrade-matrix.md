@@ -44,7 +44,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 40 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 41 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -60,6 +60,7 @@ product coordinates:
 | POSIX manual updater to a synthetic next version with the recorded user service disabled (`systemctl --user disable --now` on Linux, `launchctl disable` + `launchctl bootout` on macOS), staying stopped and reporting `service is disabled; not started` | 2 |
 | Linux manual updater to a synthetic next version with a stopped desktop-owned user service beside the npm CLI, staying stopped and naming the desktop service owner | 1 |
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
+| macOS Homebrew Node using its real npm global prefix, candidate to next to follow-on with the native service installed | 1 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
@@ -95,6 +96,13 @@ the in-place route at the second synthetic version. All
 complete 24-package closures stay readable through a paired registry. The source entry and package
 hashes, archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
+
+The Homebrew cell uses Homebrew's Node and npm, with its existing `drwxrwxr-x` lib directory.
+It installs the candidate in the real global prefix and runs both self-updates without a repair or
+reinstallation between them. Hash-bound observations retain prefix ownership and modes before
+installation and after each hop. The census checks that the lib directory remains unchanged,
+the generation store has no group or other write permission, and no staging folders remain.
+The usual independent CLI, daemon, extension and recovery checks still apply.
 
 Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal

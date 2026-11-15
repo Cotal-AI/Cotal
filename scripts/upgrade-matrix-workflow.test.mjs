@@ -14,7 +14,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 40);
+  assert.equal(plan.matrix.include.length, 41);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -38,7 +38,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 40);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 41);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
@@ -62,6 +62,16 @@ test('paired routes preserve ordinary published arguments and bind artifact rece
   const download = cells.steps.find(step => step.with?.['artifact-ids'] === '${{ needs.release-next.outputs.artifact }}');
   assert(download.if.includes('matrix.chain == true'));
   for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'stopped-daemon-before-update'", "'disabled-daemon-before-update'", "'stopped-desktop-beside-cli'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
+});
+test('Homebrew cell selects real Node and independently grades its store', () => {
+  const cells = workflow.jobs['release-cells'];
+  const selection = cells.steps.find(step => step.name === 'Select real Homebrew Node for the Homebrew coordinate');
+  assert.equal(selection.if, "matrix.nodeDistribution == 'homebrew'");
+  assert(selection.run.includes('brew --prefix'));
+  assert(selection.run.includes('"$prefix/bin" >> "$GITHUB_PATH"'));
+  assert(cells.steps.find(step => step.name === 'Run one real product upgrade coordinate').run.includes("args.push('--homebrew-node', 'true')"));
+  assert(program.includes('verifyHomebrewEvidence({ report, cell, output: directory })'));
+  assert(program.includes("'homebrew-prefix-store': homebrewEvidence"));
 });
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
   const condition = workflow.jobs.priority.if;

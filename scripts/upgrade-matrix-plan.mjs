@@ -211,6 +211,13 @@ export function boundedCells(plan) {
         requiredAssertions: [...followOnAssertions, "installer-source-receipt"],
       });
     }
+    add("darwin", "npm", "candidate-next-homebrew-self", null, {
+      sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+      targetVersion, finalTargetVersion: followOnVersion,
+      targetSource: "packed-follow-on-C", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000/2000", followOnAction: "self", nodeDistribution: "homebrew",
+      requiredAssertions: [...followOnAssertions, "homebrew-prefix-store"],
+    });
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,

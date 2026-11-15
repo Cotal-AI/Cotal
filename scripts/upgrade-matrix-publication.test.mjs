@@ -45,7 +45,7 @@ test('actual selector freezes newest public predecessor rather than a literal so
   assert.equal(result.plan.cells.filter(cell=>cell.scenario==='candidate-next-stopped-daemon-self'&&cell.sourceVersion==='0.164.8').length,3);
   assert.equal(result.plan.cells.filter(cell=>cell.scenario==='candidate-next-disabled-daemon-self'&&cell.sourceVersion==='0.164.8').length,2);
   assert.equal(result.plan.cells.filter(cell=>cell.scenario==='candidate-next-stopped-desktop-self'&&cell.sourceVersion==='0.164.8').length,1);
-  assert.equal(result.plan.cells.filter(cell=>cell.followOnAction&&cell.sourceVersion==='0.164.8').length,6);
+  assert.equal(result.plan.cells.filter(cell=>cell.followOnAction&&cell.sourceVersion==='0.164.8').length,7);
   assert.equal(result.plan.cells.filter(cell=>cell.scenario==='source-0.164.10-daemon-self-chain'&&cell.sourceVersion==='0.164.10').length,3);
 });
 test('dynamic name cannot bypass exact publisher workflow path',async()=>{
