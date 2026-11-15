@@ -11,18 +11,22 @@ Examples:
 close-window sends ONE WM_DELETE_WINDOW. Call twice on a fresh profile: the first
 must leave the explanation visible, the second must hide. The caller asserts the
 explanation and Settings content through its existing renderer driver.
-Native tray activation uses the app-owned exported D-Bus menu, after retaining the
-panel's actual right-click screenshot. No process termination or coordinate guesses.
+Native tray activation right-clicks the single child of the panel's depth-3 plugin
+container, watches dbus-monitor on the session bus to prove the opened menu is the
+app's own, and selects the item with keyboard Down/Return. No process termination or
+coordinate guesses.
 """
 
 import argparse
 import configparser
+import re
 import shlex
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -253,26 +257,26 @@ def missing_control_diagnostics():
         evidence['errors'].append({'field': 'write', 'error': str(error)})
 
 
-def click_unique(pid_set, names, roles=None, button=1):
-    matches = []
-    for app in apps():
-        if app.get_process_id() not in pid_set:
-            continue
-        for node, _ in nodes(app):
-            state = node.getState()
-            if (node.name in names and (roles is None or node.getRoleName() in roles)
-                    and state.contains(pyatspi.STATE_SHOWING)
-                    and state.contains(pyatspi.STATE_VISIBLE)):
-                rect = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-                if rect.width > 0 and rect.height > 0 and rect.x >= 0 and rect.y >= 0:
-                    matches.append((node, rect))
-    if len(matches) != 1:
-        if not matches:
-            missing_control_diagnostics()
-        raise RuntimeError(f'Expected one visible native control {names}, found {len(matches)}')
+def click_panel_tray_item(button=3):
+    panel_apps = [app for app in apps() if app.get_process_id() == args.panel_pid]
+    if len(panel_apps) != 1:
+        missing_control_diagnostics()
+        raise RuntimeError(f'Expected one owned panel AT-SPI application, found {len(panel_apps)}')
+    containers = [node for node, depth in nodes(panel_apps[0]) if depth == 3]
+    if len(containers) != 1:
+        missing_control_diagnostics()
+        raise RuntimeError(f'Expected one panel plugin container at depth 3, found {len(containers)}')
+    children = list(containers[0])
+    if len(children) != 1:
+        missing_control_diagnostics()
+        raise RuntimeError(f'Expected one child under the panel plugin container, found {len(children)}')
+    node = children[0]
+    rect = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+    if rect.width <= 0 or rect.height <= 0 or rect.x < 0 or rect.y < 0:
+        missing_control_diagnostics()
+        raise RuntimeError('Panel tray item child has no clickable bounds')
     verify(args.pid, args.start_time)
     verify(args.panel_pid, args.panel_start_time)
-    node, rect = matches[0]
     target = {'x': rect.x + rect.width // 2, 'y': rect.y + rect.height // 2,
               'bounds': [rect.x, rect.y, rect.width, rect.height]}
     report['indicatorInput'] = {'target': target, 'phases': []}
@@ -312,7 +316,9 @@ def click_unique(pid_set, names, roles=None, button=1):
             receipt['pointerAfter'] = pointer_observation()
             save('indicator-input', report['indicatorInput'])
             raise
-    return {'name': node.name, 'role': node.getRoleName(), 'button': button, 'target': target}
+    return {'name': node.name, 'role': node.getRoleName(), 'button': button,
+            'bounds': target['bounds'], 'clickPoint': {'x': target['x'], 'y': target['y']},
+            'target': target}
 
 
 def owned_indicator():
@@ -356,48 +362,225 @@ def owned_indicator():
             'exportedLayout': plain(layout)}
 
 
-def click_native_menu(label):
-    from gi.repository import Gio, GLib
-    if label not in {'Settings…', 'Quit app (computer stays connected)'}:
-        raise RuntimeError('Unsupported native tray action')
-    indicator = owned_indicator()
-    matches = []
+def exported_menu_labels(exported_layout):
+    labels = []
     def visit(node):
-        item_id, properties, children = node
-        if (properties.get('label') == label and properties.get('enabled', True)
-                and properties.get('visible', True)):
-            matches.append(item_id)
+        _, properties, children = node
+        if properties.get('visible', True) and properties.get('type') != 'separator':
+            label = properties.get('label')
+            if isinstance(label, str) and label and label != 'Label Empty':
+                labels.append(label)
         for child in children:
             visit(child)
-    visit(indicator['exportedLayout'][1])
-    if len(matches) != 1:
-        raise RuntimeError(f'Expected one enabled visible exported menu item {label}, found {len(matches)}')
-    # StatusNotifier menus are drawn by the panel plugin. Ownership belongs to the
-    # exported menu's unique bus connection, not the plugin's popup window PID.
+    visit(exported_layout[1])
+    return labels
+
+
+def navigable_menu_items(exported_layout):
+    items = []
+    def visit(node):
+        item_id, properties, children = node
+        if (properties.get('visible', True) and properties.get('enabled', True)
+                and properties.get('type') != 'separator'):
+            label = properties.get('label')
+            if isinstance(label, str) and label and label != 'Label Empty':
+                items.append({'id': item_id, 'label': label})
+        for child in children:
+            visit(child)
+    visit(exported_layout[1])
+    return items
+
+
+def parse_dbus_monitor_messages(lines, service, menu_path):
+    blocks = []
+    current = []
+    for line in lines:
+        if line.startswith(('method call ', 'method return ', 'signal ', 'error ')):
+            if current:
+                blocks.append(current)
+            current = [line]
+        elif current:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    open_calls = []
+    get_layout_serials = set()
+    layout_replies = []
+    clicked_events = []
+    for block in blocks:
+        header = block[0]
+        body = '\n'.join(block[1:])
+        dest_match = re.search(r'destination=([^\s;]+)', header)
+        sender_match = re.search(r'sender=([^\s;]+)', header)
+        dest_name = dest_match.group(1) if dest_match else ''
+        sender_name = sender_match.group(1) if sender_match else ''
+        if (header.startswith('method call ') and dest_name == service
+                and f'path={menu_path};' in header and 'interface=com.canonical.dbusmenu;' in header):
+            member_match = re.search(r'member=(\w+)', header)
+            serial_match = re.search(r'serial=(\d+)', header)
+            member = member_match.group(1) if member_match else ''
+            serial = serial_match.group(1) if serial_match else ''
+            if member == 'AboutToShow':
+                open_calls.append({'member': member, 'destination': dest_name,
+                                   'serial': serial, 'header': header})
+            elif member == 'GetLayout':
+                open_calls.append({'member': member, 'destination': dest_name,
+                                   'serial': serial, 'header': header})
+                if serial:
+                    get_layout_serials.add(serial)
+            elif member == 'Event':
+                int_match = re.search(r'^\s*int32\s+(-?\d+)', body, re.MULTILINE)
+                str_match = re.search(r'^\s*string\s+"([^"]*)"', body, re.MULTILINE)
+                event_id = int(int_match.group(1)) if int_match else None
+                event_kind = str_match.group(1) if str_match else None
+                if event_kind == 'opened':
+                    open_calls.append({'member': 'Event', 'event': 'opened', 'id': event_id,
+                                       'destination': dest_name, 'serial': serial, 'header': header})
+                elif event_kind == 'clicked':
+                    clicked_events.append({'id': event_id, 'event': 'clicked',
+                                           'destination': dest_name, 'serial': serial, 'header': header})
+        elif header.startswith('method return ') and sender_name == service:
+            reply_match = re.search(r'reply_serial=(\d+)', header)
+            reply_serial = reply_match.group(1) if reply_match else ''
+            if reply_serial in get_layout_serials:
+                labels = [
+                    label for label in re.findall(
+                        r'string "label"\s+variant\s+string "((?:[^"\\]|\\.)*)"', body)
+                    if label and label != 'Label Empty'
+                ]
+                layout_replies.append({'sender': sender_name, 'replySerial': reply_serial,
+                                       'labels': labels})
+    return {'service': service, 'menuPath': menu_path, 'openCalls': open_calls,
+            'layoutReplies': layout_replies, 'clickedEvents': clicked_events}
+
+
+def start_dbus_menu_watch(indicator):
     service = indicator['registration'].split('/', 1)[0]
     if not service.startswith(':'):
-        raise RuntimeError('Native menu activation requires a unique bus connection name')
+        raise RuntimeError('Native menu watch requires a unique bus connection name')
+    menu_path = indicator['menuPath']
+    argv = ['dbus-monitor', '--session', f"path='{menu_path}'",
+            f"destination='{service}'", f"sender='{service}'"]
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
+    lines = []
+    stderr_lines = []
+    lock = threading.Lock()
+    ready = threading.Event()
+    def read_stdout():
+        for line in proc.stdout:
+            with lock:
+                lines.append(line.rstrip('\n'))
+            if 'member=NameAcquired' in line:
+                ready.set()
+    def read_stderr():
+        for line in proc.stderr:
+            with lock:
+                stderr_lines.append(line.rstrip('\n'))
+            if 'became a monitor' in line:
+                ready.set()
+    t_out = threading.Thread(target=read_stdout, daemon=True)
+    t_err = threading.Thread(target=read_stderr, daemon=True)
+    t_out.start()
+    t_err.start()
+    ready.wait(timeout=2.0)
+    time.sleep(0.05)
+    def snapshot_watch():
+        with lock:
+            current_lines = list(lines)
+            current_err = list(stderr_lines)
+        parsed = parse_dbus_monitor_messages(current_lines, service, menu_path)
+        parsed.update(argv=argv, service=service, menuPath=menu_path,
+                      rawLines=current_lines, stderrLines=current_err)
+        return parsed
+    def stop_watch():
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+        t_out.join(timeout=1)
+        t_err.join(timeout=1)
+        return snapshot_watch()
+    return snapshot_watch, stop_watch
+
+
+def select_open_menu_item(label, indicator, snapshot_watch):
+    if label not in {'Settings…', 'Quit app (computer stays connected)'}:
+        raise RuntimeError('Unsupported native tray action')
+    service = indicator['registration'].split('/', 1)[0]
+    if not service.startswith(':'):
+        raise RuntimeError('Native menu watch requires a unique bus connection name')
+    expected_labels = exported_menu_labels(indicator['exportedLayout'])
+    navigable = navigable_menu_items(indicator['exportedLayout'])
+    matches = [(idx + 1, item['id']) for idx, item in enumerate(navigable) if item['label'] == label]
+    if len(matches) != 1:
+        raise RuntimeError(f'Expected one enabled visible exported menu item {label}, found {len(matches)}')
+    down_steps, target_id = matches[0]
+    def menu_opened():
+        observed = snapshot_watch()
+        if not observed['openCalls']:
+            return False
+        if any(call['member'] == 'GetLayout' for call in observed['openCalls']):
+            return bool(observed['layoutReplies'])
+        return True
+    try:
+        wait_for('panel D-Bus menu open call on dbus-monitor', menu_opened)
+    except Exception:
+        observed = snapshot_watch()
+        observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
+                        expectedLabels=expected_labels)
+        report['menuWatch'] = save('menu-watch', observed)
+        raise
     verify(args.pid, args.start_time)
-    if owned_indicator() != indicator:
-        raise RuntimeError('Owned native menu changed before activation')
-    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    owner = bus.call_sync('org.freedesktop.DBus', '/org/freedesktop/DBus',
-                         'org.freedesktop.DBus', 'GetConnectionUnixProcessID',
-                         GLib.Variant('(s)', (service,)), None,
-                         Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
-    if owner != args.pid:
-        raise RuntimeError('Native menu bus connection changed owner before activation')
+    verify(args.panel_pid, args.panel_start_time)
+    observed = snapshot_watch()
+    if observed['layoutReplies']:
+        wire_labels = observed['layoutReplies'][-1]['labels']
+        if wire_labels != expected_labels:
+            observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
+                            expectedLabels=expected_labels, wireLabels=wire_labels,
+                            layoutObservation='GetLayout reply')
+            report['menuWatch'] = save('menu-watch', observed)
+            raise RuntimeError(f'Opened menu wire labels {wire_labels} do not match exportedLayout {expected_labels}')
+        layout_observation = 'GetLayout reply matched exportedLayout'
+    else:
+        wire_labels = None
+        layout_observation = 'no layout fetch observed'
+    key_inputs = []
+    for step in range(down_steps):
+        verify(args.pid, args.start_time)
+        verify(args.panel_pid, args.panel_start_time)
+        command('xdotool', 'key', 'Down')
+        key_inputs.append({'step': step + 1, 'key': 'Down'})
+        time.sleep(0.05)
     verify(args.pid, args.start_time)
-    # dbusmenu timestamps are X11 server milliseconds, with zero meaning unknown.
-    timestamp = 0
-    event = {'name': label, 'method': 'com.canonical.dbusmenu.Event', 'service': service,
-             'menuPath': indicator['menuPath'], 'pid': owner, 'id': matches[0],
-             'event': 'clicked', 'data': 0, 'timestamp': timestamp}
-    report['menuActivation'] = save('menu-activation', event)
-    bus.call_sync(service, indicator['menuPath'], 'com.canonical.dbusmenu', 'Event',
-                  GLib.Variant('(isvu)', (matches[0], 'clicked', GLib.Variant('i', 0), timestamp)),
-                  None, Gio.DBusCallFlags.NONE, 5000, None)
-    return event
+    verify(args.panel_pid, args.panel_start_time)
+    command('xdotool', 'key', 'Return')
+    key_inputs.append({'step': down_steps + 1, 'key': 'Return'})
+    def item_clicked():
+        return any(event['id'] == target_id and event['destination'] == service
+                   for event in snapshot_watch()['clickedEvents'])
+    try:
+        wait_for(f'panel D-Bus Event({target_id}, clicked) for {label}', item_clicked)
+    except Exception:
+        observed = snapshot_watch()
+        observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
+                        expectedLabels=expected_labels, wireLabels=wire_labels,
+                        layoutObservation=layout_observation, keyInputs=key_inputs)
+        report['menuWatch'] = save('menu-watch', observed)
+        raise
+    observed = snapshot_watch()
+    observed.update(targetLabel=label, targetId=target_id, downSteps=down_steps,
+                    expectedLabels=expected_labels, wireLabels=wire_labels,
+                    layoutObservation=layout_observation, keyInputs=key_inputs)
+    report['menuWatch'] = save('menu-watch', observed)
+    return {'name': label, 'id': target_id, 'service': service, 'downSteps': down_steps,
+            'expectedLabels': expected_labels, 'wireLabels': wire_labels,
+            'layoutObservation': layout_observation,
+            'openCalls': observed['openCalls'], 'clickedEvents': observed['clickedEvents']}
 
 
 def dom_node(element_id):
@@ -638,21 +821,28 @@ try:
         if Path(panel['exe']).name != 'xfce4-panel':
             raise RuntimeError('Expected the owned xfce4-panel native AppIndicator host')
         report['indicator'] = owned_indicator()
-        # This systray-only panel exposes the registered item as an unnamed button.
-        # Both the unique registration's PID and the panel's start token are required.
-        report['indicatorClick'] = click_unique({args.panel_pid}, {''}, {'push button'}, button=3)
-        time.sleep(0.4)
-        report['menu'] = save('menu', snapshot())
-        display = args.diagnostics / f'{stamp}-menu-display.png'
-        capture = subprocess.run(['import', '-window', 'root', str(display)],
-                                 text=True, capture_output=True, timeout=10)
-        report['menuDisplay'] = {'path': str(display), 'exit': capture.returncode,
-                                 'error': capture.stderr.strip()}
-        report['observedMenuItems'] = [row for tree in snapshot()['trees']
-                                       for row in tree['rows']
-                                       if row.get('role') in {'menu item', 'check menu item'}]
-        label = 'Settings…' if args.action == 'settings' else 'Quit app (computer stays connected)'
-        report['menuClick'] = click_native_menu(label)
+        snapshot_watch, stop_watch = start_dbus_menu_watch(report['indicator'])
+        try:
+            # Locate the tray item as the single child of the panel's depth-3 plugin
+            # container by its bounds in this run, then watch dbus-monitor and navigate
+            # the opened menu with keyboard Down/Return.
+            report['indicatorClick'] = click_panel_tray_item(button=3)
+            time.sleep(0.4)
+            report['menu'] = save('menu', snapshot())
+            display = args.diagnostics / f'{stamp}-menu-display.png'
+            capture = subprocess.run(['import', '-window', 'root', str(display)],
+                                     text=True, capture_output=True, timeout=10)
+            report['menuDisplay'] = {'path': str(display), 'exit': capture.returncode,
+                                     'error': capture.stderr.strip()}
+            report['observedMenuItems'] = [row for tree in snapshot()['trees']
+                                           for row in tree['rows']
+                                           if row.get('role') in {'menu item', 'check menu item'}]
+            label = 'Settings…' if args.action == 'settings' else 'Quit app (computer stays connected)'
+            report['menuClick'] = select_open_menu_item(label, report['indicator'], snapshot_watch)
+        finally:
+            final_watch = stop_watch()
+            if 'menuWatch' not in report:
+                report['menuWatch'] = save('menu-watch', final_watch)
         if args.action == 'settings':
             def restored_and_focused():
                 active = command('xprop', '-root', '_NET_ACTIVE_WINDOW').strip()

@@ -351,8 +351,36 @@ class SettingsBackTests(unittest.TestCase):
         action.doAction.assert_not_called()
 
 
+class FakeNode:
+    def __init__(self, role='panel', children=(), rect=None, name=''):
+        self.name = name
+        self._role = role
+        self._children = list(children)
+        self._rect = rect
+
+    def getRoleName(self):
+        return self._role
+
+    def queryComponent(self):
+        return SimpleNamespace(getExtents=lambda _: self._rect)
+
+    def get_process_id(self):
+        return 2
+
+    def __iter__(self):
+        return iter(self._children)
+
+
 class PointerTests(unittest.TestCase):
-    def run_click(self, readings):
+    def panel_tree(self, child_role='filler', child_count=1, container_count=1, rect=None):
+        extents = SimpleNamespace(x=13, y=0, width=23, height=32) if rect is None else rect
+        child = FakeNode(role=child_role, rect=extents)
+        container = FakeNode(role='panel', children=[child] * child_count)
+        panel = FakeNode(role='panel', children=[container] * container_count)
+        frame = FakeNode(role='frame', children=[panel])
+        return FakeNode(role='application', children=[frame])
+
+    def run_click(self, readings, child_role='filler', child_count=1, container_count=1):
         source = ast.parse(Path(__file__).with_name('lifecycle-linux.py').read_text())
         functions = ast.Module(body=[n for n in source.body if isinstance(n, ast.FunctionDef)],
                                type_ignores=[])
@@ -360,11 +388,8 @@ class PointerTests(unittest.TestCase):
         def sleep(seconds):
             clock.now += seconds
         time = SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep, time_ns=lambda: 0)
-        rect = SimpleNamespace(x=14, y=0, width=22, height=32)
-        node = SimpleNamespace(name='', getRoleName=lambda: 'push button',
-                               getState=lambda: SimpleNamespace(contains=lambda _: True),
-                               queryComponent=lambda: SimpleNamespace(getExtents=lambda _: rect))
-        app = SimpleNamespace(get_process_id=lambda: 2)
+        app = self.panel_tree(child_role=child_role, child_count=child_count,
+                              container_count=container_count)
         calls = []
         def run(argv, **kwargs):
             if argv[1] == 'getmouselocation':
@@ -385,50 +410,145 @@ class PointerTests(unittest.TestCase):
                'report': {}, 'pyatspi': SimpleNamespace(STATE_SHOWING=1, STATE_VISIBLE=2,
                                                         DESKTOP_COORDS=0)}
         exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
-        env.update(apps=lambda: [app], nodes=lambda _: [(node, 0)], verify=Mock(),
-                   save=Mock(), command=command)
+        env.update(apps=lambda: [app], verify=Mock(),
+                   missing_control_diagnostics=Mock(), save=Mock(), command=command)
         error = None
+        result = None
         try:
-            env['click_unique']({2}, {''}, {'push button'}, button=3)
+            result = env['click_panel_tray_item'](button=3)
         except Exception as caught:
             error = caught
-        return env, calls, clock.now, error
+        return env, calls, clock.now, error, result
 
-    def test_already_at_target_skips_move_and_clicks(self):
-        env, calls, _, error = self.run_click(['X=25\nY=16\nSCREEN=0\nWINDOW=1\n'])
-        self.assertIsNone(error)
-        self.assertEqual([c[0] for c in calls], [['xdotool', 'click', '3']])
-        self.assertEqual(env['report']['indicatorInput']['phases'][0]['state'], 'completed')
-        self.assertGreaterEqual(env['verify'].call_count, 6)
+    def test_already_at_target_skips_move_and_clicks_both_roles(self):
+        for role in ['push button', 'filler']:
+            with self.subTest(role=role):
+                env, calls, _, error, result = self.run_click(['X=24\nY=16\nSCREEN=0\nWINDOW=1\n'],
+                                                              child_role=role)
+                self.assertIsNone(error)
+                self.assertEqual([c[0] for c in calls], [['xdotool', 'click', '3']])
+                self.assertEqual(result['bounds'], [13, 0, 23, 32])
+                self.assertEqual(result['clickPoint'], {'x': 24, 'y': 16})
+                self.assertEqual(env['report']['indicatorInput']['phases'][0]['state'], 'completed')
+                self.assertGreaterEqual(env['verify'].call_count, 6)
+
+    def test_refuses_zero_or_multiple_containers_or_children(self):
+        for containers, children in [(0, 1), (2, 1), (1, 0), (1, 2)]:
+            with self.subTest(containers=containers, children=children):
+                env, calls, _, error, _ = self.run_click(['X=24\nY=16\n'],
+                                                         child_count=children,
+                                                         container_count=containers)
+                self.assertIsNotNone(error)
+                self.assertEqual(calls, [])
+                env['missing_control_diagnostics'].assert_called_once_with()
 
     def test_moves_without_sync_and_waits_for_target(self):
-        _, calls, _, error = self.run_click(['X=0\nY=0\n', 'X=1\nY=1\n', 'X=25\nY=16\n'])
+        _, calls, _, error, _ = self.run_click(['X=0\nY=0\n', 'X=1\nY=1\n', 'X=24\nY=16\n'])
         self.assertIsNone(error)
-        self.assertEqual(calls[0][0], ['xdotool', 'mousemove', '25', '16'])
+        self.assertEqual(calls[0][0], ['xdotool', 'mousemove', '24', '16'])
         self.assertEqual(calls[-1][0], ['xdotool', 'click', '3'])
 
     def test_stuck_pointer_fails_closed(self):
-        env, calls, elapsed, error = self.run_click(['X=0\nY=0\n'])
+        env, calls, elapsed, error, _ = self.run_click(['X=0\nY=0\n'])
         self.assertIsNotNone(error)
         self.assertLessEqual(elapsed, 2.1)
         self.assertFalse(any(c[0][1] == 'click' for c in calls))
         self.assertEqual(env['report']['indicatorInput']['phases'][0]['state'], 'timeout')
 
     def test_malformed_poll_refuses_click_and_retains_reply(self):
-        env, calls, _, error = self.run_click(['X=0\nY=0\n', 'bad reply'])
+        env, calls, _, error, _ = self.run_click(['X=0\nY=0\n', 'bad reply'])
         self.assertIsNotNone(error)
-        self.assertEqual([c[0] for c in calls], [['xdotool', 'mousemove', '25', '16']])
+        self.assertEqual([c[0] for c in calls], [['xdotool', 'mousemove', '24', '16']])
         phase = env['report']['indicatorInput']['phases'][0]
         self.assertEqual(phase['state'], 'failed')
         self.assertEqual(phase['pointerAfter']['value'], 'bad reply')
 
     def test_malformed_pointer_fails_closed(self):
-        for value in ['garbage', 'X=25\nY=no\n', 'X=25\nX=25\nY=16\n']:
+        for value in ['garbage', 'X=24\nY=no\n', 'X=24\nX=24\nY=16\n']:
             with self.subTest(value=value):
-                env, calls, _, error = self.run_click([value])
+                env, calls, _, error, _ = self.run_click([value])
                 self.assertIsNotNone(error)
                 self.assertEqual(calls, [])
                 self.assertEqual(env['report']['indicatorInput']['phases'][0]['state'], 'failed')
+
+
+class MenuWatchTests(unittest.TestCase):
+    def test_passive_watch_verifies_labels_and_selects_item_with_keyboard(self):
+        source = ast.parse(Path(__file__).with_name('lifecycle-linux.py').read_text())
+        functions = ast.Module(body=[n for n in source.body if isinstance(n, ast.FunctionDef)],
+                               type_ignores=[])
+        keys = []
+        env = {'re': __import__('re'), 'time': SimpleNamespace(sleep=lambda _: None),
+               'args': SimpleNamespace(pid=10, start_time='a', panel_pid=20, panel_start_time='b'),
+               'report': {}}
+        exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
+        env.update(verify=Mock(), save=lambda name, value: value,
+                   owned_indicator=Mock(return_value=deepcopy(ConnectedViewTests.indicator)),
+                   wait_for=lambda _, fn: self.assertTrue(fn()),
+                   command=lambda *argv: keys.append(list(argv)) or '')
+        lines = [
+            'method call time=1.0 sender=:1.9 -> destination=:1.40 serial=7 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=AboutToShow',
+            '   int32 0',
+            'method call time=1.1 sender=:1.9 -> destination=:1.40 serial=8 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=GetLayout',
+            '   int32 0',
+            '   int32 -1',
+            'method return time=1.2 sender=:1.40 -> destination=:1.9 serial=12 reply_serial=8',
+            '   string "label"\n   variant string "Label Empty"',
+            '   string "label"\n   variant string "Connected"',
+            '   string "label"\n   variant string "No desktop update"',
+            '   string "label"\n   variant string "Settings…"',
+            '   string "label"\n   variant string "Open dashboard"',
+            '   string "label"\n   variant string "Quit app (computer stays connected)"',
+            'method call time=1.3 sender=:1.9 -> destination=:1.40 serial=9 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=Event',
+            '   int32 3',
+            '   string "clicked"',
+        ]
+        parsed = env['parse_dbus_monitor_messages'](
+            lines, ':1.40', '/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu')
+        result = env['select_open_menu_item'](
+            'Settings…', deepcopy(ConnectedViewTests.indicator), lambda: deepcopy(parsed))
+        self.assertEqual(result['id'], 3)
+        self.assertEqual(result['service'], ':1.40')
+        self.assertEqual(result['downSteps'], 1)
+        self.assertEqual(result['layoutObservation'], 'GetLayout reply matched exportedLayout')
+        self.assertEqual(result['wireLabels'], [
+            'Connected', 'No desktop update', 'Settings…', 'Open dashboard',
+            'Quit app (computer stays connected)'])
+        self.assertEqual(keys, [['xdotool', 'key', 'Down'], ['xdotool', 'key', 'Return']])
+
+    def test_open_without_get_layout_records_no_layout_fetch_observed(self):
+        source = ast.parse(Path(__file__).with_name('lifecycle-linux.py').read_text())
+        functions = ast.Module(body=[n for n in source.body if isinstance(n, ast.FunctionDef)],
+                               type_ignores=[])
+        keys = []
+        env = {'re': __import__('re'), 'time': SimpleNamespace(sleep=lambda _: None),
+               'args': SimpleNamespace(pid=10, start_time='a', panel_pid=20, panel_start_time='b'),
+               'report': {}}
+        exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
+        env.update(verify=Mock(), save=lambda name, value: value,
+                   wait_for=lambda _, fn: self.assertTrue(fn()),
+                   command=lambda *argv: keys.append(list(argv)) or '')
+        lines = [
+            'method call time=1.0 sender=:1.9 -> destination=:1.99 serial=5 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=AboutToShow',
+            '   int32 0',
+            'method call time=1.1 sender=:1.9 -> destination=:1.40 serial=7 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=Event',
+            '   int32 0',
+            '   string "opened"',
+            'method call time=1.2 sender=:1.9 -> destination=:1.40 serial=9 path=/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu; interface=com.canonical.dbusmenu; member=Event',
+            '   int32 5',
+            '   string "clicked"',
+        ]
+        parsed = env['parse_dbus_monitor_messages'](
+            lines, ':1.40', '/org/ayatana/NotificationItem/tray_icon_tray_app_machine/Menu')
+        self.assertEqual(len(parsed['openCalls']), 1)
+        self.assertEqual(parsed['openCalls'][0]['destination'], ':1.40')
+        result = env['select_open_menu_item'](
+            'Quit app (computer stays connected)', deepcopy(ConnectedViewTests.indicator),
+            lambda: deepcopy(parsed))
+        self.assertEqual(result['id'], 5)
+        self.assertEqual(result['downSteps'], 3)
+        self.assertIsNone(result['wireLabels'])
+        self.assertEqual(result['layoutObservation'], 'no layout fetch observed')
 
 
 class MissingControlDiagnosticsTests(unittest.TestCase):
@@ -469,7 +589,7 @@ class MissingControlDiagnosticsTests(unittest.TestCase):
         env, saved = self.environment()
         env['apps'] = lambda: []
         with self.assertRaisesRegex(RuntimeError, 'found 0'):
-            env['click_unique']({20}, {''}, {'push button'}, button=3)
+            env['click_panel_tray_item'](button=3)
         self.assertIn('missing-control', saved)
         self.assertNotIn('indicatorInput', env['report'])
 
