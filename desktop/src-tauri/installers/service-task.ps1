@@ -83,23 +83,161 @@ try {
   Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1"
   Write-SetupStep 'module-cim'
   Import-Module "$PSHOME\Modules\CimCmdlets\CimCmdlets.psd1"
-  if ($Action -eq 'census') {
+  function Read-OwnedProcesses {
     Write-SetupStep 'process-list'
+    if (!(Test-Path -LiteralPath $root -PathType Container)) {
+      return @{ processes=@(); skipped=@(); executableNames=@() }
+    }
+    $exeSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in (Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.exe')) {
+      $null = $exeSet.Add([string]$file.Name)
+    }
     $rows = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,Name,CreationDate)
-    $owned = @()
-    foreach ($row in $rows) {
-      if (!$row.ExecutablePath) {
-        if ($row.Name -in @('node.exe','cotal-desktop.exe')) {
-          $created=if($row.CreationDate){$row.CreationDate.ToUniversalTime().ToString('o')}else{'unknown'}
-          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created."
-        }
-        continue
+    $savedCurrentDir = [Environment]::CurrentDirectory
+    try {
+      [Environment]::CurrentDirectory = $PSHOME
+      Add-Type @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class CensusProcess {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, StringBuilder exe, ref uint size);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr templateFile);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  public static extern uint GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, uint size, uint flags);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool CloseHandle(IntPtr handle);
+}
+'@
+    } finally {
+      [Environment]::CurrentDirectory = $savedCurrentDir
+    }
+    $finalRoot = $null
+    $rootHandle = [CensusProcess]::CreateFileW($root, 0, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+    if ($rootHandle -eq [IntPtr]::new(-1) -or $rootHandle -eq [IntPtr]::Zero) {
+      $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      throw "Cannot identify installation folder $root (CreateFileW error $err). Run the installer again."
+    }
+    try {
+      $rootSb = [Text.StringBuilder]::new(32768)
+      $rootLen = [CensusProcess]::GetFinalPathNameByHandleW($rootHandle, $rootSb, [uint32]$rootSb.Capacity, 0)
+      if ($rootLen -eq 0 -or $rootLen -ge $rootSb.Capacity) {
+        $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "Cannot identify installation folder $root (GetFinalPathNameByHandleW error $err). Run the installer again."
       }
-      if ($row.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) {
-        $owned += @{ pid=[int]$row.ProcessId; parentPid=[int]$row.ParentProcessId; name=$row.Name; path=$row.ExecutablePath; birth=$row.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString() }
+      $finalRoot = $rootSb.ToString().TrimEnd('\')
+    } finally {
+      [CensusProcess]::CloseHandle($rootHandle) | Out-Null
+    }
+    if ([string]::IsNullOrWhiteSpace($finalRoot)) {
+      throw "Cannot identify installation folder $root (empty final path). Run the installer again."
+    }
+    $owned = @()
+    $skipped = @()
+    foreach ($row in $rows) {
+      $isNamedCandidate = [bool]($row.Name -and $exeSet.Contains([string]$row.Name))
+      $isWmiUnderRoot = [bool]($row.ExecutablePath -and $row.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase))
+      if (!$isNamedCandidate -and !$isWmiUnderRoot) { continue }
+      $created = if ($row.CreationDate) { $row.CreationDate.ToUniversalTime().ToString('o') } else { 'unknown' }
+      if ($row.ExecutablePath) {
+        $wmiHandle = [CensusProcess]::CreateFileW([string]$row.ExecutablePath, 0, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+        if ($wmiHandle -eq [IntPtr]::new(-1) -or $wmiHandle -eq [IntPtr]::Zero) {
+          $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          $wmiCheck = [CensusProcess]::OpenProcess(0x00001000, $false, [int]$row.ProcessId)
+          if ($wmiCheck -eq [IntPtr]::Zero) {
+            if ([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 87) { continue }
+          } else {
+            try {
+              $wmiCode = [uint32]0
+              if ([CensusProcess]::GetExitCodeProcess($wmiCheck, [ref]$wmiCode) -and $wmiCode -ne 259) { continue }
+            } finally {
+              [CensusProcess]::CloseHandle($wmiCheck) | Out-Null
+            }
+          }
+          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (WMI CreateFileW error $err). Close it before running setup again."
+        }
+        try {
+          $wmiSb = [Text.StringBuilder]::new(32768)
+          $wmiLen = [CensusProcess]::GetFinalPathNameByHandleW($wmiHandle, $wmiSb, [uint32]$wmiSb.Capacity, 0)
+          if ($wmiLen -eq 0 -or $wmiLen -ge $wmiSb.Capacity) {
+            $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (WMI GetFinalPathNameByHandleW error $err). Close it before running setup again."
+          }
+          $isWmiUnderRoot = $wmiSb.ToString().StartsWith($finalRoot+'\',[StringComparison]::OrdinalIgnoreCase)
+        } finally {
+          [CensusProcess]::CloseHandle($wmiHandle) | Out-Null
+        }
+      }
+      $handle = [CensusProcess]::OpenProcess(0x00001000, $false, [int]$row.ProcessId)
+      if ($handle -eq [IntPtr]::Zero) {
+        $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($err -eq 87) { continue }
+        if ($err -eq 5 -and $isNamedCandidate -and !$isWmiUnderRoot) {
+          $skipped += @{ pid=[int]$row.ProcessId; name=[string]$row.Name; error='ERROR_ACCESS_DENIED (5)' }
+          continue
+        }
+        throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (Win32 error $err). Close it before running setup again."
+      }
+      try {
+        $exitCode = [uint32]0
+        if (![CensusProcess]::GetExitCodeProcess($handle, [ref]$exitCode)) {
+          $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (GetExitCodeProcess error $err). Close it before running setup again."
+        }
+        if ($exitCode -ne 259) { continue }
+        $sb = [Text.StringBuilder]::new(32768)
+        $size = [uint32]32768
+        if (![CensusProcess]::QueryFullProcessImageNameW($handle, 0, $sb, [ref]$size)) {
+          $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          $recheck = [uint32]0
+          if ([CensusProcess]::GetExitCodeProcess($handle, [ref]$recheck) -and $recheck -ne 259) { continue }
+          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (QueryFullProcessImageNameW error $err). Close it before running setup again."
+        }
+        $rawImagePath = $sb.ToString()
+        $fileHandle = [CensusProcess]::CreateFileW($rawImagePath, 0, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
+        if ($fileHandle -eq [IntPtr]::new(-1) -or $fileHandle -eq [IntPtr]::Zero) {
+          $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          $recheck = [uint32]0
+          if ([CensusProcess]::GetExitCodeProcess($handle, [ref]$recheck) -and $recheck -ne 259) { continue }
+          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (CreateFileW error $err). Close it before running setup again."
+        }
+        $finalImagePath = $null
+        try {
+          $finalSb = [Text.StringBuilder]::new(32768)
+          $finalLen = [CensusProcess]::GetFinalPathNameByHandleW($fileHandle, $finalSb, [uint32]$finalSb.Capacity, 0)
+          if ($finalLen -eq 0 -or $finalLen -ge $finalSb.Capacity) {
+            $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (GetFinalPathNameByHandleW error $err). Close it before running setup again."
+          }
+          $finalImagePath = $finalSb.ToString()
+        } finally {
+          [CensusProcess]::CloseHandle($fileHandle) | Out-Null
+        }
+        $creationTime = [long]0; $exitTime = [long]0; $kernelTime = [long]0; $userTime = [long]0
+        if (![CensusProcess]::GetProcessTimes($handle, [ref]$creationTime, [ref]$exitTime, [ref]$kernelTime, [ref]$userTime)) {
+          $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+          throw "Cannot identify $($row.Name) process $($row.ProcessId), parent $($row.ParentProcessId), created $created (GetProcessTimes error $err). Close it before running setup again."
+        }
+        $birth = $creationTime.ToString()
+        if ($finalImagePath.StartsWith($finalRoot+'\',[StringComparison]::OrdinalIgnoreCase)) {
+          $owned += @{ pid=[int]$row.ProcessId; parentPid=[int]$row.ParentProcessId; name=[string]$row.Name; path=($root + $finalImagePath.Substring($finalRoot.Length)); birth=$birth }
+        }
+      } finally {
+        [CensusProcess]::CloseHandle($handle) | Out-Null
       }
     }
-    ConvertTo-Json -InputObject @{ processes=$owned } -Depth 5 -Compress
+    return @{ processes=$owned; skipped=$skipped; executableNames=@($exeSet | Sort-Object) }
+  }
+  if ($Action -eq 'census') {
+    ConvertTo-Json -InputObject (Read-OwnedProcesses) -Depth 5 -Compress
     Write-SetupStep 'return'; exit 0
   }
   $owned = Get-OwnedTask
@@ -136,23 +274,25 @@ try {
         'none'; Write-SetupStep 'return'; exit 0
       }
     }
-    Write-SetupStep 'process-list'
-    $rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,ExecutablePath,Name)
+    $scan=Read-OwnedProcesses
+    $ownedRows=@($scan.processes)
     $apps=[Collections.Generic.HashSet[int]]::new()
-    foreach($row in $rows) { if ($row.ExecutablePath -and [string]::Equals($row.ExecutablePath,(Join-Path $root 'cotal-desktop.exe'),[StringComparison]::OrdinalIgnoreCase)) { $null=$apps.Add([int]$row.ProcessId) } }
+    foreach($row in $ownedRows) { if ([string]::Equals($row.path,(Join-Path $root 'cotal-desktop.exe'),[StringComparison]::OrdinalIgnoreCase)) { $null=$apps.Add([int]$row.pid) } }
     do {
       $changed=$false
-      foreach($row in $rows) { if ($apps.Contains([int]$row.ParentProcessId) -and $apps.Add([int]$row.ProcessId)) { $changed=$true } }
+      foreach($row in $ownedRows) { if ($apps.Contains([int]$row.parentPid) -and $apps.Add([int]$row.pid)) { $changed=$true } }
     } while($changed)
-    $live=@($rows | Where-Object { !$apps.Contains([int]$_.ProcessId) -and (($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) -or (!$_.ExecutablePath -and $_.Name -in @('node.exe','cotal-desktop.exe'))) })
+    $live=@($ownedRows | Where-Object { !$apps.Contains([int]$_.pid) })
     if ($live.Count -ne 0) { throw 'Another program still uses the interrupted installation or could not be identified. Close it before running setup again.' }
     if ($owned -and !$owned.foreign -and $owned.task.GetInstances(0).Count -ne 0) { throw 'The owned task still has a native instance. No replacement was authorized.' }
     if ($damaged) {
-      $state=@{schema=1;installPath=$root;targetVersion=$env:COTAL_SETUP_VERSION;oldVersion=$null;installed=[bool]($owned -and !$owned.foreign);foreign=[bool]($owned -and $owned.foreign);taskEnabled=[bool]($owned -and !$owned.foreign -and $owned.task.Enabled);running=$false;receiptDigest=$(if($owned -and !$owned.foreign){$owned.receiptDigest}else{$null});phase='copying';recoveryMessage=$recoveryMessage}
+      $state=@{schema=1;installPath=$root;targetVersion=$env:COTAL_SETUP_VERSION;oldVersion=$null;installed=[bool]($owned -and !$owned.foreign);foreign=[bool]($owned -and $owned.foreign);taskEnabled=[bool]($owned -and !$owned.foreign -and $owned.task.Enabled);running=$false;receiptDigest=$(if($owned -and !$owned.foreign){$owned.receiptDigest}else{$null});skippedProcesses=@($scan.skipped);executableNames=@($scan.executableNames);phase='copying';recoveryMessage=$recoveryMessage}
     } else {
       if ($state.installed -and (!$owned -or $owned.foreign -or $owned.receiptDigest -cne $state.receiptDigest)) { throw 'The owned task changed during interrupted setup.' }
       $state.phase='copying'
       $state.targetVersion=$env:COTAL_SETUP_VERSION
+      $state | Add-Member -NotePropertyName skippedProcesses -NotePropertyValue @($scan.skipped) -Force
+      $state | Add-Member -NotePropertyName executableNames -NotePropertyValue @($scan.executableNames) -Force
     }
     if ($owned -and !$owned.foreign) {
       Write-SetupStep 'task-disable-recovery'

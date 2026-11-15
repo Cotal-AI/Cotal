@@ -45,6 +45,36 @@ const run = (file, args, timeout = 180_000) => new Promise(resolve => {
 });
 const daemon = (verb, ...args) => run(node, [cli, 'daemon', verb, '--json', ...args]);
 const required = async (file, args, timeout) => { const result = await run(file, args, timeout); assert.equal(result.code, 0, result.stderr || result.stdout); return result; };
+const useFilteredToken = cell.endsWith('-filtered');
+const filteredScratch = join(process.env.RUNNER_TEMP, 'setup-filtered', cell);
+if (useFilteredToken) mkdirSync(filteredScratch, { recursive: true });
+let filteredSeq = 0;
+const runFiltered = async (file, args, timeout = 180_000) => {
+  const start = Date.now();
+  const id = ++filteredSeq;
+  const specFile = join(filteredScratch, `filtered-spec-${id}.json`);
+  const outFile = join(filteredScratch, `filtered-out-${id}.json`);
+  const quotedArgs = args.map(a => /[\s"]/.test(a) ? `"${String(a).replaceAll('"', '\\"')}"` : String(a)).join(' ');
+  report.filteredTokenEnvNames = Object.keys(env).sort();
+  writeFileSync(specFile, JSON.stringify({ file, arguments: quotedArgs, env, timeoutMs: timeout, outFile }));
+  try {
+    const outer = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-filtered-run.ps1'), '-Spec', specFile], timeout + 30_000);
+    if (outer.code !== 0 || !existsSync(outFile)) {
+      throw new Error(`Filtered runner failed (${outer.code}): ${outer.stderr || outer.stdout}`);
+    }
+    const inner = JSON.parse(readText(outFile));
+    report.filteredTokenWhoami = inner.whoamiGroups;
+    const result = { file, args, filteredToken: true, elapsedMs: Date.now() - start, code: inner.code, signal: null, stdout: inner.stdout, stderr: inner.stderr };
+    report.calls.push(result);
+    save();
+    return result;
+  } finally {
+    rmSync(specFile, { force: true });
+    rmSync(outFile, { force: true });
+  }
+};
+const runUser = (file, args, timeout = 180_000) => useFilteredToken ? runFiltered(file, args, timeout) : run(file, args, timeout);
+const requiredUser = async (file, args, timeout) => { const result = await runUser(file, args, timeout); assert.equal(result.code, 0, result.stderr || result.stdout); return result; };
 const DAEMON_ENV_KEYS = new Set([
   'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE',
   'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
@@ -362,7 +392,7 @@ async function pollRelaunchedApp(previousPid, previousBirth, timeoutMs = 30_000)
   return { allDesktopProcesses: lastRows, appInstances: lastRows.filter(row => !row.commandLine?.includes('--daemon')) };
 }
 
-let fixture, seat, locker, app;
+let fixture, seat, locker, app, elevatedExternalPid, systemExternalTask, stopExternalSpawner;
 let serviceInstalled = false;
 let seatStopped = false;
 try {
@@ -387,9 +417,13 @@ try {
     } else if (cell === 'early') sourceVersion = '0.157.0';
     else sourceVersion = '0.164.7';
     const previous = nextHop ? baseCandidate : join(process.env.RUNNER_TEMP, `Cotal_${sourceVersion}_x64-setup.exe`);
-    if (cell !== 'fresh') {
+    if (cell === 'fresh') {
+      const freshCensus = JSON.parse((await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/src-tauri/installers/service-task.ps1'), '-Action', 'census'])).stdout);
+      report.freshCensusBeforeInstall = freshCensus;
+      check('Absent installation folder yields empty executableNames in census', Array.isArray(freshCensus.executableNames) && freshCensus.executableNames.length === 0 && Array.isArray(freshCensus.processes) && freshCensus.processes.length === 0 && Array.isArray(freshCensus.skipped) && freshCensus.skipped.length === 0);
+    } else {
       assert.ok(previous && existsSync(previous), 'Workflow must provide the verified source installer');
-      await required(previous, ['/S']);
+      await requiredUser(previous, ['/S']);
     }
     if (cell !== 'fresh') check(nextHop ? 'Exact candidate files are installed' : 'Published files are installed', JSON.parse(readText(join(runtime, 'package.json'))).version === sourceVersion);
     if (!['absent', 'fresh', 'foreign'].includes(cell)) {
@@ -410,7 +444,7 @@ try {
         }
         await observeInstalledService('before');
       } else {
-        await required(node, [cli, 'daemon', 'install', '--json']);
+        await requiredUser(node, [cli, 'daemon', 'install', '--json']);
         serviceInstalled = true;
         if (candidateNextChecks) await observeInstalledService('after-install');
         report.before = await ready(sourceVersion);
@@ -472,6 +506,51 @@ try {
         check('Owned app stays alive in tray', app.exitCode === null);
       }
     }
+    if (cell === 'external-node-exiting' || cell === 'external-node-exiting-filtered') {
+      let running = true;
+      stopExternalSpawner = () => { running = false; };
+      report.externalNodePath = process.execPath;
+      for (let w = 0; w < 10; w++) {
+        (async () => {
+          while (running) {
+            const p = spawn(process.execPath, ['-e', ''], { windowsHide: true, stdio: 'ignore' });
+            await new Promise(resolve => p.once('close', resolve));
+          }
+        })();
+      }
+      await delay(500);
+    }
+    if (cell === 'external-node-elevated' || cell === 'external-node-elevated-filtered') {
+      const started = await required(ps, [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+        `$ErrorActionPreference='Stop'; $p=Start-Process -FilePath '${process.execPath.replaceAll("'", "''")}' -ArgumentList @('-e','setInterval(()=>{},1000)') -Verb RunAs -WindowStyle Hidden -PassThru; @{pid=[int]$p.Id;executablePath='${process.execPath.replaceAll("'", "''")}'} | ConvertTo-Json -Compress`,
+      ]);
+      const parsed = JSON.parse(started.stdout);
+      elevatedExternalPid = parsed.pid;
+      report.elevatedExternalNode = parsed;
+      await delay(1000);
+    }
+    if (cell === 'external-node-system' || cell === 'external-node-system-filtered') {
+      systemExternalTask = 'cotal-repro-system-node';
+      const started = await required(ps, [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+        `$ErrorActionPreference='Stop'; ` +
+        `$node='${process.execPath.replaceAll("'", "''")}'; ` +
+        `& "$env:SystemRoot\\System32\\schtasks.exe" /Create /TN '${systemExternalTask}' /TR "\`"$node\`" -e \`"setInterval(()=>{},1000)\`"" /SC ONCE /ST 00:00 /RU SYSTEM /RL HIGHEST /F | Out-Null; ` +
+        `if($LASTEXITCODE -ne 0){throw 'Could not create SYSTEM node task'}; ` +
+        `& "$env:SystemRoot\\System32\\schtasks.exe" /Run /TN '${systemExternalTask}' | Out-Null; ` +
+        `if($LASTEXITCODE -ne 0){throw 'Could not start SYSTEM node task'}; ` +
+        `$deadline=[DateTime]::UtcNow.AddSeconds(15); $found=$null; ` +
+        `do { ` +
+        `  $rows=@(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { !$_.ExecutablePath -or $_.ExecutablePath -ceq $node }); ` +
+        `  foreach($r in $rows){ $o=Invoke-CimMethod -InputObject $r -MethodName GetOwner -ErrorAction SilentlyContinue; if($o -and $o.User -eq 'SYSTEM'){ $found=@{pid=[int]$r.ProcessId;parentPid=[int]$r.ParentProcessId;user=$o.User;domain=$o.Domain;wmiExecutablePath=$r.ExecutablePath}; break } }; ` +
+        `  if($found){break}; Start-Sleep -Milliseconds 250 ` +
+        `} while([DateTime]::UtcNow -lt $deadline); ` +
+        `if(!$found){throw 'SYSTEM node.exe did not start'}; ` +
+        `$found | ConvertTo-Json -Compress`,
+      ]);
+      report.systemExternalNode = JSON.parse(started.stdout);
+    }
     if (cell === 'app-update-mode') {
       app = spawn(join(root, 'cotal-desktop.exe'), ['--background'], { env, stdio: 'ignore', windowsHide: false });
       await delay(8000);
@@ -483,10 +562,27 @@ try {
       report.appUpdateModeBefore = beforeApp;
       check('Candidate N login-mode app carries --background argument', beforeApp.commandLine.includes('--background'));
     }
-    if (cell === 'locker') {
-      locker = spawn(node, ['-e', 'setInterval(()=>{},1000)'], { env, windowsHide: true, stdio: 'ignore' });
+    if (cell === 'locker' || cell === 'locker-filtered' || cell === 'locker-short') {
+      let lockerExe = node;
+      if (cell === 'locker-short') {
+        const shortResolved = await required(ps, [
+          '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+          `$ErrorActionPreference='Stop'; Add-Type -Namespace Win32 -Name ShortPath -MemberDefinition '[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern uint GetShortPathNameW(string lpszLongPath, System.Text.StringBuilder lpszShortPath, uint cchBuffer);'; $sb=[Text.StringBuilder]::new(32768); $n=[Win32.ShortPath]::GetShortPathNameW('${node.replaceAll("'", "''")}', $sb, [uint32]$sb.Capacity); if($n -eq 0){throw 'GetShortPathNameW failed'}; $sb.ToString()`,
+        ]);
+        lockerExe = shortResolved.stdout.trim();
+        report.lockerShortNode = { longPath: node, shortPath: lockerExe };
+        check('Short 8.3 path of bundled node.exe differs from long path', lockerExe.length > 0 && lockerExe.toLowerCase() !== node.toLowerCase() && lockerExe.includes('~'));
+      }
+      locker = spawn(lockerExe, ['-e', 'setInterval(()=>{},1000)'], { env, windowsHide: true, stdio: 'ignore' });
       await delay(1000);
       check('Real bundled Node locker stays alive', locker.pid && locker.exitCode === null);
+      if (cell === 'locker-short') {
+        const shortObs = await required(ps, [
+          '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+          `$ErrorActionPreference='Stop'; Add-Type -Namespace Win32 -Name ImgProbe -MemberDefinition '[DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid); [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool QueryFullProcessImageNameW(IntPtr h, uint flags, System.Text.StringBuilder exe, ref uint size); [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);'; $h=[Win32.ImgProbe]::OpenProcess(0x1000, $false, ${locker.pid}); $img=$null; if($h -ne [IntPtr]::Zero){ try { $sb=[Text.StringBuilder]::new(32768); $sz=[uint32]32768; if([Win32.ImgProbe]::QueryFullProcessImageNameW($h, 0, $sb, [ref]$sz)){$img=$sb.ToString()} } finally { [Win32.ImgProbe]::CloseHandle($h)|Out-Null } }; $wmi=(Get-CimInstance Win32_Process -Filter "ProcessId = ${locker.pid}").ExecutablePath; @{pid=${locker.pid};spawnedPath='${lockerExe.replaceAll("'", "''")}';queryFullProcessImageName=$img;wmiExecutablePath=$wmi} | ConvertTo-Json -Compress`,
+        ]);
+        report.lockerShortProcessObservation = JSON.parse(shortObs.stdout);
+      }
     }
     if (cell === 'occupied' || cell === 'occupied-ui') {
       Object.assign(process.env, env);
@@ -513,12 +609,29 @@ try {
       result.code = report.ui.exitCode;
     } else if (cell === 'app-update-mode') {
       result = await runUpdateModeSetup(candidate, app);
-    } else result = await run(candidate, ['/S'], 420_000);
+    } else result = await runUser(candidate, ['/S'], 420_000);
+    if (stopExternalSpawner) stopExternalSpawner();
     report.setup = result;
     report.setupElapsedMs = Date.now() - start;
     await observeDaemonLockState('whenSetupReturns', report.before?.pid);
     const diagnostic = existsSync(join(setupHome, 'result.json')) ? JSON.parse(readText(join(setupHome, 'result.json'))) : null;
     report.diagnostic = diagnostic;
+    if (useFilteredToken) {
+      check('Filtered-token setup ran with Medium Mandatory Level and BUILTIN\\Administrators deny-only', report.filteredTokenWhoami?.some(g => g.type === 'Label' && g.groupName?.includes('Medium Mandatory Level')) && report.filteredTokenWhoami?.some(g => g.groupName === 'BUILTIN\\Administrators' && g.attributes?.includes('deny only')));
+    }
+    if (before.length > 0 && !['occupied', 'occupied-ui', 'early', 'cannot-start'].includes(cell)) {
+      const expectedExeNames = [...new Set(before.filter(row => row.file.toLowerCase().endsWith('.exe')).map(row => row.file.split('/').pop()))].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      check('Census candidate executable set equals the .exe files in the installed inventory', Array.isArray(diagnostic?.executableNames) && diagnostic.executableNames.length >= 4 && JSON.stringify(diagnostic.executableNames.map(n => n.toLowerCase()).sort()) === JSON.stringify(expectedExeNames.map(n => n.toLowerCase()).sort()));
+    }
+    if (['running', 'app-open', 'app-tray', 'locker', 'locker-filtered', 'locker-short'].includes(cell)) {
+      check('Census opens and classifies every Cotal process with zero skipped rows', Array.isArray(diagnostic?.skippedProcesses) && diagnostic.skippedProcesses.length === 0);
+    }
+    if (cell === 'external-node-system-filtered') {
+      check('Filtered-token SYSTEM cell records the unopenable SYSTEM node.exe in skippedProcesses', Array.isArray(diagnostic?.skippedProcesses) && diagnostic.skippedProcesses.some(row => row.pid === report.systemExternalNode.pid && row.name === 'node.exe' && row.error === 'ERROR_ACCESS_DENIED (5)'));
+    }
+    if (['external-node-exiting', 'external-node-exiting-filtered', 'external-node-elevated', 'external-node-elevated-filtered', 'external-node-system'].includes(cell)) {
+      check('External node cell records zero skipped processes when all candidates are openable or gone', Array.isArray(diagnostic?.skippedProcesses) && diagnostic.skippedProcesses.length === 0);
+    }
     if (candidateNextChecks) {
       await observeInstalledService('after');
       if (existsSync(join(runtime, 'desktop-runtime.json'))) {
@@ -529,7 +642,7 @@ try {
       const ui = JSON.parse(readText(join(output, 'ui.json')).replace(/^\uFEFF/, ''));
       check('Newer default click-through never offers the unsafe old-uninstaller choice', !ui.some(row => row.names?.some(name => /uninstall before installing/i.test(name))));
     }
-    if (['occupied', 'occupied-ui', 'locker', 'early', 'cannot-start'].includes(cell)) {
+    if (['occupied', 'occupied-ui', 'locker', 'locker-filtered', 'locker-short', 'early', 'cannot-start'].includes(cell)) {
       check('Setup refuses before replacing files', result.code !== 0);
       compare(before, inventory());
       const postSetupStatus = await ready(sourceVersion);
@@ -570,7 +683,7 @@ try {
         report.after = await ready(expectedVersion);
         check('Retry confirms the new running service', report.after.version === expectedVersion);
       }
-      if (cell === 'locker') {
+      if (cell === 'locker' || cell === 'locker-filtered' || cell === 'locker-short') {
         check('Refusal identifies the actual bundled Node locker', diagnostic.code === 21 && diagnostic.message.includes(`node.exe (${locker.pid})`) && diagnostic.message.includes('Close programs using this installation'));
         const status = await ready(sourceVersion);
         check('Locker refusal releases the hosted launch fence', status.update.restartEvidence.prepared === false);
@@ -638,6 +751,13 @@ try {
   }
 } catch (error) { report.failure = error.stack; report.failureObservation = error.observation; process.exitCode = 1; }
 finally {
+  if (stopExternalSpawner) stopExternalSpawner();
+  if (elevatedExternalPid) {
+    await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Stop-Process -Id ${elevatedExternalPid} -Force -ErrorAction SilentlyContinue`], 15_000);
+  }
+  if (systemExternalTask) {
+    await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `& "$env:SystemRoot\\System32\\schtasks.exe" /End /TN '${systemExternalTask}' 2>$null | Out-Null; & "$env:SystemRoot\\System32\\schtasks.exe" /Delete /TN '${systemExternalTask}' /F 2>$null | Out-Null; if (${report.systemExternalNode?.pid ?? 0} -gt 0) { Stop-Process -Id ${report.systemExternalNode?.pid ?? 0} -Force -ErrorAction SilentlyContinue }`], 15_000);
+  }
   for (const file of ['helper.log', 'service-update.json', 'result.json', 'message.txt']) {
     const path = join(setupHome, file);
     if (existsSync(path)) writeFileSync(join(output, `setup-${file}`), readFileSync(path));
@@ -677,7 +797,7 @@ finally {
     const isPre01649 = Boolean(verMatch && (Number(verMatch[1]) < 0 || (Number(verMatch[1]) === 0 && (Number(verMatch[2]) < 164 || (Number(verMatch[2]) === 164 && Number(verMatch[3]) < 9)))));
     const uninstallStartedAt = new Date().toISOString();
     const uninstallStartedMs = Date.now();
-    const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes');
+    const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await runUser(node, [cli, 'daemon', 'uninstall', '--json', '--yes']);
     const uninstallEndedAt = new Date().toISOString();
     const uninstallEndedMs = Date.now();
     report.cleanup = { ...result, uninstallVersion, uninstallStartedAt, uninstallEndedAt };
