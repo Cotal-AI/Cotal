@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('describe', 'close-window', 'settings', 'quit', 'login-entry', 'connected-view', 'settings-back', 'disable-login', 'enable-login', 'read-login-settings', 'prove-login-cells')][string]$Action,
     [ValidateRange(1, 2147483647)][int]$AppPid,
     [ValidateRange(1, 2147483647)][int]$DaemonPid,
-    [string]$DaemonStart
+    [string]$DaemonStart,
+    [ValidateRange(1, 65535)][int]$DebuggerPort
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -369,6 +370,10 @@ public static class FilteredAppLauncher {
         IntPtr hToken, uint dwLogonFlags, string lpApplicationName, string lpCommandLine,
         uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory,
         ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr GetEnvironmentStringsW();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool FreeEnvironmentStringsW(IntPtr environment);
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr hObject);
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -389,7 +394,39 @@ public static class FilteredAppLauncher {
     public struct PROCESS_INFORMATION {
         public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId;
     }
-    public static int StartFiltered(string application, string commandLine, string workingDirectory) {
+    static IntPtr EnvironmentWith(string name, string value) {
+        IntPtr block = GetEnvironmentStringsW();
+        if (block == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "GetEnvironmentStringsW failed");
+        try {
+            string prefix = name + "=";
+            var kept = new System.Collections.Generic.List<string>();
+            int cursor = 0;
+            while (Marshal.ReadInt16(new IntPtr(block.ToInt64() + cursor)) != 0) {
+                string entry = Marshal.PtrToStringUni(new IntPtr(block.ToInt64() + cursor));
+                if (!entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) kept.Add(entry);
+                cursor += (entry.Length + 1) * 2;
+            }
+            kept.Add(prefix + value);
+            int bytes = 2;
+            foreach (string entry in kept) bytes += (entry.Length + 1) * 2;
+            IntPtr copy = Marshal.AllocHGlobal(bytes);
+            int write = 0;
+            foreach (string entry in kept) {
+                byte[] encoded = Encoding.Unicode.GetBytes(entry + "\0");
+                Marshal.Copy(encoded, 0, new IntPtr(copy.ToInt64() + write), encoded.Length);
+                write += encoded.Length;
+            }
+            Marshal.WriteInt16(copy, write, 0);
+            return copy;
+        } finally { FreeEnvironmentStringsW(block); }
+    }
+    public static int StartFiltered(string application, string commandLine, string workingDirectory, int debuggerPort) {
+        if (debuggerPort < 1 || debuggerPort > 65535) throw new ArgumentOutOfRangeException("debuggerPort");
+        IntPtr environment = EnvironmentWith("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=" + debuggerPort + " --remote-debugging-address=127.0.0.1");
+        try { return StartFilteredWith(application, commandLine, workingDirectory, environment); }
+        finally { Marshal.FreeHGlobal(environment); }
+    }
+    static int StartFilteredWith(string application, string commandLine, string workingDirectory, IntPtr environment) {
         IntPtr hLevel;
         if (!SaferCreateLevel(1, 0x20000, 1, out hLevel, IntPtr.Zero))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "SaferCreateLevel failed");
@@ -416,9 +453,9 @@ public static class FilteredAppLauncher {
                 STARTUPINFO si = new STARTUPINFO();
                 si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
                 PROCESS_INFORMATION pi;
-                if (!CreateProcessAsUserW(hToken, application, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0, IntPtr.Zero, workingDirectory, ref si, out pi)) {
+                if (!CreateProcessAsUserW(hToken, application, commandLine, IntPtr.Zero, IntPtr.Zero, false, 0x400, environment, workingDirectory, ref si, out pi)) {
                     int firstErr = Marshal.GetLastWin32Error();
-                    if (!CreateProcessWithTokenW(hToken, 0, application, commandLine, 0, IntPtr.Zero, workingDirectory, ref si, out pi))
+                    if (!CreateProcessWithTokenW(hToken, 0, application, commandLine, 0x400, environment, workingDirectory, ref si, out pi))
                         throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessAsUserW (" + firstErr + ") and CreateProcessWithTokenW failed");
                 }
                 CloseHandle(pi.hThread);
@@ -547,13 +584,14 @@ public static class FilteredAppLauncher {
             if ($env:USERPROFILE) { $prefDirs += (Join-Path $env:USERPROFILE 'AppData\Roaming\ai.cotal.desktop') }
             foreach ($prefDir in ($prefDirs | Select-Object -Unique)) {
                 [IO.Directory]::CreateDirectory($prefDir) | Out-Null
-                [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"connected":true,"login":false,"relocation_declined":false,"pin_offered":false,"close_explained":false}', [Text.UTF8Encoding]::new($false))
+                [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"connected":true,"relocation_declined":false,"pin_offered":false,"close_explained":false}', [Text.UTF8Encoding]::new($false))
             }
             Set-HklmRunValue $ownedValue
             $beforeFiltered = Read-HklmRunEntry
             if (!$beforeFiltered.present -or !$beforeFiltered.matchesExpected) { throw 'Cell (c) setup did not plant owned HKLM Run value.' }
+            if ($DebuggerPort -lt 1) { throw 'prove-login-cells requires DebuggerPort reserved by the driver.' }
             $workDir = Split-Path -Parent $expected
-            $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, "`"$expected`"", $workDir)
+            $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, "`"$expected`"", $workDir, $DebuggerPort)
             $filteredProc = Get-Process -Id $filteredPid
             $null = $filteredProc.Handle
             for ($waitIdx = 0; $waitIdx -lt 40; $waitIdx++) {
@@ -562,7 +600,13 @@ public static class FilteredAppLauncher {
                 Start-Sleep -Milliseconds 250
             }
             if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not show its Cotal window.' }
-            $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
+            $filteredSettings = $null
+            for ($settingsIdx = 0; $settingsIdx -lt 40; $settingsIdx++) {
+                try { $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid } catch { $filteredSettings = $null }
+                if ($filteredSettings -and $filteredSettings.result.checked -eq $true) { break }
+                Start-Sleep -Milliseconds 250
+            }
+            if (-not ($filteredSettings -and $filteredSettings.result.checked -eq $true)) { throw 'Filtered app did not show Open at login checked.' }
             $filteredEntries = Invoke-Self 'login-entry' $filteredPid
             $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.'
             $cellsProgress['cellC'] = [ordered]@{
@@ -572,14 +616,14 @@ public static class FilteredAppLauncher {
                 hkcuPresent = $filteredEntries.result.hkcu.present
                 checked = $filteredSettings.result.checked
                 loginError = $filteredSettings.result.loginError
+                filteredPid = $filteredPid
+                debuggerPort = $DebuggerPort
             }
             $diagnostics.Add([ordered]@{ cellC = $cellsProgress['cellC'] })
             Save-CellsProgress
-            if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $false -or $filteredSettings.result.loginError -cne $expectedError) {
+            if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $true -or $filteredSettings.result.loginError -cne $expectedError) {
                 throw "Cell (c) failed: integrity=$($filteredEntries.result.appIntegrity.level) hklm=$($filteredEntries.result.hklm.present) hkcu=$($filteredEntries.result.hkcu.present) checked=$($filteredSettings.result.checked) loginError=$($filteredSettings.result.loginError)"
             }
-            $filteredProc.Refresh()
-            if (!$filteredProc.HasExited) { $filteredProc.Kill(); $filteredProc.WaitForExit(10000) | Out-Null }
             $filteredProc = $null
             $result = $cellsProgress
         } catch {

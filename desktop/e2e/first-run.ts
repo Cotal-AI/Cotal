@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
@@ -393,12 +394,12 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   const driver = process.platform === "darwin" ? new MacWindowDriver(env) : new WindowDriver(undefined, process.platform === "win32" ? join(output, "webdriver-launch.jsonl") : undefined);
   let windowsAppPid: number | undefined;
   let linuxAppPid: number | undefined;
-  const lifecycle = async (action: LifecycleAction): Promise<NativeObservation> => {
+  const lifecycle = async (action: LifecycleAction, debuggerPort?: number): Promise<NativeObservation> => {
     let observation: NativeObservation;
     if (driver instanceof MacWindowDriver) {
       if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("tray-label") };
       else {
-        if (action === "prove-login-cells") throw new Error("prove-login-cells is Windows-only");
+        if (action === "prove-login-cells" || action === "enable-login" || action === "read-login-settings") throw new Error(`${action} is Windows-only`);
         observation = await driver.native(action);
       }
     } else {
@@ -416,7 +417,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
           check(`single app process before close-window: appCandidates=${JSON.stringify(census.appCandidates)}, serviceLauncher=${JSON.stringify(census.serviceLauncher)}`, census.appCandidates?.length === 1 && census.appCandidates[0].pid === windowsAppPid);
         }
       }
-      observation = await nativeLifecycle(binary, action, env, process.platform === "win32" ? windowsAppPid : undefined, windowsDaemon);
+      observation = await nativeLifecycle(binary, action, env, process.platform === "win32" ? windowsAppPid : undefined, windowsDaemon, debuggerPort);
     }
     writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action, observation })}\n`, { flag: "a" });
     return observation;
@@ -734,7 +735,31 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await lifecycle("disable-login");
       loginDisabled = true;
       if (process.platform === "win32") {
-        const loginCells = await lifecycle("prove-login-cells");
+        const reservation = createServer();
+        await new Promise<void>((resolve, reject) => { reservation.once("error", reject); reservation.listen(0, "127.0.0.1", resolve); });
+        const reserved = reservation.address();
+        assert.ok(reserved && typeof reserved !== "string");
+        const debuggerPort = reserved.port;
+        await new Promise<void>((resolve, reject) => reservation.close(error => error ? reject(error) : resolve()));
+        const loginCells = await lifecycle("prove-login-cells", debuggerPort);
+        const filteredPid = loginCells.result?.cellC?.filteredPid;
+        assert.equal(loginCells.result?.cellC?.debuggerPort, debuggerPort, "filtered app received the reserved debugger port");
+        assert.ok(Number.isInteger(filteredPid) && filteredPid > 0, "filtered app stayed running for the driver");
+        try {
+          assert.ok(driver instanceof WindowDriver, "filtered attach requires the Windows driver");
+          await driver.attachWindows(debuggerPort);
+          const savedPid = windowsAppPid;
+          windowsAppPid = filteredPid;
+          try {
+            try { await lifecycle("disable-login"); }
+            catch { await driver.click("autostart"); }
+            const afterClick = await lifecycle("read-login-settings");
+            check("person unchecks Open at login in the filtered app", afterClick.result?.checked === false);
+          } finally { windowsAppPid = savedPid; }
+        } finally {
+          await driver.close();
+          spawnSync("taskkill", ["/PID", String(filteredPid), "/T", "/F"], { windowsHide: true });
+        }
         writeFileSync(join(output, "windows-login-cells.json"), JSON.stringify(loginCells.result, null, 2));
         check("elevated Windows app removes owned HKLM Run entry on enable and disable, filtered token reports administrator requirement with true HKCU state, and foreign HKLM entry stays untouched",
           loginCells.result?.cellB?.enableRemovedOwnedHklm === true &&
@@ -742,7 +767,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
           loginCells.result?.cellC?.appIntegrity?.level === "Medium" &&
           loginCells.result?.cellC?.hklmRemained === true &&
           loginCells.result?.cellC?.hkcuPresent === false &&
-          loginCells.result?.cellC?.checked === false &&
+          loginCells.result?.cellC?.checked === true &&
           loginCells.result?.cellC?.loginError === "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there." &&
           loginCells.result?.cellD?.preservedOnEnable === true &&
           loginCells.result?.cellD?.preservedOnDisable === true);
