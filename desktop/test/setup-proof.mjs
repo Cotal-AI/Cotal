@@ -32,7 +32,7 @@ const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0',
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const proofStartedAt = new Date().toISOString();
 const report = { head: process.env.GITHUB_SHA, repeat: process.env.COTAL_SETUP_REPEAT ?? null, candidate: { kind: process.env.COTAL_SETUP_CANDIDATE_KIND ?? 'untraced', file: candidate, sha256: createHash('sha256').update(readFileSync(candidate)).digest('hex') }, cell, calls: [], checks: [], limits: [] };
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH'].includes(key)));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH', 'PSModulePath'].includes(key)));
 Object.assign(env, { COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: expectedVersion });
 const save = () => writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
 const check = (name, value) => { report.checks.push({ name, passed: Boolean(value) }); save(); assert.ok(value, name); };
@@ -270,7 +270,7 @@ async function runUpdateModeSetup(installerPath, appChild) {
     '  public static extern bool CloseHandle(IntPtr handle);',
     '}',
     '"@',
-    `$hApp = [UpdaterLaunch]::OpenProcess(0x00100001, $false, ${appChild.pid})`,
+    `$hApp = [UpdaterLaunch]::OpenProcess(0x00101001, $false, ${appChild.pid})`,
     "if ($hApp -eq [IntPtr]::Zero) { throw 'Could not open running N app handle' }",
     '$sei = New-Object UpdaterLaunch+SHELLEXECUTEINFOW',
     '$sei.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($sei)',
@@ -328,10 +328,11 @@ let seatStopped = false;
 try {
   assert.equal(existsSync(root), false, 'Each proof cell requires a fresh runner');
   if (cell === 'path-probe') {
-    const probeRun = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-path-probe.ps1'), '-Installer', candidate, '-Output', output, '-ExpectedVersion', candidateVersion], 420_000);
-    const probeResultPath = join(output, 'result.json');
+    const probeOutput = join(output, 'probe');
+    const probeRun = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(repo, 'desktop/test/setup-path-probe.ps1'), '-Installer', candidate, '-Output', probeOutput, '-ExpectedVersion', candidateVersion], 420_000);
+    const probeResultPath = join(probeOutput, 'result.json');
     const probeReport = existsSync(probeResultPath) ? JSON.parse(readText(probeResultPath)) : null;
-    report.pathProbe = { code: probeRun.code, status: probeReport?.status ?? null, cases: probeReport?.cases?.length ?? 0, observationIssues: probeReport?.observationIssues?.length ?? null, acceptanceFailures: probeReport?.acceptanceFailures?.length ?? null, recovery: probeReport?.recovery ?? null, bridgeObservations: probeReport?.bridgeObservations ?? null };
+    report.pathProbe = probeReport ?? { code: probeRun.code, stderr: probeRun.stderr };
     check('Path-identity probe script exited 0', probeRun.code === 0);
     check('All 28 guard and recovery cases completed with zero issues or failures', probeReport?.status === 'fixed-acceptance-complete' && probeReport?.cases?.length === 28 && probeReport?.observationIssues?.length === 0 && probeReport?.acceptanceFailures?.length === 0);
     check('Missing-folder /S installer rerun cleared the stale handover', probeReport?.recovery?.handoverRemoved === true);
@@ -346,8 +347,10 @@ try {
     } else if (cell === 'early') sourceVersion = '0.157.0';
     else sourceVersion = '0.164.7';
     const previous = nextHop ? baseCandidate : join(process.env.RUNNER_TEMP, `Cotal_${sourceVersion}_x64-setup.exe`);
-    assert.ok(previous && existsSync(previous), 'Workflow must provide the verified source installer');
-    if (cell !== 'fresh') await required(previous, ['/S']);
+    if (cell !== 'fresh') {
+      assert.ok(previous && existsSync(previous), 'Workflow must provide the verified source installer');
+      await required(previous, ['/S']);
+    }
     if (cell !== 'fresh') check(nextHop ? 'Exact candidate files are installed' : 'Published files are installed', JSON.parse(readText(join(runtime, 'package.json'))).version === sourceVersion);
     if (!['absent', 'fresh', 'foreign'].includes(cell)) {
       if (candidateNextChecks) {

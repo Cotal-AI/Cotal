@@ -16,10 +16,12 @@ public static class ProbePaths {
 $root=Join-Path $env:LOCALAPPDATA 'Cotal'
 $setup=Join-Path $env:LOCALAPPDATA 'CotalSetup'
 $handover=Join-Path $setup 'service-update.json'
+$env:PSModulePath=$null
 $env:COTAL_TELEMETRY='off'
 $env:COTAL_SKIP_CONNECTOR_SEED='1'
 $ownsHandover=$false
-$report=@{head=$env:GITHUB_SHA;expectedVersion=$ExpectedVersion;installerSha256=(Get-FileHash $Installer -Algorithm SHA256).Hash.ToLowerInvariant();cases=@();status='incomplete'}
+$sha256=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($Installer))).Replace('-','').ToLowerInvariant()
+$report=@{head=$env:GITHUB_SHA;expectedVersion=$ExpectedVersion;installerSha256=$sha256;cases=@();status='incomplete'}
 function Read-Normalized([string]$File) { return [IO.File]::ReadAllText($File,[Text.Encoding]::UTF8).Replace("`r`n","`n") }
 function Save { [IO.File]::WriteAllText((Join-Path $Output 'result.json'),($report|ConvertTo-Json -Depth 15),[Text.UTF8Encoding]::new($false)) }
 function Path-Api([string]$Path,[bool]$Short) {
