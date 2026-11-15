@@ -43,6 +43,31 @@ do when a deployment already exists, holds credentials, and cannot be torn down 
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
 
+## Self-update refused by 0.164.17
+
+`cotal update --self` in 0.164.16 and 0.164.17 refuses on two kinds of install, and the daemon's
+automatic update refuses with it.
+
+The first is an npm install whose package folder, or a folder above it, is group-writable. The
+Homebrew Node keeps `lib` that way, and npm under a umask of 0002 creates the package that way. The
+command prints `unprotected execution entry: <path>`.
+
+The second is an install whose Node is older than 24.22 while the umask is 0002, the default for a
+user and its services on Ubuntu, Debian and Fedora. The command reports a refused staged
+pre-install check with `unprotected execution entry: <path>`. Each automatic attempt
+also leaves an `.installing-` folder of about 66 MB under `lib/.cotal-generations`, every 90
+seconds.
+
+Install the current version once by hand. An install from the installer runs it again:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+An npm install runs `npm install -g cotal-ai@latest`. From 0.164.18 the update no longer depends on
+those modes, and automatic updates resume. A stuck 0.164.16 or 0.164.17 daemon that reaches a
+newer release prints the same instruction in `cotal daemon status` and removes the leftover folders.
+
 ## Memory-backed derived membership after 0.163.0
 
 New spaces create `KV_cotal_membership_<space>` in Memory because the feed is rebuilt from the
