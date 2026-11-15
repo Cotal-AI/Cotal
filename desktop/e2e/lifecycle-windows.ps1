@@ -316,14 +316,14 @@ public static class LifecycleWindows {
             if ([LifecycleWindows]::IsWindowVisible($hwnd)) { throw 'Two native closes did not hide the window.' }
             $result = Snapshot
         } else {
-            # tray-icon 0.25.1 counter.rs:11 starts the shared AtomicU32 COUNTER at 1, and COUNTER.next() is otherwise
-            # taken only by TrayIconId::new_unique. desktop/src-tauri/src/app.rs:257 (line 373 with E2E setup logging)
-            # builds one icon with TrayIconBuilder::with_id("machine") and no GUID, so Shell_NotifyIconGetRect addresses
-            # the owned tray_icon_app HWND with uID = 1 and GUID_NULL. Never search other IDs.
+            # Tauri 2.12.5 tray/mod.rs:230-232 with_id calls Self::new(), tray-icon 0.25.1 lib.rs:273-276
+            # TrayIconBuilder::new() calls TrayIconId::new_unique() (tray_icon_id.rs:17-18, COUNTER.next() = 1),
+            # and TrayIcon::new (windows/mod.rs:97) takes the next COUNTER value (2 today) with GUID_NULL.
+            # Probe uID 1..16 on the verified owned tray_icon_app HWND and require one S_OK.
             $trayWindows = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $script:ownerPid -and $_.className -ceq 'tray_icon_app' })
             $diagnostics.Add([ordered]@{ trayWindows = @($trayWindows | ForEach-Object {
                 [ordered]@{ pid = $_.pid; hwnd = $_.hwnd; visible = $_.visible; title = $_.title; className = $_.className }
-            }); uID = 1 })
+            }) })
             if ($trayWindows.Count -ne 1) { throw 'Expected one exact tray_icon_app window owned by AppPid.' }
             $trayHwnd = [IntPtr]$trayWindows[0].hwnd
             $overflowOpened = $false
@@ -331,13 +331,31 @@ public static class LifecycleWindows {
             if ($visibleSurfaces.Count -eq 0) { throw 'Expected at least one visible verified Explorer tray surface.' }
             $explorerPid = $visibleSurfaces[0].Current.ProcessId
             function Get-TrayIconTarget([string]$stage, [System.Windows.Automation.AutomationElement[]]$surfaces, [bool]$opened) {
-                $identifier = New-Object LifecycleWindows+NOTIFYICONIDENTIFIER
-                $identifier.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][LifecycleWindows+NOTIFYICONIDENTIFIER])
-                $identifier.hWnd = $trayHwnd
-                $identifier.uID = [uint32]1
-                $identifier.guidItem = [Guid]::Empty
-                $rect = New-Object LifecycleWindows+RECT
-                $hr = [LifecycleWindows]::Shell_NotifyIconGetRect([ref]$identifier, [ref]$rect)
+                $matches = @()
+                $probeRows = @()
+                foreach ($candidateUid in 1..16) {
+                    $identifier = New-Object LifecycleWindows+NOTIFYICONIDENTIFIER
+                    $identifier.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][LifecycleWindows+NOTIFYICONIDENTIFIER])
+                    $identifier.hWnd = $trayHwnd
+                    $identifier.uID = [uint32]$candidateUid
+                    $identifier.guidItem = [Guid]::Empty
+                    $candidateRect = New-Object LifecycleWindows+RECT
+                    $candidateHr = [LifecycleWindows]::Shell_NotifyIconGetRect([ref]$identifier, [ref]$candidateRect)
+                    $probeRows += [ordered]@{ uID = $candidateUid; hresult = ('0x' + $candidateHr.ToString('X8')); ok = ($candidateHr -eq 0) }
+                    if ($candidateHr -eq 0) {
+                        $matches += [pscustomobject]@{ uID = $candidateUid; hr = $candidateHr; rect = $candidateRect }
+                    }
+                }
+                if ($matches.Count -gt 1) {
+                    $diagnostics.Add([ordered]@{
+                        trayRectStage = $stage; trayHwnd = $trayHwnd.ToInt64(); uID = $null
+                        matchingUids = @($matches | ForEach-Object { $_.uID }); probes = $probeRows; overflowOpened = $opened
+                    })
+                    throw "Ambiguous Shell_NotifyIconGetRect S_OK count $($matches.Count) for tray_icon_app hwnd $($trayHwnd.ToInt64()) across uID 1..16."
+                }
+                $foundUid = if ($matches.Count -eq 1) { $matches[0].uID } else { $null }
+                $hr = if ($matches.Count -eq 1) { 0 } else { -2147467259 }
+                $rect = if ($matches.Count -eq 1) { $matches[0].rect } else { New-Object LifecycleWindows+RECT }
                 $width = $rect.right - $rect.left
                 $height = $rect.bottom - $rect.top
                 $empty = ($hr -ne 0 -or $width -le 0 -or $height -le 0)
@@ -379,7 +397,8 @@ public static class LifecycleWindows {
                     }
                 }
                 $diagnostics.Add([ordered]@{
-                    trayRectStage = $stage; trayHwnd = $trayHwnd.ToInt64(); uID = 1
+                    trayRectStage = $stage; trayHwnd = $trayHwnd.ToInt64(); uID = $foundUid
+                    matchingUids = @($matches | ForEach-Object { $_.uID })
                     hresult = ('0x' + $hr.ToString('X8')); ok = ($hr -eq 0)
                     rect = [ordered]@{
                         empty = $empty; left = $rect.left; top = $rect.top; right = $rect.right; bottom = $rect.bottom
@@ -387,11 +406,11 @@ public static class LifecycleWindows {
                     }
                     inVisibleExplorerSurface = $inVisibleSurface; hitTest = $hitRecord; overflowOpened = $opened
                 })
-                [pscustomobject]@{ hr = $hr; empty = $empty; x = $x; y = $y; inVisibleExplorerSurface = $inVisibleSurface; explorerOwned = $explorerOwned }
+                [pscustomobject]@{ uID = $foundUid; hr = $hr; empty = $empty; x = $x; y = $y; inVisibleExplorerSurface = $inVisibleSurface; explorerOwned = $explorerOwned }
             }
             $iconTarget = Get-TrayIconTarget 'initial' $visibleSurfaces $overflowOpened
             if ($iconTarget.hr -ne 0 -and @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $explorerPid -and $_.className -ceq 'NotifyIconOverflowWindow' -and $_.visible }).Count -gt 0) {
-                throw "Shell_NotifyIconGetRect failed for tray_icon_app hwnd $($trayHwnd.ToInt64()) and uID 1 (HRESULT 0x$($iconTarget.hr.ToString('X8')))."
+                throw "Shell_NotifyIconGetRect returned no S_OK for tray_icon_app hwnd $($trayHwnd.ToInt64()) across uID 1..16."
             }
             if (!$iconTarget.inVisibleExplorerSurface -or !$iconTarget.explorerOwned) {
                 $expanders = @()
@@ -423,7 +442,7 @@ public static class LifecycleWindows {
                 }); count = $expanders.Count })
                 if ($expanders.Count -ne 1) {
                     if ($iconTarget.hr -ne 0) {
-                        throw "Shell_NotifyIconGetRect failed for tray_icon_app hwnd $($trayHwnd.ToInt64()) and uID 1 (HRESULT 0x$($iconTarget.hr.ToString('X8')))."
+                        throw "Shell_NotifyIconGetRect returned no S_OK for tray_icon_app hwnd $($trayHwnd.ToInt64()) across uID 1..16."
                     }
                     throw 'Cotal icon is hidden and a unique Explorer overflow button (TrayNotifyWnd/303 -> Button/1502) is unavailable.'
                 }
@@ -453,7 +472,7 @@ public static class LifecycleWindows {
                 $iconTarget = Get-TrayIconTarget 'after-overflow' $visibleSurfaces $overflowOpened
             }
             if ($iconTarget.hr -ne 0) {
-                throw "Shell_NotifyIconGetRect failed for tray_icon_app hwnd $($trayHwnd.ToInt64()) and uID 1 (HRESULT 0x$($iconTarget.hr.ToString('X8')))."
+                throw "Shell_NotifyIconGetRect returned no S_OK for tray_icon_app hwnd $($trayHwnd.ToInt64()) across uID 1..16."
             }
             if ($iconTarget.empty -or !$iconTarget.inVisibleExplorerSurface -or !$iconTarget.explorerOwned) {
                 throw 'Cotal tray icon rectangle is not inside a visible verified Explorer tray surface.'

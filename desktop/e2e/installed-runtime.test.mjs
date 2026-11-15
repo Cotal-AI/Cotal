@@ -4,23 +4,20 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-const normalize = text => text.replace(/\r\n/g, '\n');
-const read = path => normalize(readFileSync(new URL(path, import.meta.url), 'utf8'));
+const read = path => readFileSync(new URL(path, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const source = read('./launch.ts');
 
 test('installed Windows failure preserves the original verdict and captures native Details before teardown', () => {
-  for (const text of [source, normalize(readFileSync(new URL('./launch.ts', import.meta.url), 'utf8').replace(/\r?\n/g, '\r\n'))]) {
-    const failure = text.slice(text.indexOf('} catch (error) {\n  report.outcome'), text.indexOf('\nfinally {'));
-    assert.match(failure, /process.platform === "win32" && nativePid/);
-    assert.match(failure, /windows-launch-details.ps1/);
-    assert.match(failure, /"-AppPid", String\(nativePid\)/);
-    assert.match(failure, /"-Binary", binary!/);
-    assert.match(failure, /"failure-details.json"/);
-    assert.match(failure, /"failure-details.png"/);
-    assert.doesNotMatch(failure, /bridgeTrace|CDP|remote-debugging/);
-    assert.match(failure, /throw error;/);
-    assert.doesNotMatch(failure, /outcome = "passed"|nativeLifecycle|NODE_OPTIONS|--features|daemon.*desktop/);
-  }
+  const failure = source.slice(source.indexOf('} catch (error) {\n  report.outcome'), source.indexOf('\nfinally {'));
+  assert.match(failure, /process.platform === "win32" && nativePid/);
+  assert.match(failure, /windows-launch-details.ps1/);
+  assert.match(failure, /"-AppPid", String\(nativePid\)/);
+  assert.match(failure, /"-Binary", binary!/);
+  assert.match(failure, /"failure-details.json"/);
+  assert.match(failure, /"failure-details.png"/);
+  assert.doesNotMatch(failure, /bridgeTrace|CDP|remote-debugging/);
+  assert.match(failure, /throw error;/);
+  assert.doesNotMatch(failure, /outcome = "passed"|nativeLifecycle|NODE_OPTIONS|--features|daemon.*desktop/);
 });
 
 test('Windows failure block retains failed native Details and never replaces the original error', () => {

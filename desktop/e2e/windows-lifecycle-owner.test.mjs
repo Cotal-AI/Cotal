@@ -85,6 +85,12 @@ test('close-window receives launch-pinned PID only after separate duplicate-proc
   assert.ok(close.indexOf('single app process before close-window') < close.indexOf('nativeLifecycle(binary, action, env,'));
   assert.match(close, /nativeLifecycle\(binary, action, env, process\.platform === "win32" \? windowsAppPid : undefined, windowsDaemon\)/);
   assert.match(caller, /row\.source === "process-argv" && row\.atUnixMs >= launchStarted/);
+  const stop = caller.slice(caller.indexOf('const stopDriver ='), caller.indexOf('const open ='));
+  assert.match(stop, /process\.platform === "linux" && linuxAppPid !== undefined/);
+  assert.doesNotMatch(stop, /process\.kill\(pid/);
+  assert.match(stop, /\/proc\/\$\{pid\}\/stat/);
+  assert.match(stop, /owned Linux app process exit/);
+  assert.match(caller, /if \(process\.platform === "linux"\) await lifecycle\("quit"\);\s*await stopDriver\(\);\s*const afterQuit = await status\(\);/);
 });
 
 test('app census excludes only the answering daemon parent with exact birth/path and retains complete evidence', () => {
@@ -98,15 +104,18 @@ test('app census excludes only the answering daemon parent with exact birth/path
   assert.match(helper, /if \(\$DaemonPid -and \(\$appCandidates\.Count -ne 1 -or \$appCandidates\[0\]\.pid -ne \$AppPid\)\)/);
 });
 
-test('tray icon lookup uses Shell_NotifyIconGetRect for owned tray_icon_app uID 1, structural chevron 303/1502 when needed, and verifies #32768 menu owner and Settings… before pressing', () => {
-  assert.match(helper, /tray-icon 0\.25\.1[\s\S]*?counter\.rs:11[\s\S]*?app\.rs:257[\s\S]*?with_id\("machine"\)/);
+test('tray icon lookup probes uID 1..16 on owned tray_icon_app requiring one S_OK, uses structural chevron 303/1502 when needed, and verifies #32768 menu owner and Settings… before pressing', () => {
+  assert.match(helper, /Tauri 2\.12\.5[\s\S]*?tray-icon 0\.25\.1[\s\S]*?TrayIconId::new_unique\(\)[\s\S]*?TrayIcon::new/);
   assert.match(helper, /Shell_NotifyIconGetRect/);
   assert.match(helper, /NOTIFYICONIDENTIFIER/);
-  const tray = helper.slice(helper.indexOf('# tray-icon 0.25.1 counter.rs:11'), helper.indexOf('# Keep the caller'));
+  const tray = helper.slice(helper.indexOf('# Tauri 2.12.5 tray/mod.rs:230-232'), helper.indexOf('# Keep the caller'));
   assert.match(tray, /className -ceq 'tray_icon_app'/);
-  assert.match(tray, /uID = 1/);
-  assert.doesNotMatch(tray, /foreach \(\$uID|1\.\.[2-9]/);
-  assert.match(tray, /Shell_NotifyIconGetRect failed for tray_icon_app hwnd/);
+  assert.match(tray, /foreach \(\$candidateUid in 1\.\.16\)/);
+  assert.match(tray, /\$matches\.Count -gt 1/);
+  assert.match(tray, /Ambiguous Shell_NotifyIconGetRect S_OK count/);
+  assert.match(tray, /Shell_NotifyIconGetRect returned no S_OK for tray_icon_app hwnd/);
+  assert.match(tray, /uID = \$foundUid/);
+  assert.match(tray, /matchingUids =/);
   assert.match(tray, /Get-TrayIconTarget 'initial'/);
   assert.ok(tray.indexOf("Get-TrayIconTarget 'initial'") < tray.indexOf("AutomationId -ceq '303'"));
   assert.match(tray, /ClassName -ceq 'TrayNotifyWnd' -and \$_\.Current\.AutomationId -ceq '303'/);

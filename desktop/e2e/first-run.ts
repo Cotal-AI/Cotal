@@ -392,6 +392,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
   const browserUrls = () => existsSync(browserLog) ? readFileSync(browserLog, "utf8").trim().split("\n").filter(Boolean) : [];
   const driver = process.platform === "darwin" ? new MacWindowDriver(env) : new WindowDriver(undefined, process.platform === "win32" ? join(output, "webdriver-launch.jsonl") : undefined);
   let windowsAppPid: number | undefined;
+  let linuxAppPid: number | undefined;
   const lifecycle = async (action: LifecycleAction): Promise<NativeObservation> => {
     let observation: NativeObservation;
     if (driver instanceof MacWindowDriver) {
@@ -475,11 +476,25 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     });
   };
   const stopDriver = async () => {
-    try { await driver.close(); }
+    try { await driver.close().catch(() => {}); }
     finally {
       if (server && server.exitCode === null && server.signalCode === null) {
         server.kill();
         await until("driver exit", async () => server!.exitCode !== null || server!.signalCode !== null, Boolean, 15_000);
+      }
+      if (process.platform === "linux" && linuxAppPid !== undefined) {
+        const pid = linuxAppPid;
+        linuxAppPid = undefined;
+        await until("owned Linux app process exit", async () => {
+          try {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            const end = stat.lastIndexOf(") ");
+            return end !== -1 && stat[end + 2] === "Z";
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+            throw error;
+          }
+        }, Boolean, 15_000);
       }
     }
   };
@@ -490,9 +505,10 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       return;
     }
     const launchStarted = Date.now();
-    const launchReceipts = join(output, "deep-link-receipts.jsonl");
+    const launchReceipts = join(process.platform === "win32" ? output : daemonHome, "deep-link-receipts.jsonl");
     const launchOffset = existsSync(launchReceipts) ? readFileSync(launchReceipts).length : 0;
     windowsAppPid = undefined;
+    linuxAppPid = undefined;
     server = spawn(process.env.TAURI_DRIVER ?? "tauri-driver", [], { env: guiEnv, cwd: home, stdio: ["ignore", "pipe", "pipe"] });
     server.stdout?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
     server.stderr?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
@@ -501,18 +517,20 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     if (process.platform === "win32" && args.length === 1 && args[0].startsWith("cotal://")) {
       await driver.openWindowsLink(binary, args[0], { env: guiEnv, cwd: home, receipts: join(output, "deep-link-receipts.jsonl") });
     } else await driver.open(binary, args);
+    const launched = await until<{ pid: number } | undefined>("fresh native app launch PID", async () => {
+      if (!existsSync(launchReceipts)) return undefined;
+      const rows = readFileSync(launchReceipts).subarray(launchOffset).toString("utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+      const starts = rows.filter(row => row.source === "process-argv" && row.atUnixMs >= launchStarted);
+      assert.equal(starts.length, 1, "one fresh native process-argv launch receipt required");
+      assert.ok(Number.isSafeInteger(starts[0].pid) && starts[0].pid > 0);
+      return starts[0];
+    }, Boolean, 30_000);
+    assert.ok(launched);
     if (process.platform === "win32") {
-      const launched = await until<{ pid: number } | undefined>("fresh native Windows app launch PID", async () => {
-        if (!existsSync(launchReceipts)) return undefined;
-        const rows = readFileSync(launchReceipts).subarray(launchOffset).toString("utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-        const starts = rows.filter(row => row.source === "process-argv" && row.atUnixMs >= launchStarted);
-        assert.equal(starts.length, 1, "one fresh native process-argv launch receipt required");
-        assert.ok(Number.isSafeInteger(starts[0].pid) && starts[0].pid > 0);
-        return starts[0];
-      }, Boolean, 30_000);
-      assert.ok(launched);
       windowsAppPid = launched.pid;
       writeFileSync(join(output, "windows-app-launches.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), pid: windowsAppPid, launchStarted })}\n`, { flag: "a", mode: 0o600 });
+    } else {
+      linuxAppPid = launched.pid;
     }
     if (!args.includes("--background")) await until("native app metadata", () => driver.text("version"), value => value.startsWith("v"));
     if (process.platform === "win32") await driver.call("POST", driver.path("execute/sync"), { script: `
@@ -552,7 +570,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
         native("/bin/launchctl", ["setenv", key, value]);
       }
     }
-    if (process.platform === "linux" && fixture.account) {
+    if (process.platform === "linux") {
       Object.assign(env, { GTK_MODULES: "gail:atk-bridge", NO_AT_BRIDGE: "0" });
       const config = join(dirs.XDG_CONFIG_HOME, "xfce4/xfconf/xfce-perchannel-xml");
       mkdirSync(config, { recursive: true });
@@ -672,7 +690,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       await shot("06-settings-connected");
       await lifecycle("quit");
       // Native quit has been observed independently. Deleting the old driver session is cleanup.
-      await stopDriver().catch(() => {});
+      await stopDriver();
       const afterQuit = await status();
       check("native Quit leaves exact daemon and Manager answering", afterQuit.pid === connected.pid && afterQuit.managers?.some((row: any) => row.instanceId === manager.instanceId && row.state === "answering"));
       await open(); await title("This computer is connected");
@@ -682,7 +700,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       check("name persistence reopen preserves daemon and Manager identity", afterReopen.pid === connected.pid && afterReopen.managers?.some((row: any) => row.instanceId === manager.instanceId && row.state === "answering"));
       await shot("07-reopened-name");
       await lifecycle("quit");
-      await stopDriver().catch(() => {});
+      await stopDriver();
       assert.deepEqual(login.args, ["--background"], "native login entry supplies only background launch");
       if (driver instanceof MacWindowDriver) await open(login.args);
       else {
@@ -751,6 +769,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     const dashboard = new URL("/machines", fixture.idpUrl); dashboard.searchParams.set("space", fixture.catalogId); dashboard.searchParams.set("machine", manager.instanceId);
     await until("dashboard target recorded", async () => browserUrls(), values => values.includes(dashboard.href));
     check("dashboard targets discovered canonical space and answering Manager", true);
+    if (process.platform === "linux") await lifecycle("quit");
     await stopDriver();
     const afterQuit = await status();
     check("real service and Manager survive app quit", afterQuit.pid === connected.pid && afterQuit.managers.some((m: any) => m.instanceId === manager.instanceId && m.state === "answering"));
@@ -762,6 +781,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     check("Ready remains available after removing the last space", await driver.displayed("connected-panel"));
     await shot("06-disconnected");
     phase("disconnected-driver-stop-start");
+    if (process.platform === "linux") await lifecycle("quit");
     await stopDriver();
     phase("disconnected-driver-stopped");
     const link = new URL("cotal://connect"); link.searchParams.set("idp", fixture.idpUrl); link.searchParams.set("space", fixture.space);
@@ -845,6 +865,9 @@ export async function firstRun(fixture: Fixture): Promise<void> {
         await lifecycle("disable-login");
         loginDisabled = true;
       } catch (error) { failure ??= `native login preference cleanup: ${String(error)}`; }
+    }
+    if (process.platform === "linux" && linuxAppPid !== undefined) {
+      await lifecycle("quit").catch(error => { failure ??= String(error); });
     }
     await windowsPhase("cleanup-driver-close", stopDriver).catch(error => { failure ??= String(error); });
     if (loginChild && loginChild.exitCode === null && loginChild.signalCode === null) {
