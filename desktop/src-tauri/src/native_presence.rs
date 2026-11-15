@@ -33,6 +33,15 @@ fn bundle() -> Result<PathBuf, String> {
         .map(PathBuf::from).ok_or_else(|| "Run the packaged Cotal application to install it.".to_string())
 }
 
+#[cfg(all(cotal_updater, target_os = "macos"))]
+pub(crate) fn updater_location(app: &AppHandle) -> Result<PathBuf, String> {
+    let source = bundle()?;
+    if crate::presence::relocation_source(&source, &app.path().download_dir().map_err(|error| error.to_string())?) {
+        return Err("Move Cotal to Applications before updating it. Disk image and Downloads copies cannot update themselves.".into());
+    }
+    Ok(source)
+}
+
 fn transient(app: &AppHandle) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
@@ -101,6 +110,7 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
 
 #[tauri::command]
 pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let _activity = app.state::<crate::app_activity::Activity>().request()?;
     let state = app.state::<Presence>();
     let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
     if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
@@ -112,6 +122,7 @@ pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String>
 
 #[tauri::command]
 pub fn dismiss_presence_offer(app: AppHandle, offer: String) -> Result<(), String> {
+    let _activity = app.state::<crate::app_activity::Activity>().request()?;
     let state = app.state::<Presence>();
     let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
     match offer.as_str() {
@@ -125,6 +136,7 @@ pub fn dismiss_presence_offer(app: AppHandle, offer: String) -> Result<(), Strin
 /// The source is this executable's bundle and the destination is fixed. Existing apps are never replaced.
 #[tauri::command]
 pub async fn move_to_applications(app: AppHandle) -> Result<(), String> {
+    let _activity = app.state::<crate::app_activity::Activity>().request()?;
     #[cfg(target_os = "macos")]
     {
         if !transient(&app)? { return Err("This application is not running from a disk image or Downloads.".into()); }

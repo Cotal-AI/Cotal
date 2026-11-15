@@ -45,6 +45,7 @@ test("launch readiness, application retry and polling follow the selected space"
       if (cmd === "plugin:deep-link|get_current") return ["cotal://connect?idp=https://example.com/auth&space=sp_first"];
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
       if (cmd === "set_connection_state") return;
+      if (cmd === "app_update_receipt") return undefined;
       if (cmd === "app_update_check") return { phase: "unconfigured" };
       if (cmd === "open_browser") { browserUrls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request");

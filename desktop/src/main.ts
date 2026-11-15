@@ -1,4 +1,4 @@
-import { renderAppUpdate, appUpdateNotice, type AppUpdate } from "./app-update";
+import { renderAppUpdate, appUpdateNotice, appliedUpdateSummary, type AppUpdate, type AppUpdateReceipt } from "./app-update";
 import { listen } from "@tauri-apps/api/event";
 import { renderAgents } from "./agents";
 import { updateScrollThumb } from "./scrollbars";
@@ -82,6 +82,19 @@ let appUpdate: AppUpdate | undefined;
 let autoUpdates: boolean | undefined;
 let nextAppCheck = 0;
 let appCheckRunning = false;
+let appApplyRunning = false;
+let nextAppApplyTick = 0;
+let appliedUpdate: AppUpdateReceipt | undefined;
+let serviceStatus: Record<string, unknown> | undefined;
+async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
+  if (tick && Date.now() < nextAppApplyTick) return;
+  if (appApplyRunning || busy || loginActive || setupActive || appPlatform !== "darwin" || !autoUpdates || !appUpdate?.version) return;
+  appApplyRunning = true;
+  if (explicit) { appliedUpdate = undefined; renderSettings(); }
+  try { appUpdate = await invoke<AppUpdate>("app_update_apply", { explicit }); }
+  catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
+  finally { if (!explicit) nextAppApplyTick = Date.now() + 600_000; appApplyRunning = false; renderSettings(); }
+}
 async function readAutoUpdates(): Promise<void> {
   const policy = await request({ op: "update-policy" });
   if (typeof policy.auto !== "boolean") throw new Error("The automatic update preference is unavailable.");
@@ -94,12 +107,10 @@ async function checkAppUpdates(manual = false): Promise<void> {
   nextAppCheck = Date.now() + 86_400_000;
   try {
     appUpdate = await invoke<AppUpdate>("app_update_check", { manual });
+    if (appUpdate.phase === "current" && (appliedUpdate?.phase === "failed" || appliedUpdate?.target !== appVersion)) appliedUpdate = undefined;
     if (appUpdaterConfigured()) await readAutoUpdates();
     renderSettings();
-    if (autoUpdates && appUpdate.phase === "available") {
-      await readAutoUpdates();
-      if (autoUpdates) appUpdate = await invoke<AppUpdate>("app_update_download");
-    }
+    if (autoUpdates && appUpdate.phase === "available") await applyAppUpdate();
   } catch (error) {
     text("settings-message", error instanceof Error ? error.message : String(error));
     if (manual) throw error;
@@ -157,6 +168,12 @@ function renderSettings(): void {
   text("update-banner-copy", latest ? `Cotal ${latest} is available.` : "");
   text("settings-computer", savedComputerName);
   text("settings-versions", `App ${appVersion ?? "Unavailable"} · Service ${daemonVersion}`);
+  const applied = appliedUpdateSummary(appliedUpdate, appVersion, serviceStatus);
+  el("applied-update").hidden = !applied;
+  text("applied-update", applied ?? "");
+  const canRestart = appPlatform === "darwin" && autoUpdates === true && appUpdate?.version && ["available", "ready", "failed"].includes(appUpdate.phase);
+  el("restart-update").hidden = !canRestart;
+  el<HTMLButtonElement>("restart-update").disabled = busy || loginActive || setupActive || appApplyRunning;
   if (appUpdaterConfigured()) renderAppUpdate(el("settings-update-summary"), appUpdate!, autoUpdates !== false);
   else { text("settings-update-summary", updateSummary(updateStatus, appVersion ?? "")); delete el("settings-update-summary").dataset.updateState; }
   const checkedAt = appUpdaterConfigured() ? appUpdate?.checkedAt === undefined ? undefined : new Date(appUpdate.checkedAt).toISOString() : updateStatus?.lastCheck;
@@ -789,6 +806,7 @@ async function refresh(): Promise<void> {
   try {
     const status = await request({ op: "status" });
     if (!current()) return;
+    serviceStatus = status;
     ready = status.state === "ready";
     if (statusProblem || (ready && problem === "NOT_ANSWERING")) clearDetails();
     renderAgents(status, el("running-agents"));
@@ -838,7 +856,7 @@ async function refresh(): Promise<void> {
     } else { state("ready", space); if (stage === "connect") showStage("connect"); }
   } catch (error) {
     if (!current()) return;
-    ready = false; state("unavailable");
+    ready = false; serviceStatus = undefined; renderSettings(); state("unavailable");
     if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
     if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
@@ -1031,8 +1049,12 @@ async function settingsAction(body: Request): Promise<void> {
     announce(body.op === "update-check" ? appUpdaterConfigured() ? "Update check complete." : "Update check complete. Cached results may be used." : "Update preference saved.");
     text("settings-message", "");
   } catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
-  finally { busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false; }
+  finally {
+    busy = false; refreshGeneration++; renderSettings(); el<HTMLButtonElement>("check-updates").disabled = false;
+    if (body.op === "update-check" && appUpdate && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate();
+  }
 }
+el("restart-update").addEventListener("click", () => void applyAppUpdate(true));
 el("check-updates").addEventListener("click", () => void settingsAction({ op: "update-check" }));
 el("update-preference").addEventListener("change", () => {
   const enabled = el<HTMLInputElement>("update-preference").checked;
@@ -1085,7 +1107,14 @@ async function start(): Promise<void> {
     const os = ({ darwin: "macOS", win32: "Windows", linux: "Linux" } as Record<string, string>)[String(info.platform)] ?? String(info.platform);
     const arch = info.platform === "darwin" && info.arch === "arm64" ? "Apple silicon" : ({ x64: "64-bit Intel / AMD", arm64: "ARM64", ia32: "32-bit Intel" } as Record<string, string>)[String(info.arch)] ?? String(info.arch);
     text("machine-details", `${os} · ${arch} · ${Math.round(Number(info.memoryBytes) / 1024 ** 3)} GB`);
-    await listen<AppUpdate>("desktop-update", event => { appUpdate = event.payload; renderSettings(); });
+    await listen<AppUpdate>("desktop-update", event => {
+      appUpdate = event.payload;
+      if (appUpdate.phase === "downloading" || appUpdate.phase === "installing") appliedUpdate = undefined;
+      renderSettings();
+    });
+    await listen("desktop-hidden", () => void applyAppUpdate());
+    try { appliedUpdate = await invoke<AppUpdateReceipt | undefined>("app_update_receipt") ?? undefined; }
+    catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
     void checkAppUpdates();
     await refresh();
     if (ready) {
@@ -1100,7 +1129,7 @@ async function start(): Promise<void> {
   initialized = true;
   document.querySelector(".app")!.classList.remove("loading");
   if (computerAccount?.hostSupport !== "supported") text("tray-label", [...connections.values()].includes("launch-ready") ? "Connected" : "Not connected");
-  const tick = async () => { if (!busy) { await refresh(); void checkAppUpdates(); } poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
+  const tick = async () => { if (!busy && !appApplyRunning) { await refresh(); void checkAppUpdates(); if (appUpdate?.version && ["available", "ready"].includes(appUpdate.phase)) void applyAppUpdate(false, true); } poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000); };
   poll = setTimeout(() => void tick(), computerAccount?.hostSupport === "supported" ? 1000 : 10_000);
 }
 document.querySelector(".connection-card")!.addEventListener("transitionend", event => {

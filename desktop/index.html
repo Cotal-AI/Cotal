@@ -18,7 +18,7 @@
       <section id="settings-panel" class="settings-card" aria-labelledby="settings-title" hidden>
         <div class="settings-heading"><h1 id="settings-title" tabindex="-1">Settings</h1><button id="settings-back" class="text-button" type="button" hidden>Back</button></div>
         <section class="settings-row"><div><h2>This computer</h2><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="text-button" type="button">Edit name</button></section>
-        <section class="settings-row"><div><h2>Updates</h2><p id="settings-update-summary">Update information is unavailable.</p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="text-button" type="button">Check now</button></section>
+        <section class="settings-row"><div><h2>Updates</h2><p id="settings-update-summary">Update information is unavailable.</p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="text-button" type="button">Check now</button><button id="restart-update" class="text-button" type="button" hidden>Restart to update</button></section>
         <div id="settings-download-row" class="settings-row" hidden><p id="settings-download-copy"></p><button id="settings-download" class="text-button" type="button">Open release page</button></div>
         <section id="update-preference-row" class="settings-row"><div><p id="update-preference-label">Notify me about updates</p><p id="update-policy" class="muted"></p></div><label class="switch"><input id="update-preference" type="checkbox" aria-labelledby="update-preference-label"><span></span></label></section>
         <div id="settings-startup"><h2>Startup</h2></div>
@@ -32,6 +32,7 @@
         <p id="step-caption" class="eyebrow">Let's get started</p>
         <h1 id="connection-title" tabindex="-1">Welcome to Cotal</h1>
         <p id="connection-description">Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.</p>
+        <p id="applied-update" class="muted" role="status" hidden></p>
         <p id="link-context" class="context" hidden></p>
         <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
         <div id="sign-in-panel">
