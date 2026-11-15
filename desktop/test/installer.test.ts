@@ -6,12 +6,13 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const base = new URL('../src-tauri/installers/', import.meta.url);
+const readText = (path: string) => readFileSync(new URL(path, base), 'utf8').replace(/\r\n/g, '\n');
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
   execFileSync(process.execPath, [fileURLToPath(new URL('../scripts/prepare-installer.mjs', import.meta.url))]);
-  const source = readFileSync(new URL('installer.nsi', base), 'utf8');
+  const source = readText('installer.nsi');
   assert.ok(source.indexOf('; A newer installer owns service preparation') < source.indexOf('  reinst_uninstall:'));
   assert.match(source, /\$WixMode <> 1\n  \$\{AndIf\} \$R0 = 1\n    Abort/);
-  const upstream = readFileSync(new URL('tauri-2.12.4.nsi', base), 'utf8');
+  const upstream = readText('tauri-2.12.4.nsi');
   assert.equal((source.match(/StrCpy \$UpdateMode 1/g) ?? []).length, (upstream.match(/StrCpy \$UpdateMode 1/g) ?? []).length);
   const pre = source.indexOf('!insertmacro NSIS_HOOK_PREINSTALL');
   assert.ok(pre < source.indexOf('!insertmacro CheckIfAppIsRunning', pre));
@@ -19,9 +20,9 @@ test('pinned installer guard precedes the old uninstaller without changing updat
   assert.ok(pre < source.indexOf('File "${MAINBINARYSRCPATH}"'));
 });
 test('setup owns task suppression without task termination and persists caller-readable results', () => {
-  const hooks = readFileSync(new URL('hooks.nsh', base), 'utf8');
-  const task = readFileSync(new URL('service-task.ps1', base), 'utf8');
-  const helper = readFileSync(new URL('service-update.mjs', base), 'utf8');
+  const hooks = readText('hooks.nsh');
+  const task = readText('service-task.ps1');
+  const helper = readText('service-update.mjs');
   assert.match(task, /finally \{ Write-SetupStep 'exit' \}/);
   assert.match(task, /Process\]::GetCurrentProcess\(\)\.StartTime\.ToUniversalTime\(\)/);
   assert.match(task, /AppendAllText/);
@@ -55,7 +56,7 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.ok(helper.indexOf("task('disable')") < helper.indexOf("await request('daemon-stop', true)"));
   assert.match(helper, /rmSync\(stateFile\);\n    outcome\(23/);
   assert.doesNotMatch(helper, /outcome\(0,.*'prepared'/);
-  const app = readFileSync(new URL('../src/app.rs', base), 'utf8');
+  const app = readText('../src/app.rs');
   assert.ok(app.indexOf('setup_state::interrupted') < app.indexOf('.sidecar(NODE_SIDECAR)'));
   assert.match(app, /SETUP_INTERRUPTED/);
   const roots = helper.indexOf('// GUI launchers and their bounded bridge children');
@@ -82,7 +83,7 @@ test('setup owns task suppression without task termination and persists caller-r
 });
 
 test('helper exit diagnostics retain only 200 private-safe run summaries and preserve exit status', () => {
-  const source = readFileSync(new URL('service-update.mjs', base), 'utf8');
+  const source = readText('service-update.mjs');
   const start = source.indexOf("process.on('exit', code => {");
   const end = source.indexOf('\nconst stateFile', start);
   assert.ok(start > 0 && end > start);
