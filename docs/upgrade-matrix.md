@@ -92,9 +92,11 @@ These options refuse outside disposable hosted runners.
 A Linux no-runtime-directory probe removes `XDG_RUNTIME_DIR` only from the updater child.
 With a live daemon it expects the named refusal before staging and verifies the original daemon lifetime.
 Without a daemon it requires the normal update result. Diagnostic and cleanup commands keep their runtime directory.
-Published-source refusal probes preserve the scheduler's failure budget. After two failed attempts,
-the third observation must report that it is waiting for a newer version or manual update,
-leave the updater log unchanged, and leave no staging directory. The probe ages timer records but never resets failures.
+Published-source refusal probes preserve the scheduler's failure budget. A deferral keeps the count
+and its recorded retry time. A replacement failure increments the count and waits one hour.
+After two counted failures, the next observation must wait without launching another updater.
+The probe ages timer records but never seeds or resets failures. Historical staging leftovers remain
+visible as measured faults. Fixed-source refusal attempts must leave no staging folders or store growth.
 The root-owned installation probe runs only on a disposable Linux runner. Root updates an actual
 `/usr/local` installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.

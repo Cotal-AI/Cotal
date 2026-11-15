@@ -5,7 +5,7 @@ import { resolve, join } from 'node:path';
 export function inspectGenerationStore(store, { required = true, maxEntries = 200000 } = {}) {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('invalid generation census entry bound');
   const root = resolve(store);
-  const report = { root, required, state: 'complete', entries: 0, links: [], violations: [] };
+  const report = { root, required, state: 'complete', entries: 0, logicalBytes: 0, links: [], violations: [] };
   const walk = (path, relative, depth) => {
     if (depth > 128) throw new Error('generation census depth bound exceeded');
     const before = lstatSync(path);
@@ -17,6 +17,7 @@ export function inspectGenerationStore(store, { required = true, maxEntries = 20
       if (!relative) throw new Error('generation store must not be a symbolic link');
       report.links.push({ path: relative, target: readlinkSync(path) });
     } else if (before.isDirectory() || before.isFile()) {
+      if (before.isFile()) report.logicalBytes += before.size;
       if ((before.mode & 0o022) !== 0) report.violations.push({ path: relative || '.', reason: 'group or other writable', mode: before.mode & 0o777 });
       if (before.isDirectory()) {
         for (const name of readdirSync(path).sort()) walk(join(path, name), relative ? `${relative}/${name}` : name, depth + 1);

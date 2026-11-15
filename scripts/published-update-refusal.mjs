@@ -6,19 +6,40 @@ export function publishedStagedRefusal(update) {
     && /Install the new version once by hand/.test((update.stdout ?? '') + (update.stderr ?? ''));
 }
 
-/** Observe two real failures and the unchanged scheduler's third-budget decision. */
-export function publishedSchedulerBudget(observations) {
+/** Regrade recorded outcomes without turning a pre-replacement deferral into a failure. */
+export function publishedSchedulerBudget(observations, { fixedSource = false } = {}) {
   assert.equal(observations.length, 3, 'three independent observations required');
-  const [first, second, third] = observations;
-  for (const row of [first, second]) {
-    assert(row.attempt.next > row.stimulusAt, 'scheduler attempt did not settle');
-    assert.match(row.text, /Install the new version once by hand/);
-    assert.equal(row.store.passed, true, 'refusal left unsafe staging');
+  for (const [index, row] of observations.entries()) {
+    const { before, attempt, stimulusAt, observedAt } = row;
+    assert(Number.isInteger(before?.failures) && before.failures >= 0, 'prior failure budget missing');
+    assert(Number.isFinite(observedAt) && observedAt >= stimulusAt, 'observation time missing');
+    assert(attempt.next > stimulusAt, 'scheduler attempt did not settle');
+    if (index > 0) assert.equal(before.failures, observations[index - 1].attempt.failures, 'failure budget was changed between observations');
+    let delay;
+    if (before.failures >= 2) {
+      assert.equal(attempt.failures, before.failures, 'waiting changed failure budget');
+      assert.match(attempt.result, /failed twice; waiting/);
+      assert.equal(row.logSha256, row.beforeLogSha256, 'waiting launched or rewrote updater log');
+      delay = 86400000;
+    } else {
+      assert.match(row.text, /Install the new version once by hand/);
+      assert(row.logMtimeMs >= stimulusAt, 'refusal log was not written by this attempt');
+      if (typeof attempt.deferred === 'string') {
+        assert.equal(attempt.result, attempt.deferred, 'deferral result disagrees with its reason');
+        assert.equal(attempt.failures, before.failures, 'deferral changed failure budget');
+        delay = /registry or extension closure availability/.test(attempt.deferred) ? 3600000 : 60000;
+      } else {
+        assert.equal(attempt.failures, before.failures + 1, 'failure must increment budget once');
+        delay = 3600000;
+      }
+    }
+    assert(attempt.next >= stimulusAt + delay && attempt.next <= observedAt + delay, 'outcome next-attempt time disagrees with recorded type');
+    assert(['complete', 'missing'].includes(row.store?.state), 'store census did not complete');
+    assert(Number.isSafeInteger(row.store.logicalBytes), 'store byte census missing');
+    if (fixedSource) {
+      assert.equal(row.store.passed, true, 'fixed source left unsafe staging');
+      assert.equal(row.store.logicalBytes, row.beforeStore.logicalBytes, 'fixed refusal grew generation store');
+    }
   }
-  assert(second.attempt.failures >= 2, 'unchanged scheduler must count two failures');
-  assert.equal(third.attempt.failures, second.attempt.failures, 'third observation changed failure budget');
-  assert.match(third.attempt.result, /failed twice; waiting/);
-  assert.equal(third.store.passed, true);
-  assert.equal(third.logSha256, second.logSha256, 'third observation launched or rewrote updater log');
   return true;
 }

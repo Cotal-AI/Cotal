@@ -901,6 +901,10 @@ export async function matrixCell(options) {
         report.publishedSchedulerObservations = [];
         for (let number = 1; number <= 3; number++) {
           for (let i=0;i<60&&!existsSync(join(cotalHome,'update-check.json'));i++) await delay(1000);
+          const before=json(join(cotalHome,'update-attempt.json'));
+          const beforeStore=inspectGenerationStore(join(prefix,'lib/.cotal-generations'),{required:false});
+          const log=join(cotalHome,'update-attempt.log');
+          const beforeLogSha256=digest(existsSync(log)?readFileSync(log):'');
           for (const [name, fields] of [['update-check.json',['checkedAt','firstSeenAt','attemptedAt']],['update-attempt.json',['next']]]) {
             const file=join(cotalHome,name), before=json(file), after={...before};
             for(const field of fields) after[field]=Date.now()-7200000;
@@ -915,13 +919,14 @@ export async function matrixCell(options) {
             report.publishedLastStatus=await daemon('published scheduler budget status',['daemon','status','--json']);
             attempt=json(join(cotalHome,'update-attempt.json'));
             text=existsSync(join(cotalHome,'update-attempt.log'))?readFileSync(join(cotalHome,'update-attempt.log'),'utf8'):'';
-            if(attempt.next>stimulusAt&&!/^updating to /.test(attempt.result)&&(number===3?/failed twice; waiting/.test(attempt.result):/Install the new version once by hand/.test(text))) break;
+            const freshLog=existsSync(log)&&statSync(log).mtimeMs>=stimulusAt;
+            if(attempt.next>stimulusAt&&!/^updating to /.test(attempt.result)&&(before.failures>=2?/failed twice; waiting/.test(attempt.result):freshLog&&/Install the new version once by hand/.test(text))) break;
           } while(Date.now()<deadline);
           if(/^updating to /.test(attempt?.result??'')){uncertain=true;throw new Error('published scheduler outcome unknown');}
           const store=inspectGenerationStore(join(prefix,'lib/.cotal-generations'),{required:false});
-          report.publishedSchedulerObservations.push({number,stimulusAt,attempt,text,store,status:report.publishedLastStatus,logSha256:digest(text??'')});
+          report.publishedSchedulerObservations.push({number,before,beforeStore,beforeLogSha256,stimulusAt,observedAt:Date.now(),attempt,text,store,status:report.publishedLastStatus,logSha256:digest(text??''),logMtimeMs:existsSync(log)?statSync(log).mtimeMs:null});
         }
-        check('published scheduler preserves two-failure budget and leaves no staging',publishedSchedulerBudget(report.publishedSchedulerObservations),report.publishedSchedulerObservations);
+        check('published scheduler preserves recorded outcome budget and timing',publishedSchedulerBudget(report.publishedSchedulerObservations),report.publishedSchedulerObservations);
         const selected=inspectInstalledUpdateRoute(pkg,process.platform);
         const bytes=Buffer.from(JSON.stringify({update,observations:report.publishedSchedulerObservations,selected}));
         const artifact=`${id}-published-refusal.txt`;
