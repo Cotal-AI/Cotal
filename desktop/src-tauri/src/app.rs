@@ -180,12 +180,12 @@ fn show(app: &AppHandle) {
 }
 
 #[tauri::command]
-fn first_paint(window: tauri::WebviewWindow) -> Result<(), String> {
+fn first_paint(window: tauri::WebviewWindow) -> Result<bool, String> {
     if window.label() != "main" { return Err("Only the main window can report its first frame.".into()); }
     let app = window.app_handle();
     let action = app.state::<PaintState>().0.lock().map_err(|_| "The first frame state is unavailable.")?.painted();
     if action == ShowAction::Show { show_now(app); }
-    Ok(())
+    window.is_visible().map_err(|e| e.to_string())
 }
 
 pub(crate) fn show_now(app: &AppHandle) {
@@ -203,6 +203,7 @@ fn show_window(app: &AppHandle) {
             window.show()?;
             window.unminimize()?;
             window.set_focus()?;
+            let _ = window.emit("desktop-shown", ());
             Ok(())
         })();
         if let Err(error) = result {
@@ -282,6 +283,15 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Cotal: not connected")
                 .show_menu_on_left_click(true)
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        tauri::tray::TrayIconEvent::Click { .. }
+                            | tauri::tray::TrayIconEvent::DoubleClick { .. }
+                    ) {
+                        let _ = tray.app_handle().emit("desktop-tray-open", ());
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "update" => { show(app); let _ = app.emit("desktop-open-settings", ()); }
                     "settings" => { show(app); let _ = app.emit("desktop-open-settings", ()); }

@@ -72,6 +72,11 @@ export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSp
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
 }
 
+export function statusPollDelayMs(hidden: boolean, hostSupport: string | undefined): number {
+  if (hidden) return 60_000;
+  return hostSupport === "supported" ? 1000 : 10_000;
+}
+
 export function canonicalProvider(value: string): string {
   const url = new URL(approvalUrl(value));
   if (url.search || url.hash) throw new Error("The provider URL must not contain a query or fragment.");
