@@ -27,6 +27,7 @@ on:
     paths:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
+      - scripts/daemon-cell-diagnostics.mjs
       - docs/upgrade-matrix.md
 # No workflow-level queue: every immutable PR head and publication must finish.
 permissions:
@@ -148,6 +149,16 @@ jobs:
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
             const cells = boundedCells(plan);
+            if (context.eventName === 'push' && context.ref === 'refs/heads/measure/staged-transaction') {
+              for (const c of cells) {
+                if (c.platform === 'win32' || (c.scenario !== 'candidate-next-daemon-self' && !c.followOnAction && !c.chain)) {
+                  c.required = false;
+                  c.disposition = 'excluded';
+                  c.reason = 'measure branch runs the 10 POSIX candidate-next and chain cells';
+                  c.requiredAssertions = [];
+                }
+              }
+            }
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
