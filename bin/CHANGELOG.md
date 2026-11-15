@@ -1,5 +1,27 @@
 # cotal-ai
 
+## 0.164.14
+
+### Patch Changes
+
+- 7917eec: On macOS and Linux, the desktop app now leaves relative entries out of the login shell PATH when starting the background service or connecting a computer, instead of refusing the whole step. Left-out entries are named in the setup progress lines, the service receipt, the operation result, and any failure message, while `cotal daemon install` in a terminal continues to refuse relative PATH entries.
+- 6cc4068: When the desktop app asks the background service on this computer to start and it does not answer within 15 seconds, the app now reports that the background service has not started, shows any startup refusal from that launch in Details, and offers Check status in the app instead of blaming the network or directing you to a terminal command. While that screen is shown, a stopped-service status check keeps it on screen and a ready answer clears it.
+- 0d7b571: Configured macOS desktop builds can install verified app updates while hidden or after Restart to update is pressed. App operations hold replacement back, the shared automatic-update preference is checked again before replacement, and the app relaunches without adding a daemon restart path. The app reports success only after the target background service and ready inventories are observed. Builds without an updater key keep their existing installer and notification controls. Windows and Linux remain installer-only.
+- 517000a: Keep Windows CLI installations current through a separate Task Scheduler update helper.
+  
+  The helper holds a no-breakaway native job until its accounting and full process list confirm it is empty. It then restarts the verified daemon service under one activation deadline and records activation separately from the installed release. Interrupted helpers pause automatic installation in the same boot and show a restart or manual-update remedy. A successful manual update or a later verified boot clears that pause. Desktop runtimes still use their signed installer.
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/cli@0.164.14
+  - @cotal-ai/auth@0.164.14
+  - @cotal-ai/delivery@0.164.14
+  - @cotal-ai/manager@0.164.14
+  - @cotal-ai/runtime@0.164.14
+  - @cotal-ai/connector-core@0.164.14
+  - @cotal-ai/registry@0.164.14
+  - @cotal-ai/core@0.164.14
+  - @cotal-ai/seat@0.164.14
+
 ## 0.164.13
 
 ### Patch Changes
