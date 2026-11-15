@@ -210,10 +210,11 @@ process list. A failed or timed-out drain does not admit another automatic updat
 recurring trigger or failure restart, and cleanup checks the recorded source and action before deletion.
 After a successful install and confirmed job drain, the same helper restarts the verified daemon
 service. It waits for the old process lifetime to end before starting the recorded task and checks
-the target daemon's authenticated status. One 240-second activation deadline covers these steps.
-An activation failure leaves the release installed and records a separate result in
-`update-windows-activation.json`; use Start service to recover. The helper never registers a
-replacement service or adds another supervisor.
+the target daemon's authenticated status. The Windows service returns about 7 to 10 seconds after
+the old daemon exits (measured at 7.3 to 10.1 seconds across three successive activations). One
+240-second activation deadline covers these steps. An activation failure leaves the release
+installed and records a separate result in `update-windows-activation.json`; use Start service to
+recover. The helper never registers a replacement service or adds another supervisor.
 
 If the worker is interrupted while its helper survives, the helper drains its job and the normal
 failure budget permits a retry. If the helper dies in the same boot, automatic installation pauses.
