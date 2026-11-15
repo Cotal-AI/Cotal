@@ -211,6 +211,16 @@ export function boundedCells(plan) {
         requiredAssertions: [...followOnAssertions, "installer-source-receipt"],
       });
     }
+    for (const [platform, channel] of [['linux', 'installer'], ['linux', 'npm'], ['darwin', 'npm']]) {
+      add(platform, channel, 'candidate-next-staged-scheduler', null, {
+        sourceVersion: plan.targetVersion, sourceKind: plan.phase === 'published' ? 'npm-exact-A' : 'packed-candidate-A',
+        targetVersion, finalTargetVersion: followOnVersion, targetSource: 'packed-follow-on-C', targetSourceSHA: plan.sourceSHA,
+        syntheticVersionRule: 'candidate.patch+1000/2000', followOnAction: 'scheduler',
+        nodeVersion: '24.18.0', ...(platform === 'linux' ? { installUmask: '0002', serviceUmask: '0002' } : {}),
+        ...(channel === 'installer' ? { installerSource: 'ARTIFACT/installer.sh', installerReceiptRequired: true } : {}),
+        requiredAssertions: [...followOnAssertions, 'native-scheduler', 'scheduler-from-staged-generation', 'generation-store-protected', ...(platform === 'linux' ? ['install-umask-observed', 'service-umask-observed'] : []), ...(channel === 'installer' ? ['installer-source-receipt'] : [])],
+      });
+    }
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,

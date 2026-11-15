@@ -37,10 +37,10 @@ export function candidateNextOptions(options, disposable = hosted) {
   assert(['candidate','published'].includes(options['next-hop-phase']), 'candidate next phase must be explicit');
   const followOnAction = options['follow-on-action'];
   if (followOnAction !== undefined) {
-    assert(['self', 'npm', 'installer'].includes(followOnAction), 'follow-on-action must be self, npm or installer');
+    assert(['self', 'npm', 'installer', 'scheduler'].includes(followOnAction), 'follow-on-action must be self, npm, installer or scheduler');
     assert(mode === 'candidate' && options['candidate-follow-on'] && options.state === 'daemon' && options.method === 'self', 'follow-on action requires candidate next hop, daemon state, self method and follow-on closure');
     if (followOnAction === 'installer') assert(options.layout === 'installer' && options['candidate-follow-on-installer'], 'installer follow-on action requires installer layout and follow-on installer script');
-    else assert.equal(options.layout, 'npm', 'self and npm follow-on actions require npm layout');
+    else if (followOnAction !== 'scheduler') assert.equal(options.layout, 'npm', 'self and npm follow-on actions require npm layout');
   }
   if (options['stopped-daemon-before-update'] !== undefined) {
     assert.equal(options['stopped-daemon-before-update'], 'true', 'stopped-daemon-before-update accepts only true');
@@ -57,7 +57,7 @@ export function candidateNextOptions(options, disposable = hosted) {
     && options['daemon-hosted-manager'] === 'true' && options['stop-agents'] === 'true'
     && daemonHostedManagerOptions(options, {hosted: disposable});
   assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && (options.state === 'daemon' || hostedConsent) && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
-  if (mode === 'candidate' && followOnAction !== 'installer') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
+  if (mode === 'candidate' && !['installer', 'scheduler'].includes(followOnAction)) assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
   if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
 }
@@ -565,6 +565,10 @@ export async function matrixCell(options) {
     const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall(nextHopMode === 'candidate' ? 'install exact candidate source' : 'install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
+    if (layout === 'installer' && shape.pinnedNode) {
+      report.installerNode = ok(await call('observe installer Node version', join(prefix, 'nodebin/node'), ['--version']), 'installer runtime');
+      assert.equal(report.installerNode.stdout.trim(), `v${shape.pinnedNode}`, 'installer private Node differs from pinned release');
+    }
     if (process.platform === 'win32') {
       const core = pathToFileURL(join(pkg, 'node_modules/@cotal-ai/core/dist/index.js')).href;
       const prepare = `const {mkSecretDir}=await import(${JSON.stringify(core)});for(const dir of ${JSON.stringify([root, ...(home.startsWith(root) ? [home] : []), project])})mkSecretDir(dir);`;
@@ -928,6 +932,39 @@ export async function matrixCell(options) {
           let npmInstall, bareNpmObservation;
           if (followOnAction === 'self') {
             update = await cotal('candidate follow-on self update under test', ['update', '--self']);
+          } else if (followOnAction === 'scheduler') {
+            const selectedBefore = inspectInstalledUpdateRoute(pkg, process.platform);
+            assert.equal(selectedBefore.updateRoute, 'staged', 'scheduler must start on a staged generation');
+            assert.equal(selectedBefore.selectedCliVersion, report.candidateNext.targetVersion);
+            assert.equal(selectedBefore.packageManagerRecordVersion, report.source);
+            ok(await cotal('enable automatic updates after staged manual hop', ['update', '--auto', 'on']), 'staged scheduler settings');
+            const originalSource = report.source, originalDaemon = report.daemonBefore;
+            try {
+              report.source = report.candidateNext.targetVersion;
+              report.daemonBefore = JSON.parse(ok(await daemon('staged scheduler source status', ['daemon', 'status', '--json']), 'staged source status').stdout).result;
+              await waitForSchedulerEligibility(report, remaining => daemon('wait for staged scheduler eligibility', ['daemon', 'status', '--json'], remaining));
+            } finally { report.source = originalSource; report.daemonBefore = originalDaemon; }
+            for (let i = 0; i < 60 && !existsSync(join(cotalHome, 'update-check.json')); i++) await delay(1000);
+            for (const [name, fields] of [['update-check.json', ['checkedAt', 'firstSeenAt', 'attemptedAt']], ['update-attempt.json', ['next']]]) {
+              const file = join(cotalHome, name), before = json(file), after = { ...before };
+              for (const field of fields) after[field] = Date.now() - 7200000;
+              save(join(output, `${id}-staged-${name}-clock.json`), { before, after });
+              save(file, after);
+            }
+            const deadline = Date.now() + 300000;
+            let selected, status, attempt;
+            do {
+              await delay(5000);
+              selected = inspectInstalledUpdateRoute(pkg, process.platform);
+              status = await daemon('staged scheduler observation', ['daemon', 'status', '--json']);
+              attempt = json(join(cotalHome, 'update-attempt.json'));
+              if (selected.selectedCliVersion === report.target && status.exit === 0 && nativeGenerationReady(JSON.parse(status.stdout).result, report.target) && /^(?:repaired and )?updated to /.test(attempt.result)) break;
+            } while (Date.now() < deadline);
+            if (/^updating to /.test(attempt?.result ?? '')) { uncertain = true; throw new Error('staged scheduler outcome unknown after deadline'); }
+            const passed = selected?.selectedCliVersion === report.target && status?.exit === 0 && nativeGenerationReady(JSON.parse(status.stdout).result, report.target) && /^(?:repaired and )?updated to /.test(attempt?.result ?? '');
+            report.stagedScheduler = { selectedBefore, selected, status, attempt, eligibility: report.schedulerEligibility, passed };
+            check('scheduler starts from staged generation and reaches follow-on', passed, report.stagedScheduler);
+            update = { exit: passed ? 0 : 1, signal: null, timeout: false, scheduler: true, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
           } else if (followOnAction === 'npm') {
             npmInstall = ok(await npmCall('manual npm install follow-on target', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.target}`, '--no-audit', '--no-fund']), 'manual npm follow-on install');
             const bareVersion = await cotal('bare manual npm CLI version observation', ['--version']);

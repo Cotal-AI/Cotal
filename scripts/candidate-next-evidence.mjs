@@ -6,6 +6,7 @@ import {findPackageJSON} from 'node:module';
 import {pathToFileURL} from 'node:url';
 import {evaluateManualDaemonState} from './daemon-manual-acceptance.mjs';
 import {matchSource16410Refusal} from './source-16410-refusal.mjs';
+import {stagedSchedulerSucceeded} from './update-machine-shape.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -356,7 +357,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
   }
   if (followOnAction) {
     assert.equal(hop.mode, 'candidate');
-    assert(['self', 'npm', 'installer'].includes(followOnAction), 'invalid follow-on action');
+    assert(['self', 'npm', 'installer', 'scheduler'].includes(followOnAction), 'invalid follow-on action');
     assert(followOnManifestSha256, 'follow-on manifest sha256 required');
     assert.equal(pair.followOnManifestSha256, followOnManifestSha256);
     assert.equal(hop.followOn?.action, followOnAction);
@@ -376,6 +377,8 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       assert(followCall.argv.includes(invocation.argv[0]) || followCall.file === invocation.argv[0]);
       for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(followCall[key], hop.followOn?.update?.[key], `follow-on self ${key} differs from actual command`);
       followOnSuccess = clean(hop.followOn?.update);
+    } else if (followOnAction === 'scheduler') {
+      followOnSuccess = stagedSchedulerSucceeded(report, pair);
     } else if (followOnAction === 'npm') {
       const npmCalls = report.calls.filter(row => row.label === 'manual npm install follow-on target');
       const bareVersionCalls = report.calls.filter(row => row.label === 'bare manual npm CLI version observation');

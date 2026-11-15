@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { machineShapeOptions, machineShapeCommand } from './update-machine-shape.mjs';
+import { machineShapeOptions, machineShapeCommand, stagedSchedulerSucceeded } from './update-machine-shape.mjs';
 
 test('native mask probes require explicit disposable platform and state', () => {
   const options = { state: 'daemon', 'install-umask': '0002', 'service-umask': '0002', 'pinned-node': '24.18.0' };
@@ -26,4 +26,21 @@ test('real child receives 0002 without changing parent mask or shell-expanding a
   assert.equal(result.mask, '2');
   assert.equal(result.arg, literal);
   assert.equal(process.umask(), before);
+});
+
+test('staged scheduler needs actual final status and no second manual updater', () => {
+  const pair = { sourceVersion: '1.2.3', targetVersion: '1.2.1003', followOnVersion: '1.2.2003' };
+  const status = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { state: 'ready', version: pair.followOnVersion } }), stderr: '' };
+  const report = {
+    stagedScheduler: { selectedBefore: { updateRoute: 'staged', selectedCliVersion: pair.targetVersion, packageManagerRecordVersion: pair.sourceVersion }, selected: { selectedCliVersion: pair.followOnVersion }, status, attempt: { result: `updated to ${pair.followOnVersion}` }, eligibility: { observations: [{ exit: 0, status: { version: pair.targetVersion, update: { automatic: true } } }] } },
+    calls: [{ label: 'upgrade under test', argv: ['update', '--self'] }, { label: 'staged scheduler observation', ...status, argv: ['daemon', 'status', '--json'] }],
+    nextHop: { followOn: { update: { scheduler: true, exit: 0 } } },
+  };
+  assert.equal(stagedSchedulerSucceeded(report, pair), true);
+  const inPlace = structuredClone(report); inPlace.stagedScheduler.selectedBefore.updateRoute = 'in-place';
+  assert.throws(() => stagedSchedulerSucceeded(inPlace, pair));
+  const manual = structuredClone(report); manual.calls.push({ label: 'second update', argv: ['update', '--self'] });
+  assert.throws(() => stagedSchedulerSucceeded(manual, pair), /manual updater/);
+  const absent = structuredClone(report); absent.calls.pop();
+  assert.throws(() => stagedSchedulerSucceeded(absent, pair), /missing/);
 });

@@ -460,7 +460,7 @@ test('candidate evidence binds captured artifacts, public command receipts and d
   assert.throws(() => verifyCandidateNextEvidence({...args, report: chain}), /terminal refusal/);
 
   // Follow-on C actions: self, npm, installer
-  for (const followOnAction of ['self', 'npm', 'installer']) {
+  for (const followOnAction of ['self', 'npm', 'installer', 'scheduler']) {
     const follow = structuredClone(report);
     follow.layout = followOnAction === 'installer' ? 'installer' : 'npm';
     follow.candidateNext.followOnVersion = '1.2.3';
@@ -473,6 +473,11 @@ test('candidate evidence binds captured artifacts, public command receipts and d
     follow.nextHop.followOn = {action: followOnAction, targetVersion: '1.2.3', ...(followOnAction === 'npm' ? {npmInstall: okCall} : {}), update: okCall};
     if (followOnAction === 'self') {
       follow.calls.push({label: 'candidate follow-on self update under test', argv: source.argv, ...okCall, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt});
+    } else if (followOnAction === 'scheduler') {
+      const status = { ...okCall, stdout: JSON.stringify({ result: { state: 'ready', version: '1.2.3' } }) };
+      follow.calls.push({ label: 'staged scheduler observation', argv: ['daemon', 'status', '--json'], ...status });
+      follow.stagedScheduler = { selectedBefore: { updateRoute: 'staged', selectedCliVersion: follow.candidateNext.targetVersion, packageManagerRecordVersion: follow.candidateNext.sourceVersion }, selected: { selectedCliVersion: '1.2.3' }, status, attempt: { result: 'updated to 1.2.3' }, eligibility: { observations: [{ exit: 0, status: { version: follow.candidateNext.targetVersion, update: { automatic: true } } }] } };
+      follow.nextHop.followOn.update = { ...okCall, scheduler: true };
     } else if (followOnAction === 'npm') {
       const bareVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n  Reconciliation pending: Run `cotal update --self` to reconcile this installation.\n', stderr: ''};
       const reconciledVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n', stderr: ''};

@@ -20,3 +20,25 @@ export function machineShapeCommand(file, argv, installUmask) {
   assert.equal(installUmask, '0002');
   return { file: '/bin/sh', argv: ['-c', 'umask 0002; exec "$@"', 'cotal-cell', file, ...argv] };
 }
+
+/** A native timer, not another manual updater, must complete the follow-on from staged B. */
+export function stagedSchedulerSucceeded(report, pair) {
+  const evidence = report.stagedScheduler;
+  assert.equal(evidence?.selectedBefore.updateRoute, 'staged');
+  assert.equal(evidence.selectedBefore.selectedCliVersion, pair.targetVersion);
+  assert.equal(evidence.selectedBefore.packageManagerRecordVersion, pair.sourceVersion);
+  assert.equal(evidence.selected.selectedCliVersion, pair.followOnVersion);
+  const calls = report.calls.filter(row => row.label === 'staged scheduler observation');
+  assert(calls.length > 0, 'staged scheduler status call missing');
+  const last = calls.at(-1);
+  for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(last[key], evidence.status[key]);
+  assert(last.exit === 0 && last.signal === null && last.timeout === false);
+  const status = JSON.parse(last.stdout).result;
+  assert.equal(status.state, 'ready');
+  assert.equal(status.version, pair.followOnVersion);
+  assert.match(evidence.attempt.result, new RegExp(`^(?:repaired and )?updated to ${pair.followOnVersion.replaceAll('.', '\\.')}(?:$|\\s)`));
+  assert(evidence.eligibility.observations.some(row => row.exit === 0 && row.status?.version === pair.targetVersion && row.status.update?.automatic === true), 'staged scheduler eligibility missing');
+  const first = report.calls.findIndex(row => row.label === 'upgrade under test');
+  assert(first >= 0 && report.calls.slice(first + 1).every(row => !row.argv?.includes('--self')), 'manual updater cannot substitute for staged scheduler');
+  return report.nextHop.followOn.update.scheduler === true && report.nextHop.followOn.update.exit === 0;
+}
