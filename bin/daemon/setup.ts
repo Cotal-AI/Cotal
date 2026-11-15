@@ -51,6 +51,7 @@ interface InstallOptions {
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
+  readonly omittedRelativePathEntries?: readonly string[];
   readonly paths: DaemonPaths;
   readonly daemonHome: string | undefined;
   readonly peerUid?: PeerUid;
@@ -131,7 +132,7 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
         native: { code: "RUNNING_WITHOUT_UNIT" },
       });
     }
-    const installed = applyInstall(opts.paths, opts.daemonHome);
+    const installed = applyInstall(opts.paths, opts.daemonHome, opts.omittedRelativePathEntries);
     unit = installed.unit;
     outcome = "installed";
     detail = `${installed.unit} installed${installed.mechanism === "systemd-user" ? `, ${installed.lingerAlready ? "linger was already enabled" : "linger enabled"}` : ""}, restart ${installed.restart}, started by ${installed.wantedBy}`;

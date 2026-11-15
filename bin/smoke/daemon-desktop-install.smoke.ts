@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
+import { filterDesktopApplicationPath } from "../daemon/desktop-path.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { excludeLifetime } from "../daemon/lifetime.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -42,18 +43,20 @@ function isolated(name: string, runNativeOnStart = false) {
     XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"), XDG_STATE_HOME: join(dir, "state"),
     PATH: `${join(dir, "native")}:/usr/local/bin:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: context, DO_NOT_TRACK: "1",
   });
-  for (const profile of [".bash_profile", ".zprofile", ".profile"]) writeFileSync(join(dir, "home", profile), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
+  for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(dir, "home", profile), `export PATH=${JSON.stringify(env.PATH)}\n`, { mode: 0o600 });
   return { dir, env, calls, receipt: join(dir, "cotal", "daemon", "service-unit.json"), unit: join(dir, "config", "systemd", "user", "cotal-daemon.service") };
 }
 type Isolated = ReturnType<typeof isolated>;
 interface Frame {
   v: number;
   event: string;
-  ok: boolean;
-  error?: { code: string; message: string; remedy?: string; native?: { code: string } };
-  result?: { installed: boolean; status: { state: string; pid: number } };
+  ok?: boolean;
+  line?: string;
+  progress?: { step: string; outcome: string; detail: string };
+  error?: { code: string; message: string; remedy?: string; native?: { code: string; detail?: unknown } };
+  result?: { installed: boolean; status: { state: string; pid: number }; omittedRelativePathEntries?: string[] };
 }
-async function request(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame> {
+async function requestFrames(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame[]> {
   const payload = typeof body === "string" ? { op: body } : body;
   const label = String(payload.op);
   return await new Promise((resolve, reject) => {
@@ -69,16 +72,17 @@ async function request(target: Isolated, body: string | Record<string, unknown>,
         assert.equal(signal, null, `desktop ${label} signal; ${stderr}`);
         assert.equal(code, 0, `desktop ${label} exit; ${stderr}`);
         const frames = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Frame);
-        const frame = frames.at(-1);
-        assert.ok(frame, `desktop ${label} emitted a frame`);
-        assert.equal(frame.v, 1);
-        assert.equal(frame.event, "result");
-        console.log(`${label}: ${JSON.stringify(frame)}`);
-        resolve(frame);
+        assert.ok(frames.length > 0 && frames.every((frame) => frame.v === 1));
+        assert.equal(frames.at(-1)?.event, "result");
+        console.log(`${label}: ${JSON.stringify(frames.at(-1))}`);
+        resolve(frames);
       } catch (error) { reject(error); }
     });
     child.stdin.end(`${JSON.stringify(payload)}\n`);
   });
+}
+async function request(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame> {
+  return (await requestFrames(target, body, timeoutMs)).at(-1)!;
 }
 function checkInstallation(target: Isolated): void {
   const receipt = JSON.parse(readFileSync(target.receipt, "utf8")) as { unit: string; unitPath: string; unitSha256: string };
@@ -89,7 +93,7 @@ function checkInstallation(target: Isolated): void {
 
 // A real account-shell failure must remain actionable before any service operation.
 const shellFailure = isolated("shell-failure");
-for (const profile of [".bash_profile", ".zprofile", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), "exit 1\n", { mode: 0o600 });
+for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) writeFileSync(join(shellFailure.dir, "home", profile), "exit 1\n", { mode: 0o600 });
 const refusedPath = await request(shellFailure, "install");
 assert.equal(refusedPath.ok, false);
 assert.equal(refusedPath.error?.code, "DEPENDENCY_UNAVAILABLE");
@@ -98,6 +102,78 @@ assert.equal(refusedPath.error?.remedy, "check that your login shell starts succ
 assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes service-manager calls");
 assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
 console.log("install PATH refusal preserves its message/remedy without service effects");
+
+// Filter keeps absolute entries and deduplicates left-out relative entries in login-shell order.
+assert.deepEqual(
+  filterDesktopApplicationPath("./node_modules/.bin:/usr/local/bin:./bin:./node_modules/.bin:/usr/bin", "/opt/cotal/bin"),
+  { path: "/usr/local/bin:/usr/bin:/opt/cotal/bin", omittedRelativeEntries: ["./node_modules/.bin", "./bin"] },
+);
+assert.throws(() => filterDesktopApplicationPath("./node_modules/.bin", "relative/node"), /absolute, pinned PATH/);
+
+// Terminal `cotal daemon install` keeps refusing when PATH contains a relative entry.
+const relativePath = isolated("relative-path");
+const relativeLoginPath = `./node_modules/.bin:./bin:./node_modules/.bin:${relativePath.env.PATH}`;
+for (const profile of [".bash_profile", ".bashrc", ".zprofile", ".zshrc", ".profile"]) {
+  writeFileSync(join(relativePath.dir, "home", profile), `export PATH=${JSON.stringify(relativeLoginPath)}\n`, { mode: 0o600 });
+}
+const terminalRefused = spawnSync(process.execPath, [cli, "daemon", "install", "--dry-run", "--json"], {
+  cwd: relativePath.dir,
+  env: { ...relativePath.env, PATH: relativeLoginPath },
+  encoding: "utf8",
+  timeout: 15_000,
+});
+assert.notEqual(terminalRefused.status, 0, "terminal install refuses a relative PATH entry");
+const terminalEnvelope = JSON.parse(terminalRefused.stdout.trim()) as { outcome: string; error?: { code: string; message: string } };
+assert.equal(terminalEnvelope.outcome, "refused");
+assert.equal(terminalEnvelope.error?.code, "UNSUPPORTED");
+assert.equal(terminalEnvelope.error?.message, "the daemon unit needs an absolute, pinned PATH; a relative or empty entry was not inherited");
+assert.ok(!existsSync(relativePath.receipt) && !existsSync(relativePath.unit));
+console.log("terminal install: relative PATH entry stays refused by design");
+
+// App bridge install with a relative login-shell PATH entry leaves it out, names it in setup-progress,
+// the install receipt and the result, and succeeds.
+const relInstalling = requestFrames(relativePath, "install");
+void relInstalling.catch(() => {});
+let relDaemon: ReturnType<typeof spawn> | undefined;
+let relDaemonExit: Promise<void> | undefined;
+try {
+  const deadline = Date.now() + 10_000;
+  while (!operations(relativePath.calls).includes("start") && Date.now() < deadline) await sleep(50);
+  assert.ok(operations(relativePath.calls).includes("start"), "relative-PATH install reached native start");
+  relDaemon = spawn(process.execPath, [cli, "daemon", "serve"], { cwd: relativePath.dir, env: relativePath.env, stdio: ["ignore", "ignore", "pipe"] });
+  relDaemonExit = new Promise<void>((resolve, reject) => { relDaemon!.once("error", reject); relDaemon!.once("close", () => resolve()); });
+  const relFrames = await relInstalling;
+  const progressFrame = relFrames.find((frame) => frame.event === "setup-progress");
+  assert.deepEqual(progressFrame, {
+    v: 1,
+    event: "setup-progress",
+    line: "service: left out relative PATH entries: ./node_modules/.bin, ./bin",
+    progress: { step: "install", outcome: "running", detail: "left out relative PATH entries: ./node_modules/.bin, ./bin" },
+  });
+  const relReady = relFrames.at(-1)!;
+  assert.equal(relReady.ok, true);
+  assert.equal(relReady.result?.installed, true);
+  assert.deepEqual(relReady.result?.omittedRelativePathEntries, ["./node_modules/.bin", "./bin"]);
+  checkInstallation(relativePath);
+  const recordedReceipt = JSON.parse(readFileSync(relativePath.receipt, "utf8")) as { omittedRelativePathEntries?: string[] };
+  assert.deepEqual(recordedReceipt.omittedRelativePathEntries, ["./node_modules/.bin", "./bin"]);
+  const unitSource = readFileSync(relativePath.unit, "utf8");
+  assert.ok(!unitSource.includes("./node_modules/.bin") && !unitSource.includes("./bin"), "unit file pins only absolute PATH entries");
+  // When an install or setup fails after dropping relative entries, the failure message also names them.
+  writeFileSync(relativePath.unit, `${unitSource}\n# modified\n`, { mode: 0o600 });
+  const failedWithOmitted = await request(relativePath, "install");
+  assert.equal(failedWithOmitted.ok, false);
+  assert.equal(failedWithOmitted.error?.code, "CONFLICT");
+  assert.match(failedWithOmitted.error?.message ?? "", /Left out relative PATH entries: \.\/node_modules\/\.bin, \.\/bin\.$/);
+  console.log("desktop bridge install: relative login-shell PATH entries left out and named in progress, receipt, result and failure");
+} finally {
+  if (relDaemon && relDaemon.exitCode === null && relDaemon.signalCode === null) {
+    relDaemon.kill("SIGTERM");
+    const timer = setTimeout(() => relDaemon!.kill("SIGKILL"), 5_000);
+    try { await relDaemonExit; } finally { clearTimeout(timer); }
+  }
+  await relInstalling.catch(() => {});
+}
 
 // First prove that the real installed-service path can reach an answering foreground daemon.
 const control = isolated("control");

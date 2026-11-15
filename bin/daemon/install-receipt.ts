@@ -16,5 +16,8 @@ export function readReceipt(paths: Pick<DaemonPaths, "state">): UnitReceipt | un
   const r = o as Record<string, unknown>;
   if (r.v !== 1 || typeof r.unit !== "string" || typeof r.unitPath !== "string" || typeof r.unitSha256 !== "string" || typeof r.installedAt !== "string") return undefined;
   if (r.mechanism !== undefined && r.mechanism !== "systemd-user" && r.mechanism !== "launchd-agent" && r.mechanism !== "scheduled-task") return undefined;
-  return { v: 1, ...(r.mechanism !== undefined ? { mechanism: r.mechanism } : {}), unit: r.unit, unitPath: r.unitPath, unitSha256: r.unitSha256, installedAt: r.installedAt, ...(typeof r.daemonHome === "string" ? { daemonHome: r.daemonHome } : {}) };
+  const omitted = Array.isArray(r.omittedRelativePathEntries) && r.omittedRelativePathEntries.every((item): item is string => typeof item === "string" && item.length > 0)
+    ? r.omittedRelativePathEntries
+    : undefined;
+  return { v: 1, ...(r.mechanism !== undefined ? { mechanism: r.mechanism } : {}), unit: r.unit, unitPath: r.unitPath, unitSha256: r.unitSha256, installedAt: r.installedAt, ...(typeof r.daemonHome === "string" ? { daemonHome: r.daemonHome } : {}), ...(omitted?.length ? { omittedRelativePathEntries: omitted } : {}) };
 }
