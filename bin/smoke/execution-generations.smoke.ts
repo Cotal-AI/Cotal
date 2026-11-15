@@ -63,6 +63,26 @@ try {
     try { const result = run(); assert.equal(result.status, 0, result.stderr); } finally { chmodSync(root, 0o700); }
     assert.equal(existsSync(executionStore(root)), false);
   });
+  check("desktop runtime refuses staged execution retention and active descriptors on every platform", () => {
+    const desktopLayouts = [
+      ["linux", join(scratch, "desktop-linux/opt/Cotal/resources/runtime")],
+      ["darwin", join(scratch, "desktop-darwin/Cotal.app/Contents/Resources/runtime")],
+      ["win32", join(scratch, "desktop-win32/AppData/Local/Cotal/runtime")],
+    ] as const;
+    for (const [platform, desktopRoot] of desktopLayouts) {
+      packageAt(desktopRoot, "0.1.0", `desktop-${platform}`);
+      writeFileSync(join(desktopRoot, "desktop-runtime.json"), JSON.stringify({ target: `${platform}-x64`, version: "0.1.0" }));
+      assert.equal(selectExecutionProgram(desktopRoot).retained, false);
+      assert.throws(() => retainExecutionGeneration(desktopRoot, source), /unavailable on the desktop runtime/);
+      assert.throws(() => retainExecutionGeneration(root, desktopRoot), /unavailable on the desktop runtime/);
+      assert.throws(() => writeExecutionDescriptor(desktopRoot, describeExecutionGeneration(desktopRoot, { id: "a".repeat(32), root: desktopRoot, version: "0.1.0", inventorySha256: "b".repeat(64) })), /unavailable on the desktop runtime/);
+      assert.equal(existsSync(executionStore(desktopRoot)), false);
+      assert.equal(existsSync(executionDescriptorPath(desktopRoot)), false);
+      mkdirSync(executionStore(desktopRoot), { recursive: true, mode: 0o700 });
+      assert.throws(() => selectExecutionProgram(desktopRoot), /unavailable on the desktop runtime/);
+      rmSync(executionStore(desktopRoot), { recursive: true, force: true });
+    }
+  });
   if (!["linux", "darwin"].includes(process.platform)) {
     check("retained stores refuse unsupported platforms before mutation", () => {
       assert.throws(() => retainExecutionGeneration(root, source), /unavailable on this platform/);

@@ -2,6 +2,7 @@ const phases = new Map([
   ['release archives checked', 'release-checks'],
   ['recovery snapshot saved', 'recovery-snapshot'],
   ['global package install finished', 'global-install'],
+  ['new version installed and verified', 'global-install'],
   ['installed reconciliation finished', 'installed-reconcile'],
   ['connector integrations refreshed', 'connector-integrations'],
 ]);

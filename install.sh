@@ -695,6 +695,14 @@ link_node_bin() {
 INSTALLED_VERSION="" PREVIOUS_VERSION=""
 
 read_installed_version() {
+  _entry="$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js"
+  if [ -f "$_entry" ]; then
+    _in_use=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$_entry" --version 2>/dev/null | sed -n '1s/^cotal-ai //p' || true)
+    if [ -n "$_in_use" ]; then
+      printf '%s' "$_in_use"
+      return 0
+    fi
+  fi
   _pkg="$INSTALL_DIR/lib/node_modules/$COTAL_PKG/package.json"
   [ -f "$_pkg" ] || return 0
   # Read the file, do not resolve it as a module: cotal-ai is ESM, and this must not depend

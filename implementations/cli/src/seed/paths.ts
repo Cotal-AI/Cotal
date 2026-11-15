@@ -190,7 +190,7 @@ const loadedCliVersion = (() => {
 export function cliVersion(): string {
   const identity = Object.getOwnPropertyDescriptor(globalThis, Symbol.for("cotal.execution.identity"));
   const loadedEntry = (identity?.value as { loadedEntry?: unknown } | undefined)?.loadedEntry;
-  if (identity?.writable === false && identity.configurable === false && typeof loadedEntry === "string" && realpathSync(loadedEntry) === entryScript()) return loadedCliVersion;
+  if (identity?.writable === false && identity.configurable === false && typeof loadedEntry === "string" && realpathSync.native(loadedEntry) === realpathSync.native(entryScript())) return loadedCliVersion;
   return installedCliVersion();
 }
 

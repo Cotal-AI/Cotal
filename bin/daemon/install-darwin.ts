@@ -18,11 +18,11 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDirNoSymlink, realDirNoSymlink } from "@cotal-ai/core";
 import { darwinLaunchdJob, type DarwinLaunchdLookup } from "@cotal-ai/seat";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, logicalExecutionEntry } from "@cotal-ai/workspace";
 import { assertSystemdSource, createSystemdSource } from "@cotal-ai/cli";
 import type { NativePlan, NativeRun, NativeService, UnitReceipt } from "./install.js";
 
@@ -61,8 +61,9 @@ export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha2
   }
   // launchd's job dictionary omits WorkingDirectory. Carry it in the exact argument vector instead;
   // this entry changes directory before importing the CLI, including any cwd-sensitive setup.
-  // Resolve our entry from this module, not argv's CLI symlink (a global install may live in bin/).
-  const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
+  // The validated daemon argv names the logical installation, including from a retained process.
+  const logical = logicalExecutionEntry();
+  const bootstrap = logical ? join(dirname(logical), "daemon-cwd.js") : fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
   const argv = [...input.argv.slice(0, daemon - 1), bootstrap, input.workingDirectory, ...input.argv.slice(daemon)];
   const entry = (key: string, value: string) => `<key>${key}</key>${str(value)}`;
   const text = [
