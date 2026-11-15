@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, win32 } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
@@ -103,16 +103,12 @@ assert.deepEqual(operations(shellFailure.calls), [], "PATH refusal precedes serv
 assert.ok(!existsSync(shellFailure.receipt) && !existsSync(shellFailure.unit), "PATH refusal creates no installation");
 console.log("install PATH refusal preserves its message/remedy without service effects");
 
-// Filter keeps absolute entries and deduplicates left-out relative entries in login-shell order on POSIX and Windows.
+// Filter keeps absolute entries and deduplicates left-out relative entries in login-shell order.
 assert.deepEqual(
-  filterDesktopApplicationPath("./node_modules/.bin:/usr/local/bin:./bin:./node_modules/.bin:/usr/bin", "/opt/cotal/bin", posix),
+  filterDesktopApplicationPath("./node_modules/.bin:/usr/local/bin:./bin:./node_modules/.bin:/usr/bin", "/opt/cotal/bin"),
   { path: "/usr/local/bin:/usr/bin:/opt/cotal/bin", omittedRelativeEntries: ["./node_modules/.bin", "./bin"] },
 );
-assert.deepEqual(
-  filterDesktopApplicationPath(".\\node_modules\\.bin;C:\\Windows\\System32;relative\\tools;.\\node_modules\\.bin", "C:\\Program Files\\Cotal", win32),
-  { path: "C:\\Windows\\System32;C:\\Program Files\\Cotal", omittedRelativeEntries: [".\\node_modules\\.bin", "relative\\tools"] },
-);
-assert.throws(() => filterDesktopApplicationPath("./node_modules/.bin", "relative/node", posix), /absolute, pinned PATH/);
+assert.throws(() => filterDesktopApplicationPath("./node_modules/.bin", "relative/node"), /absolute, pinned PATH/);
 
 // Terminal `cotal daemon install` keeps refusing when PATH contains a relative entry.
 const relativePath = isolated("relative-path");

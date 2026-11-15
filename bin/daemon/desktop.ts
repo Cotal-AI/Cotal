@@ -12,12 +12,8 @@ import { applyInstall, planUninstall, startInstalled } from "./install.js";
 import { nativeDaemonLog } from "./native-log.js";
 import { encode, isDaemonSpaceName, type DaemonResponse } from "./protocol.js";
 import { runSetup } from "./setup.js";
-<<<<<<< HEAD
-import { desktopApplicationPath } from "./desktop-path.js";
-import { assertDesktopSetupComplete } from "./desktop-setup.js";
-=======
 import { discoverDesktopApplicationPath } from "./desktop-path.js";
->>>>>>> 3308e10631 (fix(desktop): leave relative entries out of login-shell PATH (#6862))
+import { assertDesktopSetupComplete } from "./desktop-setup.js";
 
 export type DesktopRequest =
   | { readonly op: "update-policy"; readonly auto?: boolean }
