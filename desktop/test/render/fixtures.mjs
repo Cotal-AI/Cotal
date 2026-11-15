@@ -266,8 +266,8 @@ export const scenarios = [
   { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
   { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
   { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
-  { name: "audit-login-error", state: { installed: true, signedIn: true, connected: true, loginEnabled: false, presenceLoginError: "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator." }, act: page => page.click("#open-settings"), expect: async page => {
-    assert.equal(await page.locator("#settings-startup > #login-error").textContent(), "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.");
+  { name: "audit-login-error", state: { installed: true, signedIn: true, connected: true, loginEnabled: false, presenceLoginError: "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there." }, act: page => page.click("#open-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-startup > #login-error").textContent(), "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.");
     assert.equal(await page.locator("#autostart").isChecked(), false);
   } },
   ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {

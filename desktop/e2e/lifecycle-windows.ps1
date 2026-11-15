@@ -515,7 +515,7 @@ public static class FilteredAppLauncher {
             $null = Invoke-Self 'settings' $filteredPid
             $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
             $filteredEntries = Invoke-Self 'login-entry' $filteredPid
-            $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.'
+            $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.'
             if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $false -or $filteredSettings.result.loginError -cne $expectedError) {
                 throw "Cell (c) failed: integrity=$($filteredEntries.result.appIntegrity.level) hklm=$($filteredEntries.result.hklm.present) hkcu=$($filteredEntries.result.hkcu.present) checked=$($filteredSettings.result.checked) loginError=$($filteredSettings.result.loginError)"
             }

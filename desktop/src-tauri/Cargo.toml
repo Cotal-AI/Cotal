@@ -35,7 +35,7 @@ tauri-plugin-deep-link = { version = "2", optional = true }
 tokio = { version = "1", features = ["time", "sync"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["UI_Shell", "Win32_UI_Shell", "Win32_System_Registry"], optional = true }
+windows = { version = "0.62.2", features = ["UI_Shell", "Win32_Security", "Win32_UI_Shell", "Win32_System_Registry"], optional = true }
 
 [profile.release]
 strip = true

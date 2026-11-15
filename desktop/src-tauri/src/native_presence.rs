@@ -64,7 +64,7 @@ fn transient(app: &AppHandle) -> Result<bool, String> {
 }
 
 #[cfg(windows)]
-const MACHINE_LOGIN_REMAINS_MESSAGE: &str = "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.";
+const MACHINE_LOGIN_REMAINS_MESSAGE: &str = "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.";
 
 #[cfg(windows)]
 fn windows_reg_string(

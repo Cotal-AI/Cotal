@@ -108,7 +108,7 @@ test("Windows leftover machine-wide login entry is reported on the existing erro
   const dom = new JSDOM('<main><div class="connection-card"></div><div id="settings-startup"></div><section id="preferences"><input id="autostart" type="checkbox"></section></main>', { runScripts: "outside-only", url: "http://localhost" });
   const doc = dom.window.document as Document;
   const notices: { message: string; error: boolean }[] = [];
-  const leftoverMessage = "An earlier version also set Cotal to open at login for every user of this computer, and removing that needs an administrator.";
+  const leftoverMessage = "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.";
   let currentUserEnabled = false;
   dom.window.__TAURI_INTERNALS__ = {
     transformCallback: () => 1,
