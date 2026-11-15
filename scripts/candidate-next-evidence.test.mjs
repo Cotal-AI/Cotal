@@ -458,4 +458,59 @@ test('candidate evidence binds captured artifacts, public command receipts and d
   assert.throws(() => verifyCandidateNextEvidence({...args, report: chain}), /terminal refusal/);
   chain.nextHop.firstHop.refusal = {passed: true};
   assert.throws(() => verifyCandidateNextEvidence({...args, report: chain}), /terminal refusal/);
+
+  // Follow-on C actions: self, npm, installer
+  for (const followOnAction of ['self', 'npm', 'installer']) {
+    const follow = structuredClone(report);
+    follow.layout = followOnAction === 'installer' ? 'installer' : 'npm';
+    follow.candidateNext.followOnVersion = '1.2.3';
+    follow.candidateNext.followOnManifestSha256 = 'follow-on-manifest';
+    follow.calls[0].startedAt = f.diagnostics.capturedAt;
+    follow.calls[0].finishedAt = f.diagnostics.capturedAt;
+    follow.nextHop.intermediate = {status: f.status, updateCheck: f.updateCheck, commands};
+    follow.daemonDiagnostics['between-hops'] = f.diagnostics;
+    const okCall = {exit: 0, signal: null, timeout: false, stdout: '', stderr: ''};
+    follow.nextHop.followOn = {action: followOnAction, targetVersion: '1.2.3', ...(followOnAction === 'npm' ? {npmInstall: okCall} : {}), update: okCall};
+    if (followOnAction === 'self') {
+      follow.calls.push({label: 'candidate follow-on self update under test', argv: source.argv, ...okCall, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt});
+    } else if (followOnAction === 'npm') {
+      const bareVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n  Reconciliation pending: Run `cotal update --self` to reconcile this installation.\n', stderr: ''};
+      const bareDaemonStatus = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {state: 'ready', version: '1.2.3', pid: process.pid}}), stderr: ''};
+      const bareRoute = {name: 'cotal-ai', version: '1.2.3', selectedCliVersion: '1.2.3', packageManagerRecordVersion: '1.2.3', updateRoute: 'in-place'};
+      const bareExtensions = Array.from({length: 8}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: '1.2.3'}));
+      const bareBytes = Buffer.from(JSON.stringify({version: bareVersion, daemonStatus: bareDaemonStatus, route: bareRoute, recovery: null, extensions: bareExtensions, installedExtensions: bareExtensions}));
+      writeFileSync(join(f.output, 'bare-manual-npm.txt'), bareBytes, {mode: 0o600});
+      follow.nextHop.followOn.bareNpmObservation = {passed: true, commands: {artifact: 'bare-manual-npm.txt', bytes: bareBytes.length, sha256: hash(bareBytes)}};
+      follow.calls.push(
+        {label: 'manual npm install follow-on target', argv: ['install', '-g', '--prefix', '/prefix', 'cotal-ai@1.2.3'], ...okCall, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+        {label: 'bare manual npm CLI version observation', argv: [source.cli, '--version'], ...bareVersion, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+        {label: 'bare manual npm daemon status', argv: [source.cli, 'daemon', 'status', '--json'], ...bareDaemonStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+        {label: 'reconcile manual npm follow-on target', argv: source.argv, ...okCall, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      );
+    } else {
+      follow.candidateInstaller = {source: pair.source, sha256: 'installer-hash'};
+      follow.calls.push({label: 'candidate follow-on source installer', argv: ['/follow-on/installer.sh', '--version', '1.2.3', '--no-setup', '--no-modify-path'], ...okCall, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt});
+    }
+    const followArgs = {...args, report: follow, cell: {...args.cell, channel: follow.layout, followOnAction}, followOnManifestSha256: 'follow-on-manifest'};
+    assert.deepEqual(verifyCandidateNextEvidence(followArgs), {sourceIdentity: true, firstRefusal: false, intermediateWhole: true, nextHopSuccess: true, followOnSuccess: true, ...(followOnAction === 'npm' ? {bareManualNpm: true} : {})});
+    assert.throws(() => verifyCandidateNextEvidence({...followArgs, followOnManifestSha256: 'wrong-manifest'}));
+    const missingCall = structuredClone(follow);
+    missingCall.calls.pop();
+    assert.throws(() => verifyCandidateNextEvidence({...followArgs, report: missingCall}));
+    if (followOnAction === 'npm') {
+      const silentStale = structuredClone(follow);
+      const staleVersion = {exit: 0, signal: null, timeout: false, stdout: 'cotal-ai 1.2.3\n', stderr: ''};
+      const staleExtensions = Array.from({length: 8}, (_, i) => ({pkg: `@cotal-ai/ext-${i}`, version: '1.2.2'}));
+      const staleDaemonStatus = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {state: 'ready', version: '1.2.3', pid: process.pid}}), stderr: ''};
+      const staleRoute = {name: 'cotal-ai', version: '1.2.3', selectedCliVersion: '1.2.3', packageManagerRecordVersion: '1.2.3', updateRoute: 'in-place'};
+      const staleBytes = Buffer.from(JSON.stringify({version: staleVersion, daemonStatus: staleDaemonStatus, route: staleRoute, recovery: null, extensions: staleExtensions, installedExtensions: staleExtensions}));
+      writeFileSync(join(f.output, 'stale-manual-npm.txt'), staleBytes, {mode: 0o600});
+      silentStale.nextHop.followOn.bareNpmObservation = {passed: false, commands: {artifact: 'stale-manual-npm.txt', bytes: staleBytes.length, sha256: hash(staleBytes)}};
+      silentStale.calls.find(row => row.label === 'bare manual npm CLI version observation').stdout = staleVersion.stdout;
+      const staleResult = verifyCandidateNextEvidence({...followArgs, report: silentStale});
+      assert.equal(staleResult.bareManualNpm, false);
+      assert.equal(staleResult.followOnSuccess, false);
+      assert.equal(staleResult.nextHopSuccess, false);
+    }
+  }
 });

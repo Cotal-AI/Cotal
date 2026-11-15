@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
-import { captureDaemonDiagnostics, daemonShowProperties, canonicalSocketPath } from './daemon-cell-diagnostics.mjs';
+import { captureDaemonDiagnostics, daemonShowProperties, canonicalSocketPath, inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
 
 test('only the observed native macOS /var/folders alias is canonicalized', () => {
   const socket = '/var/folders/2s/native/C/cotal/daemon.sock';
@@ -243,4 +243,66 @@ test('native supervisor adapter failures do not prevent independent public statu
   assert.equal(row(report, 'launchctl-disabled').state, 'failed');
   assert.equal(row(report, 'daemon-status').state, 'observed');
   assert.equal(f.children.size, 0);
+});
+
+test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and fails closed on mixed state', () => {
+  const root = mkdtempSync('/var/tmp/upgrade-matrix/route-inspect-');
+  const libDir = join(root, 'lib');
+  const modulesDir = join(libDir, 'node_modules');
+  const pkgRoot = join(modulesDir, 'cotal-ai');
+  const distDir = join(pkgRoot, 'dist');
+  mkdirSync(distDir, { recursive: true, mode: 0o700 });
+  const bootstrap = '// bootstrap entry\n';
+  writeFileSync(join(pkgRoot, 'package.json'), JSON.stringify({ name: 'cotal-ai', version: '0.164.13' }), { mode: 0o600 });
+  writeFileSync(join(distDir, 'cotal.js'), bootstrap, { mode: 0o600 });
+
+  const inPlace = inspectInstalledUpdateRoute(pkgRoot, 'linux');
+  assert.deepEqual(inPlace, {
+    name: 'cotal-ai',
+    version: '0.164.13',
+    selectedCliVersion: '0.164.13',
+    packageManagerRecordVersion: '0.164.13',
+    updateRoute: 'in-place',
+  });
+
+  const storeRoot = join(libDir, '.cotal-generations');
+  const genId = 'gen-0.164.1013';
+  const genRoot = join(storeRoot, genId);
+  const stagedPkg = join(genRoot, 'cotal-ai');
+  const stagedDist = join(stagedPkg, 'dist');
+  mkdirSync(stagedDist, { recursive: true, mode: 0o700 });
+  const inventoryRaw = JSON.stringify({ v: 1, version: '0.164.1013' });
+  const inventorySha256 = createHash('sha256').update(inventoryRaw).digest('hex');
+  writeFileSync(join(genRoot, 'inventory.json'), inventoryRaw, { mode: 0o600 });
+  writeFileSync(join(stagedPkg, 'package.json'), JSON.stringify({ name: 'cotal-ai', version: '0.164.1013' }), { mode: 0o600 });
+  writeFileSync(join(stagedDist, 'cotal-program.js'), '// staged program\n', { mode: 0o600 });
+  const bootstrapSha256 = createHash('sha256').update(bootstrap).digest('hex');
+  const activeName = `.active-${createHash('sha256').update(pkgRoot).digest('hex')}.json`;
+  const validActive = {
+    v: 1,
+    binding: { name: 'cotal-ai', version: '0.164.13', bootstrapSha256 },
+    generation: { id: genId, version: '0.164.1013', inventorySha256 },
+  };
+  writeFileSync(join(storeRoot, activeName), JSON.stringify(validActive), { mode: 0o600 });
+
+  const staged = inspectInstalledUpdateRoute(pkgRoot, 'linux');
+  assert.equal(staged.updateRoute, 'staged');
+  assert.equal(staged.version, '0.164.1013');
+  assert.equal(staged.selectedCliVersion, '0.164.1013');
+  assert.equal(staged.packageManagerRecordVersion, '0.164.13');
+  assert.equal(staged.generationId, genId);
+  assert.equal(staged.inventorySha256, inventorySha256);
+
+  for (const mutate of [
+    a => { a.binding.version = '0.164.1013'; },
+    a => { a.binding.bootstrapSha256 = '0'.repeat(64); },
+    a => { a.generation.version = '0.164.13'; },
+    a => { a.generation.inventorySha256 = '0'.repeat(64); },
+    a => { a.generation.id = '../escape'; },
+  ]) {
+    const broken = structuredClone(validActive);
+    mutate(broken);
+    writeFileSync(join(storeRoot, activeName), JSON.stringify(broken), { mode: 0o600 });
+    assert.throws(() => inspectInstalledUpdateRoute(pkgRoot, 'linux'));
+  }
 });

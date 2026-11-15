@@ -122,8 +122,8 @@ export function hostedManagerRestored({evidence, output, target, calls, stage, a
 }
 
 /** Reopen the between-hop native capture rather than trusting a report's healthy flag. */
-export function intermediateWholeMachine({diagnostics, output, target, platform, status, updateCheck, commands}) {
-  const finalState = evaluateManualDaemonState({diagnostics: {...diagnostics, stage: 'after-update'}, output, target, platform});
+export function intermediateWholeMachine({diagnostics, output, target, platform, expectedPackageManagerVersion, status, updateCheck, commands}) {
+  const finalState = evaluateManualDaemonState({diagnostics: {...diagnostics, stage: 'after-update'}, output, target, platform, expectedPackageManagerVersion});
   if (commands) {
     assert.match(commands.artifact, /^[A-Za-z0-9_.-]+\.txt$/);
     const fd = openSync(join(output,commands.artifact), constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -149,8 +149,8 @@ export function intermediateWholeMachine({diagnostics, output, target, platform,
   return {passed: Object.values(checks).every(Boolean), checks, finalState, status, updateCheck, ...(commands ? {commands} : {}), fence: value?.update?.restartEvidence ?? {state:'unknown'}};
 }
 
-/** Verify the candidate-owned hop and optional measured first-hop refusal in archived evidence. */
-export function verifyCandidateNextEvidence({report, cell, output, sourceManifestSha256, targetManifestSha256}) {
+/** Verify the candidate-owned hop, optional measured first-hop refusal, and optional follow-on C action in archived evidence. */
+export function verifyCandidateNextEvidence({report, cell, output, sourceManifestSha256, targetManifestSha256, followOnManifestSha256}) {
   const pair = report.candidateNext;
   assert(pair, 'paired candidate identity missing');
   assert.equal(pair.source, cell.sourceSHA);
@@ -170,8 +170,10 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
   assert(Array.isArray(invocation.argv) && invocation.argv.length === 3 && invocation.argv[1] === 'update' && invocation.argv[2] === '--self');
   assert.equal(realpathSync(output), output, 'physical evidence root required');
   const hop = report.nextHop;
-  assert.equal(hop?.finalTargetVersion, pair.targetVersion);
-  assert.equal(report.target, pair.targetVersion);
+  const followOnAction = cell.followOnAction ?? hop?.followOn?.action;
+  const expectedFinalTarget = followOnAction ? pair.followOnVersion : pair.targetVersion;
+  assert.equal(hop?.finalTargetVersion, expectedFinalTarget);
+  assert.equal(report.target, expectedFinalTarget);
   const update = hop.secondHop?.update;
   const label = hop.mode === 'candidate' ? 'upgrade under test' : 'candidate second hop under test';
   const commands = report.calls?.filter(row => row.label === label);
@@ -186,8 +188,17 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
   assert.equal(command.stdout,update?.stdout,'candidate hop stdout differs from actual command');
   assert.equal(command.stderr,update?.stderr,'candidate hop stderr differs from actual command');
   const nextHopSuccess = update?.exit === 0 && update.signal === null && update.timeout === false;
-  const final = evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: pair.targetVersion, platform: cell.platform});
-  let firstRefusal = false, intermediateWhole = true;
+  const expectedFinalPackageManagerVersion = ['npm', 'installer'].includes(followOnAction)
+    ? pair.followOnVersion
+    : hop.mode === 'source-0.164.10'
+      ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? pair.sourceVersion
+      : pair.sourceVersion;
+  const final = evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
+  if (['npm', 'installer'].includes(followOnAction)) {
+    assert.equal(final.updateRoute, 'in-place', 'manual npm and installer follow-on routes must clear staged generation and finish in-place at C');
+    assert.equal(final.packageManagerRecordVersion, pair.followOnVersion);
+  }
+  let firstRefusal = false, intermediateWhole = true, followOnSuccess, bareManualNpm;
   if (hop.mode === 'source-0.164.10') {
     assert.equal(report.source, '0.164.10');
     const firstCalls=report.calls.filter(row=>row.label==='upgrade under test');
@@ -202,12 +213,101 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     const refusal = matchSource16410Refusal({platform: cell.platform, layout: cell.channel, sourceVersion: report.source, targetVersion: pair.sourceVersion, update: hop.firstHop?.update});
     assert.deepEqual(hop.firstHop?.refusal, refusal, 'first-hop refusal receipt differs from measured contract');
     assert(hop.intermediate?.commands, 'hashed between-hop command evidence missing');
-    const middle = intermediateWholeMachine({diagnostics: report.daemonDiagnostics?.['between-hops'], output, target: pair.sourceVersion, platform: cell.platform, status: hop.intermediate?.status, updateCheck: hop.intermediate?.updateCheck, commands: hop.intermediate.commands});
+    const middle = intermediateWholeMachine({diagnostics: report.daemonDiagnostics?.['between-hops'], output, target: pair.sourceVersion, platform: cell.platform, expectedPackageManagerVersion: '0.164.10', status: hop.intermediate?.status, updateCheck: hop.intermediate?.updateCheck, commands: hop.intermediate.commands});
     intermediateWhole = middle.passed;
     firstRefusal = true;
   } else {
     assert.equal(hop.mode, 'candidate');
     assert.equal(report.source, pair.sourceVersion);
+  }
+  if (followOnAction) {
+    assert.equal(hop.mode, 'candidate');
+    assert(['self', 'npm', 'installer'].includes(followOnAction), 'invalid follow-on action');
+    assert(followOnManifestSha256, 'follow-on manifest sha256 required');
+    assert.equal(pair.followOnManifestSha256, followOnManifestSha256);
+    assert.equal(hop.followOn?.action, followOnAction);
+    assert.equal(hop.followOn?.targetVersion, pair.followOnVersion);
+    assert(hop.intermediate?.commands, 'hashed between-hop command evidence missing');
+    const middle = intermediateWholeMachine({diagnostics: report.daemonDiagnostics?.['between-hops'], output, target: pair.targetVersion, platform: cell.platform, expectedPackageManagerVersion: pair.sourceVersion, status: hop.intermediate?.status, updateCheck: hop.intermediate?.updateCheck, commands: hop.intermediate.commands});
+    intermediateWhole = middle.passed;
+    const captured = Date.parse(report.daemonDiagnostics?.['between-hops']?.capturedAt);
+    assert(Number.isFinite(captured) && captured >= Date.parse(command.finishedAt), 'between-hop capture predates first candidate hop');
+    const clean = result => result?.exit === 0 && result.signal === null && result.timeout === false;
+    if (followOnAction === 'self') {
+      const followCalls = report.calls.filter(row => row.label === 'candidate follow-on self update under test');
+      assert.equal(followCalls.length, 1, 'follow-on self update call missing or duplicated');
+      const followCall = followCalls[0];
+      assert(Date.parse(followCall.startedAt) >= captured && Date.parse(followCall.finishedAt) >= Date.parse(followCall.startedAt), 'follow-on self update time bounds invalid');
+      assert(Array.isArray(followCall.argv) && followCall.argv.at(-2) === 'update' && followCall.argv.at(-1) === '--self');
+      assert(followCall.argv.includes(invocation.argv[0]) || followCall.file === invocation.argv[0]);
+      for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(followCall[key], hop.followOn?.update?.[key], `follow-on self ${key} differs from actual command`);
+      followOnSuccess = clean(hop.followOn?.update);
+    } else if (followOnAction === 'npm') {
+      const npmCalls = report.calls.filter(row => row.label === 'manual npm install follow-on target');
+      const bareVersionCalls = report.calls.filter(row => row.label === 'bare manual npm CLI version observation');
+      const bareStatusCalls = report.calls.filter(row => row.label === 'bare manual npm daemon status' || row.label === 'wait for bare manual npm daemon generation');
+      const reconcileCalls = report.calls.filter(row => row.label === 'reconcile manual npm follow-on target');
+      assert.equal(npmCalls.length, 1, 'manual npm follow-on install call missing or duplicated');
+      assert.equal(bareVersionCalls.length, 1, 'bare manual npm CLI version observation call missing or duplicated');
+      assert(bareStatusCalls.length >= 1, 'bare manual npm daemon status call missing');
+      assert.equal(reconcileCalls.length, 1, 'manual npm follow-on reconciliation call missing or duplicated');
+      const npmCall = npmCalls[0], bareVersionCall = bareVersionCalls[0], bareStatusCall = bareStatusCalls.at(-1), reconcileCall = reconcileCalls[0];
+      assert(Date.parse(npmCall.startedAt) >= captured && Date.parse(npmCall.finishedAt) >= Date.parse(npmCall.startedAt), 'manual npm install time bounds invalid');
+      assert(Date.parse(bareVersionCall.startedAt) >= Date.parse(npmCall.finishedAt) && Date.parse(bareVersionCall.finishedAt) >= Date.parse(bareVersionCall.startedAt), 'bare manual npm CLI version time bounds invalid');
+      assert(Date.parse(bareStatusCalls[0].startedAt) >= Date.parse(bareVersionCall.finishedAt) && Date.parse(bareStatusCall.finishedAt) >= Date.parse(bareStatusCalls[0].startedAt), 'bare manual npm daemon status time bounds invalid');
+      assert(Date.parse(reconcileCall.startedAt) >= Date.parse(bareStatusCall.finishedAt) && Date.parse(reconcileCall.finishedAt) >= Date.parse(reconcileCall.startedAt), 'manual npm reconciliation time bounds invalid');
+      assert(Array.isArray(npmCall.argv) && npmCall.argv.includes('install') && npmCall.argv.includes('-g') && npmCall.argv.includes(`cotal-ai@${pair.followOnVersion}`));
+      assert(Array.isArray(bareVersionCall.argv) && bareVersionCall.argv.at(-1) === '--version');
+      assert(bareVersionCall.argv.includes(invocation.argv[0]) || bareVersionCall.file === invocation.argv[0]);
+      assert(Array.isArray(reconcileCall.argv) && reconcileCall.argv.at(-2) === 'update' && reconcileCall.argv.at(-1) === '--self');
+      assert(reconcileCall.argv.includes(invocation.argv[0]) || reconcileCall.file === invocation.argv[0]);
+      const bare = hop.followOn?.bareNpmObservation;
+      assert(bare?.commands, 'hashed bare manual npm observation missing');
+      assert.match(bare.commands.artifact ?? '', /^[A-Za-z0-9_.-]+\.txt$/);
+      const fd = openSync(join(output, bare.commands.artifact), constants.O_RDONLY | constants.O_NOFOLLOW);
+      let archivedBare;
+      try {
+        const stat = fstatSync(fd);
+        assert(stat.isFile() && stat.nlink === 1 && stat.size === bare.commands.bytes && stat.size <= 524288);
+        if (process.getuid) assert(stat.uid === process.getuid() && (stat.mode & 0o022) === 0);
+        const data = readFileSync(fd);
+        assert.equal(hash(data), bare.commands.sha256);
+        archivedBare = JSON.parse(data);
+      } finally { closeSync(fd); }
+      for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) {
+        assert.equal(npmCall[key], hop.followOn?.npmInstall?.[key], `manual npm install ${key} differs from actual command`);
+        assert.equal(bareVersionCall[key], archivedBare.version?.[key], `bare manual npm version ${key} differs from actual command`);
+        assert.equal(bareStatusCall[key], archivedBare.daemonStatus?.[key], `bare manual npm daemon status ${key} differs from actual command`);
+        assert.equal(reconcileCall[key], hop.followOn?.update?.[key], `manual npm reconcile ${key} differs from actual command`);
+      }
+      const bareDaemon = archivedBare.daemonStatus?.exit === 0 ? JSON.parse(archivedBare.daemonStatus.stdout).result : undefined;
+      const bareCliHeader = String(archivedBare.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
+      const bareRemedy = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(String(archivedBare.version?.stdout ?? ''));
+      const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= 8 && archivedBare.extensions.every(entry => {
+        const installed = archivedBare.installedExtensions?.find(row => row.pkg === entry.pkg);
+        if (!installed || installed.version !== entry.version) return false;
+        if (entry.version === pair.followOnVersion) return true;
+        return entry.version === pair.targetVersion && bareRemedy;
+      });
+      bareManualNpm = clean(archivedBare.version) && bareCliHeader
+        && archivedBare.route?.updateRoute === 'in-place'
+        && archivedBare.route?.selectedCliVersion === pair.followOnVersion
+        && archivedBare.route?.packageManagerRecordVersion === pair.followOnVersion
+        && clean(archivedBare.daemonStatus) && bareDaemon?.state === 'ready' && bareDaemon?.version === pair.followOnVersion
+        && archivedBare.recovery === null
+        && bareExtensionsOk;
+      followOnSuccess = clean(hop.followOn?.npmInstall) && bareManualNpm && clean(hop.followOn?.update);
+    } else {
+      assert.equal(report.layout, 'installer');
+      const installerCalls = report.calls.filter(row => row.label === 'candidate follow-on source installer');
+      assert.equal(installerCalls.length, 1, 'follow-on installer call missing or duplicated');
+      const installerCall = installerCalls[0];
+      assert(Date.parse(installerCall.startedAt) >= captured && Date.parse(installerCall.finishedAt) >= Date.parse(installerCall.startedAt), 'follow-on installer time bounds invalid');
+      assert(Array.isArray(installerCall.argv) && installerCall.argv.includes('--version') && installerCall.argv.includes(pair.followOnVersion));
+      assert.equal(report.candidateInstaller?.source, cell.sourceSHA);
+      for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(installerCall[key], hop.followOn?.update?.[key], `follow-on installer ${key} differs from actual command`);
+      followOnSuccess = clean(hop.followOn?.update);
+    }
   }
   let managerRestored;
   if (cell.scenario === 'agent-stop-consent') {
@@ -253,5 +353,5 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     intermediateWhole = intermediateWhole && middle.passed;
     managerRestored = middle.passed && last.passed;
   }
-  return {sourceIdentity: true, firstRefusal, intermediateWhole, nextHopSuccess: nextHopSuccess && final.passed && managerRestored !== false, ...(managerRestored === undefined ? {} : {hostedManagerRestored: managerRestored})};
+  return {sourceIdentity: true, firstRefusal, intermediateWhole, nextHopSuccess: nextHopSuccess && final.passed && managerRestored !== false && followOnSuccess !== false, ...(followOnSuccess === undefined ? {} : {followOnSuccess: followOnSuccess && final.passed}), ...(bareManualNpm === undefined ? {} : {bareManualNpm}), ...(managerRestored === undefined ? {} : {hostedManagerRestored: managerRestored})};
 }
