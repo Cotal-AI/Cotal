@@ -5,11 +5,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { peerCredentials } from "@cotal-ai/seat";
 import { skipSuite } from "@cotal-ai/smoke-kit";
-import { runDesktopBridge } from "../daemon/desktop.js";
 import { daemonPaths } from "../daemon/endpoint.js";
 import { excludeLifetime } from "../daemon/lifetime.js";
 import { serveDaemon } from "../daemon/server.js";
@@ -55,27 +53,31 @@ interface Frame {
   error?: { code: string; message: string; remedy?: string; native?: { code: string } };
   result?: { installed: boolean; status: { state: string; pid: number } };
 }
-async function request(target: Isolated, op: string): Promise<Frame> {
+async function request(target: Isolated, body: string | Record<string, unknown>, timeoutMs = 35_000): Promise<Frame> {
+  const payload = typeof body === "string" ? { op: body } : body;
+  const label = String(payload.op);
   return await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, "daemon", "desktop"], { cwd: target.dir, env: target.env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), 35_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
     child.once("error", (error) => { clearTimeout(timer); reject(error); });
     child.once("close", (code, signal) => {
       clearTimeout(timer);
       try {
-        assert.equal(signal, null, `desktop ${op} signal; ${stderr}`);
-        assert.equal(code, 0, `desktop ${op} exit; ${stderr}`);
-        const frame = JSON.parse(stdout.trim()) as Frame;
+        assert.equal(signal, null, `desktop ${label} signal; ${stderr}`);
+        assert.equal(code, 0, `desktop ${label} exit; ${stderr}`);
+        const frames = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Frame);
+        const frame = frames.at(-1);
+        assert.ok(frame, `desktop ${label} emitted a frame`);
         assert.equal(frame.v, 1);
         assert.equal(frame.event, "result");
-        console.log(`${op}: ${JSON.stringify(frame)}`);
+        console.log(`${label}: ${JSON.stringify(frame)}`);
         resolve(frame);
       } catch (error) { reject(error); }
     });
-    child.stdin.end(`${JSON.stringify({ op })}\n`);
+    child.stdin.end(`${JSON.stringify(payload)}\n`);
   });
 }
 function checkInstallation(target: Isolated): void {
@@ -199,83 +201,40 @@ try {
   heldLock.release();
 }
 
-// Setup-path non-answer gets the same app wording and attempt-scoped refusal, while an answering
-// daemon on an older version does not carry NOT_ANSWERING.
-const setupTarget = isolated("setup-not-answering", true);
-const savedEnv = { ...process.env };
-const savedArgv = [...process.argv];
-const version = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
-async function runSetupBridge(expectedVersion: string): Promise<Frame> {
-  const frames: Frame[] = [];
-  const realNow = Date.now;
-  let calls = 0;
-  Date.now = () => (++calls > 8 ? realNow() + 65_000 : realNow());
-  try {
-    const paths = daemonPaths();
-    await runDesktopBridge({
-      version: expectedVersion,
-      resolveTarget: () => ({ paths }),
-      peerUid: (sock) => peerCredentials(sock).uid,
-      input: Readable.from([`${JSON.stringify({ op: "setup", space: "team", idp: "https://cotal.cloud/api/auth" })}\n`]),
-      output: new Writable({
-        write(chunk, _encoding, callback) {
-          for (const line of chunk.toString().trim().split("\n").filter(Boolean)) frames.push(JSON.parse(line) as Frame);
-          callback();
-        },
-      }),
-    });
-  } finally {
-    Date.now = realNow;
-  }
-  const result = frames.findLast((frame) => frame.event === "result");
-  assert.ok(result, "setup emitted a result frame");
-  return result;
-}
+// Setup-path non-answer gets the 60-second app wording and attempt-scoped refusal, while an answering
+// daemon on an older version does not carry NOT_ANSWERING. Both run over the real 60-second window.
+const setupNonAnswerTarget = isolated("setup-not-answering", true);
+const setupHeld = excludeLifetime(join(setupNonAnswerTarget.dir, "cotal", "daemon", "daemon.lock"));
+const oldDaemon = await serveDaemon({
+  paths: daemonPaths(control.env, join(control.dir, "cotal")),
+  version: "0.0.0-old",
+  peerUid: (sock) => peerCredentials(sock).uid,
+});
 try {
-  for (const key of Object.keys(process.env)) if (!(key in setupTarget.env)) delete process.env[key];
-  Object.assign(process.env, setupTarget.env);
-  process.argv = [process.execPath, cli, "daemon", "desktop"];
+  const setupStarted = Date.now();
+  const [setupTimedOut, oldVersionReply] = await Promise.all([
+    request(setupNonAnswerTarget, { op: "setup", space: "team", idp: "https://cotal.cloud/api/auth" }, 90_000),
+    request(control, { op: "setup", space: "team", idp: "https://cotal.cloud/api/auth" }, 90_000),
+  ]);
+  assert.ok(Date.now() - setupStarted >= 60_000, "real 60s setup readiness window elapsed");
+  checkInstallation(setupNonAnswerTarget);
+  assert.equal(setupTimedOut.ok, false);
+  assert.equal(setupTimedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(setupTimedOut.error?.native?.code, "NOT_ANSWERING");
+  assert.equal(
+    setupTimedOut.error?.message,
+    `Cotal asked the background service on this computer to start, and it did not answer within 60 seconds. It refused to start: ${join(setupNonAnswerTarget.dir, "cotal", "daemon", "daemon.lock")} is held by a live process: this daemon is already being served. Nothing was changed`,
+  );
+  assert.equal(setupTimedOut.error?.remedy, "choose Check status.");
+  console.log("setup non-answer: real 60s window, app wording and current-attempt refusal included");
 
-  const setupHeld = excludeLifetime(join(setupTarget.dir, "cotal", "daemon", "daemon.lock"));
-  try {
-    const setupTimedOut = await runSetupBridge(version);
-    checkInstallation(setupTarget);
-    assert.equal(setupTimedOut.ok, false);
-    assert.equal(setupTimedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(setupTimedOut.error?.native?.code, "NOT_ANSWERING");
-    assert.equal(
-      setupTimedOut.error?.message,
-      `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${join(setupTarget.dir, "cotal", "daemon", "daemon.lock")} is held by a live process: this daemon is already being served. Nothing was changed`,
-    );
-    assert.equal(setupTimedOut.error?.remedy, "choose Check status.");
-    console.log("setup non-answer: app wording and current-attempt refusal included");
-  } finally {
-    setupHeld.release();
-  }
-
-  // With the unit installed, an answering daemon that stays on an older version does not carry NOT_ANSWERING.
-  writeFileSync(join(setupTarget.dir, "context.json"), JSON.stringify({
-    home: join(setupTarget.dir, "home"),
-    config: join(setupTarget.dir, "config"),
-    cotal: join(setupTarget.dir, "cotal"),
-    rt: join(setupTarget.dir, "rt"),
-    calls: setupTarget.calls,
-    units: ["cotal-daemon.service"],
-  }), { mode: 0o600 });
-  const oldDaemon = await serveDaemon({ paths: daemonPaths(), version: "0.0.0-old", peerUid: (sock) => peerCredentials(sock).uid });
-  try {
-    const oldVersionReply = await runSetupBridge(version);
-    assert.equal(oldVersionReply.ok, false);
-    assert.equal(oldVersionReply.error?.code, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(oldVersionReply.error?.native, undefined, "an answering old daemon does not carry NOT_ANSWERING");
-    assert.match(oldVersionReply.error?.message ?? "", /^the daemon did not answer .* within 60s of being started; nothing was registered$/);
-    console.log("setup old-version answer: does not carry NOT_ANSWERING");
-  } finally {
-    await oldDaemon.close();
-  }
+  assert.equal(oldVersionReply.ok, false);
+  assert.equal(oldVersionReply.error?.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(oldVersionReply.error?.native, undefined, "an answering old daemon does not carry NOT_ANSWERING");
+  assert.match(oldVersionReply.error?.message ?? "", /^the daemon did not answer .* within 60s of being started; nothing was registered$/);
+  console.log("setup old-version answer: real 60s window, does not carry NOT_ANSWERING");
 } finally {
-  for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
-  Object.assign(process.env, savedEnv);
-  process.argv = savedArgv;
+  setupHeld.release();
+  await oldDaemon.close();
 }
 console.log(`daemon-desktop-install: passed; isolated evidence retained at ${root}`);
