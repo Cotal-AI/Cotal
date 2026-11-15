@@ -4,19 +4,23 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-const source = readFileSync(new URL('./launch.ts', import.meta.url), 'utf8');
+const normalize = text => text.replace(/\r\n/g, '\n');
+const read = path => normalize(readFileSync(new URL(path, import.meta.url), 'utf8'));
+const source = read('./launch.ts');
 
 test('installed Windows failure preserves the original verdict and captures native Details before teardown', () => {
-  const failure = source.slice(source.indexOf('} catch (error) {\n  report.outcome'), source.indexOf('\nfinally {'));
-  assert.match(failure, /process.platform === "win32" && nativePid/);
-  assert.match(failure, /windows-launch-details.ps1/);
-  assert.match(failure, /"-AppPid", String\(nativePid\)/);
-  assert.match(failure, /"-Binary", binary!/);
-  assert.match(failure, /"failure-details.json"/);
-  assert.match(failure, /"failure-details.png"/);
-  assert.doesNotMatch(failure, /bridgeTrace|CDP|remote-debugging/);
-  assert.match(failure, /throw error;/);
-  assert.doesNotMatch(failure, /outcome = "passed"|nativeLifecycle|NODE_OPTIONS|--features|daemon.*desktop/);
+  for (const text of [source, normalize(readFileSync(new URL('./launch.ts', import.meta.url), 'utf8').replace(/\r?\n/g, '\r\n'))]) {
+    const failure = text.slice(text.indexOf('} catch (error) {\n  report.outcome'), text.indexOf('\nfinally {'));
+    assert.match(failure, /process.platform === "win32" && nativePid/);
+    assert.match(failure, /windows-launch-details.ps1/);
+    assert.match(failure, /"-AppPid", String\(nativePid\)/);
+    assert.match(failure, /"-Binary", binary!/);
+    assert.match(failure, /"failure-details.json"/);
+    assert.match(failure, /"failure-details.png"/);
+    assert.doesNotMatch(failure, /bridgeTrace|CDP|remote-debugging/);
+    assert.match(failure, /throw error;/);
+    assert.doesNotMatch(failure, /outcome = "passed"|nativeLifecycle|NODE_OPTIONS|--features|daemon.*desktop/);
+  }
 });
 
 test('Windows failure block retains failed native Details and never replaces the original error', () => {
@@ -43,14 +47,14 @@ test('Windows failure block retains failed native Details and never replaces the
 });
 
 test('Windows Details helper pins the installed process and admits only the exact disclosure action', () => {
-  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  const helper = read('./windows-launch-details.ps1');
   for (const marker of ['$null = $owner.Handle', '$report.imagePaths.observedRaw = $owner.Path', '$report.birth', 'GetWindowThreadProcessId($hwnd', '$windowPid -ne $AppPid', 'IsWindowVisible($hwnd)', "AutomationId -ceq 'details'", "AutomationId -ceq 'refusal-detail'", "$_.Current.Name -ceq 'Details'", '$buttons.Count -ne 1', 'InvokePattern', '$report.before', '$report.after', '$report.refusal']) assert.ok(helper.includes(marker), marker);
   assert.equal((helper.match(/\$invoke.Invoke\(\)/g) ?? []).length, 1);
   assert.doesNotMatch(helper, /mouse_event|SetCursorPos|Try again|AutomationId -ceq 'recover'|daemon_request|NODE_OPTIONS/);
 });
 
 test('native Windows ownership accepts short and long names of one file and rejects another file', { skip: process.platform !== 'win32' }, () => {
-  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  const helper = read('./windows-launch-details.ps1');
   const code = helper.match(/Add-Type @'\r?\n([\s\S]*?)\r?\n'@/)[1];
   const admission = helper.slice(helper.indexOf('    $report.imagePaths.observedRaw ='), helper.indexOf('    $hwnd = $owner.MainWindowHandle'));
   const script = `
@@ -105,7 +109,7 @@ ${admission}
 });
 
 test('installed launch ownership resolves both executable spellings through the native long-path API', () => {
-  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  const helper = read('./windows-launch-details.ps1');
   assert.match(helper, /GetLongPathNameW/);
   assert.match(helper, /expectedRaw = \$Binary; observedRaw = \$null; expectedNormalized = \$null; observedNormalized = \$null/);
   assert.match(helper, /\$report.imagePaths.observedRaw = \$owner.Path/);
@@ -118,7 +122,7 @@ test('installed launch ownership resolves both executable spellings through the 
 });
 
 test('installed refusal process census publishes only app descendants and explicit unknown on failure', () => {
-  const helper = readFileSync(new URL('./windows-launch-details.ps1', import.meta.url), 'utf8');
+  const helper = read('./windows-launch-details.ps1');
   const census = helper.slice(helper.indexOf('$processes = @('), helper.indexOf('$root = [System.Windows.Automation.AutomationElement]'));
   assert.match(census, /Get-CimInstance Win32_Process -Property Name,ProcessId,ParentProcessId,CreationDate/);
   assert.match(census, /\$parents = @\(\$AppPid\)/);
@@ -194,6 +198,6 @@ test('installed Windows launch requires settled welcome with Continue with Cotal
   assert.equal(predicate(refusal), false, 'This operation could not finish must not pass');
   assert.equal(predicate(settled), true, 'settled welcome with Continue with Cotal Cloud button must pass');
   assert.match(win, /replace\(\/\^\\uFEFF\/, ""\)/);
-  const workflow = readFileSync(new URL('../../.github/workflows/desktop.yml', import.meta.url), 'utf8');
+  const workflow = read('../../.github/workflows/desktop.yml');
   assert.match(workflow, /node --test[\s\S]*?desktop\/e2e\/installed-runtime\.test\.mjs/);
 });
