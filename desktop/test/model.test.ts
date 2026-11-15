@@ -124,6 +124,18 @@ test("expired credentials and pending approval refusals map to their recovery ac
     action: "install",
     label: "Start service",
   });
+  assert.deepEqual(refusalView("NOT_ANSWERING"), {
+    title: "The background service has not started",
+    description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.",
+    action: "refresh",
+    label: "Check status",
+  });
+  assert.deepEqual(refusalView("UNREACHABLE"), {
+    title: "We cannot reach your connection",
+    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    action: "refresh",
+    label: "Try again",
+  });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",
     description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.",

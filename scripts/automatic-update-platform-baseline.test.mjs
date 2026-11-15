@@ -76,8 +76,11 @@ test('hosted Manager observation retries only the explicit rate refusal within i
 test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
   const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
   assert.equal(baseline.candidateNextOptions(options,true),'candidate');
+  assert.equal(baseline.candidateNextOptions({...options, 'candidate-follow-on': '/C', 'follow-on-action': 'self'},true),'candidate');
+  assert.equal(baseline.candidateNextOptions({...options, 'candidate-follow-on': '/C', 'follow-on-action': 'npm'},true),'candidate');
+  assert.equal(baseline.candidateNextOptions({...options, layout: 'installer', 'candidate-follow-on': '/C', 'follow-on-action': 'installer', 'candidate-follow-on-installer': '/C/installer.sh'},true),'candidate');
   assert.equal(baseline.candidateNextOptions({},false),undefined);
-  for(const change of [{candidate:undefined},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'latest'},{'next-hop-phase':undefined}]) assert.throws(()=>baseline.candidateNextOptions({...options,...change},true));
+  for(const change of [{candidate:undefined},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'latest'},{'next-hop-phase':undefined},{'follow-on-action':'self'},{'candidate-follow-on':'/C','follow-on-action':'installer'},{'candidate-follow-on':'/C','follow-on-action':'unknown'}]) assert.throws(()=>baseline.candidateNextOptions({...options,...change},true));
   assert.throws(()=>baseline.candidateNextOptions(options,false));
   assert.equal(baseline.candidateNextOptions({...options,source:'0.164.10',layout:'installer','next-hop-source':'0.164.10'},true),'source-0.164.10');
   assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
@@ -424,7 +427,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 28 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 34 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
@@ -629,8 +632,9 @@ test('Mac admission gate records late arm64 unrun before any installation', asyn
   assert.equal(outputWritten, false);
 });
 
-test('summary preserves unrun runner receipts separately from product verdicts', async () => {
+test('summary preserves unrun runner receipts separately from product verdicts and does not count matched known refusals as unexpected failures', async () => {
   const { summarize } = await import('./automatic-update-platform-baseline.mjs');
+  const { knownRefusals } = await import('./upgrade-matrix-refusals.mjs');
   const parent = '/var/tmp/upgrade-matrix';
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(parent, 'admission-summary-'));
@@ -644,6 +648,36 @@ test('summary preserves unrun runner receipts separately from product verdicts',
   assert.deepEqual(mixed.counts, { passed: 1 });
   assert.equal(mixed.admissions.length, 1);
   assert(readFileSync(join(root, 'summary.md'), 'utf8').includes('macos-15 | unrun'));
+
+  const knownDir = join(root, 'upgrade-cell-linux-npm-standalone-stop-consent');
+  mkdirSync(knownDir, { mode: 0o700 });
+  const entry = knownRefusals.find(e => e.id === 'linux-npm-standalone-stop-consent');
+  const stdout = entry.stdout.replaceAll('{{space}}', 'upgrade-proof').replaceAll('{{manager}}', 'sdz0a0f5fxj1ct3pzd181eaqvdozem1').replaceAll('{{pid}}', '2699');
+  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr: entry.stderr };
+  writeFileSync(join(knownDir, 'coordinate.json'), JSON.stringify({ id: entry.id, phase: 'published', sourceVersion: '0.164.12' }));
+  writeFileSync(join(knownDir, 'report.json'), JSON.stringify({
+    id: 'published-linux-0.164.12-npm-agent-self-stop-agents',
+    tier: 'published',
+    source: '0.164.12',
+    sourceRequested: '0.164.12',
+    target: '0.164.13',
+    result: 'failed',
+    state: 'agent',
+    agentHost: 'standalone',
+    managerHost: { mode: 'standalone', space: 'upgrade-proof' },
+    cleanupSafety: { passed: true },
+    update,
+    extensionsBefore: [{ pkg: '@cotal-ai/core', version: '0.164.12' }],
+    extensionsAfter: [{ pkg: '@cotal-ai/core', version: '0.164.12' }],
+    assertions: [
+      ...entry.failedAssertions.map(name => ({ name, passed: false, observed: name === 'upgrade exits successfully' ? update : name === 'CLI version is target' ? '0.164.12' : undefined })),
+      ...entry.requiredAssertions.map(name => ({ name, passed: true })),
+    ],
+  }));
+  const withRefusal = summarize(root);
+  assert.equal(withRefusal.unexpectedFailures, 0);
+  assert.equal(withRefusal.counts.failed, 1);
+  assert.equal(withRefusal.cells.find(c => c.knownRefusal)?.knownRefusal.issue, entry.issue);
 });
 
 import { test } from 'node:test';

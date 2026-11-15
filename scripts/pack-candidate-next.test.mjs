@@ -4,12 +4,13 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { packCandidateNext, nextCandidateVersion, NEXT_PATCH_OFFSET } from './pack-candidate-next.mjs';
+import { packCandidateNext, nextCandidateVersion, NEXT_PATCH_OFFSET, FOLLOW_ON_PATCH_OFFSET } from './pack-candidate-next.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const save = (path, value) => writeFileSync(path, JSON.stringify(value));
 const source = 'a'.repeat(40);
-function fixture(t, failure) {
+function fixture(t, failure, offset = NEXT_PATCH_OFFSET) {
+  const expectedVersion = offset === FOLLOW_ON_PATCH_OFFSET ? '1.2.2003' : '1.2.1003';
   const base = mkdtempSync(join(process.env.JCODE_SCRATCH_DIR ?? tmpdir(), 'candidate-next-test-'));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const root = join(base, 'source'), candidate = join(base, 'A'), output = join(base, 'B');
@@ -60,15 +61,15 @@ function fixture(t, failure) {
       assert.deepEqual(args, ['--workspace-concurrency', '3', 'build']);
       for (const row of rows) {
         const info = JSON.parse(readFileSync(join(row.path, 'package.json')));
-        assert.equal(info.version, '1.2.1003');
-        assert(Object.values(info.dependencies).every(value => value === '1.2.1003'));
+        assert.equal(info.version, expectedVersion);
+        assert(Object.values(info.dependencies).every(value => value === expectedVersion));
       }
       if (failure === 'build') throw new Error('build failed');
       return '';
     }
     if (file === 'synthetic-pack') {
       if (failure === 'pack') throw new Error('pack failed');
-      mkdirSync(options.output); return make(options.output, '1.2.1003');
+      mkdirSync(options.output); return make(options.output, expectedVersion);
     }
     assert.equal(file, process.execPath);
     assert(args[0].startsWith(join(realpathSync(root), 'packages')));
@@ -80,19 +81,24 @@ function fixture(t, failure) {
 
 test('deterministic patch offset and stable safe numeric ordering', () => {
   assert.equal(NEXT_PATCH_OFFSET, 1000);
+  assert.equal(FOLLOW_ON_PATCH_OFFSET, 2000);
   assert.equal(nextCandidateVersion('0.164.10'), '0.164.1010');
+  assert.equal(nextCandidateVersion('0.164.10', FOLLOW_ON_PATCH_OFFSET), '0.164.2010');
   for (const version of ['1.2.3-beta', '01.2.3', '1.2.9007199254740991', 'latest']) assert.throws(() => nextCandidateVersion(version));
+  assert.throws(() => nextCandidateVersion('0.164.10', 3000));
 });
 
 test('synthetic full contract stamps before build, preserves A, restores source', async t => {
-  const f = fixture(t);
-  const before = readFileSync(join(f.candidate, 'manifest.json'));
-  const manifest = await packCandidateNext({ sourceRoot: f.root, candidate: f.candidate, output: f.output, exec: f.exec });
-  assert.equal(manifest.packages.length, 24);
-  assert.deepEqual(readFileSync(join(f.candidate, 'manifest.json')), before);
-  for (const [i, row] of f.rows.entries()) assert.equal(readFileSync(join(row.path, 'package.json'), 'utf8'), f.originals[i]);
-  assert.equal(JSON.parse(readFileSync(join(f.output, 'next.json'))).rule, 'A.patch+1000');
-  assert.equal(f.calls.filter(([file]) => file === process.execPath).length, 4);
+  for (const offset of [NEXT_PATCH_OFFSET, FOLLOW_ON_PATCH_OFFSET]) {
+    const f = fixture(t, undefined, offset);
+    const before = readFileSync(join(f.candidate, 'manifest.json'));
+    const manifest = await packCandidateNext({ sourceRoot: f.root, candidate: f.candidate, output: f.output, offset, exec: f.exec });
+    assert.equal(manifest.packages.length, 24);
+    assert.deepEqual(readFileSync(join(f.candidate, 'manifest.json')), before);
+    for (const [i, row] of f.rows.entries()) assert.equal(readFileSync(join(row.path, 'package.json'), 'utf8'), f.originals[i]);
+    assert.equal(JSON.parse(readFileSync(join(f.output, 'next.json'))).rule, `A.patch+${offset}`);
+    assert.equal(f.calls.filter(([file]) => file === process.execPath).length, 4);
+  }
 });
 
 for (const failure of ['dirty', 'source', 'build', 'native', 'pack']) test(`refuses ${failure} and restores manifests`, async t => {

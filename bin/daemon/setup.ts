@@ -51,6 +51,7 @@ interface InstallOptions {
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
+  readonly omittedRelativePathEntries?: readonly string[];
   readonly paths: DaemonPaths;
   readonly daemonHome: string | undefined;
   readonly peerUid?: PeerUid;
@@ -76,21 +77,21 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Wait for the daemon to answer its endpoint after a start, so the steps below reach a live one. */
 async function waitForDaemon(opts: InstallOptions, seconds: number): Promise<void> {
   const deadline = Date.now() + seconds * 1000;
-  let last: unknown;
+  let notAnswering = false;
   for (;;) {
     try {
       const reply = await queryDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid });
       if (reply.ok && (!opts.version || reply.result.version === opts.version) && reply.result.protocol === DAEMON_PROTOCOL_VERSION) return;
-      last = reply.ok ? `the daemon still runs Cotal ${reply.result.version}` : reply.error;
+      notAnswering = false;
     } catch (e) {
       // NOT_RUNNING and PEER_NOT_LOCK_OWNER are both "not up yet" while a unit is starting.
       if (!(e instanceof EndpointRefusal) || (e.code !== "NOT_RUNNING" && e.code !== "PEER_NOT_LOCK_OWNER")) throw e;
-      last = e.message;
+      notAnswering = true;
     }
     if (Date.now() >= deadline) {
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the daemon did not answer ${opts.paths.socket} within ${seconds}s of being started; nothing was registered`, {
         remedy: "read its unit with systemctl --user status, then run this again",
-        ...(typeof last === "string" ? { native: { code: "NOT_ANSWERING" } } : {}),
+        ...(notAnswering ? { native: { code: "NOT_ANSWERING", detail: { waitSeconds: seconds } } } : {}),
       });
     }
     await sleep(250);
@@ -131,7 +132,7 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
         native: { code: "RUNNING_WITHOUT_UNIT" },
       });
     }
-    const installed = applyInstall(opts.paths, opts.daemonHome);
+    const installed = applyInstall(opts.paths, opts.daemonHome, opts.omittedRelativePathEntries);
     unit = installed.unit;
     outcome = "installed";
     detail = `${installed.unit} installed${installed.mechanism === "systemd-user" ? `, ${installed.lingerAlready ? "linger was already enabled" : "linger enabled"}` : ""}, restart ${installed.restart}, started by ${installed.wantedBy}`;

@@ -16,6 +16,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
+updater-e2e = []
 desktop = ["dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell", "dep:tauri-plugin-opener", "dep:tauri-plugin-autostart", "dep:tauri-plugin-single-instance", "dep:tauri-plugin-deep-link", "dep:tokio", "dep:windows", "dep:tauri-plugin-updater"]
 
 [build-dependencies]

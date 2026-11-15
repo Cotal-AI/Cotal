@@ -59,15 +59,21 @@ export function publishedPredecessor(registry, target) {
 const skipped = reason => ({ status: "skipped", acceptance: false, reason });
 
 /** Synthetic next-hop target: the candidate's stable patch plus 1000, never public latest. */
-export function syntheticNextVersion(candidate) {
+export function syntheticNextVersion(candidate, offset = 1000) {
+  requireValue(offset === 1000 || offset === 2000, "synthetic offset must be 1000 or 2000");
   requireValue(typeof candidate === "string" && stableVersion.test(candidate), "synthetic candidate must be a stable numeric version");
   const parts = candidate.split(".").map(BigInt);
   const max = BigInt(Number.MAX_SAFE_INTEGER);
-  requireValue(parts.every(part => part <= max) && parts[2] <= max - 1000n, "synthetic version exceeds safe numeric range");
-  parts[2] += 1000n;
+  const delta = BigInt(offset);
+  requireValue(parts.every(part => part <= max) && parts[2] <= max - delta, "synthetic version exceeds safe numeric range");
+  parts[2] += delta;
   const target = parts.join(".");
   requireValue(compareVersions(target, candidate) > 0, "synthetic target must be newer than candidate");
   return target;
+}
+
+export function syntheticFollowOnVersion(candidate) {
+  return syntheticNextVersion(candidate, 2000);
 }
 
 /** event is a GitHub payload. context is trusted caller-supplied metadata, not PR code.
@@ -146,6 +152,7 @@ export function boundedCells(plan) {
   for (const platform of ["linux", "darwin"]) add(platform, "installer", "daemon-self");
   {
     const targetVersion = syntheticNextVersion(plan.targetVersion);
+    const followOnVersion = syntheticFollowOnVersion(plan.targetVersion);
     const chainAssertions = ["exact-source-refusal", "intermediate-whole-machine", "next-hop-success"];
     for (const cell of cells.filter(cell => ['daemon-self', 'agent-stop-consent'].includes(cell.scenario) && cell.sourceVersion === '0.164.10')) {
       cell.chain = true;
@@ -160,6 +167,31 @@ export function boundedCells(plan) {
       targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
       syntheticVersionRule: "candidate.patch+1000",
     });
+    const followOnAssertions = ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", "native-service-manual", "independent-final-state", "candidate-source-identity", "candidate-next-target", "next-hop-success", "intermediate-whole-machine", "follow-on-target", "follow-on-success"];
+    for (const platform of ["linux", "darwin"]) {
+      add(platform, "npm", "candidate-next-second-self", null, {
+        sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+        targetVersion, finalTargetVersion: followOnVersion,
+        targetSource: "packed-follow-on-C", targetSourceSHA: plan.sourceSHA,
+        syntheticVersionRule: "candidate.patch+1000/2000", followOnAction: "self",
+        requiredAssertions: [...followOnAssertions],
+      });
+      add(platform, "npm", "candidate-next-manual-npm", null, {
+        sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+        targetVersion, finalTargetVersion: followOnVersion,
+        targetSource: "packed-follow-on-C", targetSourceSHA: plan.sourceSHA,
+        syntheticVersionRule: "candidate.patch+1000/2000", followOnAction: "npm",
+        requiredAssertions: [...followOnAssertions, "bare-manual-npm-observation"],
+      });
+      add(platform, "installer", "candidate-next-installer-rerun", null, {
+        sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+        targetVersion, finalTargetVersion: followOnVersion,
+        targetSource: "packed-follow-on-C", targetSourceSHA: plan.sourceSHA,
+        installerSource: "FOLLOW_ON_ARTIFACT/installer.sh", installerReceiptRequired: true,
+        syntheticVersionRule: "candidate.patch+1000/2000", followOnAction: "installer",
+        requiredAssertions: [...followOnAssertions, "installer-source-receipt"],
+      });
+    }
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,

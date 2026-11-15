@@ -22,18 +22,25 @@ function inspect(directory) {
   return { manifest, version: versions[0], hash: sha256(bytes) };
 }
 
-/** Keep both immutable closures readable while switching only the latest tag. */
-export async function candidatePairRegistry(sourceDirectory, targetDirectory, upstream = 'https://registry.npmjs.org/') {
-  const source = inspect(sourceDirectory), target = inspect(targetDirectory);
+/** Keep immutable closures readable while switching only the latest tag. */
+export async function candidatePairRegistry(sourceDirectory, targetDirectory, upstreamOrFollowOn = 'https://registry.npmjs.org/', maybeUpstream = 'https://registry.npmjs.org/') {
+  const hasFollowOn = typeof upstreamOrFollowOn === 'string' && !/^https?:\/\//i.test(upstreamOrFollowOn);
+  const followOnDirectory = hasFollowOn ? upstreamOrFollowOn : undefined;
+  const upstream = hasFollowOn ? maybeUpstream : upstreamOrFollowOn;
+  const source = inspect(sourceDirectory), target = inspect(targetDirectory), followOn = followOnDirectory ? inspect(followOnDirectory) : undefined;
   assert.equal(source.manifest.source, target.manifest.source, 'pair must share source SHA');
+  if (followOn) assert.equal(source.manifest.source, followOn.manifest.source, 'follow-on closure must share source SHA');
   const [major, minor, patch] = source.version.split('.').map(Number);
-  assert([major, minor, patch, patch + 1000].every(Number.isSafeInteger), 'version exceeds safe numeric ordering');
+  assert([major, minor, patch, patch + 1000, ...(followOn ? [patch + 2000] : [])].every(Number.isSafeInteger), 'version exceeds safe numeric ordering');
   assert.equal(target.version, `${major}.${minor}.${patch + 1000}`, 'target must be deterministic source patch+1000');
-  let a, b, server, latest = source.version, closing;
+  if (followOn) assert.equal(followOn.version, `${major}.${minor}.${patch + 2000}`, 'follow-on must be deterministic source patch+2000');
+  let a, b, c, server, latest = source.version, closing;
   const requests = [], cache = new Map();
   try {
     a = await candidateRegistry(sourceDirectory, 'A', upstream);
     b = await candidateRegistry(targetDirectory, 'B', upstream);
+    if (followOnDirectory) c = await candidateRegistry(followOnDirectory, 'B', upstream);
+    const registries = c ? [a, b, c] : [a, b];
     server = createServer(async (request, response) => {
       try {
         if (request.method !== 'GET') { response.writeHead(405).end('read-only candidate pair registry'); return; }
@@ -47,14 +54,25 @@ export async function candidatePairRegistry(sourceDirectory, targetDirectory, up
           return;
         }
         if (!cache.has(name)) {
-          const pending = Promise.all([a, b].map(async registry => {
+          const pending = Promise.all(registries.map(async registry => {
             const result = await fetch(`${registry.url}/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(35000) });
             assert(result.ok, `candidate metadata unavailable for ${name}: ${result.status}`);
             return result.json();
-          })).then(([left, right]) => {
+          })).then(([left, right, third]) => {
             assert.equal(left.versions[source.version]?.version, source.version, 'missing source metadata');
             assert.equal(right.versions[target.version]?.version, target.version, 'missing target metadata');
-            return { ...left, versions: { ...left.versions, ...right.versions, [source.version]: left.versions[source.version], [target.version]: right.versions[target.version] } };
+            if (followOn) assert.equal(third?.versions[followOn.version]?.version, followOn.version, 'missing follow-on metadata');
+            return {
+              ...left,
+              versions: {
+                ...left.versions,
+                ...right.versions,
+                ...(third ? third.versions : {}),
+                [source.version]: left.versions[source.version],
+                [target.version]: right.versions[target.version],
+                ...(followOn ? { [followOn.version]: third.versions[followOn.version] } : {}),
+              },
+            };
           });
           cache.set(name, pending);
           pending.catch(() => cache.delete(name));
@@ -71,20 +89,27 @@ export async function candidatePairRegistry(sourceDirectory, targetDirectory, up
       identity: { source: source.manifest.source, sourceVersion: source.version, targetVersion: target.version,
         sourceManifestSha256: source.hash, targetManifestSha256: target.hash,
         sourceArchives: a.identity.archives, targetArchives: b.identity.archives,
-        sourcePackages: structuredClone(source.manifest.packages), targetPackages: structuredClone(target.manifest.packages) },
+        sourcePackages: structuredClone(source.manifest.packages), targetPackages: structuredClone(target.manifest.packages),
+        ...(followOn ? {
+          followOnVersion: followOn.version,
+          followOnManifestSha256: followOn.hash,
+          followOnArchives: c.identity.archives,
+          followOnPackages: structuredClone(followOn.manifest.packages),
+        } : {}) },
       requests,
       activateTarget() { assert(!closing, 'registry is closing'); latest = target.version; },
+      activateFollowOn() { assert(!closing, 'registry is closing'); assert(followOn, 'follow-on closure not configured'); latest = followOn.version; },
       close() {
         closing ??= (async () => {
           await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-          await Promise.all([a.close(), b.close()]);
+          await Promise.all(registries.map(registry => registry.close()));
           return requests;
         })();
         return closing;
       },
     };
   } catch (error) {
-    await Promise.allSettled([a?.close(), b?.close()]);
+    await Promise.allSettled([a?.close(), b?.close(), c?.close()]);
     throw error;
   }
 }

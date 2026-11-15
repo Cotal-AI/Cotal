@@ -85,6 +85,81 @@ function bytes(root, file) {
 }
 const failure = error => ({ state: error?.code === 'ENOENT' ? 'missing' : error?.code === 'ETIMEDOUT' || error?.name === 'AbortError' ? 'timeout' : 'error', error: clean(error?.code === 'ERR_ASSERTION' ? error.message : error?.code ?? error?.message ?? 'diagnostic error') });
 
+export function inspectInstalledUpdateRoute(pkg, platform = process.platform) {
+  const pkgRoot = realpathSync.native(resolve(pkg));
+  directory(pkgRoot);
+  const pkgManifestBytes = bytes(pkgRoot, join(pkgRoot, 'package.json'));
+  const pkgManifest = JSON.parse(pkgManifestBytes);
+  assert.equal(pkgManifest.name, 'cotal-ai', 'unexpected package');
+  assert.match(pkgManifest.version, /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
+  const packageManagerRecordVersion = pkgManifest.version;
+  if (platform === 'win32') {
+    return {
+      name: pkgManifest.name,
+      version: packageManagerRecordVersion,
+      selectedCliVersion: packageManagerRecordVersion,
+      packageManagerRecordVersion,
+      updateRoute: 'in-place',
+    };
+  }
+  const modulesDir = dirname(pkgRoot);
+  const libDir = dirname(modulesDir);
+  const storeRoot = join(libDir, '.cotal-generations');
+  const activeName = `.active-${createHash('sha256').update(pkgRoot).digest('hex')}.json`;
+  const activePath = join(storeRoot, activeName);
+  let activeText;
+  try {
+    activeText = bytes(storeRoot, activePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        name: pkgManifest.name,
+        version: packageManagerRecordVersion,
+        selectedCliVersion: packageManagerRecordVersion,
+        packageManagerRecordVersion,
+        updateRoute: 'in-place',
+      };
+    }
+    throw error;
+  }
+  const bootstrapBytes = bytes(pkgRoot, join(pkgRoot, 'dist/cotal.js'));
+  const bootstrapSha256 = createHash('sha256').update(bootstrapBytes).digest('hex');
+  const active = JSON.parse(activeText);
+  assert.equal(active?.v, 1, 'unsupported active generation schema');
+  assert.equal(active.binding?.name, 'cotal-ai', 'active generation binding name mismatch');
+  assert.equal(active.binding?.version, packageManagerRecordVersion, 'active generation binding version differs from packageManagerRecordVersion');
+  assert.equal(active.binding?.bootstrapSha256, bootstrapSha256, 'active generation binding bootstrap hash differs from installed dist/cotal.js');
+  const generationId = active.generation?.id;
+  const selectedCliVersion = active.generation?.version;
+  const inventorySha256 = active.generation?.inventorySha256;
+  assert.match(generationId ?? '', /^[A-Za-z0-9._-]{1,128}$/, 'invalid active generation id');
+  assert(!generationId.includes('..'), 'unsafe active generation id');
+  assert.match(selectedCliVersion ?? '', /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/, 'invalid active generation version');
+  assert.match(inventorySha256 ?? '', /^[a-f0-9]{64}$/, 'invalid active generation inventory hash');
+  const generationRoot = join(storeRoot, generationId);
+  directory(generationRoot);
+  const inventoryRaw = bytes(generationRoot, join(generationRoot, 'inventory.json'));
+  assert.equal(createHash('sha256').update(inventoryRaw).digest('hex'), inventorySha256, 'staged generation inventory hash mismatch');
+  const stagedPkgRoot = join(generationRoot, 'cotal-ai');
+  directory(stagedPkgRoot);
+  const stagedManifest = JSON.parse(bytes(stagedPkgRoot, join(stagedPkgRoot, 'package.json')));
+  assert.equal(stagedManifest.name, 'cotal-ai', 'staged generation package name mismatch');
+  assert.equal(stagedManifest.version, selectedCliVersion, 'staged generation package version mismatch');
+  const stagedProgramBytes = bytes(stagedPkgRoot, join(stagedPkgRoot, 'dist/cotal-program.js'));
+  const stagedProgramSha256 = createHash('sha256').update(stagedProgramBytes).digest('hex');
+  return {
+    name: pkgManifest.name,
+    version: selectedCliVersion,
+    selectedCliVersion,
+    packageManagerRecordVersion,
+    updateRoute: 'staged',
+    activeDescriptorSha256: createHash('sha256').update(activeText).digest('hex'),
+    generationId,
+    inventorySha256,
+    stagedProgramSha256,
+  };
+}
+
 /** Read-only snapshots before/after an update. No verdict interpretation, lock operation, or service control.
  * run(file, argv, {timeoutMs,maxBuffer,signal}) must enforce the bounds and reap its children before
  * settling. daemonStatus(bounds) is the independent public CLI status runner, with the same contract.
@@ -150,10 +225,15 @@ async function capture(options) {
   if (options.plan?.globalRoot) for (const name of ['.cotal-update.lock', '.cotal-update-child']) await file(name, options.plan.globalRoot, join(options.plan.globalRoot, name));
   else report.observations.push({ kind: 'global-update-owner', state: 'unavailable', reason: 'plan.globalRoot not supplied' });
   await add('installed-version', () => {
-    const value = JSON.parse(bytes(options.pkg, join(options.pkg, 'package.json')));
-    assert.equal(value.name, 'cotal-ai', 'unexpected package');
-    assert.match(value.version, /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
-    return { state: 'archived', version: value.version, ...archive('installed-version', JSON.stringify({ name: value.name, version: value.version })) };
+    const value = inspectInstalledUpdateRoute(options.pkg, options.platform ?? process.platform);
+    return {
+      state: 'archived',
+      version: value.version,
+      selectedCliVersion: value.selectedCliVersion,
+      packageManagerRecordVersion: value.packageManagerRecordVersion,
+      updateRoute: value.updateRoute,
+      ...archive('installed-version', JSON.stringify(value)),
+    };
   });
   await add('socket', () => {
     if ((options.platform ?? process.platform) === 'win32') return { state: 'unavailable', reason: 'named-pipe metadata requires native observer; pipe not opened' };

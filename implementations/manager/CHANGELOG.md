@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.164.13
+
+### Patch Changes
+
+- e2c838e: Stop Windows `pty` seats even when they have not written to their terminal. On Windows, stopping a `pty` seat now pins the launched root process, snapshots and pins its descendant process tree before cooperative shutdown grace, terminates any surviving members through their retained process handles after grace, and frees the seat only after every captured process and the PTY have exited.
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/seat@0.164.13
+
 ## 0.164.12
 
 ### Patch Changes

@@ -14,7 +14,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 28);
+  assert.equal(plan.matrix.include.length, 34);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -24,7 +24,7 @@ test('all required release coordinates fit in the concurrency budget without wai
   assert(plan.matrix.include.some(cell => cell.platform === 'win32'));
   assert.equal(workflow.jobs['release-native'].strategy['max-parallel'], 3);
 });
-test('paired next-hop builders are explicit in both phases and stamp B before building', () => {
+test('paired next-hop builders are explicit in both phases and stamp B and C before building', () => {
   assert(!workflow.jobs['release-native'].if.includes("phase == 'candidate'"));
   assert(!workflow.jobs['release-next'].if.includes("phase == 'candidate'"));
   const pack = workflow.jobs['release-pack'];
@@ -37,13 +37,17 @@ test('paired next-hop builders are explicit in both phases and stamp B before bu
   assert(next.steps.some(step => step.with?.path === 'product' && step.with.ref.includes('needs.select.outputs.source')));
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 28);
+  assert(next.steps.some(step => step.run?.includes('--offset 2000')));
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 34);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
-test('paired routes preserve ordinary published arguments and bind both artifact receipts', () => {
+test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
   const cells = workflow.jobs['release-cells'];
   const run = cells.steps.find(step => step.name === 'Run one real product upgrade coordinate').run;
   assert(run.includes("'source-0.164.10-daemon-self-chain': 'daemon'"));
+  assert(run.includes("'candidate-next-second-self': 'daemon'"));
+  assert(run.includes("'candidate-next-manual-npm': 'daemon'"));
+  assert(run.includes("'candidate-next-installer-rerun': 'daemon'"));
   assert(run.includes("'--next-hop-source', cell.chain ? '0.164.10' : 'candidate'"));
   assert(run.includes("'--next-hop-phase', process.env.PHASE"));
   assert(run.includes("'--next-hop-final-target', cell.finalTargetVersion"));
@@ -51,7 +55,7 @@ test('paired routes preserve ordinary published arguments and bind both artifact
   assert(run.includes('cell.finalTargetVersion ?? cell.targetVersion'));
   const download = cells.steps.find(step => step.with?.['artifact-ids'] === '${{ needs.release-next.outputs.artifact }}');
   assert(download.if.includes('matrix.chain == true'));
-  for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
+  for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
 });
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
   const condition = workflow.jobs.priority.if;
@@ -77,12 +81,12 @@ test('durable events preserve immutable heads without privileged PR execution or
   assert(workflow.jobs['release-summary'].if.includes('always()'));
   assert.equal(workflow.jobs['release-cells'].strategy['fail-fast'], false);
 });
-function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '0.164.6', targetVersion = '0.164.7', phase = 'candidate', corrupt = false } = {}) {
+function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', sourceVersion = '0.164.6', targetVersion = '0.164.7', phase = 'candidate', corrupt = false } = {}) {
   const root = mkdtempSync('/var/tmp/upgrade-matrix/census-guard-');
   const base = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: targetVersion, profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion });
   base.phase = phase;
   for (const cell of base.cells) cell.phase = phase;
-  const cell = base.cells.find(c => c.id === `linux-npm-${scenario}`);
+  const cell = base.cells.find(c => c.id === `linux-${channel}-${scenario}`);
   const plan = { ...base, cells: [cell] };
   const directory = join(root, 'upgrade-results', `upgrade-cell-${cell.id}`);
   mkdirSync(directory, { recursive: true, mode: 0o700 }); mkdirSync(join(root, 'upgrade-plan'), { mode: 0o700 });
@@ -90,7 +94,7 @@ function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '
   const harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: new URL('..', import.meta.url), encoding: 'utf8' }).trim();
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   const harnessSha256 = digest(execFileSync('git', ['show', harnessSource + ':scripts/automatic-update-platform-baseline.mjs'], { cwd: new URL('..', import.meta.url) }));
-  const data = { cell: structuredClone(cell), origin: { source: plan.sourceSHA, artifact: '42', digest: 'sha256:fixed' }, report: { id: 'candidate-B-linux-0.164.6-npm-configured-self', tier: 'candidate-B (synthetic registry, real native processes)', platform: 'linux', source: sourceVersion, sourceRequested: sourceVersion, harnessSource, harnessSha256, cleanupSafety: { passed: true }, target: plan.targetVersion, layout: 'npm', state: 'configured', method: 'self', result: 'passed', environment: { hostedDisposable: true, registryOverridden: true }, candidate: { source: plan.sourceSHA, direction: 'B' }, extensionsBefore: Array.from({ length: 8 }, (_, i) => ({ pkg: `extension-${i}` })), assertions: names.map(name => ({ name, passed: true })), calls: [] } };
+  const data = { cell: structuredClone(cell), origin: { source: plan.sourceSHA, artifact: '42', digest: 'sha256:fixed' }, report: { id: `candidate-B-linux-${sourceVersion}-${channel}-configured-self`, tier: 'candidate-B (synthetic registry, real native processes)', platform: 'linux', source: sourceVersion, sourceRequested: sourceVersion, harnessSource, harnessSha256, cleanupSafety: { passed: true }, target: plan.targetVersion, layout: channel, state: 'configured', method: 'self', result: 'passed', environment: { hostedDisposable: true, registryOverridden: true }, candidate: { source: plan.sourceSHA, direction: 'B' }, extensionsBefore: Array.from({ length: 8 }, (_, i) => ({ pkg: `extension-${i}` })), assertions: names.map(name => ({ name, passed: true })), calls: [] } };
   change(data, directory);
   writeFileSync(join(root, 'upgrade-plan/plan.json'), JSON.stringify(plan));
   writeFileSync(join(directory, 'coordinate.json'), JSON.stringify(data.cell));
@@ -105,7 +109,7 @@ function fixture(change = () => {}, { scenario = 'configured', sourceVersion = '
     .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href))
     .replace("'./scripts/candidate-next-evidence.mjs'", JSON.stringify(new URL('./candidate-next-evidence.mjs', import.meta.url).href))
     .replace("'./scripts/daemon-manual-acceptance.mjs'", JSON.stringify(new URL('./daemon-manual-acceptance.mjs', import.meta.url).href)));
-  const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_NEXT_ARTIFACT: '43', EXPECTED_NEXT_DIGEST: 'sha256:next', EXPECTED_HARNESS_SOURCE: harnessSource };
+  const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_NEXT_ARTIFACT: '43', EXPECTED_NEXT_DIGEST: 'sha256:next', EXPECTED_FOLLOW_ON_ARTIFACT: '44', EXPECTED_FOLLOW_ON_DIGEST: 'sha256:follow', EXPECTED_HARNESS_SOURCE: harnessSource };
   try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe', cwd: new URL('..', import.meta.url) }); return { exit: 0, root }; }
   catch (error) { return { exit: error.status, stderr: error.stderr.toString(), root }; }
 }
@@ -158,9 +162,10 @@ test('manual service route is daemon state, self method, native Linux preparatio
   assert(run.includes("cell.platform === 'darwin' && method === 'scheduler'"));
   assert(program.includes('evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics'));
 });
-function archivePairManifests(data, directory, a, b) {
+function archivePairManifests(data, directory, a, b, c) {
   const names = JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat().sort();
-  for (const [side, filename, version] of [['source', 'candidate-source-manifest.json', a], ['target', 'candidate-next-manifest.json', b]]) {
+  const sides = [['source', 'candidate-source-manifest.json', a], ['target', 'candidate-next-manifest.json', b], ...(c ? [['followOn', 'candidate-follow-on-manifest.json', c]] : [])];
+  for (const [side, filename, version] of sides) {
     const packages = names.map((name, index) => ({ name, version, archive: `package-${index}.tgz`, sha256: 'e'.repeat(64), files: { 'package.json': 'c'.repeat(64), 'dist/cotal.js': 'd'.repeat(64) } }));
     const bytes = JSON.stringify({ source: data.cell.sourceSHA, packages });
     writeFileSync(join(directory, filename), bytes, { mode: 0o600 });
@@ -187,6 +192,111 @@ function freshNextEvidence(data, directory) {
   manualServiceEvidence(data, directory);
   Object.assign(data.report.calls.find(call => call.label === 'upgrade under test'), { argv: ['/owned/dist/cotal.js', 'update', '--self'], signal: null, timeout: false });
 }
+function followOnEvidence(data, directory, route = 'in-place') {
+  const a = data.cell.sourceVersion, b = data.cell.targetVersion, c = data.cell.finalTargetVersion;
+  freshNextEvidence(data, directory);
+  data.report.target = c;
+  data.report.candidateNext.followOnVersion = c;
+  data.nextOrigin.followOnArtifact = '44';
+  data.nextOrigin.followOnDigest = 'sha256:follow';
+  archivePairManifests(data, directory, a, b, c);
+  const middleDirectory = join(directory, 'middle');
+  mkdirSync(middleDirectory);
+  manualServiceEvidence(data, middleDirectory);
+  const middle = structuredClone(data.report.daemonDiagnostics['after-update']);
+  for (const row of middle.observations) if (row.artifact) {
+    const name = 'middle-' + row.artifact;
+    copyFileSync(join(middleDirectory, row.artifact), join(directory, name));
+    row.artifact = name;
+  }
+  const finalCell = { ...data.cell, targetVersion: c };
+  const originalCell = data.cell;
+  data.cell = finalCell;
+  manualServiceEvidence(data, directory);
+  data.cell = originalCell;
+  if (route === 'staged' && data.cell.followOnAction === 'self') {
+    const obs = data.report.daemonDiagnostics['after-update'].observations.find(row => row.kind === 'installed-version');
+    const stagedRecord = {
+      name: 'cotal-ai',
+      version: c,
+      selectedCliVersion: c,
+      packageManagerRecordVersion: a,
+      updateRoute: 'staged',
+      generationId: `gen-${c}`,
+      inventorySha256: '1'.repeat(64),
+      activeDescriptorSha256: '2'.repeat(64),
+      stagedProgramSha256: '3'.repeat(64),
+    };
+    const bytes = Buffer.from(JSON.stringify(stagedRecord));
+    writeFileSync(join(directory, obs.artifact), bytes, { mode: 0o600 });
+    obs.bytes = bytes.length;
+    obs.sha256 = createHash('sha256').update(bytes).digest('hex');
+    obs.selectedCliVersion = c;
+    obs.packageManagerRecordVersion = a;
+    obs.updateRoute = 'staged';
+  }
+  data.report.daemonDiagnostics['between-hops'] = middle;
+  const firstHopCall = data.report.calls.find(call => call.label === 'upgrade under test');
+  Object.assign(firstHopCall, { argv: ['/owned/dist/cotal.js', 'update', '--self'], signal: null, timeout: false, startedAt: '2026-11-14T10:59:58.000Z', finishedAt: '2026-11-14T10:59:59.000Z' });
+  const status = { exit: 0, stdout: JSON.stringify({ result: { state: 'ready', version: b, update: { lastResult: 'updated', restartEvidence: { prepared: false } } } }) };
+  const updateCheck = { exit: 0, timeout: false, signal: null };
+  const commandBytes = JSON.stringify({ status, updateCheck });
+  writeFileSync(join(directory, 'between-commands.txt'), commandBytes, { mode: 0o600 });
+  const commands = { artifact: 'between-commands.txt', bytes: Buffer.byteLength(commandBytes), sha256: createHash('sha256').update(commandBytes).digest('hex') };
+  const followUpdate = { exit: 0, signal: null, timeout: false, stdout: '', stderr: '' };
+  data.report.nextHop = {
+    mode: 'candidate',
+    sourceVersion: a,
+    firstTargetVersion: a,
+    finalTargetVersion: c,
+    secondHop: { update: { exit: 0, timeout: false, signal: null } },
+    intermediate: { status, updateCheck, commands },
+    followOn: { action: data.cell.followOnAction, targetVersion: c, ...(data.cell.followOnAction === 'npm' ? { npmInstall: followUpdate } : {}), update: followUpdate },
+  };
+  if (data.cell.followOnAction === 'self') {
+    data.report.calls.push({ label: 'candidate follow-on self update under test', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], ...followUpdate });
+  } else if (data.cell.followOnAction === 'npm') {
+    const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update --self\` to reconcile this installation.\n`, stderr: '' };
+    const bareDaemonStatus = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { state: 'ready', version: c, pid: 1234 } }), stderr: '' };
+    const bareRoute = { name: 'cotal-ai', version: c, selectedCliVersion: c, packageManagerRecordVersion: c, updateRoute: 'in-place' };
+    const bareExtensions = Array.from({ length: 8 }, (_, i) => ({ pkg: `@cotal-ai/ext-${i}`, version: b }));
+    const bareBytes = JSON.stringify({ version: bareVersion, daemonStatus: bareDaemonStatus, route: bareRoute, recovery: null, extensions: bareExtensions, installedExtensions: bareExtensions });
+    writeFileSync(join(directory, 'bare-manual-npm.txt'), bareBytes, { mode: 0o600 });
+    data.report.nextHop.followOn.bareNpmObservation = {
+      passed: true,
+      commands: { artifact: 'bare-manual-npm.txt', bytes: Buffer.byteLength(bareBytes), sha256: createHash('sha256').update(bareBytes).digest('hex') },
+    };
+    data.report.calls.push(
+      { label: 'manual npm install follow-on target', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['install', '-g', '--prefix', '/prefix', `cotal-ai@${c}`, '--no-audit', '--no-fund'], ...followUpdate },
+      { label: 'bare manual npm CLI version observation', startedAt: '2026-11-14T11:00:02.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', '--version'], ...bareVersion },
+      { label: 'bare manual npm daemon status', startedAt: '2026-11-14T11:00:02.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', 'daemon', 'status', '--json'], ...bareDaemonStatus },
+      { label: 'reconcile manual npm follow-on target', startedAt: '2026-11-14T11:00:02.000Z', finishedAt: '2026-11-14T11:00:03.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], ...followUpdate },
+    );
+    data.report.assertions.push({ name: 'bare manual npm install reaches target in-place and names any pending extension reconciliation', passed: true });
+  } else {
+    data.report.candidateInstaller = { source: data.cell.sourceSHA, sha256: '4'.repeat(64) };
+    data.report.calls.push({ label: 'candidate follow-on source installer', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/follow-on/installer.sh', '--version', c, '--no-setup', '--no-modify-path'], ...followUpdate });
+  }
+  data.report.assertions = [...new Map([
+    ...data.report.assertions,
+    { name: 'follow-on target matches packed artifact', passed: true },
+    { name: 'follow-on action exits successfully', passed: true },
+  ].map(row => [row.name, row])).values()];
+}
+test('actual summary accepts all three follow-on scenarios across phases and route modes', () => {
+  for (const phase of ['candidate', 'published']) {
+    for (const [scenario, channel] of [
+      ['candidate-next-second-self', 'npm'],
+      ['candidate-next-manual-npm', 'npm'],
+      ['candidate-next-installer-rerun', 'installer'],
+    ]) {
+      const result = fixture((data, directory) => followOnEvidence(data, directory, 'in-place'), { scenario, channel, phase });
+      assert.equal(result.exit, 0, result.stderr);
+    }
+    const stagedSecondSelf = fixture((data, directory) => followOnEvidence(data, directory, 'staged'), { scenario: 'candidate-next-second-self', channel: 'npm', phase });
+    assert.equal(stagedSecondSelf.exit, 0, stagedSecondSelf.stderr);
+  }
+});
 test('actual paired summary accepts candidate-owned B only with both receipts and independent final state', () => {
   for (const phase of ['candidate', 'published']) {
     const result = fixture(freshNextEvidence, { scenario: 'candidate-next-daemon-self', phase });

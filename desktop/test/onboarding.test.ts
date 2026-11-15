@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
-import type { AppUpdate } from "../src/app-update";
+import type { AppUpdate, AppUpdateReceipt } from "../src/app-update";
 import type { UpdateStatus } from "../src/updates";
 import { COTAL_CLOUD_IDP, type Frame, type Request } from "../src/model.ts";
 
@@ -15,11 +15,11 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
-  const calls: Request[] = [], urls: string[] = [], nativeCalls: string[] = [], checkArgs: { manual?: boolean }[] = [];
+  const calls: Request[] = [], urls: string[] = [], nativeCalls: string[] = [], checkArgs: { manual?: boolean }[] = [], applyArgs: { explicit?: boolean }[] = [];
   let update = options.update;
   let autoUpdates = options.autoUpdates ?? true;
   const callbacks = new Map<number, (frame: unknown) => void>(); let next = 0;
@@ -39,7 +39,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
   win.isTauri = true;
   win.__TAURI_INTERNALS__ = {
     transformCallback(fn: (frame: unknown) => void) { callbacks.set(++next, fn); return next; }, unregisterCallback() {},
-    async invoke(cmd: string, args: { manual?: boolean; request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
+    async invoke(cmd: string, args: { explicit?: boolean; manual?: boolean; request?: Request; url?: string; onEvent?: { id: number }; event?: string; handler?: number } = {}) {
       if (cmd === "plugin:deep-link|get_current") return options.link ? [options.link] : null;
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
       if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "" };
@@ -52,6 +52,8 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
         if (options.nativeCheckPending) await new Promise(() => {});
         return options.appUpdate ?? { phase: "unconfigured" };
       }
+      if (cmd === "app_update_receipt") return options.appReceipt;
+      if (cmd === "app_update_apply") { applyArgs.push({ explicit: args.explicit }); return options.appUpdate ?? { phase: "unconfigured" }; }
       if (cmd === "app_update_download") return { phase: "ready", version: options.appUpdate?.version };
       if (cmd === "open_browser") { urls.push(args.url!); return; }
       assert.equal(cmd, "daemon_request"); const r = args.request!; calls.push(r);
@@ -64,9 +66,18 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
       if (r.op === "about") {
         if (options.interruptedAbout) return { v: 1, event: "result", ok: false, error: { code: "SETUP_INTERRUPTED", message: "Run the installer again to finish updating Cotal." } };
         if (options.loading) await new Promise(() => {});
-        return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
+        return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
-      if (r.op === "install") { installed = true; stopped = false; return ok({ installed: true }); }
+      if (r.op === "install") {
+        installed = true;
+        if (options.installNotAnswering) {
+          stopped = true;
+          const reason = typeof options.installNotAnswering === "string" ? ` It refused to start: ${options.installNotAnswering}` : "";
+          return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${reason}`, remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } } satisfies Frame;
+        }
+        stopped = false;
+        return ok({ installed: true });
+      }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
       if (r.op === "status") {
@@ -107,7 +118,7 @@ async function app(options: { appVersion?: string; update?: UpdateStatus; native
   win.eval(await bundle); await settle();
   const node = <T extends HTMLElement = HTMLElement>(id: string) => doc.getElementById(id) as T;
   const click = async (id: string) => { node<HTMLButtonElement>(id).click(); await settle(); };
-  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
+  return { dom, doc, node, click, calls, urls, nativeCalls, checkArgs, applyArgs, options, arm: () => { installed = true; stopped = false; }, stop: () => { stopped = true; }, emit: async (event: string, payload: unknown = null) => { const handler = listeners.get(event); assert.ok(handler); callbacks.get(handler)!({ event, payload }); await settle(); }, copied: () => copied, advance: (ms: number) => { now += ms; clock?.(); }, tick: async () => { await tick?.(); await settle(); }, login: async () => { assert.ok(releaseLogin); releaseLogin(); await settle(); }, setup: async () => { assert.ok(releaseSetup); releaseSetup(); await settle(); } };
 }
 
 const installerStatus: UpdateStatus = { channel: "desktop", current: "0.164.7", latest: "0.165.0", lastCheck: "2026-11-14T07:00:00Z", lastResult: "available", automatic: false, notify: true };
@@ -157,18 +168,61 @@ for (const phase of ["current", "failed"] as const) {
   });
 }
 
-test("desktop updates download by default, never apply, and use the manifest answer", async () => {
+test("desktop updates wait while visible and use the manifest answer", async () => {
   const a = await app({ installed: true, connected: true, registryLatest: "0.166.0", appUpdate: { phase: "available", version: "0.165.0" } });
   try {
-    assert.equal(a.nativeCalls.filter(call => call === "app_update_download").length, 1);
-    assert.ok(!a.nativeCalls.some(call => /install|relaunch/.test(call)), "no apply command exists in this batch");
+    assert.equal(a.nativeCalls.filter(call => call === "app_update_download").length, 0);
+    assert.ok(a.nativeCalls.includes("app_update_apply"), "native side decides actual hidden-window admission");
     await a.emit("desktop-open-settings");
-    assert.match(a.node("settings-update-summary").textContent!, /0\.165\.0.*downloaded and verified/);
+    assert.match(a.node("settings-update-summary").textContent!, /Version 0\.165\.0 is available/);
     assert.ok(!a.node("settings-update-summary").textContent!.includes("0.166.0"));
     assert.equal(a.node<HTMLInputElement>("update-preference").checked, true);
     await a.tick(); await a.tick();
     assert.equal(a.nativeCalls.filter(call => call === "app_update_check").length, 1, "status polling adds no update polling");
   } finally { a.dom.window.close(); }
+});
+
+test("Mac restart is an explicit native admission request and hidden notification is automatic", async () => {
+  const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" } });
+  try {
+    await a.emit("desktop-open-settings");
+    assert.equal(a.node("restart-update").hidden, false);
+    await a.click("restart-update");
+    assert.equal(a.applyArgs.at(-1)!.explicit, true);
+    await a.emit("desktop-hidden");
+    assert.equal(a.applyArgs.at(-1)!.explicit, false);
+    assert.ok(!a.nativeCalls.includes("app_update_download"), "download only happens inside native install admission");
+  } finally { a.dom.window.close(); }
+});
+
+test("automatic tick retries wait ten minutes but hide, fresh check and button are immediate", async () => {
+  const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0", reason: "Administrator permission is needed." } });
+  try {
+    const initial = a.applyArgs.length;
+    for (let i = 0; i < 30; i++) { a.advance(1000); await a.tick(); }
+    assert.equal(a.applyArgs.length, initial, "a standing refusal must not start one native attempt per status tick");
+    await a.emit("desktop-hidden");
+    assert.equal(a.applyArgs.length, initial + 1, "hide bypasses tick cooldown");
+    await a.emit("desktop-open-settings");
+    await a.click("check-updates");
+    assert.equal(a.applyArgs.length, initial + 2, "fresh check bypasses tick cooldown");
+    await a.click("restart-update");
+    assert.equal(a.applyArgs.length, initial + 3, "explicit button bypasses tick cooldown");
+    a.advance(600_001); await a.tick();
+    assert.equal(a.applyArgs.length, initial + 4, "tick retries after ten minutes");
+  } finally { a.dom.window.close(); }
+});
+
+test("auto off and installer-only Windows never request app replacement", async () => {
+  for (const options of [{ autoUpdates: false }, { platform: "win32" }]) {
+    const a = await app({ installed: true, connected: true, appUpdate: { phase: "available", version: "0.165.0" }, ...options });
+    try {
+      await a.emit("desktop-open-settings");
+      await a.emit("desktop-hidden");
+      assert.equal(a.node("restart-update").hidden, true);
+      assert.equal(a.applyArgs.length, 0);
+    } finally { a.dom.window.close(); }
+  }
 });
 
 test("desktop auto off reports the manifest version and does not download", async () => {
@@ -301,6 +355,49 @@ test("Start service starts a stopped background service and leaves no notice", a
     assert.equal(a.node("notice").hidden, true);
     assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, false);
+  } finally { a.dom.window.close(); }
+});
+
+test("a service start that does not answer within 15 seconds keeps its refusal across NOT_RUNNING checks and clears when the service answers", async () => {
+  const reason = "the native daemon source names another installation; startup refused";
+  const expectedDetail = `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${reason}\nNext: choose Check status.`;
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    const before = a.node("connection-title").textContent;
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service is not running");
+    assert.equal(a.node("recover").textContent, "Start service");
+    a.options.installNotAnswering = reason;
+    await a.click("recover");
+    assert.equal(a.node("connection-title").textContent, "The background service has not started");
+    assert.equal(a.node("connection-description").textContent, "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
+    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("details").hidden, false);
+    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+
+    // A background poll that still observes NOT_RUNNING keeps the NOT_ANSWERING card and Details.
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service has not started");
+    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+
+    // Clicking Check status while the service is still stopped checks status without offering Start service.
+    const beforeCheck = a.calls.length;
+    await a.click("recover");
+    assert.deepEqual(a.calls.slice(beforeCheck).map(call => call.op), ["status"]);
+    assert.equal(a.node("connection-title").textContent, "The background service has not started");
+    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+
+    // Once the service answers after 15s, the next poll clears the card and Details.
+    a.arm();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, before);
+    assert.equal(a.node("recovery-panel").hidden, true);
+    assert.equal(a.node("details").hidden, true);
+    assert.equal(a.node("refusal-detail").textContent, "");
   } finally { a.dom.window.close(); }
 });
 

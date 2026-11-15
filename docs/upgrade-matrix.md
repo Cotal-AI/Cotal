@@ -44,11 +44,11 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 28 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 34 isolated
 product coordinates:
 
 | Coordinates | Count |
-|---|---:|
+| --- | ---: |
 | npm fresh, configured and stale-extension self-update on Ubuntu 24.04, macOS 15 and Windows 2022 | 9 |
 | POSIX configured installer rerun and native daemon scheduler | 4 |
 | Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts | 5 |
@@ -56,21 +56,38 @@ product coordinates:
 | Linux paused record pointing to a real snapshot under another config home | 1 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
+| POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
 status, installed version, socket and pause/lock records
-are sampled independently before cleanup. The census verifies the archived observation hashes and
+are sampled independently before cleanup. Each cell records `selectedCliVersion`,
+`packageManagerRecordVersion` and `updateRoute` (`in-place` or `staged`). An in-place route requires
+both versions to match the target. A staged route requires the active generation descriptor, inventory
+hash and staged entry to match `selectedCliVersion` at the target while `packageManagerRecordVersion`
+matches the package manager's installed source. Mixed or unverified generation state fails closed.
+The census verifies the archived observation hashes and
 rechecks the final state rather than trusting the updater's success output. A missing recovery record
 or its hash-verified JSON-null clear is healthy; a paused, unreadable or unobserved record is not.
 These are separate from unattended scheduler cells. A failed manual service update stays red until fixed.
 
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
 installed candidate's public manual updater. The synthetic target comes from the same immutable source,
-with the patch number increased by 1000 before its distributions and seed payloads are built. Both
+with the patch number increased by 1000 before its distributions and seed payloads are built. Six POSIX
+follow-on cells continue from that updated native-service state to a second synthetic closure built with
+the patch number increased by 2000: two run a second `cotal update --self`, two run manual
+`npm i -g cotal-ai@<version>`, and two rerun the receipt-bound
+installer script on the installer layout. The manual npm cell records two observation points: first,
+after `npm i -g` and a plain `cotal --version` with no update command (requiring the CLI at the second
+synthetic version with exit 0, the in-place route, the daemon at the second synthetic version after its
+restart bound, no recovery record, and every extension either at the second synthetic version or named by
+the CLI with its reconciliation remedy so a silently stale extension fails); second, after
+`cotal update --self`, requiring everything at the second synthetic version. The manual npm and
+installer follow-on cells must finish on
+the in-place route at the second synthetic version. All
 complete 24-package closures stay readable through a paired registry. The source entry and package
-hashes, both archive receipts, actual command and native before/after state are bound to the result.
+hashes, archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
 
 Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
@@ -141,7 +158,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all 28 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 34 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the

@@ -42,7 +42,7 @@ function artifact(output, observation, json = true) {
  * Missing recovery records and the stock JSON-null clear are valid absence. Other records remain unresolved evidence.
  * Owner records are observations, not kernel-lock custody proof. This never removes stale locks.
  */
-export function evaluateManualDaemonState({ diagnostics, output, target, platform } = {}) {
+export function evaluateManualDaemonState({ diagnostics, output, target, platform, expectedPackageManagerVersion } = {}) {
   const checks = [];
   const check = (name, action) => {
     try { const detail = action(); checks.push({ name, passed: true, ...(detail ? { detail } : {}) }); }
@@ -56,7 +56,7 @@ export function evaluateManualDaemonState({ diagnostics, output, target, platfor
     return found[0];
   };
   const read = kind => artifact(output, row(kind));
-  let status, lifetime;
+  let status, lifetime, observedRoute, observedSelectedCliVersion, observedPackageManagerRecordVersion;
   check('after-update capture', () => {
     assert.equal(diagnostics?.stage, 'after-update');
     assert(timestamp(diagnostics.capturedAt), 'capture timestamp missing');
@@ -125,11 +125,36 @@ export function evaluateManualDaemonState({ diagnostics, output, target, platfor
     }
   });
   check('installed target version', () => {
-    assert.equal(row('installed-version').state, 'archived');
+    const observation = row('installed-version');
+    assert.equal(observation.state, 'archived');
     const installed = read('installed-version');
     assert.equal(installed.name, 'cotal-ai');
+    const route = installed.updateRoute ?? observation.updateRoute ?? 'in-place';
+    assert(['in-place', 'staged'].includes(route), 'invalid update route');
+    if (platform === 'win32') assert.equal(route, 'in-place', 'Windows requires in-place update route');
+    const selectedCliVersion = installed.selectedCliVersion ?? installed.version;
+    const packageManagerRecordVersion = installed.packageManagerRecordVersion ?? installed.version;
     assert.equal(installed.version, target);
-    assert.equal(row('installed-version').version, target);
+    assert.equal(observation.version, target);
+    assert.equal(selectedCliVersion, target, 'selectedCliVersion differs from target');
+    if (observation.selectedCliVersion !== undefined) assert.equal(observation.selectedCliVersion, target);
+    if (observation.updateRoute !== undefined) assert.equal(observation.updateRoute, route);
+    if (observation.packageManagerRecordVersion !== undefined) assert.equal(observation.packageManagerRecordVersion, packageManagerRecordVersion);
+    if (route === 'in-place') {
+      assert.equal(packageManagerRecordVersion, target, 'in-place route requires packageManagerRecordVersion === target');
+    } else {
+      assert.match(installed.generationId ?? '', /^[A-Za-z0-9._-]{1,128}$/, 'staged route missing generationId');
+      assert.match(installed.inventorySha256 ?? '', /^[a-f0-9]{64}$/, 'staged route missing inventorySha256');
+      assert.match(installed.activeDescriptorSha256 ?? '', /^[a-f0-9]{64}$/, 'staged route missing activeDescriptorSha256');
+      assert.match(installed.stagedProgramSha256 ?? '', /^[a-f0-9]{64}$/, 'staged route missing stagedProgramSha256');
+      if (expectedPackageManagerVersion !== undefined) {
+        assert.equal(packageManagerRecordVersion, expectedPackageManagerVersion, 'staged route packageManagerRecordVersion differs from expected npm record version');
+      }
+    }
+    observedRoute = route;
+    observedSelectedCliVersion = selectedCliVersion;
+    observedPackageManagerRecordVersion = packageManagerRecordVersion;
+    return `${route}: selected=${selectedCliVersion} packageManager=${packageManagerRecordVersion}`;
   });
   for (const kind of ['update-recovery.json', 'update-recovery-observed.json']) check(`${kind} clear`, () => {
     const observation = row(kind);
@@ -179,5 +204,5 @@ export function evaluateManualDaemonState({ diagnostics, output, target, platfor
     assert.equal(socket.ino, recorded.ino);
     assert(Number.isFinite(socket.mtimeMs), 'socket timestamp missing');
   });
-  return { passed: checks.every(item => item.passed), checks, target, platform, capturedAt: diagnostics?.capturedAt, assertions: ['native-service-manual', 'independent-final-state'] };
+  return { passed: checks.every(item => item.passed), checks, target, platform, updateRoute: observedRoute, selectedCliVersion: observedSelectedCliVersion, packageManagerRecordVersion: observedPackageManagerRecordVersion, capturedAt: diagnostics?.capturedAt, assertions: ['native-service-manual', 'independent-final-state'] };
 }

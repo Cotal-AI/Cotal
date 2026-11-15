@@ -9,23 +9,27 @@ import { parseArgs } from 'node:util';
 import { isMainEntry } from './main-entry.mjs';
 
 export const NEXT_PATCH_OFFSET = 1000;
+export const FOLLOW_ON_PATCH_OFFSET = 2000;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
 const inside = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith('..') && !isAbsolute(path)); };
 
-export function nextCandidateVersion(version) {
+export function nextCandidateVersion(version, offset = NEXT_PATCH_OFFSET) {
+  assert([NEXT_PATCH_OFFSET, FOLLOW_ON_PATCH_OFFSET].includes(offset), 'offset must be 1000 or 2000');
   assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/, 'A must have a stable numeric version');
   const parts = version.split('.').map(Number);
-  assert(parts.every(Number.isSafeInteger) && Number.isSafeInteger(parts[2] + NEXT_PATCH_OFFSET), 'version exceeds safe ordering');
-  return `${parts[0]}.${parts[1]}.${parts[2] + NEXT_PATCH_OFFSET}`;
+  assert(parts.every(Number.isSafeInteger) && Number.isSafeInteger(parts[2] + offset), 'version exceeds safe ordering');
+  return `${parts[0]}.${parts[1]}.${parts[2] + offset}`;
 }
 
 // The caller supplies a separate clean checkout at A.source, installed dependencies,
 // and the normal assembled seat/workspace native closure and receipts. This does
 // not download, assemble or start native services. Source-owned guards remain mandatory.
-export async function packCandidateNext({ sourceRoot, candidate, output, exec = execFileSync } = {}) {
+export async function packCandidateNext({ sourceRoot, candidate, output, offset = NEXT_PATCH_OFFSET, exec = execFileSync } = {}) {
   assert(sourceRoot && candidate && output, 'sourceRoot, candidate and output are required');
+  offset = Number(offset);
+  assert([NEXT_PATCH_OFFSET, FOLLOW_ON_PATCH_OFFSET].includes(offset), 'offset must be 1000 or 2000');
   const root = realpathSync(resolve(sourceRoot));
   candidate = realpathSync(resolve(candidate));
   output = join(realpathSync(resolve(output, '..')), resolve(output).split(/[\\/]/).at(-1));
@@ -77,7 +81,7 @@ export async function packCandidateNext({ sourceRoot, candidate, output, exec = 
     return { manifest, sha256: sha(bytes), bootstrapSha256: sha(readFileSync(join(directory, 'bootstrap.json'))), installerSha256: sha(readFileSync(join(directory, 'installer.json'))) };
   };
   const aVersion = json(join(candidate, 'manifest.json')).packages?.[0]?.version;
-  const version = nextCandidateVersion(aVersion);
+  const version = nextCandidateVersion(aVersion, offset);
   const a = verify(candidate, aVersion);
   const rows = JSON.parse(run('pnpm', ['list', '-r', '--include-workspace-root', '--depth', '-1', '--json']));
   const manifests = rows.map(row => {
@@ -116,7 +120,7 @@ export async function packCandidateNext({ sourceRoot, candidate, output, exec = 
     const b = verify(output, version);
     assert.notEqual(a.sha256, b.sha256, 'distinct A/B manifests required');
     assert.deepEqual(verify(candidate, aVersion), a, 'A must remain unchanged');
-    save(join(output, 'next.json'), { source, rule: 'A.patch+1000', offset: NEXT_PATCH_OFFSET, candidate: { version: aVersion, manifestSha256: a.sha256 }, next: { version, manifestSha256: b.sha256 } });
+    save(join(output, 'next.json'), { source, rule: `A.patch+${offset}`, offset, candidate: { version: aVersion, manifestSha256: a.sha256 }, next: { version, manifestSha256: b.sha256 } });
     return manifest;
   } finally {
     for (const row of manifests) writeFileSync(row.path, row.original);
@@ -124,6 +128,6 @@ export async function packCandidateNext({ sourceRoot, candidate, output, exec = 
 }
 
 if (isMainEntry(import.meta.url)) {
-  const { values } = parseArgs({ options: { 'source-root': { type: 'string' }, candidate: { type: 'string' }, output: { type: 'string' } } });
-  await packCandidateNext({ sourceRoot: values['source-root'], candidate: values.candidate, output: values.output });
+  const { values } = parseArgs({ options: { 'source-root': { type: 'string' }, candidate: { type: 'string' }, output: { type: 'string' }, offset: { type: 'string' } } });
+  await packCandidateNext({ sourceRoot: values['source-root'], candidate: values.candidate, output: values.output, ...(values.offset === undefined ? {} : { offset: Number(values.offset) }) });
 }

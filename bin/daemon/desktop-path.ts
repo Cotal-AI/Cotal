@@ -13,6 +13,23 @@ const run = (command: string, args: string[]) => new Promise<string>((resolve, r
   });
 });
 
+export interface DiscoveredApplicationPath {
+  readonly path: string;
+  readonly omittedRelativeEntries: readonly string[];
+}
+
+/** Keep only absolute POSIX entries for the desktop service and name any relative entries left out, in order and without duplicates. */
+export function filterDesktopApplicationPath(raw: string, nodeDir: string): DiscoveredApplicationPath {
+  const entries = `${raw}${posix.delimiter}${nodeDir}`.split(posix.delimiter).filter((entry) => entry !== "");
+  const kept: string[] = [];
+  const omitted: string[] = [];
+  for (const entry of entries) {
+    if (posix.isAbsolute(entry)) kept.push(entry);
+    else if (!omitted.includes(entry)) omitted.push(entry);
+  }
+  return { path: pinnedPath(kept.join(posix.delimiter), posix), omittedRelativeEntries: omitted };
+}
+
 /** Windows tasks do not pin PATH. Read the current machine and user values on each native start. */
 export async function windowsApplicationPath(): Promise<string> {
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
@@ -22,9 +39,9 @@ export async function windowsApplicationPath(): Promise<string> {
   return pinnedPath(`${value};${dirname(process.execPath)}`, win32);
 }
 
-/** No renderer-supplied executable, argument, shell or environment is accepted. */
-export async function desktopApplicationPath(): Promise<string> {
-  if (process.platform === "win32") return windowsApplicationPath();
+/** Discover the desktop application PATH and any relative entries left out of it. No renderer-supplied executable, argument, shell or environment is accepted. */
+export async function discoverDesktopApplicationPath(): Promise<DiscoveredApplicationPath> {
+  if (process.platform === "win32") return { path: await windowsApplicationPath(), omittedRelativeEntries: [] };
   if (process.platform !== "linux" && process.platform !== "darwin") throw new CommandFailure("refused", "UNSUPPORTED", "this OS has no desktop application discovery");
   const shell = userInfo().shell;
   if (!shell || !posix.isAbsolute(shell)) throw new CommandFailure("refused", "UNSUPPORTED", "the account has no absolute login shell; no application PATH was guessed");
@@ -32,5 +49,5 @@ export async function desktopApplicationPath(): Promise<string> {
   const output = await run(shell, ["-ilc", `printf '\\n${marker}%s${marker}\\n' "$PATH"`]);
   const parts = output.split(marker);
   if (parts.length !== 3) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the login shell returned no bounded application PATH; no service was changed");
-  return pinnedPath(`${parts[1]}:${dirname(process.execPath)}`, posix);
+  return filterDesktopApplicationPath(parts[1]!, dirname(process.execPath));
 }

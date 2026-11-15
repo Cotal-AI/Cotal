@@ -234,6 +234,8 @@ This is a deferred update, not confirmation that the new version was installed. 
 attempt retries after one hour without consuming the version's failure budget. You can also run
 `cotal update --self` again later. Other npm resolution errors remain failures.
 
+The helper binds npm's destination to the verified global CLI package that owns the daemon,
+not the scheduled task's inherited npm prefix. An unknown package layout refuses before launch.
 On Windows, a manual update retains the old daemon's authenticated process lifetime. After that
 process exits, it starts the unchanged owned scheduled task once if the task is enabled and has
 no running instance. It never enables a disabled task or reinstalls the service. The same
@@ -256,6 +258,28 @@ User logout and system shutdown can still interrupt the update.
 A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
 CLI-only users must install the background service with `cotal daemon install` to receive automatic
 installation. `cotal update --auto off` disables it.
+
+On Windows, the daemon registers a separate demand-only Task Scheduler helper under the signed-in
+user's interactive token at least privilege. It runs the guarded updater inside a no-breakaway job.
+The helper retains that job until native accounting reports no active members and a complete empty
+process list. A failed or timed-out drain does not admit another automatic update. The task has no
+recurring trigger or failure restart, and cleanup checks the recorded source and action before deletion.
+After a successful install and confirmed job drain, the same helper restarts the verified daemon
+service. It waits for the old process lifetime to end before starting the recorded task and checks
+the target daemon's authenticated status. The Windows service returns about 7 to 10 seconds after
+the old daemon exits (measured at 7.3 to 10.1 seconds across three successive activations). One
+240-second activation deadline covers these steps. An activation failure leaves the release
+installed and records a separate result in `update-windows-activation.json`; use Start service to
+recover. The helper never registers a replacement service or adds another supervisor.
+
+If the worker is interrupted while its helper survives, the helper drains its job and the normal
+failure budget permits a retry. If the helper dies in the same boot, automatic installation pauses.
+Status and notices instruct you to restart the computer or run `cotal update`; successful manual
+reconciliation clears the pause without changing manual update admission. A later OS-loader boot
+sequence lets the next automatic attempt use the existing interrupted-update recovery under the
+update lock. Clock changes do not establish a new boot. An unavailable boot query refuses.
+Older Windows versions need one manual update to obtain this scheduler path. Actual reboot recovery
+cannot be exercised by the hosted Windows acceptance runner and remains a native validation limit.
 
 On Linux, a daemon-started automatic update moves its authenticated updater parent and reconcile
 child into a sibling systemd user scope before reconciliation. This requires cgroup v2,
