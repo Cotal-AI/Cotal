@@ -1,5 +1,27 @@
 # cotal-ai
 
+## 0.164.13
+
+### Patch Changes
+
+- 75cdde2: Keep daemon-hosted Manager status checks within the CLI connect rate limit during updates.
+  
+  The daemon now retains one instance-pinned control session per live hosted Manager, coalesces concurrent status refreshes for the same space, and backs off for five seconds after a failed control exchange. If a status probe is still rate-limited, the daemon preserves any earlier observation of that child instead of resetting an answering Manager to starting.
+- a4c9747: Windows desktop setup preserves the background service across newer-version upgrades and refuses to interrupt hosted agents.
+  
+  Setup holds hosted launch admission before gracefully stopping the verified service, disables its scheduled task while replacing files, and restores its previous running or stopped state. Interrupted setup blocks service startup until the installer completes recovery. Silent refusals and unconfirmed startup write a persistent result for callers.
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/manager@0.164.13
+  - @cotal-ai/auth@0.164.13
+  - @cotal-ai/cli@0.164.13
+  - @cotal-ai/delivery@0.164.13
+  - @cotal-ai/runtime@0.164.13
+  - @cotal-ai/connector-core@0.164.13
+  - @cotal-ai/registry@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/seat@0.164.13
+
 ## 0.164.12
 
 ### Patch Changes
