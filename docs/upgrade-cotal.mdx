@@ -197,6 +197,12 @@ first-party extensions to the running CLI's release, or refuses with `cotal upda
 extension cannot be reconciled. When automatic updates are enabled, the daemon's scheduled check
 finishes a pending extension reconciliation even when the CLI is already at the latest release.
 It checks running-manager continuity before installation repair.
+A background service recorded for another Cotal installation is left running. The update
+names its hosted Managers and the recorded entry path without preparing or fencing them.
+An owned daemon can release an abandoned update's hosted-Manager fences after verifying
+that the recorded updater process lifetime has ended. A living updater keeps its fences.
+This isolation starts with the first release carrying this fix. An update into that release
+still runs the older updater until the replacement is active.
 On Linux, a supervisor in another user's installation or an isolated container does not add local
 custody. A supervisor that resolves to this installation still counts, including one launched
 through sudo. If attribution remains uncertain, update refuses with the process ID, numeric user

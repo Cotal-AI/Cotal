@@ -17,6 +17,7 @@ import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmi
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
+import { processBirth } from "./lifetime.js";
 import type { HostedManager, HostedAgents } from "./protocol.js";
 import { readHostedAgents } from "./agents.js";
 import { readManagerCleanup, writeManagerCleanup, validateManagerCleanupAuthority, managerCleanupFile } from "./manager-cleanup.js";
@@ -79,6 +80,19 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
   let generationTask = Promise.resolve();
   const generationOwners = new Set<string>();
   const generationReleases = new Set<string>();
+  const pruneDeadGenerationOwners = (): boolean => {
+    let pruned = false;
+    for (const candidate of generationOwners) {
+      if (!candidate.startsWith("[")) continue;
+      const parsed = JSON.parse(candidate) as unknown;
+      if (!Array.isArray(parsed) || parsed[0] !== "peer" || typeof parsed[2] !== "number" || typeof parsed[3] !== "string") continue;
+      if (processBirth(parsed[2]) !== parsed[3]) {
+        generationOwners.delete(candidate);
+        pruned = true;
+      }
+    }
+    return pruned;
+  };
   let generationAcquisitions = 0;
   const queueGeneration = (operation: () => Promise<void>): Promise<void> => {
     const task = generationTask.then(operation);
@@ -677,7 +691,9 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       generationAcquisitions++;
       return queueGeneration(async () => {
       generationAcquisitions--;
-      if (generationPrepared) { generationOwners.add(owner); return; }
+      pruneDeadGenerationOwners();
+      if (generationPrepared && generationOwners.size > 0) { generationOwners.add(owner); return; }
+      generationPrepared = false;
       try {
         await Promise.all([...live.values()].map((l) => l.healthTask));
         // A timed-out prepare can still have landed. Roll back every retained attempt before retrying.
@@ -740,7 +756,8 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     abortGenerationRestart(owner: string): Promise<void> {
       return queueGeneration(async () => {
-        if (!generationOwners.delete(owner) && !generationReleases.has(owner)) return;
+        const pruned = pruneDeadGenerationOwners();
+        if (!generationOwners.delete(owner) && !generationReleases.has(owner) && !pruned) return;
         if (generationOwners.size !== 0) return;
         // Keep release authority and exact child attempts if an abort is unconfirmed.
         generationReleases.add(owner);
