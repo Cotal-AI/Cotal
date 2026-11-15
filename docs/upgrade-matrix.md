@@ -89,6 +89,9 @@ Machine-shape probes can pin an exact Node release and run install/update childr
 without changing the harness process's mask. A Linux native-service probe sets an owned `UMask=0002`
 drop-in, reads the service's effective mask, and removes that drop-in after receipt-guarded uninstall.
 These options refuse outside disposable hosted runners.
+For an umask probe, read-only package diagnostics accept owned package-manager directories inside
+the cell's private fixture root. They preserve the measured modes. Credentials, evidence files and
+retained generations keep their write-protection checks.
 A Linux no-runtime-directory probe removes `XDG_RUNTIME_DIR` only from the updater child.
 With a live daemon it expects the named refusal before staging and verifies the original daemon lifetime.
 Without a daemon it requires the normal update result. Diagnostic and cleanup commands keep their runtime directory.

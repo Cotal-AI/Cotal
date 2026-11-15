@@ -39,13 +39,23 @@ function clean(text) {
 function owned(stat) {
   if (process.getuid) assert.equal(stat.uid, process.getuid(), 'owner differs');
 }
-function directory(path) {
+function directory(path, privateFixtureRoot) {
   assert(typeof path === 'string' && isAbsolute(path) && resolve(path) === path, 'root must be absolute and normalized');
   assert.equal(realpathSync(path), path, 'symlink parent refused');
   const stat = lstatSync(path);
   assert(stat.isDirectory() && !stat.isSymbolicLink(), 'root is not a directory');
   owned(stat);
-  if (process.getuid) assert.equal(stat.mode & 0o022, 0, 'writable root refused');
+  if (process.getuid && (stat.mode & 0o022) !== 0) {
+    assert(privateFixtureRoot, 'writable root refused');
+    const boundary=directory(privateFixtureRoot);
+    assert.equal(boundary.mode&0o077,0,'fixture boundary must be private');
+    assert(path.startsWith(privateFixtureRoot+'/'),'package path escaped private fixture');
+    for(let parent=dirname(path);parent!==privateFixtureRoot;parent=dirname(parent)){
+      assert.equal(realpathSync(parent),parent,'symlink parent refused');
+      const info=lstatSync(parent);owned(info);
+      assert(info.isDirectory()&&!info.isSymbolicLink(),'package parent is not a directory');
+    }
+  }
   return stat;
 }
 export function canonicalSocketPath(socket, parent, platform = process.platform) {
@@ -57,18 +67,18 @@ export function canonicalSocketPath(socket, parent, platform = process.platform)
   return join(parent, 'daemon.sock');
 }
 
-function safePath(root, file) {
-  directory(root);
+function safePath(root, file, privateFixtureRoot) {
+  directory(root,privateFixtureRoot);
   assert(file.startsWith(root + '/') || file.startsWith(root + '\\'), 'path escaped root');
-  for (let parent = dirname(file); parent !== root; parent = dirname(parent)) directory(parent);
+  for (let parent = dirname(file); parent !== root; parent = dirname(parent)) directory(parent,privateFixtureRoot);
   assert.equal(realpathSync(file), file, 'symlink file refused');
   const stat = lstatSync(file);
   owned(stat);
   assert(!stat.isSymbolicLink(), 'symlink refused');
   return stat;
 }
-function bytes(root, file, limit = LIMIT) {
-  const before = safePath(root, file);
+function bytes(root, file, limit = LIMIT, privateFixtureRoot) {
+  const before = safePath(root, file,privateFixtureRoot);
   assert(before.isFile() && before.nlink === 1, 'not an exclusive regular file');
   if (process.getuid) assert.equal(before.mode & 0o022, 0, 'writable file refused');
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
@@ -79,17 +89,17 @@ function bytes(root, file, limit = LIMIT) {
     const buffer = Buffer.alloc(limit + 1);
     const count = readSync(fd, buffer, 0, buffer.length, 0);
     assert(count <= limit, 'source exceeds byte limit');
-    const after = safePath(root, file);
+    const after = safePath(root, file,privateFixtureRoot);
     assert(after.ino === stat.ino && after.dev === stat.dev, 'source changed');
     return buffer.subarray(0, count).toString('utf8');
   } finally { closeSync(fd); }
 }
 const failure = error => ({ state: error?.code === 'ENOENT' ? 'missing' : error?.code === 'ETIMEDOUT' || error?.name === 'AbortError' ? 'timeout' : 'error', error: clean(error?.code === 'ERR_ASSERTION' ? error.message : error?.code ?? error?.message ?? 'diagnostic error') });
 
-export function inspectInstalledUpdateRoute(pkg, platform = process.platform) {
+export function inspectInstalledUpdateRoute(pkg, platform = process.platform, {privateFixtureRoot} = {}) {
   const pkgRoot = realpathSync.native(resolve(pkg));
-  directory(pkgRoot);
-  const pkgManifestBytes = bytes(pkgRoot, join(pkgRoot, 'package.json'));
+  directory(pkgRoot,privateFixtureRoot);
+  const pkgManifestBytes = bytes(pkgRoot, join(pkgRoot, 'package.json'),LIMIT,privateFixtureRoot);
   const pkgManifest = JSON.parse(pkgManifestBytes);
   assert.equal(pkgManifest.name, 'cotal-ai', 'unexpected package');
   assert.match(pkgManifest.version, /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
@@ -123,7 +133,7 @@ export function inspectInstalledUpdateRoute(pkg, platform = process.platform) {
     }
     throw error;
   }
-  const bootstrapBytes = bytes(pkgRoot, join(pkgRoot, 'dist/cotal.js'));
+  const bootstrapBytes = bytes(pkgRoot, join(pkgRoot, 'dist/cotal.js'),LIMIT,privateFixtureRoot);
   const bootstrapSha256 = createHash('sha256').update(bootstrapBytes).digest('hex');
   const active = JSON.parse(activeText);
   assert.equal(active?.v, 1, 'unsupported active generation schema');
@@ -193,11 +203,11 @@ async function capture(options) {
     assert.match(options.id, /^[A-Za-z0-9_.-]{1,160}$/);
     assert.match(options.stage, /^[a-z][a-z-]{0,40}$/);
     outputStat = directory(options.output);
-    for (const key of ['home', 'cotalHome', 'daemonHome', 'config', 'pkg']) directory(options[key]);
+    for (const key of ['home', 'cotalHome', 'daemonHome', 'config', 'pkg']) directory(options[key],key==='pkg'?options.privateFixtureRoot:undefined);
     return { state: 'observed' };
   });
-  const file = async (kind, root, path, json = true) => add(kind, () => {
-    const text = bytes(root, path);
+  const file = async (kind, root, path, json = true, privateFixtureRoot) => add(kind, () => {
+    const text = bytes(root, path,LIMIT,privateFixtureRoot);
     const value = json ? JSON.parse(text) : undefined;
     let ownerProcess;
     const owner = value?.owner ?? value;
@@ -223,10 +233,10 @@ async function capture(options) {
   for (const name of ['update-settings.json', 'update-recovery.json', 'update-recovery-observed.json', 'update-attempt.json', 'update-check.json', 'update-check.lock', 'update-launchd.json', 'update-launchd-result.json']) await file(name, options.cotalHome, join(options.cotalHome ?? '', name));
   await file('update-attempt.log', options.cotalHome, join(options.cotalHome ?? '', 'update-attempt.log'), false);
   for (const name of ['.extensions.lock', '.extensions.lock.update', '.extensions.lock.npm-child']) await file(name, options.config, join(options.config ?? '', name));
-  if (options.plan?.globalRoot) for (const name of ['.cotal-update.lock', '.cotal-update-child']) await file(name, options.plan.globalRoot, join(options.plan.globalRoot, name));
+  if (options.plan?.globalRoot) for (const name of ['.cotal-update.lock', '.cotal-update-child']) await file(name, options.plan.globalRoot, join(options.plan.globalRoot, name),true,options.privateFixtureRoot);
   else report.observations.push({ kind: 'global-update-owner', state: 'unavailable', reason: 'plan.globalRoot not supplied' });
   await add('installed-version', () => {
-    const value = inspectInstalledUpdateRoute(options.pkg, options.platform ?? process.platform);
+    const value = inspectInstalledUpdateRoute(options.pkg, options.platform ?? process.platform,{privateFixtureRoot:options.privateFixtureRoot});
     return {
       state: 'archived',
       version: value.version,
