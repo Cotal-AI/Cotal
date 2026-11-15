@@ -23,7 +23,7 @@ on:
         default: bounded
         required: true
   push:
-    branches: [test/upgrade-matrix]
+    branches: [test/upgrade-matrix, measure/broken-target-recovery]
     paths:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
@@ -1301,16 +1301,18 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: priority
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
+    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure' || contains(github.event.head_commit.message, '[desktop-beside-cli-only]'))"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
       - uses: actions/download-artifact@v4
         with:
           name: desktop-release-Linux-X64
@@ -1328,9 +1330,35 @@ jobs:
           sudo loginctl enable-linger "$USER"
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Prepare owned broker fixture dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/matrix-broker"
+          mkdir -p "$work"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/nats-server-v2.14.0-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
+          (cd "$work" && awk '$2 == "nats-server-v2.14.0-linux-amd64.tar.gz" {print $1 "  nats-server.tar.gz"}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && sha256sum -c selected.sha256)
+          tar -xzf "$work/nats-server.tar.gz" -C "$work"
+          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+      - name: Build only the signed-in participant fixture dependencies
+        shell: bash
+        run: |
+          node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
+          pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
       - name: Real released desktop daemon beside separate CLI
         shell: bash
-        run: node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout npm --state daemon --method self --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence"
+        run: |
+          node --import tsx --input-type=module - --source 0.164.0 --layout npm --state daemon --method self --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence" <<'NODE'
+          import { pathToFileURL } from 'node:url';
+          const { matrixCell, cellExitCode } = await import(pathToFileURL(process.cwd() + '/scripts/automatic-update-platform-baseline.mjs'));
+          const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
+          const args = process.argv.slice(2);
+          const options = Object.fromEntries(args.reduce((rows, value, index, all) => index % 2 === 0 ? [...rows, [value.slice(2), all[index + 1]]] : rows, []));
+          options.prepare = prepareUpdateParticipant;
+          const report = await matrixCell(options);
+          process.exitCode = cellExitCode(report);
+          NODE
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1339,7 +1367,7 @@ jobs:
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
+    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[desktop-beside-cli-only]') && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
