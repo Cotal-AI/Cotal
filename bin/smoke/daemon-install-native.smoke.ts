@@ -229,6 +229,26 @@ try {
     check("restarting a loaded owned job force-kickstarts only its exact target", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
       ["/bin/launchctl", "print", target], ["/bin/launchctl", "kickstart", "-k", target],
     ]), r.calls);
+    for (const [labelText, stdout, expected] of [
+      ["absent entry is enabled", "disabled services = {\n}\n", true],
+      ["false entry is enabled", `disabled services = {\n\t"${label}" => false\n}\n`, true],
+      ["enabled entry is enabled", `disabled services = {\n\t"${label}" => enabled\n}\n`, true],
+      ["true entry is disabled", `disabled services = {\n\t"${label}" => true\n}\n`, false],
+      ["disabled entry is disabled", `disabled services = {\n\t"${label}" => disabled\n}\n`, false],
+    ] as const) {
+      const probe = recorder(call => call.args[0] === "print-disabled" ? { status: 0, stdout } : { status: 113 });
+      check(`launchd isEnabled: ${labelText}`, launchAgentService(probe.run, () => originalJob).isEnabled?.(receipt) === expected, probe.calls);
+    }
+    for (const [labelText, reply, expectedCode] of [
+      ["non-zero exit refuses TARGET_UNAVAILABLE", { status: 1, stdout: "", detail: "domain unavailable" }, "TARGET_UNAVAILABLE"],
+      ["missing block header refuses TARGET_UNAVAILABLE", { status: 0, stdout: `"${label}" => false\n` }, "TARGET_UNAVAILABLE"],
+      ["unparsed entry line refuses TARGET_UNAVAILABLE", { status: 0, stdout: `disabled services = {\n\tmalformed line\n\t"${label}" => false\n}\n` }, "TARGET_UNAVAILABLE"],
+      ["unrecognized token refuses TARGET_UNAVAILABLE", { status: 0, stdout: `disabled services = {\n\t"${label}" => maybe\n}\n` }, "TARGET_UNAVAILABLE"],
+      ["duplicate label refuses CONFLICT", { status: 0, stdout: `disabled services = {\n\t"${label}" => false\n\t"${label}" => true\n}\n` }, "CONFLICT"],
+    ] as const) {
+      const probe = recorder(call => call.args[0] === "print-disabled" ? reply : { status: 113 });
+      check(`launchd isEnabled refusal: ${labelText}`, code(() => launchAgentService(probe.run, () => originalJob).isEnabled?.(receipt)) === expectedCode, probe.calls);
+    }
     r.calls.length = 0;
     const refreshed = refreshedDaemonPath("launchd-agent", readFileSync(plist, "utf8"), "/new-bin:/bin")!;
     writeFileSync(plist, refreshed, { mode: 0o600 });

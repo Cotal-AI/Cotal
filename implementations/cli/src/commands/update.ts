@@ -318,6 +318,11 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           const env = { ...rt.env, [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
           const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
           if (reconciled.status !== 0) throw new Error(failure(reconciled));
+          if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
+            const currentRecovery = readUpdateRecovery();
+            if (currentRecovery && currentRecovery.phase !== "verified-ready") writeUpdateRecovery({ ...currentRecovery, installed: version, phase: "verified-ready" });
+            await rt.waitForInstalledGeneration?.(version);
+          }
           snapshot.discard();
           clearUpdateRecovery();
           recordUpdateCompletion(version, `repaired paused installation at ${version}`, true);
@@ -342,6 +347,11 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
         const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid) };
         const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
         if (reconciled.status !== 0) throw new Error(failure(reconciled));
+        if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
+          const currentRecovery = readUpdateRecovery();
+          if (currentRecovery && currentRecovery.phase !== "verified-ready") writeUpdateRecovery({ ...currentRecovery, installed: record.previous, phase: "verified-ready" });
+          await rt.waitForInstalledGeneration?.(record.previous);
+        }
         snapshot.discard();
         clearUpdateRecovery();
         rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
@@ -1199,7 +1209,17 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   if (child.stdout) rt.stdout(child.stdout);
   if (child.status !== 0) {
     rt.err(c.red(`✗ cotal-ai@${targetVersion} installed globally, but its reconcile failed: ${failure(child)}`));
-    return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1);
+    return await repairReplacement(`reconcile failed: ${failure(child)}`, child.status ?? 1, readUpdateRecovery()?.phase === "verified-ready");
+  }
+  if (rt.env.COTAL_AUTO_UPDATE !== "1") {
+    try {
+      const recovery = readUpdateRecovery();
+      if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: targetVersion, phase: "verified-ready" });
+      await rt.waitForInstalledGeneration?.(targetVersion);
+    } catch (error) {
+      rt.err(c.red(`✗ installed daemon generation: ${refusal(error)}`));
+      return await repairReplacement(`installed daemon generation: ${message(error)}`, 1, true);
+    }
   }
   rt.out("Removing completed update recovery snapshot");
   snapshot.discard();
@@ -1216,20 +1236,28 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     const result = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [verified, "update", ...targetArgv(target)], repairEnv, true);
     if (result.stderr) rt.stderr(result.stderr);
     if (result.stdout) rt.stdout(result.stdout);
-    return result.status === 0;
+    if (result.status !== 0) return false;
+    if (rt.env.COTAL_AUTO_UPDATE !== "1") {
+      const recovery = readUpdateRecovery();
+      if (recovery && recovery.phase !== "verified-ready") writeUpdateRecovery({ ...recovery, installed: version, phase: "verified-ready" });
+      await rt.waitForInstalledGeneration?.(version);
+    }
+    return true;
   }
 
-  async function repairReplacement(reason: string, failureStatus = 1): Promise<number> {
-    rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
-    try {
-      if (await reconcileVersion(targetVersion)) {
-        snapshot.discard();
-        clearUpdateRecovery();
-        recordUpdateCompletion(targetVersion, `repaired and updated to ${targetVersion}`, true);
-        rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
-        return interrupted;
-      }
-    } catch (error) { rt.err(`reconcile retry: ${message(error)}`); }
+  async function repairReplacement(reason: string, failureStatus = 1, skipTargetRetry = false): Promise<number> {
+    if (!skipTargetRetry) {
+      rt.err(c.yellow("Retrying reconciliation of the installed generation before rollback."));
+      try {
+        if (await reconcileVersion(targetVersion)) {
+          snapshot.discard();
+          clearUpdateRecovery();
+          recordUpdateCompletion(targetVersion, `repaired and updated to ${targetVersion}`, true);
+          rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
+          return interrupted;
+        }
+      } catch (error) { rt.err(`reconcile retry: ${message(error)}`); }
+    }
     rt.err(c.yellow(`Restoring verified cotal-ai@${current} through the global updater.`));
     try {
       const recovery = readUpdateRecovery();

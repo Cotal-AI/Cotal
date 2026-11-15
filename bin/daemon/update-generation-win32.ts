@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { CommandFailure, win32ProcessBinding, type Win32ProcessPin } from "@cotal-ai/workspace";
 import { queryDaemon } from "./client.js";
 import { EndpointRefusal, type DaemonPaths } from "./endpoint.js";
-import { readLifetimeRecord } from "./lifetime.js";
+import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { readReceipt } from "./install-receipt.js";
 import { scheduledTaskService } from "./install-win32.js";
 import { checkWindowsRecordedUnit } from "./ownership-win32.js";
@@ -10,9 +11,9 @@ import { recordedSourceIdentity } from "./install-identity.js";
 import { daemonArgv } from "@cotal-ai/cli";
 import type { NativeRun } from "./install.js";
 
-let captured: { paths: DaemonPaths; pin: Win32ProcessPin; receipt: string } | undefined;
+let captured: { paths: DaemonPaths; pin?: Win32ProcessPin; receipt: string } | undefined;
 
-/** Retain the authenticated old generation before reconciliation can make it exit. */
+/** Retain the authenticated old generation, or confirm no live daemon holds the lock, before reconciliation. */
 export async function captureWindowsGeneration(paths: DaemonPaths): Promise<void> {
   if (process.platform !== "win32" || captured) return;
   const receipt = readReceipt(paths);
@@ -30,18 +31,40 @@ export async function captureWindowsGeneration(paths: DaemonPaths): Promise<void
       captured = { paths, pin, receipt: JSON.stringify(receipt) };
     } finally { if (captured?.pin !== pin) pin.close(); }
   } catch (error) {
-    if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") return;
+    if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") {
+      const before = readLifetimeRecord(paths.lock);
+      if (before?.start && processBirth(before.pid) === before.start) {
+        const pin = win32ProcessBinding().pinProcess(before.pid);
+        try {
+          const after = readLifetimeRecord(paths.lock);
+          if (pin.token === before.start && !pin.exited() && after?.pid === before.pid && after.start === before.start) {
+            captured = { paths, pin, receipt: JSON.stringify(receipt) };
+            return;
+          }
+        } finally { if (captured?.pin !== pin) pin.close(); }
+      }
+      let absent = !existsSync(paths.lock) || (before?.start !== undefined && processBirth(before.pid) !== before.start);
+      if (!before && !absent) {
+        const exclusion = excludeLifetime(paths.lock);
+        exclusion.release();
+        absent = true;
+      }
+      if (!absent) throw new Error("the Windows daemon lifetime changed during capture");
+      captured = { paths, receipt: JSON.stringify(receipt) };
+      return;
+    }
     throw error;
   }
 }
 
 /** Release an old-generation observation on every update outcome. */
 export function closeWindowsGeneration(): void {
-  captured?.pin.close(); captured = undefined;
+  captured?.pin?.close(); captured = undefined;
 }
 
 /** Native supervision after a published Windows daemon exits successfully needs an explicit Run. */
-export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: number): Promise<{ poll(remainingMs: number): Promise<void>; close(): void }> {
+export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: number): Promise<{ poll(remainingMs: number): Promise<boolean | void>; close(): void }> {
+  if (process.platform === "win32" && !captured) await captureWindowsGeneration(paths);
   if (process.platform !== "win32" || !captured || captured.paths.lock !== paths.lock)
     throw new Error("the Windows update has no retained authenticated daemon lifetime");
   const retained = captured;
@@ -56,14 +79,29 @@ export async function windowsGenerationLifecycle(paths: DaemonPaths, deadline: n
   const task = scheduledTaskService(run);
   return {
     async poll() {
-      if (started || !retained.pin.exited()) return;
+      if (started || (retained.pin && !retained.pin.exited())) return;
       const receipt = readReceipt(paths);
       if (!receipt || JSON.stringify(receipt) !== retained.receipt) throw new Error("the Windows daemon installation changed during update");
       checkWindowsRecordedUnit(paths, receipt, task);
-      if (!recordedSourceIdentity(receipt, "scheduled-task", [...daemonArgv(), "daemon", "serve"]).same)
+      const identity = recordedSourceIdentity(receipt, "scheduled-task", [...daemonArgv(), "daemon", "serve"]);
+      if (!identity.same) {
+        if (!retained.pin) {
+          console.log(`machine daemon: the background service belongs to another Cotal installation (${identity.installedEntry}). This update left it stopped.`);
+          started = true;
+          return false;
+        }
         throw new Error("the Windows daemon source names another installation");
+      }
       const native = task.inspect(receipt);
-      if (!native.present || native.enabled !== true) throw new Error("the Windows daemon task is absent or disabled; update did not enable it");
+      if (!native.present) throw new Error("the Windows daemon task is absent; update did not register it");
+      if (native.enabled !== true) {
+        if (!retained.pin) {
+          console.log(`machine daemon: ${receipt.unit}: service is disabled; not started`);
+          started = true;
+          return false;
+        }
+        throw new Error("the Windows daemon task is absent or disabled; update did not enable it");
+      }
       if (native.instances !== 0) { started = true; return; }
       // startEnabled performs its own fresh source/principal/action/enabled/instance check.
       task.startEnabled(receipt);

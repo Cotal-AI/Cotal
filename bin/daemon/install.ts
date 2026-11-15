@@ -206,6 +206,7 @@ export interface NativeService {
   publish(plan: NativePlan): void;
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
+  isEnabled?(receipt: UnitReceipt): boolean;
   start(receipt: UnitReceipt): void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
   remove(receipt: UnitReceipt, preserveSource?: boolean): void;
@@ -419,6 +420,27 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   return plan;
 }
 
+/** Start only an enabled, same-installation POSIX unit or LaunchAgent during update, never overriding an operator disable. */
+export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: string | undefined): Promise<{ started: boolean; unit: string; state: string }> {
+  assertDesktopSetupComplete();
+  const recorded = recordedUnit(paths, daemonHome);
+  const identity = recordedDaemonIdentity(recorded);
+  if (!identity.same) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon source names another installation (${identity.installed}); update did not start it`);
+  const { receipt, plan, service } = recorded;
+  if (service) {
+    if (service.isEnabled && !service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
+    service.start(receipt);
+    return { started: true, unit: plan.unit, state: "enabled" };
+  }
+  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"]);
+  if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
+  const state = read.stdout.trim();
+  if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} reported an empty UnitFileState; nothing was started`);
+  if (state !== "enabled") return { started: false, unit: plan.unit, state };
+  submitSystemdUnitControl("start", plan.unit);
+  return { started: true, unit: plan.unit, state: "enabled" };
+}
+
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
 export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): boolean {
   try { lstatSync(unitReceiptFile(paths)); }
@@ -431,11 +453,11 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; current: string } {
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; installedEntry: string; current: string } {
   return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
 }
 
-function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; current: string } {
+function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; installedEntry: string; current: string } {
   return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
 

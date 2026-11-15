@@ -76,11 +76,17 @@ test('hosted Manager observation retries only the explicit rate refusal within i
 test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
   const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
   assert.equal(baseline.candidateNextOptions(options,true),'candidate');
+  assert.equal(baseline.candidateNextOptions({...options, 'stopped-daemon-before-update': 'true'},true),'candidate');
+  assert.equal(baseline.candidateNextOptions({...options, 'disabled-daemon-before-update': 'true'},true),'candidate');
+  assert.equal(baseline.candidateNextOptions({...options, 'stopped-daemon-before-update': 'true', 'desktop-runtime': '/desktop/runtime'},true),'candidate');
   assert.equal(baseline.candidateNextOptions({...options, 'candidate-follow-on': '/C', 'follow-on-action': 'self'},true),'candidate');
   assert.equal(baseline.candidateNextOptions({...options, 'candidate-follow-on': '/C', 'follow-on-action': 'npm'},true),'candidate');
   assert.equal(baseline.candidateNextOptions({...options, layout: 'installer', 'candidate-follow-on': '/C', 'follow-on-action': 'installer', 'candidate-follow-on-installer': '/C/installer.sh'},true),'candidate');
   assert.equal(baseline.candidateNextOptions({},false),undefined);
-  for(const change of [{candidate:undefined},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'latest'},{'next-hop-phase':undefined},{'follow-on-action':'self'},{'candidate-follow-on':'/C','follow-on-action':'installer'},{'candidate-follow-on':'/C','follow-on-action':'unknown'}]) assert.throws(()=>baseline.candidateNextOptions({...options,...change},true));
+  assert.equal(baseline.candidateNextOptions({'stopped-daemon-before-update':'true', 'desktop-runtime':'/desktop/runtime', state:'daemon', method:'self'},true),undefined);
+  assert.throws(()=>baseline.candidateNextOptions({'stopped-daemon-before-update':'true'},true));
+  assert.throws(()=>baseline.candidateNextOptions({'disabled-daemon-before-update':'true'},true));
+  for(const change of [{candidate:undefined},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'latest'},{'next-hop-phase':undefined},{'follow-on-action':'self'},{'candidate-follow-on':'/C','follow-on-action':'installer'},{'candidate-follow-on':'/C','follow-on-action':'unknown'},{'stopped-daemon-before-update':'false'},{'disabled-daemon-before-update':'false'},{'stopped-daemon-before-update':'true','disabled-daemon-before-update':'true'},{'desktop-runtime':'/desktop/runtime'},{'stopped-daemon-before-update':'true','candidate-follow-on':'/C','follow-on-action':'self'},{'disabled-daemon-before-update':'true','candidate-follow-on':'/C','follow-on-action':'self'},{'stopped-daemon-before-update':'true',source:'0.164.10','next-hop-source':'0.164.10'}]) assert.throws(()=>baseline.candidateNextOptions({...options,...change},true));
   assert.throws(()=>baseline.candidateNextOptions(options,false));
   assert.equal(baseline.candidateNextOptions({...options,source:'0.164.10',layout:'installer','next-hop-source':'0.164.10'},true),'source-0.164.10');
   assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
@@ -427,7 +433,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 34 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 40 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);

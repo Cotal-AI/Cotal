@@ -372,7 +372,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 34
+      max-parallel: 40
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
@@ -385,13 +385,13 @@ jobs:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - uses: actions/download-artifact@v4
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.followOnAction != null || matrix.chain == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         with:
           artifact-ids: ${{ needs.release-pack.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-candidate
       - uses: actions/download-artifact@v4
-        if: matrix.scenario == 'candidate-next-daemon-self' || matrix.followOnAction != null || matrix.chain == true
+        if: matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         with:
           artifact-ids: ${{ needs.release-next.outputs.artifact }}
           merge-multiple: true
@@ -403,7 +403,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/release-follow-on
       - name: Verify candidate immutable source and full package census
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.followOnAction != null || matrix.chain == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         shell: bash
         env:
           SOURCE_SHA: ${{ needs.select.outputs.source }}
@@ -431,7 +431,7 @@ jobs:
           mkdirSync(process.env.RUNNER_TEMP + '/upgrade-evidence', { recursive: true });
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           const cell = JSON.parse(process.env.CELL);
-          if (cell.scenario === 'candidate-next-daemon-self' || cell.followOnAction || cell.chain === true) {
+          if (cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true) {
             const nextRoot = process.env.RUNNER_TEMP + '/release-next/';
             const next = JSON.parse(readFileSync(nextRoot + 'manifest.json'));
             const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -454,8 +454,25 @@ jobs:
             writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-next-origin.json', JSON.stringify(originReceipt));
           }
           NODE
+      - uses: actions/download-artifact@v4
+        if: matrix.scenario == 'candidate-next-stopped-desktop-self'
+        with:
+          name: desktop-release-Linux-X64
+          run-id: 43456519342
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/desktop-release
+      - name: Verify released desktop package for stopped-desktop ownership cell
+        if: matrix.scenario == 'candidate-next-stopped-desktop-self'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          package=$(find "$RUNNER_TEMP/desktop-release" -name 'Cotal_0.164.2_amd64.deb' -print -quit)
+          test -n "$package"
+          printf '%s  %s\n' 87921721f6dcdf01a454a8d62f8d15f12dee8fd2934a470f435e034f60ca5e9d "$package" | sha256sum -c -
+          dpkg-deb -x "$package" "$RUNNER_TEMP/released-desktop"
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'candidate-next-daemon-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
+        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -497,13 +514,16 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
-          const paired = cell.scenario === 'candidate-next-daemon-self' || Boolean(cell.followOnAction) || cell.chain === true;
+          const paired = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
           const candidate = process.env.RUNNER_TEMP + '/release-candidate';
           if (paired) {
             args.push('--candidate', candidate, '--candidate-next', process.env.RUNNER_TEMP + '/release-next', '--next-hop-source', cell.chain ? '0.164.10' : 'candidate', '--next-hop-phase', process.env.PHASE);
+            if (cell.stoppedDaemonBeforeUpdate) args.push('--stopped-daemon-before-update', 'true');
+            if (cell.disabledDaemonBeforeUpdate) args.push('--disabled-daemon-before-update', 'true');
+            if (cell.desktopBesideCli) args.push('--desktop-runtime', process.env.RUNNER_TEMP + '/released-desktop/usr/lib/Cotal/runtime', '--desktop-node', process.env.RUNNER_TEMP + '/released-desktop/usr/bin/cotal-node');
             if (cell.chain || cell.followOnAction) args.push('--next-hop-final-target', cell.finalTargetVersion);
             if (cell.followOnAction) {
               const followOn = process.env.RUNNER_TEMP + '/release-follow-on';
@@ -611,7 +631,7 @@ jobs:
             assert(expected, 'evidence coordinate must be required by the frozen plan');
             assert.deepEqual(cell, expected, 'complete evidence coordinate must match the frozen plan');
             assert.equal(entry.name, `upgrade-cell-${cell.id}`, 'artifact name must match its coordinate');
-            if (plan.phase === 'candidate' || cell.scenario === 'candidate-next-daemon-self' || Boolean(cell.followOnAction) || cell.chain === true) {
+            if (plan.phase === 'candidate' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true) {
               const origin = JSON.parse(readFileSync(join(directory, 'candidate-origin.json')));
               assert.equal(origin.source, plan.sourceSHA);
               assert.equal(origin.artifact, process.env.EXPECTED_CANDIDATE_ARTIFACT);
@@ -639,12 +659,12 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
               assert.equal(report.method, method);
-              const next = cell.scenario === 'candidate-next-daemon-self' || Boolean(cell.followOnAction);
+              const next = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction);
               const paired = next || cell.chain === true;
               const finalTarget = cell.finalTargetVersion ?? cell.targetVersion;
               assert.equal(report.source, cell.sourceVersion);
@@ -687,7 +707,7 @@ jobs:
                 : cell.chain === true
                   ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? plan.targetVersion
                   : cell.sourceVersion;
-              const manualFinalState = (['daemon-self', 'candidate-next-daemon-self', 'candidate-next-second-self', 'candidate-next-manual-npm', 'candidate-next-installer-rerun', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario) || paired && cell.scenario === 'agent-stop-consent')
+              const manualFinalState = (['daemon-self', 'candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-second-self', 'candidate-next-manual-npm', 'candidate-next-installer-rerun', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario) || paired && cell.scenario === 'agent-stop-consent')
                 ? evaluateManualDaemonState({ diagnostics: report.daemonDiagnostics?.['after-update'], output: directory, target: finalTarget, platform: cell.platform, expectedPackageManagerVersion })
                 : undefined;
               let pairedEvidence;
@@ -730,6 +750,9 @@ jobs:
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
                 'candidate-next-target': report.candidateNext?.targetVersion === (cell.followOnAction ? cell.targetVersion : finalTarget),
                 'next-hop-success': pairedEvidence?.nextHopSuccess === true,
+                'stopped-daemon-before-update': pairedEvidence?.stoppedDaemonBeforeUpdate === true && ok('native daemon confirmed stopped before manual update'),
+                'disabled-daemon-before-update': pairedEvidence?.disabledDaemonBeforeUpdate === true && ok('native daemon confirmed disabled and stopped before manual update') && ok('disabled native daemon remains stopped across manual update') && ok('manual update reports service is disabled; not started'),
+                'stopped-desktop-beside-cli': pairedEvidence?.stoppedDesktopBesideCli === true && ok('stopped desktop daemon remains stopped across CLI update') && ok('CLI update names the stopped desktop service owner') && ok('released desktop inventory unchanged') && ok('CLI update preserves original desktop service source'),
                 'follow-on-target': report.candidateNext?.followOnVersion === finalTarget && ok('follow-on target matches packed artifact'),
                 'follow-on-success': pairedEvidence?.followOnSuccess === true && ok('follow-on action exits successfully'),
                 'bare-manual-npm-observation': pairedEvidence?.bareManualNpm === true && ok('bare manual npm install reaches target in-place and names any pending extension reconciliation'),
@@ -744,7 +767,7 @@ jobs:
                 'installer-source-receipt': report.candidateInstaller?.source === plan.sourceSHA,
                 'foreign-snapshot-retained': ok('foreign snapshot bytes remain untouched'),
                 'container-manager-preserved': ok('foreign container Manager remains running and untouched') && ok('host selected remote user-sign-in mesh before upgrade') && report.participant?.remote === true && report.participant?.localManagerStarted === false,
-                'native-service-manual': ['daemon-self', 'candidate-next-daemon-self', 'candidate-next-second-self', 'candidate-next-manual-npm', 'candidate-next-installer-rerun', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario) && ok('manual native service starts at source with scheduler disabled') && report.method === 'self' && report.environment?.nativeServiceRequested === true && report.calls.some(call => call.label === 'native install' && call.exit === 0) && (paired ? pairedEvidence?.nextHopSuccess === true : report.calls.some(call => call.label === 'upgrade under test' && call.exit === 0 && Array.isArray(call.argv) && call.argv.includes('--self'))),
+                'native-service-manual': ['daemon-self', 'candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-disabled-daemon-self', 'candidate-next-second-self', 'candidate-next-manual-npm', 'candidate-next-installer-rerun', 'source-0.164.10-daemon-self-chain'].includes(cell.scenario) && ok('manual native service starts at source with scheduler disabled') && report.method === 'self' && report.environment?.nativeServiceRequested === true && report.calls.some(call => call.label === 'native install' && call.exit === 0) && (paired ? pairedEvidence?.nextHopSuccess === true : report.calls.some(call => call.label === 'upgrade under test' && call.exit === 0 && Array.isArray(call.argv) && call.argv.includes('--self'))),
                 'independent-final-state': manualFinalState?.passed === true && ok('independent manual service final state'),
                 'native-scheduler': ok('scheduler completed within observation deadline') && ok('daemon scheduler performed a replacement or reported up to date'),
                 'daemon-restart': ok('native daemon remains active at its expected generation') && (cell.platform !== 'darwin' || ok('launchd transition observed exactly one daemon restart')),
