@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -190,6 +190,42 @@ async function ready(version) {
     await delay(500);
   } while (Date.now() < until);
   throw new Error(`Service did not answer ${version}`);
+}
+async function observeDaemonLockState(label, statusPid) {
+  const lockPath = join(root, 'daemon', 'daemon.lock');
+  const exists = existsSync(lockPath);
+  const st = exists ? statSync(lockPath) : null;
+  const bytes = exists ? readText(lockPath) : null;
+  let statusPidAlive = null;
+  let statusPidBirth = null;
+  if (Number.isInteger(statusPid) && statusPid > 0) {
+    const procObs = await run(ps, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `$ErrorActionPreference='Stop'; $gp=Get-Process -Id ${statusPid} -ErrorAction SilentlyContinue; @{alive=[bool]($null -ne $gp);birth=$(if($gp){$gp.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}else{$null})} | ConvertTo-Json -Compress`,
+    ], 15_000);
+    if (procObs.code === 0) {
+      const parsed = JSON.parse(procObs.stdout);
+      statusPidAlive = parsed.alive;
+      statusPidBirth = parsed.birth;
+    }
+  }
+  const entry = {
+    label,
+    observedAt: new Date().toISOString(),
+    lock: {
+      exists,
+      size: st ? st.size : null,
+      mtime: st ? st.mtime.toISOString() : null,
+      bytes,
+    },
+    statusPid: statusPid ?? null,
+    statusPidAlive,
+    statusPidBirth,
+  };
+  report.daemonLockBracket ??= {};
+  report.daemonLockBracket[label] = entry;
+  save();
+  return entry;
 }
 function inventory() {
   const rows = [];
@@ -480,6 +516,7 @@ try {
     } else result = await run(candidate, ['/S'], 420_000);
     report.setup = result;
     report.setupElapsedMs = Date.now() - start;
+    await observeDaemonLockState('whenSetupReturns', report.before?.pid);
     const diagnostic = existsSync(join(setupHome, 'result.json')) ? JSON.parse(readText(join(setupHome, 'result.json'))) : null;
     report.diagnostic = diagnostic;
     if (candidateNextChecks) {
@@ -495,7 +532,9 @@ try {
     if (['occupied', 'occupied-ui', 'locker', 'early', 'cannot-start'].includes(cell)) {
       check('Setup refuses before replacing files', result.code !== 0);
       compare(before, inventory());
-      check('Service remains old and running', (await ready(sourceVersion)).pid === report.before.pid);
+      const postSetupStatus = await ready(sourceVersion);
+      check('Service remains old and running', postSetupStatus.pid === report.before.pid);
+      await observeDaemonLockState('afterPostSetupStatus', postSetupStatus.pid);
       if (seat) {
         const birth = await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${report.seat.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc().ToString()`]);
         check('Same real fixture process survives refusal', birth.stdout.trim() === report.seat.birth);
@@ -633,20 +672,22 @@ finally {
     const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes');
     report.cleanup = result;
     if (result.code !== 0) {
-      const lockPath = join(root, 'daemon', 'daemon.lock');
+      const atRefusal = await observeDaemonLockState('atRefusal', report.before?.pid);
       const daemonLogPath = join(root, 'daemon', 'daemon.log');
       const obs = await run(ps, [
         '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
         `$ErrorActionPreference='Stop'; ` +
         `Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class PipeInspect {\n  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);\n  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);\n  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);\n}\n'@; ` +
         `$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $pipeName="\\\\.\\pipe\\cotal-daemon-$sid"; ` +
-        `$h=[PipeInspect]::CreateFileW($pipeName, 0x80000000, 0, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero); $pipeServerPid=$null; $pipeErr=$null; ` +
+        `$h=[PipeInspect]::CreateFileW($pipeName, [uint32]2147483648, 0, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero); $pipeServerPid=$null; $pipeErr=$null; ` +
         `if($h -ne [IntPtr]::new(-1) -and $h -ne [IntPtr]::Zero){ $pidOut=[uint32]0; if([PipeInspect]::GetNamedPipeServerProcessId($h, [ref]$pidOut)){$pipeServerPid=[int]$pidOut}else{$pipeErr=[Runtime.InteropServices.Marshal]::GetLastWin32Error()}; [PipeInspect]::CloseHandle($h)|Out-Null }else{$pipeErr=[Runtime.InteropServices.Marshal]::GetLastWin32Error()}; ` +
         `$procs=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | Where-Object { $_.Name -in @('cotal-desktop.exe','node.exe') -or ($_.ExecutablePath -and $_.ExecutablePath -like '*\\Cotal\\*') } | ForEach-Object { $gp=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;name=$_.Name;executablePath=$_.ExecutablePath;commandLine=$_.CommandLine;birth=$(if($gp){$gp.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}else{$null})} }); ` +
         `@{pipeName=$pipeName;pipeServerPid=$pipeServerPid;pipeError=$pipeErr;processes=$procs} | ConvertTo-Json -Depth 5 -Compress`,
       ], 30_000);
       report.cleanupRefusalObservation = {
-        lockRecord: existsSync(lockPath) ? readText(lockPath) : null,
+        lockRecord: atRefusal.lock.bytes,
+        lockState: atRefusal,
+        bracket: report.daemonLockBracket ?? null,
         daemonLogTail: existsSync(daemonLogPath) ? readText(daemonLogPath).split('\n').slice(-40).join('\n') : null,
         pipeAndProcesses: obs.code === 0 ? JSON.parse(obs.stdout) : { code: obs.code, stderr: obs.stderr },
       };
