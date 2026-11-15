@@ -6,10 +6,11 @@ import { dirname, join, posix, win32 } from "node:path";
 import { CommandFailure } from "@cotal-ai/workspace";
 import { pinnedPath } from "./install.js";
 
-const run = (command: string, args: string[]) => new Promise<string>((resolve, reject) => {
-  execFile(command, args, { timeout: 10_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8" }, (error, stdout) => {
-    if (error) reject(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the account's application PATH could not be read; no service was changed", { remedy: "check that your login shell starts successfully, then choose Check again" }));
-    else resolve(stdout);
+const run = (command: string, args: string[], remedy: string, timeoutRemedy = remedy) => new Promise<string>((resolve, reject) => {
+  execFile(command, args, { timeout: 30_000, maxBuffer: 64 * 1024, windowsHide: true, encoding: "utf8" }, (error, stdout) => {
+    if (!error) resolve(stdout);
+    else if (error.killed) reject(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "reading the account's application PATH timed out after 30 seconds; no service was changed", { remedy: timeoutRemedy }));
+    else reject(new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the account's application PATH could not be read; no service was changed", { remedy }));
   });
 });
 
@@ -35,7 +36,7 @@ export async function windowsApplicationPath(): Promise<string> {
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   if (!root || !win32.isAbsolute(root)) throw new CommandFailure("refused", "UNSUPPORTED", "the Windows system directory is unavailable; no application PATH was guessed");
   const script = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $ErrorActionPreference = 'Stop'; $p = @([Environment]::GetEnvironmentVariable('Path','Machine'), [Environment]::GetEnvironmentVariable('Path','User')) | Where-Object { $_ }; [Console]::Write([Environment]::ExpandEnvironmentVariables(($p -join ';')))";
-  const value = await run(join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]);
+  const value = await run(join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], "choose Try again, or run cotal daemon install in a terminal for diagnostics", "wait a moment and choose Try again");
   return pinnedPath(`${value};${dirname(process.execPath)}`, win32);
 }
 
@@ -46,7 +47,7 @@ export async function discoverDesktopApplicationPath(): Promise<DiscoveredApplic
   const shell = userInfo().shell;
   if (!shell || !posix.isAbsolute(shell)) throw new CommandFailure("refused", "UNSUPPORTED", "the account has no absolute login shell; no application PATH was guessed");
   const marker = `cotal_path_${randomUUID().replaceAll("-", "")}`;
-  const output = await run(shell, ["-ilc", `printf '\\n${marker}%s${marker}\\n' "$PATH"`]);
+  const output = await run(shell, ["-ilc", `printf '\\n${marker}%s${marker}\\n' "$PATH"`], "check that your login shell starts successfully, then choose Check again");
   const parts = output.split(marker);
   if (parts.length !== 3) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the login shell returned no bounded application PATH; no service was changed");
   return filterDesktopApplicationPath(parts[1]!, dirname(process.execPath));
