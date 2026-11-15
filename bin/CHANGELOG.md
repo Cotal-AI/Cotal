@@ -1,5 +1,22 @@
 # cotal-ai
 
+## 0.164.17
+
+### Patch Changes
+
+- 997d973: Configured Windows desktop apps can download and apply verified updates while hidden in the system tray or when **Restart to update** is chosen. The Windows updater launches the guarded NSIS setup in update mode, reconciles its setup result into the post-relaunch session receipt, and restores the pre-update window state.
+- ba5e806: Desktop service installation and setup now allow up to 30 seconds to read the account's application PATH and report when that read timed out. On Windows, timed-out PATH reads advise waiting a moment and choosing Try again, and non-timeout PATH read failures point to retrying or running `cotal daemon install` rather than checking a login shell.
+- @cotal-ai/connector-core@0.164.17
+  - @cotal-ai/auth@0.164.17
+  - @cotal-ai/cli@0.164.17
+  - @cotal-ai/delivery@0.164.17
+  - @cotal-ai/manager@0.164.17
+  - @cotal-ai/registry@0.164.17
+  - @cotal-ai/runtime@0.164.17
+  - @cotal-ai/core@0.164.17
+  - @cotal-ai/seat@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
 ## 0.164.16
 
 ### Patch Changes
