@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
+import { repairInstallModes } from "./install-umask.js";
 
 interface Promotion {
   readonly v: 1;
@@ -83,7 +84,10 @@ export function stageExtensions(): ExtensionStage {
   const stageConfig = join(stage, "config"), prefix = join(stageConfig, "cotal", "extensions");
   mkdirSync(dirname(prefix), { recursive: true, mode: 0o700 });
   if (existsSync(root)) cpSync(root, prefix, { recursive: true, verbatimSymlinks: true });
-  else { mkdirSync(prefix); writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true })); }
+  else { mkdirSync(prefix, { mode: 0o755 }); writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "cotal-extensions", private: true })); }
+  // The stage is this process's own: under a umask of 0002 the folder above, and on Node before
+  // 24.22 every copied folder, would be group-writable and the protected-path rule would refuse it.
+  repairInstallModes(prefix);
   let promoted = false;
   return {
     config: stageConfig, prefix,

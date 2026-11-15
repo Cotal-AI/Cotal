@@ -345,7 +345,7 @@ async function addTransaction(pkg: string, resolved: string, expectedPkg: string
   const rollbackDir = rollbackRoot ? join(rollbackRoot, "extensions") : undefined;
   const stageDir = stageRoot ? join(stageRoot, "cotal", "extensions") : undefined;
   if (stageDir) {
-    mkdirSync(stageDir, { recursive: true });
+    mkdirSync(stageDir, { recursive: true, mode: 0o755 });
     writeFileSync(join(stageDir, "package.json"), `${JSON.stringify({ name: "cotal-extensions", private: true }, null, 2)}\n`);
   }
   if (rollbackDir) {
