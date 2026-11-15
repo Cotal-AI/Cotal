@@ -789,8 +789,8 @@ async function refresh(): Promise<void> {
   try {
     const status = await request({ op: "status" });
     if (!current()) return;
-    if (statusProblem) clearDetails();
     ready = status.state === "ready";
+    if (statusProblem || (ready && problem === "NOT_ANSWERING")) clearDetails();
     renderAgents(status, el("running-agents"));
     requestAnimationFrame(sizeSpaceList);
     daemonVersion = String(status.version);
@@ -839,6 +839,7 @@ async function refresh(): Promise<void> {
   } catch (error) {
     if (!current()) return;
     ready = false; state("unavailable");
+    if (problem === "NOT_ANSWERING" && error instanceof DaemonRefusal && error.code === "NOT_RUNNING") { buttons(); return; }
     if (!(error instanceof DaemonRefusal && error.code === "NOT_RUNNING" && (stage === "welcome" || stage === "sign-in") && !loginActive)) refusal(error, true);
   }
   buttons();
@@ -917,7 +918,9 @@ el("login-form").addEventListener("submit", (event) => {
 el("recover").addEventListener("click", () => {
   if (busy) { if (problem === "EXPIRED" && !retrySignIn) { retrySignIn = true; showStage(stage); } return; }
   const recovery = el("recover").dataset.action;
-  problem = undefined; notice("");
+  const keepNotAnswering = problem === "NOT_ANSWERING" && recovery === "refresh";
+  if (!keepNotAnswering) problem = undefined;
+  notice("");
   if (recovery === "login") { beginSignIn(); el<HTMLFormElement>("login-form").requestSubmit(); }
   else if (recovery === "connect") el<HTMLButtonElement>("connect").click();
   else if (recovery === "spaces") void action(async () => { await spaces(true); nextAfterSignIn(); });
@@ -929,7 +932,7 @@ el("recover").addEventListener("click", () => {
     if (!ready) throw new Error("The background service is not ready.");
     notice("");
   });
-  else void action(async () => { clearDetails(); await refresh(); });
+  else void action(async () => { if (!keepNotAnswering) clearDetails(); await refresh(); });
 });
 el("open-approval").addEventListener("click", () => { if (approval) void invoke("open_browser", { url: approval }).catch(refusal); });
 function beginSignIn(): void {

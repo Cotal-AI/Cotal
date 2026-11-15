@@ -1,27 +1,37 @@
 /** Built desktop install readiness with recording systemd tools, never the host service manager. */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
+import { excludeLifetime } from "../daemon/lifetime.js";
 
 if (process.platform !== "linux") skipSuite("daemon-desktop-install: Linux recording systemd fixture only");
 const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+const nativeEntry = fileURLToPath(new URL("../dist/daemon-native.js", import.meta.url));
 const fixture = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
 const root = mkdtempSync(join(tmpdir(), "desktop-install-"));
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const operations = (file: string): string[] => existsSync(file)
   ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line: string) => (JSON.parse(line) as { operation: string }).operation)
   : [];
-function isolated(name: string) {
+function isolated(name: string, runNativeOnStart = false) {
   const dir = join(root, name);
-  for (const leaf of ["home", "cotal", "config", "rt", "native", "cache", "data", "state"]) mkdirSync(join(dir, leaf), { recursive: true, mode: 0o700 });
+  for (const leaf of ["home", "cotal", "cotal/daemon", "config", "rt", "native", "cache", "data", "state"]) mkdirSync(join(dir, leaf), { recursive: true, mode: 0o700 });
   const calls = join(dir, "calls.jsonl");
   const context = join(dir, "context.json");
-  writeFileSync(context, JSON.stringify({ home: join(dir, "home"), config: join(dir, "config"), calls, units: ["cotal-daemon.service"] }), { mode: 0o600 });
+  writeFileSync(context, JSON.stringify({
+    home: join(dir, "home"),
+    config: join(dir, "config"),
+    cotal: join(dir, "cotal"),
+    rt: join(dir, "rt"),
+    calls,
+    ...(runNativeOnStart ? { nativeEntry } : {}),
+    units: ["cotal-daemon.service"],
+  }), { mode: 0o600 });
   for (const tool of ["systemctl", "loginctl"]) writeFileSync(join(dir, "native", tool), `#!${process.execPath}\n${fixture}`, { mode: 0o700 });
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_") && !["NODE_OPTIONS", "NODE_PATH"].includes(key)));
   Object.assign(env, {
@@ -37,7 +47,7 @@ interface Frame {
   v: number;
   event: string;
   ok: boolean;
-  error?: { code: string; message: string; remedy?: string };
+  error?: { code: string; message: string; remedy?: string; native?: { code: string } };
   result?: { installed: boolean; status: { state: string; pid: number } };
 }
 async function request(target: Isolated, op: string): Promise<Frame> {
@@ -133,6 +143,18 @@ assert.equal(stopped.error?.message, "The background service is installed but st
 assert.deepEqual(operations(control.calls).slice(beforeStatus.length), ["directory-read"], "a status request reads the installation and starts nothing");
 console.log("installed and stopped: status names the stopped service, not a missing installation");
 
+// Produce a real earlier-launch daemon.log on `control` before the install request starts, so its
+// launch timestamp is strictly older than the install attempt and must not be reported.
+const staleLock = excludeLifetime(join(control.dir, "cotal", "daemon", "daemon.lock"));
+try {
+  spawnSync(process.execPath, [nativeEntry, "daemon", "serve"], { cwd: control.dir, env: control.env, stdio: "ignore", timeout: 10_000 });
+} finally {
+  staleLock.release();
+}
+const staleLog = readFileSync(join(control.dir, "cotal", "daemon", "daemon.log"), "utf8");
+assert.match(staleLog, /^daemon service launch \S+\ndaemon startup refused: /);
+await sleep(10);
+
 // The same timeout classification applies after a fresh install and a recorded-service start.
 for (const target of [isolated("timeout"), control]) {
   const before = operations(target.calls);
@@ -144,8 +166,31 @@ for (const target of [isolated("timeout"), control]) {
     ? ["directory-read", "directory-read", "start"] : ["directory-read", "linger-read", "daemon-reload", "enable", "start"]);
   assert.equal(timedOut.ok, false);
   assert.equal(timedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
-  assert.equal(timedOut.error?.message, "The background service was installed and a start was requested, but the daemon did not answer within 15 seconds. Use `cotal daemon status` for diagnostics.");
-  assert.ok(!JSON.stringify(timedOut).includes(target.dir), "fixed app guidance contains no private path");
-  console.log(`${target === control ? "recorded start" : "fresh install"}: readiness timeout passed`);
+  assert.equal(timedOut.error?.native?.code, "NOT_ANSWERING");
+  assert.equal(timedOut.error?.message, "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.");
+  assert.equal(timedOut.error?.remedy, "choose Check status.");
+  assert.ok(!JSON.stringify(timedOut).includes(target.dir), "fixed app guidance contains no private path or stale launch refusal");
+  console.log(`${target === control ? "recorded start (stale log ignored)" : "fresh install"}: readiness timeout passed`);
+}
+
+// A refusal written during this install attempt is included with the "daemon startup refused:" prefix removed.
+const refusedStart = isolated("refused-start", true);
+const heldLock = excludeLifetime(join(refusedStart.dir, "cotal", "daemon", "daemon.lock"));
+try {
+  const started = Date.now();
+  const timedOut = await request(refusedStart, "install");
+  assert.ok(Date.now() - started >= 15_000, "real readiness window elapsed for refused start");
+  checkInstallation(refusedStart);
+  assert.equal(timedOut.ok, false);
+  assert.equal(timedOut.error?.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(timedOut.error?.native?.code, "NOT_ANSWERING");
+  assert.equal(
+    timedOut.error?.message,
+    `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${join(refusedStart.dir, "cotal", "daemon", "daemon.lock")} is held by a live process: this daemon is already being served. Nothing was changed`,
+  );
+  assert.equal(timedOut.error?.remedy, "choose Check status.");
+  console.log("refused start: current-attempt daemon.log refusal included");
+} finally {
+  heldLock.release();
 }
 console.log(`daemon-desktop-install: passed; isolated evidence retained at ${root}`);
