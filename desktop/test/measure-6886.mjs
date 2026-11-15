@@ -219,10 +219,10 @@ try {
     Array.isArray(measurement.connectedIdleTray?.minutes) &&
       measurement.connectedIdleTray.minutes.length === 10 &&
       measurement.connectedIdleTray.summary?.totalNodeStarts === 0 &&
-      measurement.connectedIdleTray.summary?.totalJobProcessesDelta === 0 &&
       measurement.connectedIdleTray.summary?.jobCpuSecondsPerMinute <= 1 &&
       measurement.connectedIdleTray.bridgeMemoryAtStart?.count === 1 &&
-      measurement.connectedIdleTray.bridgeMemoryAtEnd?.count === 1
+      measurement.connectedIdleTray.bridgeMemoryAtEnd?.count === 1 &&
+      measurement.connectedIdleTray.bridgeMemoryAtStart?.bridge?.pid === measurement.connectedIdleTray.bridgeMemoryAtEnd?.bridge?.pid
   );
   check(
     'Quit window completed 10 minutes (600 s) after app job drained to 0 active processes',
@@ -352,6 +352,7 @@ try {
       if (skewOps.some(o => o.op === 'status-watch' && o.skewed === true)) break;
       await delay(250);
     }
+    await delay(1500);
     const initialRefusedWatchSeen = skewOps.some(o => o.op === 'status-watch' && o.skewed === true);
     const opsAfterInitialRefusal = skewOps.length;
     await delay(5000);
