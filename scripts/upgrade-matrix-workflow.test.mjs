@@ -264,6 +264,20 @@ test('special summary rejects mismatched receipts and failed observable commands
     }
   }
 });
+test('package-layout summary refuses receipt-bound incomplete and duplicate package censuses', () => {
+  for (const change of [manifest => { manifest.packages = []; }, manifest => { manifest.packages[0] = manifest.packages[1]; }]) {
+    const result = fixture((data, directory) => {
+      specialCellEvidence(data, directory);
+      const path = join(directory, 'candidate-next-manifest.json');
+      const manifest = JSON.parse(readFileSync(path));
+      change(manifest);
+      const bytes = JSON.stringify(manifest);
+      writeFileSync(path, bytes);
+      data.nextOrigin.targetManifestSha256 = createHash('sha256').update(bytes).digest('hex');
+    }, { scenario: 'candidate-next-pnpm-layout', channel: 'pnpm' });
+    assert.notEqual(result.exit, 0, 'an artifact receipt cannot waive the complete package census');
+  }
+});
 function publishedRefusalEvidence(data, directory, change = () => {}) {
   const cell = data.cell;
   data.cell = { ...cell, targetVersion: cell.sourceVersion };

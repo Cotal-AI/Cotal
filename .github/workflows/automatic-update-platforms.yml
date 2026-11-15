@@ -696,8 +696,9 @@ jobs:
               const report=JSON.parse(bytes);assert.equal(report.source,plan.sourceSHA);assert.equal(report.layout,cell.layoutProbe);
               assert.equal(report.sourceVersion,cell.sourceVersion);assert.equal(report.targetVersion,cell.targetVersion);
               const origin=JSON.parse(readFileSync(join(directory,'candidate-next-origin.json')));assert.equal(origin.artifact,process.env.EXPECTED_NEXT_ARTIFACT);assert.equal(origin.digest,process.env.EXPECTED_NEXT_DIGEST);
+              const expectedNames=JSON.parse(readFileSync('.changeset/config.json')).fixed.flat().sort();
               for(const [side,file,version]of[['source','candidate-source-manifest.json',cell.sourceVersion],['target','candidate-next-manifest.json',cell.targetVersion]]){
-                const data=readFileSync(join(directory,file)),manifest=JSON.parse(data);assert.equal(digest(data),origin[side+'ManifestSha256']);assert.equal(manifest.source,plan.sourceSHA);assert(manifest.packages.every(pkg=>pkg.version===version));
+                const data=readFileSync(join(directory,file)),manifest=JSON.parse(data);assert.equal(digest(data),origin[side+'ManifestSha256']);assert.equal(manifest.source,plan.sourceSHA);assert.deepEqual(manifest.packages.map(pkg=>pkg.name).sort(),expectedNames);assert(manifest.packages.every(pkg=>pkg.version===version));
               }
               const graded=packageLayoutAssertions(report,cell);actual.push({id:cell.id,status:graded.passed?'passed':'failed',assertions:graded.assertions});continue;
             }
