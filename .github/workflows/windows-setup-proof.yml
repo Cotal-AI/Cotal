@@ -32,6 +32,9 @@ on:
         description: 'Include the 18 timing repeat cells (running 1..9 and app-tray 1..9)'
         type: boolean
         default: false
+  push:
+    branches:
+      - measure/win-setup-keeps-service
 permissions:
   contents: read
   actions: read
@@ -43,6 +46,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       expected: ${{ steps.plan.outputs.expected }}
       version_pr: ${{ steps.plan.outputs.version_pr }}
+      measure_6879: ${{ steps.plan.outputs.measure_6879 }}
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6.0.8
@@ -56,9 +60,12 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $versionPr = ('${{ github.event_name }}' -eq 'pull_request') -and ('${{ github.head_ref }}' -eq 'changeset-release/main')
+          $measure6879 = ('${{ github.ref }}' -eq 'refs/heads/measure/win-setup-keeps-service')
           $repeats = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
           $cells = if ($versionPr) {
             @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
+          } elseif ($measure6879) {
+            @('measure-6879')
           } else {
             @('running','occupied','stopped','absent','locker','locker-filtered','locker-short','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe','external-node-exiting','external-node-exiting-filtered','external-node-elevated','external-node-elevated-filtered','external-node-system','external-node-system-filtered')
           }
@@ -71,14 +78,19 @@ jobs:
             }
           }
           $expected = @('build','stock-ui-control') + @($include | ForEach-Object { "native ($($_.repeat), $($_.cell))" })
-          "version_pr=$($versionPr.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "version_pr=$((($versionPr -or $measure6879)).ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "measure_6879=$($measure6879.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "matrix=$(@{ include = $include } | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
           "expected=$($expected | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.plan.outputs.measure_6879 != 'true'
       - run: pnpm install --frozen-lockfile
+        if: steps.plan.outputs.measure_6879 != 'true'
       - name: Stamp disposable proof version
+        if: steps.plan.outputs.measure_6879 != 'true'
         run: pnpm exec node desktop/test/setup-candidate-version.mjs
       - name: Build stock Windows native bindings
+        if: steps.plan.outputs.measure_6879 != 'true'
         shell: cmd
         run: |
           set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -91,11 +103,17 @@ jobs:
           node packages/seat/scripts/build-native.mjs --host
           if errorlevel 1 exit /b 1
       - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
+        if: steps.plan.outputs.measure_6879 != 'true'
       - run: pnpm --filter cotal-ai seeded-connectors
+        if: steps.plan.outputs.measure_6879 != 'true'
       - run: pnpm --dir desktop prepare:runtime
+        if: steps.plan.outputs.measure_6879 != 'true'
       - run: pnpm --dir desktop check:runtime
+        if: steps.plan.outputs.measure_6879 != 'true'
       - run: pnpm --dir desktop exec tauri build --bundles nsis
+        if: steps.plan.outputs.measure_6879 != 'true'
       - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.measure_6879 != 'true'
         with:
           name: setup-candidate
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -117,6 +135,7 @@ jobs:
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
       - name: Build synthetic next candidate in warm tree
+        if: steps.plan.outputs.measure_6879 != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -157,6 +176,7 @@ jobs:
             throw "Synthetic next setup bundle carries desktop-runtime.json version $bundledVersion instead of $nextVersion"
           }
       - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.measure_6879 != 'true'
         with:
           name: setup-synthetic-next
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -194,6 +214,7 @@ jobs:
         if: matrix.cell == 'occupied' || matrix.cell == 'occupied-ui' || matrix.cell == 'absent'
         run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
       - uses: actions/download-artifact@v4
+        if: matrix.cell != 'measure-6879'
         with:
           name: setup-candidate
           path: candidate
@@ -252,20 +273,26 @@ jobs:
             Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
             (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
           }
-          $folder=if($cell -eq 'cannot-start'){'invalid-candidate'}else{'candidate'}
-          $candidate=@(Get-ChildItem "$folder/*-setup.exe")
-          if($candidate.Count -ne 1){throw 'Candidate not singular'}
-          "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
+          if($cell -ne 'measure-6879') {
+            $folder=if($cell -eq 'cannot-start'){'invalid-candidate'}else{'candidate'}
+            $candidate=@(Get-ChildItem "$folder/*-setup.exe")
+            if($candidate.Count -ne 1){throw 'Candidate not singular'}
+            "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
+          }
           if($cell -in @('installed-candidate-to-next','app-installed','app-update-mode')) {
             $next=@(Get-ChildItem 'next-candidate/*-setup.exe')
             if($next.Count -ne 1){throw 'Synthetic next candidate not singular'}
             "COTAL_SETUP_NEXT=$($next[0].FullName)" >> $env:GITHUB_ENV
           }
       - name: Exercise actual installed setup
+        if: matrix.cell != 'measure-6879'
         env:
           COTAL_SETUP_REPEAT: ${{ matrix.repeat }}
           COTAL_SETUP_CANDIDATE_KIND: ${{ matrix.cell == 'cannot-start' && 'invalid-helper-control' || 'product' }}
         run: pnpm exec tsx desktop/test/setup-proof.mjs ${{ matrix.cell }}
+      - name: Measure #6879 native step durations
+        if: matrix.cell == 'measure-6879'
+        run: node desktop/test/measure-6879.mjs
       - name: Existing Windows service lifecycle suites
         if: always() && matrix.cell == 'absent'
         shell: pwsh
