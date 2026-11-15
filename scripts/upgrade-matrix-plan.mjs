@@ -239,6 +239,11 @@ export function boundedCells(plan) {
       syntheticVersionRule:'candidate.patch+1000',nodeVersion:'24.18.0',rootOwned:true,...(oldVersion?{oldVersion}:{}),
       requiredAssertions:['root-update-success','normal-account-versions','owning-command-refusal','root-owned-install','readable-generation-metadata','private-journals','generation-store-protected','owned-runner-teardown',...(oldVersion?['published-root-lockout','manual-root-install-heals']:[])],
     });
+    for(const layoutProbe of ['pnpm','nvm'])add('linux',layoutProbe==='pnpm'?'pnpm':'npm',`candidate-next-${layoutProbe}-layout`,null,{
+      sourceVersion:plan.targetVersion,sourceKind:plan.phase==='published'?'npm-exact-A':'packed-candidate-A',targetVersion,targetSource:'packed-next-B',targetSourceSHA:plan.sourceSHA,
+      syntheticVersionRule:'candidate.patch+1000',nodeVersion:'24.18.0',layoutProbe,
+      requiredAssertions:['layout-source-version','layout-update-success','layout-target-version','layout-extensions','layout-status','layout-prefix-preserved','generation-store-protected'],
+    });
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,

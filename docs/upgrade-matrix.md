@@ -44,7 +44,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 50 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 52 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -64,6 +64,7 @@ product coordinates:
 | Linux updater session without `XDG_RUNTIME_DIR`, with a live daemon (safe refusal) and without a daemon (successful update) | 2 |
 | Published 0.164.16 and 0.164.17 target-check escape notices with two scheduler failures and an unchanged-budget waiting observation | 2 |
 | Root-owned system installation used by a normal account, including published 0.164.16 and 0.164.17 lockout and manual-install recovery | 3 |
+| Actual pnpm global and nvm-selected npm layouts, using their installed command to update to the synthetic next release | 2 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
@@ -97,6 +98,8 @@ leave the updater log unchanged, and leave no staging directory. The probe ages 
 The root-owned installation probe runs only on a disposable Linux runner. Root updates an actual
 `/usr/local` installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
+The package-manager layout probes use pnpm's own global root and shim, or an immutable nvm release's selected Node prefix.
+They do not replace those layouts with a custom npm prefix. A public updater refusal remains a failed cell.
 
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
 installed candidate's public manual updater. The synthetic target comes from the same immutable source,
@@ -187,7 +190,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all 50 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 52 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the
