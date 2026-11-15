@@ -630,14 +630,28 @@ finally {
   }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
   if (serviceInstalled) {
-    const runUninstall = () => report.foreignCli ? run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : daemon('uninstall', '--yes');
-    let result = await runUninstall();
-    if (result.code === 3 && result.stdout?.includes('is not the daemon holding')) {
-      await delay(1000);
-      result = await runUninstall();
-    }
+    const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes');
     report.cleanup = result;
-    if (result.code !== 0) process.exitCode = 1;
+    if (result.code !== 0) {
+      const lockPath = join(root, 'daemon', 'daemon.lock');
+      const daemonLogPath = join(root, 'daemon', 'daemon.log');
+      const obs = await run(ps, [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+        `$ErrorActionPreference='Stop'; ` +
+        `Add-Type @'\nusing System;\nusing System.Runtime.InteropServices;\npublic static class PipeInspect {\n  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);\n  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);\n  [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);\n}\n'@; ` +
+        `$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $pipeName="\\\\.\\pipe\\cotal-daemon-$sid"; ` +
+        `$h=[PipeInspect]::CreateFileW($pipeName, 0x80000000, 0, [IntPtr]::Zero, 3, 0, [IntPtr]::Zero); $pipeServerPid=$null; $pipeErr=$null; ` +
+        `if($h -ne [IntPtr]::new(-1) -and $h -ne [IntPtr]::Zero){ $pidOut=[uint32]0; if([PipeInspect]::GetNamedPipeServerProcessId($h, [ref]$pidOut)){$pipeServerPid=[int]$pidOut}else{$pipeErr=[Runtime.InteropServices.Marshal]::GetLastWin32Error()}; [PipeInspect]::CloseHandle($h)|Out-Null }else{$pipeErr=[Runtime.InteropServices.Marshal]::GetLastWin32Error()}; ` +
+        `$procs=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine,CreationDate | Where-Object { $_.Name -in @('cotal-desktop.exe','node.exe') -or ($_.ExecutablePath -and $_.ExecutablePath -like '*\\Cotal\\*') } | ForEach-Object { $gp=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;name=$_.Name;executablePath=$_.ExecutablePath;commandLine=$_.CommandLine;birth=$(if($gp){$gp.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}else{$null})} }); ` +
+        `@{pipeName=$pipeName;pipeServerPid=$pipeServerPid;pipeError=$pipeErr;processes=$procs} | ConvertTo-Json -Depth 5 -Compress`,
+      ], 30_000);
+      report.cleanupRefusalObservation = {
+        lockRecord: existsSync(lockPath) ? readText(lockPath) : null,
+        daemonLogTail: existsSync(daemonLogPath) ? readText(daemonLogPath).split('\n').slice(-40).join('\n') : null,
+        pipeAndProcesses: obs.code === 0 ? JSON.parse(obs.stdout) : { code: obs.code, stderr: obs.stderr },
+      };
+      process.exitCode = 1;
+    }
   }
   const events = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $start=[DateTime]::Parse('${proofStartedAt}').ToUniversalTime(); $events=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000;StartTime=$start} -ErrorAction SilentlyContinue); ConvertTo-Json -InputObject @($events|ForEach-Object{@{time=$_.TimeCreated.ToUniversalTime().ToString('o');id=$_.Id;message=$_.Message}}) -Compress`], 30_000);
   writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));

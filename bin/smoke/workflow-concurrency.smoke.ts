@@ -91,7 +91,8 @@ function check(name: string, cond: boolean, extra?: unknown): void {
 // desktop.yml and native-cell.yml run on pull requests or dispatch only,
 // so neither push-to-main population changes.
 // Upgrade matrix adds one PR/workflow-run/manual workflow, not a main-push workflow.
-const EXPECTED_WORKFLOWS = 16;
+// windows-setup-proof.yml runs on pull requests, dispatch or dedicated measure branches, not main pushes.
+const EXPECTED_WORKFLOWS = 17;
 const EXPECTED_PUSH_TO_MAIN = 8;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` and `remotion.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,
