@@ -263,10 +263,43 @@ function followOnEvidence(data, directory, route = 'in-place') {
     data.report.calls.push({ label: 'candidate follow-on self update under test', startedAt: '2026-11-14T11:00:01.000Z', finishedAt: '2026-11-14T11:00:02.000Z', argv: ['/owned/dist/cotal.js', 'update', '--self'], ...followUpdate });
   } else if (data.cell.followOnAction === 'npm') {
     const bareVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n  Reconciliation pending: Run \`cotal update --self\` to reconcile this installation.\n`, stderr: '' };
+    const reconciledVersion = { exit: 0, signal: null, timeout: false, stdout: `cotal-ai ${c}\n`, stderr: '' };
+    const bareRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: null, error: `@cotal-ai/tmux is ${b} and this cotal is ${c} - run \`cotal update --self\` to reconcile this installation` }] } }), stderr: '' };
+    const reconciledRuntimes = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { items: [{ name: 'tmux', state: 'installed', package: '@cotal-ai/tmux', reachable: true, error: null }] } }), stderr: '' };
     const bareDaemonStatus = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { state: 'ready', version: c, pid: 1234 } }), stderr: '' };
     const bareRoute = { name: 'cotal-ai', version: c, selectedCliVersion: c, packageManagerRecordVersion: c, updateRoute: 'in-place' };
-    const bareExtensions = Array.from({ length: 8 }, (_, i) => ({ pkg: `@cotal-ai/ext-${i}`, version: b }));
-    const bareBytes = JSON.stringify({ version: bareVersion, daemonStatus: bareDaemonStatus, route: bareRoute, recovery: null, extensions: bareExtensions, installedExtensions: bareExtensions });
+    const bareExtensions = [{ pkg: '@cotal-ai/tmux', version: b }, ...Array.from({ length: 7 }, (_, i) => ({ pkg: `@cotal-ai/ext-${i}`, version: b }))];
+    const reconciledExtensions = [{ pkg: '@cotal-ai/tmux', version: c }, ...Array.from({ length: 7 }, (_, i) => ({ pkg: `@cotal-ai/ext-${i}`, version: c }))];
+    const bareBytes = JSON.stringify({
+      version: bareVersion,
+      daemonStatus: bareDaemonStatus,
+      runtimes: bareRuntimes,
+      route: bareRoute,
+      recovery: null,
+      extensions: bareExtensions,
+      installedExtensions: bareExtensions,
+      launchGateRefusal: {
+        command: { exit: 1, signal: null, timeout: false, stdout: '', stderr: `✗ failed to reconcile @cotal-ai/tmux@${c} - run \`cotal update --self\` to reconcile this installation\n` },
+        extensions: bareExtensions,
+        installedExtensions: bareExtensions,
+      },
+      launchGateReconcile: {
+        command: { exit: 2, signal: null, timeout: false, stdout: '', stderr: '' },
+        version: reconciledVersion,
+        runtimes: reconciledRuntimes,
+        extensions: reconciledExtensions,
+        installedExtensions: reconciledExtensions,
+      },
+      scheduledReconcile: {
+        pendingBefore: bareVersion,
+        attempt: { version: c, failures: 0, result: `updated to ${c}`, next: Date.now() + 86400000 },
+        version: reconciledVersion,
+        runtimes: reconciledRuntimes,
+        daemonStatus: bareDaemonStatus,
+        extensions: reconciledExtensions,
+        installedExtensions: reconciledExtensions,
+      },
+    });
     writeFileSync(join(directory, 'bare-manual-npm.txt'), bareBytes, { mode: 0o600 });
     data.report.nextHop.followOn.bareNpmObservation = {
       passed: true,

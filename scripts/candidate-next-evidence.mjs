@@ -423,13 +423,51 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
         if (entry.version === pair.followOnVersion) return true;
         return entry.version === pair.targetVersion && bareRemedy;
       });
+      const bareRuntimesRow = [0, 4].includes(archivedBare.runtimes?.exit) ? JSON.parse(archivedBare.runtimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
+      const bareTmuxRefusedOk = [0, 4].includes(archivedBare.runtimes?.exit) && archivedBare.runtimes?.signal === null && archivedBare.runtimes?.timeout === false
+        && typeof bareRuntimesRow?.error === 'string'
+        && bareRuntimesRow.error.includes(`@cotal-ai/tmux is ${pair.targetVersion} and this cotal is ${pair.followOnVersion} - run \`cotal update --self\` to reconcile this installation`);
+      const gateRefusal = archivedBare.launchGateRefusal;
+      const gateRefusalOk = gateRefusal?.command?.exit === 1
+        && gateRefusal.command.signal === null
+        && gateRefusal.command.timeout === false
+        && /run `cotal update --self` to reconcile this installation/.test(String(gateRefusal.command.stdout ?? '') + String(gateRefusal.command.stderr ?? ''))
+        && Array.isArray(gateRefusal.extensions)
+        && gateRefusal.extensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === pair.targetVersion)
+        && Array.isArray(gateRefusal.installedExtensions)
+        && gateRefusal.installedExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === pair.targetVersion);
+      const gateReconcile = archivedBare.launchGateReconcile;
+      const gateReconcileHeader = String(gateReconcile?.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
+      const gateTmuxRow = gateReconcile?.runtimes?.exit === 0 ? JSON.parse(gateReconcile.runtimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
+      const gateReconcileOk = clean(gateReconcile?.version) && gateReconcileHeader
+        && !/Reconciliation pending/.test(String(gateReconcile?.version?.stdout ?? ''))
+        && clean(gateReconcile?.runtimes)
+        && gateTmuxRow?.state === 'installed' && gateTmuxRow?.package === '@cotal-ai/tmux' && gateTmuxRow?.error === null
+        && Array.isArray(gateReconcile?.extensions) && gateReconcile.extensions.length >= 8
+        && gateReconcile.extensions.every(entry => entry.version === pair.followOnVersion && gateReconcile.installedExtensions?.find(row => row.pkg === entry.pkg)?.version === pair.followOnVersion);
+      const scheduled = archivedBare.scheduledReconcile;
+      const scheduledHeader = String(scheduled?.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
+      const scheduledTmuxRow = scheduled?.runtimes?.exit === 0 ? JSON.parse(scheduled.runtimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
+      const scheduledOk = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(String(scheduled?.pendingBefore?.stdout ?? ''))
+        && scheduled?.attempt?.version === pair.followOnVersion
+        && scheduled?.attempt?.result === `updated to ${pair.followOnVersion}`
+        && clean(scheduled?.version) && scheduledHeader
+        && !/Reconciliation pending/.test(String(scheduled?.version?.stdout ?? ''))
+        && clean(scheduled?.runtimes)
+        && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null
+        && Array.isArray(scheduled?.extensions) && scheduled.extensions.length >= 8
+        && scheduled.extensions.every(entry => entry.version === pair.followOnVersion && scheduled.installedExtensions?.find(row => row.pkg === entry.pkg)?.version === pair.followOnVersion);
       bareManualNpm = clean(archivedBare.version) && bareCliHeader
         && archivedBare.route?.updateRoute === 'in-place'
         && archivedBare.route?.selectedCliVersion === pair.followOnVersion
         && archivedBare.route?.packageManagerRecordVersion === pair.followOnVersion
         && clean(archivedBare.daemonStatus) && bareDaemon?.state === 'ready' && bareDaemon?.version === pair.followOnVersion
         && archivedBare.recovery === null
-        && bareExtensionsOk;
+        && bareExtensionsOk
+        && bareTmuxRefusedOk
+        && gateRefusalOk
+        && gateReconcileOk
+        && scheduledOk;
       followOnSuccess = clean(hop.followOn?.npmInstall) && bareManualNpm && clean(hop.followOn?.update);
     } else {
       assert.equal(report.layout, 'installer');

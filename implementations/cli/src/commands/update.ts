@@ -462,18 +462,30 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
         const custody = await rt.reportRunningManager(target);
         rt.out("No newer CLI version; installed package closure is current. No connector reconciliation was run.");
         if (custody === "legacy") rt.out("A later update will require stopping the agents listed above before replacing packages.");
+        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateCompletion(current, "up to date", true);
         reportVersion(current, latest.version, rt, false);
         return 0;
       } catch (error) {
+        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
         rt.err(c.red(`✗ running manager continuity check: ${refusal(error)}`));
         return 1;
       }
     }
 
-    return reconcileCurrent(current, rt, target, (reconciled) => {
+    return reconcileCurrent(current, rt, target, (reconciled, deferred) => {
       if (!latest.ok) {
+        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry or extension closure availability", true);
         rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
         return 1;
+      }
+      if (rt.env.COTAL_AUTO_UPDATE === "1") {
+        if (reconciled) recordUpdateCompletion(current, `updated to ${current}`, true);
+        else if (!deferred) {
+          recordUpdateReplacement(current);
+          recordUpdateCompletion(current, `reconciliation failed at ${current}`, false);
+        }
+      } else if (reconciled && rt === updateRuntime) {
+        recordUpdateCompletion(current, `updated to ${current}`, true);
       }
       reportVersion(current, latest.version, rt, reconciled);
       return reconciled ? 0 : 1;
@@ -495,7 +507,7 @@ async function reconcileCurrent(
   current: string,
   rt: UpdateRuntime,
   target: Record<string, unknown>,
-  finish: (reconciled: boolean) => number,
+  finish: (reconciled: boolean, deferred?: boolean) => number,
 ): Promise<number> {
   // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
   // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
@@ -504,16 +516,21 @@ async function reconcileCurrent(
   // run that refused to proceed (#1620). The continuity check is a pure read of the running manager
   // and the selected target; nothing may be written until it has answered.
   try {
-    if (await rt.reportRunningManager(target) === "legacy") return finish(false);
+    if (await rt.reportRunningManager(target) === "legacy") {
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
+      return finish(false, true);
+    }
   } catch (e) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for agents to stop");
     rt.err(c.red(`✗ running manager continuity check: ${refusal(e)}`));
-    return finish(false);
+    return finish(false, true);
   }
 
   try { await rt.preflightReplacement?.(); }
   catch (error) {
+    if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "installed daemon preflight refused");
     rt.err(c.red(`✗ installed daemon preflight: ${refusal(error)}`));
-    return finish(false);
+    return finish(false, true);
   }
 
   rt.out(c.bold("Built-in connectors"));

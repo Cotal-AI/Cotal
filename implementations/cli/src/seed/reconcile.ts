@@ -3,6 +3,7 @@ import { spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
+  CommandFailure,
   claimUpdateClosureAccess,
   waitForUpdateClosure,
   CorruptExtensionPackageError,
@@ -12,6 +13,7 @@ import {
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  isBundledDesktopRuntime,
   loadExtensionsManifest,
   provenance,
   quarantineExtensionsManifest,
@@ -71,8 +73,8 @@ import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from 
  *  - a health preamble BEFORE the stamp fast path, so a lost authority can't hide behind a current
  *    stamp; the ever-seeded authority (unioned with its monotonic backup on read) is the sole arbiter
  *    of removed-vs-never-seeded.
- *  - refresh gated on the manifest entry's `source`: only connectors WE seeded auto-refresh on an
- *    upgrade; an operator-managed official entry (a manual `ext add` at a chosen version) is left alone.
+ *  - every still-installed first-party extension (`@cotal-ai/*`) is brought to the running generation
+ *    on upgrade, or the reconcile refuses loud naming `cotal update --self`.
  */
 
 /** `verify` is `cotal update`'s mode: every built-in is reconciled under the locks like `force`, but a
@@ -206,7 +208,7 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
             "run `cotal ext seed --repair`",
         );
       }
-    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation && !reconcileLockActive()) {
+    } else if (readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation && !reconcileLockActive()) {
       // Steady state AND no reconcile in flight. The lock check is LAST (immediately before NOOP) so
       // it is the linearization point: a `--force` that link-publishes the lock during the slower
       // health/stamp reads is still caught here, and we fall through to acquire/wait rather than
@@ -294,12 +296,40 @@ function builtinsAccounted(): boolean {
  * The fast path must not preserve an older manifest that advertises only a subset of what the packed
  * built-in now registers, or lazy materialization of the new provider can never find its owner. An
  * entry whose connector metadata predates the cached setup ref is that older manifest. */
-function builtinsMetadataCurrent(): boolean {
+function builtinsMetadataCurrent(generation: string = seedGeneration()): boolean {
   for (const name of SEED_BUILTINS) {
     const entry = installedEntry(name);
-    if (entry?.source === "seeded" && connectorMetadataStale(entry)) return false;
+    if (entry && (entry.source !== "seeded" || entry.version !== generation || connectorMetadataStale(entry))) return false;
   }
   return true;
+}
+
+/** Why an operator-installed official extension needs to be brought to `generation`, or undefined when
+ *  it is recorded and installed on disk at `generation` with its main entry present. */
+function operatorPackageDiffers(entry: InstalledExtension, generation: string): string | undefined {
+  if (entry.version !== generation) return `recorded at ${entry.version}, not ${generation}`;
+  let installed: ReturnType<typeof installedExtensionPackage>;
+  try {
+    installed = installedExtensionPackage(entry.pkg);
+  } catch {
+    return "corrupt package metadata on disk";
+  }
+  if (!installed) return "not installed on disk";
+  if (installed.version !== generation) return `installed at ${installed.version}, not ${generation}`;
+  if (!mainEntryPresent(entry.pkg, installed.main)) return "main entry file is missing";
+  return undefined;
+}
+
+/** Whether every operator-installed official `@cotal-ai/*` extension is recorded and on disk at `generation`. */
+function officialExtensionsCurrent(generation: string): boolean {
+  try {
+    const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
+    return loadExtensionsManifest().extensions.every(
+      (entry) => !entry.pkg.startsWith("@cotal-ai/") || builtIns.has(entry.pkg) || operatorPackageDiffers(entry, generation) === undefined,
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
@@ -366,6 +396,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     !recoveryPending() &&
     readWitness() &&
     builtinsMetadataCurrent() &&
+    officialExtensionsCurrent(generation) &&
     readStamp()?.generation === generation &&
     SEED_BUILTINS.every((name) => everSeeded.has(name))
   )
@@ -424,15 +455,19 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
       everSeeded.add(name);
       seeded.push(name);
     } else if (entry) {
-      // Refresh policy: any --force; for connectors WE seeded (source === "seeded") a strictly-newer
-      // generation; on an unknown-cursor --repair (repairAllSeeded) every seeded built-in; and on an
-      // ordinary --repair a seeded entry that is not fully intact on disk (a partial tear — main may
-      // survive while a required file is gone). An operator-managed official entry (no seeded marker)
-      // is never auto-refreshed on upgrade — only --force may replace it.
+      // Refresh policy: any --force; a strictly-newer generation; an entry whose version or seeded
+      // provenance differs from the running generation; on an unknown-cursor --repair (repairAllSeeded)
+      // every seeded built-in; and on an ordinary --repair a seeded entry that is not fully intact on
+      // disk (a partial tear — main may survive while a required file is gone).
       const isSeeded = entry.source === "seeded";
       const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
-      const metadataStale = isSeeded && connectorMetadataStale(entry);
-      let refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
+      const metadataStale = !isSeeded || entry.version !== generation || connectorMetadataStale(entry);
+      let refresh = mode === "force" || torn || metadataStale || isStrictlyNewer(generation, stampGen);
+      if (mode === "auto" && refresh && !torn && !metadataStale && entry.version === generation && seededInstallDiffers(name, generation, entry) === undefined) {
+        for (const link of bindExtensionPeers([entry.pkg], entry.pkg))
+          provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
+        refresh = false;
+      }
       if (mode === "verify" && !refresh) {
         const differs = unverifiable() ?? seededInstallDiffers(name, generation, entry);
         if (differs === undefined) {
@@ -461,13 +496,42 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
     }
   }
 
+  const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map((entry) => entry.pkg));
+  const operators = mode === "reset" ? [] : loadExtensionsManifest().extensions.filter((entry) =>
+    entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && (
+      mode === "verify"
+        ? operatorInstallDiffers(entry, generation) !== undefined
+        : mode === "force" || (mode === "repair" && repairAllSeeded) || operatorPackageDiffers(entry, generation) !== undefined
+    ),
+  ).map((entry) => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
+
   if (mode === "verify") {
     const { installExtensionSet } = await import("../commands/ext.js");
-    const builtIns = new Set(Object.values(SEEDED_EXTENSIONS).map(entry => entry.pkg));
-    const operators = loadExtensionsManifest().extensions.filter(entry => entry.pkg.startsWith("@cotal-ai/") && !builtIns.has(entry.pkg) && operatorInstallDiffers(entry, generation) !== undefined)
-      .map(entry => ({ pkg: entry.pkg, spec: `${entry.pkg}@${generation}`, version: generation }));
     await installExtensionSet([...staged, ...operators]);
     for (const entry of staged) verifyInstalled(entry.name, generation);
+    for (const entry of operators) verifyOperatorInstalled(entry.pkg, generation);
+  } else if (operators.length) {
+    clearCursor();
+    const { installExtensionSet } = await import("../commands/ext.js");
+    for (const entry of operators) console.error(c.dim(`Reconciling extension ${entry.pkg}@${generation}`));
+    try {
+      await installExtensionSet(operators, console.error, { isolate: true });
+      for (const entry of operators) {
+        verifyOperatorInstalled(entry.pkg, generation);
+        refreshed.push(entry.pkg);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const desktop = isBundledDesktopRuntime();
+      throw new CommandFailure(
+        "refused",
+        "DEPENDENCY_UNAVAILABLE",
+        desktop
+          ? `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail}`
+          : `failed to reconcile ${operators.map((entry) => `${entry.pkg}@${generation}`).join(", ")}: ${detail} - run \`cotal update --self\` to reconcile this installation`,
+        { cause: error, ...(desktop ? {} : { remedy: "run `cotal update --self` to reconcile this installation" }) },
+      );
+    }
   }
 
   // An npm upgrade reaches this path before the command runs. Refresh harness-owned copies before
@@ -499,7 +563,7 @@ export function deferredSeedRefusal(): Error | undefined {
   const generation = seedGeneration();
   let current = false;
   try {
-    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && readStamp()?.generation === generation;
+    current = !readCursor() && !recoveryPending() && !!readWitness() && authorityIntact() && builtinsAccounted() && builtinsMetadataCurrent() && officialExtensionsCurrent(generation) && readStamp()?.generation === generation;
   } catch {
     current = false; // unreadable seed state: the deferred reconcile reports it
   }
@@ -747,6 +811,13 @@ function verifyInstalled(name: string, generation: string): void {
     throw new Error(`connector "${name}" (${pkg}) installed at version ${installed.version} but the seed generation is ${generation} (a version-skewed payload) - rerun \`cotal ext seed --repair\``);
   if (!mainEntryPresent(pkg, installed.main))
     throw new Error(`connector "${name}" (${pkg}) is installed but its entry file is missing (a torn install) - rerun \`cotal ext seed --repair\``);
+}
+
+function verifyOperatorInstalled(pkg: string, generation: string): void {
+  const entry = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
+  if (!entry) throw new Error(`extension ${pkg} was expected in the manifest after reconciliation but is absent`);
+  const differs = operatorPackageDiffers(entry, generation);
+  if (differs) throw new Error(`extension ${pkg} after reconciliation is ${differs}`);
 }
 
 /** The package's declared main entry file exists on disk (`main`, else the CommonJS default). Used to
