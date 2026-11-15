@@ -4,6 +4,7 @@ import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 import { queryDaemon } from "./client.js";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { installedDaemonIdentity, unitReceiptFile } from "./install.js";
+import { processBirth, readLifetimeRecord } from "./lifetime.js";
 import { daemonManagerIntentFile } from "./manager.js";
 
 /** Test hooks: the installed-service check, the daemon query and the wait bound. */
@@ -31,7 +32,10 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     if (!existsSync(unitReceiptFile(paths))) return;
     const installation = installedDaemonIdentity(paths);
     if (!installation.same) {
-      console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      const lifetime = readLifetimeRecord(paths.lock);
+      if (!lifetime?.start || processBirth(lifetime.pid) !== lifetime.start) {
+        console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      }
       return;
     }
   }
