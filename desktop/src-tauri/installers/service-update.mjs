@@ -42,10 +42,12 @@ let modules;
 let prepared = false;
 let committed = false;
 let paused = false;
+let skippedProcesses = [];
+let executableNames = [];
 function outcome(code, message, name = code === 0 ? 'updated' : 'refused', activeAgents = 0) {
   lastStep = `outcome:${code}`;
   message = message.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 1800);
-  write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, completedAt: new Date().toISOString() });
+  write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, skippedProcesses: state?.skippedProcesses ?? skippedProcesses, executableNames: state?.executableNames ?? executableNames, completedAt: new Date().toISOString() });
   writeFileSync(messageFile, `${message}\r\n`);
   process.stdout.write(`${message}\n`);
   process.exitCode = code;
@@ -92,7 +94,15 @@ async function waitDead() {
   throw new Error('The old service did not confirm shutdown within 130 seconds. Run cotal daemon start before retrying setup.');
 }
 function census(servicePid) {
-  const rows = task('census').processes;
+  const scan = task('census');
+  if (!Array.isArray(scan?.processes) || !Array.isArray(scan?.skipped) || !Array.isArray(scan?.executableNames)) throw new Error('The owned task returned an invalid census response.');
+  const rows = scan.processes;
+  skippedProcesses = scan.skipped;
+  executableNames = scan.executableNames;
+  if (state) {
+    state.skippedProcesses = skippedProcesses;
+    state.executableNames = executableNames;
+  }
   const service = rows.find(row => row.pid === servicePid);
   const launcher = service && rows.find(row => row.pid === service.parentPid && row.path.toLowerCase() === join(root, 'cotal-desktop.exe').toLowerCase());
   const allowed = new Set([process.pid, servicePid, launcher?.pid]);

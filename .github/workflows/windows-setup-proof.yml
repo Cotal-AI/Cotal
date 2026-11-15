@@ -60,7 +60,7 @@ jobs:
           $cells = if ($versionPr) {
             @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
           } else {
-            @('running','occupied','stopped','absent','locker','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe')
+            @('running','occupied','stopped','absent','locker','locker-filtered','locker-short','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe','external-node-exiting','external-node-exiting-filtered','external-node-elevated','external-node-elevated-filtered','external-node-system','external-node-system-filtered')
           }
           $include = @($cells | ForEach-Object { @{ repeat = 0; cell = $_ } })
           if ($repeats) {
