@@ -287,6 +287,11 @@ func text(_ element: AXUIElement) -> String {
         let value = string(element, name)
         if !value.isEmpty { return value }
     }
+    let textChildren = children(element).filter { string($0, "AXRole") == "AXStaticText" && !text($0).isEmpty }
+    if string(element, "AXRole") == "AXGroup" && string(element, "AXSubrole") == "AXApplicationStatus" {
+        guard textChildren.count == 1 else { fail("status element must have one AXStaticText child, found \(textChildren.count)") }
+        return text(textChildren[0])
+    }
     return children(element).map(text).filter { !$0.isEmpty }.joined(separator: " ")
 }
 func appWindow() -> AXUIElement {
@@ -425,19 +430,14 @@ case "displayed":
     output(found.first.map(visible) ?? false)
 case "enabled": output(enabled(unique(matches(arg(0)))))
 case "text":
-    if arg(0) == "tray-label" {
-        // The retained native AX tree exposes machine-details and its header parent's
-        // anonymous status text, but drops the status span's DOM ID. The journey also
-        // says Ready, so never search the whole window for that expected word.
-        let details = unique(matches("machine-details"))
-        guard let parent = attribute(details, "AXParent"), CFGetTypeID(parent) == AXUIElementGetTypeID() else {
-            fail("machine-details has no accessible header parent")
-        }
-        let header = parent as! AXUIElement
-        let states: Set<String> = ["Not connected", "Ready", "Connected", "Starting", "Sign in required", "Checking connection"]
-        let statuses = children(header).filter { string($0, "AXRole") == "AXStaticText" && states.contains(text($0)) }
-        output(text(unique(statuses)))
-    } else { output(text(unique(matches(arg(0))))) }
+    let target = unique(matches(arg(0)))
+    if arg(0) == "tray-label" && (string(target, "AXValue").isEmpty && string(target, "AXTitle").isEmpty && string(target, "AXDescription").isEmpty) {
+        let textChildren = children(target).filter { string($0, "AXRole") == "AXStaticText" && !text($0).isEmpty }
+        guard textChildren.count == 1 else { fail("tray-label must have one AXStaticText child, found \(textChildren.count)") }
+        output(text(textChildren[0]))
+    } else {
+        output(text(target))
+    }
 case "click": press(unique(matches(arg(0)))); output(true)
 case "click-test-id": press(unique(matches(arg(0), testId: true))); output(true)
 case "test-id-attributes":

@@ -461,6 +461,13 @@ public static class FilteredAppLauncher {
             if ($LASTEXITCODE -ne 0) { throw "Sub-action $subAction failed ($LASTEXITCODE): $subOut" }
             return ($subOut | ConvertFrom-Json)
         }
+        $cellsFile = if ($env:COTAL_DESKTOP_E2E_NATIVE_LOG) { Join-Path (Split-Path -Parent $env:COTAL_DESKTOP_E2E_NATIVE_LOG) 'windows-login-cells.json' } else { $null }
+        $cellsProgress = [ordered]@{}
+        function Save-CellsProgress {
+            if ($cellsFile) {
+                [IO.File]::WriteAllText($cellsFile, ($cellsProgress | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
+            }
+        }
         $filteredProc = $null
         try {
             if (!$AppPid) { throw 'prove-login-cells requires AppPid of the running elevated app.' }
@@ -485,6 +492,14 @@ public static class FilteredAppLauncher {
             if ($afterDisable.result.hkcu.present -or $afterDisable.result.hklm.present) {
                 throw 'Cell (b) disable check failed: disabling Open at login in elevated app did not clear HKCU and owned HKLM.'
             }
+            $cellsProgress['cellB'] = [ordered]@{
+                enableRemovedOwnedHklm = (!$afterEnable.result.hklm.present -and $afterEnable.result.hkcu.present)
+                disableRemovedOwnedHklm = (!$afterDisable.result.hklm.present -and !$afterDisable.result.hkcu.present)
+                enabledResult = $enabledObs.result
+                disabledResult = $disabledObs.result
+            }
+            $diagnostics.Add([ordered]@{ cellB = $cellsProgress['cellB'] })
+            Save-CellsProgress
 
             # Cell (d): plant foreign HKLM value and verify elevated app leaves it untouched.
             Set-HklmRunValue $foreignValue
@@ -496,6 +511,13 @@ public static class FilteredAppLauncher {
                 throw 'Cell (d) failed: elevated app modified or removed a foreign HKLM Run value.'
             }
             Remove-HklmRunValue
+            $cellsProgress['cellD'] = [ordered]@{
+                foreignPath = $foreignExe
+                preservedOnEnable = ($afterForeignEnable.result.hklm.present -and $afterForeignEnable.result.hklm.path -ceq $foreignExe)
+                preservedOnDisable = ($afterForeignDisable.result.hklm.present -and $afterForeignDisable.result.hklm.path -ceq $foreignExe)
+            }
+            $diagnostics.Add([ordered]@{ cellD = $cellsProgress['cellD'] })
+            Save-CellsProgress
 
             # Quit the elevated app before launching the filtered Medium-integrity app for cell (c).
             $null = Invoke-Self 'quit' $AppPid
@@ -521,11 +543,20 @@ public static class FilteredAppLauncher {
             }
             $null = Invoke-Self 'quit' $filteredPid
             $filteredProc = $null
-            $result = [ordered]@{
-                cellB = [ordered]@{ enableRemovedOwnedHklm = (!$afterEnable.result.hklm.present -and $afterEnable.result.hkcu.present); disableRemovedOwnedHklm = (!$afterDisable.result.hklm.present -and !$afterDisable.result.hkcu.present); enabledResult = $enabledObs.result; disabledResult = $disabledObs.result }
-                cellC = [ordered]@{ appIntegrity = $filteredEntries.result.appIntegrity; hklmRemained = $filteredEntries.result.hklm.present; hkcuPresent = $filteredEntries.result.hkcu.present; checked = $filteredSettings.result.checked; loginError = $filteredSettings.result.loginError }
-                cellD = [ordered]@{ foreignPath = $foreignExe; preservedOnEnable = ($afterForeignEnable.result.hklm.present -and $afterForeignEnable.result.hklm.path -ceq $foreignExe); preservedOnDisable = ($afterForeignDisable.result.hklm.present -and $afterForeignDisable.result.hklm.path -ceq $foreignExe) }
+            $cellsProgress['cellC'] = [ordered]@{
+                appIntegrity = $filteredEntries.result.appIntegrity
+                hklmRemained = $filteredEntries.result.hklm.present
+                hkcuPresent = $filteredEntries.result.hkcu.present
+                checked = $filteredSettings.result.checked
+                loginError = $filteredSettings.result.loginError
             }
+            $diagnostics.Add([ordered]@{ cellC = $cellsProgress['cellC'] })
+            Save-CellsProgress
+            $result = $cellsProgress
+        } catch {
+            $cellsProgress['error'] = $_.Exception.Message
+            Save-CellsProgress
+            throw
         } finally {
             if ($null -ne $filteredProc) {
                 try {
@@ -603,16 +634,19 @@ public static class FilteredAppLauncher {
                 if ($controls[0].Current.IsOffscreen) { throw "Exact AutomationId '$id' is offscreen." }
                 return $controls[0]
             }
+            function Read-SingleText([System.Windows.Automation.AutomationElement]$element, [string]$labelName) {
+                $direct = $element.Current.Name
+                if ($direct) { return $direct }
+                $textNodes = @(Children $element | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Text -and $_.Current.Name })
+                if ($textNodes.Count -ne 1) {
+                    throw "Expected one named Text child under '$labelName', found $($textNodes.Count)."
+                }
+                return $textNodes[0].Current.Name
+            }
             if ($Action -eq 'connected-view') {
                 $heading = Exact-Control 'connection-title'
                 $label = Exact-Control 'tray-label'
-                $labelText = $label.Current.Name
-                if (!$labelText) {
-                    foreach ($child in @(Children $label)) {
-                        if ($child.Current.Name) { $labelText = $child.Current.Name; break }
-                    }
-                }
-                $result = [ordered]@{ title = $heading.Current.Name; label = $labelText }
+                $result = [ordered]@{ title = $heading.Current.Name; label = (Read-SingleText $label 'tray-label') }
                 if (!$result.title -or !$result.label) { throw 'Exact native view controls expose empty accessibility names.' }
             } elseif ($Action -eq 'settings-back') {
                 Assert-Owner
@@ -664,12 +698,7 @@ public static class FilteredAppLauncher {
                 $toggle = $null
                 if (!$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) { throw 'Exact autostart checkbox exposes no TogglePattern.' }
                 $errEl = Exact-Control 'login-error'
-                $errText = $errEl.Current.Name
-                if (!$errText) {
-                    foreach ($child in @(Children $errEl)) {
-                        if ($child.Current.Name) { $errText = $child.Current.Name; break }
-                    }
-                }
+                $errText = Read-SingleText $errEl 'login-error'
                 $result = [ordered]@{
                     checked = ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)
                     loginError = $errText
@@ -804,9 +833,35 @@ public static class FilteredAppLauncher {
                         }
                     }
                 }
+                $uiaNotificationIcons = @()
+                foreach ($surface in $surfaces) {
+                    foreach ($node in @(Children $surface)) {
+                        if ($node.Current.ClassName -ceq 'ToolbarWindow32' -and $node.Current.AutomationId -ceq '1504') {
+                            foreach ($btn in @(Children $node)) {
+                                $btnRect = $btn.Current.BoundingRectangle
+                                $uiaNotificationIcons += [ordered]@{
+                                    surface = $surface.Current.ClassName
+                                    name = $btn.Current.Name
+                                    automationId = $btn.Current.AutomationId
+                                    className = $btn.Current.ClassName
+                                    controlType = $btn.Current.ControlType.ProgrammaticName
+                                    offscreen = $btn.Current.IsOffscreen
+                                    boundingRectangle = [ordered]@{
+                                        empty = $btnRect.IsEmpty
+                                        left = if ($btnRect.IsEmpty) { $null } else { $btnRect.Left }
+                                        top = if ($btnRect.IsEmpty) { $null } else { $btnRect.Top }
+                                        width = if ($btnRect.IsEmpty) { $null } else { $btnRect.Width }
+                                        height = if ($btnRect.IsEmpty) { $null } else { $btnRect.Height }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 $diagnostics.Add([ordered]@{
                     trayRectStage = $stage; trayHwnd = $trayHwnd.ToInt64(); uID = $foundUid
-                    matchingUids = @($matches | ForEach-Object { $_.uID })
+                    matchingUids = @($matches | ForEach-Object { $_.uID }); probes = $probeRows
+                    uiaNotificationIcons = $uiaNotificationIcons
                     hresult = ('0x' + $hr.ToString('X8')); ok = ($hr -eq 0)
                     rect = [ordered]@{
                         empty = $empty; left = $rect.left; top = $rect.top; right = $rect.right; bottom = $rect.bottom
@@ -816,9 +871,14 @@ public static class FilteredAppLauncher {
                 })
                 [pscustomobject]@{ uID = $foundUid; hr = $hr; empty = $empty; x = $x; y = $y; inVisibleExplorerSurface = $inVisibleSurface; explorerOwned = $explorerOwned }
             }
-            $iconTarget = Get-TrayIconTarget 'initial' $visibleSurfaces $overflowOpened
-            if ($iconTarget.hr -ne 0 -and @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $explorerPid -and $_.className -ceq 'NotifyIconOverflowWindow' -and $_.visible }).Count -gt 0) {
-                throw "Shell_NotifyIconGetRect returned no S_OK for tray_icon_app hwnd $($trayHwnd.ToInt64()) across uID 1..16."
+            $iconTarget = $null
+            for ($initialAttempt = 0; $initialAttempt -lt 20; $initialAttempt++) {
+                $iconTarget = Get-TrayIconTarget 'initial' $visibleSurfaces $overflowOpened
+                if ($iconTarget.hr -eq 0 -or @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $explorerPid -and $_.className -ceq 'NotifyIconOverflowWindow' -and $_.visible }).Count -eq 0) {
+                    break
+                }
+                Start-Sleep -Milliseconds 150
+                $visibleSurfaces = @(Explorer-Surfaces)
             }
             if (!$iconTarget.inVisibleExplorerSurface -or !$iconTarget.explorerOwned) {
                 $expanders = @()
@@ -876,8 +936,12 @@ public static class FilteredAppLauncher {
                     if (@([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $explorerPid -and $_.className -ceq 'NotifyIconOverflowWindow' -and $_.visible }).Count -eq 1) { break }
                     Start-Sleep -Milliseconds 150
                 }
-                $visibleSurfaces = @(Explorer-Surfaces)
-                $iconTarget = Get-TrayIconTarget 'after-overflow' $visibleSurfaces $overflowOpened
+                for ($afterAttempt = 0; $afterAttempt -lt 20; $afterAttempt++) {
+                    $visibleSurfaces = @(Explorer-Surfaces)
+                    $iconTarget = Get-TrayIconTarget 'after-overflow' $visibleSurfaces $overflowOpened
+                    if ($iconTarget.hr -eq 0 -and !$iconTarget.empty -and $iconTarget.inVisibleExplorerSurface -and $iconTarget.explorerOwned) { break }
+                    Start-Sleep -Milliseconds 150
+                }
             }
             if ($iconTarget.hr -ne 0) {
                 throw "Shell_NotifyIconGetRect returned no S_OK for tray_icon_app hwnd $($trayHwnd.ToInt64()) across uID 1..16."
