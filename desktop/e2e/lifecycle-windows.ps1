@@ -452,6 +452,22 @@ public static class FilteredAppLauncher {
                 finally { $k.Dispose() }
             }
         }
+        function Read-HklmRunEntry {
+            $subKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($runSubKey, $false)
+            try {
+                $raw = if ($null -ne $subKey) { $subKey.GetValue('Cotal', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
+                if ($null -eq $raw) { return [ordered]@{ present = $false } }
+                if ($raw -isnot [string]) { return [ordered]@{ present = $true; kind = $raw.GetType().FullName; matchesExpected = $false } }
+                $parsedArgs = @([LifecycleWindows]::Arguments($raw))
+                $matchesExpected = ($parsedArgs.Count -eq 2 -and $parsedArgs[1] -ceq '--background' -and [string]::Equals($parsedArgs[0], $expected, [StringComparison]::OrdinalIgnoreCase))
+                return [ordered]@{
+                    present = $true
+                    matchesExpected = $matchesExpected
+                    path = if ($parsedArgs.Count -ge 1) { $parsedArgs[0] } else { $null }
+                    args = if ($parsedArgs.Count -gt 1) { @($parsedArgs[1..($parsedArgs.Count - 1)]) } else { @() }
+                }
+            } finally { if ($null -ne $subKey) { $subKey.Dispose() } }
+        }
         function Invoke-Self([string]$subAction, [int]$targetPid) {
             $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
             $subArgs = @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-Binary', $expected, '-Action', $subAction)
@@ -476,10 +492,10 @@ public static class FilteredAppLauncher {
             if (!(Test-Path -LiteralPath $foreignExe -PathType Leaf)) { throw 'Expected sibling node.exe for foreign HKLM proof cell.' }
             $foreignValue = "`"$foreignExe`" --background"
 
-            # Cell (b): plant owned HKLM value while Open at login is off, then turn Open at login ON in the elevated app.
+            # Cell (b): plant owned HKLM value and verify turning Open at login ON in the elevated app writes HKCU and removes owned HKLM.
             Set-HklmRunValue $ownedValue
-            $beforeEnable = Invoke-Self 'login-entry' $AppPid
-            if (!$beforeEnable.result.hklm.present -or !$beforeEnable.result.hklm.matchesExpected) { throw 'Cell (b) setup did not plant owned HKLM Run value.' }
+            $plantedOnEnable = Read-HklmRunEntry
+            if (!$plantedOnEnable.present -or !$plantedOnEnable.matchesExpected) { throw 'Cell (b) setup did not plant owned HKLM Run value.' }
             $enabledObs = Invoke-Self 'enable-login' $AppPid
             $afterEnable = Invoke-Self 'login-entry' $AppPid
             if (!$afterEnable.result.hkcu.present -or !$afterEnable.result.hkcu.matchesExpected -or $afterEnable.result.hklm.present) {
@@ -487,12 +503,16 @@ public static class FilteredAppLauncher {
             }
             # Also verify turning Open at login OFF removes HKCU and any re-planted owned HKLM value.
             Set-HklmRunValue $ownedValue
+            $plantedOnDisable = Read-HklmRunEntry
+            if (!$plantedOnDisable.present -or !$plantedOnDisable.matchesExpected) { throw 'Cell (b) disable setup did not plant owned HKLM Run value.' }
             $disabledObs = Invoke-Self 'disable-login' $AppPid
             $afterDisable = Invoke-Self 'login-entry' $AppPid
             if ($afterDisable.result.hkcu.present -or $afterDisable.result.hklm.present) {
                 throw 'Cell (b) disable check failed: disabling Open at login in elevated app did not clear HKCU and owned HKLM.'
             }
             $cellsProgress['cellB'] = [ordered]@{
+                plantedBeforeEnable = ($plantedOnEnable.present -and $plantedOnEnable.matchesExpected)
+                plantedBeforeDisable = ($plantedOnDisable.present -and $plantedOnDisable.matchesExpected)
                 enableRemovedOwnedHklm = (!$afterEnable.result.hklm.present -and $afterEnable.result.hkcu.present)
                 disableRemovedOwnedHklm = (!$afterDisable.result.hklm.present -and !$afterDisable.result.hkcu.present)
                 enabledResult = $enabledObs.result
@@ -522,8 +542,10 @@ public static class FilteredAppLauncher {
             # Quit the elevated app before launching the filtered Medium-integrity app for cell (c).
             $null = Invoke-Self 'quit' $AppPid
 
-            # Cell (c): plant owned HKLM value, launch app under a filtered Medium-integrity token, open Settings, and read #login-error and #autostart.
+            # Cell (c): High-integrity Explorer on the runner refuses Shell_NotifyIconW from a Medium-integrity process (0x80004005), so open the window directly.
             Set-HklmRunValue $ownedValue
+            $beforeFiltered = Read-HklmRunEntry
+            if (!$beforeFiltered.present -or !$beforeFiltered.matchesExpected) { throw 'Cell (c) setup did not plant owned HKLM Run value.' }
             $workDir = Split-Path -Parent $expected
             $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, "`"$expected`"", $workDir)
             $filteredProc = Get-Process -Id $filteredPid
@@ -534,24 +556,29 @@ public static class FilteredAppLauncher {
                 Start-Sleep -Milliseconds 250
             }
             if ($waitIdx -eq 40) { throw 'Filtered Medium-integrity app did not show its Cotal window.' }
+            $filteredInitialSettings = Invoke-Self 'read-login-settings' $filteredPid
+            $null = Invoke-Self 'disable-login' $filteredPid
             $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid
             $filteredEntries = Invoke-Self 'login-entry' $filteredPid
             $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.'
+            $cellsProgress['cellC'] = [ordered]@{
+                plantedBeforeFiltered = ($beforeFiltered.present -and $beforeFiltered.matchesExpected)
+                appIntegrity = $filteredEntries.result.appIntegrity
+                hklmRemained = $filteredEntries.result.hklm.present
+                hkcuPresent = $filteredEntries.result.hkcu.present
+                initialChecked = $filteredInitialSettings.result.checked
+                initialLoginError = $filteredInitialSettings.result.loginError
+                checked = $filteredSettings.result.checked
+                loginError = $filteredSettings.result.loginError
+            }
+            $diagnostics.Add([ordered]@{ cellC = $cellsProgress['cellC'] })
+            Save-CellsProgress
             if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $false -or $filteredSettings.result.loginError -cne $expectedError) {
                 throw "Cell (c) failed: integrity=$($filteredEntries.result.appIntegrity.level) hklm=$($filteredEntries.result.hklm.present) hkcu=$($filteredEntries.result.hkcu.present) checked=$($filteredSettings.result.checked) loginError=$($filteredSettings.result.loginError)"
             }
             $filteredProc.Refresh()
             if (!$filteredProc.HasExited) { $filteredProc.Kill(); $filteredProc.WaitForExit(10000) | Out-Null }
             $filteredProc = $null
-            $cellsProgress['cellC'] = [ordered]@{
-                appIntegrity = $filteredEntries.result.appIntegrity
-                hklmRemained = $filteredEntries.result.hklm.present
-                hkcuPresent = $filteredEntries.result.hkcu.present
-                checked = $filteredSettings.result.checked
-                loginError = $filteredSettings.result.loginError
-            }
-            $diagnostics.Add([ordered]@{ cellC = $cellsProgress['cellC'] })
-            Save-CellsProgress
             $result = $cellsProgress
         } catch {
             $cellsProgress['error'] = $_.Exception.Message
