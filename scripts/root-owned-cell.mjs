@@ -14,6 +14,7 @@ export function rootOwnedAssertions(report, cell) {
   const refusal=calls.find(row=>row.label==='normal account own updater refusal');
   const modes=observations.findLast(row=>row.modes)?.modes;
   const store=observations.find(row=>row.store)?.store;
+  const refusedStore=observations.find(row=>row.afterNormalRefusal)?.afterNormalRefusal;
   const mode=(suffix,value)=>modes?.entries?.some(row=>row.path.endsWith(suffix)&&row.mode===value&&row.uid===0);
   const records=modes?.entries?.filter(row=>row.path.endsWith('/inventory.json')||/\/\.active-[a-f0-9]{64}\.json$/.test(row.path))??[];
   const assertions={
@@ -24,6 +25,7 @@ export function rootOwnedAssertions(report, cell) {
     'readable-generation-metadata':modes?.passed===true&&mode('/.cotal-generations',0o755)&&mode('/dist/cotal.js',0o755)&&records.length>=2&&records.every(row=>row.uid===0&&row.mode===0o644),
     'private-journals':modes?.passed===true&&modes.entries.filter(row=>row.path.includes('/.transaction-')).every(row=>row.mode===(row.kind==='directory'?0o700:0o600)),
     'generation-store-protected':store?.passed===true,
+    'refusal-store-unchanged':store?.passed===true&&refusedStore?.passed===true&&Number.isSafeInteger(store.logicalBytes)&&refusedStore.logicalBytes===store.logicalBytes,
     'owned-runner-teardown':report.cleanup?.owner==='disposable hosted runner teardown'&&report.cleanup.commandOutcomesKnown===true,
   };
   if(cell.oldVersion){
@@ -146,6 +148,9 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
     registry.activateFollowOn();
     const refused = await call('normal account own updater refusal', false, [cli, 'update', '--self']);
     check('normal updater names owning npm command', refused.exit !== 0 && /owning command: npm install -g --prefix \/usr\/local cotal-ai@latest/.test(refused.stdout + refused.stderr), refused);
+    const afterNormalRefusal=await census();
+    report.observations.push({afterNormalRefusal});
+    check('fixed refusal leaves no staging or generation-store growth',afterNormalRefusal.passed&&afterNormalRefusal.logicalBytes===store.logicalBytes,{before:store,after:afterNormalRefusal});
     report.passed = report.assertions.every(row => row.passed);
   } catch (error) { report.passed = false; report.error = error.message; }
     report.cleanup.commandOutcomesKnown = report.calls.every(row => row.timeout === false && row.signal === null && (Number.isInteger(row.exit) || row.error === 'EACCES'));

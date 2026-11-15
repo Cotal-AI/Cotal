@@ -204,7 +204,8 @@ function specialCellEvidence(data, directory, change = () => {}) {
     data.report.observations = [
       { ownership: { uid: 0, path: '/usr/local/bin/node' } },
       { installed: { uid: 0, version: cell.sourceVersion } },
-      { store: { passed: true }, modes: { passed: true, entries: [
+      { afterNormalRefusal: { passed: true, logicalBytes: 100 } },
+      { store: { passed: true, logicalBytes: 100 }, modes: { passed: true, entries: [
         { path: '/usr/local/lib/.cotal-generations', uid: 0, mode: 0o755 },
         { path: '/usr/local/lib/node_modules/cotal-ai/dist/cotal.js', uid: 0, mode: 0o755 },
         { path: '/usr/local/lib/.cotal-generations/generation/inventory.json', uid: 0, mode: 0o644 },

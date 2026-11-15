@@ -14,3 +14,12 @@ test('reported root mode flag cannot replace actual metadata entries',()=>{
  assert.equal(rootOwnedAssertions(report,cell).passed,true);
  entries.at(-1).mode=0o600;assert.equal(rootOwnedAssertions(report,cell).passed,false);
 });
+test('fixed normal-account refusal must leave no staging folders or store growth',()=>{
+ const cell={requiredAssertions:['refusal-store-unchanged']};
+ const report={passed:true,observations:[{store:{passed:true,logicalBytes:100}},{afterNormalRefusal:{passed:true,logicalBytes:100}}]};
+ assert.equal(rootOwnedAssertions(report,cell).passed,true);
+ report.observations[1].afterNormalRefusal.logicalBytes=101;
+ assert.equal(rootOwnedAssertions(report,cell).passed,false);
+ report.observations[1].afterNormalRefusal={passed:false,logicalBytes:100};
+ assert.equal(rootOwnedAssertions(report,cell).passed,false);
+});

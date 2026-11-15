@@ -237,7 +237,7 @@ export function boundedCells(plan) {
       sourceVersion:plan.targetVersion,sourceKind:plan.phase==='published'?'npm-exact-A':'packed-candidate-A',targetVersion,
       targetSource:'packed-next-B',targetSourceSHA:plan.sourceSHA,visibleFollowOnVersion:followOnVersion,
       syntheticVersionRule:'candidate.patch+1000',nodeVersion:'24.18.0',rootOwned:true,...(oldVersion?{oldVersion}:{}),
-      requiredAssertions:['root-update-success','normal-account-versions','owning-command-refusal','root-owned-install','readable-generation-metadata','private-journals','generation-store-protected','owned-runner-teardown',...(oldVersion?['published-root-lockout','manual-root-install-heals']:[])],
+      requiredAssertions:['root-update-success','normal-account-versions','owning-command-refusal','root-owned-install','readable-generation-metadata','private-journals','generation-store-protected','refusal-store-unchanged','owned-runner-teardown',...(oldVersion?['published-root-lockout','manual-root-install-heals']:[])],
     });
     for(const layoutProbe of ['pnpm','nvm'])add('linux',layoutProbe==='pnpm'?'pnpm':'npm',`candidate-next-${layoutProbe}-layout`,null,{
       sourceVersion:plan.targetVersion,sourceKind:plan.phase==='published'?'npm-exact-A':'packed-candidate-A',targetVersion,targetSource:'packed-next-B',targetSourceSHA:plan.sourceSHA,
