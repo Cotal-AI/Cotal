@@ -1,5 +1,11 @@
 # @cotal-ai/workspace
 
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+
 ## 0.164.14
 
 ### Patch Changes
