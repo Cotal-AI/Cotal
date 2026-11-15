@@ -70,8 +70,12 @@ jobs:
             const metadata = { eventName: context.eventName, repository };
             let source, phase;
             let publication;
-            const ownershipMeasure = context.eventName === 'push' && context.ref === 'refs/heads/measure/broken-target-recovery' && event.head_commit.message.includes('[6887-only]');
+            const ownershipMeasure = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-foreign-daemon-fence';
             if (ownershipMeasure) {
+              assert.equal(event.inputs.source_sha, process.env.PRODUCT_SOURCE);
+              assert.equal(event.inputs.phase, 'candidate');
+              assert.equal(event.inputs.target_version, '0.164.18');
+              assert.equal(event.inputs.profile, 'bounded');
               source = process.env.PRODUCT_SOURCE;
               phase = 'candidate';
             }
@@ -1308,7 +1312,7 @@ jobs:
           if-no-files-found: error
   desktop-beside-cli:
     needs: [release-pack, release-next]
-    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[6887-only]') && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
+    if: "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-foreign-daemon-fence' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
