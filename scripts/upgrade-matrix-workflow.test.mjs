@@ -263,6 +263,48 @@ test('special summary rejects mismatched receipts and failed observable commands
     }
   }
 });
+function publishedRefusalEvidence(data, directory, change = () => {}) {
+  const cell = data.cell;
+  data.cell = { ...cell, targetVersion: cell.sourceVersion };
+  manualServiceEvidence(data, directory);
+  data.cell = cell;
+  data.report.update = { exit: 1, signal: null, timeout: false, stdout: '', stderr: 'Install the new version once by hand' };
+  Object.assign(data.report.calls.find(row => row.label === 'upgrade under test'), data.report.update);
+  data.report.publishedSchedulerObservations = [0, 1, 2].map(index => {
+    const stimulusAt = 1000000 + index * 10000;
+    const reason = 'staged pre-install check refused';
+    return { before: { failures: 0 }, stimulusAt, observedAt: stimulusAt + 5000,
+      attempt: { failures: 0, result: reason, deferred: reason, next: stimulusAt + 61000 },
+      text: 'Install the new version once by hand', logMtimeMs: stimulusAt + 1000,
+      store: { state: 'missing', passed: true, logicalBytes: 0 } };
+  });
+  data.report.generationStore = { passed: true };
+  data.report.expectedRefusal = { passed: true };
+  data.report.result = 'failed';
+  change(data);
+  const selected = { selectedCliVersion: cell.sourceVersion };
+  const bytes = JSON.stringify({ update: data.report.update, observations: data.report.publishedSchedulerObservations, selected });
+  const artifact = 'published-refusal.txt';
+  writeFileSync(join(directory, artifact), bytes);
+  data.report.publishedRefusal = { selected, receipt: { artifact, bytes: Buffer.byteLength(bytes), sha256: createHash('sha256').update(bytes).digest('hex') } };
+}
+test('actual historical summary accepts repeated deferrals without inventing counted failures', () => {
+  for (const old of ['0.164.16', '0.164.17']) {
+    const result = fixture(publishedRefusalEvidence, { channel: 'installer', scenario: `source-${old}-staged-refusal` });
+    assert.equal(result.exit, 0, result.stderr);
+  }
+});
+test('historical summary preserves leftover staging as raw red and rejects altered retry records', () => {
+  for (const change of [
+    data => { data.report.generationStore = { passed: false, violations: [{ reason: 'unfinished generation staging' }] }; },
+    data => { data.report.publishedSchedulerObservations[2].attempt.failures = 1; },
+    data => { data.report.publishedSchedulerObservations[2].attempt.next += 3600000; },
+    data => { data.report.publishedSchedulerObservations[2].logMtimeMs = 0; },
+  ]) {
+    const result = fixture((data, directory) => publishedRefusalEvidence(data, directory, change), { channel: 'installer', scenario: 'source-0.164.17-staged-refusal' });
+    assert.notEqual(result.exit, 0);
+  }
+});
 function freshNextEvidence(data, directory) {
   const a = data.cell.sourceVersion, b = data.cell.targetVersion;
   const sourceManifestSha256 = 'a'.repeat(64), targetManifestSha256 = 'b'.repeat(64);
