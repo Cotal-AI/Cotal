@@ -18,12 +18,12 @@ pub(crate) struct RequestSlots(Arc<Semaphore>);
 struct TrayStatus(MenuItem<tauri::Wry>);
 struct TrayUpdate(MenuItem<tauri::Wry>);
 struct PaintState(std::sync::Mutex<FirstPaint>);
-struct ActiveWatch(std::sync::Mutex<Option<tokio::sync::watch::Sender<bool>>>);
+struct ActiveWatch(std::sync::Mutex<Option<(u32, tauri_plugin_shell::process::CommandChild)>>);
 
 pub(crate) fn stop_watch(app: &AppHandle) {
     if let Ok(mut active) = app.state::<ActiveWatch>().0.lock() {
-        if let Some(tx) = active.take() {
-            let _ = tx.send(true);
+        if let Some((_, prev)) = active.take() {
+            let _ = prev.kill();
         }
     }
 }
@@ -96,6 +96,7 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
     let (mut events, mut child) = command
         .spawn()
         .map_err(|_| "The packaged daemon client could not start.")?;
+    let watch_pid = child.pid();
     let mut input =
         serde_json::to_vec(&request).map_err(|_| "The request could not be encoded.")?;
     input.push(b'\n');
@@ -103,16 +104,15 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         let _ = child.kill();
         return Err("The daemon client input closed.".into());
     }
-    let mut watch_rx = if is_watch {
-        let (tx, rx) = tokio::sync::watch::channel(false);
+    let mut child = if is_watch {
         if let Ok(mut active) = app.state::<ActiveWatch>().0.lock() {
-            if let Some(prev) = active.replace(tx) {
-                let _ = prev.send(true);
+            if let Some((_, prev)) = active.replace((watch_pid, child)) {
+                let _ = prev.kill();
             }
         }
-        Some(rx)
-    } else {
         None
+    } else {
+        Some(child)
     };
     let read_events = async {
         let mut result = None;
@@ -147,6 +147,26 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
                 }
                 CommandEvent::Error(_) => return Err("The daemon client transport failed.".into()),
                 CommandEvent::Terminated(payload) => {
+                    if is_watch {
+                        let still_active = app
+                            .state::<ActiveWatch>()
+                            .0
+                            .lock()
+                            .ok()
+                            .and_then(|mut active| {
+                                if active.as_ref().is_some_and(|(p, _)| *p == watch_pid) {
+                                    active.take().map(|(_, c)| {
+                                        let _ = c.kill();
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .is_some();
+                        if !still_active {
+                            return Ok(serde_json::json!({"v":1,"event":"result","ok":true,"result":{"closed":true,"watchMode":"push"}}));
+                        }
+                    }
                     if payload.code != Some(0) { return Err("The daemon client exited unsuccessfully. No completed operation is assumed.".into()); }
                     return result.ok_or_else(|| "The daemon client exited without a result.".to_string());
                 }
@@ -155,17 +175,24 @@ pub(crate) async fn run_request(app: &AppHandle, slots: &RequestSlots, request: 
         }
         Err("The daemon client closed without an exit receipt.".into())
     };
-    let frame = if let Some(rx) = &mut watch_rx {
-        tokio::select! {
-            res = read_events => res,
-            _ = rx.changed() => Ok(serde_json::json!({"v":1,"event":"result","ok":true,"result":{"closed":true,"watchMode":"push"}})),
-        }
+    let frame = if is_watch {
+        read_events.await
     } else {
         tokio::time::timeout(Duration::from_secs(seconds), read_events)
             .await
             .map_err(|_| "The daemon client timed out. The operation outcome is unknown; check status before retrying.".to_string())?
     };
-    let _ = child.kill();
+    if let Some(c) = child.take() {
+        let _ = c.kill();
+    } else if is_watch {
+        if let Ok(mut active) = app.state::<ActiveWatch>().0.lock() {
+            if active.as_ref().is_some_and(|(p, _)| *p == watch_pid) {
+                if let Some((_, c)) = active.take() {
+                    let _ = c.kill();
+                }
+            }
+        }
+    }
     let frame = frame?;
     if (!is_watch && matches!(operation, "status" | "setup"))
         || (is_watch && frame.get("ok").and_then(Value::as_bool) == Some(false))
