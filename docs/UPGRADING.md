@@ -73,8 +73,9 @@ newer release prints the same instruction in `cotal daemon status` and removes t
 
 A machine that reached 0.164.16 or 0.164.17 through `cotal update --self` has a second fault. Its
 daemon's automatic update ends with `staged update requires an installed npm or pnpm package`, and
-`cotal daemon status` stays at `updating to <version>`. Run `cotal update --self` once. From 0.164.18
-the daemon starts its updater at the installed command and automatic updates continue.
+`cotal daemon status` stays at `updating to <version>`. Install the current version once by hand
+there too, with the same two commands. From 0.164.18 the daemon starts its updater at the installed
+command and automatic updates continue.
 
 ## Memory-backed derived membership after 0.163.0
 
