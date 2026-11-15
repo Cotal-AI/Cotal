@@ -21,6 +21,7 @@ export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
+import { machineShapeOptions, machineShapeCommand } from './update-machine-shape.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -351,6 +352,7 @@ function safeRoot(output) {
 export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   const nextHopMode = candidateNextOptions(options);
+  const shape = machineShapeOptions(options, { disposable: hosted, platform: process.platform });
   const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
@@ -396,7 +398,7 @@ export async function matrixCell(options) {
   if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
   if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
-  report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
+  report.environment = { nodeVersion: process.versions.node, installUmask: shape.installUmask, serviceUmask: shape.serviceUmask, hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
   const cotalHome = env.COTAL_HOME ?? (process.platform === 'win32' ? join(env.LOCALAPPDATA, 'Cotal') : join(home, '.cotal'));
   const config = env.XDG_CONFIG_HOME ? join(env.XDG_CONFIG_HOME, 'cotal') : process.platform === 'win32' ? join(env.APPDATA, 'Cotal') : join(home, '.config/cotal');
@@ -416,7 +418,7 @@ export async function matrixCell(options) {
   }
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
-  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
+  let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup, serviceUmaskDropin;
   const transcript = [];
   async function captureServiceEvidence(stage) {
     if (!installedService) return;
@@ -441,7 +443,8 @@ export async function matrixCell(options) {
     }
     const startedAt = new Date().toISOString();
     const result = await new Promise(resolveCall => {
-      const child = spawn(file, argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const command = machineShapeCommand(file, argv, shape.installUmask);
+      const child = spawn(command.file, command.argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '', stderr = '', timeoutHit = false;
       const timer = setTimeout(() => { timeoutHit = true; child.kill(); }, timeout);
       child.stdout.on('data', bytes => { stdout += bytes; });
@@ -552,6 +555,12 @@ export async function matrixCell(options) {
       if (expectedTarget) assert.equal(report.target, expectedTarget, 'packed target differs from frozen version PR head');
       // Native services read npm's normal per-account config, not the launching shell's registry env.
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
+    }
+    if (shape.installUmask || shape.pinnedNode) {
+      const observed = ok(await call('observe install Node and umask', process.execPath, ['--input-type=module', '-e', 'console.log(JSON.stringify({version:process.versions.node,umask:process.umask().toString(8).padStart(4,"0")}))']), 'install runtime');
+      report.installRuntime = JSON.parse(observed.stdout);
+      if (shape.installUmask) assert.equal(report.installRuntime.umask, shape.installUmask, 'install command umask differs');
+      if (shape.pinnedNode) assert.equal(report.installRuntime.version, shape.pinnedNode, 'install Node differs from pinned release');
     }
     const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall(nextHopMode === 'candidate' ? 'install exact candidate source' : 'install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
@@ -741,6 +750,16 @@ export async function matrixCell(options) {
       receipt = json(join(report.daemonHome, 'service-unit.json'));
       assert.equal(receipt.unit, plan.unit);
       assert.equal(receipt.unitSha256, digest(readFileSync(plan.unitPath)));
+      if (shape.serviceUmask) {
+        const directory = `${plan.unitPath}.d`;
+        mkdirSync(directory, { mode: 0o700 });
+        serviceUmaskDropin = join(directory, 'cell-umask.conf');
+        writeFileSync(serviceUmaskDropin, '[Service]\nUMask=0002\n', { flag: 'wx', mode: 0o600 });
+        ok(await call('reload native service umask', 'systemctl', ['--user', 'daemon-reload']), 'reload source service');
+        ok(await call('restart source daemon under requested umask', 'systemctl', ['--user', 'restart', receipt.unit]), 'restart source service');
+        report.serviceUmask = ok(await call('observe native service umask', 'systemctl', ['--user', 'show', receipt.unit, '--property=UMask', '--value']), 'service umask');
+        assert.equal(report.serviceUmask.stdout.trim(), shape.serviceUmask, 'native service mask differs');
+      }
       for (let i = 0; i < 60; i++) {
         const status = await daemon('native status before', ['daemon', 'status', '--json']);
         if (status.exit === 0 && JSON.parse(status.stdout).result?.state === 'ready') {
@@ -1444,6 +1463,13 @@ export async function matrixCell(options) {
           : 'owned composition stopped; hosted Manager removal not confirmed';
       }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
+    if (serviceUmaskDropin && report.cleanup === 'receipt-guarded native removal confirmed') {
+      try {
+        assert.equal(readFileSync(serviceUmaskDropin, 'utf8'), '[Service]\nUMask=0002\n');
+        unlinkSync(serviceUmaskDropin);
+        ok(await call('reload after removing owned service umask drop-in', 'systemctl', ['--user', 'daemon-reload']), 'remove service mask');
+      } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (restoreRegistry && !uncertain && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed')) {
       try { restoreRegistry(); report.registryConfig = 'restored before candidate registry stopped'; }

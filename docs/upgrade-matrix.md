@@ -80,6 +80,11 @@ A transient `.installing-` or `.preparing-` entry, a group- or other-writable re
 an unreadable entry, or a census that exceeds its bound fails the cell. Child symbolic links are recorded
 without following them. A successful staged route requires the store to exist.
 
+Machine-shape probes can pin an exact Node release and run install/update children under umask `0002`
+without changing the harness process's mask. A Linux native-service probe sets an owned `UMask=0002`
+drop-in, reads the service's effective mask, and removes that drop-in after receipt-guarded uninstall.
+These options refuse outside disposable hosted runners.
+
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
 installed candidate's public manual updater. The synthetic target comes from the same immutable source,
 with the patch number increased by 1000 before its distributions and seed payloads are built. Six POSIX
