@@ -15,7 +15,7 @@ const bundle = build({ root: fileURLToPath(new URL("..", import.meta.url)), logL
   const entry = output.output.find(file => file.type === "chunk" && file.isEntry);
   assert.ok(entry && "code" in entry); return entry.code;
 });
-async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
+async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; appVersion?: string; update?: UpdateStatus; nativeCheckError?: boolean; nativeCheckPending?: boolean; policyError?: boolean; appUpdate?: AppUpdate; autoUpdates?: boolean; registryLatest?: string; personal?: boolean; label?: string; kind?: string; account?: Record<string, unknown>; provider?: string; link?: string; installed?: boolean; installNotAnswering?: string | boolean; connected?: boolean; count?: number; serviceState?: string; loginReason?: string; setupCode?: string; statusError?: boolean; interrupted?: boolean; interruptedAbout?: boolean; mismatch?: boolean; loading?: boolean; otherProviderFailed?: boolean; ownProviderFailed?: boolean; oldDaemon?: boolean; switched?: boolean; credentialsKept?: { space: string; path: string; reason: string }[] } = {}) {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
   const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
   const win = dom.window, doc = win.document as Document;
@@ -68,7 +68,16 @@ async function app(options: { appReceipt?: AppUpdateReceipt; platform?: string; 
         if (options.loading) await new Promise(() => {});
         return ok({ version: options.appVersion ?? "test", machine: "My computer", platform: options.platform ?? "darwin", arch: "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
-      if (r.op === "install") { installed = true; stopped = false; return ok({ installed: true }); }
+      if (r.op === "install") {
+        installed = true;
+        if (options.installNotAnswering) {
+          stopped = true;
+          const reason = typeof options.installNotAnswering === "string" ? ` It refused to start: ${options.installNotAnswering}` : "";
+          return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${reason}`, remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } } satisfies Frame;
+        }
+        stopped = false;
+        return ok({ installed: true });
+      }
       if (!installed) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The daemon is not running. Install its background service first." } } satisfies Frame;
       if (stopped) return { v: 1, event: "result", ok: false, error: { code: "NOT_RUNNING", message: "The background service is installed but stopped. Choose Start service to start it." } } satisfies Frame;
       if (r.op === "status") {
@@ -346,6 +355,49 @@ test("Start service starts a stopped background service and leaves no notice", a
     assert.equal(a.node("notice").hidden, true);
     assert.equal(a.node("details").hidden, true);
     assert.equal(a.node<HTMLButtonElement>("connect").disabled, false);
+  } finally { a.dom.window.close(); }
+});
+
+test("a service start that does not answer within 15 seconds keeps its refusal across NOT_RUNNING checks and clears when the service answers", async () => {
+  const reason = "the native daemon source names another installation; startup refused";
+  const expectedDetail = `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: ${reason}\nNext: choose Check status.`;
+  const a = await app({ installed: true });
+  try {
+    await a.click("login"); await a.login();
+    const before = a.node("connection-title").textContent;
+    a.stop();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service is not running");
+    assert.equal(a.node("recover").textContent, "Start service");
+    a.options.installNotAnswering = reason;
+    await a.click("recover");
+    assert.equal(a.node("connection-title").textContent, "The background service has not started");
+    assert.equal(a.node("connection-description").textContent, "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
+    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("details").hidden, false);
+    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+
+    // A background poll that still observes NOT_RUNNING keeps the NOT_ANSWERING card and Details.
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, "The background service has not started");
+    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+
+    // Clicking Check status while the service is still stopped checks status without offering Start service.
+    const beforeCheck = a.calls.length;
+    await a.click("recover");
+    assert.deepEqual(a.calls.slice(beforeCheck).map(call => call.op), ["status"]);
+    assert.equal(a.node("connection-title").textContent, "The background service has not started");
+    assert.equal(a.node("recover").textContent, "Check status");
+    assert.equal(a.node("refusal-detail").textContent, expectedDetail);
+
+    // Once the service answers after 15s, the next poll clears the card and Details.
+    a.arm();
+    await a.tick();
+    assert.equal(a.node("connection-title").textContent, before);
+    assert.equal(a.node("recovery-panel").hidden, true);
+    assert.equal(a.node("details").hidden, true);
+    assert.equal(a.node("refusal-detail").textContent, "");
   } finally { a.dom.window.close(); }
 });
 
