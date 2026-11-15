@@ -3,12 +3,17 @@ import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { assertLifecycleToken, mkSecretDir, parseRemoteEndpointDeregisterResult, registry, writeSecretFileAtomic, type AuthProvider } from "@cotal-ai/core";
+import {
+  assertLifecycleToken, BASELINE_LIFECYCLE_ENDPOINT, controlReplyFrom, dialerFor, drainAndClose,
+  invokeRepairingSplit, issuedUserCaller, jwtFromCreds, mkSecretDir, parseRemoteEndpointDeregisterResult,
+  registry, resolveService, standaloneConnectOpts, unansweredRequest, writeSecretFileAtomic,
+  type AuthProvider, type EpCaller,
+} from "@cotal-ai/core";
 import { daemonArgv } from "@cotal-ai/cli/self-exec";
 import { writeDefaultPersonaForLaunch } from "@cotal-ai/cli/default-persona";
 import { loadIdpSession, retainManagerAuthorityRoute, withIdpSessionDir } from "@cotal-ai/auth";
-import { findMesh, homeCotalDir, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore, isCommandFailure } from "@cotal-ai/workspace";
-import { askManager } from "@cotal-ai/workspace/control";
+import { controlCaller, findMesh, homeCotalDir, isCommandFailure, isConnectRefusal, resolveControlTarget, spaceFromSegment, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DIAL_TIMEOUT_MS, DialNotAdmitted, dialWithRetry, epRailFailure, notAdmittedRefusal } from "@cotal-ai/workspace/control";
 import { installedGenerationVersion, reconcileHostedConnectors, ReplacedDaemonGeneration } from "./generation.js";
 import { daemonPaths, daemonPathsFor } from "./endpoint.js";
 import { daemonStartedByOwnedService, installedDaemonIdentity, unitReceiptFile } from "./install.js";
@@ -35,11 +40,23 @@ const controlClient = { versionSkew: (detail: string) => detail, roster: async (
 export class HostedManagerRefusal extends Error {
   constructor(readonly code: "SEATS_ACTIVE" | "GENERATION_PENDING" | "MANAGER_UNAVAILABLE", message: string, readonly remedy: string) { super(message); }
 }
+interface ProbeSession {
+  readonly child: ChildProcess;
+  readonly instanceId: string;
+  readonly nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>;
+  readonly caller: EpCaller;
+  readonly expiresAtMs: number;
+}
 interface Live {
   view: HostedManager;
   child?: ChildProcess;
   exited?: Promise<void>;
   starting?: Promise<HostedManager>;
+  refreshing?: Promise<HostedManager>;
+  probeSession?: ProbeSession;
+  probeOpening?: Promise<ProbeSession>;
+  exchangeFailedUntil?: number;
+  lastExchangeError?: unknown;
   timer?: ReturnType<typeof setTimeout>;
   healthTimer?: ReturnType<typeof setTimeout>;
   healthTask?: Promise<void>;
@@ -133,25 +150,112 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     }
     return { space, state: "stopped", restarts: 0 };
   };
-  const probe = (space: string, selected: string) => withIdpSessionDir(home, async () => {
-    const target = await resolveControlTarget({ space }, "control-caller-privileged", selected, { onRefusal: "throw", readOnly: true });
-    return askManager(controlClient, space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: selected });
-  });
+  const isRateLimited = (error: unknown): boolean =>
+    (isConnectRefusal(error) && error.native?.code === "RATE_LIMITED")
+    || (error instanceof Error && ((error as { code?: unknown }).code === "rate-limited" || /RATE_LIMITED|over its limit of \d+ connects a minute/.test(error.message)));
+  const closeProbeSession = (l: Live, expected?: ProbeSession) => {
+    const current = l.probeSession;
+    if (!current || (expected && current !== expected)) return;
+    l.probeSession = undefined;
+    void drainAndClose(current.nc, 2000).catch(() => {});
+  };
+  const openProbeSession = async (l: Live, child: ChildProcess, selected: string): Promise<ProbeSession> => {
+    if (l.exchangeFailedUntil !== undefined && Date.now() < l.exchangeFailedUntil) {
+      throw l.lastExchangeError ?? new Error("hosted Manager status exchange failed recently; retrying after backoff");
+    }
+    let nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> | undefined;
+    try {
+      const target = await withIdpSessionDir(home, () => resolveControlTarget({ space: l.view.space }, "control-caller-privileged", selected, { onRefusal: "throw", readOnly: true }));
+      const who = controlCaller(target.auth);
+      if ("refusal" in who) throw new Error(who.refusal);
+      let connectOpts: Record<string, unknown> = {};
+      nc = await dialWithRetry(() => {
+        connectOpts = standaloneConnectOpts(target.auth.creds ? { creds: target.auth.creds, tls: target.auth.tls === true } : target.auth.bearer ? { bearer: target.auth.bearer, sentinelCreds: target.auth.sentinelCreds, tls: target.auth.tls === true } : { tls: target.auth.tls === true });
+        return dialerFor(target.server)({ servers: target.server, ...connectOpts, timeout: DIAL_TIMEOUT_MS, maxReconnectAttempts: 0 });
+      }).catch((e: unknown) => {
+        if (!(e instanceof DialNotAdmitted)) throw e;
+        throw notAdmittedRefusal(e, `manager instance ${selected}`, "nothing was sent to the manager", { space: l.view.space, managerInstanceId: selected }, target.auth.bearer !== undefined);
+      });
+      const caller = target.auth.bearer !== undefined && target.auth.managerInstanceId !== undefined
+        ? await issuedUserCaller(nc, l.view.space, String(connectOpts.name), who.caller)
+        : who.caller;
+      const token = target.auth.bearer ?? jwtFromCreds(target.auth.creds ?? "");
+      let expiresAtMs = Date.now() + 300_000;
+      if (token) {
+        try {
+          const payload = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { exp?: unknown };
+          if (typeof payload.exp === "number" && Number.isFinite(payload.exp)) expiresAtMs = payload.exp * 1000;
+        } catch {}
+      }
+      if (closed || l.stopping || l.child !== child || (l.view.instanceId !== undefined && l.view.instanceId !== selected)) {
+        void drainAndClose(nc, 2000).catch(() => {});
+        throw new Error("the hosted Manager changed or stopped while opening its control session");
+      }
+      const session: ProbeSession = { child, instanceId: selected, nc, caller, expiresAtMs };
+      l.exchangeFailedUntil = undefined;
+      l.lastExchangeError = undefined;
+      l.probeSession = session;
+      void nc.closed().then(() => { if (l.probeSession === session) l.probeSession = undefined; });
+      return session;
+    } catch (error) {
+      if (nc) void drainAndClose(nc, 2000).catch(() => {});
+      l.exchangeFailedUntil = Date.now() + 5000;
+      l.lastExchangeError = error;
+      throw error;
+    }
+  };
+  const probe = async (l: Live, selected: string) => {
+    const child = l.child;
+    if (!child) return { ok: false as const, error: "the hosted Manager is not running" };
+    let session = l.probeSession;
+    if (session && (session.child !== child || session.instanceId !== selected || session.nc.isClosed() || Date.now() + 30_000 >= session.expiresAtMs)) {
+      closeProbeSession(l, session);
+      session = undefined;
+    }
+    if (!session) {
+      session = await (l.probeOpening ??= openProbeSession(l, child, selected).finally(() => { l.probeOpening = undefined; }));
+    }
+    try {
+      const service = await resolveService(session.nc, l.view.space, BASELINE_LIFECYCLE_ENDPOINT, session.caller, { deadlineMs: 10_000, commands: ["status"], instanceId: selected });
+      const r = await invokeRepairingSplit(session.nc, l.view.space, service, "status", undefined, { deadlineMs: 3000, id: randomUUID() });
+      if (r.reply.ok !== true) {
+        closeProbeSession(l, session);
+        return { ok: false as const, error: controlReplyFrom(r.reply).error ?? "the hosted Manager did not answer status" };
+      }
+      return { ok: true as const, data: r.reply.data };
+    } catch (error) {
+      if (!unansweredRequest(error) || session.nc.isClosed()) {
+        closeProbeSession(l, session);
+        l.exchangeFailedUntil = Date.now() + 5000;
+        l.lastExchangeError = error;
+      }
+      return { ok: false as const, error: epRailFailure(controlClient, error, { instanceId: selected }).error ?? (error instanceof Error ? error.message : String(error)) };
+    }
+  };
   const refresh = async (space: string): Promise<HostedManager> => {
     const l = live.get(space);
     if (generationPending && l?.child) return { ...status(space), state: "starting", reason: "an installed generation transition is pending", next: command(`wait for activation or read \`cotal daemon status --space ${space}\``) };
     if (!l?.child || !l.view.instanceId || l.stopping || l.starting || recordError(space)) return status(space);
-    const child = l.child, selected = l.view.instanceId;
-    let deadline: ReturnType<typeof setTimeout> | undefined;
-    try {
-      // This includes caller issuance, broker admission and contract resolution, not only status.
-      const reply = await Promise.race([probe(space, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status observation did not complete within 15000ms")), 15_000); })]);
-      if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
-      if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
-    } catch (error) {
-      if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "starting", reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString(), next: `inspect \`cotal daemon status --space ${space}\`; restore its connection, then run \`cotal daemon setup --space ${space}\`` };
-    } finally { if (deadline) clearTimeout(deadline); }
-    return status(space);
+    return l.refreshing ??= (async () => {
+      const child = l.child!, selected = l.view.instanceId!;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        // This includes caller issuance, broker admission and contract resolution, not only status.
+        const reply = await Promise.race([probe(l, selected), new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("the pinned Manager status observation did not complete within 15000ms")), 15_000); })]);
+        if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
+        if (l.child === child && !l.stopping && !closed && !generationPending) l.view = { ...l.view, state: "answering", connectors: connectors(reply.data), reason: undefined, next: undefined, observedAt: new Date().toISOString() };
+      } catch (error) {
+        if (l.child === child && !l.stopping && !closed && !generationPending) {
+          const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
+          if (!isRateLimited(error)) {
+            l.view = { ...l.view, state: "starting", reason, observedAt: new Date().toISOString(), next: `inspect \`cotal daemon status --space ${space}\`; restore its connection, then run \`cotal daemon setup --space ${space}\`` };
+          } else if (l.view.observedAt === undefined) {
+            l.view = { ...l.view, state: "starting", reason, next: `wait for the CLI connect limit to refill, then run \`cotal daemon status --space ${space}\` again` };
+          }
+        }
+      } finally { if (deadline) clearTimeout(deadline); }
+      return status(space);
+    })().finally(() => { l.refreshing = undefined; });
   };
   const observe = (l: Live) => {
     if (l.healthTimer) clearTimeout(l.healthTimer);
@@ -203,6 +307,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     return l.stopTask ??= stopChildOnce(l).finally(() => { l.stopTask = undefined; });
   }
   async function stopChildOnce(l: Live): Promise<void> {
+    closeProbeSession(l);
     const child = l.child;
     if (!child) return;
     // Entering retirement is not a new Manager observation.
@@ -310,7 +415,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       chmodSync(logFile, 0o600);
     };
     const [node, ...argv] = daemonArgv();
-    l.view = { ...l.view, state: "starting", reason: "waiting for the hosted Manager to initialize and register", observedAt: undefined };
+    closeProbeSession(l);
+    l.exchangeFailedUntil = undefined;
+    l.lastExchangeError = undefined;
+    l.view = { ...l.view, state: "starting", reason: "waiting for the hosted Manager to initialize and register", next: undefined, observedAt: undefined };
     let nativeReason: string | undefined;
     let authorityTerminal = false;
     let authorityStatus: number | undefined;
@@ -359,12 +467,17 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         return;
       }
       if (frame.kind !== "manager-instance" || typeof frame.instanceId !== "string") return;
-      try { instanceId = assertLifecycleToken(frame.instanceId, "instanceId"); } catch { /* an invalid frame never selects another instance */ }
+      try {
+        const nextInstanceId = assertLifecycleToken(frame.instanceId, "instanceId");
+        if (instanceId !== undefined && instanceId !== nextInstanceId) closeProbeSession(l);
+        instanceId = nextInstanceId;
+      } catch { /* an invalid frame never selects another instance */ }
     });
     let ended = false;
     l.exited = new Promise<void>((resolve) => {
-      child.once("error", (error) => { nativeReason = safeDiagnostic(error.message).slice(0, 1500); ended = true; resolve(); });
+      child.once("error", (error) => { closeProbeSession(l); nativeReason = safeDiagnostic(error.message).slice(0, 1500); ended = true; resolve(); });
       child.once("exit", (code, signal) => {
+        closeProbeSession(l);
         stdoutLine("", true);
         stderrLine("", true);
         child.stdout?.destroy();
@@ -401,7 +514,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         if (instanceId && ready) {
           const selected = instanceId;
           l.view = { ...l.view, instanceId: selected };
-          const reply = await probe(space, selected);
+          const reply = await probe(l, selected);
           if (reply.ok && !ended && !l.stopping && !closed) {
             const path = daemonManagerIntentFile(space, home);
             const cleanup = readManagerCleanup(home, space);
@@ -418,7 +531,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
       } catch (error) {
         last = error;
-        l.view = { ...l.view, reason: safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500), observedAt: new Date().toISOString() };
+        const reason = safeDiagnostic(error instanceof Error ? error.message : String(error)).slice(0, 1500);
+        l.view = isRateLimited(error)
+          ? { ...l.view, state: "starting", reason, next: `wait for the CLI connect limit to refill, then run \`cotal daemon status --space ${space}\` again` }
+          : { ...l.view, reason, observedAt: new Date().toISOString() };
       }
       await pause(250);
     }
@@ -452,7 +568,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     if (l.starting) return l.starting;
     if (l.child && l.view.instanceId) {
       try {
-        const reply = await probe(space, l.view.instanceId);
+        const reply = await probe(l, l.view.instanceId);
         if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager did not answer status");
         if (closed || l.stopping || !l.child) throw new Error("the hosted Manager is stopping");
         writeSecretFileAtomic(daemonManagerIntentFile(space, home), JSON.stringify({ v: 1, space }));
@@ -487,7 +603,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         }
       } catch (error) {
         if (error instanceof HostedManagerRefusal) throw error;
-        l.view = { ...l.view, state: "starting", reason: error instanceof Error ? safeDiagnostic(error.message).slice(0, 1500) : "the hosted Manager did not answer status", next: `read \`cotal daemon status --space ${space}\`; correct its connection or restart the daemon`, observedAt: new Date().toISOString() };
+        const reason = error instanceof Error ? safeDiagnostic(error.message).slice(0, 1500) : "the hosted Manager did not answer status";
+        if (!isRateLimited(error)) {
+          l.view = { ...l.view, state: "starting", reason, next: `read \`cotal daemon status --space ${space}\`; correct its connection or restart the daemon`, observedAt: new Date().toISOString() };
+        } else if (l.view.observedAt === undefined) {
+          l.view = { ...l.view, state: "starting", reason, next: `wait for the CLI connect limit to refill, then run \`cotal daemon status --space ${space}\` again` };
+        }
       }
       return { ...l.view };
     }
@@ -583,7 +704,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
             while (l.view.state !== "answering" && l.child === child && !closed && !l.stopping && selected && Date.now() < deadline) {
               let timer: ReturnType<typeof setTimeout> | undefined;
               try {
-                const reply = await Promise.race([probe(l.view.space, selected), new Promise<never>((_, reject) => {
+                const reply = await Promise.race([probe(l, selected), new Promise<never>((_, reject) => {
                   timer = setTimeout(() => reject(new Error("the pinned Manager status probe did not answer")), Math.min(3500, deadline - Date.now()));
                 })]);
                 if (!reply.ok) throw new Error(reply.error ?? "the hosted Manager refused status");
@@ -750,11 +871,13 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
       closed = true;
       await Promise.all([...live.values()].map(async (l) => {
         l.stopping = true;
+        closeProbeSession(l);
         if (l.timer) clearTimeout(l.timer);
         if (l.healthTimer) clearTimeout(l.healthTimer);
         await stopChild(l);
         await l.healthTask;
         await l.starting;
+        await l.refreshing;
       }));
     },
   };

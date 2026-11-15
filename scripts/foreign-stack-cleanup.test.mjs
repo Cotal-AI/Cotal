@@ -35,11 +35,11 @@ test('the inspect boundary must be present, ordered and no earlier than the cont
   f.after.State.FinishedAt = '2026-11-14T06:45:37.951Z';
   assert.equal(foreignStackEnded(f), false);
 });
-test('PID1 shutdown exec137 requires observed clean same-incarnation end by the inspect', () => {
+test('PID 1 shutdown exec 137 requires observed clean same-incarnation end by the inspect', () => {
   assert.equal(foreignStackEnded(fixture()), true);
   const zero = fixture(); zero.stop.exit = 0; assert.equal(foreignStackEnded(zero), true);
 });
-test('other failures and uncertain cleanup never inherit the PID1 allowance', () => {
+test('other failures and uncertain cleanup never inherit the PID 1 allowance', () => {
   for (const mutate of [f => { f.stop.exit = 1; }, f => { f.stop.exit = 143; }, f => { f.stop.timeout = true; }, f => { f.stop.signal = 'SIGTERM'; }, f => { f.before.pid1Supervise = false; }, f => { f.noProcesses = false; }, f => { f.after.State.Running = true; }, f => { f.after.State.Pid = 42; }, f => { f.after.State.ExitCode = 137; }, f => { f.after.State.OOMKilled = true; }, f => { f.after.State.FinishedAt = '2026-11-14T06:45:40Z'; }, f => { f.after.State.FinishedAt = 'unknown'; }]) {
     const f = fixture(); mutate(f); assert.equal(foreignStackEnded(f), false);
   }

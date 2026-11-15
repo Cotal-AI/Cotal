@@ -8,6 +8,8 @@ export interface Win32JobLaunch { application: string; commandLine: string; cwd:
 
 /** A read-only retained kernel process object. Close it when observation ends. */
 export interface Win32ProcessPin { readonly token: string; exited(): boolean; close(): void }
+/** One retained member of the subtree captured at stop time, not historical custody. */
+export interface Win32TreePin extends Win32ProcessPin { readonly pid: number; terminate(): void }
 
 /** The shipped Windows binding. `launch` starts one process inside a new job that kills every
  *  member when its last handle closes and allows no breakaway; the job and the launched process
@@ -15,6 +17,7 @@ export interface Win32ProcessPin { readonly token: string; exited(): boolean; cl
 export interface Win32ProcessBinding {
   creationToken(pid: number): string | undefined;
   pinProcess(pid: number): Win32ProcessPin;
+  processTree(pid: number, token: string): Win32TreePin[];
   userSid(): string;
   /** Windows' system ID for this app's publisher, as hex, and its SystemIdentificationSource:
    *  0 none, 1 TPM, 2 UEFI, 3 registry. */
@@ -44,7 +47,7 @@ export function win32ProcessBinding(): Win32ProcessBinding {
     let loaded: unknown;
     try { loaded = require(fileURLToPath(path)); }
     catch (cause) { throw new Error("could not load the shipped Windows creation identity binding; reinstall this version", { cause }); }
-    if (loaded === null || typeof loaded !== "object" || !["creationToken", "pinProcess", "userSid", "systemId", "bootId", "accounting", "drain", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
+    if (loaded === null || typeof loaded !== "object" || !["creationToken", "pinProcess", "processTree", "userSid", "systemId", "bootId", "accounting", "drain", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
       throw new Error("the shipped Windows creation identity binding is missing a reader");
     binding = loaded as Win32ProcessBinding;
   }

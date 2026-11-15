@@ -43,6 +43,14 @@ async fn daemon_request(
         .resource_dir()
         .map_err(|_| "The packaged runtime is unavailable.")?
         .join("runtime");
+    let install = runtime.parent().ok_or("The packaged installation is unavailable.")?;
+    let setup_interrupted = match crate::setup_state::interrupted(install) {
+        Ok(value) => value,
+        Err(_) => return Ok(serde_json::json!({"v":1,"event":"result","ok":false,"error":{"code":"SETUP_INTERRUPTED","message":"Run the installer again to finish updating Cotal."}})),
+    };
+    if setup_interrupted {
+        return Ok(serde_json::json!({"v":1,"event":"result","ok":false,"error":{"code":"SETUP_INTERRUPTED","message":"Run the installer again to finish updating Cotal."}}));
+    }
     let entry = runtime.join("dist").join("cotal.js");
     if !entry.is_file() {
         return Err(

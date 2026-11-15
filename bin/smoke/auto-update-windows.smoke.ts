@@ -1,11 +1,13 @@
 import "../../implementations/cli/smoke/update-isolation.js";
 import strictAssert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { windowsBootDisposition, readWindowsUpdatePause, clearWindowsUpdateAfterManualSuccess, windowsUpdateManuallyCleared, WINDOWS_INTERRUPTED_UPDATE } from "@cotal-ai/workspace";
-import { renderWindowsUpdateTask, windowsAutomaticPrefix } from "../daemon/update-windows.js";
+import { renderWindowsUpdateTask, startWindowsUpdate, windowsAutomaticPrefix } from "../daemon/update-windows.js";
 import { daemonServeArgv } from "../daemon/install.js";
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -103,5 +105,45 @@ try {
   assert.match(lifetimeSource, /pin\.exited\(\)/);
   assert.match(custodySource, /pin = win32ProcessBinding\(\)\.pinProcess\(r\.owner\.pid\)/);
   assert.match(custodySource, /!pin\.exited\(\)/);
+  const desktopRoot = join(home, "desktop-app", "runtime"), desktopEntry = join(desktopRoot, "dist", "cotal.js"), desktopHome = join(home, "desktop-cotal-home"), fakeSysRoot = join(home, "fake-windows");
+  mkdirSync(join(desktopRoot, "dist"), { recursive: true });
+  mkdirSync(desktopHome, { recursive: true, mode: 0o700 });
+  mkdirSync(join(fakeSysRoot, "System32"), { recursive: true });
+  const schtasksLog = join(home, "schtasks.log");
+  writeFileSync(join(fakeSysRoot, "System32", "schtasks.exe"), "#!/bin/sh\necho \"$@\" >> \"$COTAL_SCHTASKS_LOG\"\nexit 0\n", { mode: 0o755 });
+  cpSync(fileURLToPath(new URL("../dist", import.meta.url)), join(desktopRoot, "dist"), { recursive: true });
+  symlinkSync(fileURLToPath(new URL("../node_modules", import.meta.url)), join(desktopRoot, "node_modules"), "dir");
+  writeFileSync(join(desktopRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
+  writeFileSync(join(desktopRoot, "desktop-runtime.json"), JSON.stringify({ schema: 1, version: "0.0.0-desktop" }));
+  assert.throws(() => windowsAutomaticPrefix(desktopEntry), /desktop app runtime/);
+  assert.throws(() => startWindowsUpdate(0, desktopEntry), /desktop app runtime/);
+  const runDesktopStart = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      [
+        `const { startWindowsUpdate } = await import(${JSON.stringify(pathToFileURL(join(desktopRoot, "dist", "daemon", "update-windows.js")).href)});`,
+        'Object.defineProperty(process, "platform", { value: "win32" });',
+        "try { startWindowsUpdate(0); console.log(JSON.stringify({ refused: false })); }",
+        "catch (e) { console.log(JSON.stringify({ refused: true, message: e instanceof Error ? e.message : String(e) })); }",
+      ].join("\n"),
+    ],
+    {
+      cwd: desktopRoot,
+      env: { ...process.env, COTAL_HOME: desktopHome, SystemRoot: fakeSysRoot, COTAL_SCHTASKS_LOG: schtasksLog, COTAL_DAEMON_NATIVE_SERVICE: "1" },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(runDesktopStart.status, 0, runDesktopStart.stderr || runDesktopStart.stdout);
+  const desktopOutcome = JSON.parse(runDesktopStart.stdout.trim()) as { refused: boolean; message?: string };
+  assert.equal(desktopOutcome.refused, true);
+  assert.match(desktopOutcome.message ?? "", /desktop app runtime/);
+  assert.equal(readdirSync(desktopHome).length, 0, "desktop runtime refusal must write zero files");
+  assert.equal(existsSync(schtasksLog), false, "desktop runtime refusal must create zero tasks");
+  rmSync(join(desktopRoot, "desktop-runtime.json"));
+  assert.throws(() => startWindowsUpdate(0, desktopEntry), /cannot identify its installed global CLI prefix/);
+  assert.equal(readdirSync(desktopHome).length, 0, "prefix refusal must write zero files before any XML or receipt");
+  assert.equal(existsSync(schtasksLog), false, "prefix refusal must create zero tasks");
   emitSentinel({ passed: counted.cells(), failed: 0 });
 } finally { rmSync(home, { recursive: true, force: true }); }

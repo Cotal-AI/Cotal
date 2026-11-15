@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 const linux = 'Request refused\n  the updated daemon did not restore its hosted Managers before the deadline\n  Outcome: refused\n  Code:    LIFECYCLE_BLOCKED\n\nNext\n  read `cotal daemon status` and the recorded daemon user service\n';
 const windows = 'Outcome unconfirmed\n  Windows daemon restart failed during waiting for a fresh daemon to answer (up to 60s): replacement version or protocol did not match; ownership is ambiguous; the task was not enabled (the daemon lifetime is still held; uninstall retained its source and receipt); the generation fence, source and receipt were retained\n  Outcome: unknown\n  Code:    OPERATION_UNKNOWN\n\nNext\n  inspect `cotal daemon status` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection\n';
 
-// Measured in run43619555017, not inferred from a different platform's error.
+// Measured in run 43619555017, not inferred from a different platform's error.
 export const source16410Refusals = Object.freeze([
   ...['npm','installer'].map(layout => Object.freeze({name:'source-0.164.10-linux-postlude-lifecycle-blocked',platform:'linux',layout,exit:2,signal:null,timeout:false,trailer:linux})),
   ...['npm','installer'].map(layout => Object.freeze({name:'source-0.164.10-darwin-postlude-command-deadline',platform:'darwin',layout,exit:null,signal:'SIGTERM',timeout:true,deadlineMs:180000,trailer:null})),
-  // Also measured in the paired Darwin original at Ainstalled (exit 2, no signal or timeout).
+  // Also measured in the paired Darwin original at A installed (exit 2, no signal or timeout).
   ...['npm','installer'].map(layout => Object.freeze({name:'source-0.164.10-darwin-postlude-lifecycle-blocked',platform:'darwin',layout,exit:2,signal:null,timeout:false,trailer:linux})),
   Object.freeze({name:'source-0.164.10-win32-postlude-operation-unknown',platform:'win32',layout:'npm',exit:3,signal:null,timeout:false,trailer:windows}),
 ]);
@@ -42,7 +42,7 @@ export function matchSource16410Refusal({platform, layout, sourceVersion, target
     } else {
       assert.equal(stdout.slice(stdout.indexOf(completed) + completed.length), '', 'unexpected output after reconciled timeout stage');
       assert(!/Request refused|Outcome unconfirmed|\bCode:\s/.test(stderr), 'unmeasured failure before command deadline');
-      assert(Number.isSafeInteger(update.elapsedMs) && update.elapsedMs >= contract.deadlineMs && update.elapsedMs <= contract.deadlineMs + 1000, 'timeout is not the measured 180s command boundary');
+      assert(Number.isSafeInteger(update.elapsedMs) && update.elapsedMs >= contract.deadlineMs && update.elapsedMs <= contract.deadlineMs + 1000, 'timeout is not the measured 180 s command boundary');
     }
   }
   return {name: contract.name, issue:'https://github.com/Cotal-AI/Cotal/issues/6842', passed:true, rawExit:update.exit, rawSignal:update.signal, rawTimeout:update.timeout};

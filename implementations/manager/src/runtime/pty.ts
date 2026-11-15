@@ -13,6 +13,7 @@ import {
   preferSeatForOomKill,
 } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
+import { WindowsSeatStop } from "./windows-stop.js";
 
 /**
  * In-process node-pty ownership. The worker is the child's parent, so killing
@@ -59,6 +60,25 @@ export class LegacyPtyRuntime implements Runtime {
 
     const dataSubs = new Set<(c: Buffer) => void>();
     const exitSubs = new Set<() => void>();
+    const windowsStop = process.platform === "win32" ? new WindowsSeatStop(() => proc.pid) : undefined;
+    let stopRequested = false;
+    let stopProof: Promise<void> | undefined;
+    let stopVerified = false;
+    const rawExitSubs = new Set<() => void>();
+    const rawExit = (): Promise<void> => alive
+      ? new Promise<void>((resolve) => {
+          const done = (): void => { rawExitSubs.delete(done); resolve(); };
+          rawExitSubs.add(done);
+          if (!alive) done();
+        })
+      : Promise.resolve();
+    const exitWaiters = new Set<{ resolve: () => void; reject: (err: unknown) => void }>();
+    const fireExitSubs = (): void => {
+      for (const fn of [...exitSubs]) {
+        exitSubs.delete(fn);
+        fn();
+      }
+    };
     // Mirror the child's PTY into a headless terminal, so on attach we hand the new client a
     // reconstructed screen image — the alternate-screen buffer of a full-screen TUI, or the
     // scrollback of an inline one — instead of a raw byte replay. A raw replay can't rebuild an
@@ -84,6 +104,7 @@ export class LegacyPtyRuntime implements Runtime {
     const diagnostic = new ConnectorDiagnosticReader();
 
     proc.onData((d) => {
+      windowsStop?.capture();
       term.write(d); // mirror into the screen model for attach-time reconstruction
       diagnostic.push(d);
       const b = Buffer.from(d, "utf8");
@@ -92,12 +113,21 @@ export class LegacyPtyRuntime implements Runtime {
     });
     proc.onExit(({ exitCode, signal }) => {
       alive = false;
+      windowsStop?.onProcessExit();
       // `signal` is absent on an ordinary exit and 0 is a real exit code, so both are recorded as
       // present-or-absent rather than coalesced into one number.
       const last = diagnostic.read();
       exit = { code: exitCode, ...(signal === undefined ? {} : { signal }), ...(last ? { diagnostic: last } : {}) };
       confirmGate?.disarm();
-      for (const fn of exitSubs) fn();
+      for (const fn of rawExitSubs) fn();
+      if (!stopRequested) {
+        windowsStop?.close();
+        for (const w of [...exitWaiters]) {
+          exitWaiters.delete(w);
+          w.resolve();
+        }
+        fireExitSubs();
+      }
     });
 
     const handle: AgentHandle = {
@@ -108,34 +138,43 @@ export class LegacyPtyRuntime implements Runtime {
       get pid() {
         return proc.pid > 0 ? proc.pid : undefined;
       },
-      status: () => (alive ? "running" : "exited"),
+      status: () => (alive || (stopRequested && !stopVerified) ? "running" : "exited"),
       exitInfo: () => exit,
       startupOutcome: () => confirmGate?.outcome ?? "pending",
       stop: (opts) => {
-        if (!alive) return;
-        // node-pty's ConPTY backend has no signals: kill(<signal>) throws on Windows, and a
-        // pseudoconsole can't deliver SIGTERM for a graceful mesh-leave. The manager instead sends a
-        // cooperative `{op:"shutdown"}` over the agent's control endpoint BEFORE a graceful stop, so
-        // here we just give the agent a window to run its exit handlers (leave the mesh, publish
-        // offline) and exit on its own, then hard-kill (ConPTY close) as a fallback. A hard stop
-        // (graceful:false — emergency reap) skips the window and kills immediately.
-        if (process.platform === "win32") {
-          if (opts?.graceful === false) {
-            proc.kill();
+        if (windowsStop) {
+          if (stopVerified || (!alive && !stopRequested)) {
+            windowsStop.close();
             return;
           }
-          // `alive` guards the already-exited case; the try/catch covers the narrow race where the
-          // ConPTY tears down between the check and the kill (node-pty throws on a dead handle).
-          setTimeout(() => {
-            if (!alive) return;
-            try {
-              proc.kill();
-            } catch {
-              /* already gone */
-            }
-          }, GRACE_MS);
+          stopRequested = true;
+          const next = windowsStop.stop(opts?.graceful === false ? 0 : GRACE_MS, 9_000, rawExit);
+          if (stopProof !== next) {
+            stopProof = next;
+            void next.then(
+              () => {
+                if (stopVerified) return;
+                stopVerified = true;
+                windowsStop.close();
+                for (const w of [...exitWaiters]) {
+                  exitWaiters.delete(w);
+                  w.resolve();
+                }
+                fireExitSubs();
+              },
+              (err) => {
+                if (stopProof === next) {
+                  for (const w of [...exitWaiters]) {
+                    exitWaiters.delete(w);
+                    w.reject(err);
+                  }
+                }
+              },
+            );
+          }
           return;
         }
+        if (!alive) return;
         if (opts?.graceful === false) {
           proc.kill("SIGKILL");
           return;
@@ -145,16 +184,14 @@ export class LegacyPtyRuntime implements Runtime {
         proc.kill("SIGTERM");
         setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
       },
-      waitForExit: () => alive
-        ? new Promise<void>((resolve) => {
-            const done = (): void => {
-              exitSubs.delete(done);
-              resolve();
-            };
-            exitSubs.add(done);
-            if (!alive) done();
-          })
-        : Promise.resolve(),
+      waitForExit: () => {
+        if (!windowsStop) return rawExit();
+        if (stopVerified || (!alive && !stopRequested)) return Promise.resolve();
+        if (stopProof) return stopProof;
+        return new Promise<void>((resolve, reject) => {
+          exitWaiters.add({ resolve, reject });
+        });
+      },
       interrupt: () => {
         if (alive) proc.write("\x03");
       },
@@ -191,7 +228,7 @@ export class LegacyPtyRuntime implements Runtime {
           // bridge surfaces a `process-exit` end frame instead of a silent zombie. proc.onExit fired
           // ONCE before this listener existed, so a late subscriber would otherwise never hear it
           // (waitForExit carries the same already-dead guard).
-          if (!alive) { queueMicrotask(fn); return () => {}; }
+          if (!alive && (!stopRequested || stopVerified)) { queueMicrotask(fn); return () => {}; }
           exitSubs.add(fn);
           return () => exitSubs.delete(fn);
         },

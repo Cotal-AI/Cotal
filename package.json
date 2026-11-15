@@ -1053,6 +1053,7 @@
     "smoke:daemon-update-startup": "tsx bin/smoke/daemon-update-startup.smoke.ts",
     "smoke:daemon-update-no-runtime": "tsx bin/smoke/daemon-update-no-runtime.smoke.ts",
     "smoke:daemon-paused-update": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-paused-update.smoke.ts",
+    "smoke:daemon-update-connect-rate": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-update-connect-rate.smoke.ts",
     "smoke:daemon-expired-provider": "tsx bin/smoke/daemon-other-providers.smoke.ts --expired",
     "smoke:daemon-login-signals": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-login-signals.smoke.ts",
     "smoke:daemon-login": "pnpm --filter @cotal-ai/auth... --filter @cotal-ai/seat build && tsx bin/smoke/daemon-login.smoke.ts",
@@ -1318,7 +1319,7 @@
     "smoke:auto-update-repair": "node bin/smoke/auto-update-repair.smoke.mjs",
     "smoke:auto-update-snapshot": "tsx bin/smoke/auto-update-snapshot.smoke.ts",
     "smoke:daemon-install-native": "tsx bin/smoke/daemon-ownership-imports.smoke.ts && tsx bin/smoke/daemon-ownership-win32.smoke.ts && tsx bin/smoke/daemon-install-native.smoke.ts && tsx bin/smoke/daemon-install-entry.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --retry && tsx bin/smoke/daemon-ownership-responsive.smoke.ts --pending && tsx bin/smoke/daemon-owned-uninstall.smoke.ts && tsx bin/smoke/auto-update-snapshot.smoke.ts",
-    "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
+    "smoke:daemon-desktop": "pnpm --filter cotal-ai... build && tsx bin/smoke/desktop-setup.smoke.ts && tsx bin/smoke/daemon-desktop.smoke.ts && tsx bin/smoke/daemon-desktop-install.smoke.ts && tsx bin/smoke/daemon-desktop-setup.smoke.ts && tsx bin/smoke/daemon-startup-context.smoke.ts",
     "smoke:execution-generations": "tsx bin/smoke/execution-generations.smoke.ts && tsx bin/smoke/execution-generation-cli.smoke.ts",
     "smoke:daemon-transport": "tsx bin/smoke/daemon-shutdown-probe.smoke.ts && tsx bin/smoke/daemon-transport.smoke.ts"
   },

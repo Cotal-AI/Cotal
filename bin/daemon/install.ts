@@ -51,6 +51,7 @@ import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
+import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
@@ -407,6 +408,7 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
 export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
+  assertDesktopSetupComplete();
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.start(receipt);
@@ -450,6 +452,7 @@ export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: str
 
 /** A delayed Windows native child must not publish after uninstall removed its installation. */
 export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string): void {
+  assertDesktopSetupComplete();
   const receipt = readReceipt(paths);
   if (!receipt || receipt.mechanism !== "scheduled-task" || receipt.daemonHome !== daemonHome ||
       receipt.unit !== scheduledTaskName(daemonHome, windowsUserSid()) || receipt.unitPath !== join(paths.state, "service-task.xml"))

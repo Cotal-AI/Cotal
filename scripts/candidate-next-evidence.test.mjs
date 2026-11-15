@@ -70,7 +70,7 @@ function hostedObservations(attempts = 2, {
   return f;
 }
 
-test('hosted observations accept archived single answer and two attempts with the stated 1s delay', () => {
+test('hosted observations accept archived single answer and two attempts with the stated 1 s delay', () => {
   for (const attempts of [1, 2]) {
     const f = hostedObservations(attempts);
     const before = JSON.stringify(f);
