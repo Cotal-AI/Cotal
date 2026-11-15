@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -10,7 +10,7 @@ import { describeExecutionGeneration, retainExecutionGeneration, writeExecutionD
 if (!["linux", "darwin"].includes(process.platform)) {
   console.log("execution generation CLI: retained execution is unsupported on this platform");
 } else {
-  const repo = join(import.meta.dirname, "../.."), scratch = mkdtempSync(join(tmpdir(), "execution-cli-"));
+  const repo = join(import.meta.dirname, "../.."), scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "execution-cli-")));
   const installed = join(scratch, "prefix/lib/node_modules/cotal-ai"), source = join(scratch, "source/cotal-ai");
   try {
     for (const root of [installed, source]) {

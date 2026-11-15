@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,7 +16,7 @@ if (process.platform !== "linux") skipSuite("daemon ownership responsiveness: re
 const pending = process.argv.includes("--pending");
 const retry = process.argv.includes("--retry") || pending;
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const root = mkdtempSync(join(tmpdir(), "dor-"));
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), "dor-")));
 const home = join(root, "home"), config = join(root, "config"), runtime = join(root, "rt"), native = join(root, "native");
 for (const directory of [home, config, runtime, native]) mkdirSync(directory, { mode: 0o700 });
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: home, COTAL_HOME: home, XDG_CONFIG_HOME: config, XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: runtime, PATH: `${native}:${process.env.PATH}`, COTAL_DAEMON_NATIVE_SERVICE: "1", COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1" };

@@ -93,7 +93,7 @@ function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeR
 
 // The physical path: macOS puts the temp dir under /var, a symlink, which a protected service
 // directory refuses as it would for a user, and the fixture home here stands in for a real one.
-const root = realpathSync(mkdtempSync(join(tmpdir(), "dni-")));
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), "dni-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
