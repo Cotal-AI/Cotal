@@ -167,15 +167,78 @@ def move_pointer(x, y, receipt, persist):
         persist()
 
 
+def process_info(pid):
+    root = Path('/proc') / str(pid)
+    if root.stat().st_uid != os.getuid():
+        raise RuntimeError(f'PID {pid} is not owned by this user')
+    fields = (root / 'stat').read_text().rsplit(')', 1)[1].split()
+    return {'pid': pid, 'parentPid': int(fields[1]), 'state': fields[0],
+            'startTime': fields[19], 'exe': str((root / 'exe').resolve(strict=True))}
+
+
+def panel_children(panel_pid):
+    children = []
+    if panel_pid is None:
+        return children
+    for proc in sorted(Path('/proc').iterdir(), key=lambda p: int(p.name) if p.name.isdecimal() else 0):
+        if not proc.name.isdecimal():
+            continue
+        try:
+            info = process_info(int(proc.name))
+            if info['parentPid'] == panel_pid:
+                children.append(info)
+        except Exception:
+            continue
+    return children
+
+
+def desktop_snapshot():
+    desktop_apps = []
+    for app in pyatspi.Registry.getDesktop(0):
+        row = {'name': getattr(app, 'name', '')}
+        try:
+            app_pid = app.get_process_id()
+            row['pid'] = app_pid
+            try:
+                row.update(process_info(app_pid))
+            except Exception as proc_error:
+                row['processError'] = str(proc_error)
+        except Exception as pid_error:
+            row['pidError'] = str(pid_error)
+        try:
+            row['rows'] = accessible_rows(app)
+        except Exception as rows_error:
+            row['rowsError'] = str(rows_error)
+            row['rows'] = []
+        desktop_apps.append(row)
+    return desktop_apps
+
+
 def missing_control_diagnostics():
     """Retain read-only panel facts without admitting another control or input."""
-    evidence = {'panelPid': args.panel_pid, 'tree': None, 'plugins': [], 'errors': []}
+    evidence = {'panelPid': args.panel_pid, 'tree': None, 'desktop': None,
+                'desktopApps': [], 'panelChildren': [], 'plugins': [], 'errors': []}
     report['missingControl'] = evidence
     try:
         verify(args.panel_pid, args.panel_start_time)
         evidence['tree'] = save('missing-control-tree', snapshot())
     except Exception as error:
         evidence['errors'].append({'field': 'tree', 'error': str(error)})
+    try:
+        verify(args.panel_pid, args.panel_start_time)
+        evidence['panelChildren'] = panel_children(args.panel_pid)
+    except Exception as error:
+        evidence['errors'].append({'field': 'panelChildren', 'error': str(error)})
+    try:
+        verify(args.panel_pid, args.panel_start_time)
+        desktop_apps = desktop_snapshot()
+        evidence['desktop'] = save('missing-control-desktop', desktop_apps)
+        evidence['desktopApps'] = [
+            {k: v for k, v in app.items() if k != 'rows'} | {'rowCount': len(app.get('rows', []))}
+            for app in desktop_apps
+        ]
+    except Exception as error:
+        evidence['errors'].append({'field': 'desktop', 'error': str(error)})
     argv = ['xfconf-query', '--channel', 'xfce4-panel', '--list', '--verbose']
     try:
         verify(args.panel_pid, args.panel_start_time)

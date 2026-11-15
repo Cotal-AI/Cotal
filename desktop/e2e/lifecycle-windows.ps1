@@ -9,6 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $diagnostics = [System.Collections.Generic.List[object]]::new()
 $candidates = @()
 $appCandidates = @()
@@ -33,6 +34,9 @@ public static class LifecycleWindows {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder text, int count);
     [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll", SetLastError=true)] public static extern int GetMenuItemCount(IntPtr hMenu);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)] static extern bool GetMenuItemInfoW(IntPtr hMenu, uint item, bool byPosition, ref MENUITEMINFOW info);
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CommandLineToArgvW(string command, out int count);
@@ -41,6 +45,48 @@ public static class LifecycleWindows {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
     [StructLayout(LayoutKind.Sequential)] public struct NOTIFYICONIDENTIFIER {
         public uint cbSize; public IntPtr hWnd; public uint uID; public Guid guidItem;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct MENUITEMINFOW {
+        public uint cbSize; public uint fMask; public uint fType; public uint fState; public uint wID;
+        public IntPtr hSubMenu; public IntPtr hbmpChecked; public IntPtr hbmpUnchecked;
+        public UIntPtr dwItemData; public IntPtr dwTypeData; public uint cch; public IntPtr hbmpItem;
+    }
+    public sealed class Win32MenuItem {
+        public int index; public uint id; public uint type; public uint state; public string stringValue; public bool ok; public int win32Error;
+    }
+    public sealed class Win32MenuRead {
+        public long hmenu; public int itemCount; public int win32Error; public Win32MenuItem[] items;
+    }
+    public static Win32MenuRead ReadMenu(IntPtr hwnd) {
+        IntPtr hmenu = SendMessageW(hwnd, 0x01E1, IntPtr.Zero, IntPtr.Zero);
+        if (hmenu == IntPtr.Zero) return new Win32MenuRead { hmenu = 0, itemCount = -1, win32Error = Marshal.GetLastWin32Error(), items = new Win32MenuItem[0] };
+        int count = GetMenuItemCount(hmenu);
+        int countErr = count < 0 ? Marshal.GetLastWin32Error() : 0;
+        var rows = new List<Win32MenuItem>();
+        for (int i = 0; i < count; i++) {
+            var info = new MENUITEMINFOW();
+            info.cbSize = (uint)Marshal.SizeOf(typeof(MENUITEMINFOW));
+            info.fMask = 0x00000143; // MIIM_STATE | MIIM_ID | MIIM_STRING | MIIM_FTYPE
+            bool ok = GetMenuItemInfoW(hmenu, (uint)i, true, ref info);
+            int err = ok ? 0 : Marshal.GetLastWin32Error();
+            string text = "";
+            if (ok && info.cch > 0) {
+                uint capacity = info.cch + 1;
+                IntPtr buffer = Marshal.AllocHGlobal((int)capacity * 2);
+                try {
+                    info.cch = capacity;
+                    info.dwTypeData = buffer;
+                    if (GetMenuItemInfoW(hmenu, (uint)i, true, ref info)) {
+                        text = Marshal.PtrToStringUni(buffer, (int)info.cch) ?? "";
+                    } else {
+                        ok = false;
+                        err = Marshal.GetLastWin32Error();
+                    }
+                } finally { Marshal.FreeHGlobal(buffer); }
+            }
+            rows.Add(new Win32MenuItem { index = i, id = info.wID, type = info.fType, state = info.fState, stringValue = text, ok = ok, win32Error = err });
+        }
+        return new Win32MenuRead { hmenu = hmenu.ToInt64(), itemCount = count, win32Error = countErr, items = rows.ToArray() };
     }
     public sealed class Window {
         public int pid; public long hwnd; public bool visible; public string title; public string className;
@@ -494,8 +540,16 @@ public static class LifecycleWindows {
                     [uint32]$menuOwnerPid = 0
                     [LifecycleWindows]::GetWindowThreadProcessId([IntPtr]$menu.hwnd, [ref]$menuOwnerPid) | Out-Null
                     $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$menu.hwnd)
+                    $menuChildren = @(Children $root)
                     $items = @()
-                    foreach ($item in (Children $root)) {
+                    $uiaDescendants = @()
+                    foreach ($item in $menuChildren) {
+                        $uiaDescendants += [ordered]@{
+                            controlType = $item.Current.ControlType.ProgrammaticName
+                            name = $item.Current.Name
+                            className = $item.Current.ClassName
+                            frameworkId = $item.Current.FrameworkId
+                        }
                         if ($item.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem) {
                             $items += [ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd }
                             $diagnostics.Add([ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd })
@@ -505,7 +559,17 @@ public static class LifecycleWindows {
                             }
                         }
                     }
-                    $observedMenus += [ordered]@{ menuHwnd = $menu.hwnd; menuOwnerPid = [int]$menuOwnerPid; items = $items }
+                    $win32Menu = [LifecycleWindows]::ReadMenu([IntPtr]$menu.hwnd)
+                    $observedMenus += [ordered]@{
+                        menuHwnd = $menu.hwnd; menuOwnerPid = [int]$menuOwnerPid; items = $items
+                        uiaDescendants = $uiaDescendants
+                        win32Menu = [ordered]@{
+                            hmenu = $win32Menu.hmenu; itemCount = $win32Menu.itemCount; win32Error = $win32Menu.win32Error
+                            items = @($win32Menu.items | ForEach-Object {
+                                [ordered]@{ index = $_.index; id = $_.id; type = $_.type; state = $_.state; string = $_.stringValue; ok = $_.ok; win32Error = $_.win32Error }
+                            })
+                        }
+                    }
                 }
                 $lastMenuObservation = [ordered]@{
                     menuOwnerPid = if ($observedMenus.Count -eq 1) { $observedMenus[0].menuOwnerPid } else { $null }

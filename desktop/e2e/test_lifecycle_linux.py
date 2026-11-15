@@ -439,11 +439,17 @@ class MissingControlDiagnosticsTests(unittest.TestCase):
         saved = {}
         env = {'args': SimpleNamespace(pid=10, panel_pid=20, panel_start_time='owned'),
                'report': {}, 'verify': Mock(), 'snapshot': Mock(return_value={'panel': []}),
+               'pyatspi': SimpleNamespace(Registry=SimpleNamespace(getDesktop=lambda _: [])),
                'subprocess': SimpleNamespace(run=Mock(return_value=SimpleNamespace(
                    returncode=0, stdout='/plugins/plugin-1 systray\n', stderr=''))),
                'save': lambda name, value: saved.setdefault(name, deepcopy(value)) or name}
         exec(compile(functions, '<real lifecycle functions>', 'exec'), env)
         env.update(verify=Mock(), snapshot=Mock(return_value={'panel': []}),
+                   panel_children=Mock(return_value=[{'pid': 21, 'parentPid': 20, 'state': 'S',
+                                                      'startTime': '99', 'exe': '/usr/lib/xfce4/panel/wrapper-2.0'}]),
+                   desktop_snapshot=Mock(return_value=[{'name': 'wrapper-2.0', 'pid': 21, 'parentPid': 20,
+                                                        'startTime': '99', 'exe': '/usr/lib/xfce4/panel/wrapper-2.0',
+                                                        'rows': [{'role': 'push button', 'name': ''}]}]),
                    save=lambda name, value: saved.setdefault(name, deepcopy(value)) or name)
         return env, saved
 
@@ -451,7 +457,10 @@ class MissingControlDiagnosticsTests(unittest.TestCase):
         env, saved = self.environment()
         env['missing_control_diagnostics']()
         self.assertIn('missing-control-tree', saved)
+        self.assertIn('missing-control-desktop', saved)
         self.assertIn('missing-control', saved)
+        self.assertEqual(saved['missing-control']['panelChildren'][0]['pid'], 21)
+        self.assertEqual(saved['missing-control']['desktopApps'][0]['rowCount'], 1)
         argv = env['subprocess'].run.call_args.args[0]
         self.assertEqual(argv, ['xfconf-query', '--channel', 'xfce4-panel', '--list', '--verbose'])
         self.assertEqual(env['report']['missingControl']['errors'], [])
@@ -467,9 +476,11 @@ class MissingControlDiagnosticsTests(unittest.TestCase):
     def test_diagnostic_errors_are_recorded_without_native_input(self):
         env, saved = self.environment()
         env['snapshot'].side_effect = RuntimeError('tree unavailable')
+        env['panel_children'].side_effect = RuntimeError('children unavailable')
+        env['desktop_snapshot'].side_effect = RuntimeError('desktop unavailable')
         env['subprocess'].run.side_effect = RuntimeError('plugin query unavailable')
         env['missing_control_diagnostics']()
-        self.assertEqual(len(env['report']['missingControl']['errors']), 2)
+        self.assertEqual(len(env['report']['missingControl']['errors']), 4)
         self.assertIn('missing-control', saved)
 
 
