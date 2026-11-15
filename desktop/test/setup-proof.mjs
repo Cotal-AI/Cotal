@@ -31,7 +31,7 @@ const cli = join(runtime, 'dist', 'cotal.js');
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const proofStartedAt = new Date().toISOString();
-const report = { head: process.env.GITHUB_SHA, repeat: process.env.COTAL_SETUP_REPEAT ?? null, candidate: { kind: process.env.COTAL_SETUP_CANDIDATE_KIND ?? 'untraced', file: candidate, sha256: createHash('sha256').update(readFileSync(candidate)).digest('hex') }, cell, calls: [], checks: [], limits: [] };
+const report = { head: process.env.GITHUB_SHA, repeat: process.env.COTAL_SETUP_REPEAT ?? null, inheritedPSModulePath: process.env.PSModulePath ?? null, candidate: { kind: process.env.COTAL_SETUP_CANDIDATE_KIND ?? 'untraced', file: candidate, sha256: createHash('sha256').update(readFileSync(candidate)).digest('hex') }, cell, calls: [], checks: [], limits: [] };
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH', 'PSModulePath'].includes(key)));
 Object.assign(env, { COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1', COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: expectedVersion });
 const save = () => writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
@@ -81,6 +81,7 @@ function installServiceViaAppBridge(usePrefix) {
       const frames = stdout.replace(/\r\n/g, '\n').trim().split('\n').filter(Boolean).map(line => {
         try { return JSON.parse(line); } catch { return { raw: line }; }
       });
+      const progressFrames = frames.filter(frame => frame && frame.event === 'setup-progress');
       const resultFrame = frames.find(frame => frame && frame.event === 'result') ?? null;
       const call = {
         usePrefix,
@@ -91,6 +92,7 @@ function installServiceViaAppBridge(usePrefix) {
         code,
         signal,
         ok: code === 0 && resultFrame?.ok === true,
+        progressFrames,
         resultFrame,
         stdout,
         stderr,
@@ -287,13 +289,15 @@ async function runUpdateModeSetup(installerPath, appChild) {
     '$appExitedElapsedMs = $sw.Elapsed.TotalMilliseconds',
     '$setupStartToAppExitMs = [Math]::Round($appExitedElapsedMs - $setupStartedElapsedMs, 3)',
     '$appExit = [uint32]999',
-    '[UpdaterLaunch]::GetExitCodeProcess($hApp, [ref]$appExit) | Out-Null',
+    '$appExitOk = [UpdaterLaunch]::GetExitCodeProcess($hApp, [ref]$appExit)',
     '[UpdaterLaunch]::CloseHandle($hApp) | Out-Null',
+    'if (-not $appExitOk) { throw "GetExitCodeProcess failed for running N app handle" }',
     'if ($sei.hProcess -eq [IntPtr]::Zero) { throw "ShellExecuteExW returned no setup process handle" }',
     '$setupWait = [UpdaterLaunch]::WaitForSingleObject($sei.hProcess, 360000)',
     '$setupExit = [uint32]999',
-    '[UpdaterLaunch]::GetExitCodeProcess($sei.hProcess, [ref]$setupExit) | Out-Null',
+    '$setupExitOk = [UpdaterLaunch]::GetExitCodeProcess($sei.hProcess, [ref]$setupExit)',
     '[UpdaterLaunch]::CloseHandle($sei.hProcess) | Out-Null',
+    'if (-not $setupExitOk) { throw "GetExitCodeProcess failed for setup process handle" }',
     'if ($setupWait -ne 0) { throw "Update-mode setup did not finish within 360s" }',
     '@{verb="open";parameters=$sei.lpParameters;terminated=$terminated;appWait=[int]$appWait;setupStartToAppExitMs=$setupStartToAppExitMs;appExitCode=[int]$appExit;setupExitCode=[int]$setupExit} | ConvertTo-Json -Compress',
   ].join('\n');
@@ -550,6 +554,26 @@ try {
       else if (cell === 'stopped') {
         const stopped = await daemon('status');
         check('Previously stopped service stays stopped', stopped.code !== 0 && JSON.parse(stopped.stdout).error.cause.code === 'NOT_RUNNING');
+        const startServiceBridge = await installServiceViaAppBridge(true);
+        report.stoppedStartServiceBridge = startServiceBridge;
+        check('App bridge Start service reply is ok within its 15s deadline', startServiceBridge.ok === true && startServiceBridge.elapsedMs <= 15_000);
+        report.after = await ready(expectedVersion);
+        check('Stopped service started via app bridge answers at version N', report.after.version === expectedVersion);
+        const lockRecord = JSON.parse(readText(join(root, 'daemon', 'daemon.lock')));
+        const afterStoppedObs = await required(ps, [
+          '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+          `$ErrorActionPreference='Stop'; ` +
+          `$receipt=Get-Content -Raw -LiteralPath '${join(root, 'daemon', 'service-unit.json').replaceAll("'", "''")}' | ConvertFrom-Json; ` +
+          `$scheduler=New-Object -ComObject Schedule.Service; $scheduler.Connect(); ` +
+          `$task=$scheduler.GetFolder('\\').GetTask($receipt.unit); ` +
+          `$lockProc=Get-Process -Id ${lockRecord.pid} -ErrorAction SilentlyContinue; ` +
+          `$daemons=@(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like '*daemon-native.js*' } | ForEach-Object { $gp=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; @{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;executablePath=[string]$_.ExecutablePath;commandLine=[string]$_.CommandLine;birth=$(if($gp){$gp.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}else{$null})} }); ` +
+          `@{task=@{enabled=[bool]$task.Enabled;state=[int]$task.State;instances=[int]$task.GetInstances(0).Count};lockPidBirth=$(if($lockProc){$lockProc.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}else{$null});daemonProcesses=$daemons} | ConvertTo-Json -Depth 5 -Compress`,
+        ]);
+        const state = JSON.parse(afterStoppedObs.stdout);
+        report.stoppedStartServiceState = { lockRecord, ...state };
+        check('Owned task is enabled and running with one instance after Start service', state.task.enabled === true && state.task.state === 4 && state.task.instances === 1);
+        check('Single daemon lifetime matches lock record and process birth', lockRecord.v === 1 && lockRecord.pid === report.after.pid && typeof lockRecord.start === 'string' && lockRecord.start === state.lockPidBirth && state.daemonProcesses.length === 1 && state.daemonProcesses[0].pid === lockRecord.pid && state.daemonProcesses[0].birth === lockRecord.start);
       } else report.after = await ready(expectedVersion);
       if (candidateNextChecks) {
         check('Candidate-to-next result binds both stamped versions', diagnostic.fromVersion === sourceVersion && diagnostic.toVersion === expectedVersion && diagnostic.outcome === 'updated');
@@ -605,7 +629,16 @@ finally {
     await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process -Filter "Name = 'cotal-desktop.exe'" | Where-Object { $_.CommandLine -notlike '*--daemon*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`], 15_000);
   }
   if (locker?.exitCode === null) { const ended = new Promise(resolve => locker.once('exit', resolve)); locker.kill(); await ended; }
-  if (serviceInstalled) { const result = report.foreignCli ? await run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : await daemon('uninstall', '--yes'); report.cleanup = result; if (result.code !== 0) process.exitCode = 1; }
+  if (serviceInstalled) {
+    const runUninstall = () => report.foreignCli ? run(process.execPath, [report.foreignCli, 'daemon', 'uninstall', '--yes', '--json']) : daemon('uninstall', '--yes');
+    let result = await runUninstall();
+    if (result.code === 3 && result.stdout?.includes('is not the daemon holding')) {
+      await delay(1000);
+      result = await runUninstall();
+    }
+    report.cleanup = result;
+    if (result.code !== 0) process.exitCode = 1;
+  }
   const events = await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; $start=[DateTime]::Parse('${proofStartedAt}').ToUniversalTime(); $events=@(Get-WinEvent -FilterHashtable @{LogName='Application';Id=1000;StartTime=$start} -ErrorAction SilentlyContinue); ConvertTo-Json -InputObject @($events|ForEach-Object{@{time=$_.TimeCreated.ToUniversalTime().ToString('o');id=$_.Id;message=$_.Message}}) -Compress`], 30_000);
   writeFileSync(join(output, 'application-events-1000.json'), JSON.stringify(events, null, 2));
   await fixture?.close();

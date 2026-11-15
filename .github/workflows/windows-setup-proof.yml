@@ -36,6 +36,7 @@ on:
     branches:
       - measure/win-setup-alias
       - measure/win-setup-keeps-service
+      - measure/win-setup-with-auto
 permissions:
   contents: read
   actions: read
@@ -60,9 +61,12 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $versionPr = ('${{ github.event_name }}' -eq 'pull_request') -and ('${{ github.head_ref }}' -eq 'changeset-release/main')
+          $withAuto = ('${{ github.ref }}' -eq 'refs/heads/measure/win-setup-with-auto')
           $repeats = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
           $cells = if ($versionPr) {
             @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
+          } elseif ($withAuto) {
+            @('running','stopped','app-installed','app-installed-0.164.9','app-installed-latest','app-open','app-tray','app-update-mode')
           } else {
             @('running','occupied','stopped','absent','locker','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe')
           }
@@ -75,7 +79,7 @@ jobs:
             }
           }
           $expected = @('build','stock-ui-control') + @($include | ForEach-Object { "native ($($_.repeat), $($_.cell))" })
-          "version_pr=$($versionPr.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "version_pr=$((($versionPr -or $withAuto)).ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "matrix=$(@{ include = $include } | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
           "expected=$($expected | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
       - uses: dtolnay/rust-toolchain@stable
