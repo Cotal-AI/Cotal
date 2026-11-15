@@ -11,7 +11,9 @@ export function machineShapeOptions(options, { disposable, platform }) {
     assert(disposable, 'pinned-node requires disposable runner');
     assert.match(pinnedNode, /^\d+\.\d+\.\d+$/, 'pinned-node requires an exact release');
   }
-  return { installUmask, serviceUmask, pinnedNode };
+  const withoutRuntimeDir = options['without-runtime-dir'];
+  if (withoutRuntimeDir !== undefined) assert(disposable && platform === 'linux' && withoutRuntimeDir === 'true' && ['daemon', 'fresh'].includes(options.state), 'without-runtime-dir requires disposable Linux daemon or fresh cell');
+  return { installUmask, serviceUmask, pinnedNode, withoutRuntimeDir: withoutRuntimeDir === 'true' };
 }
 
 /** Apply the mask to the actual child, never the shared harness process. */
@@ -21,7 +23,14 @@ export function machineShapeCommand(file, argv, installUmask) {
   return { file: '/bin/sh', argv: ['-c', 'umask 0002; exec "$@"', 'cotal-cell', file, ...argv] };
 }
 
-/** A native timer, not another manual updater, must complete the follow-on from staged B. */
+/** The daemon's independently observed lifetime must remain unchanged after a no-runtime refusal. */
+export function runtimeDirectoryRefusal({ update, before, after, version }) {
+  return update.exit === 1 && update.signal === null && update.timeout === false
+    && /machine daemon is running and this session has no XDG_RUNTIME_DIR/.test(update.stdout + update.stderr)
+    && before.state === 'ready' && after.state === 'ready' && before.version === version && after.version === version
+    && before.pid === after.pid && before.startedAt === after.startedAt;
+}
+
 export function stagedSchedulerSucceeded(report, pair) {
   const evidence = report.stagedScheduler;
   assert.equal(evidence?.selectedBefore.updateRoute, 'staged');

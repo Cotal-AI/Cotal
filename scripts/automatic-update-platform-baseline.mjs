@@ -21,7 +21,7 @@ export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
-import { machineShapeOptions, machineShapeCommand } from './update-machine-shape.mjs';
+import { machineShapeOptions, machineShapeCommand, runtimeDirectoryRefusal } from './update-machine-shape.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -56,7 +56,7 @@ export function candidateNextOptions(options, disposable = hosted) {
   const hostedConsent = mode === '0.164.10' && options.state === 'agent' && options.layout === 'npm'
     && options['daemon-hosted-manager'] === 'true' && options['stop-agents'] === 'true'
     && daemonHostedManagerOptions(options, {hosted: disposable});
-  assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && (options.state === 'daemon' || hostedConsent) && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
+  assert(disposable && options.candidate && ['npm', 'installer'].includes(options.layout) && (options.state === 'daemon' || hostedConsent || options['without-runtime-dir'] === 'true' && options.state === 'fresh') && options.method === 'self', 'candidate next hop requires hosted manual native service and both closures');
   if (mode === 'candidate' && !['installer', 'scheduler'].includes(followOnAction)) assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
   if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
@@ -467,7 +467,13 @@ export async function matrixCell(options) {
     return result;
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
-  const cotal = (label, argv, timeout) => layout === 'installer' ? call(label, launcher, argv, timeout) : call(label, process.execPath, [cli, ...argv], timeout);
+  const cotal = async (label, argv, timeout) => {
+    const prior = env.XDG_RUNTIME_DIR;
+    const omit = shape.withoutRuntimeDir && label === 'upgrade under test';
+    if (omit) { delete env.XDG_RUNTIME_DIR; report.runtimeDirectoryOmitted = !Object.hasOwn(env, 'XDG_RUNTIME_DIR'); }
+    try { return layout === 'installer' ? await call(label, launcher, argv, timeout) : await call(label, process.execPath, [cli, ...argv], timeout); }
+    finally { if (omit && prior !== undefined) env.XDG_RUNTIME_DIR = prior; }
+  };
   const daemon = (label, argv, timeout) => desktopRuntime
     ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv], timeout)
     : cotal(label, argv, timeout);
@@ -583,7 +589,7 @@ export async function matrixCell(options) {
       report.refusal = "Published 0.155.0 has no automatic-update settings (--auto is unknown), so this state cannot be constructed through its CLI.";
       return report;
     }
-    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state)) {
+    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state) || shape.withoutRuntimeDir) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
     }
@@ -884,6 +890,21 @@ export async function matrixCell(options) {
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') {
       update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
+      if (shape.withoutRuntimeDir && installedService) {
+        report.update = update;
+        const daemonStatus = ok(await daemon('source daemon after runtime-directory refusal', ['daemon', 'status', '--json']), 'source daemon still answers');
+        const after = JSON.parse(daemonStatus.stdout).result;
+        const selected = inspectInstalledUpdateRoute(pkg, process.platform);
+        const store = inspectGenerationStore(join(prefix, 'lib/.cotal-generations'), { required: false });
+        const bytes = Buffer.from(JSON.stringify({ before: report.daemonBefore, daemonStatus, selected, store }));
+        const artifact = `${id}-runtime-directory-refusal.txt`;
+        writeFileSync(join(output, artifact), bytes, { flag: 'wx', mode: 0o600 });
+        report.runtimeDirectoryRefusal = { before: report.daemonBefore, after, selected, store, daemonStatus, receipt: { artifact, bytes: bytes.length, sha256: digest(bytes) } };
+        check('live daemon runtime-directory refusal leaves source unchanged', runtimeDirectoryRefusal({ update, before: report.daemonBefore, after, version: report.source }) && report.runtimeDirectoryOmitted === true && selected.selectedCliVersion === report.source && store.state === 'missing', report.runtimeDirectoryRefusal);
+        report.expectedRefusal = { kind: 'live daemon requires runtime directory', passed: report.assertions.every(row => row.passed) };
+        report.result = 'failed';
+        return report;
+      }
       if (nextHopMode === 'source-0.164.10') {
         const firstCall = report.calls.findLast(row => row.label === 'upgrade under test');
         report.nextHop.firstHop = { update: { ...update, elapsedMs: firstCall.elapsedMs } };
@@ -1402,7 +1423,7 @@ export async function matrixCell(options) {
       check('generation store is settled and protected', report.generationStore.passed, report.generationStore);
       if (!report.generationStore.passed) report.result = 'failed';
     }
-    if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
+    if (installedService && !report.runtimeDirectoryRefusal && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
       const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
         ? report.target
         : nextHopMode === 'source-0.164.10'
@@ -1517,6 +1538,7 @@ export async function matrixCell(options) {
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
+    if (report.expectedRefusal && report.runtimeDirectoryRefusal) report.expectedRefusal.passed = report.expectedRefusal.passed && report.assertions.every(row => row.passed) && report.cleanupSafety.passed;
     report.root = root;
     report.finishedAt = new Date().toISOString();
     report.retentionOwner = hosted ? 'disposable runner teardown' : 'lane owner after process quiescence';
