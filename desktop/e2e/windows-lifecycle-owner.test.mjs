@@ -55,16 +55,18 @@ test('actual lifecycle wrapper forwards launch PID and retains candidates even o
     const observed = await nativeLifecycle(candidates[0].path, 'describe', env, 42);
     assert.deepEqual(observed.candidates, candidates, 'PID selection must not filter the full census');
     assert.deepEqual(calls[0].args.slice(-2), ['-AppPid', '42']);
+    await nativeLifecycle(candidates[0].path, 'settings', env, 42, { pid: 100, start: '134391186778779367' });
+    assert.deepEqual(calls[1].args.slice(-6), ['-AppPid', '42', '-DaemonPid', '100', '-DaemonStart', '134391186778779367']);
     refused = true;
-    await assert.rejects(nativeLifecycle(candidates[0].path, 'close-window', env, 42), /native refusal/);
+    await assert.rejects(nativeLifecycle(candidates[0].path, 'close-window', env, 42, { pid: 100, start: '134391186778779367' }), /native refusal/);
     const evidence = readFileSync(join(root, 'windows-lifecycle-candidates.jsonl'), 'utf8');
     const rows = evidence.trim().split('\n').map(JSON.parse);
-    assert.deepEqual(rows.map(row => row.ok), [true, false]);
+    assert.deepEqual(rows.map(row => row.ok), [true, true, false]);
     assert.ok(rows.every(row => row.appPid === 42 && row.candidates.length === 2));
-    assert.deepEqual(rows.map(row => row.diagnostics), [diagnostics, diagnostics], 'success and refusal must retain native diagnostics');
+    assert.deepEqual(rows.map(row => row.diagnostics), [diagnostics, diagnostics, diagnostics], 'success and refusal must retain native diagnostics');
     assert.doesNotMatch(evidence, /NOT-RETAINED|commandLine/);
     for (const pid of [0, -1, 1.5, NaN]) await assert.rejects(nativeLifecycle(candidates[0].path, 'close-window', env, pid));
-    assert.equal(calls.length, 2, 'invalid PID never reaches the native helper');
+    assert.equal(calls.length, 3, 'invalid PID never reaches the native helper');
   } finally {
     Object.defineProperty(process, 'platform', platform);
     t.mock.restoreAll();
@@ -81,28 +83,44 @@ test('close-window receives launch-pinned PID only after separate duplicate-proc
   assert.match(close, /check\(`single app process before close-window: appCandidates=\$\{JSON\.stringify\(census\.appCandidates\)\}, serviceLauncher=\$\{JSON\.stringify\(census\.serviceLauncher\)\}`/);
   assert.match(close, /census\.appCandidates\?\.length === 1 && census.appCandidates\[0\].pid === windowsAppPid/);
   assert.ok(close.indexOf('single app process before close-window') < close.indexOf('nativeLifecycle(binary, action, env,'));
-  assert.match(close, /process.platform === "win32" \? windowsAppPid : undefined/);
+  assert.match(close, /nativeLifecycle\(binary, action, env, process\.platform === "win32" \? windowsAppPid : undefined, windowsDaemon\)/);
   assert.match(caller, /row\.source === "process-argv" && row\.atUnixMs >= launchStarted/);
 });
 
 test('app census excludes only the answering daemon parent with exact birth/path and retains complete evidence', () => {
   const census = helper.slice(helper.indexOf('if ($DaemonPid)'), helper.indexOf("if ($Action -eq 'login-entry')"));
+  assert.doesNotMatch(census, /\$Action -ne 'describe'/);
   assert.match(census, /Get-CimInstance Win32_Process -Filter "ProcessId=\$DaemonPid" -Property ProcessId,ParentProcessId/);
   assert.doesNotMatch(census, /CommandLine|\.CreationDate/);
   for (const marker of ['ToFileTimeUtc().ToString() -cne $DaemonStart', '$null = $daemonProcess.Handle', '$null = $launcher.Handle', '$launcher.Id -eq $AppPid', '$launcher.Path, $expected', '$launcher.StartTime -gt $daemonProcess.StartTime', '$matchingLauncher.Count -ne 1', '$daemonProcess.HasExited -or $launcher.HasExited']) assert.ok(census.includes(marker), marker);
   assert.match(census, /\$appCandidates = @\(\$candidates \| Where-Object \{ \$_.pid -ne \$serviceLauncher.pid \}\)/);
   assert.doesNotMatch(census, /\$candidates =/);
+  assert.match(helper, /if \(\$DaemonPid -and \(\$appCandidates\.Count -ne 1 -or \$appCandidates\[0\]\.pid -ne \$AppPid\)\)/);
 });
 
-test('tray overflow records the matched native controls before refusing an ambiguous count', () => {
-  const tray = helper.slice(helper.indexOf('$expanders = @()'), helper.indexOf('Click-Element $expanders[0]'));
+test('tray icon lookup uses Shell_NotifyIconGetRect for owned tray_icon_app uID 1, structural chevron 303/1502 when needed, and verifies #32768 menu owner and Settings… before pressing', () => {
+  assert.match(helper, /tray-icon 0\.25\.1[\s\S]*?counter\.rs:11[\s\S]*?app\.rs:257[\s\S]*?with_id\("machine"\)/);
+  assert.match(helper, /Shell_NotifyIconGetRect/);
+  assert.match(helper, /NOTIFYICONIDENTIFIER/);
+  const tray = helper.slice(helper.indexOf('# tray-icon 0.25.1 counter.rs:11'), helper.indexOf('# Keep the caller'));
+  assert.match(tray, /className -ceq 'tray_icon_app'/);
+  assert.match(tray, /uID = 1/);
+  assert.doesNotMatch(tray, /foreach \(\$uID|1\.\.[2-9]/);
+  assert.match(tray, /Shell_NotifyIconGetRect failed for tray_icon_app hwnd/);
+  assert.match(tray, /Get-TrayIconTarget 'initial'/);
+  assert.ok(tray.indexOf("Get-TrayIconTarget 'initial'") < tray.indexOf("AutomationId -ceq '303'"));
+  assert.match(tray, /ClassName -ceq 'TrayNotifyWnd' -and \$_\.Current\.AutomationId -ceq '303'/);
+  assert.match(tray, /ClassName -ceq 'Button' -and \$child\.Current\.AutomationId -ceq '1502'/);
   assert.match(tray, /overflowMatches = @\(\$expanders \| ForEach-Object/);
-  for (const field of ['name = $_.Current.Name', 'automationId = $_.Current.AutomationId', 'className = $_.Current.ClassName', 'offscreen = $_.Current.IsOffscreen']) assert.ok(tray.includes(field), field);
   assert.ok(tray.indexOf('overflowMatches =') < tray.indexOf('if ($expanders.Count -ne 1)'));
-  assert.match(tray, /count = \$expanders.Count/);
-  assert.match(tray, /@\('SystemTrayIcon', 'NotificationChevron'\)/);
-  assert.match(tray, /@\('Show hidden icons', 'Show Hidden Icons'\)/);
-  assert.doesNotMatch(tray, /Notification Chevron/);
+  assert.match(tray, /chevronHitTest =/);
+  assert.match(tray, /Get-TrayIconTarget 'after-overflow'/);
+  assert.match(tray, /overflowOpened =/);
+  assert.match(tray, /menuObservation =/);
+  assert.match(tray, /menuOwnerPid =/);
+  assert.match(tray, /hasSettingsItem =/);
+  assert.match(tray, /'Settings' \+ \[char\]0x2026/);
+  assert.ok(tray.indexOf('hasSettingsItem') < tray.indexOf('Click-Element $menuItem'));
 });
 
 test('raw tray diagnostics walk every verified surface including hidden overflow without selecting them', () => {
@@ -124,7 +142,7 @@ test('raw tray diagnostics walk every verified surface including hidden overflow
 });
 
 test('tray diagnostics distinguish absent native surfaces from empty UI Automation descendants', () => {
-  const surfaces = helper.slice(helper.indexOf('function Explorer-Surfaces'), helper.indexOf('function Find-TrayIcon'));
+  const surfaces = helper.slice(helper.indexOf('function Explorer-Surfaces'), helper.indexOf('    Process-Candidates'));
   assert.match(surfaces, /explorerSurfaces = @\(\$trayWindows \| ForEach-Object/);
   for (const field of ['className = $_.className', 'hwnd = $_.hwnd', 'visible = $_.visible', 'pid = $_.pid']) assert.ok(surfaces.includes(field), field);
   assert.match(surfaces, /if \(\$window.visible\) \{ \$surface \}/);
@@ -132,5 +150,4 @@ test('tray diagnostics distinguish absent native surfaces from empty UI Automati
   for (const field of ['className = $surface.Current.ClassName', 'hwnd = $surface.Current.NativeWindowHandle', 'pid = $surface.Current.ProcessId', 'descendantCount = $null']) assert.ok(surfaces.includes(field), field);
   assert.ok(surfaces.indexOf('$diagnostics.Add($row)') < surfaces.indexOf('$elements = @(Children $surface)'));
   assert.match(surfaces, /\$row\['descendantCount'\] = \$elements.Count/);
-  assert.equal((helper.match(/foreach \(\$element in \(Explorer-Children \$surface\)\)/g) ?? []).length, 2);
 });

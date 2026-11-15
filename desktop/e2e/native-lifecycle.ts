@@ -20,7 +20,7 @@ export async function nativeLifecycle(binary: string, action: LifecycleAction, e
     args.push("-AppPid", String(appPid));
   }
   if (daemon !== undefined) {
-    assert.ok(windows && action === "describe" && appPid && Number.isSafeInteger(daemon.pid) && daemon.pid > 0 && /^[1-9][0-9]*$/.test(daemon.start), "daemon census requires a pinned kernel lifetime");
+    assert.ok(windows && appPid && Number.isSafeInteger(daemon.pid) && daemon.pid > 0 && /^[1-9][0-9]*$/.test(daemon.start), "daemon census requires a pinned kernel lifetime");
     args.push("-DaemonPid", String(daemon.pid), "-DaemonStart", daemon.start);
   }
   const stdout = await new Promise<string>((resolve, reject) => {

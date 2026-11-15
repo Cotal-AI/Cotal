@@ -70,8 +70,8 @@ func zeroMatchReceipt(_ selectors: [String], _ tree: [AXUIElement]) {
         return ["pid": owner, "pidError": result.rawValue, "owned": result == .success && owner == pid]
     }
     let record: [String: Any] = ["operation": operation, "pid": pid, "selectors": selectors,
-                               "source": "selector-tree", "nodeCount": tree.count,
-                               "AXWebAreaCount": areas.count, "AXWebAreas": owners,
+                               "source": "selector-tree", "timestamp": ISO8601DateFormatter().string(from: Date()),
+                               "nodeCount": tree.count, "AXWebAreaCount": areas.count, "AXWebAreas": owners,
                                "window": windowSelectionContext ?? [:]]
     if let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
        let text = String(data: data, encoding: .utf8) {
@@ -326,26 +326,51 @@ func settingsControls() -> (AXUIElement, AXUIElement) {
     var observation = ""
     var lastTree: [AXUIElement] = []
     var missing: [String] = []
+    var attempt = 0
     repeat {
+        attempt += 1
         guard !running.isTerminated else { fail("owned app exited during Settings readiness") }
+        let walkStarted = Date()
         let tree = nodes(appWindow())
+        let walkElapsedMs = Int((Date().timeIntervalSince(walkStarted) * 1000).rounded())
         lastTree = tree
-        let headings = tree.filter { string($0, "AXDOMIdentifier") == "settings-title" }
-        let backs = tree.filter { string($0, "AXDOMIdentifier") == "open-settings" }
-        missing = [("settings-title", headings.count), ("open-settings", backs.count)].filter { $0.1 == 0 }.map { $0.0 }
-        observation = "settings-title count=\(headings.count), open-settings count=\(backs.count)"
-        guard headings.count <= 1, backs.count <= 1 else { fail("ambiguous Settings selector: \(observation)") }
-        if let heading = headings.first, let back = backs.first {
-            for control in [heading, back] {
-                var owner: pid_t = 0
-                guard AXUIElementGetPid(control, &owner) == .success, owner == pid else { fail("Settings control is outside owned PID") }
+        let areas = tree.filter { string($0, "AXRole") == "AXWebArea" }
+        let ownedAreas = areas.filter { area in
+            var owner: pid_t = 0
+            return AXUIElementGetPid(area, &owner) == .success && owner == pid
+        }
+        let attemptRecord: [String: Any] = [
+            "operation": operation, "pid": pid, "source": "settings-controls",
+            "attempt": attempt, "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "walkElapsedMs": walkElapsedMs, "AXWebAreaCount": areas.count,
+            "ownedAXWebAreaCount": ownedAreas.count, "nodeCount": tree.count,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: attemptRecord, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            fputs("macOS driver zero-match: \(text)\n", stderr)
+        }
+        guard ownedAreas.count <= 1 else { fail("ambiguous owned AXWebArea: count=\(ownedAreas.count)") }
+        if ownedAreas.count == 1 {
+            let headings = tree.filter { string($0, "AXDOMIdentifier") == "settings-title" }
+            let backs = tree.filter { string($0, "AXDOMIdentifier") == "open-settings" }
+            missing = [("settings-title", headings.count), ("open-settings", backs.count)].filter { $0.1 == 0 }.map { $0.0 }
+            observation = "settings-title count=\(headings.count), open-settings count=\(backs.count)"
+            guard headings.count <= 1, backs.count <= 1 else { fail("ambiguous Settings selector: \(observation)") }
+            if let heading = headings.first, let back = backs.first {
+                for control in [heading, back] {
+                    var owner: pid_t = 0
+                    guard AXUIElementGetPid(control, &owner) == .success, owner == pid else { fail("Settings control is outside owned PID") }
+                }
+                let title = text(heading)
+                let label = text(back)
+                observation += ", title=\(title), label=\(label), role=\(string(back, "AXRole")), headingVisible=\(visible(heading)), backVisible=\(visible(back)), backEnabled=\(enabled(back))"
+                if visible(heading), title == "Settings", visible(back), enabled(back), label == "Back", string(back, "AXRole") == "AXButton" {
+                    return (heading, back)
+                }
             }
-            let title = text(heading)
-            let label = text(back)
-            observation += ", title=\(title), label=\(label), role=\(string(back, "AXRole")), headingVisible=\(visible(heading)), backVisible=\(visible(back)), backEnabled=\(enabled(back))"
-            if visible(heading), title == "Settings", visible(back), enabled(back), label == "Back", string(back, "AXRole") == "AXButton" {
-                return (heading, back)
-            }
+        } else {
+            missing = ["settings-title", "open-settings"]
+            observation = "ownedAXWebArea count=0, AXWebArea count=\(areas.count), nodeCount=\(tree.count)"
         }
         Thread.sleep(forTimeInterval: 0.1)
     } while Date() < deadline

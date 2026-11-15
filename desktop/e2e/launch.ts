@@ -137,8 +137,8 @@ try {
       await until("installed Cotal main window", async () => run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-Process -Id ${app!.pid}).MainWindowHandle`]), value => value !== "0", 30_000);
       await until("installed Windows welcome has native computer metadata", async () => {
         alive(); run("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", join(repo, "desktop/e2e/capture.ps1"), "-AppPid", String(app!.pid), "-Destination", png]);
-        return readFileSync(png.replace(/\.png$/, ".accessibility.json"), "utf8").toLowerCase();
-      }, value => value.includes("windows") && value.includes("gb") && !value.includes("operation did not complete") && !value.includes("reading computer information"), 45_000);
+        return readFileSync(png.replace(/\.png$/, ".accessibility.json"), "utf8").replace(/^\uFEFF/, "").toLowerCase();
+      }, value => value.includes("welcome to cotal") && (JSON.parse(value) as { name: string; id: string; type: string }[]).some(node => node.name === "continue with cotal cloud" && node.id === "login" && node.type === "controltype.button") && value.includes("windows") && value.includes("gb") && !value.includes("this operation could not finish") && !value.includes("checking this computer") && !value.includes("reading computer information"), 45_000);
     } else {
       await until("installed macOS first window", async () => run("osascript", ["-e", `tell application "System Events" to tell first process whose unix id is ${nativePid} to count windows`]), value => Number(value) > 0, 45_000);
       run("osascript", ["-e", `tell application "System Events" to set frontmost of first process whose unix id is ${nativePid} to true`]);

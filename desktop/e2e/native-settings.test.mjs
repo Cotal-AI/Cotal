@@ -51,6 +51,14 @@ test("Mac Settings readiness is bounded and diagnoses exact selectors without in
   assert.match(mac, /settings-title/);
   assert.match(mac, /open-settings/);
   assert.match(mac, /settingsControls\(\)[\s\S]*press\(back\)/);
+  const settings = mac.split("func settingsControls()")[1].split("func loginCheckboxState()")[0];
+  assert.match(settings, /"source": "settings-controls"/);
+  assert.match(settings, /"timestamp": ISO8601DateFormatter\(\)\.string\(from: Date\(\)\)/);
+  assert.match(settings, /"walkElapsedMs":/);
+  assert.match(settings, /"AXWebAreaCount": areas\.count/);
+  assert.match(settings, /"ownedAXWebAreaCount": ownedAreas\.count/);
+  assert.match(settings, /"nodeCount": tree\.count/);
+  assert.ok(settings.indexOf("ownedAreas.count == 1") < settings.indexOf('"settings-title"'));
 });
 
 test("Mac login observation reacquires the exact checkbox after native input", () => {

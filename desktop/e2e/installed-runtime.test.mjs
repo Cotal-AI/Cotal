@@ -164,3 +164,36 @@ test('installed macOS client executes the shipped signature and its own Node and
   assert.ok(mac.includes('"applications-node-entitlements.plist"'));
   assert.ok(mac.indexOf('spawnSync(node, args') < mac.indexOf('targets.push('));
 });
+
+test('installed Windows launch requires settled welcome with Continue with Cotal Cloud and screens out exact refusal text within 45 s', () => {
+  const win = source.slice(source.lastIndexOf('} else if (process.platform === "win32")'), source.indexOf('} else {', source.lastIndexOf('} else if (process.platform === "win32")')));
+  const match = win.match(/},\s*(value\s*=>\s*[\s\S]*?),\s*45_000\)/);
+  assert.ok(match, 'Windows welcome wait keeps its 45 s bound');
+  const predicate = runInNewContext(match[1].replace(/ as \{[^}]+\}\[\]/g, ''), { JSON });
+  const checking = JSON.stringify([
+    { name: 'runnervm9zap3', id: '', type: 'ControlType.Text' },
+    { name: 'Windows · 64-bit Intel / AMD · 16 GB', id: '', type: 'ControlType.Text' },
+    { name: 'Checking connection', id: '', type: 'ControlType.Text' },
+    { name: 'Welcome to Cotal', id: '', type: 'ControlType.Group' },
+    { name: 'Checking this computer…', id: 'loading-title', type: 'ControlType.Text' },
+  ]).toLowerCase();
+  const refusal = JSON.stringify([
+    { name: 'Windows · 64-bit Intel / AMD · 16 GB', id: '', type: 'ControlType.Text' },
+    { name: 'Welcome to Cotal', id: '', type: 'ControlType.Group' },
+    { name: 'Continue with Cotal Cloud', id: 'login', type: 'ControlType.Button' },
+    { name: 'This operation could not finish', id: 'connection-title', type: 'ControlType.Text' },
+  ]).toLowerCase();
+  const settled = JSON.stringify([
+    { name: 'runnervm9zap3', id: '', type: 'ControlType.Text' },
+    { name: 'Windows · 64-bit Intel / AMD · 16 GB', id: '', type: 'ControlType.Text' },
+    { name: 'Not connected', id: '', type: 'ControlType.Text' },
+    { name: 'Welcome to Cotal', id: 'connection-title', type: 'ControlType.Text' },
+    { name: 'Continue with Cotal Cloud', id: 'login', type: 'ControlType.Button' },
+  ]).toLowerCase();
+  assert.equal(predicate(checking), false, 'Checking this computer… must not pass');
+  assert.equal(predicate(refusal), false, 'This operation could not finish must not pass');
+  assert.equal(predicate(settled), true, 'settled welcome with Continue with Cotal Cloud button must pass');
+  assert.match(win, /replace\(\/\^\\uFEFF\/, ""\)/);
+  const workflow = readFileSync(new URL('../../.github/workflows/desktop.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /node --test[\s\S]*?desktop\/e2e\/installed-runtime\.test\.mjs/);
+});

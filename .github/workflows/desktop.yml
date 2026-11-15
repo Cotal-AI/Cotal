@@ -432,7 +432,7 @@ jobs:
             New-Item -ItemType Directory -Path $path -Force | Out-Null
             [Environment]::SetEnvironmentVariable($entry.Key, $path, 'Process')
           }
-          node --test desktop/e2e/windows-peer-trace.test.mjs desktop/e2e/windows-peer-trace-native.test.mjs
+          node --test desktop/e2e/windows-peer-trace.test.mjs desktop/e2e/windows-peer-trace-native.test.mjs desktop/e2e/installed-runtime.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Stock Windows peer identity observation failed.' }
       - name: Diagnose Windows native deep-link argv and plugin delivery
         if: runner.os == 'Windows'

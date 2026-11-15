@@ -36,7 +36,12 @@ public static class LifecycleWindows {
     [DllImport("user32.dll", SetLastError=true)] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CommandLineToArgvW(string command, out int count);
+    [DllImport("shell32.dll", ExactSpelling=true)] public static extern int Shell_NotifyIconGetRect([In] ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left, top, right, bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct NOTIFYICONIDENTIFIER {
+        public uint cbSize; public IntPtr hWnd; public uint uID; public Guid guidItem;
+    }
     public sealed class Window {
         public int pid; public long hwnd; public bool visible; public string title; public string className;
     }
@@ -176,27 +181,11 @@ public static class LifecycleWindows {
         $row['descendantCount'] = $elements.Count
         $elements
     }
-    function Find-TrayIcon {
-        $icons = @()
-        foreach ($surface in @(Explorer-Surfaces)) {
-            foreach ($element in (Explorer-Children $surface)) {
-                $name = $element.Current.Name
-                if ($name -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) {
-                    $diagnostics.Add([ordered]@{ explorerButton = $name; automationId = $element.Current.AutomationId; className = $element.Current.ClassName; offscreen = $element.Current.IsOffscreen })
-                }
-                if ($name -ceq 'Cotal: connected' -or $name -ceq 'Cotal: not connected') {
-                    if (!$element.Current.IsOffscreen -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $icons += $element }
-                }
-            }
-        }
-        if ($icons.Count -gt 1) { throw 'Multiple exact Cotal tray icons found. Refusing an ambiguous click.' }
-        if ($icons.Count -eq 1) { return $icons[0] }
-    }
     Process-Candidates
     $diagnostics.Add([ordered]@{ candidates = @($candidates) })
     $appCandidates = @($candidates)
     if ($DaemonPid) {
-        if ($Action -ne 'describe' -or !$DaemonStart -or !$AppPid) { throw 'Daemon classification requires describe, app PID and a pinned daemon birth.' }
+        if (!$DaemonStart -or !$AppPid) { throw 'Daemon classification requires app PID and a pinned daemon birth.' }
         $daemonProcess = Get-Process -Id $DaemonPid
         $null = $daemonProcess.Handle
         if ($daemonProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -cne $DaemonStart) { throw 'Answering daemon birth changed before census.' }
@@ -233,6 +222,7 @@ public static class LifecycleWindows {
         $result = Snapshot
         if ($AppPid -and @($result.processes | Where-Object { $_.pid -eq $AppPid }).Count -ne 1) { throw 'AppPid does not own the expected binary.' }
     } else {
+        if ($DaemonPid -and ($appCandidates.Count -ne 1 -or $appCandidates[0].pid -ne $AppPid)) { throw 'Expected one exact app candidate after service launcher classification.' }
         $owners = @(Owned-Processes)
         if ($AppPid) { $owners = @($owners | Where-Object { $_.Id -eq $AppPid }) }
         if ($owners.Count -ne 1) { throw 'Expected one exact binary owner. Supply AppPid if multiple instances exist.' }
@@ -326,47 +316,199 @@ public static class LifecycleWindows {
             if ([LifecycleWindows]::IsWindowVisible($hwnd)) { throw 'Two native closes did not hide the window.' }
             $result = Snapshot
         } else {
-            $icon = Find-TrayIcon
-            if ($null -eq $icon) {
+            # tray-icon 0.25.1 counter.rs:11 starts the shared AtomicU32 COUNTER at 1, and COUNTER.next() is otherwise
+            # taken only by TrayIconId::new_unique. desktop/src-tauri/src/app.rs:257 (line 373 with E2E setup logging)
+            # builds one icon with TrayIconBuilder::with_id("machine") and no GUID, so Shell_NotifyIconGetRect addresses
+            # the owned tray_icon_app HWND with uID = 1 and GUID_NULL. Never search other IDs.
+            $trayWindows = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $script:ownerPid -and $_.className -ceq 'tray_icon_app' })
+            $diagnostics.Add([ordered]@{ trayWindows = @($trayWindows | ForEach-Object {
+                [ordered]@{ pid = $_.pid; hwnd = $_.hwnd; visible = $_.visible; title = $_.title; className = $_.className }
+            }); uID = 1 })
+            if ($trayWindows.Count -ne 1) { throw 'Expected one exact tray_icon_app window owned by AppPid.' }
+            $trayHwnd = [IntPtr]$trayWindows[0].hwnd
+            $overflowOpened = $false
+            $visibleSurfaces = @(Explorer-Surfaces)
+            if ($visibleSurfaces.Count -eq 0) { throw 'Expected at least one visible verified Explorer tray surface.' }
+            $explorerPid = $visibleSurfaces[0].Current.ProcessId
+            function Get-TrayIconTarget([string]$stage, [System.Windows.Automation.AutomationElement[]]$surfaces, [bool]$opened) {
+                $identifier = New-Object LifecycleWindows+NOTIFYICONIDENTIFIER
+                $identifier.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf([type][LifecycleWindows+NOTIFYICONIDENTIFIER])
+                $identifier.hWnd = $trayHwnd
+                $identifier.uID = [uint32]1
+                $identifier.guidItem = [Guid]::Empty
+                $rect = New-Object LifecycleWindows+RECT
+                $hr = [LifecycleWindows]::Shell_NotifyIconGetRect([ref]$identifier, [ref]$rect)
+                $width = $rect.right - $rect.left
+                $height = $rect.bottom - $rect.top
+                $empty = ($hr -ne 0 -or $width -le 0 -or $height -le 0)
+                $x = if ($empty) { $null } else { $rect.left + $width / 2.0 }
+                $y = if ($empty) { $null } else { $rect.top + $height / 2.0 }
+                $inVisibleSurface = $false
+                $hitRecord = $null
+                $explorerOwned = $false
+                if (!$empty) {
+                    foreach ($surface in $surfaces) {
+                        if ($surface.Current.ClassName -ceq 'NotifyIconOverflowWindow') {
+                            $bounds = $surface.Current.BoundingRectangle
+                            if (!$surface.Current.IsOffscreen -and !$bounds.IsEmpty -and $x -ge $bounds.Left -and $x -le $bounds.Right -and $y -ge $bounds.Top -and $y -le $bounds.Bottom) {
+                                $inVisibleSurface = $true
+                                break
+                            }
+                        } elseif ($surface.Current.ClassName -ceq 'Shell_TrayWnd') {
+                            foreach ($node in @(Children $surface)) {
+                                if ($node.Current.ClassName -ceq 'ToolbarWindow32' -and $node.Current.AutomationId -ceq '1504' -and !$node.Current.IsOffscreen) {
+                                    $bounds = $node.Current.BoundingRectangle
+                                    if (!$bounds.IsEmpty -and $x -ge $bounds.Left -and $x -le $bounds.Right -and $y -ge $bounds.Top -and $y -le $bounds.Bottom) {
+                                        $inVisibleSurface = $true
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    $hit = [System.Windows.Automation.AutomationElement]::FromPoint([System.Windows.Point]::new($x, $y))
+                    $explorerOwned = ($null -ne $hit -and !$hit.Current.IsOffscreen -and $hit.Current.ProcessId -eq $explorerPid -and $hit.Current.AutomationId -cne '1502')
+                    $hitRecord = if ($null -eq $hit) { $null } else {
+                        [ordered]@{
+                            point = [ordered]@{ x = $x; y = $y }; pid = $hit.Current.ProcessId
+                            controlType = $hit.Current.ControlType.ProgrammaticName; name = $hit.Current.Name
+                            automationId = $hit.Current.AutomationId; className = $hit.Current.ClassName
+                            hwnd = $hit.Current.NativeWindowHandle; offscreen = $hit.Current.IsOffscreen
+                            explorerOwned = $explorerOwned
+                        }
+                    }
+                }
+                $diagnostics.Add([ordered]@{
+                    trayRectStage = $stage; trayHwnd = $trayHwnd.ToInt64(); uID = 1
+                    hresult = ('0x' + $hr.ToString('X8')); ok = ($hr -eq 0)
+                    rect = [ordered]@{
+                        empty = $empty; left = $rect.left; top = $rect.top; right = $rect.right; bottom = $rect.bottom
+                        width = $width; height = $height
+                    }
+                    inVisibleExplorerSurface = $inVisibleSurface; hitTest = $hitRecord; overflowOpened = $opened
+                })
+                [pscustomobject]@{ hr = $hr; empty = $empty; x = $x; y = $y; inVisibleExplorerSurface = $inVisibleSurface; explorerOwned = $explorerOwned }
+            }
+            $iconTarget = Get-TrayIconTarget 'initial' $visibleSurfaces $overflowOpened
+            if ($iconTarget.hr -ne 0 -and @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $explorerPid -and $_.className -ceq 'NotifyIconOverflowWindow' -and $_.visible }).Count -gt 0) {
+                throw "Shell_NotifyIconGetRect failed for tray_icon_app hwnd $($trayHwnd.ToInt64()) and uID 1 (HRESULT 0x$($iconTarget.hr.ToString('X8')))."
+            }
+            if (!$iconTarget.inVisibleExplorerSurface -or !$iconTarget.explorerOwned) {
                 $expanders = @()
-                foreach ($surface in @(Explorer-Surfaces)) {
-                    foreach ($element in (Explorer-Children $surface)) {
-                        if ($element.Current.AutomationId -in @('SystemTrayIcon', 'NotificationChevron') -or $element.Current.Name -in @('Show hidden icons', 'Show Hidden Icons')) {
-                            if (!$element.Current.IsOffscreen -and $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button) { $expanders += $element }
+                foreach ($surface in $visibleSurfaces) {
+                    if ($surface.Current.ClassName -cne 'Shell_TrayWnd') { continue }
+                    $elements = @(Explorer-Children $surface)
+                    $notify = @($elements | Where-Object { $_.Current.ClassName -ceq 'TrayNotifyWnd' -and $_.Current.AutomationId -ceq '303' -and !$_.Current.IsOffscreen })
+                    foreach ($area in $notify) {
+                        foreach ($child in @(Children $area)) {
+                            if ($child.Current.ClassName -ceq 'Button' -and $child.Current.AutomationId -ceq '1502' -and !$child.Current.IsOffscreen -and $child.Current.IsEnabled) {
+                                $expanders += $child
+                            }
                         }
                     }
                 }
                 $diagnostics.Add([ordered]@{ overflowMatches = @($expanders | ForEach-Object {
-                    [ordered]@{ name = $_.Current.Name; automationId = $_.Current.AutomationId; className = $_.Current.ClassName; offscreen = $_.Current.IsOffscreen }
-                }); count = $expanders.Count })
-                if ($expanders.Count -ne 1) { throw 'Cotal icon is hidden and a unique Explorer overflow button is unavailable (English UI required for name-based discovery).' }
-                Click-Element $expanders[0]
-                Start-Sleep -Milliseconds 700
-                $icon = Find-TrayIcon
-            }
-            if ($null -eq $icon) { throw 'Exact Cotal tray icon not exposed by Explorer UIAutomation, including overflow.' }
-            Assert-Owner
-            $diagnostics.Add([ordered]@{ trayName = $icon.Current.Name; explorerPid = $icon.Current.ProcessId })
-            # A real left click opens the app's native menu, not a synthetic product event.
-            Click-Element $icon $true
-            $label = if ($Action -eq 'settings') { 'Settings' + [char]0x2026 } else { 'Quit app (computer stays connected)' }
-            $menuItem = $null
-            for ($i = 0; $i -lt 30; $i++) {
-                $menus = @([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $script:ownerPid -and $_.visible -and $_.className -eq '#32768' })
-                $found = @()
-                foreach ($menu in $menus) {
-                    $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$menu.hwnd)
-                    foreach ($item in (Children $root)) {
-                        if ($item.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem) {
-                            $diagnostics.Add([ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd })
-                            if ($item.Current.Name -ceq $label -and $item.Current.ProcessId -eq $script:ownerPid) { $found += $item }
+                    $r = $_.Current.BoundingRectangle
+                    [ordered]@{
+                        name = $_.Current.Name; automationId = $_.Current.AutomationId; className = $_.Current.ClassName
+                        controlType = $_.Current.ControlType.ProgrammaticName; offscreen = $_.Current.IsOffscreen
+                        boundingRectangle = [ordered]@{
+                            empty = $r.IsEmpty
+                            left = if ($r.IsEmpty) { $null } else { $r.Left }
+                            top = if ($r.IsEmpty) { $null } else { $r.Top }
+                            width = if ($r.IsEmpty) { $null } else { $r.Width }
+                            height = if ($r.IsEmpty) { $null } else { $r.Height }
                         }
                     }
+                }); count = $expanders.Count })
+                if ($expanders.Count -ne 1) {
+                    if ($iconTarget.hr -ne 0) {
+                        throw "Shell_NotifyIconGetRect failed for tray_icon_app hwnd $($trayHwnd.ToInt64()) and uID 1 (HRESULT 0x$($iconTarget.hr.ToString('X8')))."
+                    }
+                    throw 'Cotal icon is hidden and a unique Explorer overflow button (TrayNotifyWnd/303 -> Button/1502) is unavailable.'
                 }
-                if ($found.Count -gt 1) { throw 'Ambiguous native menu item.' }
-                if ($found.Count -eq 1) { $menuItem = $found[0]; break }
+                $chevronRect = $expanders[0].Current.BoundingRectangle
+                if ($chevronRect.IsEmpty -or $chevronRect.Width -le 0 -or $chevronRect.Height -le 0) { throw 'Explorer overflow chevron has no clickable rectangle.' }
+                $cx = $chevronRect.Left + $chevronRect.Width / 2.0
+                $cy = $chevronRect.Top + $chevronRect.Height / 2.0
+                $chevronHit = [System.Windows.Automation.AutomationElement]::FromPoint([System.Windows.Point]::new($cx, $cy))
+                $chevronOwned = ($null -ne $chevronHit -and !$chevronHit.Current.IsOffscreen -and $chevronHit.Current.ProcessId -eq $explorerPid)
+                $diagnostics.Add([ordered]@{ chevronHitTest = if ($null -eq $chevronHit) { $null } else {
+                    [ordered]@{
+                        point = [ordered]@{ x = $cx; y = $cy }; pid = $chevronHit.Current.ProcessId
+                        controlType = $chevronHit.Current.ControlType.ProgrammaticName; name = $chevronHit.Current.Name
+                        automationId = $chevronHit.Current.AutomationId; className = $chevronHit.Current.ClassName
+                        hwnd = $chevronHit.Current.NativeWindowHandle; offscreen = $chevronHit.Current.IsOffscreen
+                        explorerOwned = $chevronOwned
+                    }
+                } })
+                if (!$chevronOwned) { throw 'Explorer overflow chevron hit-test did not land on Windows Explorer.' }
+                [LifecycleWindows]::Click($cx, $cy)
+                $overflowOpened = $true
+                for ($i = 0; $i -lt 20; $i++) {
+                    if (@([LifecycleWindows]::Windows() | Where-Object { $_.pid -eq $explorerPid -and $_.className -ceq 'NotifyIconOverflowWindow' -and $_.visible }).Count -eq 1) { break }
+                    Start-Sleep -Milliseconds 150
+                }
+                $visibleSurfaces = @(Explorer-Surfaces)
+                $iconTarget = Get-TrayIconTarget 'after-overflow' $visibleSurfaces $overflowOpened
+            }
+            if ($iconTarget.hr -ne 0) {
+                throw "Shell_NotifyIconGetRect failed for tray_icon_app hwnd $($trayHwnd.ToInt64()) and uID 1 (HRESULT 0x$($iconTarget.hr.ToString('X8')))."
+            }
+            if ($iconTarget.empty -or !$iconTarget.inVisibleExplorerSurface -or !$iconTarget.explorerOwned) {
+                throw 'Cotal tray icon rectangle is not inside a visible verified Explorer tray surface.'
+            }
+            Assert-Owner
+            # A real left click opens the app's native menu, not a synthetic product event.
+            [LifecycleWindows]::Click($iconTarget.x, $iconTarget.y)
+            $settingsLabel = 'Settings' + [char]0x2026
+            $label = if ($Action -eq 'settings') { $settingsLabel } else { 'Quit app (computer stays connected)' }
+            $menuItem = $null
+            $lastMenuObservation = $null
+            for ($i = 0; $i -lt 30; $i++) {
+                $allMenus = @([LifecycleWindows]::Windows() | Where-Object { $_.visible -and $_.className -eq '#32768' })
+                $menus = @($allMenus | Where-Object { $_.pid -eq $script:ownerPid })
+                $found = @()
+                $settingsFound = @()
+                $observedMenus = @()
+                foreach ($menu in $menus) {
+                    [uint32]$menuOwnerPid = 0
+                    [LifecycleWindows]::GetWindowThreadProcessId([IntPtr]$menu.hwnd, [ref]$menuOwnerPid) | Out-Null
+                    $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]$menu.hwnd)
+                    $items = @()
+                    foreach ($item in (Children $root)) {
+                        if ($item.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem) {
+                            $items += [ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd }
+                            $diagnostics.Add([ordered]@{ menuName = $item.Current.Name; pid = $item.Current.ProcessId; hwnd = $menu.hwnd })
+                            if ([int]$menuOwnerPid -eq $script:ownerPid -and $item.Current.ProcessId -eq $script:ownerPid) {
+                                if ($item.Current.Name -ceq $settingsLabel) { $settingsFound += $item }
+                                if ($item.Current.Name -ceq $label) { $found += $item }
+                            }
+                        }
+                    }
+                    $observedMenus += [ordered]@{ menuHwnd = $menu.hwnd; menuOwnerPid = [int]$menuOwnerPid; items = $items }
+                }
+                $lastMenuObservation = [ordered]@{
+                    menuOwnerPid = if ($observedMenus.Count -eq 1) { $observedMenus[0].menuOwnerPid } else { $null }
+                    appPid = $script:ownerPid
+                    overflowOpened = $overflowOpened
+                    hasSettingsItem = ($settingsFound.Count -eq 1)
+                    targetLabel = $label
+                    targetMatches = $found.Count
+                    menus = $observedMenus
+                    allMenuWindows = @($allMenus | ForEach-Object { [ordered]@{ pid = $_.pid; hwnd = $_.hwnd; visible = $_.visible; className = $_.className } })
+                }
+                if ($found.Count -gt 1 -or $settingsFound.Count -gt 1) {
+                    $diagnostics.Add([ordered]@{ menuObservation = $lastMenuObservation })
+                    throw 'Ambiguous native menu item.'
+                }
+                if ($observedMenus.Count -eq 1 -and $observedMenus[0].menuOwnerPid -eq $script:ownerPid -and $settingsFound.Count -eq 1 -and $found.Count -eq 1) {
+                    $menuItem = $found[0]
+                    break
+                }
                 Start-Sleep -Milliseconds 100
             }
+            $diagnostics.Add([ordered]@{ menuObservation = $lastMenuObservation })
             if ($null -eq $menuItem) { throw 'Exact native tray menu item was not exposed by the selected app PID.' }
             Assert-Owner
             Click-Element $menuItem

@@ -398,17 +398,21 @@ export async function firstRun(fixture: Fixture): Promise<void> {
       if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("tray-label") };
       else observation = await driver.native(action);
     } else {
-      if (process.platform === "win32" && action === "close-window") {
+      let windowsDaemon: { pid: number; start: string } | undefined;
+      if (process.platform === "win32") {
         assert.ok(windowsAppPid, "close-window requires the launch-pinned Windows app PID");
         const answering = await status();
         const { readLifetimeRecord, processBirth } = await import(pathToFileURL(join(repo, "bin/dist/daemon/lifetime.js")).href);
         const daemon = readLifetimeRecord(join(daemonHome, "daemon.lock"));
         assert.ok(daemon?.start && daemon.pid === answering.pid && processBirth(daemon.pid) === daemon.start, "fresh answering daemon lifetime before app census");
-        const census = await nativeLifecycle(binary, "describe", env, windowsAppPid, { pid: daemon.pid, start: daemon.start });
-        writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action: "before-close-window", observation: census })}\n`, { flag: "a" });
-        check(`single app process before close-window: appCandidates=${JSON.stringify(census.appCandidates)}, serviceLauncher=${JSON.stringify(census.serviceLauncher)}`, census.appCandidates?.length === 1 && census.appCandidates[0].pid === windowsAppPid);
+        windowsDaemon = { pid: daemon.pid, start: daemon.start };
+        if (action === "close-window") {
+          const census = await nativeLifecycle(binary, "describe", env, windowsAppPid, { pid: daemon.pid, start: daemon.start });
+          writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action: "before-close-window", observation: census })}\n`, { flag: "a" });
+          check(`single app process before close-window: appCandidates=${JSON.stringify(census.appCandidates)}, serviceLauncher=${JSON.stringify(census.serviceLauncher)}`, census.appCandidates?.length === 1 && census.appCandidates[0].pid === windowsAppPid);
+        }
       }
-      observation = await nativeLifecycle(binary, action, env, process.platform === "win32" ? windowsAppPid : undefined);
+      observation = await nativeLifecycle(binary, action, env, process.platform === "win32" ? windowsAppPid : undefined, windowsDaemon);
     }
     writeFileSync(join(output, "native-lifecycle.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), action, observation })}\n`, { flag: "a" });
     return observation;
