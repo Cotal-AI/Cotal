@@ -204,9 +204,9 @@ function refuseDoomedStagedCheck(root: string): boolean {
   if (!copiesSharedWrite()) return false;
   const home = dirname(dirname(store));
   const remedy = existsSync(join(home, "nodebin"))
-    ? "run the installer again: curl -fsSL https://get.cotal.ai | sh"
-    : `run: npm install -g --prefix ${home} cotal-ai@latest`;
-  process.stderr.write(`the installed Cotal updater cannot finish on this machine: its Node copies the new version with group-writable folders under the current umask, then refuses its own copy. Install the new version once by hand, ${remedy}. Later updates run on their own\n`);
+    ? "run the installer from get.cotal.ai again"
+    : `run npm install -g --prefix ${home} cotal-ai@latest`;
+  process.stderr.write(`the installed Cotal updater cannot finish on this machine: its Node copies the new version with group-writable folders under the current umask, then refuses its own copy. Install the new version once by hand: ${remedy}. Later updates run on their own`);
   for (const name of readdirSync(store)) {
     if (/^\.installing-[A-Za-z0-9]{6}$/.test(name)) try { rmSync(join(store, name), { recursive: true, force: true }); } catch { /* the next attempt removes it */ }
   }

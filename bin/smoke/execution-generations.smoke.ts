@@ -245,10 +245,10 @@ try {
     const old = under("002", { COTAL_SKIP_CONNECTOR_SEED: "1" });
     if (refuses) {
       assert.equal(old.status, 1); assert.equal(old.stdout, "");
-      assert.match(old.stderr, /Install the new version once by hand, run: npm install -g --prefix .*stuck cotal-ai@latest\. Later updates run on their own/);
+      assert.match(old.stderr, /Install the new version once by hand: run npm install -g --prefix .*stuck cotal-ai@latest\. Later updates run on their own$/);
       assert.deepEqual(readdirSync(store), []);
       stage(); mkdirSync(join(scratch, "stuck/nodebin"));
-      assert.match(under("002", { COTAL_SKIP_CONNECTOR_SEED: "1" }).stderr, /run the installer again: curl -fsSL https:\/\/get\.cotal\.ai \| sh\. Later/);
+      assert.match(under("002", { COTAL_SKIP_CONNECTOR_SEED: "1" }).stderr, /by hand: run the installer from get\.cotal\.ai again\. Later/);
       stage();
     } else { assert.equal(old.status, 0, old.stderr); assert.equal(old.stdout.trim(), "staged target"); }
     for (const result of [under("002", { COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_EXECUTION_COPY_MODES: "explicit" }), under("022", { COTAL_SKIP_CONNECTOR_SEED: "1" }), under("002", { COTAL_SKIP_CONNECTOR_SEED: "" })]) {
