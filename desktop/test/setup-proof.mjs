@@ -279,9 +279,13 @@ async function runUpdateModeSetup(installerPath, appChild) {
     `$sei.lpFile = '${installerPath.replaceAll("'", "''")}'`,
     `$sei.lpParameters = '${parameters}'`,
     '$sei.nShow = 5',
+    '$sw = [Diagnostics.Stopwatch]::StartNew()',
     'if (-not [UpdaterLaunch]::ShellExecuteExW([ref]$sei)) { [UpdaterLaunch]::CloseHandle($hApp) | Out-Null; throw "ShellExecuteExW open failed" }',
+    '$setupStartedElapsedMs = $sw.Elapsed.TotalMilliseconds',
     '$terminated = [UpdaterLaunch]::TerminateProcess($hApp, 0)',
     '$appWait = [UpdaterLaunch]::WaitForSingleObject($hApp, 15000)',
+    '$appExitedElapsedMs = $sw.Elapsed.TotalMilliseconds',
+    '$setupStartToAppExitMs = [Math]::Round($appExitedElapsedMs - $setupStartedElapsedMs, 3)',
     '$appExit = [uint32]999',
     '[UpdaterLaunch]::GetExitCodeProcess($hApp, [ref]$appExit) | Out-Null',
     '[UpdaterLaunch]::CloseHandle($hApp) | Out-Null',
@@ -291,7 +295,7 @@ async function runUpdateModeSetup(installerPath, appChild) {
     '[UpdaterLaunch]::GetExitCodeProcess($sei.hProcess, [ref]$setupExit) | Out-Null',
     '[UpdaterLaunch]::CloseHandle($sei.hProcess) | Out-Null',
     'if ($setupWait -ne 0) { throw "Update-mode setup did not finish within 360s" }',
-    '@{verb="open";parameters=$sei.lpParameters;terminated=$terminated;appWait=[int]$appWait;appExitCode=[int]$appExit;setupExitCode=[int]$setupExit} | ConvertTo-Json -Compress',
+    '@{verb="open";parameters=$sei.lpParameters;terminated=$terminated;appWait=[int]$appWait;setupStartToAppExitMs=$setupStartToAppExitMs;appExitCode=[int]$appExit;setupExitCode=[int]$setupExit} | ConvertTo-Json -Compress',
   ].join('\n');
   const launch = await required(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], 420_000);
   const parsed = JSON.parse(launch.stdout);

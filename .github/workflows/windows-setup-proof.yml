@@ -125,10 +125,16 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           Remove-Item -Path 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath 'desktop/src-tauri/runtime' -Recurse -Force
+          Remove-Item -LiteralPath 'desktop/src-tauri/binaries/node-x86_64-pc-windows-msvc.exe' -Force
+          if ((Test-Path -LiteralPath 'desktop/src-tauri/runtime') -or (Test-Path -LiteralPath 'desktop/src-tauri/binaries/node-x86_64-pc-windows-msvc.exe')) {
+            throw 'Staged N runtime or sidecar binary was not removed before N+1 preparation'
+          }
           git checkout -- bin/package.json
           if($LASTEXITCODE -ne 0){throw 'Could not reset bin/package.json before next stamp'}
           pnpm exec node desktop/test/setup-candidate-version.mjs --next
           if($LASTEXITCODE -ne 0){throw 'Synthetic next candidate version stamping failed'}
+          $nextVersion = ([IO.File]::ReadAllText('bin/package.json',[Text.Encoding]::UTF8).Replace("`r`n","`n") | ConvertFrom-Json).version
           (Get-Item 'desktop/src-tauri/tauri.conf.json').LastWriteTimeUtc = [DateTime]::UtcNow
           pnpm --workspace-concurrency=3 --filter cotal-ai... build
           if($LASTEXITCODE -ne 0){throw 'Synthetic next workspace build failed'}
@@ -136,8 +142,24 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Synthetic next seeded-connectors build failed'}
           pnpm --dir desktop prepare:runtime
           if($LASTEXITCODE -ne 0){throw 'Synthetic next runtime preparation failed'}
+          $stagedRuntimeVersion = ([IO.File]::ReadAllText('desktop/src-tauri/runtime/desktop-runtime.json',[Text.Encoding]::UTF8).Replace("`r`n","`n") | ConvertFrom-Json).version
+          if ($stagedRuntimeVersion -cne $nextVersion) {
+            throw "Staged desktop-runtime.json version ($stagedRuntimeVersion) does not match N+1 ($nextVersion)"
+          }
           pnpm --dir desktop exec tauri build --bundles nsis
           if($LASTEXITCODE -ne 0){throw 'Synthetic next NSIS bundle build failed'}
+          $setup = @(Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe')
+          if ($setup.Count -ne 1 -or $setup[0].Name -cne "Cotal_${nextVersion}_x64-setup.exe") {
+            throw 'Synthetic next setup bundle does not match N+1 version'
+          }
+          $bundledManifest = (& 7z e -so $setup[0].FullName '*desktop-runtime.json' -r) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not extract desktop-runtime.json from synthetic next setup bundle'
+          }
+          $bundledVersion = ($bundledManifest.Replace("`r`n","`n") | ConvertFrom-Json).version
+          if ($bundledVersion -cne $nextVersion) {
+            throw "Synthetic next setup bundle carries desktop-runtime.json version $bundledVersion instead of $nextVersion"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: setup-synthetic-next
