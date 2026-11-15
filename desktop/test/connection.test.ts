@@ -30,7 +30,7 @@ test("launch readiness, application retry and polling follow the selected space"
   const callbacks = new Map<number, (frame: unknown) => void>();
   let callback = 0;
   win.setTimeout = (fn: () => Promise<void>, ms: number) => {
-    assert.equal(ms, 10_000);
+    assert.equal(ms, 60_000);
     tick = fn;
     return 1;
   };
@@ -56,6 +56,7 @@ test("launch readiness, application retry and polling follow the selected space"
         case "update-policy": result = { auto: req.auto ?? true }; break;
         case "about": result = { machine: "test", version: "test", platform: "linux", arch: "x64", memoryBytes: 0 }; break;
         case "status": result = { state: "ready", version: daemonVersion, managers: [...managers.values()] }; break;
+        case "status-watch": result = { closed: false }; break;
         case "spaces": result = { spaces: ["first", "second"].map((space) => ({ space, catalogId: `sp_${space}`, mode: "user", idp: "https://example.com/auth" })) }; break;
         case "setup": {
           callbacks.get(args.onEvent!.id)!({ index: 0, message: { v: 1, event: "setup-progress", line: "connectors: 0 available", progress: { step: "applications", outcome: approved ? "available" : "unavailable", detail: "inventory", applications: ["Claude Code", "Codex"] } } satisfies Frame });
@@ -208,23 +209,28 @@ test("launch readiness, application retry and polling follow the selected space"
   } finally { win.close(); }
 });
 
-test("hidden window switches from 1 s to 60 s cadence and refreshes immediately on tray open or show", async () => {
+test("status-watch pushes updates without polling and VERSION_MISMATCH recovers automatically on 60 s status recheck", async () => {
   const output = await build({ root: fileURLToPath(new URL("..", import.meta.url)), logLevel: "silent", build: { write: false } });
   assert.ok(!Array.isArray(output) && "output" in output);
   const bundle = output.output.find((file) => file.type === "chunk" && file.isEntry);
   assert.ok(bundle && "code" in bundle);
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/<script\b[^>]*><\/script>/g, "");
+
   for (const startedHidden of [false, true]) {
     const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
     const win = dom.window;
+    const doc = win.document as Document;
     const calls: Request[] = [];
     const delays: number[] = [];
     const callbacks = new Map<number, (frame: unknown) => void>();
     const listeners = new Map<string, number>();
     let callback = 0;
+    let tickFn: (() => Promise<void>) | undefined;
+    let pushStatus: ((status: Record<string, unknown>) => void) | undefined;
     win.HTMLImageElement.prototype.decode = () => Promise.resolve();
-    win.setTimeout = (_fn: () => Promise<void>, ms: number) => {
+    win.setTimeout = (fn: () => Promise<void>, ms: number) => {
       delays.push(ms);
+      tickFn = fn;
       return delays.length;
     };
     win.clearTimeout = () => {};
@@ -233,7 +239,7 @@ test("hidden window switches from 1 s to 60 s cadence and refreshes immediately 
     win.__TAURI_INTERNALS__ = {
       transformCallback: (fn: (frame: unknown) => void) => { callbacks.set(++callback, fn); return callback; },
       unregisterCallback() {},
-      async invoke(cmd: string, args: { request?: Request; event?: string; handler?: number } = {}) {
+      async invoke(cmd: string, args: { request?: Request; event?: string; handler?: number; onEvent?: { id: number } } = {}) {
         if (cmd === "first_paint") return !startedHidden;
         if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++callback; }
         if (cmd === "plugin:deep-link|get_current") return null;
@@ -244,18 +250,20 @@ test("hidden window switches from 1 s to 60 s cadence and refreshes immediately 
         assert.equal(cmd, "daemon_request");
         const req = args.request!;
         calls.push(req);
-        if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "win32", arch: "x64", memoryBytes: 0 } };
-        if (req.op === "status") return {
-          v: 1,
-          event: "result",
-          ok: true,
-          result: {
-            state: "ready",
-            version: "0.164.15",
-            managers: [{ space: "first", state: "answering", instanceId: "m1", connectors: [{ agent: "claude", state: "available" }] }],
-            account: { mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed: "connected" }] },
-          },
+        const statusResult = {
+          state: "ready",
+          version: "0.164.15",
+          managers: [{ space: "first", state: "answering", instanceId: "m1", connectors: [{ agent: "claude", state: "available" }] }],
+          account: { mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed: "connected" }] },
         };
+        if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "win32", arch: "x64", memoryBytes: 0 } };
+        if (req.op === "status") return { v: 1, event: "result", ok: true, result: statusResult };
+        if (req.op === "status-watch") {
+          let index = 0;
+          pushStatus = (nextStatus) => callbacks.get(args.onEvent!.id)!({ index: index++, message: { v: 1, event: "status", ok: true, watchMode: "push", result: nextStatus } satisfies Frame });
+          pushStatus(statusResult);
+          return await new Promise<Frame>(() => {});
+        }
         if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://cloud.cotal.ai/api/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
         throw new Error(`Unexpected request ${req.op}`);
       },
@@ -265,27 +273,119 @@ test("hidden window switches from 1 s to 60 s cadence and refreshes immediately 
     try {
       win.eval(bundle.code);
       await settle();
-      assert.equal(delays.at(-1), startedHidden ? 60_000 : 1000, `initial cadence for startedHidden=${startedHidden}`);
-      if (!startedHidden) {
-        emit("desktop-hidden");
-        await settle();
-        assert.equal(delays.at(-1), 60_000, "hiding switches supported-host cadence to 60 s");
-      }
-      const statusBeforeTray = calls.filter(c => c.op === "status").length;
-      let now = Date.now() + 2000;
-      win.Date.now = () => now;
+      assert.equal(doc.documentElement.dataset.watchMode, "push");
+      assert.equal(calls.filter(c => c.op === "status-watch").length, 1, "opens one persistent status-watch stream");
+      const statusAfterInit = calls.filter(c => c.op === "status").length;
+      await tickFn!();
+      await settle();
+      emit("desktop-hidden");
+      await settle();
       emit("desktop-tray-open");
       await settle();
-      assert.equal(calls.filter(c => c.op === "status").length, statusBeforeTray + 1, "tray open triggers immediate status refresh while hidden");
-      assert.equal(delays.at(-1), 60_000, "tray open keeps 60 s cadence while window stays hidden");
-      emit("desktop-tray-open");
-      await settle();
-      assert.equal(calls.filter(c => c.op === "status").length, statusBeforeTray + 1, "coalesces duplicate tray click events within 1 s");
-      const statusBeforeShow = calls.filter(c => c.op === "status").length;
       emit("desktop-shown");
       await settle();
-      assert.equal(calls.filter(c => c.op === "status").length, statusBeforeShow + 1, "showing window triggers immediate status refresh");
-      assert.equal(delays.at(-1), 1000, "showing window restores 1 s cadence on supported host");
+      assert.equal(calls.filter(c => c.op === "status").length, statusAfterInit, "watchActive=true sends zero periodic or visibility status polls");
+      pushStatus!({
+        state: "ready",
+        version: "0.164.15",
+        managers: [],
+        account: { mode: "account", hostSupport: "supported", spaces: [] },
+      });
+      await settle();
+      assert.equal(doc.getElementById("connection-title")!.textContent, "This computer is connected to your account");
+    } finally {
+      win.close();
+    }
+  }
+
+  // Version skew cell: older daemon refuses status-watch with UNKNOWN_OP (watchMode: "refused-unknown-op"),
+  // app enters VERSION_MISMATCH, repeats one status request every 60 s, and opens status-watch automatically
+  // as soon as another process updates the daemon to the matching version without a click.
+  {
+    const dom = new JSDOM(html, { url: "http://localhost/", pretendToBeVisual: true, runScripts: "outside-only" });
+    const win = dom.window;
+    const doc = win.document as Document;
+    const calls: Request[] = [];
+    const delays: number[] = [];
+    const callbacks = new Map<number, (frame: unknown) => void>();
+    let callback = 0;
+    let tickFn: (() => Promise<void>) | undefined;
+    let daemonUpgraded = false;
+    win.HTMLImageElement.prototype.decode = () => Promise.resolve();
+    win.setTimeout = (fn: () => Promise<void>, ms: number) => {
+      delays.push(ms);
+      tickFn = fn;
+      return delays.length;
+    };
+    win.clearTimeout = () => {};
+    win.isTauri = true;
+    win.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+    win.__TAURI_INTERNALS__ = {
+      transformCallback: (fn: (frame: unknown) => void) => { callbacks.set(++callback, fn); return callback; },
+      unregisterCallback() {},
+      async invoke(cmd: string, args: { request?: Request; onEvent?: { id: number } } = {}) {
+        if (cmd === "first_paint") return true;
+        if (cmd === "plugin:event|listen") return ++callback;
+        if (cmd === "plugin:deep-link|get_current") return null;
+        if (cmd === "desktop_presence") return { loginEnabled: true, relocationOffer: false, pinOffer: false, pinMessage: "" };
+        if (cmd === "set_connection_state" || cmd === "set_update_notice") return;
+        if (cmd === "app_update_receipt") return undefined;
+        if (cmd === "app_update_check" || cmd === "app_update_apply") return { phase: "unconfigured" };
+        assert.equal(cmd, "daemon_request");
+        const req = args.request!;
+        calls.push(req);
+        const currentVersion = daemonUpgraded ? "0.164.15" : "0.164.14";
+        const statusResult = {
+          state: "ready",
+          version: currentVersion,
+          managers: [{ space: "first", state: "answering", instanceId: "m1", connectors: [{ agent: "claude", state: "available" }] }],
+          account: { mode: "account", hostSupport: "supported", spaces: [{ space: "first", desired: true, observed: "connected" }] },
+        };
+        if (req.op === "about") return { v: 1, event: "result", ok: true, result: { machine: "test", version: "0.164.15", platform: "win32", arch: "x64", memoryBytes: 0 } };
+        if (req.op === "status") return { v: 1, event: "result", ok: true, result: statusResult };
+        if (req.op === "status-watch") {
+          if (!daemonUpgraded) {
+            return {
+              v: 1,
+              event: "result",
+              ok: false,
+              error: {
+                code: "VERSION_MISMATCH",
+                message: "The running daemon and this app have different versions. Update them together before making changes.",
+                native: { code: "UNKNOWN_OP", detail: { watchMode: "refused-unknown-op", appVersion: "0.164.15", daemonVersion: "0.164.14" } },
+              },
+              result: { status: statusResult },
+            } satisfies Frame;
+          }
+          callbacks.get(args.onEvent!.id)!({ index: 0, message: { v: 1, event: "status", ok: true, watchMode: "push", result: statusResult } satisfies Frame });
+          return await new Promise<Frame>(() => {});
+        }
+        if (req.op === "spaces") return { v: 1, event: "result", ok: true, result: { signedInProviders: ["https://cloud.cotal.ai/api/auth"], spaces: [{ space: "first", label: "First", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_first", kind: "team", role: "owner" }] } };
+        throw new Error(`Unexpected request ${req.op}`);
+      },
+    };
+    const settle = async () => { for (let i = 0; i < 30; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+    try {
+      win.eval(bundle.code);
+      await settle();
+      assert.equal(doc.documentElement.dataset.watchMode, "refused-unknown-op");
+      assert.equal(doc.getElementById("connection-title")!.textContent, "Your connection needs an update");
+      assert.equal(delays.at(-1), 60_000, "VERSION_MISMATCH schedules a 60 s status recheck");
+
+      // First 60 s recheck while daemon is still 0.164.14 stays in VERSION_MISMATCH.
+      const statusBeforeStillSkewed = calls.filter(c => c.op === "status").length;
+      await tickFn!();
+      await settle();
+      assert.equal(calls.filter(c => c.op === "status").length, statusBeforeStillSkewed + 1);
+      assert.equal(doc.getElementById("connection-title")!.textContent, "Your connection needs an update");
+
+      // Another process updates the daemon to 0.164.15; next 60 s recheck notices and opens status-watch without a click.
+      daemonUpgraded = true;
+      await tickFn!();
+      await settle();
+      assert.equal(doc.documentElement.dataset.watchMode, "push");
+      assert.equal(calls.filter(c => c.op === "status-watch").length, 2);
+      assert.equal(doc.getElementById("connection-title")!.textContent, "This computer is connected");
     } finally {
       win.close();
     }
