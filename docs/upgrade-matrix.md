@@ -93,6 +93,9 @@ Without a daemon it requires the normal update result. Diagnostic and cleanup co
 Published-source refusal probes preserve the scheduler's failure budget. After two failed attempts,
 the third observation must report that it is waiting for a newer version or manual update,
 leave the updater log unchanged, and leave no staging directory. The probe ages timer records but never resets failures.
+The root-owned installation probe runs only on a disposable Linux runner. Root updates an actual
+`/usr/local` installation, and the normal account checks the selected version and its own updater's owning-command refusal.
+It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
 
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
 installed candidate's public manual updater. The synthetic target comes from the same immutable source,
