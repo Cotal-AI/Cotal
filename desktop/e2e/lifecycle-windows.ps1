@@ -606,7 +606,13 @@ public static class FilteredAppLauncher {
             if ($Action -eq 'connected-view') {
                 $heading = Exact-Control 'connection-title'
                 $label = Exact-Control 'tray-label'
-                $result = [ordered]@{ title = $heading.Current.Name; label = $label.Current.Name }
+                $labelText = $label.Current.Name
+                if (!$labelText) {
+                    foreach ($child in @(Children $label)) {
+                        if ($child.Current.Name) { $labelText = $child.Current.Name; break }
+                    }
+                }
+                $result = [ordered]@{ title = $heading.Current.Name; label = $labelText }
                 if (!$result.title -or !$result.label) { throw 'Exact native view controls expose empty accessibility names.' }
             } elseif ($Action -eq 'settings-back') {
                 Assert-Owner
