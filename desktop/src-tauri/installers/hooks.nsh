@@ -9,6 +9,7 @@ Var CotalVersion
 Var CotalSetupMutex
 Var CotalFresh
 Var CotalPhase
+Var CotalUpdateMode
 
 Function CotalSetupMessage
   ClearErrors
@@ -42,11 +43,20 @@ Function CotalHelperExit
   ${EndIf}
 FunctionEnd
 
+; In update mode with /R, every refusal relaunches $INSTDIR\cotal-desktop.exe:
+; the old app before the copy, or the new app after a finish refusal.
 Function CotalSetupRefused
   Call CotalSetupMessage
   DetailPrint "$CotalMessage"
   SetErrorLevel $CotalCode
-  ${IfNot} ${Silent}
+  ${If} $CotalUpdateMode = 1
+    ${GetOptions} $CMDLINE "/R" $0
+    ${IfNot} ${Errors}
+    ${AndIf} ${FileExists} "$INSTDIR\cotal-desktop.exe"
+      ${GetOptions} $CMDLINE "/ARGS" $0
+      nsis_tauri_utils::RunAsUser "$INSTDIR\cotal-desktop.exe" "$0"
+    ${EndIf}
+  ${ElseIfNot} ${Silent}
     MessageBox MB_ICONSTOP|MB_OK "$CotalMessage"
   ${EndIf}
   Quit
@@ -75,18 +85,23 @@ FunctionEnd
 
 !macro NSIS_HOOK_PREINSTALL
   InitPluginsDir
+  StrCpy $CotalUpdateMode $UpdateMode
+  StrCpy $CotalVersion "${VERSION}"
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\CotalDesktopSetup") p .r0 ?e'
   StrCpy $CotalSetupMutex $0
   Pop $1
   ${If} $CotalSetupMutex = 0
   ${OrIf} $1 = 183
-    SetErrorLevel 21
-    ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "Another Cotal setup is running. Wait for it to finish, then retry."
-    ${EndIf}
-    Quit
+    CreateDirectory "$LOCALAPPDATA\CotalSetup"
+    FileOpen $0 "$LOCALAPPDATA\CotalSetup\result.json" w
+    FileWrite $0 '{$\"schema$\":1,$\"outcome$\":$\"refused$\",$\"code$\":21,$\"message$\":$\"Another Cotal setup is running. Wait for it to finish, then retry.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"$CotalVersion$\",$\"phase$\":$\"mutex$\"}'
+    FileClose $0
+    FileOpen $0 "$LOCALAPPDATA\CotalSetup\message.txt" w
+    FileWrite $0 "Another Cotal setup is running. Wait for it to finish, then retry.$\r$\n"
+    FileClose $0
+    StrCpy $CotalCode "21"
+    Call CotalSetupRefused
   ${EndIf}
-  StrCpy $CotalVersion "${VERSION}"
   ${IfNot} ${FileExists} "$INSTDIR\cotal-desktop.exe"
   ${AndIfNot} ${FileExists} "$LOCALAPPDATA\CotalSetup\service-update.json"
   ${AndIfNot} ${FileExists} "$LOCALAPPDATA\Cotal\daemon\service-unit.json"
@@ -111,13 +126,8 @@ FunctionEnd
   Pop $CotalMessage
   Call CotalHelperExit
   ${If} $CotalCode != "0"
-    Call CotalSetupMessage
-    DetailPrint "$CotalMessage"
-    SetErrorLevel 21
-    ${IfNot} ${Silent}
-      MessageBox MB_ICONSTOP|MB_OK "$CotalMessage"
-    ${EndIf}
-    Quit
+    StrCpy $CotalCode "21"
+    Call CotalSetupRefused
   ${EndIf}
   ${If} $CotalMessage == "recover$\r$\n"
   ${OrIf} $CotalMessage == "recover$\n"
@@ -131,6 +141,7 @@ FunctionEnd
     Call CotalHelperExit
     ${If} $CotalCode == "20"
     ${AndIfNot} ${Silent}
+    ${AndIf} $CotalUpdateMode <> 1
       Call CotalSetupMessage
       MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$CotalMessage" IDRETRY cotal_prepare_retry
       SetErrorLevel 20
@@ -162,6 +173,7 @@ FunctionEnd
       Call CotalSetupMessage
       DetailPrint "$CotalMessage"
       ${IfNot} ${Silent}
+      ${AndIf} $CotalUpdateMode <> 1
         MessageBox MB_ICONINFORMATION|MB_OK "$CotalMessage"
       ${EndIf}
       SetErrorLevel 23

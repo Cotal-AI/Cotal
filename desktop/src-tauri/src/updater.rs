@@ -30,27 +30,27 @@ pub struct UpdateView {
 impl UpdateView {
     pub fn disabled() -> Self {
         Self { phase: "unconfigured", version: None, checked_at: None, downloaded: None, total: None,
-            reason: Some(if cfg!(target_os = "linux") { "This Linux build cannot update itself because installing a deb or rpm requires administrator rights. Use the matching package installer." } else if cfg!(target_os = "windows") { "This Windows build updates through the installer. Desktop automatic updates are not available yet." } else { "This build cannot update itself. Use the installer to update Cotal." }.into()) }
+            reason: Some(if cfg!(target_os = "linux") { "This Linux build cannot update itself because installing a deb or rpm requires administrator rights. Use the matching package installer." } else { "This build cannot update itself. Use the installer to update Cotal." }.into()) }
     }
 }
 
-#[cfg(any(not(cotal_updater), not(target_os = "macos")))]
+#[cfg(any(not(cotal_updater), target_os = "linux"))]
 #[tauri::command]
 pub async fn app_update_check() -> Result<UpdateView, String> { Ok(UpdateView::disabled()) }
 
-#[cfg(any(not(cotal_updater), not(target_os = "macos")))]
+#[cfg(any(not(cotal_updater), target_os = "linux"))]
 #[tauri::command]
 pub async fn app_update_download() -> Result<UpdateView, String> { Ok(UpdateView::disabled()) }
 
-#[cfg(any(not(cotal_updater), not(target_os = "macos")))]
+#[cfg(any(not(cotal_updater), target_os = "linux"))]
 #[tauri::command]
 pub async fn app_update_apply() -> Result<UpdateView, String> { Ok(UpdateView::disabled()) }
 
-#[cfg(any(not(cotal_updater), not(target_os = "macos")))]
+#[cfg(any(not(cotal_updater), target_os = "linux"))]
 #[tauri::command]
 pub fn app_update_receipt() -> Result<Option<serde_json::Value>, String> { Ok(None) }
 
-#[cfg(all(test, any(not(cotal_updater), not(target_os = "macos"))))]
+#[cfg(all(test, any(not(cotal_updater), target_os = "linux")))]
 mod disabled_tests {
     #[test]
     fn no_key_commands_cannot_produce_a_candidate_or_download() {
@@ -69,7 +69,7 @@ mod disabled_tests {
     }
 }
 
-#[cfg(all(cotal_updater, target_os = "macos"))]
+#[cfg(all(cotal_updater, not(target_os = "linux")))]
 mod configured {
     use super::UpdateView;
     use crate::{app::RequestSlots, app_activity::Activity, DesktopRequest};
@@ -125,6 +125,9 @@ mod configured {
         Ok(state)
     }
     pub fn load(app: &AppHandle) -> Updates {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
         let state = match read_cache(app) {
             Ok(state) => state,
             Err(reason) => {
@@ -135,7 +138,37 @@ mod configured {
             }
         };
         let saved = match receipt_path(app).and_then(|path| crate::update_receipt::take_session(&path)) {
-            Ok(Some(receipt)) => Some(Ok(receipt)),
+            Ok(Some(receipt)) => {
+                #[cfg(target_os = "windows")]
+                let receipt = {
+                    let setup_result = read_setup_result();
+                    let (receipt, reason) = crate::update_receipt::reconcile_setup(
+                        receipt,
+                        &app.package_info().version.to_string(),
+                        setup_result.as_ref().map(|opt| opt.as_ref()).map_err(String::as_str),
+                    );
+                    if let Some(reason) = reason {
+                        if let Ok(mut pending) = state.pending.lock() {
+                            if receipt.phase == "installed" {
+                                pending.view.phase = "current";
+                                pending.view.version = None;
+                                pending.view.checked_at = Some(now());
+                                pending.update = None;
+                                pending.bytes = None;
+                            }
+                            pending.view.reason = Some(reason);
+                        }
+                        if let Err(save_error) = save(app, &state) {
+                            if let Ok(mut pending) = state.pending.lock() {
+                                pending.view.phase = "failed";
+                                pending.view.reason = Some(format!("Could not save desktop update check: {save_error}"));
+                            }
+                        }
+                    }
+                    receipt
+                };
+                Some(Ok(receipt))
+            }
             Ok(None) => None,
             Err(reason) => Some(Err(reason)),
         };
@@ -215,6 +248,9 @@ mod configured {
     }
 
     async fn download(app: &AppHandle, state: &Updates) -> Result<UpdateView, String> {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
         let mut update = with_pending(&state, |pending| {
             pending.update.clone().ok_or_else(|| "No manifest-verified desktop update is available.".to_string())
         })??;
@@ -246,11 +282,39 @@ mod configured {
     pub fn receipt(state: &Updates) -> Result<Option<Receipt>, String> {
         state.receipt.lock().map_err(|_| "Desktop update result is unavailable.")?.take().transpose()
     }
+    #[cfg(target_os = "windows")]
+    fn read_setup_result() -> Result<Option<serde_json::Value>, String> {
+        let local = std::env::var_os("LOCALAPPDATA").ok_or("The Windows application data directory is unavailable.")?;
+        let path = std::path::PathBuf::from(local).join("CotalSetup").join("result.json");
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("Setup result could not be read: {error}")),
+        };
+        let mut bytes = Vec::new();
+        file.take(65_537).read_to_end(&mut bytes).map_err(|error| format!("Setup result could not be read: {error}"))?;
+        if bytes.len() > 65_536 { return Err("Setup result is too large.".into()); }
+        let value = serde_json::from_slice(&bytes).map_err(|error| format!("Setup result is invalid JSON: {error}"))?;
+        Ok(Some(value))
+    }
+    #[cfg(target_os = "windows")]
+    fn clear_setup_result() {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let _ = fs::remove_file(std::path::PathBuf::from(local).join("CotalSetup").join("result.json"));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    async fn windows_active_agents(app: &AppHandle) -> Result<Option<String>, String> {
+        let slots = app.state::<RequestSlots>();
+        let frame = crate::app::run_request(app, &slots, DesktopRequest::Status {}, None).await?;
+        crate::update_receipt::active_agents_reason(&frame)
+    }
     pub fn reopen(app: &AppHandle) -> Result<Option<bool>, String> {
         let state = app.state::<Updates>();
         let saved = state.receipt.lock().map_err(|_| "Desktop update result is unavailable.")?;
+        let version = app.package_info().version.to_string();
         match saved.as_ref() {
-            Some(Ok(receipt)) if receipt.relaunch_pending && receipt.target == app.package_info().version.to_string() => Ok(Some(receipt.reopen)),
+            Some(Ok(receipt)) if receipt.relaunch_pending && (receipt.target == version || (cfg!(target_os = "windows") && receipt.phase == "failed" && receipt.from == version)) => Ok(Some(receipt.reopen)),
             _ => Ok(None),
         }
     }
@@ -290,16 +354,22 @@ mod configured {
     }
 
     fn unprivileged_replacement(app: &AppHandle) -> Result<bool, String> {
-        use std::{ffi::CString, os::unix::ffi::OsStrExt};
-        unsafe extern "C" { fn access(path: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int; }
         let bundle = crate::native_presence::updater_location(app)?;
-        let parent = bundle.parent().ok_or("The app installation has no parent directory.")?;
-        for path in [bundle.as_path(), parent] {
-            let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| "The app path is invalid.")?;
-            // W_OK | X_OK: the actual installing user must be able to modify this directory.
-            if unsafe { access(path.as_ptr(), 3) } != 0 { return Ok(false); }
-        }
-        let probe = parent.join(format!(".cotal-update-{}-{}", std::process::id(), now()));
+        #[cfg(unix)]
+        let directory = {
+            use std::{ffi::CString, os::unix::ffi::OsStrExt};
+            unsafe extern "C" { fn access(path: *const std::ffi::c_char, mode: std::ffi::c_int) -> std::ffi::c_int; }
+            let parent = bundle.parent().ok_or("The app installation has no parent directory.")?;
+            for path in [bundle.as_path(), parent] {
+                let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| "The app path is invalid.")?;
+                // W_OK | X_OK: the actual installing user must be able to modify this directory.
+                if unsafe { access(path.as_ptr(), 3) } != 0 { return Ok(false); }
+            }
+            parent
+        };
+        #[cfg(not(unix))]
+        let directory = bundle.as_path();
+        let probe = directory.join(format!(".cotal-update-{}-{}", std::process::id(), now()));
         match fs::create_dir(&probe) {
             Ok(()) => { fs::remove_dir(probe).map_err(|error| error.to_string())?; Ok(true) }
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(30) => Ok(false),
@@ -320,6 +390,12 @@ mod configured {
             return waiting(&app, state, "This app needs administrator permission to update. Use Restart to update or the installer.");
         }
         if !automatic(&app).await? { return waiting(&app, state, "Automatic updates are off. No app files were changed."); }
+        #[cfg(target_os = "windows")]
+        if !explicit {
+            if let Some(reason) = windows_active_agents(&app).await? {
+                return waiting(&app, state, &reason);
+            }
+        }
         clear_failed_receipt(&app)?;
         *state.receipt.lock().map_err(|_| "Desktop update result is unavailable.")? = None;
         if !with_pending(state, |pending| pending.bytes.is_some())? {
@@ -346,6 +422,14 @@ mod configured {
             let enabled = tokio::time::timeout(Duration::from_secs(5), automatic(&app)).await
                 .map_err(|_| "The automatic update preference did not answer within five seconds. No app files were changed.".to_string())??;
             if !enabled { return waiting(&app, state, "Automatic updates are off. No app files were changed."); }
+            #[cfg(target_os = "windows")]
+            if !explicit {
+                let reason = tokio::time::timeout(Duration::from_secs(5), windows_active_agents(&app)).await
+                    .map_err(|_| "The background service status did not answer within five seconds. No app files were changed.".to_string())??;
+                if let Some(reason) = reason {
+                    return waiting(&app, state, &reason);
+                }
+            }
             crate::native_presence::updater_location(&app)?;
             if !explicit && !unprivileged_replacement(&app)? {
                 return waiting(&app, state, "This app needs administrator permission to update. Use Restart to update or the installer.");
@@ -355,6 +439,14 @@ mod configured {
                 Ok::<_, String>((pending.update.clone().ok_or("The verified update is unavailable.")?, pending.bytes.take().ok_or("The verified download is unavailable.")?))
             })??;
             let mut receipt = Receipt { schema: 1, from: app.package_info().version.to_string(), target: update.version.clone(), phase: "installing".into(), reopen: explicit || activity.take_show_request()?, relaunch_pending: true, reason: None };
+            #[cfg(target_os = "windows")]
+            let update = {
+                let quit = activity.finish()?;
+                receipt.reopen = !quit && (receipt.reopen || activity.take_show_request()?);
+                receipt.relaunch_pending = !quit;
+                clear_setup_result();
+                update.restart_after_install(!quit)
+            };
             write_receipt(&app, &receipt)?;
             with_pending(state, |pending| { pending.view.phase = "installing"; pending.view.reason = None; })?;
             publish(&app, state)?;
@@ -387,28 +479,28 @@ mod configured {
         result
     }
 }
-#[cfg(all(cotal_updater, target_os = "macos"))]
+#[cfg(all(cotal_updater, not(target_os = "linux")))]
 pub use configured::{load, reopen};
 
-#[cfg(all(cotal_updater, target_os = "macos"))]
+#[cfg(all(cotal_updater, not(target_os = "linux")))]
 #[tauri::command]
 pub async fn app_update_check(app: tauri::AppHandle, state: tauri::State<'_, configured::Updates>, manual: bool) -> Result<UpdateView, String> {
     configured::check(app, &state, manual).await
 }
 
-#[cfg(all(cotal_updater, target_os = "macos"))]
+#[cfg(all(cotal_updater, not(target_os = "linux")))]
 #[tauri::command]
 pub async fn app_update_download(app: tauri::AppHandle, state: tauri::State<'_, configured::Updates>) -> Result<UpdateView, String> {
     configured::apply(app, &state, false).await
 }
 
-#[cfg(all(cotal_updater, target_os = "macos"))]
+#[cfg(all(cotal_updater, not(target_os = "linux")))]
 #[tauri::command]
 pub async fn app_update_apply(app: tauri::AppHandle, state: tauri::State<'_, configured::Updates>, explicit: bool) -> Result<UpdateView, String> {
     configured::apply(app, &state, explicit).await
 }
 
-#[cfg(all(cotal_updater, target_os = "macos"))]
+#[cfg(all(cotal_updater, not(target_os = "linux")))]
 #[tauri::command]
 pub fn app_update_receipt(state: tauri::State<'_, configured::Updates>) -> Result<Option<configured::Receipt>, String> {
     configured::receipt(&state)

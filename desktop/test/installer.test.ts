@@ -15,6 +15,7 @@ test('pinned installer guard precedes the old uninstaller without changing updat
   const upstream = readText('tauri-2.12.4.nsi');
   assert.equal((source.match(/StrCpy \$UpdateMode 1/g) ?? []).length, (upstream.match(/StrCpy \$UpdateMode 1/g) ?? []).length);
   const pre = source.indexOf('!insertmacro NSIS_HOOK_PREINSTALL');
+  assert.ok(source.indexOf('!addplugindir "${ADDITIONALPLUGINSPATH}"') < source.indexOf('!include "{{installer_hooks}}"'));
   assert.ok(pre < source.indexOf('!insertmacro CheckIfAppIsRunning', pre));
   assert.ok(source.indexOf('StrCpy $CotalCopying 1') > source.indexOf('!insertmacro CheckIfAppIsRunning', pre));
   assert.ok(pre < source.indexOf('File "${MAINBINARYSRCPATH}"'));
@@ -78,6 +79,10 @@ test('setup owns task suppression without task termination and persists caller-r
   assert.match(task, /handover named another installation/);
   assert.match(hooks, /MB_ICONINFORMATION/);
   assert.match(hooks, /\$CotalFresh/);
+  assert.match(hooks, /StrCpy \$CotalUpdateMode \$UpdateMode/);
+  assert.match(hooks, /Another Cotal setup is running\.[\s\S]*Call CotalSetupRefused/);
+  assert.match(hooks, /\$\{If\} \$CotalUpdateMode = 1[\s\S]*nsis_tauri_utils::RunAsUser "\$INSTDIR\\cotal-desktop\.exe" "\$0"/);
+  assert.doesNotMatch(hooks.slice(0, hooks.indexOf('Function CotalSetupAbort')), /\$CotalCopying/);
   assert.match(helper, /'started-unconfirmed'/);
   for (const field of ['schema', 'outcome', 'code', 'message', 'activeAgents', 'fromVersion', 'toVersion', 'completedAt']) assert.ok(helper.includes(field));
 });

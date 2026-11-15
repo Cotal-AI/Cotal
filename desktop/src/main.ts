@@ -88,7 +88,7 @@ let appliedUpdate: AppUpdateReceipt | undefined;
 let serviceStatus: Record<string, unknown> | undefined;
 async function applyAppUpdate(explicit = false, tick = false): Promise<void> {
   if (tick && Date.now() < nextAppApplyTick) return;
-  if (appApplyRunning || busy || loginActive || setupActive || appPlatform !== "darwin" || !autoUpdates || !appUpdate?.version) return;
+  if (appApplyRunning || busy || loginActive || setupActive || !["darwin", "win32"].includes(appPlatform) || !autoUpdates || !appUpdate?.version) return;
   appApplyRunning = true;
   if (explicit) { appliedUpdate = undefined; renderSettings(); }
   try { appUpdate = await invoke<AppUpdate>("app_update_apply", { explicit }); }
@@ -110,7 +110,7 @@ async function checkAppUpdates(manual = false): Promise<void> {
     if (appUpdate.phase === "current" && (appliedUpdate?.phase === "failed" || appliedUpdate?.target !== appVersion)) appliedUpdate = undefined;
     if (appUpdaterConfigured()) await readAutoUpdates();
     renderSettings();
-    if (autoUpdates && appUpdate.phase === "available") await applyAppUpdate();
+    if (autoUpdates && appUpdate.phase === "available") await applyAppUpdate(false, !manual && appliedUpdate?.phase === "failed");
   } catch (error) {
     text("settings-message", error instanceof Error ? error.message : String(error));
     if (manual) throw error;
@@ -171,7 +171,7 @@ function renderSettings(): void {
   const applied = appliedUpdateSummary(appliedUpdate, appVersion, serviceStatus);
   el("applied-update").hidden = !applied;
   text("applied-update", applied ?? "");
-  const canRestart = appPlatform === "darwin" && autoUpdates === true && appUpdate?.version && ["available", "ready", "failed"].includes(appUpdate.phase);
+  const canRestart = ["darwin", "win32"].includes(appPlatform) && autoUpdates === true && appUpdate?.version && ["available", "ready", "failed"].includes(appUpdate.phase);
   el("restart-update").hidden = !canRestart;
   el<HTMLButtonElement>("restart-update").disabled = busy || loginActive || setupActive || appApplyRunning;
   if (appUpdaterConfigured()) renderAppUpdate(el("settings-update-summary"), appUpdate!, autoUpdates !== false);
@@ -1148,7 +1148,10 @@ async function start(): Promise<void> {
     await listen("desktop-tray-open", () => {
       if (windowHidden && initialized && !tickRunning && Date.now() - lastTickAt >= 1000) void tick();
     });
-    try { appliedUpdate = await invoke<AppUpdateReceipt | undefined>("app_update_receipt") ?? undefined; }
+    try {
+      appliedUpdate = await invoke<AppUpdateReceipt | undefined>("app_update_receipt") ?? undefined;
+      if (appliedUpdate?.phase === "failed") nextAppApplyTick = Date.now() + 600_000;
+    }
     catch (error) { text("settings-message", error instanceof Error ? error.message : String(error)); }
     void checkAppUpdates();
     await refresh();

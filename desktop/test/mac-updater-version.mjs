@@ -2,9 +2,9 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
-if (process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted' || process.platform !== 'darwin') throw new Error('Updater fixture versions require a disposable hosted Mac.');
+if (process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted' || !['darwin', 'win32'].includes(process.platform)) throw new Error('Updater fixture versions require a disposable hosted Mac or Windows runner.');
 const version = process.argv[2];
-if (!/^0\.164\.(8|9)$/.test(version ?? '')) throw new Error('The updater fixture accepts only its declared N and N+1.');
+if (!/^0\.164\.(8|9|10)$/.test(version ?? '')) throw new Error('The updater fixture accepts only its declared N, N+1 and N+2.');
 const pnpm = process.env.npm_execpath;
 if (!pnpm) throw new Error('Run fixture version stamping with pnpm exec node.');
 const rows = JSON.parse(execFileSync(process.execPath, [pnpm, 'list', '-r', '--depth', '-1', '--json'], { encoding: 'utf8' }));
