@@ -193,6 +193,31 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     check(receipt: UnitReceipt) {
       owned(receipt);
     },
+    isEnabled(receipt: UnitReceipt): boolean {
+      const id = uid();
+      owned(receipt);
+      const read = run(LAUNCHCTL, ["print-disabled", `gui/${id}`]);
+      if (read.status !== 0) {
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `launchd's GUI domain gui/${id} did not confirm disabled services for ${receipt.unit} (${read.detail}); nothing was started`);
+      }
+      const match = /^\s*disabled services = \{([\s\S]*)\}\s*$/.exec(read.stdout);
+      if (!match) {
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `launchd's GUI domain gui/${id} returned an unparsed print-disabled block for ${receipt.unit}; nothing was started`);
+      }
+      const matches: string[] = [];
+      for (const rawLine of match[1]!.split("\n")) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const entry = /^"([^"\r\n]+)" => (true|false|disabled|enabled)$/.exec(line);
+        if (!entry) {
+          throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `launchd's GUI domain gui/${id} returned an unparsed disabled entry (${line}) while checking ${receipt.unit}; nothing was started`);
+        }
+        if (entry[1] === receipt.unit) matches.push(entry[2]!);
+      }
+      if (matches.length > 1) throw new CommandFailure("refused", "CONFLICT", `launchd returned duplicate disabled entries for ${receipt.unit}; nothing was started`);
+      const token = matches[0] ?? "false";
+      return token === "false" || token === "enabled";
+    },
     start(receipt: UnitReceipt) {
       const id = uid();
       if (owned(receipt)) step(["kickstart", `gui/${id}/${receipt.unit}`]);

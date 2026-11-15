@@ -14,7 +14,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 34);
+  assert.equal(plan.matrix.include.length, 40);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -38,24 +38,30 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 34);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 40);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
   const cells = workflow.jobs['release-cells'];
   const run = cells.steps.find(step => step.name === 'Run one real product upgrade coordinate').run;
   assert(run.includes("'source-0.164.10-daemon-self-chain': 'daemon'"));
+  assert(run.includes("'candidate-next-stopped-daemon-self': 'daemon'"));
+  assert(run.includes("'candidate-next-disabled-daemon-self': 'daemon'"));
+  assert(run.includes("'candidate-next-stopped-desktop-self': 'daemon'"));
   assert(run.includes("'candidate-next-second-self': 'daemon'"));
   assert(run.includes("'candidate-next-manual-npm': 'daemon'"));
   assert(run.includes("'candidate-next-installer-rerun': 'daemon'"));
   assert(run.includes("'--next-hop-source', cell.chain ? '0.164.10' : 'candidate'"));
   assert(run.includes("'--next-hop-phase', process.env.PHASE"));
+  assert(run.includes("if (cell.stoppedDaemonBeforeUpdate) args.push('--stopped-daemon-before-update', 'true')"));
+  assert(run.includes("if (cell.disabledDaemonBeforeUpdate) args.push('--disabled-daemon-before-update', 'true')"));
+  assert(run.includes("if (cell.desktopBesideCli) args.push('--desktop-runtime'"));
   assert(run.includes("'--next-hop-final-target', cell.finalTargetVersion"));
   assert(run.includes("} else if (process.env.PHASE === 'candidate')"));
   assert(run.includes('cell.finalTargetVersion ?? cell.targetVersion'));
   const download = cells.steps.find(step => step.with?.['artifact-ids'] === '${{ needs.release-next.outputs.artifact }}');
   assert(download.if.includes('matrix.chain == true'));
-  for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
+  for (const name of ['candidate-next-origin.json', 'EXPECTED_NEXT_ARTIFACT', 'EXPECTED_NEXT_DIGEST', 'EXPECTED_FOLLOW_ON_ARTIFACT', 'EXPECTED_FOLLOW_ON_DIGEST', 'sourceManifestSha256', 'targetManifestSha256', 'followOnManifestSha256', 'verifyCandidateNextEvidence', "'candidate-source-identity'", "'candidate-next-target'", "'next-hop-success'", "'stopped-daemon-before-update'", "'disabled-daemon-before-update'", "'stopped-desktop-beside-cli'", "'follow-on-target'", "'follow-on-success'", "'exact-source-refusal'", "'intermediate-whole-machine'"]) assert(program.includes(name), name);
 });
 test('ordinary landing push cannot admit the legacy priority cascade', () => {
   const condition = workflow.jobs.priority.if;

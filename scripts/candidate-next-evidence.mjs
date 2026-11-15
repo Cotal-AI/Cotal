@@ -193,12 +193,146 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     : hop.mode === 'source-0.164.10'
       ? report.daemonDiagnostics?.['between-hops']?.observations?.find(row => row.kind === 'installed-version')?.packageManagerRecordVersion ?? pair.sourceVersion
       : pair.sourceVersion;
-  const final = evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
+  const final = (cell.disabledDaemonBeforeUpdate || cell.desktopBesideCli)
+    ? {passed: true}
+    : evaluateManualDaemonState({diagnostics: report.daemonDiagnostics?.['after-update'], output, target: expectedFinalTarget, platform: cell.platform, expectedPackageManagerVersion: expectedFinalPackageManagerVersion});
   if (['npm', 'installer'].includes(followOnAction)) {
     assert.equal(final.updateRoute, 'in-place', 'manual npm and installer follow-on routes must clear staged generation and finish in-place at C');
     assert.equal(final.packageManagerRecordVersion, pair.followOnVersion);
   }
-  let firstRefusal = false, intermediateWhole = true, followOnSuccess, bareManualNpm;
+  let firstRefusal = false, intermediateWhole = true, followOnSuccess, bareManualNpm, stoppedDaemonBeforeUpdate, disabledDaemonBeforeUpdate, stoppedDesktopBesideCli;
+  if (cell.stoppedDaemonBeforeUpdate) {
+    assert.equal(hop.mode, 'candidate');
+    const stopped = report.stoppedDaemonBeforeUpdate;
+    assert(stopped?.commands, 'hashed stopped-daemon-before-update command evidence missing');
+    assert.match(stopped.commands.artifact ?? '', /^[A-Za-z0-9_.-]+\.txt$/);
+    const fd = openSync(join(output, stopped.commands.artifact), constants.O_RDONLY | constants.O_NOFOLLOW);
+    let archivedStopped;
+    try {
+      const stat = fstatSync(fd);
+      assert(stat.isFile() && stat.nlink === 1 && stat.size === stopped.commands.bytes && stat.size <= 524288);
+      if (process.getuid) assert(stat.uid === process.getuid() && (stat.mode & 0o022) === 0);
+      const data = readFileSync(fd);
+      assert.equal(hash(data), stopped.commands.sha256);
+      archivedStopped = JSON.parse(data);
+    } finally { closeSync(fd); }
+    const stopCalls = report.calls.filter(row => row.label === 'stop native daemon before manual repair');
+    const statusCalls = report.calls.filter(row => row.label === 'stopped daemon status before manual repair');
+    assert.equal(stopCalls.length, 1, 'stop native daemon call missing or duplicated');
+    assert(statusCalls.length >= 1, 'stopped daemon status call missing');
+    const stopCall = stopCalls[0], statusCall = statusCalls.at(-1);
+    assert(Date.parse(stopCall.finishedAt) >= Date.parse(stopCall.startedAt)
+      && Date.parse(statusCall.startedAt) >= Date.parse(stopCall.finishedAt)
+      && Date.parse(statusCall.finishedAt) >= Date.parse(statusCall.startedAt)
+      && Date.parse(command.startedAt) >= Date.parse(statusCall.finishedAt), 'stopped daemon observation must precede update --self');
+    for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) {
+      assert.equal(stopCall[key], archivedStopped.stopCommand?.[key], `stop native daemon ${key} differs from actual call`);
+      assert.equal(statusCall[key], archivedStopped.statusWhileStopped?.[key], `stopped daemon status ${key} differs from actual call`);
+    }
+    stoppedDaemonBeforeUpdate = archivedStopped.stopCommand?.exit === 0 && archivedStopped.stopCommand?.signal === null && archivedStopped.stopCommand?.timeout === false
+      && archivedStopped.statusWhileStopped?.exit === 2 && archivedStopped.statusWhileStopped?.signal === null && archivedStopped.statusWhileStopped?.timeout === false;
+  }
+  if (cell.desktopBesideCli) {
+    assert.equal(hop.mode, 'candidate');
+    assert.equal(cell.platform, 'linux');
+    assert.equal(cell.stoppedDaemonBeforeUpdate, true);
+    const desktopAfter = report.stoppedDesktopAfterUpdate;
+    assert(desktopAfter?.commands, 'hashed stopped-desktop-after-update command evidence missing');
+    assert.match(desktopAfter.commands.artifact ?? '', /^[A-Za-z0-9_.-]+\.txt$/);
+    let archivedDesktopAfter;
+    const fd = openSync(join(output, desktopAfter.commands.artifact), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = fstatSync(fd);
+      assert(stat.isFile() && stat.nlink === 1 && stat.size === desktopAfter.commands.bytes && stat.size <= 524288);
+      if (process.getuid) assert(stat.uid === process.getuid() && (stat.mode & 0o022) === 0);
+      const data = readFileSync(fd);
+      assert.equal(hash(data), desktopAfter.commands.sha256);
+      archivedDesktopAfter = JSON.parse(data);
+    } finally { closeSync(fd); }
+    const statusAfterCalls = report.calls.filter(row => row.label === 'native status after');
+    const showAfterCalls = report.calls.filter(row => row.label === 'desktop unit show after CLI update');
+    assert.equal(statusAfterCalls.length, 1, 'stopped desktop status after call missing or duplicated');
+    assert.equal(showAfterCalls.length, 1, 'desktop unit show after call missing or duplicated');
+    const statusAfterCall = statusAfterCalls[0], showAfterCall = showAfterCalls[0];
+    assert(Date.parse(statusAfterCall.startedAt) >= Date.parse(command.finishedAt)
+      && Date.parse(showAfterCall.startedAt) >= Date.parse(statusAfterCall.finishedAt), 'stopped desktop observations must follow update --self');
+    for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) {
+      assert.equal(statusAfterCall[key], archivedDesktopAfter.status?.[key], `stopped desktop status after ${key} differs from actual call`);
+      assert.equal(showAfterCall[key], archivedDesktopAfter.unitShowAfter?.[key], `desktop unit show after ${key} differs from actual call`);
+    }
+    const desktopEntryPath = report.desktop?.entry;
+    assert(typeof desktopEntryPath === 'string' && desktopEntryPath.length > 0 && desktopEntryPath === join(String(report.desktop?.runtime ?? ''), 'dist/cotal.js'), 'recorded desktop entry path missing');
+    stoppedDesktopBesideCli = archivedDesktopAfter.status?.exit === 2 && archivedDesktopAfter.status?.signal === null && archivedDesktopAfter.status?.timeout === false
+      && archivedDesktopAfter.unitShowAfter?.exit === 0 && archivedDesktopAfter.unitShowAfter?.signal === null && archivedDesktopAfter.unitShowAfter?.timeout === false
+      && /ActiveState=inactive/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? '')) && /MainPID=0/.test(String(archivedDesktopAfter.unitShowAfter?.stdout ?? ''))
+      && String(command.stdout ?? '').includes(`machine daemon: the background service belongs to another Cotal installation (${desktopEntryPath}). This update left it stopped.`)
+      && archivedDesktopAfter.updateNamesDesktopOwner === true
+      && archivedDesktopAfter.remainsStopped === true;
+  }
+  if (cell.disabledDaemonBeforeUpdate) {
+    assert.equal(hop.mode, 'candidate');
+    assert(['linux', 'darwin'].includes(cell.platform));
+    const disabledBefore = report.disabledDaemonBeforeUpdate;
+    const disabledAfter = report.disabledDaemonAfterUpdate;
+    assert(disabledBefore?.commands && disabledAfter?.commands, 'hashed disabled-daemon command evidence missing');
+    let archivedBefore, archivedAfter;
+    for (const [entry, assign] of [[disabledBefore.commands, v => { archivedBefore = v; }], [disabledAfter.commands, v => { archivedAfter = v; }]]) {
+      assert.match(entry.artifact ?? '', /^[A-Za-z0-9_.-]+\.txt$/);
+      const fd = openSync(join(output, entry.artifact), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = fstatSync(fd);
+        assert(stat.isFile() && stat.nlink === 1 && stat.size === entry.bytes && stat.size <= 524288);
+        if (process.getuid) assert(stat.uid === process.getuid() && (stat.mode & 0o022) === 0);
+        const data = readFileSync(fd);
+        assert.equal(hash(data), entry.sha256);
+        assign(JSON.parse(data));
+      } finally { closeSync(fd); }
+    }
+    const disableCalls = report.calls.filter(row => row.label === 'disable native daemon before manual update');
+    const stopCalls = report.calls.filter(row => row.label === 'stop native daemon before manual update');
+    const statusBeforeCalls = report.calls.filter(row => row.label === 'disabled daemon status before manual update');
+    const showBeforeCalls = report.calls.filter(row => row.label === 'disabled unit show before manual update');
+    const statusAfterCalls = report.calls.filter(row => row.label === 'native status after');
+    const showAfterCalls = report.calls.filter(row => row.label === 'disabled unit show after manual update');
+    assert.equal(disableCalls.length, 1, 'disable native daemon call missing or duplicated');
+    assert.equal(stopCalls.length, cell.platform === 'darwin' ? 1 : 0, 'darwin disabled cell requires one bootout stop call');
+    assert(statusBeforeCalls.length >= 1, 'disabled daemon status before call missing');
+    assert.equal(showBeforeCalls.length, 1, 'disabled unit show before call missing or duplicated');
+    assert.equal(statusAfterCalls.length, 1, 'disabled daemon status after call missing or duplicated');
+    assert.equal(showAfterCalls.length, 1, 'disabled unit show after call missing or duplicated');
+    const disableCall = disableCalls[0], stopCall = stopCalls[0], statusBeforeCall = statusBeforeCalls.at(-1), showBeforeCall = showBeforeCalls[0], statusAfterCall = statusAfterCalls[0], showAfterCall = showAfterCalls[0];
+    assert(Date.parse(disableCall.finishedAt) >= Date.parse(disableCall.startedAt)
+      && (!stopCall || (Date.parse(stopCall.startedAt) >= Date.parse(disableCall.finishedAt) && Date.parse(stopCall.finishedAt) >= Date.parse(stopCall.startedAt)))
+      && Date.parse(statusBeforeCall.startedAt) >= Date.parse((stopCall ?? disableCall).finishedAt)
+      && Date.parse(showBeforeCall.startedAt) >= Date.parse(statusBeforeCall.finishedAt)
+      && Date.parse(command.startedAt) >= Date.parse(showBeforeCall.finishedAt)
+      && Date.parse(statusAfterCall.startedAt) >= Date.parse(command.finishedAt)
+      && Date.parse(showAfterCall.startedAt) >= Date.parse(statusAfterCall.finishedAt), 'disabled daemon observations must bracket update --self');
+    for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) {
+      assert.equal(disableCall[key], archivedBefore.disableCommand?.[key], `disable native daemon ${key} differs from actual call`);
+      if (stopCall) assert.equal(stopCall[key], archivedBefore.stopCommand?.[key], `stop native daemon ${key} differs from actual call`);
+      assert.equal(statusBeforeCall[key], archivedBefore.statusWhileDisabled?.[key], `disabled daemon status before ${key} differs from actual call`);
+      assert.equal(showBeforeCall[key], archivedBefore.unitShowBefore?.[key], `disabled unit show before ${key} differs from actual call`);
+      assert.equal(statusAfterCall[key], archivedAfter.status?.[key], `disabled daemon status after ${key} differs from actual call`);
+      assert.equal(showAfterCall[key], archivedAfter.unitShowAfter?.[key], `disabled unit show after ${key} differs from actual call`);
+    }
+    const cleanZero = item => item?.exit === 0 && item?.signal === null && item?.timeout === false;
+    const stoppedExit = item => item?.exit === 2 && item?.signal === null && item?.timeout === false;
+    const unitName = disabledBefore.unit;
+    assert(typeof unitName === 'string' && unitName.length > 0, 'disabled unit name missing');
+    const inactiveDisabled = text => cell.platform === 'linux'
+      ? /ActiveState=inactive/.test(String(text ?? '')) && /UnitFileState=disabled/.test(String(text ?? '')) && /MainPID=0/.test(String(text ?? ''))
+      : new RegExp(`"${unitName.replaceAll('.', '\\.')}" => (?:true|disabled)`).test(String(text ?? ''));
+    disabledDaemonBeforeUpdate = cleanZero(archivedBefore.disableCommand)
+      && (!stopCall || cleanZero(archivedBefore.stopCommand))
+      && stoppedExit(archivedBefore.statusWhileDisabled)
+      && cleanZero(archivedBefore.unitShowBefore) && inactiveDisabled(archivedBefore.unitShowBefore?.stdout)
+      && stoppedExit(archivedAfter.status)
+      && cleanZero(archivedAfter.unitShowAfter) && inactiveDisabled(archivedAfter.unitShowAfter?.stdout)
+      && String(command.stdout ?? '').includes('service is disabled; not started')
+      && archivedAfter.updateReportsDisabledNotStarted === true
+      && archivedAfter.remainsDisabledAndStopped === true;
+  }
   if (hop.mode === 'source-0.164.10') {
     assert.equal(report.source, '0.164.10');
     const firstCalls=report.calls.filter(row=>row.label==='upgrade under test');
@@ -353,5 +487,5 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
     intermediateWhole = intermediateWhole && middle.passed;
     managerRestored = middle.passed && last.passed;
   }
-  return {sourceIdentity: true, firstRefusal, intermediateWhole, nextHopSuccess: nextHopSuccess && final.passed && managerRestored !== false && followOnSuccess !== false, ...(followOnSuccess === undefined ? {} : {followOnSuccess: followOnSuccess && final.passed}), ...(bareManualNpm === undefined ? {} : {bareManualNpm}), ...(managerRestored === undefined ? {} : {hostedManagerRestored: managerRestored})};
+  return {sourceIdentity: true, firstRefusal, intermediateWhole, nextHopSuccess: nextHopSuccess && final.passed && managerRestored !== false && followOnSuccess !== false && stoppedDaemonBeforeUpdate !== false && disabledDaemonBeforeUpdate !== false && stoppedDesktopBesideCli !== false, ...(stoppedDaemonBeforeUpdate === undefined ? {} : {stoppedDaemonBeforeUpdate}), ...(disabledDaemonBeforeUpdate === undefined ? {} : {disabledDaemonBeforeUpdate}), ...(stoppedDesktopBesideCli === undefined ? {} : {stoppedDesktopBesideCli}), ...(followOnSuccess === undefined ? {} : {followOnSuccess: followOnSuccess && final.passed}), ...(bareManualNpm === undefined ? {} : {bareManualNpm}), ...(managerRestored === undefined ? {} : {hostedManagerRestored: managerRestored})};
 }

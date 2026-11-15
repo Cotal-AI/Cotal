@@ -7,9 +7,9 @@ import { update, updateRuntime, installedCliVersion, localUpdateManagers, readMa
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
-import { daemonPaths, EndpointRefusal } from "./endpoint.js";
+import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
@@ -19,13 +19,41 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 
+async function posixGenerationLifecycle(paths: DaemonPaths): Promise<{ poll(): Promise<boolean | void>; close(): void }> {
+  const initial = readLifetimeRecord(paths.lock);
+  let observedLive = Boolean(initial?.start && processBirth(initial.pid) === initial.start);
+  let started = false;
+  return {
+    async poll() {
+      if (started || observedLive) return;
+      const current = readLifetimeRecord(paths.lock);
+      if (current?.start && processBirth(current.pid) === current.start) {
+        observedLive = true;
+        return;
+      }
+      const installation = installedDaemonIdentity(paths);
+      if (!installation.same) {
+        console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+        started = true;
+        return false;
+      }
+      started = true;
+      const outcome = await startEnabledInstalled(paths, undefined);
+      if (!outcome.started) {
+        console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; not started`);
+        return false;
+      }
+    },
+    close() {},
+  };
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
   let preparedRestart = false;
-  let absentRecoveryHost = false;
   let currentPackages = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
@@ -91,8 +119,9 @@ const composed: Command = { ...command, async run(args) {
       }
     };
   }, waitForInstalledGeneration: async version => {
-    if (absentRecoveryHost) return;
-    await waitForInstalledDaemonGeneration(version, process.platform === "win32" ? { lifecycle: windowsGenerationLifecycle } : {});
+    await waitForInstalledDaemonGeneration(version, {
+      lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
+    });
   }, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
     const recovery = readUpdateRecovery();
     if (recovery?.preparedRestart && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
@@ -107,7 +136,7 @@ const composed: Command = { ...command, async run(args) {
         absent = true;
       }
       if (absent) {
-        absentRecoveryHost = recovery.phase === "restoring";
+        if (process.platform === "win32") await captureWindowsGeneration(paths);
         console.log("hosted Manager continuity: daemon lifetime proves no live host");
         return "none";
       }
@@ -134,7 +163,10 @@ const composed: Command = { ...command, async run(args) {
       if (process.platform === "win32") await captureWindowsGeneration(daemonPaths());
       managers = reply.result.managers ?? [];
     } catch (error) {
-      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+      if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
+        if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
+        return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+      }
       throw error;
     }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.
@@ -226,16 +258,21 @@ const composed: Command = { ...command, async run(args) {
     }
     return localVerdict;
   }) });
-  } finally {
-    closeWindowsGeneration();
-    if (recoveryFence) await managerViaDaemon({ paths: daemonPaths() }, { op: "managers-abort-restart" });
-  }
-  if (currentPackages || args.values.check === true || args.values.auto || args.values.notify || process.exitCode || !daemonObserved) return;
+  if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
   // This process keeps the release it loaded. The daemon must run the selected or installed release.
   const expectedVersion = replacementVersion ?? installedCliVersion();
+  if (!daemonObserved) {
+    if (args.values.self === true) {
+      await waitForInstalledDaemonGeneration(expectedVersion, {
+        lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
+      });
+    }
+    return;
+  }
+  if (currentPackages) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
@@ -268,6 +305,10 @@ const composed: Command = { ...command, async run(args) {
     } catch (error) { if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error; }
     if (Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the updated daemon did not restore its hosted Managers before the deadline", { remedy: "read \`cotal daemon status\` and the recorded daemon user service" });
     await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  } finally {
+    closeWindowsGeneration();
+    if (recoveryFence) await managerViaDaemon({ paths: daemonPaths() }, { op: "managers-abort-restart" });
   }
 } };
 registry.register(composed);

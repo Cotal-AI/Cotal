@@ -12,7 +12,7 @@ export interface GenerationWaitProbe {
   readonly query?: typeof queryDaemon;
   readonly timeoutMs?: number;
   readonly lifecycle?: (paths: DaemonPaths, deadline: number) => Promise<{
-    poll(remainingMs: number): Promise<void>;
+    poll(remainingMs: number): Promise<boolean | void>;
     close(): void;
   }>;
 }
@@ -25,7 +25,16 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     throw error;
   }
   // Foreground daemons and another installation keep their existing update behavior.
-  if (!(probe.installed ? probe.installed() : existsSync(unitReceiptFile(paths)) && installedDaemonIdentity(paths).same)) return;
+  if (probe.installed) {
+    if (!probe.installed()) return;
+  } else {
+    if (!existsSync(unitReceiptFile(paths))) return;
+    const installation = installedDaemonIdentity(paths);
+    if (!installation.same) {
+      console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      return;
+    }
+  }
   const query = probe.query ?? queryDaemon;
   const bound = probe.timeoutMs ?? 120_000;
   console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
@@ -38,7 +47,7 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     if (remaining <= 0) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `installed Cotal ${version} did not become ready within ${Math.round(bound / 1000)}s: ${waiting}; connector reconciliation was not started by this update. Read \`cotal daemon status\` and the recorded daemon user service, restore the daemon and its hosted Managers, then run \`cotal update\` again`, {
       remedy: "read \`cotal daemon status\` and the recorded daemon user service, restore the daemon and its hosted Managers, then run \`cotal update\` again",
     });
-    await lifecycle?.poll(remaining);
+    if (await lifecycle?.poll(remaining) === false) return;
     if (Date.now() >= deadline) continue;
     try {
       const reply = await query({ paths, timeoutMs: Math.min(20_000, Math.max(1, deadline - Date.now())) });

@@ -136,7 +136,7 @@ export function boundedCells(plan) {
       installerSource: channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? "ARTIFACT/installer.sh" : null,
       installerReceiptRequired: channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate",
       installerOverride: false, required: !reason, disposition: reason ? "excluded" : "required", reason,
-      requiredAssertions: reason ? [] : ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", ...(channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? ["installer-source-receipt"] : []), ...(scenario === "daemon-scheduler" ? ["native-scheduler", "daemon-restart"] : []), ...(["daemon-self", "candidate-next-daemon-self"].includes(scenario) ? ["native-service-manual", "independent-final-state"] : []), ...(scenario === "candidate-next-daemon-self" ? ["candidate-source-identity", "candidate-next-target", "next-hop-success"] : []), ...(["agent-stop-consent", "standalone-stop-consent"].includes(scenario) ? ["stop-consent", "owned-stack-cleanup"] : []), ...(scenario === "foreign-config-recovery" ? ["foreign-snapshot-retained"] : []), ...(scenario === "container-manager" ? ["container-manager-preserved", "owned-stack-cleanup"] : [])],
+      requiredAssertions: reason ? [] : ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", ...(channel === "installer" && scenario === "configured-rerun" && plan.phase === "candidate" ? ["installer-source-receipt"] : []), ...(scenario === "daemon-scheduler" ? ["native-scheduler", "daemon-restart"] : []), ...(["daemon-self", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self"].includes(scenario) ? ["native-service-manual", "independent-final-state"] : []), ...(scenario === "candidate-next-disabled-daemon-self" ? ["native-service-manual", "disabled-daemon-before-update"] : []), ...(scenario === "candidate-next-stopped-desktop-self" ? ["stopped-daemon-before-update", "stopped-desktop-beside-cli"] : []), ...(["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(scenario) ? ["candidate-source-identity", "candidate-next-target", "next-hop-success"] : []), ...(scenario === "candidate-next-stopped-daemon-self" ? ["stopped-daemon-before-update"] : []), ...(["agent-stop-consent", "standalone-stop-consent"].includes(scenario) ? ["stop-consent", "owned-stack-cleanup"] : []), ...(scenario === "foreign-config-recovery" ? ["foreign-snapshot-retained"] : []), ...(scenario === "container-manager" ? ["container-manager-preserved", "owned-stack-cleanup"] : [])],
       ...identity });
   };
   for (const platform of platforms) for (const scenario of ["fresh", "configured", "stale-self"]) add(platform, "npm", scenario);
@@ -166,6 +166,25 @@ export function boundedCells(plan) {
       sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A", targetVersion,
       targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
       syntheticVersionRule: "candidate.patch+1000",
+    });
+    for (const platform of platforms) add(platform, "npm", "candidate-next-stopped-daemon-self", null, {
+      sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A", targetVersion,
+      targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000",
+      stoppedDaemonBeforeUpdate: true,
+    });
+    for (const platform of ["linux", "darwin"]) add(platform, "npm", "candidate-next-disabled-daemon-self", null, {
+      sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A", targetVersion,
+      targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000",
+      disabledDaemonBeforeUpdate: true,
+    });
+    add("linux", "npm", "candidate-next-stopped-desktop-self", null, {
+      sourceVersion: plan.targetVersion, sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A", targetVersion,
+      targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000",
+      stoppedDaemonBeforeUpdate: true,
+      desktopBesideCli: true,
     });
     const followOnAssertions = ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", "native-service-manual", "independent-final-state", "candidate-source-identity", "candidate-next-target", "next-hop-success", "intermediate-whole-machine", "follow-on-target", "follow-on-success"];
     for (const platform of ["linux", "darwin"]) {

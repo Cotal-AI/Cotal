@@ -22,7 +22,14 @@ import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
-  if (options['candidate-next'] === undefined) return undefined;
+  if (options['candidate-next'] === undefined) {
+    if (options['stopped-daemon-before-update'] !== undefined) {
+      assert.equal(options['stopped-daemon-before-update'], 'true', 'stopped-daemon-before-update accepts only true');
+      assert(disposable && Boolean(options['desktop-runtime']) && options.state === 'daemon' && options.method === 'self', 'stopped-daemon-before-update without candidate-next requires disposable desktop-runtime daemon self');
+    }
+    assert.equal(options['disabled-daemon-before-update'], undefined, 'disabled-daemon-before-update requires candidate-next');
+    return undefined;
+  }
   const mode = options['next-hop-source'];
   assert(['candidate', '0.164.10'].includes(mode), 'candidate next source must be explicit');
   assert(['candidate','published'].includes(options['next-hop-phase']), 'candidate next phase must be explicit');
@@ -32,6 +39,17 @@ export function candidateNextOptions(options, disposable = hosted) {
     assert(mode === 'candidate' && options['candidate-follow-on'] && options.state === 'daemon' && options.method === 'self', 'follow-on action requires candidate next hop, daemon state, self method and follow-on closure');
     if (followOnAction === 'installer') assert(options.layout === 'installer' && options['candidate-follow-on-installer'], 'installer follow-on action requires installer layout and follow-on installer script');
     else assert.equal(options.layout, 'npm', 'self and npm follow-on actions require npm layout');
+  }
+  if (options['stopped-daemon-before-update'] !== undefined) {
+    assert.equal(options['stopped-daemon-before-update'], 'true', 'stopped-daemon-before-update accepts only true');
+    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && followOnAction === undefined && options['disabled-daemon-before-update'] === undefined, 'stopped-daemon-before-update requires candidate next hop, npm layout, daemon state and self method without follow-on action');
+  }
+  if (options['desktop-runtime'] !== undefined) {
+    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && options['stopped-daemon-before-update'] === 'true' && process.platform === 'linux', 'candidate-next desktop-runtime requires Linux stopped-daemon-before-update');
+  }
+  if (options['disabled-daemon-before-update'] !== undefined) {
+    assert.equal(options['disabled-daemon-before-update'], 'true', 'disabled-daemon-before-update accepts only true');
+    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && followOnAction === undefined && options['stopped-daemon-before-update'] === undefined && ['linux', 'darwin'].includes(process.platform), 'disabled-daemon-before-update requires POSIX candidate next hop, npm layout, daemon state and self method without follow-on action');
   }
   const hostedConsent = mode === '0.164.10' && options.state === 'agent' && options.layout === 'npm'
     && options['daemon-hosted-manager'] === 'true' && options['stop-agents'] === 'true'
@@ -352,7 +370,7 @@ export async function matrixCell(options) {
   if (launchdProof) assert(hosted && process.platform === 'darwin' && (publishedLaunchd || options.candidate && (options.direction === 'A' || options.direction === 'B' && macTransitionSource(source, expectedTarget, launchdProof))) && state === 'daemon' && method === 'scheduler' && ['transition', 'off-before-tick', 'killed-before-result'].includes(launchdProof), 'launchd proof requires hosted macOS candidate-A, published or published-to-candidate scheduler');
   if (windowsPolicy) assert(hosted && process.platform === 'win32' && !options.candidate && source === '0.164.6' && layout === 'npm' && state === 'daemon' && method === 'scheduler', 'Windows policy baseline requires hosted published 0.164.6 npm daemon scheduler');
   const output = resolve(options.output ?? join(process.env.RUNNER_TEMP ?? '/var/tmp/upgrade-matrix', 'upgrade-evidence'));
-  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
+  const variant = [options['stale-version'] ? `stale-${options['stale-version']}` : '', options['prior-status'] === 'true' ? 'prior-status' : '', options['desktop-runtime'] ? 'desktop-beside-cli' : '', options['stopped-daemon-before-update'] === 'true' ? 'stopped-daemon' : '', options['disabled-daemon-before-update'] === 'true' ? 'disabled-daemon' : '', options['stop-agents'] === 'true' ? 'stop-agents' : '', daemonHostedManager ? 'daemon-hosted-manager' : '', options['first-install'] === 'true' ? 'first-install' : '', options['follow-on-action'] ? `follow-on-${options['follow-on-action']}` : '', launchdProof ?? '', windowsPolicy ? 'windows-policy' : ''].filter(Boolean).join('-');
   const id = `${nextHopMode ? 'candidate-next-' : options.candidate ? `candidate-${options.direction ?? 'B'}-` : 'published-'}${process.platform}-${source}-${layout}-${state}-${method}${variant ? `-${variant}` : ''}`;
   const report = { tier: nextHopMode ? 'candidate-next (synthetic registry, real native processes)' : options.candidate ? `candidate-${options.direction ?? 'B'} (synthetic registry, real native processes)` : 'published', id, sourceRequested: source, platform: process.platform, layout, state, method, calls: [], assertions: [], startedAt: new Date().toISOString(), harnessSource: process.env.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim(), harnessSha256: digest(readFileSync(import.meta.filename)) };
   report.agentHost = state === 'agent' ? daemonHostedManager ? 'daemon' : 'standalone' : undefined;
@@ -739,11 +757,17 @@ export async function matrixCell(options) {
         assert(manualReady, 'manual update must start at the source with no Manager, agent or competing scheduler');
       }
       if (desktopRuntime) {
-        report.desktop = { runtime: desktopRuntime, inventory: desktopInventory, nodeSha256: digest(readFileSync(desktopNode)), release: 'v0.164.2', workflowRun: 43456519342 };
+        const unitText = readFileSync(plan.unitPath, 'utf8');
+        const execLine = /^ExecStart=(.*)$/m.exec(unitText)?.[1] ?? '';
+        const execArgv = [...execLine.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]).replace(/\\([\\"])/g, '$1').replaceAll('%%', '%').replaceAll('$$', '$'));
+        const daemonIdx = execArgv.indexOf('daemon');
+        const desktopEntry = daemonIdx >= 2 ? execArgv[daemonIdx - 1] : execArgv[0];
+        assert.equal(desktopEntry, join(desktopRuntime, 'dist/cotal.js'), 'recorded desktop unit entry must match released desktop runtime');
+        report.desktop = { runtime: desktopRuntime, entry: desktopEntry, inventory: desktopInventory, nodeSha256: digest(readFileSync(desktopNode)), release: 'v0.164.2', workflowRun: 43456519342 };
         assert.equal(report.daemonBefore.version, '0.164.2');
         assert.equal(report.daemonBefore.update.channel, 'desktop');
         assert.equal(report.daemonBefore.update.automatic, false);
-        assert(readFileSync(plan.unitPath, 'utf8').includes(desktopRuntime), 'native service source must name actual released desktop runtime');
+        assert(unitText.includes(desktopRuntime), 'native service source must name actual released desktop runtime');
       }
       if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
         // Native custody observation runs asynchronously after the socket first becomes ready.
@@ -773,6 +797,58 @@ export async function matrixCell(options) {
       await launchdObserver.sample();
       report.launchdProof = { kind: launchdProof, publicTarget: report.target };
       if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+    }
+    if (options['stopped-daemon-before-update'] === 'true') {
+      const stopCommand = process.platform === 'linux'
+        ? ok(await call('stop native daemon before manual repair', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'stop', receipt.unit]), 'stop native daemon before manual repair')
+        : process.platform === 'darwin'
+          ? ok(await call('stop native daemon before manual repair', '/bin/launchctl', ['bootout', `gui/${process.getuid()}/${receipt.unit}`]), 'stop native daemon before manual repair')
+          : ok(await call('stop native daemon before manual repair', join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'schtasks.exe'), ['/End', '/TN', receipt.unit]), 'stop native daemon before manual repair');
+      let stoppedStatus = await daemon('stopped daemon status before manual repair', ['daemon', 'status', '--json']);
+      for (let i = 0; i < 60 && stoppedStatus.exit === 0; i++) {
+        await delay(500);
+        stoppedStatus = await daemon('stopped daemon status before manual repair', ['daemon', 'status', '--json']);
+      }
+      const stoppedBytes = Buffer.from(JSON.stringify({ stopCommand, statusWhileStopped: stoppedStatus }));
+      const stoppedCommands = { artifact: `${id}-stopped-daemon-before-update.txt`, bytes: stoppedBytes.length, sha256: digest(stoppedBytes) };
+      writeFileSync(join(output, stoppedCommands.artifact), stoppedBytes, { flag: 'wx', mode: 0o600 });
+      const stoppedPassed = stopCommand.exit === 0 && stopCommand.signal === null && stopCommand.timeout === false
+        && stoppedStatus.exit === 2 && stoppedStatus.signal === null && stoppedStatus.timeout === false;
+      report.stoppedDaemonBeforeUpdate = { passed: stoppedPassed, unit: receipt.unit, stopCommand, statusWhileStopped: stoppedStatus, commands: stoppedCommands };
+      check('native daemon confirmed stopped before manual update', stoppedPassed, report.stoppedDaemonBeforeUpdate);
+      assert(stoppedPassed, 'native daemon must be confirmed stopped before manual update');
+    }
+    if (options['disabled-daemon-before-update'] === 'true') {
+      assert(['linux', 'darwin'].includes(process.platform), 'disabled-daemon-before-update requires Linux systemd or macOS launchd user service');
+      let disableCommand, stopCommand, unitShowBefore;
+      if (process.platform === 'linux') {
+        disableCommand = ok(await call('disable native daemon before manual update', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'disable', '--now', receipt.unit]), 'disable native daemon before manual update');
+      } else {
+        const gui = `gui/${process.getuid()}`;
+        disableCommand = ok(await call('disable native daemon before manual update', '/bin/launchctl', ['disable', `${gui}/${receipt.unit}`]), 'disable native daemon before manual update');
+        stopCommand = ok(await call('stop native daemon before manual update', '/bin/launchctl', ['bootout', `${gui}/${receipt.unit}`]), 'stop native daemon before manual update');
+      }
+      let disabledStatus = await daemon('disabled daemon status before manual update', ['daemon', 'status', '--json']);
+      for (let i = 0; i < 60 && disabledStatus.exit === 0; i++) {
+        await delay(500);
+        disabledStatus = await daemon('disabled daemon status before manual update', ['daemon', 'status', '--json']);
+      }
+      unitShowBefore = process.platform === 'linux'
+        ? ok(await call('disabled unit show before manual update', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'show', receipt.unit, '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID']), 'disabled unit show before manual update')
+        : ok(await call('disabled unit show before manual update', '/bin/launchctl', ['print-disabled', `gui/${process.getuid()}`]), 'disabled unit show before manual update');
+      const disabledBytes = Buffer.from(JSON.stringify({ disableCommand, ...(stopCommand ? { stopCommand } : {}), statusWhileDisabled: disabledStatus, unitShowBefore }));
+      const disabledCommands = { artifact: `${id}-disabled-daemon-before-update.txt`, bytes: disabledBytes.length, sha256: digest(disabledBytes) };
+      writeFileSync(join(output, disabledCommands.artifact), disabledBytes, { flag: 'wx', mode: 0o600 });
+      const unitDisabledBefore = process.platform === 'linux'
+        ? /ActiveState=inactive/.test(unitShowBefore.stdout) && /UnitFileState=disabled/.test(unitShowBefore.stdout) && /MainPID=0/.test(unitShowBefore.stdout)
+        : new RegExp(`"${receipt.unit.replaceAll('.', '\\.')}" => (?:true|disabled)`).test(unitShowBefore.stdout);
+      const disabledPassed = disableCommand.exit === 0 && disableCommand.signal === null && disableCommand.timeout === false
+        && (!stopCommand || (stopCommand.exit === 0 && stopCommand.signal === null && stopCommand.timeout === false))
+        && disabledStatus.exit === 2 && disabledStatus.signal === null && disabledStatus.timeout === false
+        && unitDisabledBefore;
+      report.disabledDaemonBeforeUpdate = { passed: disabledPassed, unit: receipt.unit, disableCommand, ...(stopCommand ? { stopCommand } : {}), statusWhileDisabled: disabledStatus, unitShowBefore, commands: disabledCommands };
+      check('native daemon confirmed disabled and stopped before manual update', disabledPassed, report.disabledDaemonBeforeUpdate);
+      assert(disabledPassed, 'native daemon must be confirmed disabled and stopped before manual update');
     }
     await captureServiceEvidence('before-update');
     if (nextHopMode === 'candidate') {
@@ -1078,21 +1154,63 @@ export async function matrixCell(options) {
       check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade_proof_worker'), seats);
     }
     if (installedService) {
-      let active = await daemon('native status after', ['daemon', 'status', '--json']);
-      const expectedDaemonVersion = desktopInventory?.version ?? expectedVersion;
-      for (let i = 0; i < 60; i++) {
-        if (active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion)) break;
-        await delay(1000);
-        active = await daemon('wait for target native generation', ['daemon', 'status', '--json']);
-      }
-      check('native daemon remains active at its expected generation', active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion), active);
-      if (active.exit === 0) finalDaemon = JSON.parse(active.stdout).result;
-      if (desktopRuntime) {
-        const after = JSON.parse(active.stdout).result;
-        check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
+      if (desktopRuntime && options['stopped-daemon-before-update'] === 'true') {
+        const afterStatus = await daemon('native status after', ['daemon', 'status', '--json']);
+        const unitShowAfter = ok(await call('desktop unit show after CLI update', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'show', receipt.unit, '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID']), 'desktop unit show after CLI update');
+        const ownerReport = `machine daemon: the background service belongs to another Cotal installation (${report.desktop.entry}). This update left it stopped.`;
+        const stoppedDesktopAfter = {
+          status: afterStatus,
+          unitShowAfter,
+          updateNamesDesktopOwner: update.stdout.includes(ownerReport),
+          remainsStopped: afterStatus.exit === 2 && afterStatus.signal === null && afterStatus.timeout === false && /ActiveState=inactive/.test(unitShowAfter.stdout) && /MainPID=0/.test(unitShowAfter.stdout),
+        };
+        const afterBytes = Buffer.from(JSON.stringify(stoppedDesktopAfter));
+        const afterCommands = { artifact: `${id}-stopped-desktop-after-update.txt`, bytes: afterBytes.length, sha256: digest(afterBytes) };
+        writeFileSync(join(output, afterCommands.artifact), afterBytes, { flag: 'wx', mode: 0o600 });
+        report.stoppedDesktopAfterUpdate = { ...stoppedDesktopAfter, commands: afterCommands };
+        check('stopped desktop daemon remains stopped across CLI update', stoppedDesktopAfter.remainsStopped, report.stoppedDesktopAfterUpdate);
+        check('CLI update names the stopped desktop service owner', stoppedDesktopAfter.updateNamesDesktopOwner, update.stdout);
         check('released desktop inventory unchanged', verifyDesktopRuntime(desktopRuntime).sha256 === desktopHash, desktopHash);
         const current = json(join(report.daemonHome, 'service-unit.json'));
         check('CLI update preserves original desktop service source', current.unit === receipt.unit && current.unitPath === receipt.unitPath && current.unitSha256 === receipt.unitSha256, current);
+      } else if (options['disabled-daemon-before-update'] === 'true') {
+        const afterStatus = await daemon('native status after', ['daemon', 'status', '--json']);
+        const unitShowAfter = process.platform === 'linux'
+          ? ok(await call('disabled unit show after manual update', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'show', receipt.unit, '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID']), 'disabled unit show after manual update')
+          : ok(await call('disabled unit show after manual update', '/bin/launchctl', ['print-disabled', `gui/${process.getuid()}`]), 'disabled unit show after manual update');
+        const disabledReport = `${receipt.unit}: service is disabled; not started`;
+        const unitDisabledAfter = process.platform === 'linux'
+          ? /ActiveState=inactive/.test(unitShowAfter.stdout) && /UnitFileState=disabled/.test(unitShowAfter.stdout) && /MainPID=0/.test(unitShowAfter.stdout)
+          : new RegExp(`"${receipt.unit.replaceAll('.', '\\.')}" => (?:true|disabled)`).test(unitShowAfter.stdout);
+        const disabledAfter = {
+          status: afterStatus,
+          unitShowAfter,
+          updateReportsDisabledNotStarted: update.stdout.includes(disabledReport),
+          remainsDisabledAndStopped: afterStatus.exit === 2 && afterStatus.signal === null && afterStatus.timeout === false && unitDisabledAfter,
+        };
+        const afterBytes = Buffer.from(JSON.stringify(disabledAfter));
+        const afterCommands = { artifact: `${id}-disabled-daemon-after-update.txt`, bytes: afterBytes.length, sha256: digest(afterBytes) };
+        writeFileSync(join(output, afterCommands.artifact), afterBytes, { flag: 'wx', mode: 0o600 });
+        report.disabledDaemonAfterUpdate = { ...disabledAfter, commands: afterCommands };
+        check('disabled native daemon remains stopped across manual update', disabledAfter.remainsDisabledAndStopped, report.disabledDaemonAfterUpdate);
+        check('manual update reports service is disabled; not started', disabledAfter.updateReportsDisabledNotStarted, update.stdout);
+      } else {
+        let active = await daemon('native status after', ['daemon', 'status', '--json']);
+        const expectedDaemonVersion = desktopInventory?.version ?? expectedVersion;
+        for (let i = 0; i < 60; i++) {
+          if (active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion)) break;
+          await delay(1000);
+          active = await daemon('wait for target native generation', ['daemon', 'status', '--json']);
+        }
+        check('native daemon remains active at its expected generation', active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion), active);
+        if (active.exit === 0) finalDaemon = JSON.parse(active.stdout).result;
+        if (desktopRuntime) {
+          const after = JSON.parse(active.stdout).result;
+          check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
+          check('released desktop inventory unchanged', verifyDesktopRuntime(desktopRuntime).sha256 === desktopHash, desktopHash);
+          const current = json(join(report.daemonHome, 'service-unit.json'));
+          check('CLI update preserves original desktop service source', current.unit === receipt.unit && current.unitPath === receipt.unitPath && current.unitSha256 === receipt.unitSha256, current);
+        }
       }
     }
     if (launchdObserver) {
@@ -1134,7 +1252,7 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
-    if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime) {
+    if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
       const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
         ? report.target
         : nextHopMode === 'source-0.164.10'
@@ -1145,6 +1263,8 @@ export async function matrixCell(options) {
       check('independent manual service final state', report.manualServiceFinalState.passed, report.manualServiceFinalState);
       if (!report.manualServiceFinalState.passed) report.result = 'failed';
       if (nextHopMode) report.nextHop.passed = report.nextHop.passed === true && report.manualServiceFinalState.passed && report.assertions.every(row => row.passed);
+    } else if (nextHopMode && (options['disabled-daemon-before-update'] === 'true' || Boolean(desktopRuntime))) {
+      report.nextHop.passed = report.nextHop.passed === true && report.assertions.every(row => row.passed);
     }
     if (compositionCleanup && !daemonHostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }

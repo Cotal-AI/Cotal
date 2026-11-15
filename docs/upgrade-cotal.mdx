@@ -267,10 +267,30 @@ attempt retries after one hour without consuming the version's failure budget. Y
 
 The helper binds npm's destination to the verified global CLI package that owns the daemon,
 not the scheduled task's inherited npm prefix. An unknown package layout refuses before launch.
-On Windows, a manual update retains the old daemon's authenticated process lifetime. After that
-process exits, it starts the unchanged owned scheduled task once if the task is enabled and has
-no running instance. It never enables a disabled task or reinstalls the service. The same
-120-second readiness deadline covers task startup and the target daemon's authenticated status.
+On Windows, a manual update retains the old daemon's authenticated process lifetime when one is
+running, or confirms that no live daemon holds the lock when the service is stopped. Once no old
+daemon process is running, it starts the unchanged owned scheduled task once if the task is enabled
+and has no running instance. It never enables a disabled task or reinstalls the service. On Linux
+and macOS, when the recorded owned user service is stopped before a manual `cotal update --self`,
+the updater starts the unchanged owned unit or LaunchAgent only when it is enabled and waits for the
+daemon to answer. On all three platforms, if the recorded stopped service belongs to another
+installation, such as the desktop app's bundled runtime, the updater leaves it stopped, does not wait
+for the new CLI version on that socket, and reports `the background service belongs to another Cotal installation (<path>). This update left it stopped.` On Linux, the updater starts
+a stopped unit only when `systemctl --user show` reports `UnitFileState=enabled`; any other state is
+left stopped and reported as `service is <state>; not started`. On macOS, the updater reads
+`launchctl print-disabled gui/<uid>`, requiring every entry in the `disabled services = { ... }` block
+to parse as `"<label>" => true|false|disabled|enabled`, and starts the LaunchAgent only when the label
+is absent or mapped to `false` or `enabled`; if the label is mapped to `true` or `disabled`, or if a
+Windows scheduled task is disabled, the updater leaves it stopped and reports `service is disabled; not started`.
+When an enabled, same-installation service is started or restarted, the 120-second readiness deadline
+covers service startup and the target daemon's authenticated status, and the parent updater requires
+the daemon to answer at the target version before completing the update rather than accepting a zero
+exit code from the reconciliation child alone. Protection starts with the first release that carries
+each recovery step, and the transition into that release is guarded by the candidate-to-next upgrade
+matrix cells. A target daemon that hangs during startup without exiting is bounded only by the live
+readiness observer; startup hangs after observer death are tracked in
+[#6881](https://github.com/Cotal-AI/Cotal/issues/6881), and desktop application bundle updates are
+tracked in [#6880](https://github.com/Cotal-AI/Cotal/issues/6880).
 Published Windows updater records without a start token are accepted only when the active lock's
 process ID and nonce match, and the retained process predates both the recovery record and lock
 file. New Windows updater records carry the native process creation token. Unreadable evidence

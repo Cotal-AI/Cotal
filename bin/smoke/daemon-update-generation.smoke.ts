@@ -151,4 +151,74 @@ for (const fail of [false, true]) {
   assert.deepEqual(order, fail ? ["poll", "close"] : ["poll", "query", "close"]);
 }
 
+// A disabled or foreign stopped service returning false from lifecycle.poll stops waiting without querying the socket.
+{
+  const order: string[] = [];
+  await waitForInstalledDaemonGeneration("2.0.0", {
+    installed: () => true, timeoutMs: 1000,
+    lifecycle: async () => ({
+      async poll() { order.push("poll-stop"); return false; },
+      close() { order.push("close"); },
+    }),
+    query: (async () => { order.push("query"); return status("2.0.0"); }) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+  });
+  assert.deepEqual(order, ["poll-stop", "close"], "disabled or foreign stopped service returns without querying the daemon socket");
+}
+
+// A reconcile child exiting 0 never satisfies upgradeAndReconcile or repairReplacement unless the daemon answers at the target version.
+for (const firstReconcileFails of [false, true]) {
+  const cellRoot = join(root, `reconcile-ready-${firstReconcileFails}`);
+  const globalPrefix = join(cellRoot, "global");
+  const globalModules = join(globalPrefix, "lib", "node_modules");
+  mkdirSync(globalModules, { recursive: true, mode: 0o700 });
+  const priorHome: string | undefined = process.env.HOME;
+  const priorCotal: string | undefined = process.env.COTAL_HOME;
+  const priorXdg: string | undefined = process.env.XDG_CONFIG_HOME;
+  process.env.HOME = join(cellRoot, "user-home");
+  process.env.COTAL_HOME = join(cellRoot, "cotal-home");
+  process.env.XDG_CONFIG_HOME = join(cellRoot, "xdg-config");
+  for (const dir of [process.env.HOME, process.env.COTAL_HOME, process.env.XDG_CONFIG_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    let reconcileCalls = 0;
+    const waits: string[] = [], errors: string[] = [];
+    const rt: UpdateRuntime = {
+      ...updateRuntime,
+      env: {},
+      version: () => "0.13.1",
+      checkout: () => false,
+      installPrefix: () => globalPrefix,
+      reportRunningManager: async () => "none",
+      reconcile: async () => {},
+      refreshConnectors: async () => [],
+      extensions: () => [],
+      claimUpdatePass: () => () => {},
+      claimGlobalUpdate: () => () => {},
+      verifyGlobalEntry: (_r, v) => join(globalModules, `cotal-${v}.js`),
+      npm: args => args[0] === "view" ? { status: 0, stdout: '"0.13.2"', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${globalModules}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
+      npmAsync: async args => {
+        const spec = args[1]!;
+        const v = spec.slice(spec.lastIndexOf("@") + 1);
+        return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
+      },
+      spawnGlobal: async (_r, op) => {
+        if (op === "reconcile" && ++reconcileCalls === 1 && firstReconcileFails) return { status: 1, stdout: "", stderr: "transient reconcile error" };
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      waitForInstalledGeneration: async v => {
+        waits.push(v);
+        if (v === "0.13.2") throw new Error("installed Cotal 0.13.2 did not become ready");
+      },
+      out: () => {},
+      err: line => { errors.push(line); },
+    };
+    assert.equal(await executeUpdate(true, rt), 1);
+    assert.deepEqual(waits, ["0.13.2", "0.13.1"], "parent requires daemon readiness at 0.13.2 and verifies restored 0.13.1");
+    assert.ok(errors.some(line => line.includes("cotal-ai@0.13.1 was restored and reconciled")), errors.join("\n"));
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME; else process.env.HOME = priorHome;
+    if (priorCotal === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = priorCotal;
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
 emitSentinel({ passed: counted.cells(), failed: 0 });

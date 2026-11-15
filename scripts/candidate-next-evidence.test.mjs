@@ -513,4 +513,124 @@ test('candidate evidence binds captured artifacts, public command receipts and d
       assert.equal(staleResult.nextHopSuccess, false);
     }
   }
+
+  // Stopped-daemon manual-repair cells
+  {
+    const stopped = structuredClone(report);
+    const stopCmd = {exit: 0, signal: null, timeout: false, stdout: '', stderr: ''};
+    const stoppedStatus = {exit: 2, signal: null, timeout: false, stdout: '', stderr: 'not running'};
+    const stoppedBytes = Buffer.from(JSON.stringify({stopCommand: stopCmd, statusWhileStopped: stoppedStatus}));
+    writeFileSync(join(f.output, 'stopped-daemon-before-update.txt'), stoppedBytes, {mode: 0o600});
+    stopped.stoppedDaemonBeforeUpdate = {passed: true, unit: 'cotal-daemon.service', stopCommand: stopCmd, statusWhileStopped: stoppedStatus, commands: {artifact: 'stopped-daemon-before-update.txt', bytes: stoppedBytes.length, sha256: hash(stoppedBytes)}};
+    stopped.calls = [
+      {label: 'stop native daemon before manual repair', argv: ['systemctl', '--user', 'stop', 'cotal-daemon.service'], ...stopCmd, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'stopped daemon status before manual repair', argv: [source.cli, 'daemon', 'status', '--json'], ...stoppedStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {...stopped.calls[0], startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+    ];
+    const stoppedArgs = {...args, report: stopped, cell: {...args.cell, scenario: 'candidate-next-stopped-daemon-self', stoppedDaemonBeforeUpdate: true}};
+    assert.deepEqual(verifyCandidateNextEvidence(stoppedArgs), {sourceIdentity: true, firstRefusal: false, intermediateWhole: true, nextHopSuccess: true, stoppedDaemonBeforeUpdate: true});
+    const runningBefore = structuredClone(stopped);
+    const badStatus = {exit: 0, signal: null, timeout: false, stdout: '{}', stderr: ''};
+    const badBytes = Buffer.from(JSON.stringify({stopCommand: stopCmd, statusWhileStopped: badStatus}));
+    writeFileSync(join(f.output, 'running-daemon-before-update.txt'), badBytes, {mode: 0o600});
+    runningBefore.stoppedDaemonBeforeUpdate.commands = {artifact: 'running-daemon-before-update.txt', bytes: badBytes.length, sha256: hash(badBytes)};
+    runningBefore.calls[1].exit = 0;
+    runningBefore.calls[1].stdout = '{}';
+    runningBefore.calls[1].stderr = '';
+    const badResult = verifyCandidateNextEvidence({...stoppedArgs, report: runningBefore});
+    assert.equal(badResult.stoppedDaemonBeforeUpdate, false);
+    assert.equal(badResult.nextHopSuccess, false);
+  }
+
+  // Disabled-daemon manual-update cell
+  {
+    const disabled = structuredClone(report);
+    const disableCmd = {exit: 0, signal: null, timeout: false, stdout: '', stderr: ''};
+    const disabledStatus = {exit: 2, signal: null, timeout: false, stdout: '', stderr: 'not running'};
+    const showBefore = {exit: 0, signal: null, timeout: false, stdout: 'LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=disabled\nMainPID=0\n', stderr: ''};
+    const showAfter = {exit: 0, signal: null, timeout: false, stdout: 'LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=disabled\nMainPID=0\n', stderr: ''};
+    const beforeBytes = Buffer.from(JSON.stringify({disableCommand: disableCmd, statusWhileDisabled: disabledStatus, unitShowBefore: showBefore}));
+    const afterBytes = Buffer.from(JSON.stringify({status: disabledStatus, unitShowAfter: showAfter, updateReportsDisabledNotStarted: true, remainsDisabledAndStopped: true}));
+    writeFileSync(join(f.output, 'disabled-daemon-before-update.txt'), beforeBytes, {mode: 0o600});
+    writeFileSync(join(f.output, 'disabled-daemon-after-update.txt'), afterBytes, {mode: 0o600});
+    disabled.disabledDaemonBeforeUpdate = {passed: true, unit: 'cotal-daemon.service', disableCommand: disableCmd, statusWhileDisabled: disabledStatus, unitShowBefore: showBefore, commands: {artifact: 'disabled-daemon-before-update.txt', bytes: beforeBytes.length, sha256: hash(beforeBytes)}};
+    disabled.disabledDaemonAfterUpdate = {status: disabledStatus, unitShowAfter: showAfter, updateReportsDisabledNotStarted: true, remainsDisabledAndStopped: true, commands: {artifact: 'disabled-daemon-after-update.txt', bytes: afterBytes.length, sha256: hash(afterBytes)}};
+    const updateCall = {...disabled.calls[0], stdout: 'machine daemon: cotal-daemon.service: service is disabled; not started\n', stderr: '', startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt};
+    disabled.nextHop.secondHop.update = {exit: 0, signal: null, timeout: false, stdout: updateCall.stdout, stderr: ''};
+    disabled.calls = [
+      {label: 'disable native daemon before manual update', argv: ['systemctl', '--user', 'disable', '--now', 'cotal-daemon.service'], ...disableCmd, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'disabled daemon status before manual update', argv: [source.cli, 'daemon', 'status', '--json'], ...disabledStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'disabled unit show before manual update', argv: ['systemctl', '--user', 'show', 'cotal-daemon.service'], ...showBefore, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      updateCall,
+      {label: 'native status after', argv: [source.cli, 'daemon', 'status', '--json'], ...disabledStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'disabled unit show after manual update', argv: ['systemctl', '--user', 'show', 'cotal-daemon.service'], ...showAfter, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+    ];
+    const disabledArgs = {...args, report: disabled, cell: {...args.cell, scenario: 'candidate-next-disabled-daemon-self', disabledDaemonBeforeUpdate: true}};
+    assert.deepEqual(verifyCandidateNextEvidence(disabledArgs), {sourceIdentity: true, firstRefusal: false, intermediateWhole: true, nextHopSuccess: true, disabledDaemonBeforeUpdate: true});
+    const startedAnyway = structuredClone(disabled);
+    startedAnyway.calls[3].stdout = 'started disabled unit\n';
+    startedAnyway.nextHop.secondHop.update.stdout = 'started disabled unit\n';
+    const badDisabled = verifyCandidateNextEvidence({...disabledArgs, report: startedAnyway});
+    assert.equal(badDisabled.disabledDaemonBeforeUpdate, false);
+    assert.equal(badDisabled.nextHopSuccess, false);
+
+    // Darwin disabled-daemon manual-update cell (with bootout + print-disabled)
+    const darwinDisabled = structuredClone(report);
+    const darwinStopCmd = {exit: 0, signal: null, timeout: false, stdout: '', stderr: ''};
+    const darwinShowBefore = {exit: 0, signal: null, timeout: false, stdout: 'disabled services = {\n\t"ai.cotal.daemon" => true\n}\n', stderr: ''};
+    const darwinShowAfter = {exit: 0, signal: null, timeout: false, stdout: 'disabled services = {\n\t"ai.cotal.daemon" => disabled\n}\n', stderr: ''};
+    const darwinBeforeBytes = Buffer.from(JSON.stringify({disableCommand: disableCmd, stopCommand: darwinStopCmd, statusWhileDisabled: disabledStatus, unitShowBefore: darwinShowBefore}));
+    const darwinAfterBytes = Buffer.from(JSON.stringify({status: disabledStatus, unitShowAfter: darwinShowAfter, updateReportsDisabledNotStarted: true, remainsDisabledAndStopped: true}));
+    writeFileSync(join(f.output, 'darwin-disabled-before.txt'), darwinBeforeBytes, {mode: 0o600});
+    writeFileSync(join(f.output, 'darwin-disabled-after.txt'), darwinAfterBytes, {mode: 0o600});
+    darwinDisabled.disabledDaemonBeforeUpdate = {passed: true, unit: 'ai.cotal.daemon', disableCommand: disableCmd, stopCommand: darwinStopCmd, statusWhileDisabled: disabledStatus, unitShowBefore: darwinShowBefore, commands: {artifact: 'darwin-disabled-before.txt', bytes: darwinBeforeBytes.length, sha256: hash(darwinBeforeBytes)}};
+    darwinDisabled.disabledDaemonAfterUpdate = {status: disabledStatus, unitShowAfter: darwinShowAfter, updateReportsDisabledNotStarted: true, remainsDisabledAndStopped: true, commands: {artifact: 'darwin-disabled-after.txt', bytes: darwinAfterBytes.length, sha256: hash(darwinAfterBytes)}};
+    const darwinUpdateCall = {...darwinDisabled.calls[0], stdout: 'machine daemon: ai.cotal.daemon: service is disabled; not started\n', stderr: '', startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt};
+    darwinDisabled.nextHop.secondHop.update = {exit: 0, signal: null, timeout: false, stdout: darwinUpdateCall.stdout, stderr: ''};
+    darwinDisabled.calls = [
+      {label: 'disable native daemon before manual update', argv: ['/bin/launchctl', 'disable', 'gui/501/ai.cotal.daemon'], ...disableCmd, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'stop native daemon before manual update', argv: ['/bin/launchctl', 'bootout', 'gui/501/ai.cotal.daemon'], ...darwinStopCmd, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'disabled daemon status before manual update', argv: [source.cli, 'daemon', 'status', '--json'], ...disabledStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'disabled unit show before manual update', argv: ['/bin/launchctl', 'print-disabled', 'gui/501'], ...darwinShowBefore, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      darwinUpdateCall,
+      {label: 'native status after', argv: [source.cli, 'daemon', 'status', '--json'], ...disabledStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'disabled unit show after manual update', argv: ['/bin/launchctl', 'print-disabled', 'gui/501'], ...darwinShowAfter, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+    ];
+    const darwinArgs = {...args, report: darwinDisabled, cell: {...args.cell, platform: 'darwin', scenario: 'candidate-next-disabled-daemon-self', disabledDaemonBeforeUpdate: true}};
+    assert.deepEqual(verifyCandidateNextEvidence(darwinArgs), {sourceIdentity: true, firstRefusal: false, intermediateWhole: true, nextHopSuccess: true, disabledDaemonBeforeUpdate: true});
+  }
+
+  // Stopped desktop-beside-CLI manual-update cell
+  {
+    const desktop = structuredClone(report);
+    const runtimePath = '/released-desktop/usr/lib/Cotal/runtime';
+    const entryPath = '/released-desktop/usr/lib/Cotal/runtime/dist/cotal.js';
+    desktop.desktop = {runtime: runtimePath, entry: entryPath};
+    const stopCmd = {exit: 0, signal: null, timeout: false, stdout: '', stderr: ''};
+    const stoppedStatus = {exit: 2, signal: null, timeout: false, stdout: '', stderr: 'not running'};
+    const showAfter = {exit: 0, signal: null, timeout: false, stdout: 'LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=enabled\nMainPID=0\n', stderr: ''};
+    const stoppedBytes = Buffer.from(JSON.stringify({stopCommand: stopCmd, statusWhileStopped: stoppedStatus}));
+    const afterBytes = Buffer.from(JSON.stringify({status: stoppedStatus, unitShowAfter: showAfter, updateNamesDesktopOwner: true, remainsStopped: true}));
+    writeFileSync(join(f.output, 'stopped-desktop-before-update.txt'), stoppedBytes, {mode: 0o600});
+    writeFileSync(join(f.output, 'stopped-desktop-after-update.txt'), afterBytes, {mode: 0o600});
+    desktop.stoppedDaemonBeforeUpdate = {passed: true, unit: 'cotal-daemon.service', stopCommand: stopCmd, statusWhileStopped: stoppedStatus, commands: {artifact: 'stopped-desktop-before-update.txt', bytes: stoppedBytes.length, sha256: hash(stoppedBytes)}};
+    desktop.stoppedDesktopAfterUpdate = {status: stoppedStatus, unitShowAfter: showAfter, updateNamesDesktopOwner: true, remainsStopped: true, commands: {artifact: 'stopped-desktop-after-update.txt', bytes: afterBytes.length, sha256: hash(afterBytes)}};
+    const updateCall = {...desktop.calls[0], stdout: `machine daemon: the background service belongs to another Cotal installation (${entryPath}). This update left it stopped.\n`, stderr: '', startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt};
+    desktop.nextHop.secondHop.update = {exit: 0, signal: null, timeout: false, stdout: updateCall.stdout, stderr: ''};
+    desktop.calls = [
+      {label: 'stop native daemon before manual repair', argv: ['systemctl', '--user', 'stop', 'cotal-daemon.service'], ...stopCmd, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'stopped daemon status before manual repair', argv: [source.cli, 'daemon', 'status', '--json'], ...stoppedStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      updateCall,
+      {label: 'native status after', argv: [source.cli, 'daemon', 'status', '--json'], ...stoppedStatus, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+      {label: 'desktop unit show after CLI update', argv: ['systemctl', '--user', 'show', 'cotal-daemon.service'], ...showAfter, startedAt: f.diagnostics.capturedAt, finishedAt: f.diagnostics.capturedAt},
+    ];
+    const desktopArgs = {...args, report: desktop, cell: {...args.cell, scenario: 'candidate-next-stopped-desktop-self', stoppedDaemonBeforeUpdate: true, desktopBesideCli: true}};
+    assert.deepEqual(verifyCandidateNextEvidence(desktopArgs), {sourceIdentity: true, firstRefusal: false, intermediateWhole: true, nextHopSuccess: true, stoppedDaemonBeforeUpdate: true, stoppedDesktopBesideCli: true});
+    const unnamedOwner = structuredClone(desktop);
+    unnamedOwner.calls[2].stdout = 'did not name owner\n';
+    unnamedOwner.nextHop.secondHop.update.stdout = 'did not name owner\n';
+    const badDesktop = verifyCandidateNextEvidence({...desktopArgs, report: unnamedOwner});
+    assert.equal(badDesktop.stoppedDesktopBesideCli, false);
+    assert.equal(badDesktop.nextHopSuccess, false);
+  }
 });
