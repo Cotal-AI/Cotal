@@ -141,6 +141,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     return;
   }
   let target: ReturnType<DesktopBridgeOptions["resolveTarget"]> | undefined;
+  let startedAt: number | undefined;
   try {
     if (req.op === "update-policy") {
       const settings = req.auto === undefined ? readUpdateSettings() : setUpdateSetting("auto", req.auto);
@@ -173,6 +174,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     const client = { paths, peerUid: opts.peerUid, peerPid: opts.peerPid };
     if (req.op === "install" || req.op === "setup") process.env.PATH = await desktopApplicationPath();
     if (req.op === "setup") {
+      startedAt = Date.now();
       const result = await runSetup({ ...client, daemonHome: home, space: req.space, idp: req.idp, version: opts.version, waitSeconds: 0,
         report: (line, progress) => emit({ v: 1, event: "setup-progress", line, progress }),
         onPrompt: (prompt) => emit({ v: 1, event: "login-prompt", prompt }),
@@ -193,7 +195,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
         emit({ v: 1, event: "result", ok: true, result: { installed: true, status: answering.result } });
         return;
       }
-      const startedAt = Date.now();
+      startedAt = Date.now();
       if (existing) await startInstalled(paths, home, opts.version, detail => emit({ v: 1, event: "setup-progress", line: `service: ${detail}`, progress: { step: "install", outcome: "running", detail } }));
       else applyInstall(paths, home);
       const deadline = Date.now() + 15_000;
@@ -206,13 +208,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
           return;
         } catch (e) {
           if (!(e instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(e.code)) throw e;
-          if (Date.now() >= deadline) {
-            const refusal = attemptStartupRefusal(paths.state, startedAt);
-            throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${refusal ? ` It refused to start: ${refusal}` : ""}`, {
-              remedy: "choose Check status.",
-              native: { code: "NOT_ANSWERING" },
-            });
-          }
+          if (Date.now() >= deadline) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the installed daemon did not answer within 15 seconds of being started", { native: { code: "NOT_ANSWERING" } });
         }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
@@ -239,7 +235,10 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
     emit({ ...reply, event: "result" });
   } catch (e) {
     const code = e instanceof EndpointRefusal || e instanceof CommandFailure ? e.code : "OPERATION_FAILED";
-    const message = e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
+    const notAnswering = e instanceof CommandFailure && (req.op === "setup" || req.op === "install") && e.code === "DEPENDENCY_UNAVAILABLE" && e.native?.code === "NOT_ANSWERING";
+    const refusal = notAnswering && target && startedAt !== undefined ? attemptStartupRefusal(target.paths.state, startedAt) : undefined;
+    const message = notAnswering ? `Cotal asked the background service on this computer to start, and it did not answer within 15 seconds.${refusal ? ` It refused to start: ${refusal}` : ""}`
+      : e instanceof CommandFailure && (e.code === "CONFLICT" || req.op === "setup" || req.op === "install") ? e.message
       : code === "NOT_RUNNING" ? (target && serviceInstalled(target)
         ? "The background service is installed but stopped. Choose Start service to start it."
         : "The daemon is not running. Install its background service first.")
@@ -248,7 +247,7 @@ export async function runDesktopBridge(opts: DesktopBridgeOptions): Promise<void
       : code === "PEER_UID_MISMATCH" || code === "PEER_NOT_LOCK_OWNER" ? "The local daemon identity could not be verified. The requested change was not sent."
       : "The operation could not be completed. Use the matching `cotal daemon` command for diagnostics; no success is assumed.";
     emit({ v: 1, event: "result", ok: false, error: { code, message,
-      ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: e.remedy, native: e.native } : {}),
+      ...(e instanceof CommandFailure && (req.op === "setup" || req.op === "install") ? { remedy: notAnswering ? "choose Check status." : e.remedy, native: e.native } : {}),
     } });
   }
 }
