@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -23,7 +23,10 @@ const app = '/Applications/Cotal.app';
 const node = join(app, 'Contents/MacOS/cotal-node');
 const runtime = join(app, 'Contents/Resources/runtime');
 const cli = join(runtime, 'dist/cotal.js');
-const env = { ...process.env, DO_NOT_TRACK: '1' };
+const rawPathEntries = (process.env.PATH ?? '').split(delimiter).filter(entry => entry !== '');
+const inheritedPath = rawPathEntries.filter(entry => isAbsolute(entry));
+const droppedPath = rawPathEntries.filter(entry => !isAbsolute(entry));
+const env = { ...process.env, PATH: [dirname(node), ...inheritedPath].join(delimiter), DO_NOT_TRACK: '1' };
 for (const key of Object.keys(env)) if (key.startsWith('COTAL_') || key.startsWith('TAURI_SIGNING_')) delete env[key];
 let mode = 'publication';
 const requests = [];
@@ -59,6 +62,7 @@ const server = createServer((req, res) => {
 await new Promise(resolve => server.listen(43189, '127.0.0.1', resolve));
 const records = [];
 const record = (name, value) => { records.push({ name, at: new Date().toISOString(), value }); writeFileSync(join(out, 'observations.json'), JSON.stringify(records, null, 2)); };
+record('runner PATH filter', { droppedCount: droppedPath.length, dropped: droppedPath });
 const run = async (command, args, options = {}) => {
   const result = await execute(command, args, { env, timeout: 180_000, maxBuffer: 4 * 1024 * 1024, ...options });
   return result.stdout;
@@ -73,7 +77,11 @@ const call = async (...args) => {
   const envelope = JSON.parse(raw);
   return { ...envelope, ok: envelope.outcome === 'ok' };
 };
-const ax = async (operation, ...args) => JSON.parse(await run('/usr/bin/swift', [driver, app, operation, ...args], { timeout: 30_000 }));
+const ax = async (operation, ...args) => {
+  const result = JSON.parse(await run('/usr/bin/swift', [driver, app, operation, ...args], { timeout: 30_000 }));
+  if (operation === 'click' || operation === 'settings') record(`ax ${[operation, ...args].join(' ')}`, result);
+  return result;
+};
 async function until(name, observe, accept, timeout = 180_000) {
   const deadline = Date.now() + timeout;
   let last;
