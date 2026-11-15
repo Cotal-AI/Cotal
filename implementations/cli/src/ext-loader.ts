@@ -16,6 +16,7 @@ import {
   extensionLocalProcesses,
   extensionProvides,
   importInstalledExtension,
+  isBundledDesktopRuntime,
   loadExtensionsManifest,
   materializeFromManifest,
   type CachedCommand,
@@ -196,6 +197,13 @@ export async function materializeExtensionCommand(stub: Command): Promise<Comman
   if (!pkg) return stub; // not a stub — already live
   const ext = loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
   if (!ext) throw new Error(`extension ${pkg} vanished from the manifest - \`cotal ext add\` it again`);
+  if (ext.pkg.startsWith("@cotal-ai/") && ext.version !== cliVersion()) {
+    const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
+    if (!seeded && isBundledDesktopRuntime()) {
+      throw new Error(`this Cotal app runs ${cliVersion()}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`);
+    }
+    throw new Error(`${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`${seeded ? "cotal ext seed" : "cotal update --self"}\` to ${seeded ? "bring it to this version" : "reconcile this installation"}`);
+  }
   await importInstalledExtension(ext, { kind: "command", name: stub.name }); // throws if the import doesn't advertise the stubbed command
   return registry.resolve<Command>("command", stub.name);
 }
@@ -227,8 +235,12 @@ function seededVersionSkew(ref: ExtensionRef): string | undefined {
   const ext = loadExtensionsManifest().extensions.find((candidate) =>
     extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
   );
-  if (!ext || ext.version === cliVersion() || !Object.values(SEEDED_EXTENSIONS).some((seeded) => seeded.pkg === ext.pkg)) return undefined;
-  return `${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`cotal ext seed\` to bring it to this version`;
+  if (!ext || ext.version === cliVersion() || !ext.pkg.startsWith("@cotal-ai/")) return undefined;
+  const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
+  if (!seeded && isBundledDesktopRuntime()) {
+    return `this Cotal app runs ${cliVersion()}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`;
+  }
+  return `${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`${seeded ? "cotal ext seed" : "cotal update --self"}\` to ${seeded ? "bring it to this version" : "reconcile this installation"}`;
 }
 
 /** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */

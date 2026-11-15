@@ -10,7 +10,7 @@
  *    reported by reset and repair, which still succeed, and `ext remove` then drops its entry
  *  - corrupt manifest → `--reset` quarantines + rebuilds; connectors still on disk → `--repair` rebuilds
  *  - truncated authority never resurrects a removed connector (backup union)
- *  - operator-pinned official entry not auto-refreshed on upgrade (source-aware); semver fail-loud
+ *  - operator-installed official entry reconciled to running generation on upgrade; semver fail-loud
  *  - a forged `COTAL_EXT_SEEDING` gets no seed-child treatment
  *  - an ambiguous (pending, dead-parent) child marker is fail-loud
  *  - concurrent first boots do not collide or falsely report "interrupted"

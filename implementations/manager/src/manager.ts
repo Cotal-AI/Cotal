@@ -2164,8 +2164,7 @@ export class Manager {
     const asked = kind?.trim();
     if (!this.installedExtensions || this.executionState.kind === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
     if (!manifestExtensionNames("runtime").includes(asked)) throw new Error(runtimeInstallHint(asked));
-    if (registry.all<RuntimeProvider>("runtime").some((provider) => provider.name === asked)) return;
-    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name) });
+    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
   }
 
   /** The backend one seat launches, restarts, and is reaped through. An omitted or blank choice is

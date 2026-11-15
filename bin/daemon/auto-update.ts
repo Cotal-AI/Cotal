@@ -3,11 +3,19 @@ import { readFileSync, existsSync, closeSync, ftruncateSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { openPrivateAppend, writeSecretFileAtomic } from "@cotal-ai/core";
-import { checkForUpdate, homeCotalDir, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
+import { checkForUpdate, homeCotalDir, loadExtensionsManifest, newerUpdate, readUpdateCheck, readUpdateRecovery, readUpdateSettings, recoveryDisposition, UPDATE_DAY_MS, UPDATE_HOUR_MS } from "@cotal-ai/workspace";
 import type { DaemonUpdateStatus } from "./protocol.js";
 import { cleanWindowsUpdate, startWindowsUpdate } from "./update-windows.js";
 import { WINDOWS_INTERRUPTED_UPDATE, readWindowsUpdatePause } from "@cotal-ai/workspace";
 import { cleanLaunchUpdate, startLaunchUpdate } from "./update-launchd.js";
+
+function reconciliationPending(version: string): boolean {
+  try {
+    return loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
+  } catch {
+    return false;
+  }
+}
 
 interface Attempt { version?: string; failures: number; result: string; next: number; }
 interface UpdateHost {
@@ -100,6 +108,10 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
       }
     }
     const settings = readUpdateSettings();
+    try {
+      const recorded = JSON.parse(readFileSync(file, "utf8"));
+      if (recorded && Number.isInteger(recorded.failures) && recorded.failures >= 0 && typeof recorded.result === "string" && Number.isFinite(recorded.next)) state = recorded;
+    } catch { /* Keep the last validated attempt state when unreadable. */ }
     const cached = process.env.COTAL_NO_UPDATE_CHECK !== "1" && (settings.auto || settings.notify) ? await checkForUpdate() : readUpdateCheck();
     const recovery = readUpdateRecovery();
     const retiring = recovery !== undefined && recoveryDisposition(recovery).action === "retire";
@@ -112,10 +124,11 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (!status().automatic) return;
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
+    const reconciling = !retiring && !newerUpdate(cached.latest, host.version) && reconciliationPending(host.version);
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
     if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
-    if (!retiring && !newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
-    if (!retiring && Date.now() - (cached.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
+    if (!retiring && !reconciling && !newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
+    if (!retiring && !reconciling && Date.now() - (cached.firstSeenAt ?? Date.now()) < UPDATE_HOUR_MS) { state = { ...state, result: "waiting for release hold", next: (cached.firstSeenAt ?? Date.now()) + UPDATE_HOUR_MS }; persist(); return; }
     try { await host.prepare(); }
     catch (error) { state = { ...state, result: `waiting for idle Managers: ${error instanceof Error ? error.message : String(error)}`, next: Date.now() + 60_000 }; persist(); return; }
     try {

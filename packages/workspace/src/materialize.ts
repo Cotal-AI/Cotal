@@ -1,10 +1,12 @@
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
   bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
+  hostPackageDir,
   installedExtensionPackage,
   loadExtensionsManifest,
   type InstalledExtension,
@@ -13,6 +15,20 @@ import {
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 import { SEEDED_EXTENSIONS } from "./official-connectors.js";
+
+/** Whether this process is running from the desktop app's bundled runtime (`desktop-runtime.json`). */
+export function isBundledDesktopRuntime(): boolean {
+  try {
+    let dir = hostPackageDir("@cotal-ai/workspace");
+    for (let i = 0; i < 4; i++) {
+      if (existsSync(join(dir, "desktop-runtime.json"))) return true;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch { /* Non-installed host or unresolvable peer root is not a bundled desktop runtime. */ }
+  return false;
+}
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -212,8 +228,15 @@ export async function materializeFromManifest<T extends Extension = Extension>(
           opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
         );
       }
-      if (opts.expectedGeneration !== undefined && Object.values(SEEDED_EXTENSIONS).some((seeded) => seeded.pkg === ext.pkg) && ext.version !== opts.expectedGeneration) {
-        throw new Error(`connector ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; stop its seats and restart the Manager from the installed CLI before launching new agents`);
+      if (opts.expectedGeneration !== undefined && ext.pkg.startsWith("@cotal-ai/") && ext.version !== opts.expectedGeneration) {
+        const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
+        throw new Error(
+          seeded
+            ? `connector ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; stop its seats and restart the Manager from the installed CLI before launching new agents`
+            : isBundledDesktopRuntime()
+              ? `this Cotal app runs ${opts.expectedGeneration}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`
+              : `extension ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; run \`cotal update --self\` to reconcile this installation, then stop its seats and restart the Manager from the installed CLI`,
+        );
       }
       await loadOne(ext, ref);
     }),

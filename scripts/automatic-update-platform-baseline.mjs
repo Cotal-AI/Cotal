@@ -851,6 +851,8 @@ export async function matrixCell(options) {
               bareDaemonStatus = await daemon('wait for bare manual npm daemon generation', ['daemon', 'status', '--json']);
             }
             const bareDaemon = bareDaemonStatus.exit === 0 ? JSON.parse(bareDaemonStatus.stdout).result : undefined;
+            const bareRuntimes = await cotal('bare manual npm runtimes observation', ['runtimes', '--json']);
+            const bareTmuxRow = [0, 4].includes(bareRuntimes.exit) ? JSON.parse(bareRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
             const remedyPresent = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(bareVersion.stdout);
             const bareExtensionsAccounted = bareExtensions.length >= 8 && bareExtensions.every(entry => {
               const installed = bareInstalledExtensions.find(row => row.pkg === entry.pkg);
@@ -858,17 +860,103 @@ export async function matrixCell(options) {
               if (entry.version === report.target) return true;
               return entry.version === report.candidateNext.targetVersion && remedyPresent;
             });
+            env.npm_config_registry = 'http://127.0.0.1:1';
+            const restoreBrokenRegistry = configureCandidateRegistry(home, 'http://127.0.0.1:1');
+            let launchGateRefusal;
+            try {
+              launchGateRefusal = await cotal('bare manual npm launch gate refusal when registry unreachable', ['space', 'forget', 'manual-npm-gate-probe']);
+            } finally {
+              restoreBrokenRegistry();
+              env.npm_config_registry = overlay.url;
+            }
+            const refusalExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const refusalInstalledExtensions = refusalExtensions.map(entry => {
+              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
+              return { pkg: entry.pkg, version: metadata?.version };
+            });
+            const launchGateReconcile = await cotal('bare manual npm launch gate reconciles official extensions', ['space', 'forget', 'manual-npm-gate-probe']);
+            const launchGateVersion = await cotal('bare manual npm version after launch gate', ['--version']);
+            const launchGateRuntimes = await cotal('bare manual npm runtimes after launch gate', ['runtimes', '--json']);
+            const launchGateTmuxRow = launchGateRuntimes.exit === 0 ? JSON.parse(launchGateRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
+            const launchGateExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const launchGateInstalledExtensions = launchGateExtensions.map(entry => {
+              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
+              return { pkg: entry.pkg, version: metadata?.version };
+            });
+            const priorSkipSeed = env.COTAL_SKIP_CONNECTOR_SEED;
+            env.COTAL_SKIP_CONNECTOR_SEED = '1';
+            try {
+              ok(await cotal('reset tmux to B before scheduled reconciliation', ['ext', 'add', `@cotal-ai/tmux@${report.candidateNext.targetVersion}`]), 'reset tmux to B');
+            } finally {
+              if (priorSkipSeed === undefined) delete env.COTAL_SKIP_CONNECTOR_SEED;
+              else env.COTAL_SKIP_CONNECTOR_SEED = priorSkipSeed;
+            }
+            const pendingBeforeScheduled = await cotal('manual npm version before scheduled reconciliation', ['--version']);
+            ok(await cotal('enable automatic updates for manual npm scheduled reconciliation', ['update', '--auto', 'on']), 'enable automatic updates');
+            await waitForSchedulerEligibility({ ...report, source: report.target, daemonBefore: undefined }, remaining => daemon('wait for manual npm scheduler custody', ['daemon', 'status', '--json'], remaining));
+            for (let i = 0; i < 40 && !existsSync(join(cotalHome, 'update-check.json')); i++) await delay(1000);
+            if (!existsSync(join(cotalHome, 'update-check.json'))) await cotal('populate manual npm update check cache', ['update', '--check']);
+            const agedAt = Date.now() - 25 * 3600000;
+            for (const [name, fields] of [['update-check.json', ['checkedAt', 'firstSeenAt', 'attemptedAt']], ['update-attempt.json', ['next']]]) {
+              const file = join(cotalHome, name);
+              if (!existsSync(file)) continue;
+              const current = json(file);
+              const next = { ...current };
+              for (const field of fields) next[field] = agedAt;
+              save(file, next);
+            }
+            const scheduleDeadline = Date.now() + 180000;
+            let scheduledAttempt;
+            while (Date.now() < scheduleDeadline) {
+              await delay(3000);
+              const curAttempt = existsSync(join(cotalHome, 'update-attempt.json')) ? json(join(cotalHome, 'update-attempt.json')) : null;
+              const curExts = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+              const launchdBusy = existsSync(join(cotalHome, 'update-launchd.json')) || existsSync(join(cotalHome, 'update-launchd-result.json'));
+              if (curAttempt?.version === report.target && curAttempt?.result === `updated to ${report.target}` && !launchdBusy && curExts.length >= 8 && curExts.every(entry => entry.version === report.target)) {
+                scheduledAttempt = curAttempt;
+                break;
+              }
+            }
+            const scheduledVersion = await cotal('manual npm version after scheduled reconciliation', ['--version']);
+            const scheduledRuntimes = await cotal('manual npm runtimes after scheduled reconciliation', ['runtimes', '--json']);
+            const scheduledTmuxRow = scheduledRuntimes.exit === 0 ? JSON.parse(scheduledRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
+            const scheduledDaemonStatus = await daemon('manual npm daemon status after scheduled reconciliation', ['daemon', 'status', '--json']);
+            const scheduledExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const scheduledInstalledExtensions = scheduledExtensions.map(entry => {
+              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
+              return { pkg: entry.pkg, version: metadata?.version };
+            });
+            ok(await cotal('disable automatic updates after manual npm scheduled reconciliation', ['update', '--auto', 'off']), 'disable automatic updates');
             const bareChecks = {
               cliAtTargetWithExitZero: bareVersion.exit === 0 && bareVersion.signal === null && bareVersion.timeout === false && cliReportsVersion(bareVersion.stdout, report.target) && bareRoute.selectedCliVersion === report.target && bareRoute.packageManagerRecordVersion === report.target,
               routeInPlace: bareRoute.updateRoute === 'in-place',
               daemonAtTarget: bareDaemonStatus.exit === 0 && nativeGenerationReady(bareDaemon, report.target),
               noRecoveryRecord: bareRecovery === null,
               extensionsAtTargetOrNamedWithRemedy: bareExtensionsAccounted,
+              staleTmuxRefusedWithRemedyBeforeReconcile: [0, 4].includes(bareRuntimes.exit) && typeof bareTmuxRow?.error === 'string' && bareTmuxRow.error.includes(`@cotal-ai/tmux is ${report.candidateNext.targetVersion} and this cotal is ${report.target} - run \`cotal update --self\` to reconcile this installation`),
+              launchGateRefusesWhenUnreachableWithRemedy: launchGateRefusal.exit === 1 && /run `cotal update --self` to reconcile this installation/.test(launchGateRefusal.stdout + launchGateRefusal.stderr) && refusalExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === report.candidateNext.targetVersion) && refusalInstalledExtensions.some(entry => entry.pkg === '@cotal-ai/tmux' && entry.version === report.candidateNext.targetVersion),
+              launchGateReconcilesOfficialExtensionsAndLoadsTmux: launchGateVersion.exit === 0 && cliReportsVersion(launchGateVersion.stdout, report.target) && !/Reconciliation pending/.test(launchGateVersion.stdout) && launchGateTmuxRow?.state === 'installed' && launchGateTmuxRow?.package === '@cotal-ai/tmux' && launchGateTmuxRow?.error === null && launchGateExtensions.length >= 8 && launchGateExtensions.every(entry => entry.version === report.target && launchGateInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
+              scheduledCheckReconcilesPendingExtensionsAndLoadsTmux: /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(pendingBeforeScheduled.stdout) && scheduledAttempt?.version === report.target && scheduledAttempt?.result === `updated to ${report.target}` && scheduledVersion.exit === 0 && cliReportsVersion(scheduledVersion.stdout, report.target) && !/Reconciliation pending/.test(scheduledVersion.stdout) && scheduledTmuxRow?.state === 'installed' && scheduledTmuxRow?.package === '@cotal-ai/tmux' && scheduledTmuxRow?.error === null && scheduledExtensions.length >= 8 && scheduledExtensions.every(entry => entry.version === report.target && scheduledInstalledExtensions.find(row => row.pkg === entry.pkg)?.version === report.target),
             };
-            const bareBytes = Buffer.from(JSON.stringify({ version: bareVersion, daemonStatus: bareDaemonStatus, route: bareRoute, recovery: bareRecovery, extensions: bareExtensions, installedExtensions: bareInstalledExtensions, checks: bareChecks }));
+            const bareBytes = Buffer.from(JSON.stringify({
+              version: bareVersion,
+              daemonStatus: bareDaemonStatus,
+              runtimes: bareRuntimes,
+              route: bareRoute,
+              recovery: bareRecovery,
+              extensions: bareExtensions,
+              installedExtensions: bareInstalledExtensions,
+              launchGateRefusal: { command: launchGateRefusal, extensions: refusalExtensions, installedExtensions: refusalInstalledExtensions },
+              launchGateReconcile: { command: launchGateReconcile, version: launchGateVersion, runtimes: launchGateRuntimes, extensions: launchGateExtensions, installedExtensions: launchGateInstalledExtensions },
+              scheduledReconcile: { pendingBefore: pendingBeforeScheduled, attempt: scheduledAttempt, version: scheduledVersion, runtimes: scheduledRuntimes, daemonStatus: scheduledDaemonStatus, extensions: scheduledExtensions, installedExtensions: scheduledInstalledExtensions },
+              checks: bareChecks,
+            }));
             const bareCommands = { artifact: `${id}-bare-manual-npm.txt`, bytes: bareBytes.length, sha256: digest(bareBytes) };
             writeFileSync(join(output, bareCommands.artifact), bareBytes, { flag: 'wx', mode: 0o600 });
-            bareNpmObservation = { passed: Object.values(bareChecks).every(Boolean), selectedCliVersion: bareRoute.selectedCliVersion, packageManagerRecordVersion: bareRoute.packageManagerRecordVersion, updateRoute: bareRoute.updateRoute, daemonVersion: bareDaemon?.version, recovery: bareRecovery, extensions: bareExtensions, installedExtensions: bareInstalledExtensions, remedyPresent, versionCommand: bareVersion, daemonStatusCommand: bareDaemonStatus, checks: bareChecks, commands: bareCommands };
+            bareNpmObservation = { passed: Object.values(bareChecks).every(Boolean), selectedCliVersion: bareRoute.selectedCliVersion, packageManagerRecordVersion: bareRoute.packageManagerRecordVersion, updateRoute: bareRoute.updateRoute, daemonVersion: bareDaemon?.version, recovery: bareRecovery, extensions: bareExtensions, installedExtensions: bareInstalledExtensions, remedyPresent, versionCommand: bareVersion, daemonStatusCommand: bareDaemonStatus, runtimesCommand: bareRuntimes, launchGateRefusal: { command: launchGateRefusal, extensions: refusalExtensions, installedExtensions: refusalInstalledExtensions }, launchGateReconcile: { command: launchGateReconcile, version: launchGateVersion, runtimes: launchGateRuntimes, extensions: launchGateExtensions, installedExtensions: launchGateInstalledExtensions }, scheduledReconcile: { pendingBefore: pendingBeforeScheduled, attempt: scheduledAttempt, version: scheduledVersion, runtimes: scheduledRuntimes, daemonStatus: scheduledDaemonStatus, extensions: scheduledExtensions, installedExtensions: scheduledInstalledExtensions }, checks: bareChecks, commands: bareCommands };
             check('bare manual npm install reaches target in-place and names any pending extension reconciliation', bareNpmObservation.passed, bareNpmObservation);
             update = await cotal('reconcile manual npm follow-on target', ['update', '--self']);
           } else {
