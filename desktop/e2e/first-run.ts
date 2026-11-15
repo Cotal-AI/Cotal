@@ -398,7 +398,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
     if (driver instanceof MacWindowDriver) {
       if (action === "connected-view") observation = { ...(await driver.native("describe")), title: await driver.text("connection-title"), label: await driver.text("tray-label") };
       else {
-        assert.notEqual(action, "prove-login-cells", "prove-login-cells is Windows-only");
+        if (action === "prove-login-cells") throw new Error("prove-login-cells is Windows-only");
         observation = await driver.native(action);
       }
     } else {
