@@ -233,6 +233,12 @@ export function boundedCells(plan) {
       targetSource: plan.targetSource, nodeVersion: '24.18.0', serviceUmask: '0002', publishedStagedRefusal: true,
       requiredAssertions: ['published-staged-refusal', 'unchanged-failure-budget', 'source-unchanged', 'generation-store-protected', 'no-recovery', 'owned-native-cleanup'],
     });
+    for (const oldVersion of [undefined,'0.164.16','0.164.17']) add('linux','npm',oldVersion?`root-owned-source-${oldVersion}-recovery`:'root-owned-candidate-next',null,{
+      sourceVersion:plan.targetVersion,sourceKind:plan.phase==='published'?'npm-exact-A':'packed-candidate-A',targetVersion,
+      targetSource:'packed-next-B',targetSourceSHA:plan.sourceSHA,visibleFollowOnVersion:followOnVersion,
+      syntheticVersionRule:'candidate.patch+1000',nodeVersion:'24.18.0',rootOwned:true,...(oldVersion?{oldVersion}:{}),
+      requiredAssertions:['root-update-success','normal-account-versions','owning-command-refusal','root-owned-install','readable-generation-metadata','private-journals','generation-store-protected','owned-runner-teardown',...(oldVersion?['published-root-lockout','manual-root-install-heals']:[])],
+    });
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,
