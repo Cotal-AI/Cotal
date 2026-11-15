@@ -33,7 +33,7 @@ permissions:
   contents: read
   actions: read
 env:
-  PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
+  PRODUCT_SOURCE: 4d2bcc4d3cba800f8223a5c9e22f03b12bc18807
 jobs:
   select:
     runs-on: ubuntu-24.04
@@ -70,6 +70,11 @@ jobs:
             const metadata = { eventName: context.eventName, repository };
             let source, phase;
             let publication;
+            const ownershipMeasure = context.eventName === 'push' && context.ref === 'refs/heads/measure/broken-target-recovery' && event.head_commit.message.includes('[6887-only]');
+            if (ownershipMeasure) {
+              source = process.env.PRODUCT_SOURCE;
+              phase = 'candidate';
+            }
             if (context.eventName === 'pull_request') {
               const pr = event.pull_request;
               if (pr.base.ref === 'main' && pr.head.ref === 'changeset-release/main' && pr.head.repo.full_name === repository && pr.base.repo.full_name === repository) {
@@ -137,12 +142,14 @@ jobs:
               const registry = await response.json();
               metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
               metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
-              if (phase === 'candidate') assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
-              else assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
+              if (phase === 'candidate' && !ownershipMeasure) assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
+              else if (phase === 'published') assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
             }
-            const plan = planPhase(event, metadata);
+            const planningEvent = ownershipMeasure ? { inputs: { phase, source_sha: source, target_version: metadata.targetVersion, profile: 'bounded' } } : event;
+            const plan = planPhase(planningEvent, { ...metadata, ...(ownershipMeasure ? { eventName: 'workflow_dispatch' } : {}) });
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
-            const cells = boundedCells(plan);
+            const cells = boundedCells(plan).filter(cell => !ownershipMeasure || ['candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-disabled-daemon-self', 'candidate-next-stopped-desktop-self'].includes(cell.scenario));
+            if (ownershipMeasure) assert.equal(cells.length, 9);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
@@ -1300,8 +1307,8 @@ jobs:
             ${{ runner.temp }}/owner-mac-evidence
           if-no-files-found: error
   desktop-beside-cli:
-    needs: priority
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure' || contains(github.event.head_commit.message, '[desktop-beside-cli-only]'))"
+    needs: [release-pack, release-next]
+    if: "github.event_name == 'push' && contains(github.event.head_commit.message, '[6887-only]') && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1346,10 +1353,20 @@ jobs:
         run: |
           node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
           pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release-pack.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release-next.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-next
       - name: Real released desktop daemon beside separate CLI
         shell: bash
         run: |
-          node --import tsx --input-type=module - --source 0.164.0 --layout npm --state daemon --method self --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence" <<'NODE'
+          node --import tsx --input-type=module - --source 0.164.18 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --expected-target 0.164.1018 --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence" <<'NODE'
           import { pathToFileURL } from 'node:url';
           const { matrixCell, cellExitCode } = await import(pathToFileURL(process.cwd() + '/scripts/automatic-update-platform-baseline.mjs'));
           const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
