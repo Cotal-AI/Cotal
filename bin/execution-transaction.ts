@@ -115,7 +115,12 @@ export function executionStagingPrefix(installed: string): string {
 export function retireSupersededExecutionDescriptor(installed: string): boolean {
   if (existsSync(join(installed, "desktop-runtime.json")) || (process.platform !== "linux" && process.platform !== "darwin")) return false;
   const descriptorPath = executionDescriptorPath(installed);
-  if (!lstatSync(descriptorPath, { throwIfNoEntry: false })) return false;
+  try {
+    if (!lstatSync(descriptorPath, { throwIfNoEntry: false })) return false;
+  } catch (error) {
+    if (["EACCES", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  }
   const selected = selectExecutionProgram(installed);
   if (selected.retained) return false;
   rmSync(descriptorPath, { force: true });
