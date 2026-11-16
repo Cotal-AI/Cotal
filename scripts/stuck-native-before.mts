@@ -1,21 +1,21 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// BEFORE ONLY. Run once on each fresh disposable Linux runner, never on the laptop.
+// Recovery measurement only. Run once per route on a fresh disposable native runner, never the laptop.
 // node --import tsx stuck-native-before.mts REPO ROOT BASE_A BASE_B FIXED npm|installer
 const [repo, root, baseA, baseB, fixed, route] = process.argv.slice(2);
-assert(process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', 'requires admitted disposable GitHub-hosted Linux');
+assert(['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', 'requires admitted disposable GitHub-hosted POSIX runner');
 assert(repo && root && process.env.RUNNER_TEMP && resolve(root).startsWith(resolve(process.env.RUNNER_TEMP) + '/'), 'private runner temp root required');
 assert(route === 'npm' || route === 'installer', 'one route per fresh runner');
 assert(!existsSync(root), 'fresh before-state required');
 process.umask(0o077);
 mkdirSync(root, { mode: 0o700 });
-const report: any = { kind: 'official18-owned-native-before-proof', route, startedAt: new Date().toISOString(), calls: [], observations: [], harnessSource: process.env.GITHUB_SHA };
+const report: any = { kind: 'official18-owned-native-recovery', platform: process.platform, route, startedAt: new Date().toISOString(), calls: [], observations: [], harnessSource: process.env.GITHUB_SHA };
 const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const guard = () => { const d = statfsSync(root); assert(d.bavail * d.bsize >= 25769803776, 'STOP: less than 24 GiB before install or install-capable command'); };
@@ -34,7 +34,7 @@ const { candidatePairRegistry } = await load(join(repo, 'scripts/candidate-pair-
 const { candidateRegistry } = await load(join(repo, 'scripts/automatic-update-platform-baseline.mjs'));
 const { prepareUpdateParticipant } = await load(join(repo, 'implementations/auth/smoke/update-participant.fixture.ts'));
 const cli = join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
-const birth = (pid: number) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1)!.split(' ')[19]; } catch { return undefined; } };
+let birth: (pid: number) => string | undefined = () => { throw new Error('native process birth helper not loaded'); };
 const identity = (pid: number) => { const start = birth(pid); assert(start && pid > 1, 'process birth required'); return { pid, start }; };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 let active: any, registry: any, closeParticipant: any, receipt: any, queryDaemon: any, managerViaDaemon: any, paths: any;
@@ -74,6 +74,28 @@ async function observe(label: string) {
   const row = { label, at: new Date().toISOString(), daemon: { ...identity(d.pid), version: d.version, state: d.state }, managers: (d.managers ?? []).map((m: any) => ({ space: m.space, state: m.state, instanceId: m.instanceId, ...(m.pid ? identity(m.pid) : {}) })), fence: d.update?.restartEvidence };
   report.observations.push(row); save(); return row;
 }
+async function verifyNative(pid: number, stage: string) {
+  assert.equal(hash(readFileSync(receipt.unitPath)), receipt.unitSha256, 'recorded service source must stay unchanged');
+  if (process.platform === 'linux') {
+    const native = ok(await call(`native supervisor identity ${stage}`, 'systemctl', ['--user', 'show', receipt.unit, '--property=MainPID,ControlGroup,ActiveState,UnitFileState']));
+    assert(native.stdout.includes(`MainPID=${pid}\n`) && native.stdout.includes('ActiveState=active') && native.stdout.includes('UnitFileState=enabled'), 'systemd must own the observed daemon');
+  } else {
+    const { launchAgentService } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/install-darwin.js'));
+    const { nativeRun } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/install-native-run.js'));
+    const service = launchAgentService(nativeRun);
+    service.check(receipt); assert.equal(service.isEnabled(receipt), true, 'verified loaded LaunchAgent must be enabled');
+    const native = ok(await call(`launchd supervisor identity ${stage}`, '/bin/launchctl', ['print', `gui/${process.getuid!()}/${receipt.unit}`]));
+    const ids = [...native.stdout.matchAll(/^\s*pid = (\d+)\s*$/gm)].map(match => Number(match[1]));
+    assert.deepEqual(ids, [pid], 'actual launchd PID must equal the authenticated daemon PID');
+  }
+}
+async function installSeatFixture() {
+  const fixture = join(root, 'recovery-seat'); mkdirSync(fixture, { mode: 0o700 });
+  writeFileSync(join(fixture, 'package.json'), JSON.stringify({ name: 'cotal-recovery-seat', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
+  writeFileSync(join(fixture, 'seat.mjs'), `import{CotalEndpoint}from'@cotal-ai/core';import{readFileSync,writeFileSync}from'node:fs';import{execFile}from'node:child_process';const e=process.env,cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(err,out)=>err?reject(err):resolve(out.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent',meta:{'ai.cotal.manager.instance':e.COTAL_MANAGER_INSTANCE}},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();writeFileSync(e.COTAL_RECOVERY_READY,JSON.stringify({pid:process.pid,name:e.COTAL_NAME,lifecycleUid:e.COTAL_LIFECYCLE_UID}),{mode:0o600});for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));setInterval(()=>{},1000);`);
+  writeFileSync(join(fixture, 'index.js'), `import{registry}from'@cotal-ai/core';import{fileURLToPath}from'node:url';registry.register({kind:'connector',name:'recovery-standin',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[fileURLToPath(new URL('./seat.mjs',import.meta.url))],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_NAME:o.name,COTAL_RECOVERY_READY:${JSON.stringify(join(root, 'seat-ready.json'))},COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+  guard(); ok(await cotal('register real recovery seat', ['ext', 'add', fixture]));
+}
 try {
   report.inputs = [baseA, baseB, fixed].map((directory, index) => {
     const bytes = readFileSync(join(directory, 'manifest.json')), manifest = JSON.parse(bytes.toString());
@@ -88,8 +110,19 @@ try {
   ok(await call('install official18', 'npm', ['install', '-g', '--prefix', prefix, 'cotal-ai@0.164.18', '--registry=https://registry.npmjs.org/', '--no-audit', '--no-fund']));
   report.officialManifestSha256 = hash(readFileSync(join(prefix, 'lib/node_modules/cotal-ai/package.json')));
   assert.equal(JSON.parse(readFileSync(join(prefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, '0.164.18');
+  const archiveResponse = await fetch(report.officialDist.tarball); assert(archiveResponse.ok, 'public archive fetch must succeed');
+  const archive = Buffer.from(await archiveResponse.arrayBuffer());
+  assert.equal('sha512-' + createHash('sha512').update(archive).digest('base64'), report.officialDist.integrity, 'official archive must match registry SRI');
+  const archivePath = join(root, 'official18.tgz'); writeFileSync(archivePath, archive, { mode: 0o600 });
+  report.officialFiles = ['dist/daemon/execution-preinstall.js', 'dist/daemon/execution-preinstall-client.js', 'dist/cotal.js'].map(file => {
+    const published = execFileSync('tar', ['-xOf', archivePath, 'package/' + file], { timeout: 10000 });
+    assert.equal(hash(readFileSync(join(prefix, 'lib/node_modules/cotal-ai', file))), hash(published), 'old side must equal integrity-bound public archive');
+    return { file, sha256: hash(published) };
+  });
+  ({ processBirth: birth } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/lifetime.js')));
   guard(); ok(await cotal('seed official18', ['ext', 'seed', '--repair']));
   closeParticipant = await prepareUpdateParticipant({ env, project, cotalHome: env.COTAL_HOME, report });
+  await installSeatFixture();
   ({ queryDaemon, managerViaDaemon } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/client.js')));
   const { daemonPaths } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/endpoint.js')); paths = daemonPaths();
   const plan = JSON.parse(ok(await cotal('native install plan', ['daemon', 'install', '--dry-run', '--json'])).stdout).result;
@@ -102,12 +135,16 @@ try {
   let daemon: any;
   for (let i = 0; i < 100; i++) { try { const r = await queryDaemon({ paths }); if (r.ok && r.result.state === 'ready') { daemon = r.result; break; } } catch {} await pause(250); }
   assert(daemon?.pid && daemon.version === '0.164.18');
-  const native = ok(await call('native supervisor identity', 'systemctl', ['--user', 'show', receipt.unit, '--property=MainPID,ControlGroup,ActiveState,UnitFileState']));
-  assert(native.stdout.includes(`MainPID=${daemon.pid}\n`) && native.stdout.includes('ActiveState=active') && native.stdout.includes('UnitFileState=enabled'), 'supervisor must own the observed daemon');
+  await verifyNative(daemon.pid, 'before');
   const manager = await managerViaDaemon({ paths }, { op: 'manager-start', space: report.participant.space });
   assert.equal(manager.state, 'answering'); report.beforeManager = { ...identity(manager.pid), instanceId: manager.instanceId };
-  report.nativeCgroups = { daemon: readFileSync(`/proc/${daemon.pid}/cgroup`, 'utf8'), manager: readFileSync(`/proc/${manager.pid}/cgroup`, 'utf8') };
-  assert.equal(report.nativeCgroups.daemon, report.nativeCgroups.manager, 'old Manager must be a child of this native service group');
+  if (process.platform === 'linux') {
+    report.nativeCgroups = { daemon: readFileSync(`/proc/${daemon.pid}/cgroup`, 'utf8'), manager: readFileSync(`/proc/${manager.pid}/cgroup`, 'utf8') };
+    assert.equal(report.nativeCgroups.daemon, report.nativeCgroups.manager, 'old Manager must be a child of this native service group');
+  } else {
+    const parent = ok(await call('native Manager parent', '/bin/ps', ['-o', 'ppid=', '-p', String(manager.pid)]));
+    assert.equal(Number(parent.stdout.trim()), daemon.pid, 'old Manager must belong to the observed launchd daemon');
+  }
   registry = await candidatePairRegistry(baseA, baseB); registry.activateTarget();
   env.npm_config_registry = registry.url; process.env.npm_config_registry = registry.url;
   guard(); active = launch('official updater fence producer', process.execPath, [cli, 'update', '--self', '--space', report.participant.space]);
@@ -139,12 +176,36 @@ try {
   assert(report.version.exit === 0 && report.version.stdout.startsWith(`cotal-ai ${report.target}\n`), 'new software must really be selected');
   if (route === 'npm') { guard(); report.self = await cotal('new public self update', ['update', '--self', '--space', report.participant.space]); }
   report.after = await observe('after public replacement and reconcile');
-  report.publicPsAfter = await cotal('new public ps against old Manager', ['ps', '--space', report.participant.space, '--json']);
+  report.publicPsAfter = await cotal('new public ps after recovery', ['ps', '--space', report.participant.space, '--json']);
   report.hashesAfter = { state: hashes(env.COTAL_HOME), config: hashes(join(env.XDG_CONFIG_HOME, 'cotal')) };
-  assert.equal(report.after.daemon.pid, report.before.daemon.pid); assert.equal(report.after.daemon.start, report.before.daemon.start);
-  assert.equal(birth(report.beforeManager.pid), report.beforeManager.start);
-  assert(report.publicPsAfter.exit !== 0 && /preserving/.test(report.publicPsAfter.stdout + report.publicPsAfter.stderr), 'expected before-proof: new software installed, exact old Manager still refuses ps in preserving mode');
-  report.outcome = 'reproduced: newer software installed, same owned native daemon and old Manager remain fenced, public ps refuses';
+  const afterHashes = new Map(report.hashesAfter.state.map((row: any) => [row.path, row.sha256]));
+  const durable = report.hashesBefore.state.filter((row: any) => /\/(manager-host|idp-sessions|service-unit|computer)\.json$/.test(row.path));
+  assert(durable.some((row: any) => row.path.endsWith('/manager-host.json')) && durable.some((row: any) => row.path.endsWith('/idp-sessions.json')), 'hosting intent and session hashes must be recorded');
+  for (const row of durable) assert.equal(afterHashes.get(row.path), row.sha256, 'recovery must preserve recorded hosting/account/session/service state');
+  report.preservedState = durable;
+  ok(report.replacement); if (report.self) ok(report.self); ok(report.publicPsAfter);
+  assert.equal(report.after.daemon.version, report.target);
+  const restored = report.after.managers.find((m: any) => m.space === report.participant.space);
+  assert.equal(restored?.state, 'answering'); assert.equal(report.after.fence?.prepared, false);
+  report.oldChildrenBeforeTeardown = { daemonAlive: birth(report.before.daemon.pid) === report.before.daemon.start, managerAlive: birth(report.beforeManager.pid) === report.beforeManager.start };
+  assert.deepEqual(report.oldChildrenBeforeTeardown, { daemonAlive: false, managerAlive: false }, 'old native daemon AND Manager must be gone before teardown');
+  await verifyNative(report.after.daemon.pid, 'recovered');
+  const name = 'recovered_worker', space = report.participant.space;
+  report.spawn = ok(await cotal('spawn on recovered Manager', ['spawn', '--agent', 'recovery-standin', '--on', restored.instanceId, '--name', name, '--detach', '--no-events', '--space', space]));
+  for (let i = 0; i < 120 && !existsSync(join(root, 'seat-ready.json')); i++) await pause(250);
+  assert(existsSync(join(root, 'seat-ready.json')), 'real recovered authenticated seat must become ready');
+  const seat = JSON.parse(readFileSync(join(root, 'seat-ready.json'), 'utf8')); report.seat = { ...seat, ...identity(seat.pid) };
+  report.work = JSON.parse(ok(await cotal('public recovered seat inventory', ['ps', '--on', restored.instanceId, '--space', space, '--json'])).stdout).result;
+  assert(report.work.items.some((row: any) => row.name === name), 'spawned seat must be publicly listed');
+  report.stop = ok(await cotal('stop on recovered Manager', ['stop', '--name', name, '--on', restored.instanceId, '--space', space]));
+  for (let i = 0; i < 100 && birth(seat.pid) === report.seat.start; i++) await pause(100);
+  report.seatStopped = birth(seat.pid) !== report.seat.start; assert.equal(report.seatStopped, true, 'stopped seat kernel lifetime must end');
+  report.empty = JSON.parse(ok(await cotal('public inventory after recovered stop', ['ps', '--on', restored.instanceId, '--space', space, '--json'])).stdout).result;
+  assert.equal(report.empty.items.length, 0);
+  guard(); report.nextSelf = ok(await cotal('second public self update after recovery', ['update', '--self', '--space', space]));
+  report.final = await observe('after recovered lifecycle and second self');
+  assert.equal(report.final.daemon.version, report.target); assert.equal(report.final.managers.find((m: any) => m.space === space)?.state, 'answering');
+  report.outcome = 'recovered: fixed native daemon and Manager, old lifetimes gone, real spawn/stop and subsequent public self update succeeded';
 } catch (error: any) { report.error = error.stack; report.outcome ??= 'setup or observation failure, not accepted reproduction'; process.exitCode = 1; }
 finally {
   if (active) { active.child.kill('SIGKILL'); await active.done; }

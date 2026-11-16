@@ -11,11 +11,12 @@ permissions:
 jobs:
   before:
     if: github.ref == 'refs/heads/measure/stuck-native-before'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, macos-15]
         route: [npm, installer]
     env:
       DO_NOT_TRACK: '1'
@@ -36,8 +37,15 @@ jobs:
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - name: Guard before fixture build
         run: node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<25769803776)throw Error('Less than 24 GiB before build')"
+      - name: Build native macOS host primitives
+        if: runner.os == 'macOS'
+        run: |
+          node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<25769803776)throw Error('Less than 24 GiB before native build')"
+          node packages/seat/scripts/build-native.mjs --host
       - name: Build only fixture dependency closure
-        run: pnpm --filter 'cotal-ai...' --workspace-concurrency 3 build
+        run: |
+          node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<25769803776)throw Error('Less than 24 GiB before fixture build')"
+          pnpm --filter 'cotal-ai...' --workspace-concurrency 3 build
       - name: Download fixed candidate from the authorized producer
         uses: actions/download-artifact@v4
         with:
@@ -81,13 +89,15 @@ jobs:
         run: |
           work="$RUNNER_TEMP/nats"
           mkdir -p "$work"
-          archive=nats-server-v2.14.0-linux-amd64.tar.gz
+          case "$RUNNER_OS" in Linux) platform=linux ;; macOS) platform=darwin ;; *) exit 1 ;; esac
+          case "$(uname -m)" in x86_64) arch=amd64 ;; arm64|aarch64) arch=arm64 ;; *) exit 1 ;; esac
+          archive="nats-server-v2.14.0-$platform-$arch.tar.gz"
           curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.14.0/$archive" -o "$work/$archive"
           curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
           awk -v archive="$archive" '$2 == archive { print }' "$work/SHA256SUMS" > "$work/selected.sha256"
           test -s "$work/selected.sha256"
-          (cd "$work" && sha256sum -c selected.sha256 && tar -xzf "$archive")
-          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+          (cd "$work" && shasum -a 256 -c selected.sha256 && tar -xzf "$archive")
+          echo "$work/nats-server-v2.14.0-$platform-$arch" >> "$GITHUB_PATH"
       - name: Run one fresh official18 native before state
         env:
           ROUTE: ${{ matrix.route }}
@@ -99,14 +109,14 @@ jobs:
           ROUTE: ${{ matrix.route }}
         run: |
           if [ -f "$RUNNER_TEMP/stuck-$ROUTE/result.json" ]; then
-            sha256sum "$RUNNER_TEMP/stuck-$ROUTE/result.json" > "$RUNNER_TEMP/before-result.sha256"
+            shasum -a 256 "$RUNNER_TEMP/stuck-$ROUTE/result.json" > "$RUNNER_TEMP/before-result.sha256"
           fi
-          sha256sum scripts/stuck-native-before.mts > "$RUNNER_TEMP/before-script.sha256"
+          shasum -a 256 scripts/stuck-native-before.mts > "$RUNNER_TEMP/before-script.sha256"
       - name: Retain result and source receipts, never private profiles
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stuck-native-before-${{ matrix.route }}
+          name: stuck-native-before-${{ matrix.os }}-${{ matrix.route }}
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/stuck-${{ matrix.route }}/result.json
