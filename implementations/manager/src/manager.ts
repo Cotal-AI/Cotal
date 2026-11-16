@@ -370,7 +370,9 @@ export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal"
  * covered by the caller invoking `renewDaemonCreds` once synchronously before starting the timer,
  * so no separate floor is needed. The pass is idempotent, since `renewDaemonCreds` no-ops each
  * credential when its state is `healthy`, so a tick that lands before the window costs one health
- * check per owner. */
+ * check per owner. A managed seat's credential is judged as of the next tick instead, because the
+ * seat re-reads its file only once a minute and nothing pushes the renewal to it: a tick that
+ * lands in the window's last minute can come too late for the seat to adopt it. */
 export function credRenewIntervalMs(ttlSeconds: number): number {
   return Math.max(1, Math.floor((ttlSeconds / 4) * 1000));
 }
@@ -3103,6 +3105,14 @@ export class Manager {
       // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
       // Same class-2 mechanics as the daemon creds: re-sign the file for the SAME nkey; the
       // agent endpoint's 75% source re-read adopts it.
+      //
+      // Each credential is judged as of the NEXT pass, so one whose renewal point falls before it
+      // is re-signed now, ahead of the endpoint's re-read. Judged as of now, a credential whose
+      // renewal point lands just after a pass waited a whole interval: the endpoint warned every
+      // minute that the file still held the old generation, and when the next pass came in the
+      // credential's last minute, the endpoint's one-minute retry could miss it and the connection
+      // expired.
+      const nextPassSec = Math.floor(Date.now() / 1000) + Math.ceil(credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC) / 1000);
       if (!this.userMode) {
         for (const a of [...this.agents.values()]) {
           // The `terminalizing` test here is an OPTIMISATION, NOT THE GUARD. There are awaits below
@@ -3115,7 +3125,7 @@ export class Manager {
           try {
             const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds, this.space));
             if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
-            const health = inspectCredHealth(stored);
+            const health = inspectCredHealth(stored, nextPassSec);
             if (health.state === "healthy") continue;
             if (health.state === "unbounded" || health.state === "unreadable") {
               console.error(`! managed cred renewal ${a.name}: credential is ${health.state}${health.error ? ` (${health.error})` : ""} - not renewed (a pre-TTL credential stays as minted until respawn)`);
