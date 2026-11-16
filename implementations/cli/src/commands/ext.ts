@@ -12,7 +12,6 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock, extensionNpmMutationPath } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
@@ -222,7 +221,7 @@ export async function installExtensionSet(
   opts?: { isolate?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
-  const ownerConfig = globalConfigDir();
+  const ownerConfig = dirname(extensionsDir());
   const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
   if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
   const stage = stageExtensions();
