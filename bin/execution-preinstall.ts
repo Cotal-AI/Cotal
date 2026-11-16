@@ -13,6 +13,7 @@ export async function executionPreinstall(input: string | undefined): Promise<vo
       !request.flags || typeof request.flags !== "object" || Array.isArray(request.flags) ||
       Object.entries(request.flags).some(([key, value]) => !["space", "server", "creds", "on"].includes(key) || typeof value !== "string"))
     throw new Error("invalid execution pre-install request");
+  throw new Error("declared target fixture refuses update admission");
   const result = await readExecutionPreinstall({ ...request, installedEntry: realpathSync.native(request.installedEntry) });
   process.stdout.write(`COTAL_PREINSTALL_RESULT ${JSON.stringify({ v: 1, nonce: request.nonce, installedEntry: request.installedEntry, ...result })}\n`);
 }
