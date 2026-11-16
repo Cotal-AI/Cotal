@@ -80,7 +80,12 @@ function runDoctor(values: Record<string, boolean | string | undefined> = {}): P
     });
 }
 
+// Doctor also reads machine-local export records and resolves --fix through the mesh registry.
+// Keep both private to this fixture, regardless of the caller's COTAL_HOME or saved meshes.
+const priorHome = process.env.COTAL_HOME;
+process.env.COTAL_HOME = join(root, "home");
 try {
+  mkdirSync(process.env.COTAL_HOME, { mode: 0o700 });
   // ── 1. fingerprint redaction at the persistence boundary ────────────────────────────────────────
   const FAKE_FP = "a".repeat(64); // a plausible SHA-256 hex digest
   writeRenewalRecord(root, auth.space, {
@@ -193,5 +198,7 @@ try {
   console.log = origLog;
   console.error = origErr;
   process.chdir(origCwd);
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
   rmSync(root, { recursive: true, force: true });
 }
