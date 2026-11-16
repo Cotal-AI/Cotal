@@ -13,7 +13,8 @@ mkdirSync(own); mkdirSync(foreign);
 const account = `cotal${process.pid}`;
 const sid = win32ProcessBinding().userSid();
 const ps = (script: string) => {
-  const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(`$ErrorActionPreference='Stop';${script}`, "utf16le").toString("base64")], { encoding: "utf8", timeout: 30000, windowsHide: true });
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "psmodulepath"));
+  const result = spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(`$ErrorActionPreference='Stop';Import-Module Microsoft.PowerShell.Security;${script}`, "utf16le").toString("base64")], { env: environment, encoding: "utf8", timeout: 30000, windowsHide: true });
   assert.equal(result.status, 0, result.stderr);
   return result.stdout.trim();
 };
