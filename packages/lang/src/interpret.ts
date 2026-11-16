@@ -32,7 +32,7 @@ import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
 import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
-import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
+import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins, type EffectCeilings } from "./pins.js";
 import {
   agentHandles,
   dispatchPrimitive,
@@ -300,6 +300,7 @@ export interface RunOptions {
   readonly file?: string;
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
   /**
    * The HOST's stop, asked before every effect that has not already been recorded.
    *
@@ -414,7 +415,7 @@ class Interpreter {
     // periodically never reached the ceiling however much it performed against the world, and the
     // fault text claimed a run-scoped fact from an activation-scoped counter.
     this.prng = new Prng(pins.seed);
-    this.effects = { journal: this.journal, options, ceiling: pins.effectCeiling, effectCount: this.journal.dispatchedEffects() };
+    this.effects = { journal: this.journal, options: { ...options, pins }, ceiling: pins.effectCeiling, effectCount: this.journal.dispatchedEffects(), kindCounts: new Map() };
     this.stepBudget = pins.stepBudget;
     this.yieldEvery = pins.yieldEvery;
     this.nextYield = this.yieldEvery;

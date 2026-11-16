@@ -223,6 +223,13 @@ forks it; the parent's ceiling is not inherited.
 
 ## Available implementations [#available-implementations]
 
+Library callers can supply `ceilings: { spawn: 6 }` alongside `effectCeiling` when starting a run.
+The run records those per-kind limits as pins and refuses a changed override on resume with L5009.
+The next spawn beyond that limit fails with L4029 before dispatch, while turns can continue.
+Counts include the journalled prefix across restarts. Unlisted kinds keep only the total bound.
+Older records without this field retain their total-only limit. Use a runtime that supports
+per-kind ceilings on every host that may resume such a run.
+
 The language, its validator, interpreter, simulator and dry run are `@cotal-ai/lang`
 (`packages/lang`), usable in-process with your own effect handler and with no broker: `validate(src)`,
 then `run(src, { runId, handler })`, and `resume(src, journal, { runId, pins, handler })` to pick a

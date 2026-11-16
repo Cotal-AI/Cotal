@@ -10,6 +10,7 @@ const FILES = [
   "journal",
   "fuzz-journal",
   "pins",
+  "kind-ceilings",
   "scopes",
   "sim",
   "participant",

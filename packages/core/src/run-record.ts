@@ -44,6 +44,8 @@ export interface RunPinsValue {
   readonly yieldEvery: number;
   readonly stepBudget: number;
   readonly effectCeiling: number;
+  /** Optional per-kind journaled limits. Missing kinds have no additional limit. */
+  readonly ceilings?: Readonly<Partial<Record<"spawn" | "participant" | "turn" | "ask" | "checkpoint" | "sleep" | "wait" | "waitUntil" | "notify" | "monitor" | "conclave", number>>>;
   readonly languageVersion: string;
 }
 

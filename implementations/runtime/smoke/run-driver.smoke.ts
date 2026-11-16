@@ -1021,7 +1021,28 @@ console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.leng
     lost.status === "released" && lost.reason.name === "JournalAppendRejected", why(lost));
 }
 
-const EXPECTED_CELLS = 87;
+// Per-kind authority survives the real run record and the confined worker boundary.
+{
+  const handler = new CountingHandler();
+  const source = 'await sleep("1m", { name: "first" }); await sleep("1m", { name: "second" });';
+  const limited = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-kind-ceiling", source,
+    lease: lease("m1", 1, 1), handler, ceilings: { sleep: 1 },
+  }));
+  c("hosted per-kind ceiling fails L4029 after exactly one real dispatch",
+    limited.status === "threw" && "code" in limited.reason && limited.reason.code === "L4029" && handler.effects.length === 1, why(limited));
+  const record = await readRunRecord(kv, EP, "d-kind-ceiling");
+  c("the immutable broker run record carries its resolved kind ceiling",
+    record?.spec.value.pins.ceilings?.sleep === 1, record?.spec.value.pins);
+  const changed = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-kind-ceiling", source,
+    lease: lease("m2", 2, 2), handler: new CountingHandler(), ceilings: { sleep: 2 },
+  }));
+  c("hosted resume forwards a changed kind override and refuses L5009",
+    changed.status !== "completed" && "code" in changed.reason && changed.reason.code === "L5009", why(changed));
+}
+
+const EXPECTED_CELLS = 90;
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
 if (ok + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

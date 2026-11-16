@@ -6730,7 +6730,9 @@ split, mediated, written by the driver's commit path only.
 
 - **Spec** (create-only, decided once): `{ v: 1, run, pins, createdAt, forkedFrom? }`. `pins` is
   the **resolved pin set** the run started under, `{ seed, startedAt, yieldEvery, stepBudget,
-  effectCeiling, languageVersion }` (`spec/cotal-lang.md` §8.3): every one selects which effects run,
+  effectCeiling, languageVersion, ceilings? }` (`spec/cotal-lang.md` §8.3). `ceilings` maps journalled
+  effect kinds to nonnegative safe-integer limits; absence preserves the earlier total-only bound.
+  Every pin selects which effects run,
   so a resume MUST read them back and bind to them, and MUST refuse a caller value that differs.
   `startedAt` is the run's **logical epoch**, and a resuming host's own clock never moves a
   replayed program. The RESOLVED value is pinned, never the default: a default is a property of the

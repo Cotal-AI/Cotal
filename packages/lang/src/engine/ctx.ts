@@ -258,6 +258,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     } as RunOptions,
     ceiling: run.pins.effectCeiling,
     effectCount: run.journal.dispatchedEffects(),
+    kindCounts: new Map(),
   };
 
   // A LOG LINE IS DATA on this engine: a function anywhere inside a logged value is refused HERE, in

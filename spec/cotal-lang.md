@@ -817,6 +817,7 @@ different value for any pin is refused (L5009), and a resume handed history with
 | `yieldEvery` | interpreter dispatches between yields to the host's event loop | 1024 |
 | `stepBudget` | interpreter dispatches allowed in **one walk** before L4013 | 1 000 000 |
 | `effectCeiling` | effects allowed in **the run** before L4009 | 10 000 |
+| `ceilings` | optional per-kind effect limits before L4029 | no per-kind limits |
 | `languageVersion` | the language version the run started under | the version of the engine that resolves them |
 
 `yieldEvery` selects no outcome (§7.3): it is pinned so a run record never churns, and a future
@@ -826,6 +827,27 @@ version 1, a transformed-site hit under version 2), so the same budget does not 
 program two engines, and a recorded `stepBudget` is not comparable across versions; `effectCeiling` bounds the run because the journal records every dispatch, and a
 resume counts the recorded distinct effect keys toward it, a `conclave`'s included, so re-entering a
 pending or refused step does not count it again.
+
+`ceilings` is an optional record whose keys are the journalled effect kinds: `spawn`,
+`participant`, `turn`, `ask`, `checkpoint`, `sleep`, `wait`, `waitUntil`, `notify`, `monitor`
+and `conclave`. Values MUST be nonnegative safe integers. Unknown keys and invalid values
+MUST be refused before execution. Zero forbids a new dispatch of that kind. Missing kinds
+have no additional limit. The total `effectCeiling` still applies independently.
+
+For example, a host may start a run with `ceilings: { spawn: 6 }`. Its seventh new spawn
+MUST raise L4029 before creating an entry or calling the handler. The fault names the kind
+and pinned limit. A program may catch it and continue other kinds, including turns.
+Counts come from distinct journalled keys of that kind across the whole run, including
+pending and refused entries. Replay and re-entry of an existing key MUST NOT charge it again.
+Concurrent branches share the same allowance.
+
+The resolved record is copied and frozen. Resume inherits it when no override is supplied;
+an override MUST name the same keys and values, independent of key order, or fail L5009.
+Old pins without `ceilings` retain no per-kind limits; an empty override is equivalent to
+that absence. Forks inherit the parent's language pins and count the retained effect prefix.
+Migration keeps the recorded pins. A run with per-kind limits MUST execute on an implementation
+that supports this field; an older implementation does not enforce these new limits.
+Path and worktree policy remain host responsibilities.
 
 ### 8.4 Language version
 
@@ -1320,6 +1342,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4026 | A plane read did not answer before the client deadline |
 | L4027 | At-most-once step's outcome was never settled |
 | L4028 | Effect not admitted inside `once` |
+| L4029 | Run per-kind effect ceiling reached |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |

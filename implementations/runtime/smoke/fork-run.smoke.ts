@@ -58,7 +58,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const SPACE = "forkrun";
 const EP = "manager";
 const NOW = 1_770_000_000_000;
-const PINS = resolvePins({ runId: "r-parent" }, NOW, WALKER_LANGUAGE_VERSION);
+const PINS = resolvePins({ runId: "r-parent", ceilings: { sleep: 20 } }, NOW, WALKER_LANGUAGE_VERSION);
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -191,7 +191,7 @@ const plan = async (
   const entries = await record("r-parent", FLAT);
   const p = await plan({ entries, source: FLAT, fromStepKey: "/sleep:three#0" });
 
-  c("the plan carries the PARENT's pins", p.pins.seed === PINS.seed, { seed: p.pins.seed });
+  c("the plan carries the PARENT's pins", p.pins.seed === PINS.seed && p.pins.ceilings?.sleep === 20, { seed: p.pins.seed, ceilings: p.pins.ceilings });
   c("whose seed is the parent's id, not the child's", p.pins.seed === "r-parent", p.pins.seed);
   // What the child would get if it resolved its own: the same call the parent made, with the child's
   // id. It is a different seed, and every pure draw in the copied prefix would be a different draw.

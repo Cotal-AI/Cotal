@@ -148,6 +148,7 @@ export const CATALOG = Object.freeze({
   L4027: "At-most-once step's outcome was never settled",
   // A program fault like L4011: the program put an effect inside `once` that a hold cannot bound.
   L4028: "Effect not admitted inside `once`",
+  L4029: "Run per-kind effect ceiling reached",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

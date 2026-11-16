@@ -50,6 +50,7 @@ import {
   type JournalEntry,
   type JournalStore,
   type RunPins,
+  type EffectCeilings,
   type RunResult,
   type WorkerRunFailed,
 } from "@cotal-ai/lang";
@@ -87,6 +88,7 @@ export interface EngineHostRequest {
   readonly file?: string;
   readonly seed?: string;
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
   readonly stepBudget?: number;
   readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
 }
@@ -196,6 +198,7 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.seed !== undefined ? { seed: req.seed } : {}),
       ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
+      ...(req.ceilings !== undefined ? { ceilings: req.ceilings } : {}),
       ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
     },
     { entry, bridge: { handler: req.handler, store }, ...(req.onLog !== undefined ? { onLog: req.onLog } : {}) },

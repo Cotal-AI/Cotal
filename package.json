@@ -115,7 +115,7 @@
     "smoke:runtime-run-command-usage": "tsx implementations/runtime/smoke/run-command-usage.smoke.ts",
     "smoke:run-seat-one-sweep": "tsx implementations/runtime/smoke/run-seat-one-sweep.smoke.ts",
     "smoke:runtime-run-host-replay": "tsx implementations/runtime/smoke/run-host-replay.smoke.ts",
-    "smoke:lang-pins": "tsx packages/lang/smoke/pins.smoke.ts",
+    "smoke:lang-pins": "tsx packages/lang/smoke/pins.smoke.ts && tsx packages/lang/smoke/kind-ceilings.smoke.ts",
     "smoke:lang-scopes": "tsx packages/lang/smoke/scopes.smoke.ts",
     "smoke:lang-sim": "tsx packages/lang/smoke/sim.smoke.ts",
     "smoke:lang-interpret": "tsx packages/lang/smoke/interpret.smoke.ts",

@@ -43,6 +43,7 @@ export interface EffectHost {
   readonly options: RunOptions;
   readonly ceiling: number;
   effectCount: number;
+  readonly kindCounts: Map<EffectKind, number>;
 }
 
 /**
@@ -269,8 +270,12 @@ export function onceBodyNotCallable(): RuntimeFault {
  * Only a `miss` counts: a pending or refused key is already in that seed, and counting its
  * re-entry again would fault a resumed run at a step where a fresh one goes on.
  */
-function countEffect(host: EffectHost, verdict: LookupVerdict): void {
+function countEffect(host: EffectHost, verdict: LookupVerdict, kind: EffectKind): void {
   if (verdict.verdict !== "miss") return;
+  const limit = host.options.pins?.ceilings?.[kind];
+  const count = host.kindCounts.get(kind) ?? host.journal.dispatchedEffects(kind);
+  if (limit !== undefined && count >= limit)
+    throw new RuntimeFault("L4029", `This run has reached its pinned ${kind} ceiling of ${limit}. No new ${kind} effect was dispatched. Other effect kinds keep their own limits.`);
   host.effectCount += 1;
   if (host.effectCount > host.ceiling) {
     throw new RuntimeFault(
@@ -278,6 +283,7 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
       `this run has performed more than ${host.ceiling} effects, which means a loop is not terminating. Add an exit condition or a permit.`,
     );
   }
+  host.kindCounts.set(kind, count + 1);
 }
 
 /**
@@ -286,7 +292,7 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
  * and {@link performScope} for a scope that dispatches, so a rule about admitting a dispatch cannot
  * reach one path and miss another.
  */
-function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict): void {
+function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict, kind: EffectKind): void {
   // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
   // this side: work already in flight is another matter, and the handler owns it.
   if (frame.signal.cancelled) {
@@ -305,7 +311,7 @@ function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerd
     throw new RunReleased(stop);
   }
 
-  countEffect(host, verdict);
+  countEffect(host, verdict, kind);
 }
 
 /** A live step: its entry is begun (or recovered) and its handler context is ready. */
@@ -361,7 +367,7 @@ async function enterStep(
       break;
   }
 
-  admitDispatch(host, frame, verdict);
+  admitDispatch(host, frame, verdict, kind);
 
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
@@ -1552,7 +1558,7 @@ export async function performScope(
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
   // A conclave's open is real work against the world, so it is admitted as an effect is.
-  if (dispatches) admitDispatch(host, frame, verdict);
+  if (dispatches) admitDispatch(host, frame, verdict, "conclave");
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a

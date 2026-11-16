@@ -78,6 +78,7 @@ export {
   bindPins,
   resolvePins,
   type PinnableOptions,
+  type EffectCeilings,
   type RunPins,
 } from "./pins.js";
 

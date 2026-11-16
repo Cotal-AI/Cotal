@@ -64,6 +64,7 @@ import {
   type EffectHandler,
   type JournalEntry,
   type RunPins,
+  type EffectCeilings,
   type RunResult,
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
@@ -92,6 +93,7 @@ interface HostedEngineRequest {
     readonly seed?: string;
     readonly file?: string;
     readonly effectCeiling?: number;
+    readonly ceilings?: EffectCeilings;
     readonly stepBudget?: number;
     readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   };
@@ -119,6 +121,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
     ...(r.options.effectCeiling !== undefined ? { effectCeiling: r.options.effectCeiling } : {}),
+    ...(r.options.ceilings !== undefined ? { ceilings: r.options.ceilings } : {}),
     ...(r.options.stepBudget !== undefined ? { stepBudget: r.options.stepBudget } : {}),
     ...(r.options.onLog !== undefined ? { onLog: r.options.onLog } : {}),
   });
@@ -286,6 +289,7 @@ export interface DriveRequest {
   readonly seed?: string;
   readonly file?: string;
   readonly effectCeiling?: number;
+  readonly ceilings?: EffectCeilings;
   readonly stepBudget?: number;
   /**
    * The most bytes a settled `ok` result may canonicalize to, checked by the journal AHEAD of the
@@ -513,6 +517,7 @@ async function drive(
         runId: req.runId,
         ...(req.seed !== undefined ? { seed: req.seed } : {}),
         ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
+        ...(req.ceilings !== undefined ? { ceilings: req.ceilings } : {}),
         ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
       },
       req.handler.now(),
@@ -652,6 +657,7 @@ async function drive(
     ...(req.seed !== undefined ? { seed: req.seed } : {}),
     ...(req.file !== undefined ? { file: req.file } : {}),
     ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
+    ...(req.ceilings !== undefined ? { ceilings: req.ceilings } : {}),
     ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
     ...(req.onLog !== undefined ? { onLog: req.onLog } : {}),
   };

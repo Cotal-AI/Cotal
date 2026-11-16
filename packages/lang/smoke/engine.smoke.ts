@@ -2969,7 +2969,7 @@ let n = 1;
     // `ready` is the boot handshake the host waits on before it posts a root cancellation; its
     // behaviour is celled by root-cancellation.smoke.ts's worker boot and parked cells.
     const KINDS = ["log", "ready", "result"];
-    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
+    const REQUEST_FIELDS = ["ceilings", "cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "hostPackageVersion", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
