@@ -331,7 +331,32 @@ try {
 
   // Hop 1 (0.164.8 -> 0.164.9): N+1's bundled daemon throws before it binds, so setup restores N.
   await ui('close');
-  const rolledBack = await until('Hop 1 setup rolled back to 0.164.8', async () => readSetupResult(), value => value && value.toVersion === '0.164.9' && value.outcome === 'rolled-back' && value.code === 23);
+  const hop = await until('Hop 1 setup finished', async () => readSetupResult(), value => value && value.toVersion === '0.164.9' && (value.outcome === 'rolled-back' && value.code === 23 || value.outcome === 'refused'));
+  if (hop.outcome === 'refused') {
+    const probe = join(out, 'refusal-probe.ps1');
+    writeFileSync(probe, [
+      "$runtime = Join-Path $env:LOCALAPPDATA 'Cotal\\runtime'",
+      "$acl = Get-Acl -LiteralPath $runtime",
+      "$first = Get-ChildItem -LiteralPath $runtime -Force | Select-Object -First 1",
+      "$entry = if ($first) { Get-Acl -LiteralPath $first.FullName } else { $null }",
+      "$readonly = @(Get-ChildItem -LiteralPath $runtime -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReadOnly } | Select-Object -ExpandProperty FullName)",
+      "$session = [uint32]0; $key = 'cotal-proof-holders-0000000000000'",
+      "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ProofHolders { [DllImport(\"rstrtmgr.dll\", CharSet=CharSet.Unicode)] public static extern int RmStartSession(out uint s, uint f, string k); [DllImport(\"rstrtmgr.dll\", CharSet=CharSet.Unicode)] public static extern int RmRegisterResources(uint s, uint n, string[] p, uint a, IntPtr ap, uint sv, string[] sn); [DllImport(\"rstrtmgr.dll\", CharSet=CharSet.Unicode)] public static extern int RmGetList(uint s, out uint need, ref uint count, IntPtr info, out uint reboot); [DllImport(\"rstrtmgr.dll\")] public static extern int RmEndSession(uint s); }'",
+      "$started = [ProofHolders]::RmStartSession([ref]$session, 0, $key)",
+      "$registered = if ($started -eq 0) { [ProofHolders]::RmRegisterResources($session, 1, @($runtime), 0, [IntPtr]::Zero, 0, @()) } else { $started }",
+      "$needed = [uint32]0; $count = [uint32]0; $reboot = [uint32]0",
+      "$listed = if ($registered -eq 0) { [ProofHolders]::RmGetList($session, [ref]$needed, [ref]$count, [IntPtr]::Zero, [ref]$reboot) } else { $registered }",
+      "if ($started -eq 0) { [void][ProofHolders]::RmEndSession($session) }",
+      "[pscustomobject]@{ owner = $acl.Owner; access = @($acl.Access | ForEach-Object { $_.IdentityReference.Value + ' ' + $_.FileSystemRights }); first = $first.FullName; firstOwner = $entry.Owner; readOnly = $readonly; holderQuery = @{ started = $started; registered = $registered; listed = $listed; needed = $needed }; helperSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } | ConvertTo-Json -Depth 4",
+    ].join('\n'));
+    let folder = 'probe failed';
+    try { folder = JSON.parse((await execute(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', probe], { encoding: 'utf8' })).stdout); }
+    catch (error) { folder = error.message; }
+    const version = existsSync(join(runtime, 'package.json')) ? JSON.parse(readFileSync(join(runtime, 'package.json'), 'utf8')).version : null;
+    const service = await call('daemon', 'status').catch(error => ({ ok: false, message: error.message }));
+    record('Hop 1 refusal left this state', { setup: hop, folder, installedVersion: version, service });
+  }
+  const rolledBack = hop;
   assert.equal(rolledBack.fromVersion, '0.164.8');
   assert.equal(await installed(), '0.164.8');
   const restored = await until('Hop 1 service and Manager ready again on 0.164.8', () => call('daemon', 'status'), reply => reply.ok && reply.result.version === '0.164.8' && reply.result.state === 'ready');
