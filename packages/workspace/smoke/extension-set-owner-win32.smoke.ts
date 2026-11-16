@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { windowsSetOwnedByCurrentUser } from "../src/extension-set-win32.js";
+import { win32ProcessBinding } from "../src/win32-process.js";
+
+if (process.platform !== "win32") throw new Error("Windows connector-set owner measurement requires Windows");
+const root = mkdtempSync(join(tmpdir(), "connector-owner-"));
+const own = join(root, "own set ü"), foreign = join(root, "foreign set"), junction = join(root, "junction");
+mkdirSync(own); mkdirSync(foreign);
+const account = `cotal${process.pid}`;
+const sid = win32ProcessBinding().userSid();
+const ps = (script: string) => {
+  const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(`$ErrorActionPreference='Stop';${script}`, "utf16le").toString("base64")], { encoding: "utf8", timeout: 30000, windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+};
+const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+let created = false;
+try {
+  ps(`$a=Get-Acl -LiteralPath ${literal(own)};$a.SetOwner([Security.Principal.SecurityIdentifier]::new(${literal(sid)}));Set-Acl -LiteralPath ${literal(own)} -AclObject $a`);
+  const foreignSid = ps(`$p=ConvertTo-SecureString ([Guid]::NewGuid().ToString()+'aA!9') -AsPlainText -Force;$u=New-LocalUser -Name ${literal(account)} -Password $p -AccountNeverExpires;$u.SID.Value`);
+  created = true;
+  ps(`$a=Get-Acl -LiteralPath ${literal(foreign)};$a.SetOwner([Security.Principal.SecurityIdentifier]::new(${literal(foreignSid)}));Set-Acl -LiteralPath ${literal(foreign)} -AclObject $a;New-Item -ItemType Junction -Path ${literal(junction)} -Target ${literal(own)}|Out-Null`);
+  const ownResult = windowsSetOwnedByCurrentUser(own);
+  const foreignResult = windowsSetOwnedByCurrentUser(foreign);
+  let reparseError = "";
+  try { windowsSetOwnedByCurrentUser(junction); } catch (error) { reparseError = String(error); }
+  assert.equal(ownResult, true);
+  assert.equal(foreignResult, false);
+  assert.match(reparseError, /real directory|reparse/);
+  const result = { platform: process.platform, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, accountRemoved: false };
+  ps(`Remove-LocalUser -Name ${literal(account)}`); created = false;
+  result.accountRemoved = true;
+  const output = process.env.COTAL_OWNER_PROBE_OUTPUT;
+  if (!output) throw new Error("measurement output directory required");
+  mkdirSync(output, { recursive: true });
+  writeFileSync(join(output, "result.json"), JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(result));
+} finally {
+  if (created) ps(`Remove-LocalUser -Name ${literal(account)}`);
+}
