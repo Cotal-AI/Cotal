@@ -307,6 +307,17 @@ jobs:
       - name: Verify macOS window-scoped Dock presence, focus and reopen
         if: runner.os == 'macOS'
         run: bash desktop/scripts/check-presence-macos.sh
+      - name: Measure whether the status-watch bridge dies with the app
+        if: runner.os == 'macOS' && github.ref == 'refs/heads/measure/macos-bridge-exit'
+        run: bash desktop/test/measure-macos-bridge-exit.sh
+      - name: Upload macOS bridge-exit evidence
+        if: always() && runner.os == 'macOS' && github.ref == 'refs/heads/measure/macos-bridge-exit'
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-proof-macos-bridge-exit-${{ runner.arch }}
+          path: ${{ runner.temp }}/setup-proof/macos-bridge-exit/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Verify installed Windows shortcuts and taskbar presence
         if: runner.os == 'Windows'
         shell: pwsh
