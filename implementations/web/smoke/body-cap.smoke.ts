@@ -38,6 +38,8 @@
  *
  * Section 10: `POST /api/send`, the second body route, reads its body under the same cap.
  *
+ * Section 11: the delete body has a ten-second total deadline, even while bytes keep arriving.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-body-cap
  */
 import { spawn } from "node:child_process";
@@ -68,6 +70,10 @@ const EDGE_CL = "edge_cl";    // deleted through a body of EXACTLY the cap, with
 const EDGE_TE = "edge_te";    // the same, with no declared length at all
 const KEEP_A = "keep_a";      // deleted over a keep-alive socket, first request
 const KEEP_B = "keep_b";      // deleted over the SAME socket, proving it stayed reusable
+const SLOW_TE = "slow_chunked";
+const SLOW_CL = "slow_declared";
+const SLOW_EMPTY = "slow_empty";
+const AFTER_DEADLINE = "after_deadline";
 const MSG = "seeded";
 
 const PORT = await freePort();
@@ -83,12 +89,12 @@ try {
   if (!up) throw new Error("nats-server did not start");
   await setupSpaceStreams({ servers: SERVER, space: SPACE });
 
-  const seed = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B],
+  const seed = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B, SLOW_TE, SLOW_CL, SLOW_EMPTY, AFTER_DEADLINE],
     consume: false, registerPresence: false,
     card: { id: newIdentity().id, name: "seed", kind: "endpoint" } });
   seed.on("error", () => {});
   await seed.start();
-  for (const ch of [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B]) await seed.multicast(MSG, { channel: ch });
+  for (const ch of [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B, SLOW_TE, SLOW_CL, SLOW_EMPTY, AFTER_DEADLINE]) await seed.multicast(MSG, { channel: ch });
   await seed.stop();
 
   let log = "";
@@ -569,6 +575,66 @@ try {
     ok("10.3 a post with NO declared length is refused on the read loop as a size, never as a body it read and disliked",
       /8192 byte limit/.test(chunkedLog) && !/must be a JSON object/.test(chunkedLog) && !chunked.status.includes("400"),
       { status: chunked.status, operatorLine: chunkedLog.slice(-240) });
+  }
+  console.log("11. delete uploads have a total body deadline");
+  {
+    const slowChannels = [SLOW_TE, SLOW_CL, SLOW_EMPTY];
+    ok("11.0 CONTROL: the slow requests name channels with stored messages",
+      (await Promise.all(slowChannels.map(stillThere))).every(Boolean) && await stillThere(AFTER_DEADLINE));
+
+    // Use the real ten-second policy, not a test override. The trickles keep the socket active
+    // below the byte cap, so an idle timeout cannot pass as a total deadline. The last case sends
+    // no body bytes at all, proving that the clock does not wait for the first chunk.
+    const slowUpload = (channel: string, chunked: boolean, empty: boolean) => new Promise<{
+      status: string; response: string; elapsedMs: number; sent: number; clientStopped: boolean; writable: boolean;
+    }>((resolve) => {
+      let response = "", sent = 0, started = Date.now(), clientStopped = false;
+      let trickle: ReturnType<typeof setInterval> | undefined;
+      const sock = net.connect(WEB_PORT, "127.0.0.1", () => {
+        started = Date.now();
+        sock.write("POST /api/channel/delete HTTP/1.1\r\nHost: h\r\n" + COOKIE +
+          "Connection: keep-alive\r\nContent-Type: application/json\r\n" +
+          (chunked ? "Transfer-Encoding: chunked\r\n\r\n" : `Content-Length: ${CAP}\r\n\r\n`));
+        if (empty) return;
+        const send = (body: Buffer): void => {
+          sent += body.length;
+          sock.write(chunked ? asChunks(body) : body);
+        };
+        send(Buffer.from(JSON.stringify({ channel })));
+        trickle = setInterval(() => send(Buffer.from(" ")), 500);
+        // Never send the chunk terminator or the remaining declared bytes.
+      });
+      const stop = setTimeout(() => { clientStopped = true; sock.destroy(); }, 20_000);
+      sock.on("data", (data) => { response += data.toString("latin1"); });
+      sock.on("error", () => {});
+      sock.once("close", () => {
+        clearTimeout(stop);
+        clearInterval(trickle);
+        resolve({ status: response.split("\r\n")[0] ?? "", response, elapsedMs: Date.now() - started,
+          sent, clientStopped, writable: sock.writable });
+      });
+    });
+    const results = await Promise.all([
+      slowUpload(SLOW_TE, true, false),
+      slowUpload(SLOW_CL, false, false),
+      slowUpload(SLOW_EMPTY, false, true),
+    ]);
+    for (const [i, result] of results.entries()) {
+      console.log(`  deadline ${slowChannels[i]}: ${JSON.stringify(result)}`);
+      ok(`11.1 ${slowChannels[i]} receives 408 at the ten-second deadline, not the platform backstop`,
+        result.status.includes("408") && result.elapsedMs >= 9_500 && result.elapsedMs < 15_000
+        && !result.clientStopped && result.sent < CAP, result);
+      ok(`11.2 ${slowChannels[i]} closes its keep-alive connection and names the deadline`,
+        /connection:\s*close/i.test(result.response) && result.response.includes("10000ms") && !result.writable, result);
+      ok(`11.3 ${slowChannels[i]} has no deletion effect`, await stillThere(slowChannels[i]!));
+    }
+    ok("11.4 the operator records deadline refusals, not server faults",
+      log.includes("refused: request body did not finish within 10000ms") && !log.includes("failed: request body"));
+    const control = await post(JSON.stringify({ channel: AFTER_DEADLINE }));
+    ok("11.5 CONTROL: an ordinary delete still succeeds after the expired uploads",
+      control.status === 200 && control.text.includes('"purged":1') && !(await stillThere(AFTER_DEADLINE)), control);
+    ok("11.6 timed-out channels remain unchanged after a later successful mutation",
+      (await Promise.all(slowChannels.map(stillThere))).every(Boolean));
   }
 } finally {
   webChild?.kill("SIGKILL");

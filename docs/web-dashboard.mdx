@@ -217,6 +217,7 @@ Invalid names are refused rather than rewritten into a different channel.
 
 Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
 The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
+Its complete body must arrive within ten seconds. Otherwise it returns `408`, closes the connection and leaves the channel unchanged.
 That route is not an action in the current service. Use the console or authorized CLI `channel remove` instead. A session-gate refusal also closes a request with an announced body.
 Ordinary bodyless requests keep their connection. The configured read-only service refuses deletion before reaching its mutation handler.
 
