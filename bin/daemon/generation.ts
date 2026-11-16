@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked, extensionSetPaths, assertExtensionSetReady } from "@cotal-ai/workspace";
+import { loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked, extensionSetPaths, assertExtensionSetReady, seedWriterKind } from "@cotal-ai/workspace";
 import { selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +24,8 @@ export async function reconcileHostedConnectors(version: string, acquireConnecto
   if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
+  // Checkouts cannot seed a released connector set and their Managers have no set to hold.
+  if (seedWriterKind() === "checkout") return;
   acquireConnectorSet();
   try {
     const stamp = JSON.parse(readFileSync(join(extensionSetPaths().seed, "stamp.json"), "utf8"));

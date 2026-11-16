@@ -119,6 +119,9 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
  *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
+  // Such a folder can hold no inventory. Leave its refusal to command dispatch, which also
+  // preserves help, version and docs without trying to inspect a connector migration lock.
+  if (globalConfigDirProblem()) return { extensions: [] };
   assertExtensionSetReadable();
   const p = extensionsManifestPath();
   let parsed: unknown;
