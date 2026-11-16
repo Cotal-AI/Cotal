@@ -42,6 +42,8 @@ import type { EntryState, JournalEntry, JournalStore } from "../journal.js";
 import { EffectResultTooLarge, JournalAppendRejected } from "../journal.js";
 import type { StepKey } from "../keys.js";
 import { messageOf, nameOf } from "../errors.js";
+import type { EffectKind } from "../primitives.js";
+import type { RunOptions } from "../interpret.js";
 
 /** One 16-byte SharedArrayBuffer: an Int32 answer flag at 0, the Float64 clock value at 8. */
 export const CLOCK_BYTES = 16;
@@ -97,6 +99,7 @@ interface WireCtx {
 }
 
 type ToHost =
+  | { readonly kind: "before-effect"; readonly seq: number; readonly effectKind: EffectKind }
   | { readonly kind: "effect"; readonly seq: number; readonly method: Method; readonly req: unknown; readonly ctx: WireCtx }
   | { readonly kind: "append"; readonly seq: number; readonly entry: JournalEntry }
   | { readonly kind: "cancel"; readonly seq: number; readonly reason: string }
@@ -186,7 +189,11 @@ function rehydrate(w: WireError): Error {
  * so a host-initiated `bind` reaches the real context (and through it, the real journal), and so
  * a cancellation fires at the host the moment the thread's signal fires.
  */
-export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { handler: EffectHandler; store: JournalStore } {
+export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): {
+  handler: EffectHandler;
+  store: JournalStore;
+  beforeEffect: NonNullable<RunOptions["beforeEffect"]>;
+} {
   const flag = new Int32Array(clock, 0, 1);
   const value = new Float64Array(clock, 8, 1);
   let seq = 0;
@@ -294,7 +301,22 @@ export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { hand
     },
   };
 
-  return { handler, store };
+  return {
+    handler,
+    store,
+    beforeEffect: (effectKind) => {
+      const s = seq++;
+      appending++;
+      const answer = new Promise<string | undefined>((resolve, reject) =>
+        pending.set(s, {
+          resolve: (v) => { appending--; resolve(v as string | undefined); },
+          reject: (e) => { appending--; reject(e); },
+        }),
+      );
+      port.postMessage({ kind: "before-effect", seq: s, effectKind } satisfies ToHost);
+      return answer;
+    },
+  };
 }
 
 export interface BridgeHost {
@@ -318,7 +340,7 @@ export interface BridgeHost {
  */
 export function serviceBridge(
   port: MessagePort,
-  seam: { readonly handler: EffectHandler; readonly store: JournalStore },
+  seam: { readonly handler: EffectHandler; readonly store: JournalStore; readonly beforeEffect?: RunOptions["beforeEffect"] },
   disagree: (e: Error) => void,
 ): BridgeHost {
   const clock = new SharedArrayBuffer(CLOCK_BYTES);
@@ -343,6 +365,16 @@ export function serviceBridge(
   );
 
   port.on("message", (m: ToHost) => {
+    if (m.kind === "before-effect") {
+      void Promise.resolve().then(() => {
+        if (seam.beforeEffect === undefined) throw new Error("the worker requested a live-effect policy this host did not supply");
+        return seam.beforeEffect(m.effectKind);
+      }).then(
+        (reason) => toThread({ kind: "answer", seq: m.seq, ok: true, value: reason }),
+        (e: unknown) => toThread({ kind: "answer", seq: m.seq, ok: false, error: flatten(e) }),
+      );
+      return;
+    }
     if (m.kind === "idle") {
       idleAt = m.seen;
       if (idleAt === sent) {

@@ -136,6 +136,7 @@ export async function runOnEngine(source: string, module: string, options: Engin
     ...(options.migration !== undefined ? { migration: options.migration } : {}),
     ...(options.onLog !== undefined ? { onLog: options.onLog } : {}),
     ...(options.shouldStop !== undefined ? { shouldStop: options.shouldStop } : {}),
+    ...(options.beforeEffect !== undefined ? { beforeEffect: options.beforeEffect } : {}),
   });
 
   // The run clock starts at the run's LOGICAL epoch, not at this host's clock: a run resumed on

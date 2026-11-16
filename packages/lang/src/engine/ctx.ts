@@ -125,6 +125,7 @@ export interface EngineRun {
   readonly migration?: boolean;
   readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
   readonly shouldStop?: () => string | undefined;
+  readonly beforeEffect?: RunOptions["beforeEffect"];
 }
 
 // ---- the coercion law, shared by every site that can reach host ToPrimitive --------------------
@@ -255,6 +256,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       ...(run.migration !== undefined ? { migration: run.migration } : {}),
       ...(run.onLog !== undefined ? { onLog: run.onLog } : {}),
       ...(run.shouldStop !== undefined ? { shouldStop: run.shouldStop } : {}),
+      ...(run.beforeEffect !== undefined ? { beforeEffect: run.beforeEffect } : {}),
     } as RunOptions,
     ceiling: run.pins.effectCeiling,
     effectCount: run.journal.dispatchedEffects(),

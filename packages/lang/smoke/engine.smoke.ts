@@ -2979,7 +2979,8 @@ let n = 1;
     // the set is the union of the two directions, and a kind added to either side reds this cell
     // until it is declared here beside the cells that grade its behaviour.
     const bridgeSrc = readFileSync(fileURLToPath(new URL("../src/engine/bridge.ts", import.meta.url)), "utf8");
-    const BRIDGE_KINDS = ["answer", "append", "bind", "bind-answer", "cancel", "effect", "idle", "now"];
+    // before-effect is exercised through the shipped driver in before-effect.smoke.ts.
+    const BRIDGE_KINDS = ["answer", "append", "before-effect", "bind", "bind-answer", "cancel", "effect", "idle", "now"];
     const bridgePosted = [...new Set([...bridgeSrc.matchAll(/(?:postMessage|toThread)\(\{\s*kind: "([\w-]+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the effect bridge speaks exactly the ${BRIDGE_KINDS.length} message kinds this table cells, both directions together`, JSON.stringify(bridgePosted) === JSON.stringify(BRIDGE_KINDS), { declared: BRIDGE_KINDS, found: bridgePosted });
     // AND THE HOST'S SIDE OF THE SAME AGREEMENT, reproduced rather than reasoned: a thread that

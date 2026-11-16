@@ -314,6 +314,12 @@ export interface RunOptions {
    * where its journal says it is and the next driver resumes from there.
    */
   readonly shouldStop?: () => string | undefined;
+  /**
+   * Host policy for the next live effect kind, after replay and before counting, appending or
+   * dispatching it. Return a reason to release through {@link RunReleased}, or undefined to
+   * proceed. This policy is not pinned, so a same-pin resume may use a different policy.
+   */
+  readonly beforeEffect?: (kind: EffectKind) => string | undefined | Promise<string | undefined>;
   /** Cooperative root cancellation, distinct from a next-boundary host release. */
   readonly cancellation?: RootCancellationSource;
   /**

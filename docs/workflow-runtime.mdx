@@ -172,6 +172,16 @@ program acts on the entry. A successor whose replay ends below it refuses the ru
 
 ## Host authority [#driver-and-mediator-authority]
 
+Library hosts can supply `DriveRequest.beforeEffect(kind)` to release before a particular live
+effect, such as `spawn`, while allowing other kinds to proceed. The language's `RunOptions`
+accepts the same hook. Return a reason, or a promise of one, to raise `RunReleased`; return
+`undefined` to proceed. The driver reports `status: "released"` with that reason.
+The hook runs after replay lookup and before the effect count, pending append and handler call,
+on both engine versions. Workflow catch and finally blocks cannot intercept the release.
+Replayed effects never call the hook. The policy is not a durable ceiling or a pin, so a later
+same-pin resume can permit the effect. `PauseToken` and the work horizon keep their existing
+kind-blind behavior and take precedence over this policy.
+
 A run's **driver** connects on a `run-driver` credential minted for one run and takeover
 attempt. It can append to its journal, use its replay durable, and write its own `run`, `program`,
 `notice` and `migration` records. It has no store point reads, checkpoint writes, chat consumers,

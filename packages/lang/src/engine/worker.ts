@@ -32,6 +32,7 @@ import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import type { EffectHandler } from "../effects.js";
 import type { JournalEntry, JournalStore } from "./../journal.js";
 import type { RunPins } from "../pins.js";
+import type { RunOptions } from "../interpret.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
 import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
@@ -200,7 +201,11 @@ export interface WorkerRunOptions {
    * The live seam a `"bridged"` request runs against: the host's handler and its durable store.
    * Required exactly when the request says `"bridged"`; see {@link WorkerRunRequest.handler}.
    */
-  readonly bridge?: { readonly handler: EffectHandler; readonly store: JournalStore };
+  readonly bridge?: {
+    readonly handler: EffectHandler;
+    readonly store: JournalStore;
+    readonly beforeEffect?: RunOptions["beforeEffect"];
+  };
 }
 
 /**
@@ -229,14 +234,14 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   }
   const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
   let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
-  let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
+  let bridge: { port: MessagePort; clock: SharedArrayBuffer; beforeEffect: boolean } | undefined;
   // Assigned when the run's answer is set up below; the bridge hears only the thread, which does
   // not exist yet, so no disagreement can arrive before the assignment.
   let disagree: (e: Error) => void = () => {};
   if (options.bridge !== undefined) {
     const channel = new MessageChannel();
     host = serviceBridge(channel.port1, options.bridge, (e) => disagree(e));
-    bridge = { port: channel.port2, clock: host.clock };
+    bridge = { port: channel.port2, clock: host.clock, beforeEffect: options.bridge.beforeEffect !== undefined };
   }
   // Two literal spellings rather than one spread, so the crossing audit in the engine suite reads
   // exactly what the thread is handed in each route off this source.

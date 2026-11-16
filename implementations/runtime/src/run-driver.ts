@@ -65,6 +65,7 @@ import {
   type JournalEntry,
   type RunPins,
   type RunResult,
+  type RunOptions,
 } from "@cotal-ai/lang";
 import { runOnHostedEngine } from "./engine-host.js";
 import { RunJournalStore, replayOwnJournal } from "./journal-store.js";
@@ -87,6 +88,7 @@ interface HostedEngineRequest {
     readonly runId: string;
     readonly handler: EffectHandler;
     readonly shouldStop: () => string | undefined;
+    readonly beforeEffect?: RunOptions["beforeEffect"];
     readonly cancellation?: RootCancellationSource;
     readonly pins: RunPins;
     readonly seed?: string;
@@ -115,6 +117,7 @@ const hostedEngineRun = (r: HostedEngineRequest): Promise<RunResult> =>
     entries: r.entries,
     ...(r.resultBytes !== undefined ? { resultBytes: r.resultBytes } : {}),
     shouldStop: r.options.shouldStop,
+    ...(r.options.beforeEffect !== undefined ? { beforeEffect: r.options.beforeEffect } : {}),
     ...(r.options.cancellation !== undefined ? { cancellation: r.options.cancellation } : {}),
     ...(r.options.file !== undefined ? { file: r.options.file } : {}),
     ...(r.options.seed !== undefined ? { seed: r.options.seed } : {}),
@@ -306,6 +309,9 @@ export interface DriveRequest {
   readonly workExpiry?: number;
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
+  /** Kind-aware live-effect policy. A returned reason releases before count, append or dispatch.
+   *  Replayed effects do not call it. The policy may change on a same-pin resume. */
+  readonly beforeEffect?: RunOptions["beforeEffect"];
   /** Where the program's `log(...)` lines go. They are not journalled. */
   readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   /** Root cancellation established by the hosting manager after observing its durable marker. */
@@ -647,6 +653,7 @@ async function drive(
     runId: req.runId,
     handler: req.handler,
     shouldStop,
+    ...(req.beforeEffect !== undefined ? { beforeEffect: req.beforeEffect } : {}),
     ...(req.cancellation !== undefined ? { cancellation: req.cancellation } : {}),
     pins,
     ...(req.seed !== undefined ? { seed: req.seed } : {}),

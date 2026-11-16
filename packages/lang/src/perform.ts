@@ -286,7 +286,7 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
  * and {@link performScope} for a scope that dispatches, so a rule about admitting a dispatch cannot
  * reach one path and miss another.
  */
-function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict): void {
+function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict, kind: EffectKind): void | Promise<void> {
   // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
   // this side: work already in flight is another matter, and the handler owns it.
   if (frame.signal.cancelled) {
@@ -305,7 +305,19 @@ function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerd
     throw new RunReleased(stop);
   }
 
-  countEffect(host, verdict);
+  const policy = host.options.beforeEffect;
+  if (policy === undefined) {
+    countEffect(host, verdict);
+    return;
+  }
+  return Promise.resolve(policy(kind)).then((reason) => {
+    if (reason !== undefined) throw new RunReleased(reason);
+    // A policy may cross the worker bridge. Cancellation during that await admits no work.
+    if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? "cancelled");
+    const stop = host.options.shouldStop?.();
+    if (stop !== undefined) throw new RunReleased(stop);
+    countEffect(host, verdict);
+  });
 }
 
 /** A live step: its entry is begun (or recovered) and its handler context is ready. */
@@ -361,7 +373,8 @@ async function enterStep(
       break;
   }
 
-  admitDispatch(host, frame, verdict);
+  const admission = admitDispatch(host, frame, verdict, kind);
+  if (admission !== undefined) await admission;
 
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
@@ -1552,7 +1565,11 @@ export async function performScope(
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
   // A conclave's open is real work against the world, so it is admitted as an effect is.
-  if (dispatches) admitDispatch(host, frame, verdict);
+  if (dispatches) {
+    // The scope table marks only the world-side conclave as dispatching an effect.
+    const admission = admitDispatch(host, frame, verdict, scopeKey.kind as EffectKind);
+    if (admission !== undefined) await admission;
+  }
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a

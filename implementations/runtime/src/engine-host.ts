@@ -51,6 +51,7 @@ import {
   type JournalStore,
   type RunPins,
   type RunResult,
+  type RunOptions,
   type WorkerRunFailed,
 } from "@cotal-ai/lang";
 
@@ -83,6 +84,7 @@ export interface EngineHostRequest {
   /** The journal's result bound (L5006). The journal it bounds is built in the thread, so it crosses as data. */
   readonly resultBytes?: number;
   readonly shouldStop: () => string | undefined;
+  readonly beforeEffect?: RunOptions["beforeEffect"];
   readonly cancellation?: RootCancellationSource;
   readonly file?: string;
   readonly seed?: string;
@@ -198,7 +200,22 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
       ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
     },
-    { entry, bridge: { handler: req.handler, store }, ...(req.onLog !== undefined ? { onLog: req.onLog } : {}) },
+    {
+      entry,
+      bridge: {
+        handler: req.handler,
+        store,
+        ...(req.beforeEffect !== undefined ? {
+          beforeEffect: async (kind: Parameters<NonNullable<RunOptions["beforeEffect"]>>[0]) => {
+            const stopped = req.shouldStop();
+            if (stopped !== undefined) return stopped;
+            const reason = await req.beforeEffect!(kind);
+            return reason ?? req.shouldStop();
+          },
+        } : {}),
+      },
+      ...(req.onLog !== undefined ? { onLog: req.onLog } : {}),
+    },
   );
   publish = (reason) => worker.stop(reason);
   const unsubscribe = req.cancellation?.subscribe((reason) => worker.cancel(reason));

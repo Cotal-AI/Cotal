@@ -35,6 +35,7 @@ import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
 import { PACKAGE_VERSION } from "./package-version.js";
+import type { RunOptions } from "../interpret.js";
 
 // Refuse before lockdown installs SES's uncaught-exception handler, so Worker reports the cause.
 if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
@@ -72,7 +73,7 @@ port.on("message", (message: unknown) => {
 const { request, stop, bridge } = workerData as {
   request: WorkerRunRequest;
   stop: SharedArrayBuffer;
-  bridge?: { port: MessagePort; clock: SharedArrayBuffer };
+  bridge?: { port: MessagePort; clock: SharedArrayBuffer; beforeEffect: boolean };
 };
 
 /**
@@ -115,7 +116,7 @@ const confined = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) 
  * that store, so every append is durable in the host before the effect it precedes fires. A
  * module-named handler keeps its whole path in the thread, journal and all, as it always has.
  */
-async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal }> {
+async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal; beforeEffect?: RunOptions["beforeEffect"] }> {
   if (request.handler === "inspection") {
     const stop = (): never => { throw new Error("read-only inspection attempted to dispatch an effect"); };
     return {
@@ -136,6 +137,7 @@ async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal 
     const seam = bridgedSeam(bridge.port, bridge.clock);
     return {
       handler: seam.handler,
+      ...(bridge.beforeEffect ? { beforeEffect: seam.beforeEffect } : {}),
       journal: new Journal({
         run: request.runId,
         entries: request.entries ?? [],
@@ -171,6 +173,7 @@ async function run(): Promise<WorkerRunResult> {
     handler: seam.handler,
     evaluate: confined,
     shouldStop,
+    ...(seam.beforeEffect !== undefined ? { beforeEffect: seam.beforeEffect } : {}),
     cancellation,
     ...(request.handler === "inspection" ? { migration: true } : {}),
     ...(request.file !== undefined ? { file: request.file } : {}),
