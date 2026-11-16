@@ -174,7 +174,15 @@ export async function runLegacy(options) {
     await cotal('install real owned service', ['daemon', 'install', '--json'], true);
     receipt = JSON.parse(readFileSync(join(state, 'daemon/service-unit.json'))); verifyOwnedUnit();
     report.plan = nativePlan; report.receipt = receipt;
-    const initial = await snapshot('source ready'); report.before = initial;
+    let initial;
+    const readyUntil = Date.now() + 120000;
+    while (Date.now() < readyUntil) {
+      initial = await snapshot('source readiness observation');
+      const status = statusEvidence(initial.daemon.stdout);
+      if (status.state === 'ready' && status.version === '0.160.2' && status.update.automatic === true) break;
+      await delay(2000);
+    }
+    report.before = initial;
     assert.equal(statusEvidence(initial.daemon.stdout).version, '0.160.2'); assert.equal(statusEvidence(initial.daemon.stdout).state, 'ready');
     assert.equal(statusEvidence(initial.daemon.stdout).update.automatic, true, 'historical scheduler must actually be enabled');
     const waitMs = Number(options.waitMs ?? 12 * 60000);
