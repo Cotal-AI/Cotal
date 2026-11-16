@@ -22,6 +22,11 @@ on:
         options: [bounded, extended]
         default: bounded
         required: true
+      measurement:
+        type: choice
+        options: ['', macos-release]
+        default: ''
+        required: false
   push:
     branches: [test/upgrade-matrix]
     paths:
@@ -65,6 +70,7 @@ jobs:
             const { execFileSync } = require('node:child_process');
             const { createHash } = require('node:crypto');
             const { planPhase, boundedCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
+            const { selectMacosMeasurement } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/macos-release-measurement.mjs`));
             const event = context.payload;
             const repository = `${context.repo.owner}/${context.repo.repo}`;
             const metadata = { eventName: context.eventName, repository };
@@ -142,7 +148,7 @@ jobs:
             }
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
-            const cells = boundedCells(plan);
+            const cells = selectMacosMeasurement(boundedCells(plan), { selector: event.inputs?.measurement, eventName: context.eventName, ref: context.ref, plan });
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
