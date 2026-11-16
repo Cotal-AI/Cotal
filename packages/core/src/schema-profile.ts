@@ -8,89 +8,26 @@
  * `contract-invalid` (distinct from invocation-time `bad-request`), and all bounds are enforced
  * BEFORE compilation so a hostile descriptor cannot turn registration into a DoS.
  */
-import { Ajv2020, type AnySchema, type ValidateFunction } from "ajv/dist/2020.js";
+import { Ajv2020, type AnySchema } from "ajv/dist/2020.js";
+import { prepareContractValidator, type ContractValidator } from "./contract-validator.js";
+export type { ContractValidator, ContractValidationError } from "./contract-validator.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
-// CommonJS under NodeNext: the default import is `module.exports`, whose `default` is the function.
-import ajvStandalone from "ajv/dist/standalone/index.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { assertSafePattern } from "./safe-pattern.js";
 import { buildContractClosureManifest, type ContractClosureManifest } from "./contract-manifest.js";
 
 export { SCHEMA_PROFILE };
 
-/**
- * The EXACT Ajv configuration the profile compiles with. Module-private: it was briefly exported so
- * a node-ceiling calibration could measure the real compiler, and that ceiling is gone (see
- * SCHEMA_PROFILE), so the export would be a public surface with nothing behind it.
- *
- * EVERY OPTION HERE IS PINNED RATHER THAN INHERITED, including the ones whose pinned value equals
- * Ajv's current default. An inherited default is a behaviour this profile depends on and does not
- * control: it can change in a minor release, and a `^8` range will take that change silently. The
- * two comments below record what each pin is load-bearing FOR, because a pin nobody can explain is
- * the first one someone deletes.
- */
+/** Schema meta-validation only. Instance verdicts come from the shared interpreter. */
 const AJV_PROFILE_OPTIONS = Object.freeze({
-  strict: false, // the wire accepts full 2020-12, not ajv's strict-mode dialect subset
-  // PINNED TRUE, not ajv's `false` default, for the flat code shape it produces (#1551).
-  // `allErrors: false` makes ajv nest one continuation `if` per property in the generated
-  // validator, so the compile of a wide object schema overflows the host call stack at a width
-  // set by the STACK BUDGET, not by any ceiling this profile enforces — every document this
-  // profile admits (bytes, depth, ref-chain, pattern length, vocabulary) can still fail to
-  // compile purely on shape. `allErrors: true` builds the same validations as a flat sequence
-  // instead, which does not remove the stack-bounded ceiling (ajv's codegen still recurses while
-  // it builds the code tree) but moves it about 3.4x wider at any given stack budget: measured on
-  // this pin, default 8MB stack SMALLEST_FAIL moved from 2055 properties to 6946, and
-  // `--stack-size=256` moved from 494 to 1769 (one host, Node 24; the ratio is the stable
-  // quantity, not the absolute counts — re-measure with a child process per candidate width, one
-  // `--stack-size` per row, per issue #1551's method).
-  //
-  // Safe to flip only because it changes NO VERDICT this profile's own checks depend on: ajv
-  // orders keyword/property evaluation identically regardless of `allErrors`, so `errors[0]` —
-  // the only field any caller-facing message reads (`endpoint-envelope.ts` firstErrorDetail,
-  // `endpoint-traits.ts` readSchema) — is byte-identical between the two settings for every
-  // schema/instance pair tried, and `packages/core/smoke/schema-profile.smoke.ts`'s full 67-check
-  // suite (every `refuses`/`ok` assertion, including the pattern safe-subset gate and the
-  // admitted-vocabulary walk) passes unchanged under either setting. Nothing on the wire ever
-  // reads ajv's full `errors` array, only its first entry, so `allErrors`'s extra collected
-  // errors are never observed by a caller. If a future change makes any of that no longer true —
-  // a caller starts reading `errors.length`, or a verdict diverges between the settings — this
-  // pin must be re-measured before it stays.
+  strict: false,
   allErrors: true,
-  // JSON members are own properties. Host prototype names never satisfy required/properties.
   ownProperties: true,
   validateFormats: false,
   loadSchema: undefined,
-  // PINNED TRUE, never inherited (#4012): ajv meta-validates every closure document against the
-  // 2020-12 meta-schema before it compiles, which is what refuses a malformed keyword value such
-  // as `{"type": 5}` or `{"minLength": -1}` as `contract-invalid` at registration.
   validateSchema: true,
   meta: true,
-  // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
-  // semantics exactly (astral atoms, surrogate refusals), so the engine MUST compile
-  // `pattern` with the `u` flag. If this ever flipped, patterns would be proven under one
-  // grammar and executed under another (an admitting under-approximation).
   unicodeRegExp: true,
-  // PINNED for the same reason as `unicodeRegExp`, and discovered the same way — by checking what
-  // an inherited default actually does rather than assuming it does nothing.
-  //
-  // Ajv defaults this to TRUE (`ajv@8.20.0/dist/core.js:83`), and with it on, a referenced schema
-  // with no refs of its own is INLINED INTO ITS REFERRER'S GENERATED CODE. A closure is compiled by
-  // ONE `ajv.compile` on the root, with members merely `addSchema`'d — so under inlining the
-  // codegen units are NOT one-per-document: leaf members merge upward into the root's function.
-  //
-  // THE PER-DOCUMENT BOUNDS DEPEND ON THAT NOT HAPPENING. `maxDocumentBytes` and `maxDepth` are
-  // enforced per document, and they are worth something only if a document is what gets compiled.
-  // Under inlining, N members each comfortably inside the per-document bounds become ONE generated
-  // function that no per-document bound describes — the check keeps passing while the thing it
-  // claims to bound stops existing. `maxClosureBytes` still caps the aggregate, so this is not a
-  // hole; it is the difference between a bound that means what it says and one that happens to be
-  // covered by a neighbour.
-  //
-  // It is also observably load-bearing rather than theoretically so: flipping it changes compile
-  // cost and changes the outcome of a high-fanout closure that otherwise compiles. `false` costs a
-  // function call per referenced schema at validation time and buys the structural guarantee that
-  // each referenced schema is its own compiled unit. On a DoS boundary a deterministic structure is
-  // worth more than inlining's marginal speed.
   inlineRefs: false,
 } as const);
 
@@ -359,7 +296,7 @@ function assertDocumentProfile(doc: unknown, label: string): string[] {
  *  registered digest) can never enter a serve table (§13.7: the digest and its enforcing
  *  validator are one value). */
 export interface CompiledContract {
-  validate: ValidateFunction;
+  validate: ContractValidator;
   closureDigest: string;
 }
 
@@ -368,7 +305,7 @@ export interface CompiledContract {
  *  branded object impossible, so brand membership proves BOTH fields came out of one compile. */
 const COMPILED = new WeakSet<CompiledContract>();
 
-function makeCompiled(validate: ValidateFunction, closureDigest: string): CompiledContract {
+function makeCompiled(validate: ContractValidator, closureDigest: string): CompiledContract {
   const compiled: CompiledContract = Object.freeze({ validate, closureDigest });
   COMPILED.add(compiled);
   return compiled;
@@ -430,106 +367,18 @@ function assertClosureProfile(bundle: SchemaBundle): string {
   return contractDigest(buildContractClosureManifest(digestOrInvalid(bundle.root, "root schema"), [...seen]));
 }
 
-/** The size of the widest map-valued keyword (`properties`, `patternProperties`, `$defs`,
- *  `definitions`, `dependentSchemas`, `dependencies`) anywhere in one document — the shape that
- *  drives ajv's per-property codegen (SPEC §13.7). Used only to NAME a codegen overflow after it
- *  happens; every ceiling in {@link SCHEMA_PROFILE} has already admitted this document by the time
- *  anything calls this, so it never gates anything itself. */
-function widestMapKeywordSize(doc: unknown, max = 0): number {
-  if (doc === null || typeof doc !== "object" || Array.isArray(doc)) return max;
-  for (const [k, v] of Object.entries(doc as Record<string, unknown>)) {
-    if (SCHEMA_VALUED_MAP_KEYS.includes(k) && v && typeof v === "object" && !Array.isArray(v)) {
-      const size = Object.keys(v as Record<string, unknown>).length;
-      if (size > max) max = size;
-      for (const sub of Object.values(v as Record<string, unknown>)) max = widestMapKeywordSize(sub, max);
-    } else if (SCHEMA_VALUED_KEYS.includes(k)) {
-      max = widestMapKeywordSize(v, max);
-    } else if (SCHEMA_VALUED_LIST_KEYS.includes(k) && Array.isArray(v)) {
-      for (const sub of v) max = widestMapKeywordSize(sub, max);
-    }
-  }
-  return max;
-}
-
-/** The widest map-valued keyword across the whole closure (root plus every bundle member) — the
- *  quantity {@link widestMapKeywordSize} measures, maximised over every document a compile call
- *  actually sees. */
-function widestClosurePropertyCount(bundle: SchemaBundle): number {
-  let max = widestMapKeywordSize(bundle.root);
-  for (const member of Object.values(bundle.members ?? {})) max = widestMapKeywordSize(member, max);
-  return max;
-}
-
-function compileWithinBudget(bundle: SchemaBundle): ValidateFunction {
-  // NOTHING HERE REFUSES A SCHEMA FOR BEING EXPENSIVE, and that is deliberate rather than
-  // overlooked. This function does not time the compile either; the node ceiling that was briefly
-  // going to carry the refusal is gone, for the reasons recorded at `SCHEMA_PROFILE`.
-  //
-  // SO SAY PLAINLY WHAT IS ADMITTED NOW. A document of ~1000 patterned properties is ~90KB, depth
-  // 2, ref-chain 0, every pattern inside `maxPatternChars` — it passes every remaining bound and
-  // COMPILES, in a few hundred ms. It is admitted. The reason that is the right trade and not a
-  // hole: reaching this function at all requires the authority to REGISTER a contract, the cost is
-  // paid once at registration rather than per call, and the alternative on offer was a constant
-  // whose two candidate bases were both falsified by measurement. An unfounded bound is not a
-  // cheap safety margin — it refuses real contracts on a number nobody can defend, which is the
-  // failure this profile already made once with a timer.
-  //
-  // AND THE CODEGEN OVERFLOW IS CAUGHT, not unguarded. A large patterned document can RangeError
-  // inside Ajv's code generator; that throw lands in the catch below and is normalised to
-  // `contract-invalid`, the same as any other schema that does not compile. It has been doing that
-  // the whole time. The overflow is also not a stable edge to bound against — the same schema in
-  // this same process has thrown cold and compiled on the immediate warm retry.
-  //
-  // Why the timing could not stay a refusal: no instrument available on this package's Node floor
-  // measures the right quantity. Wall clock counts the machine — a trivial two-property closure
-  // compiles in ~4ms warm, yet on a loaded host measured 101-158ms elapsed and was refused, so a
-  // manager could not import its own contracts. `process.cpuUsage()` sums EVERY THREAD in the
-  // process, so V8's background optimizing-compiler threads land in it, as does any sibling Worker
-  // (16.4ms of process CPU against 0.18ms on the measuring thread). Node exposes no per-thread CPU
-  // below 22.19 and the floor is `>=22`, so there was no third instrument.
-  //
-  // That was not theoretical. `Windows / required` refused the manager's OWN service contract with
-  // `compile took 125ms of CPU (profile budget 100ms; 80ms elapsed)` — CPU above wall clock, which
-  // is only possible with concurrent threads. The costliest schema in that contract measures 6.4ms
-  // warm and ALL 23 of its schemas together total 71.5ms. A 3-node schema cannot cost 125ms of
-  // compile work, and the same contract compiled fine in four sibling jobs on the same runner
-  // image. The number was very nearly all instrument, and it made the required gate unmergeable.
-  //
-  // SPEC 2458 gives 100ms as a REFERENCE budget, not a normative constant. The profile enforces its
-  // registration bounds structurally — bytes, depth, ref-chain, pattern length, vocabulary — and
-  // does not time the compile. A process-wide CPU sample cannot name the compile's own cost (the
-  // paragraph above), so printing it on the embedder's stderr reported an instrument, not a fact
-  // the operator could act on, and every caller of this library received it unasked.
-  // Compile with deterministic local resolution only. Members register under their cotal: URI
-  // so in-document `$ref: "cotal:sha256:…"` resolves from the bundle, never the network.
-  const ajv = new ProfileAjv(AJV_PROFILE_OPTIONS);
-  let validate: ValidateFunction;
+function compileWithinBudget(bundle: SchemaBundle): ContractValidator {
   try {
-    // Every member is reachable and digest-verified (assertClosureProfile refuses extras), so
-    // exactly the closure registers. A registration failure (e.g. a `$id` collision between
-    // members) is a profile rejection, same as a compile failure.
-    for (const [digest, member] of Object.entries(bundle.members ?? {})) ajv.addSchema(member as object, `cotal:${digest}`);
-    validate = ajv.compile(bundle.root as object);
-  } catch (e) {
-    // A `RangeError` here is the compiler's own generated code overflowing the host's call
-    // stack (SPEC §13.7) — every ceiling above already admitted this document, so the schema is
-    // not what failed. Naming the caller's schema in that case (as the generic branch below does
-    // for every other compile failure) sends the caller to rewrite something that was never
-    // wrong. Named instead: the shape that overflowed (ajv's per-property codegen), and the width
-    // that did it (the widest `properties`/`patternProperties`/`$defs`/… map anywhere in the
-    // closure) — the two facts a caller needs to know this is not their schema's fault.
-    if (e instanceof RangeError) {
-      const width = widestClosurePropertyCount(bundle);
-      throw new ContractInvalidError(
-        `schema does not compile under the 2020-12 profile: the generated validator's code shape overflowed `
-        + `the call stack (${(e as Error).message}) compiling a ${width}-property object, which every profile `
-        + `ceiling (document/closure bytes, depth, ref-chain, pattern length, admitted vocabulary) had already `
-        + `admitted; this is the compiler's generated-code shape running out of stack, not a defect in the schema`,
-      );
-    }
-    throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(e as Error).message}`);
+    // Ajv checks schema validity and closure-local custom meta-schemas only. It never
+    // compiles an instance validator and never decides an instance verdict.
+    const meta = new ProfileAjv(AJV_PROFILE_OPTIONS);
+    for (const [digest, member] of Object.entries(bundle.members ?? {}))
+      meta.addSchema(member as object, `cotal:${digest}`);
+    meta.validateSchema(bundle.root as AnySchema, true);
+    return prepareContractValidator(bundle);
+  } catch (error) {
+    throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(error as Error).message}`);
   }
-  return validate;
 }
 
 /** Validate the whole closure against the profile and compile it with a real 2020-12
@@ -540,26 +389,23 @@ export function compileContract(bundle: SchemaBundle): CompiledContract {
   return makeCompiled(compileWithinBudget(bundle), closureDigest);
 }
 
-/** BUILD-TIME ONLY: the same profile walk and the same Ajv options as {@link compileContract}, with
- *  the validator emitted as standalone ES module source instead of a function built at runtime. A
- *  page under a strict CSP cannot run Ajv's runtime code generation, so the browser entry carries
- *  validators generated here for the closures it supports (`scripts/gen-browser-contracts.ts`).
- *  `code` selects the output form only; every option that decides a verdict is unchanged. */
+/** Build-time module source for a checked closure. The module imports the node-free interpreter
+ * and prepares the authored schema as data, with the same verdicts as compileContract. */
 export function standaloneContractSource(bundle: SchemaBundle): { closureDigest: string; source: string } {
   const closureDigest = assertClosureProfile(bundle);
-  const ajv = new Ajv2020({ ...AJV_PROFILE_OPTIONS, code: { source: true, esm: true } });
-  for (const [digest, member] of Object.entries(bundle.members ?? {})) ajv.addSchema(member as object, `cotal:${digest}`);
-  return { closureDigest, source: ajvStandalone.default(ajv, ajv.compile(bundle.root as object)) };
+  compileWithinBudget(bundle);
+  const literal = `JSON.parse(${JSON.stringify(JSON.stringify(bundle)).replace(/</g, "\\u003c")})`;
+  return { closureDigest, source: `import { prepareContractValidator } from "@cotal-ai/core/contract-validator";\nexport const validate = prepareContractValidator(${literal});\nexport default validate;\n` };
 }
 
 /** {@link compileContract} without the closure identity, kept for validation-only callers. */
-export function compileContractSchema(bundle: SchemaBundle): ValidateFunction {
+export function compileContractSchema(bundle: SchemaBundle): ContractValidator {
   return compileContract(bundle).validate;
 }
 
 /** A bounded compiled-schema LRU (SPEC §13.7's reference 256-entry cache), keyed by CLOSURE
  *  digest. The profile walk (incl. member digest verification) runs on EVERY call — only the
- *  ajv compilation is skipped on a hit. Sound across callers: two bundles with one closure
+ *  preparation is skipped on a hit. Sound across callers: two bundles with one closure
  *  digest are byte-identical closures, so a hit can never serve another caller's
  *  mis-assembled bundle. */
 export function createCompiledContractCache(capacity: number = SCHEMA_PROFILE.compiledCacheEntries): {
@@ -591,7 +437,7 @@ type ContractPair = Readonly<{ input: CompiledContract; output: CompiledContract
 /** A service's compiled command contracts and the §13.7 artifacts its registration publishes,
  *  from its command rows. The frozen `contracts` table compiles and freezes a command's pair on
  *  its first access and keeps it, so a module can build its table at load while a process that only
- *  reads digests pays no Ajv compile. `artifactValues()` returns each distinct schema root followed
+ *  reads digests pays no validator preparation. `artifactValues()` returns each distinct schema root followed
  *  by its closure manifest. */
 export function serviceContractTable(rows: ReadonlyArray<{ name: string; input: unknown; output: unknown }>): {
   contracts: Readonly<Record<string, ContractPair>>;
