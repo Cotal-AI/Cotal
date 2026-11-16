@@ -433,7 +433,7 @@ test('workflow bounds diagnostics and preserves every immutable release head wit
     if (done.has(name)) return;
     const job = workflow.jobs[name];
     assert(job, `unknown dependency ${name}`);
-    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 40 : 6), `${name} exceeds its matrix bound`);
+    if (job.strategy) assert(job.strategy['max-parallel'] <= (name === 'release-cells' ? 52 : 6), `${name} exceeds its matrix bound`);
     if (!['priority', 'scheduler-proof', 'installer-proof', 'transition-native', 'mac-controls-proof', 'windows-baseline', 'next-release-macos', 'windows-job-facts', 'select'].includes(name)) assert(job.needs, `${name} bypasses priority ordering`);
     visiting.add(name);
     for (const dependency of [job.needs ?? []].flat()) visit(dependency);
@@ -547,7 +547,15 @@ test('real product cache refresh requires success checkedAt older than one day, 
     const now = Date.now(), initial = { v: 1, latest: '0.164.7', checkedAt: now - 7200000, firstSeenAt: now - 7200000, attemptedAt: now - 7200000 };
     writeFileSync(join(cotal, 'update-check.json'), JSON.stringify(initial));
     assert.deepEqual(await run(), initial, 'two-hour success cache is intentionally reused');
-    writeFileSync(join(cotal, 'update-check.json'), JSON.stringify({ ...initial, checkedAt: now - 25 * 3600000 }));
+    const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
+    const block=source.split("const selectedBefore = inspectInstalledUpdateRoute")[1].split('const deadline =')[0];
+    const expression=/for \(const field of fields\) after\[field\] = Date\.now\(\) - ([^;]+);/.exec(block)?.[1];
+    assert(expression,'staged scheduler clock stimulus missing');
+    const age=Function('field',`return ${expression}`);
+    assert(age('checkedAt')>24*3600000);
+    assert.equal(age('attemptedAt'),7200000);
+    assert(!/after\.failures|after\[['"]failures['"]\]/.test(block),'clock stimulus cannot rewrite failure count');
+    writeFileSync(join(cotal, 'update-check.json'), JSON.stringify({ ...initial, checkedAt: now-age('checkedAt') }));
     const refreshed = await run();
     assert.equal(refreshed.latest, '0.164.7'); assert(refreshed.attemptedAt >= now); assert(refreshed.checkedAt >= now);
     assert.equal(refreshed.firstSeenAt, initial.firstSeenAt);
@@ -655,28 +663,30 @@ test('summary preserves unrun runner receipts separately from product verdicts a
   assert.equal(mixed.admissions.length, 1);
   assert(readFileSync(join(root, 'summary.md'), 'utf8').includes('macos-15 | unrun'));
 
-  const knownDir = join(root, 'upgrade-cell-linux-npm-standalone-stop-consent');
+  const knownDir = join(root, 'upgrade-cell-linux-npm-container-manager');
   mkdirSync(knownDir, { mode: 0o700 });
-  const entry = knownRefusals.find(e => e.id === 'linux-npm-standalone-stop-consent');
-  const stdout = entry.stdout.replaceAll('{{space}}', 'upgrade-proof').replaceAll('{{manager}}', 'sdz0a0f5fxj1ct3pzd181eaqvdozem1').replaceAll('{{pid}}', '2699');
-  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr: entry.stderr };
-  writeFileSync(join(knownDir, 'coordinate.json'), JSON.stringify({ id: entry.id, phase: 'published', sourceVersion: '0.164.12' }));
+  const entry = knownRefusals.find(e => e.id === 'linux-npm-container-manager');
+  const space = 'update-participant-a-1794633286189';
+  const owner = 'u_wdhhojionrz2rav4mearesx4ou';
+  const stdout = entry.stdout.replaceAll('{{space}}', space);
+  const stderr = entry.stderr.replaceAll('{{owner}}', owner);
+  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr };
+  writeFileSync(join(knownDir, 'coordinate.json'), JSON.stringify({ id: entry.id, phase: 'published', sourceVersion: '0.164.6' }));
   writeFileSync(join(knownDir, 'report.json'), JSON.stringify({
-    id: 'published-linux-0.164.12-npm-agent-self-stop-agents',
+    id: 'published-linux-0.164.6-npm-configured-self',
     tier: 'published',
-    source: '0.164.12',
-    sourceRequested: '0.164.12',
-    target: '0.164.13',
+    source: '0.164.6',
+    sourceRequested: '0.164.6',
+    target: '0.164.7',
     result: 'failed',
-    state: 'agent',
-    agentHost: 'standalone',
-    managerHost: { mode: 'standalone', space: 'upgrade-proof' },
+    state: 'configured',
+    participant: { remote: true, localManagerStarted: false, space, owner },
     cleanupSafety: { passed: true },
     update,
-    extensionsBefore: [{ pkg: '@cotal-ai/core', version: '0.164.12' }],
-    extensionsAfter: [{ pkg: '@cotal-ai/core', version: '0.164.12' }],
+    extensionsBefore: [{ pkg: '@cotal-ai/core', version: '0.164.6' }],
+    extensionsAfter: [{ pkg: '@cotal-ai/core', version: '0.164.6' }],
     assertions: [
-      ...entry.failedAssertions.map(name => ({ name, passed: false, observed: name === 'upgrade exits successfully' ? update : name === 'CLI version is target' ? '0.164.12' : undefined })),
+      ...entry.failedAssertions.map(name => ({ name, passed: false, observed: name === 'upgrade exits successfully' ? update : name === 'CLI version is target' ? '0.164.6' : undefined })),
       ...entry.requiredAssertions.map(name => ({ name, passed: true })),
     ],
   }));

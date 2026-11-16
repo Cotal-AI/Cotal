@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync } from
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { archiveHostedDiagnostics, writeHostedSeatRecorder } from './hosted-consent-diagnostics.mjs';
 
 test('real fixture child retains full output and actual exit, not only Node last line', () => {
@@ -46,10 +47,13 @@ test('generated hosted connector records the actual Manager launch without envir
   const line = source.split('\n').find(line => line.includes("writeFileSync(join(fixture, 'index.js')"));
   assert(line);
   const core = new URL('../packages/core/dist/index.js', import.meta.url).href;
+  mkdirSync(join(root, 'node_modules/@cotal-ai'), { recursive: true });
+  symlinkSync(fileURLToPath(new URL('../packages/core', import.meta.url)), join(root, 'node_modules/@cotal-ai/core'));
   const ready = join(root, 'ready'), release = join(root, 'release'), launchedSeat = launcher;
   const launchRecord = `writeFileSync(${JSON.stringify(paths.launch)},JSON.stringify({name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid}),{mode:0o600});`;
   const expression = line.slice(line.indexOf('`'), line.lastIndexOf('`') + 1);
   const generated = new Function('core', 'ready', 'release', 'launchRecord', 'launchedSeat', `return ${expression}`)(core, ready, release, launchRecord, launchedSeat);
+  assert(generated.startsWith("import {registry} from '@cotal-ai/core';"));
   const file = join(root, 'index.mjs'); writeFileSync(file, generated); await import(new URL(`file://${file}`));
   const { registry } = await import(core); const connector = registry.resolve('connector', 'upgrade-standin');
   const opts = { name: 'upgrade_proof_worker', lifecycleUid: 'lifecycle', space: 'test_space', servers: 'nats://localhost:4222', userAuth: { owner: 'u_owner', actor: 'upgrade_proof_worker', sentinelCredsPath: '/private/sentinel.creds', bearerCmd: [process.execPath, '/private/bearer.mjs'] } };

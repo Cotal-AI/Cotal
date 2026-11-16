@@ -14,7 +14,7 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 45);
+  assert.equal(plan.matrix.include.length, 52);
   assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
   assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
   assert.equal(cells.strategy['fail-fast'], false);
@@ -38,7 +38,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 45);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 52);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
@@ -114,7 +114,10 @@ function fixture(change = () => {}, { scenario = 'configured', channel = 'npm', 
     .replace("'./scripts/upgrade-matrix-plan.mjs'", JSON.stringify(new URL('./upgrade-matrix-plan.mjs', import.meta.url).href))
     .replace("'./scripts/upgrade-matrix-refusals.mjs'", JSON.stringify(new URL('./upgrade-matrix-refusals.mjs', import.meta.url).href))
     .replace("'./scripts/candidate-next-evidence.mjs'", JSON.stringify(new URL('./candidate-next-evidence.mjs', import.meta.url).href))
-    .replace("'./scripts/update-machine-shape.mjs'", JSON.stringify(new URL('./update-machine-shape.mjs', import.meta.url).href))
+    .replace("'./scripts/package-layout-cell.mjs'", JSON.stringify(new URL('./package-layout-cell.mjs', import.meta.url).href))
+    .replace("'./scripts/root-owned-cell.mjs'",JSON.stringify(new URL('./root-owned-cell.mjs', import.meta.url).href))
+    .replace("'./scripts/published-update-refusal.mjs'",JSON.stringify(new URL('./published-update-refusal.mjs', import.meta.url).href))
+    .replace("'./scripts/update-machine-shape.mjs'",JSON.stringify(new URL('./update-machine-shape.mjs', import.meta.url).href))
     .replace("'./scripts/daemon-manual-acceptance.mjs'", JSON.stringify(new URL('./daemon-manual-acceptance.mjs', import.meta.url).href)));
   const env = { ...process.env, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: join(root, 'summary.md'), EXPECTED_CANDIDATE_ARTIFACT: '42', EXPECTED_CANDIDATE_DIGEST: 'sha256:fixed', EXPECTED_NEXT_ARTIFACT: '43', EXPECTED_NEXT_DIGEST: 'sha256:next', EXPECTED_FOLLOW_ON_ARTIFACT: '44', EXPECTED_FOLLOW_ON_DIGEST: 'sha256:follow', EXPECTED_HARNESS_SOURCE: harnessSource };
   try { execFileSync(process.execPath, [join(root, 'summary.mjs')], { env, stdio: 'pipe', cwd: new URL('..', import.meta.url) }); return { exit: 0, root }; }
@@ -183,6 +186,140 @@ function archivePairManifests(data, directory, a, b, c) {
     data.report.candidateNext[side + 'Archives'] = packages.map(({ name, sha256 }) => ({ name, sha256 }));
   }
 }
+function specialCellEvidence(data, directory, change = () => {}) {
+  const { cell } = data;
+  const clean = { exit: 0, signal: null, timeout: false, stdout: '', stderr: '' };
+  const call = (label, extra = {}) => ({ ...clean, label, ...extra });
+  data.nextOrigin = { artifact: '43', digest: 'sha256:next', followOnArtifact: '44', followOnDigest: 'sha256:follow' };
+  data.report = { passed: true, source: cell.sourceSHA, sourceVersion: cell.sourceVersion, targetVersion: cell.targetVersion, candidateNext: {}, calls: [], observations: [] };
+  archivePairManifests(data, directory, cell.sourceVersion, cell.targetVersion, cell.rootOwned ? cell.visibleFollowOnVersion : undefined);
+  if (cell.rootOwned) {
+    for (const side of ['source', 'target', 'followOn']) data.report[side + 'ManifestSha256'] = data.nextOrigin[side + 'ManifestSha256'];
+    data.report.cleanup = { owner: 'disposable hosted runner teardown', commandOutcomesKnown: true };
+    data.report.calls = [
+      call('root candidate public updater to next', { root: true }),
+      ...[cell.sourceVersion, cell.targetVersion].map(version => call(`normal account version ${version}`, { root: false, stdout: `cotal-ai ${version}\n` })),
+      call('normal account own updater refusal', { root: false, exit: 1, stderr: 'owning command: npm install -g --prefix /usr/local cotal-ai@latest' }),
+    ];
+    data.report.observations = [
+      { ownership: { uid: 0, path: '/usr/local/bin/node' } },
+      { installed: { uid: 0, version: cell.sourceVersion } },
+      { afterNormalRefusal: { passed: true, logicalBytes: 100 } },
+      { store: { passed: true, logicalBytes: 100 }, modes: { passed: true, entries: [
+        { path: '/usr/local/lib/.cotal-generations', uid: 0, mode: 0o755 },
+        { path: '/usr/local/lib/node_modules/cotal-ai/dist/cotal.js', uid: 0, mode: 0o755 },
+        { path: '/usr/local/lib/.cotal-generations/generation/inventory.json', uid: 0, mode: 0o644 },
+        { path: `/usr/local/lib/.cotal-generations/.active-${'a'.repeat(64)}.json`, uid: 0, mode: 0o644 },
+        { path: '/usr/local/lib/.cotal-generations/.transaction-test/journal.json', kind: 'file', uid: 0, mode: 0o600 },
+      ] } },
+    ];
+    if (cell.oldVersion) data.report.calls.push(
+      call(`normal account after ${cell.oldVersion} attempt`, { root: false, exit: 126, stderr: 'Permission denied', finishedAt: '2026-11-15T23:00:00.000Z' }),
+      call(`root npm install ${cell.sourceVersion}`, { root: true, startedAt: '2026-11-15T23:00:01.000Z' }),
+    );
+  } else {
+    data.report.layout = cell.layoutProbe;
+    data.report.pnpmVersion = '11.28.2';
+    data.report.installation = { prefix: '/owned/.nvm/versions/node/v24.18.0' };
+    data.report.prefixAfter = data.report.installation.prefix;
+    data.report.calls = [
+      call('installed source public version', { stdout: `cotal-ai ${cell.sourceVersion}\n` }),
+      call('package-manager installed public updater'),
+      call('installed target public version', { stdout: `cotal-ai ${cell.targetVersion}\n` }),
+      call('installed target public status'), call('pnpm global list after'),
+    ];
+    data.report.assertions = [{ name: 'recorded extensions reach target', observed: Array.from({ length: 8 }, () => ({ recorded: cell.targetVersion, installed: cell.targetVersion })) }];
+    data.report.route = { selectedCliVersion: cell.targetVersion };
+    data.report.store = { passed: true };
+  }
+  change(data);
+  const name = cell.rootOwned ? 'root-owned' : 'package-layout';
+  const bytes = JSON.stringify(data.report);
+  writeFileSync(join(directory, name + '.json'), bytes);
+  writeFileSync(join(directory, name + '.sha256'), `${createHash('sha256').update(bytes).digest('hex')}  ${name}.json\n`);
+  // The fixture also writes an ordinary report. It must not bypass the special branch.
+  data.report.id = 'unused-ordinary-report';
+}
+test('actual summary accepts root-owned recovery and actual package-layout evidence in both phases', () => {
+  for (const phase of ['candidate', 'published']) for (const [scenario, channel] of [
+    ['root-owned-candidate-next', 'npm'], ['root-owned-source-0.164.16-recovery', 'npm'], ['root-owned-source-0.164.17-recovery', 'npm'],
+    ['candidate-next-pnpm-layout', 'pnpm'], ['candidate-next-nvm-layout', 'npm'],
+  ]) {
+    const result = fixture(specialCellEvidence, { phase, scenario, channel });
+    assert.equal(result.exit, 0, result.stderr);
+  }
+});
+test('special summary rejects mismatched receipts and failed observable commands', () => {
+  for (const [scenario, channel] of [['root-owned-candidate-next', 'npm'], ['candidate-next-pnpm-layout', 'pnpm'], ['candidate-next-nvm-layout', 'npm']]) {
+    for (const change of [
+      data => { data.nextOrigin.artifact = 'foreign'; },
+      data => { data.nextOrigin.targetManifestSha256 = 'f'.repeat(64); },
+      data => { data.report.source = 'f'.repeat(40); },
+      data => { data.report.calls[0].exit = 1; },
+      data => { data.report.calls[0].timeout = true; },
+      data => { data.report.passed = false; },
+    ]) {
+      const result = fixture((data, directory) => specialCellEvidence(data, directory, change), { scenario, channel });
+      assert.notEqual(result.exit, 0, `${scenario}: invalid evidence must fail closed`);
+    }
+  }
+});
+test('package-layout summary refuses receipt-bound incomplete and duplicate package censuses', () => {
+  for (const change of [manifest => { manifest.packages = []; }, manifest => { manifest.packages[0] = manifest.packages[1]; }]) {
+    const result = fixture((data, directory) => {
+      specialCellEvidence(data, directory);
+      const path = join(directory, 'candidate-next-manifest.json');
+      const manifest = JSON.parse(readFileSync(path));
+      change(manifest);
+      const bytes = JSON.stringify(manifest);
+      writeFileSync(path, bytes);
+      data.nextOrigin.targetManifestSha256 = createHash('sha256').update(bytes).digest('hex');
+    }, { scenario: 'candidate-next-pnpm-layout', channel: 'pnpm' });
+    assert.notEqual(result.exit, 0, 'an artifact receipt cannot waive the complete package census');
+  }
+});
+function publishedRefusalEvidence(data, directory, change = () => {}) {
+  const cell = data.cell;
+  data.cell = { ...cell, targetVersion: cell.sourceVersion };
+  manualServiceEvidence(data, directory);
+  data.cell = cell;
+  data.report.update = { exit: 1, signal: null, timeout: false, stdout: '', stderr: 'Install the new version once by hand' };
+  Object.assign(data.report.calls.find(row => row.label === 'upgrade under test'), data.report.update);
+  data.report.publishedSchedulerObservations = [0, 1, 2].map(index => {
+    const stimulusAt = 1000000 + index * 10000;
+    const reason = 'staged pre-install check refused';
+    return { before: { failures: 0 }, stimulusAt, observedAt: stimulusAt + 5000,
+      attempt: { failures: 0, result: reason, deferred: reason, next: stimulusAt + 61000 },
+      text: 'Install the new version once by hand', logMtimeMs: stimulusAt + 1000,
+      store: { state: 'missing', passed: true, logicalBytes: 0 } };
+  });
+  data.report.generationStore = { passed: true };
+  data.report.expectedRefusal = { passed: true };
+  data.report.result = 'failed';
+  change(data);
+  const selected = { selectedCliVersion: cell.sourceVersion };
+  const bytes = JSON.stringify({ update: data.report.update, observations: data.report.publishedSchedulerObservations, selected });
+  const artifact = 'published-refusal.txt';
+  writeFileSync(join(directory, artifact), bytes);
+  data.report.publishedRefusal = { selected, receipt: { artifact, bytes: Buffer.byteLength(bytes), sha256: createHash('sha256').update(bytes).digest('hex') } };
+}
+test('actual historical summary accepts repeated deferrals without inventing counted failures', () => {
+  for (const old of ['0.164.16', '0.164.17']) {
+    const result = fixture(publishedRefusalEvidence, { channel: 'installer', scenario: `source-${old}-staged-refusal` });
+    assert.equal(result.exit, 0, result.stderr);
+  }
+});
+test('historical summary preserves leftover staging as raw red and rejects altered retry records', () => {
+  for (const change of [
+    data => { data.report.generationStore = { passed: false, violations: [{ reason: 'unfinished generation staging' }] }; },
+    data => { data.report.publishedSchedulerObservations[2].attempt.failures = 1; },
+    data => { data.report.publishedSchedulerObservations[2].attempt.next += 3600000; },
+    data => { data.report.publishedSchedulerObservations[2].logMtimeMs = 0; },
+  ]) {
+    const result = fixture((data, directory) => publishedRefusalEvidence(data, directory, change), { channel: 'installer', scenario: 'source-0.164.17-staged-refusal' });
+    assert.notEqual(result.exit, 0);
+  }
+});
 function freshNextEvidence(data, directory) {
   const a = data.cell.sourceVersion, b = data.cell.targetVersion;
   const sourceManifestSha256 = 'a'.repeat(64), targetManifestSha256 = 'b'.repeat(64);
@@ -558,11 +695,14 @@ test('actual census binds rolling source and rejects raw source, harness or dige
   for (const change of [d => { d.report.source = '0.164.6'; }, d => { d.report.sourceRequested = 'latest'; }, d => { d.report.candidate.source = 'b'.repeat(40); }, d => { d.report.harnessSha256 = '0'.repeat(64); }, d => { delete d.report.cleanupSafety; }]) assert.notEqual(fixture(change, { sourceVersion: '0.164.7', targetVersion: '0.164.8' }).exit, 0);
   assert.notEqual(fixture(() => {}, { corrupt: true }).exit, 0);
 });
-function standaloneEvidence(data) {
-  const entry = knownRefusals.find(entry => entry.id === 'linux-npm-standalone-stop-consent');
-  const stdout = entry.stdout.replaceAll('{{space}}', 'upgrade-proof').replaceAll('{{manager}}', 'sdz0a0f5fxj1ct3pzd181eaqvdozem1').replaceAll('{{pid}}', '2699');
-  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr: entry.stderr };
-  Object.assign(data.report, { result: 'failed', state: 'agent', agentHost: 'standalone', managerHost: { mode: 'standalone', space: 'upgrade-proof' }, update });
+function containerRefusalEvidence(data) {
+  const entry = knownRefusals.find(entry => entry.id === 'linux-npm-container-manager');
+  const space = 'update-participant-a-1794633286189';
+  const owner = 'u_wdhhojionrz2rav4mearesx4ou';
+  const stdout = entry.stdout.replaceAll('{{space}}', space);
+  const stderr = entry.stderr.replaceAll('{{owner}}', owner);
+  const update = { exit: entry.exit, signal: null, timeout: false, stdout, stderr };
+  Object.assign(data.report, { result: 'failed', state: 'configured', participant: { remote: true, localManagerStarted: false, space, owner }, update });
   data.report.extensionsBefore = Array.from({ length: 8 }, (_, i) => ({ pkg: `@cotal-ai/extension-${i}`, version: data.cell.sourceVersion }));
   data.report.extensionsAfter = structuredClone(data.report.extensionsBefore);
   data.report.assertions = [...entry.failedAssertions.map(name => ({ name, passed: false, observed: name === 'upgrade exits successfully' ? update : name === 'CLI version is target' ? data.cell.sourceVersion : undefined })), ...entry.requiredAssertions.map(name => ({ name, passed: true }))];
@@ -570,20 +710,37 @@ function standaloneEvidence(data) {
 test('actual summary accepts only exact safe listed red and keeps full upgrade acceptance false', () => {
   for (const phase of ['candidate', 'published']) {
     const result = fixture(data => {
-      standaloneEvidence(data);
+      containerRefusalEvidence(data);
       if (phase === 'published') { data.report.tier = 'published'; data.report.environment.registryOverridden = false; delete data.report.candidate; }
-    }, { scenario: 'standalone-stop-consent', phase });
+    }, { scenario: 'container-manager', phase });
     assert.equal(result.exit, 0, result.stderr);
     const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
     assert.equal(census.acceptance, true);
     assert.equal(census.upgradeAcceptance, false);
     assert.equal(census.passed.length, 0);
-    assert.equal(census.knownRefusals[0].issue, 'https://github.com/Cotal-AI/Cotal/issues/6802');
+    assert.equal(census.knownRefusals[0].issue, 'https://github.com/Cotal-AI/Cotal/issues/6785');
+  }
+});
+test('actual summary accepts standalone-stop-consent as a genuine pass with no known refusal', () => {
+  for (const phase of ['candidate', 'published']) {
+    const result = fixture(data => {
+      data.report.state = 'agent';
+      data.report.agentHost = 'standalone';
+      data.report.calls = [{ argv: ['update', '--self', '--stop-agents'], exit: 0 }];
+      data.report.assertions.push({ name: 'owned local stack cleanup succeeds', passed: true });
+      if (phase === 'published') { data.report.tier = 'published'; data.report.environment.registryOverridden = false; delete data.report.candidate; }
+    }, { scenario: 'standalone-stop-consent', sourceVersion: '0.164.16', targetVersion: '0.164.17', phase });
+    assert.equal(result.exit, 0, result.stderr);
+    const census = JSON.parse(readFileSync(join(result.root, 'upgrade-results/census.json')));
+    assert.equal(census.acceptance, true);
+    assert.equal(census.upgradeAcceptance, true);
+    assert.deepEqual(census.passed, ['linux-npm-standalone-stop-consent']);
+    assert.equal(census.knownRefusals.length, 0);
   }
 });
 test('actual summary refuses listed green, changed refusal, extra failure and missing cleanup', () => {
   for (const mutate of [d => { d.report.result = 'passed'; }, d => { d.report.update.stdout += 'changed\n'; }, d => { d.report.assertions.push({ name: 'extra failure', passed: false }); }, d => { d.report.cleanupSafety.passed = false; }, d => { d.report.candidate.source = 'b'.repeat(40); }]) {
-    const result = fixture(d => { standaloneEvidence(d); mutate(d); }, { scenario: 'standalone-stop-consent' });
+    const result = fixture(d => { containerRefusalEvidence(d); mutate(d); }, { scenario: 'container-manager' });
     assert.notEqual(result.exit, 0);
   }
   const unknown = fixture(d => { d.report.result = 'failed'; });

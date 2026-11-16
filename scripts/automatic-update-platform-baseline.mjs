@@ -22,6 +22,7 @@ import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
 import { machineShapeOptions, machineShapeCommand, runtimeDirectoryRefusal } from './update-machine-shape.mjs';
+import { publishedStagedRefusal, publishedSchedulerBudget } from './published-update-refusal.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -353,6 +354,8 @@ export async function matrixCell(options) {
   const { source = 'latest', state = 'fresh', method = 'self', layout = 'npm' } = options;
   const nextHopMode = candidateNextOptions(options);
   const shape = machineShapeOptions(options, { disposable: hosted, platform: process.platform });
+  const oldSourceRefusal = options['published-staged-refusal'] === 'true';
+  if (oldSourceRefusal) assert(hosted && process.platform === 'linux' && state === 'daemon' && method === 'self' && ['0.164.16','0.164.17'].includes(source) && shape.serviceUmask === '0002' && !shape.installUmask, 'published refusal requires unchanged supported old source, safe install modes, native0002 service');
   const daemonHostedManager = daemonHostedManagerOptions(options);
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
@@ -426,6 +429,7 @@ export async function matrixCell(options) {
     try {
       report.daemonDiagnostics[stage] = await captureDaemonDiagnostics({
         cotalHome, daemonHome: report.daemonHome, config, output, id, stage, home, pkg,
+        ...(shape.installUmask ? {privateFixtureRoot:root} : {}),
         plan: { ...plan, globalRoot: modules },
         socket: process.platform === 'linux' && env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, 'cotal', 'daemon.sock') : undefined,
         startedAt: report.startedAt, platform: process.platform,
@@ -443,7 +447,7 @@ export async function matrixCell(options) {
     }
     const startedAt = new Date().toISOString();
     const result = await new Promise(resolveCall => {
-      const command = machineShapeCommand(file, argv, shape.installUmask);
+      const command = machineShapeCommand(file, argv, shape.installUmask ?? (oldSourceRefusal && label === 'upgrade under test' ? '0002' : undefined));
       const child = spawn(command.file, command.argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '', stderr = '', timeoutHit = false;
       const timer = setTimeout(() => { timeoutHit = true; child.kill(); }, timeout);
@@ -682,7 +686,7 @@ export async function matrixCell(options) {
       const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
       const ready = join(root, 'writer-ready'), release = join(root, 'writer-release');
       releaseHolder = () => writeFileSync(release, 'release');
-      writeFileSync(join(fixture, 'index.js'), `import {registry} from ${JSON.stringify(core)};import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
+      writeFileSync(join(fixture, 'index.js'), `import {registry} from '@cotal-ai/core';import {existsSync,writeFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';if(process.env.MATRIX_HOLD==='1'){writeFileSync(${JSON.stringify(ready)},'ready');const deadline=Date.now()+30000;while(!existsSync(${JSON.stringify(release)})){if(Date.now()>deadline)throw Error('fixture writer deadline');await delay(50);}}registry.register({kind:'connector',name:'upgrade-standin',requires:['node'],buildLaunch:o=>{${launchRecord}return {command:process.execPath,args:[${JSON.stringify(launchedSeat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),...(o.userAuth?{COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd)}:{COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id)}),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
       if (state === 'agent' && daemonHostedManager) {
         assert(report.participant?.remote === true && report.participant?.localManagerStarted === false, 'daemon-hosted Manager requires prepared remote user-auth participant without a local Manager');
         const space = report.participant.space;
@@ -890,11 +894,55 @@ export async function matrixCell(options) {
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') {
       update = await cotal('upgrade under test', ['update', '--self', ...(options['stop-agents'] === 'true' ? ['--stop-agents'] : [])]);
+      if (oldSourceRefusal) {
+        report.update = update;
+        assert(publishedStagedRefusal(update), 'published source did not reach target escape notice');
+        check('published updater names one-time manual installation', true, update);
+        ok(await cotal('enable published scheduler refusal observation', ['update','--auto','on']), 'published scheduler settings');
+        report.publishedSchedulerObservations = [];
+        for (let number = 1; number <= 3; number++) {
+          for (let i=0;i<60&&!existsSync(join(cotalHome,'update-check.json'));i++) await delay(1000);
+          const before=json(join(cotalHome,'update-attempt.json'));
+          const beforeStore=inspectGenerationStore(join(prefix,'lib/.cotal-generations'),{required:false});
+          const log=join(cotalHome,'update-attempt.log');
+          const beforeLogSha256=digest(existsSync(log)?readFileSync(log):'');
+          for (const [name, fields] of [['update-check.json',['checkedAt','firstSeenAt','attemptedAt']],['update-attempt.json',['next']]]) {
+            const file=join(cotalHome,name), before=json(file), after={...before};
+            for(const field of fields) after[field]=Date.now()-7200000;
+            save(join(output,`${id}-budget-${number}-${name}`),{before,after});
+            save(file,after);
+          }
+          const stimulusAt=Date.now(), deadline=stimulusAt+180000;
+          let attempt,text;
+          do {
+            await delay(5000);
+            // status makes the daemon observe the aged attempt record, without running an updater.
+            report.publishedLastStatus=await daemon('published scheduler budget status',['daemon','status','--json']);
+            attempt=json(join(cotalHome,'update-attempt.json'));
+            text=existsSync(join(cotalHome,'update-attempt.log'))?readFileSync(join(cotalHome,'update-attempt.log'),'utf8'):'';
+            const freshLog=existsSync(log)&&statSync(log).mtimeMs>=stimulusAt;
+            if(attempt.next>stimulusAt&&!/^updating to /.test(attempt.result)&&(before.failures>=2?/failed twice; waiting/.test(attempt.result):freshLog&&/Install the new version once by hand/.test(text))) break;
+          } while(Date.now()<deadline);
+          if(/^updating to /.test(attempt?.result??'')){uncertain=true;throw new Error('published scheduler outcome unknown');}
+          const store=inspectGenerationStore(join(prefix,'lib/.cotal-generations'),{required:false});
+          report.publishedSchedulerObservations.push({number,before,beforeStore,beforeLogSha256,stimulusAt,observedAt:Date.now(),attempt,text,store,status:report.publishedLastStatus,logSha256:digest(text??''),logMtimeMs:existsSync(log)?statSync(log).mtimeMs:null});
+        }
+        check('published scheduler preserves recorded outcome budget and timing',publishedSchedulerBudget(report.publishedSchedulerObservations),report.publishedSchedulerObservations);
+        const selected=inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
+        const bytes=Buffer.from(JSON.stringify({update,observations:report.publishedSchedulerObservations,selected}));
+        const artifact=`${id}-published-refusal.txt`;
+        writeFileSync(join(output,artifact),bytes,{flag:'wx',mode:0o600});
+        report.publishedRefusal={selected,receipt:{artifact,bytes:bytes.length,sha256:digest(bytes)}};
+        check('published refusal keeps original CLI selected',selected.selectedCliVersion===report.source,selected);
+        report.expectedRefusal={kind:'published target-check escape notice',passed:report.assertions.every(row=>row.passed)};
+        report.result='failed';
+        return report;
+      }
       if (shape.withoutRuntimeDir && installedService) {
         report.update = update;
         const daemonStatus = ok(await daemon('source daemon after runtime-directory refusal', ['daemon', 'status', '--json']), 'source daemon still answers');
         const after = JSON.parse(daemonStatus.stdout).result;
-        const selected = inspectInstalledUpdateRoute(pkg, process.platform);
+        const selected = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
         const store = inspectGenerationStore(join(prefix, 'lib/.cotal-generations'), { required: false });
         const bytes = Buffer.from(JSON.stringify({ before: report.daemonBefore, daemonStatus, selected, store }));
         const artifact = `${id}-runtime-directory-refusal.txt`;
@@ -954,7 +1002,7 @@ export async function matrixCell(options) {
           if (followOnAction === 'self') {
             update = await cotal('candidate follow-on self update under test', ['update', '--self']);
           } else if (followOnAction === 'scheduler') {
-            const selectedBefore = inspectInstalledUpdateRoute(pkg, process.platform);
+            const selectedBefore = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
             assert.equal(selectedBefore.updateRoute, 'staged', 'scheduler must start on a staged generation');
             assert.equal(selectedBefore.selectedCliVersion, report.candidateNext.targetVersion);
             assert.equal(selectedBefore.packageManagerRecordVersion, report.source);
@@ -968,7 +1016,7 @@ export async function matrixCell(options) {
             for (let i = 0; i < 60 && !existsSync(join(cotalHome, 'update-check.json')); i++) await delay(1000);
             for (const [name, fields] of [['update-check.json', ['checkedAt', 'firstSeenAt', 'attemptedAt']], ['update-attempt.json', ['next']]]) {
               const file = join(cotalHome, name), before = json(file), after = { ...before };
-              for (const field of fields) after[field] = Date.now() - 7200000;
+              for (const field of fields) after[field] = Date.now() - (field === 'checkedAt' ? 25 * 3600000 : 7200000);
               save(join(output, `${id}-staged-${name}-clock.json`), { before, after });
               save(file, after);
             }
@@ -976,7 +1024,7 @@ export async function matrixCell(options) {
             let selected, status, attempt;
             do {
               await delay(5000);
-              selected = inspectInstalledUpdateRoute(pkg, process.platform);
+              selected = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
               status = await daemon('staged scheduler observation', ['daemon', 'status', '--json']);
               attempt = json(join(cotalHome, 'update-attempt.json'));
               if (selected.selectedCliVersion === report.target && status.exit === 0 && nativeGenerationReady(JSON.parse(status.stdout).result, report.target) && /^(?:repaired and )?updated to /.test(attempt.result)) break;
@@ -989,7 +1037,7 @@ export async function matrixCell(options) {
           } else if (followOnAction === 'npm') {
             npmInstall = ok(await npmCall('manual npm install follow-on target', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.target}`, '--no-audit', '--no-fund']), 'manual npm follow-on install');
             const bareVersion = await cotal('bare manual npm CLI version observation', ['--version']);
-            const bareRoute = inspectInstalledUpdateRoute(pkg, process.platform);
+            const bareRoute = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
             const bareManifest = join(config, 'extensions/extensions.json');
             const bareExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const bareInstalledExtensions = bareExtensions.map(entry => {
@@ -1184,7 +1232,7 @@ export async function matrixCell(options) {
           continue;
         }
         let installedState;
-        try { installedState = inspectInstalledUpdateRoute(pkg, process.platform); }
+        try { installedState = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {}); }
         catch (error) { if (error.code === 'ENOENT') { report.schedulerReplacementObserved = true; continue; } throw error; }
         const installedVersion = installedState.selectedCliVersion;
         const status = await cotal('scheduler observation', ['daemon', 'status', '--json']);
@@ -1201,7 +1249,7 @@ export async function matrixCell(options) {
         uncertain = true;
         throw new Error(`scheduler outcome unknown after observation deadline: ${attempt.result}; native service retained for runner teardown`);
       }
-      const postSchedulerRoute = inspectInstalledUpdateRoute(pkg, process.platform);
+      const postSchedulerRoute = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
       check('scheduler completed within observation deadline', report.source === report.target ? attempt.result === 'up to date' : postSchedulerRoute.selectedCliVersion === report.target && /^(?:repaired and )?updated to /i.test(attempt.result), attempt);
       update = { exit: 0, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
       save(join(output, `${id}-scheduler-after.json`), { check: json(join(cotalHome, 'update-check.json')), attempt: json(join(cotalHome, 'update-attempt.json')) });
@@ -1259,7 +1307,7 @@ export async function matrixCell(options) {
     report.updaterSelectedVersions = selectedVersions;
     report.updaterSelectedVersion = selectedVersions[0];
     check('upgrade exits successfully', update.exit === 0, update);
-    const installedRoute = inspectInstalledUpdateRoute(pkg, process.platform);
+    const installedRoute = inspectInstalledUpdateRoute(pkg, process.platform, shape.installUmask ? {privateFixtureRoot:root} : {});
     report.updateRoute = installedRoute.updateRoute;
     report.selectedCliVersion = installedRoute.selectedCliVersion;
     report.packageManagerRecordVersion = installedRoute.packageManagerRecordVersion;
@@ -1418,12 +1466,12 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
-    if (process.platform !== 'win32' && (nextHopMode || options['generation-store-census'] === 'true')) {
+    if (process.platform !== 'win32' && (oldSourceRefusal || nextHopMode || options['generation-store-census'] === 'true')) {
       report.generationStore = inspectGenerationStore(join(prefix, 'lib', '.cotal-generations'), { required: report.result === 'passed' && !desktopRuntime && !['npm', 'installer'].includes(options['follow-on-action']) });
       check('generation store is settled and protected', report.generationStore.passed, report.generationStore);
       if (!report.generationStore.passed) report.result = 'failed';
     }
-    if (installedService && !report.runtimeDirectoryRefusal && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
+    if (installedService && !oldSourceRefusal && !report.runtimeDirectoryRefusal && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
       const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
         ? report.target
         : nextHopMode === 'source-0.164.10'
@@ -1538,7 +1586,7 @@ export async function matrixCell(options) {
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };
-    if (report.expectedRefusal && report.runtimeDirectoryRefusal) report.expectedRefusal.passed = report.expectedRefusal.passed && report.assertions.every(row => row.passed) && report.cleanupSafety.passed;
+    if (report.expectedRefusal && (report.runtimeDirectoryRefusal || oldSourceRefusal)) report.expectedRefusal.passed = report.expectedRefusal.passed && report.assertions.every(row => row.passed) && report.cleanupSafety.passed;
     report.root = root;
     report.finishedAt = new Date().toISOString();
     report.retentionOwner = hosted ? 'disposable runner teardown' : 'lane owner after process quiescence';

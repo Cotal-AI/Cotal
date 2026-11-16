@@ -19,6 +19,7 @@ test('settled private tree passes and records each entry', () => {
   assert.equal(report.passed, true);
   assert.equal(report.state, 'complete');
   assert.equal(report.entries, 3);
+  assert.equal(report.logicalBytes, 2);
 });
 
 test('group and other write fail for files and directories', () => {
@@ -45,6 +46,7 @@ test('missing store is accepted only when explicitly optional', () => {
   const path = join(root, 'absent');
   assert.equal(inspectGenerationStore(path).passed, false);
   assert.equal(inspectGenerationStore(path, { required: false }).passed, true);
+  assert.equal(inspectGenerationStore(path, { required: false }).logicalBytes, 0);
 });
 
 test('never follows a child link or accepts a store link', () => {
@@ -55,6 +57,7 @@ test('never follows a child link or accepts a store link', () => {
   const report = inspectGenerationStore(path);
   assert.equal(report.passed, true);
   assert.equal(report.entries, 2);
+  assert.equal(report.logicalBytes, 0);
   assert.deepEqual(report.links, [{ path: 'dependency', target }]);
   symlinkSync(path, join(root, 'store-link'), 'dir');
   assert.equal(inspectGenerationStore(join(root, 'store-link')).passed, false);

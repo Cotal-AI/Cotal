@@ -43,6 +43,36 @@ function fixture() {
 }
 const row = (report, kind) => report.observations.find(item => item.kind === kind);
 
+test('owned npm0002 layout is observable only inside an explicit private fixture boundary', async () => {
+  const f=fixture();
+  chmodSync(f.pkg,0o775);chmodSync(f.globalRoot,0o775);
+  const refused=await captureDaemonDiagnostics(f.options);
+  assert.equal(row(refused,'roots').state,'error');
+  assert.equal(row(refused,'installed-version').state,'error');
+  const observed=await captureDaemonDiagnostics({...f.options,stage:'private',privateFixtureRoot:f.home});
+  assert.equal(row(observed,'roots').state,'observed');
+  assert.equal(row(observed,'installed-version').state,'archived');
+  assert.equal(row(observed,'.cotal-update.lock').state,'missing');
+  assert.equal(lstatSync(f.pkg).mode&0o777,0o775,'observer must not repair measured modes');
+  assert.equal(lstatSync(f.globalRoot).mode&0o777,0o775);
+});
+test('private package observation never waives credential/output/file protection or boundary ownership', async () => {
+  for(const kind of ['boundary','alias','outside','config','output','file']){
+    const f=fixture();chmodSync(f.pkg,0o775);chmodSync(f.globalRoot,0o775);
+    let boundary=f.home;
+    if(kind==='boundary')chmodSync(f.home,0o755);
+    if(kind==='alias'){boundary=join(f.home,'alias');symlinkSync(f.home,boundary);}
+    if(kind==='outside')boundary=f.output;
+    if(kind==='config')chmodSync(f.config,0o775);
+    if(kind==='output')chmodSync(f.output,0o775);
+    if(kind==='file')chmodSync(join(f.pkg,'package.json'),0o664);
+    const result=await captureDaemonDiagnostics({...f.options,privateFixtureRoot:boundary});
+    if(kind==='file')assert.equal(row(result,'installed-version').state,'error');
+    else assert.equal(row(result,'roots').state,'error',kind);
+    assert.equal(f.children.size,0);
+  }
+});
+
 test('pretty JSON sensitive sections suppress nested values and retain following safe lines', async () => {
   const f = fixture();
   const raw = [JSON.stringify({ argv: ['--password', 'CANARY_PRIVATE', { nested: ['CANARY_PRIVATE', 'bracket ] in string'] }], message: 'safe-after-argv' }, null, 2), JSON.stringify({ environment: { TOKEN: 'CANARY_PRIVATE', nested: { array: ['CANARY_PRIVATE'] } }, message: 'safe-after-env' }, null, 2), 'safe-final-marker'].join('\n');

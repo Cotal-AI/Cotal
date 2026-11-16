@@ -3,18 +3,8 @@ const commonFailures = ['upgrade exits successfully', 'CLI version is target',
   'every recorded extension is at target', 'selected CLI reports target',
   'recorded extension package versions match target', 'no manual step or refusal'];
 const commonSafety = ['every prior extension remains recorded', 'cotal status exits zero', 'source generation unchanged'];
-const standalone = `  {{space}}: reading local Manager {{manager}} (pid {{pid}})
-! legacy manager custody: PTY continuity is impossible; this update is not a hot update
-  Manager {{manager}} in space "{{space}}": 1 seats
-  {{space}}-worker: drain-only
-  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.
-  Next: stop this Manager through its original host, ending any seats listed above; run \`cotal update --self\`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.
-`;
 // Set fixedIn only after a release actually carries the fix, never from a proposed release number.
 export const knownRefusals = Object.freeze([
-  {id: 'linux-npm-standalone-stop-consent', phases: Object.freeze(['candidate', 'published']), since: '0.164.6', fixedIn: null,
-    issue: 'https://github.com/Cotal-AI/Cotal/issues/6802', exit: 1, stdout: standalone, stderr: '',
-    failedAssertions: commonFailures, requiredAssertions: [...commonSafety, 'no paused recovery record', 'owned local stack cleanup succeeds']},
   {id: 'linux-npm-container-manager', phases: Object.freeze(['candidate', 'published']), sourceVersion: '0.164.6',
     issue: 'https://github.com/Cotal-AI/Cotal/issues/6785', exit: 1,
     stdout: '  {{space}}: a manager for this mesh runs on this machine; reading its custody\n',

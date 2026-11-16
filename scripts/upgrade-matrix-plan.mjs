@@ -228,6 +228,22 @@ export function boundedCells(plan) {
       expectedNoRuntimeRefusal: nativeState === 'daemon',
       requiredAssertions: nativeState === 'daemon' ? ['runtime-directory-refusal', 'source-daemon-unchanged', 'no-staging-created', 'no-recovery', 'owned-native-cleanup'] : ['target-version', 'extension-versions', 'inventory-preserved', 'status-healthy', 'no-recovery', 'no-manual-intervention', 'candidate-source-identity', 'candidate-next-target', 'next-hop-success', 'runtime-directory-omitted', 'no-native-service', 'generation-store-protected'],
     });
+    for (const sourceVersion of ['0.164.16', '0.164.17']) add('linux', 'installer', `source-${sourceVersion}-staged-refusal`, null, {
+      sourceVersion, sourceKind: 'npm-exact-source', targetVersion: plan.targetVersion,
+      targetSource: plan.targetSource, nodeVersion: '24.18.0', serviceUmask: '0002', publishedStagedRefusal: true,
+      requiredAssertions: ['published-staged-refusal', 'unchanged-failure-budget', 'source-unchanged', 'generation-store-protected', 'no-recovery', 'owned-native-cleanup'],
+    });
+    for (const oldVersion of [undefined,'0.164.16','0.164.17']) add('linux','npm',oldVersion?`root-owned-source-${oldVersion}-recovery`:'root-owned-candidate-next',null,{
+      sourceVersion:plan.targetVersion,sourceKind:plan.phase==='published'?'npm-exact-A':'packed-candidate-A',targetVersion,
+      targetSource:'packed-next-B',targetSourceSHA:plan.sourceSHA,visibleFollowOnVersion:followOnVersion,
+      syntheticVersionRule:'candidate.patch+1000',nodeVersion:'24.18.0',rootOwned:true,...(oldVersion?{oldVersion}:{}),
+      requiredAssertions:['root-update-success','normal-account-versions','owning-command-refusal','root-owned-install','readable-generation-metadata','private-journals','generation-store-protected','refusal-store-unchanged','owned-runner-teardown',...(oldVersion?['published-root-lockout','manual-root-install-heals']:[])],
+    });
+    for(const layoutProbe of ['pnpm','nvm'])add('linux',layoutProbe==='pnpm'?'pnpm':'npm',`candidate-next-${layoutProbe}-layout`,null,{
+      sourceVersion:plan.targetVersion,sourceKind:plan.phase==='published'?'npm-exact-A':'packed-candidate-A',targetVersion,targetSource:'packed-next-B',targetSourceSHA:plan.sourceSHA,
+      syntheticVersionRule:'candidate.patch+1000',nodeVersion:'24.18.0',layoutProbe,
+      requiredAssertions:['layout-source-version','layout-update-success','layout-target-version','layout-extensions','layout-status','layout-prefix-preserved','generation-store-protected'],
+    });
     for (const platform of platforms) add(platform, "npm", "source-0.164.10-daemon-self-chain", null, {
       sourceVersion: "0.164.10", sourceKind: "npm-exact-source", chain: true,
       finalTargetVersion: targetVersion, targetSourceSHA: plan.sourceSHA,
