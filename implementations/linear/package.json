@@ -26,8 +26,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@nats-io/kv": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0"
+    "@nats-io/kv": "3.4.0",
+    "@nats-io/transport-node": "3.4.0"
   },
   "peerDependencies": {
     "@cotal-ai/core": "*",

@@ -55,8 +55,8 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
-    "@nats-io/jetstream": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0",
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
     "ajv": "^8.20.0",
     "string-width": "^8.2.1",
     "yaml": "^2.9.0",
