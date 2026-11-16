@@ -20,6 +20,7 @@ import { candidateSourceIdentity, hostedManagerRestored, hostedManagerRetryAfter
 export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
+import { isTimedStatus, statusTiming } from './daemon-status-timings.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -417,6 +418,19 @@ export async function matrixCell(options) {
   const [npm, npmPrefix] = npmCommand();
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
+  let statusTimingSequence = 0;
+  function timedStatus(argv, label) {
+    if (!isTimedStatus({ platform: process.platform, nextHopMode, method, followOnAction: options['follow-on-action'], argv })) return undefined;
+    const artifact = `${id}-status-timing-${++statusTimingSequence}.jsonl`;
+    const timing = statusTiming(join(output, artifact), env, label);
+    const evidence = { artifact, label, semantics: 'observation only; load-hook return is not module evaluation; socket data is not validated RPC completion' };
+    (report.statusTimings ??= []).push(evidence);
+    return { env: timing.env, finish(result) {
+      try { Object.assign(evidence, timing.finish(result)); }
+      catch (error) { evidence.error = error.message; }
+      return evidence.error;
+    } };
+  }
   async function captureServiceEvidence(stage) {
     if (!installedService) return;
     report.daemonDiagnostics ??= {};
@@ -427,7 +441,12 @@ export async function matrixCell(options) {
         socket: process.platform === 'linux' && env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, 'cotal', 'daemon.sock') : undefined,
         startedAt: report.startedAt, platform: process.platform,
         cli: layout === 'installer' ? { file: launcher, args: [] } : { file: process.execPath, args: [cli] },
-        run: (file, argv, bounds) => runDiagnosticCommand(file, argv, { cwd: project, env, timeoutMs: bounds.timeoutMs, maxBytes: bounds.maxBuffer }),
+        run: async (file, argv, bounds) => {
+          const timing = timedStatus(argv, `diagnostics:${stage}`);
+          const result = await runDiagnosticCommand(file, argv, { cwd: project, env: timing?.env ?? env, timeoutMs: bounds.timeoutMs, maxBytes: bounds.maxBuffer });
+          timing?.finish(result);
+          return result;
+        },
       });
     } catch (error) {
       report.daemonDiagnostics[stage] = { state: 'unreadable', error: error.message, observedAt: new Date().toISOString() };
@@ -439,8 +458,9 @@ export async function matrixCell(options) {
       assert(disk.bavail * disk.bsize >= 20 * 1024 ** 3, 'STOP: less than 20 GiB free before installation action');
     }
     const startedAt = new Date().toISOString();
+    const timing = timedStatus(argv, label);
     const result = await new Promise(resolveCall => {
-      const child = spawn(file, argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const child = spawn(file, argv, { cwd: project, env: timing?.env ?? env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '', stderr = '', timeoutHit = false;
       const timer = setTimeout(() => { timeoutHit = true; child.kill(); }, timeout);
       child.stdout.on('data', bytes => { stdout += bytes; });
@@ -449,10 +469,15 @@ export async function matrixCell(options) {
       child.once('close', (exit, signal) => { clearTimeout(timer); resolveCall({ exit, signal, stdout, stderr, timeout: timeoutHit }); });
     });
     const finishedAt = new Date().toISOString();
+    const timingError = timing?.finish(result);
     const entry = { label, file, argv, startedAt, finishedAt, elapsedMs: Date.parse(finishedAt) - Date.parse(startedAt), ...result };
     report.calls.push(entry);
     transcript.push(`$ ${file} ${argv.join(' ')}\n${result.stdout}${result.stderr}\n[exit ${result.exit}]\n`);
     writeFileSync(join(output, `${id}.log`), transcript.join('\n'), { mode: 0o600 });
+    if (timingError) {
+      if (result.exit === null || result.timeout || result.signal) uncertain = true;
+      throw new Error(timingError);
+    }
     if (result.exit === null || result.timeout || result.signal) {
       uncertain = true;
       // Only the authenticated old-source postlude deadline may reach the between-hop proof.
