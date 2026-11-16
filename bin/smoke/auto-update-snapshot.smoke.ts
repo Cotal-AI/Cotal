@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, statSy
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
-import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess } from "@cotal-ai/workspace";
+import { writeUpdateRecovery, readUpdateRecovery, clearUpdateRecovery, claimUpdateClosureAccess, extensionSetPaths } from "@cotal-ai/workspace";
 import { snapshotUpdateClosure } from "../../implementations/cli/src/lib/update-snapshot.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
@@ -17,7 +17,8 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "update-snapshot-")));
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.COTAL_HOME = join(root, "home");
 const config = globalConfigDir();
-const seed = join(config, "seed"), extensions = join(config, "extensions");
+const { seed, extensions } = extensionSetPaths();
+const legacy = join(config, "extensions");
 mkdirSync(process.env.COTAL_HOME, { recursive: true, mode: 0o700 });
 const release = claimUpdateClosureAccess();
 try {
@@ -48,12 +49,15 @@ try {
     assert.equal(statSync(config).mode & 0o777, 0o755);
     existing.discard();
   }
+  mkdirSync(legacy, { recursive: true, mode: 0o700 });
+  writeFileSync(join(legacy, "legacy-sentinel"), "legacy untouched");
   for (const dir of [seed, extensions]) { mkdirSync(dir, { recursive: true, mode: 0o700 }); writeFileSync(join(dir, "stamp"), "previous"); }
   const snapshot = snapshotUpdateClosure();
   for (const dir of [seed, extensions]) writeFileSync(join(dir, "stamp"), "replacement");
-  writeUpdateRecovery({ previous: "1.0.0", target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: snapshot.path, reason: "smoke" });
+  writeUpdateRecovery({ previous: extensionSetPaths().version, target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: snapshot.path, reason: "smoke" });
   snapshot.restore();
   for (const dir of [seed, extensions]) assert.equal(readFileSync(join(dir, "stamp"), "utf8"), "previous");
+  assert.equal(readFileSync(join(legacy, "legacy-sentinel"), "utf8"), "legacy untouched");
   assert.ok(readUpdateRecovery()!.renames!.every(entry => entry.done));
   snapshot.discard(); clearUpdateRecovery();
 
@@ -61,13 +65,14 @@ try {
   writeFileSync(join(seed, "stamp"), "replacement");
   const failed = join(resumed.path, "failed-stamp");
   renameSync(join(seed, "stamp"), failed);
-  writeUpdateRecovery({ previous: "1.0.0", target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: resumed.path, reason: "resume", renames: [
+  writeUpdateRecovery({ previous: extensionSetPaths().version, target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: resumed.path, reason: "resume", renames: [
     { from: join(seed, "stamp"), to: failed, done: true },
     { from: `${resumed.path}${sep}seed${sep}..${sep}seed${sep}stamp`, to: join(seed, "stamp"), done: false },
   ] });
   snapshotUpdateClosure(resumed.path).restore();
   assert.equal(readFileSync(join(seed, "stamp"), "utf8"), "previous");
   assert.equal(readFileSync(failed, "utf8"), "replacement");
+  assert.equal(readFileSync(join(legacy, "legacy-sentinel"), "utf8"), "legacy untouched");
   assert.ok(readUpdateRecovery()!.renames!.every(entry => entry.done));
   resumed.discard(); clearUpdateRecovery();
 
@@ -75,7 +80,7 @@ try {
     const refused = snapshotUpdateClosure();
     const external = join(root, "outside");
     writeFileSync(external, "untouched");
-    writeUpdateRecovery({ previous: "1.0.0", target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: refused.path, reason: "refuse", renames: [{
+    writeUpdateRecovery({ previous: extensionSetPaths().version, target: "2.0.0", installed: "2.0.0", phase: "restoring", snapshot: refused.path, reason: "refuse", renames: [{
       from: outside === "from" ? external : join(seed, "stamp"),
       to: outside === "to" ? external : join(refused.path, "outside"), done: false,
     }] });
