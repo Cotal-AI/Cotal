@@ -350,6 +350,7 @@ export const scenarios = [
     await page.evaluate(spaces => {
       window.__renderState.catalogSpaces = spaces;
       window.__renderState.account.spaces = spaces.map(({ space }) => ({ space, desired: true, observed: "connected" }));
+      window.__pushStatus();
     }, longAccountSpaces);
     await page.waitForFunction(() => document.querySelectorAll('[data-testid="connected-space-row"]').length === 12, null, { timeout: 6000 });
     await page.click("#settings-disconnect");
@@ -491,9 +492,9 @@ export const scenarios = [
   } },
   { name: "account-live-list", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
     assert.equal(await page.locator("#another-space").textContent(), "Add to another space");
-    await page.evaluate(() => window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }));
+    await page.evaluate(() => { window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }); window.__pushStatus(); });
     await page.locator('[data-space="research"]').waitFor({ timeout: 6000 });
-    await page.evaluate(() => window.__renderState.account.spaces.pop());
+    await page.evaluate(() => { window.__renderState.account.spaces.pop(); window.__pushStatus(); });
     await page.locator('[data-space="research"]').waitFor({ state: "detached", timeout: 6000 });
   } },
   { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
