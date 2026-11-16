@@ -71,8 +71,9 @@ try {
   assert.match(validate.stdout, /native-wake\.js/);
   const health = spawnSync(actual, ["mcp", "list"], { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(health.status, 0, `${health.stdout}\n${health.stderr}`);
-  const cotalServer = `${health.stdout}${health.stderr}`.split("\n").find((line) => line.startsWith("plugin:cotal:cotal:"));
+  const cotalServer = `${health.stdout}${health.stderr}`.split("\n").find((line) => line.startsWith("cotal:"));
   assert.ok(cotalServer, "native MCP discovery must include the installed Cotal server");
+  assert.ok(cotalServer.includes(join(plugin, "dist", "seat.cjs")), cotalServer);
   assert.match(cotalServer, /Connected/, "the server must start with the app's minimal PATH");
   console.log(`Desktop bundled Code ${number}, sha256 ${createHash("sha256").update(readFileSync(actual)).digest("hex")}`);
   console.log("DESKTOP-ONLY SETUP PASSED: no standalone Claude CLI, copied login, manual MCP config or launch flags");
