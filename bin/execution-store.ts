@@ -142,6 +142,32 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       if (record.previous.descriptor) generation(record.previous.descriptor.generation);
       return { directory, path, record, finished: record.completed === true && path !== protectedJournal };
     });
+    // A successful successor supersedes its uniquely identified rollback ancestry. Unlike the
+    // absence of this home's recovery record, its explicit completion is installation-wide proof.
+    for (const completed of transactions.filter(row => row.finished)) {
+      let predecessor = completed.record.previous.descriptor?.generation;
+      const visited = new Set<string>([completed.record.target.id]);
+      while (predecessor && !visited.has(predecessor.id)) {
+        visited.add(predecessor.id);
+        const expected = predecessor;
+        const ancestors = transactions.filter(row => row.record.installed === completed.record.installed
+          && executionDescriptorPath(row.record.installed) === executionDescriptorPath(completed.record.installed)
+          && row.record.target.id === expected.id && row.record.target.version === expected.version
+          && row.record.target.inventorySha256 === expected.inventorySha256);
+        if (ancestors.length !== 1 || ancestors[0].path === protectedJournal) break;
+        const ancestor = ancestors[0];
+        if (!ancestor.finished) {
+          const temporary = `${ancestor.path}.${randomBytes(16).toString("hex")}`;
+          try {
+            writeFileSync(temporary, JSON.stringify({ ...ancestor.record, completed: true }), { flag: "wx", mode: 0o600 });
+            renameSync(temporary, ancestor.path);
+          } finally { rmSync(temporary, { force: true }); }
+          ancestor.record.completed = true;
+          ancestor.finished = true;
+        }
+        predecessor = ancestor.record.previous.descriptor?.generation;
+      }
+    }
     const keep = new Set<string>();
     for (const { record, name } of descriptors) {
       keep.add(record.generation.id);

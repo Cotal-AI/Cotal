@@ -150,6 +150,24 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(existsSync(join(homeA, ".cotal/update-recovery.json")), true);
     assert.equal(existsSync(legacy[0].journal), true, "different Cotal home cannot retire an unmarked paused journal");
     assert.equal(existsSync(legacy[0].root), true, "different Cotal home cannot retire the paused target");
+
+    // The installation advances successfully once more. Its explicit completion supersedes only
+    // the exact linked history of this installation, not every unmarked transaction in the store.
+    writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version: "0.8.0", bin: { cotal: "./dist/cotal.js" } }));
+    const successor = retainExecutionGeneration(otherInstall, source);
+    const successorJournal = journalExecutionTransaction(otherInstall, successor);
+    publishExecutionTransaction(otherInstall, successorJournal);
+    completeExecutionTransaction(otherInstall, successorJournal);
+    const successorCleanup = spawnSync(process.execPath, ["--input-type=module", "-e", `const{cleanupExecutionStore}=await import(${JSON.stringify(module)});cleanupExecutionStore(${JSON.stringify(otherInstall)});`], { env: env(homeB), encoding: "utf8" });
+    assert.equal(successorCleanup.status, 0, successorCleanup.stderr);
+    assert.equal(successorCleanup.stderr, "");
+    for (const prior of legacy) assert.equal(existsSync(prior.journal), false, "completed successor marks and retires its exact legacy ancestry");
+    assert.equal(existsSync(legacy[0].root), false);
+    assert.equal(existsSync(legacy[1].root), false);
+    assert.equal(existsSync(legacy[2].root), true, "immediately replaced legacy generation stays");
+    assert.equal(existsSync(successor.root), true);
+    assert.equal(readdirSync(executionStore(otherInstall)).filter(name => /^[a-f0-9]{32}$/.test(name)).length, 2);
+    assert.equal(selectExecutionProgram(otherInstall).root, successor.root);
     console.log("execution store cleanup: active and previous retained, completed and abandoned data retired, pending recovery and foreign lock preserved");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
