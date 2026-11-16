@@ -482,7 +482,7 @@ public static class FilteredAppLauncher {
             if ($fact.exists) {
                 $bytes = [IO.File]::ReadAllBytes($file)
                 $fact.size = $bytes.Length
-                $fact.sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).ToLowerInvariant()
+                $fact.sha256 = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
                 $parsed = ([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
                 if ($parsed.PSObject.Properties.Name -contains 'login') { $fact.login = $parsed.login }
             }
