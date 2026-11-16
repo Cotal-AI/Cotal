@@ -108,13 +108,15 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
       if (valid) return await reconcile();
       const aside = `${paths.ready}.invalid.${randomBytes(8).toString("hex")}`;
       renameSync(paths.ready, aside);
-      if (existsSync(join(paths.extensions, "extensions.json"))) {
-        preparing = true;
-        const value = await reconcile();
-        verifyExtensionSet(paths);
-        publishReady(paths);
-        return value;
-      }
+    }
+    const installationRecord = join(paths.root, "install.json");
+    if (options.repair && existsSync(installationRecord) && existsSync(join(paths.extensions, "extensions.json")) &&
+        committedVersion(JSON.parse(readFileSync(installationRecord, "utf8")), paths.version)) {
+      preparing = true;
+      const value = await reconcile();
+      verifyExtensionSet(paths);
+      publishReady(paths);
+      return value;
     }
     if (!existsSync(pending)) {
       const install = join(paths.root, "install.json");
