@@ -289,6 +289,26 @@ async function runTurn(text) {
   }
   notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
 
+  if (text.includes("ACTIVITY-PROBE")) {
+    const steps = [
+      ["item/agentMessage/delta", { delta: "answer" }],
+      ["item/reasoning/summaryTextDelta", { delta: "thinking" }],
+      ["item/reasoning/textDelta", { delta: "reasoning" }],
+      ["item/commandExecution/outputDelta", { delta: "output" }],
+      ["item/fileChange/outputDelta", { delta: "patch" }],
+      ["item/agentMessage/delta", { threadId: "foreign", delta: "other" }],
+      ["item/agentMessage/delta", { delta: "" }],
+      ["thread/tokenUsage/updated", { tokenUsage: { total: { totalTokens: 100 } } }],
+    ];
+    for (let i = 0; i < steps.length; i++) {
+      while (!existsSync(`${process.env.FAKE_CODEX_ACTIVITY_STEP}.${i}`)) await new Promise((r) => setTimeout(r, 25));
+      const [method, fields] = steps[i];
+      notify(method, { threadId: THREAD, turnId, itemId: "activity_item", ...fields });
+      journal({ ev: "activityStep", step: i, at: Date.now() });
+    }
+    while (!existsSync(`${process.env.FAKE_CODEX_ACTIVITY_STEP}.end`)) await new Promise((r) => setTimeout(r, 25));
+  }
+
   if (activeTurnIsRace) {
     // Hold the turn open for a steer window; the steer handler completes it (same-write race).
     // Fallback completion if no steer arrives, so the smoke can't hang.

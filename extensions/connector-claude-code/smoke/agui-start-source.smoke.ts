@@ -253,6 +253,7 @@ try {
   const recordStatus = async (status: PresenceStatus): Promise<void> => { published.push(status); };
   const agent = {
     setStatus: recordStatus,
+    noteActivity() {},
     resetStatus: recordStatus,
     setAttention: async () => {},
     setCondition: async () => {},
@@ -312,6 +313,7 @@ try {
   const chosen: string[][] = [];
   const holder = {
     setStatus: async () => {},
+    noteActivity() {},
     resetStatus: async () => {},
     setAttention: async () => {},
     setCondition: async () => {},
