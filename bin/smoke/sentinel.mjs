@@ -202,6 +202,27 @@ export function parseSentinel(text) {
   return null;
 }
 
+/** Assertion-result rows after the selected tally need a later final tally.
+ * This observes output ordering, not assertions that produce no result row.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function hasPostTallyAssertions(text) {
+  let tally = false, structured = false, trailing = false;
+  const result = /^\s*(?:✓|✗|ok(?: -)? |not ok - |FAIL {2})/;
+  for (const line of String(text).split(/\r?\n/)) {
+    // Strip a row marker so parseSentinel cannot mistake one result for a tally.
+    const parsed = parseSentinel(line.replace(result, ""));
+    if (parsed) {
+      if (structured && parsed.kind === "legacy") continue;
+      structured = parsed.kind !== "legacy";
+      tally = true;
+      trailing = false;
+    } else if (result.test(line) && tally) trailing = true;
+  }
+  return trailing;
+}
+
 /**
  * Wrap a `node:assert` namespace so each assertion increments a cell count the suite can emit.
  *

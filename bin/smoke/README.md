@@ -113,6 +113,10 @@ with a line break. Structured count and skip records take precedence over legacy
 regardless of their position. The last structured record wins; without one, the last legacy
 tally wins. Per-row counting is used only when neither is present.
 
+Serial and pooled runners refuse a tally followed by more assertion-result rows unless a later
+final tally covers them. Diagnostic output after the tally is allowed. This checks premature
+tally acceptance, not omitted assertions or assertions that print no result row.
+
 ## Shared hosts
 
 `pnpm smoke:up-stack:live` checks that `up` moves off the default address when it is taken. With

@@ -12,6 +12,7 @@ export type ParsedSentinel = {
 };
 
 export function parseSentinel(text: string): ParsedSentinel | null;
+export function hasPostTallyAssertions(text: string): boolean;
 export function countedAssert<T extends object>(ns: T): { assert: T; cells: () => number };
 export function createSuite(): {
   check: (name: string, cond: boolean, extra?: unknown) => void;
