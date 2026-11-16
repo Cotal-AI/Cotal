@@ -32,6 +32,9 @@ on:
         description: 'Include the 18 timing repeat cells (running 1..9 and app-tray 1..9)'
         type: boolean
         default: false
+  push:
+    branches:
+      - measure/install-powershell
 permissions:
   contents: read
   actions: read
@@ -56,9 +59,12 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $versionPr = ('${{ github.event_name }}' -eq 'pull_request') -and ('${{ github.head_ref }}' -eq 'changeset-release/main')
+          $measure6879 = ('${{ github.ref }}' -eq 'refs/heads/measure/install-powershell')
           $repeats = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
           $cells = if ($versionPr) {
             @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
+          } elseif ($measure6879) {
+            @('measure-6879')
           } else {
             @('running','occupied','stopped','absent','locker','locker-filtered','locker-short','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe','external-node-exiting','external-node-exiting-filtered','external-node-elevated','external-node-elevated-filtered','external-node-system','external-node-system-filtered')
           }
@@ -262,10 +268,14 @@ jobs:
             "COTAL_SETUP_NEXT=$($next[0].FullName)" >> $env:GITHUB_ENV
           }
       - name: Exercise actual installed setup
+        if: matrix.cell != 'measure-6879'
         env:
           COTAL_SETUP_REPEAT: ${{ matrix.repeat }}
           COTAL_SETUP_CANDIDATE_KIND: ${{ matrix.cell == 'cannot-start' && 'invalid-helper-control' || 'product' }}
         run: pnpm exec tsx desktop/test/setup-proof.mjs ${{ matrix.cell }}
+      - name: Measure PowerShell calls inside daemon install
+        if: matrix.cell == 'measure-6879'
+        run: pnpm exec tsx desktop/test/measure-6879.mjs
       - name: Existing Windows service lifecycle suites
         if: always() && matrix.cell == 'absent'
         shell: pwsh
