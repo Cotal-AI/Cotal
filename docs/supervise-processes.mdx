@@ -32,6 +32,8 @@ It does not rewrite the unit or change startup.
 Inherited terminal or scope metadata alone does not prove that ownership.
 
 `cotal service install <name>` writes an owned systemd user unit for a saved direct-process service definition on Linux.
+New units use `Restart=on-failure` with a five-second delay. A clean exit or an explicit
+systemd stop does not restart the service. Native start limits still apply.
 It does not install the manager preset, broker, or sibling components as units in this release.
 The snippets below are examples of process ownership to adapt for your deployment, not a shipped stack installer.
 See the [service reference](cli-services.mdx#service) for supported definitions.
@@ -47,9 +49,12 @@ WorkingDirectory=/srv/cotal-mesh
 ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
 Restart=on-failure
 RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=180s
 ```
-`cotal up --foreground` refuses when this folder's stack is already running, for example after a
-manual background `cotal up`. Stop that stack before the unit starts.
+On a prepared controller root, `cotal up --foreground` can take over a running stack that has
+no foreground holder. A second live holder is refused. A retained legacy launcher refuses
+takeover, so stop that stack before the unit starts.
 
 Set the working directory and binary path for the installation.
 If the host should run only the broker and delivery daemon, add `--no-manager` to `ExecStart`.
@@ -70,6 +75,10 @@ Choose the ownership you need before copying a unit; `Type=simple` alone does no
 
 If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
 The unit restart repairs the recorded store rather than creating a second mesh.
+For a controller stack the launcher exits 5 after its recorded broker process is confirmed gone.
+It does not restart the broker itself or treat an unresponsive live process as dead.
+An external `cotal down` or preserve releases that launcher with exit 0 and does not trigger
+`Restart=on-failure`. Use the native unit's stop command for a supervisor-owned shutdown.
 If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
 A repair `up` can wait out that lease when it proves the holder is gone.
 It refuses if the lease is still renewed by a live holder.
@@ -77,6 +86,24 @@ It refuses if the lease is still renewed by a live holder.
 Built-in `pty` seats run with `oom_score_adj` set to `500`.
 Under memory pressure, the kernel prefers them over the broker, manager, and delivery daemon, whose scores are unchanged.
 Extension runtimes do not own the seat process and apply no such preference.
+
+### Unattended operation
+
+A systemd user unit enabled for `default.target` starts when the user manager starts.
+Without lingering, that normally requires a login and does not promise startup after reboot
+or survival after the last logout. Inspect the account's linger state before relying on
+unattended recovery. An administrator can enable lingering with `loginctl enable-linger <user>`.
+Cotal's per-service installer reports enablement, not verified reboot activation, and does
+not change this account policy.
+
+On macOS, a user LaunchAgent runs in the signed-in user's domain. It is not a boot-time
+LaunchDaemon. The current per-service command only previews a plist and does not install
+or start it. Windows has no per-service stack installer. Configure a native foreground
+service with an explicit recovery policy on those platforms rather than assuming detached
+`up` has supervision. Cotal has no internal broker watchdog on any platform.
+
+Seat memory limits remain opt-in host or runtime policy. Cotal applies no default memory
+cap, and the Linux OOM preference is not a memory bound.
 
 ## Check detached component health
 

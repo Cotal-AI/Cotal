@@ -51,7 +51,9 @@ export async function controlSystemdService(definition: ServiceDefinitionSnapsho
       assertPrivateSystemdGeneration(receipt.privateHome, receipt.seededGeneration, cli[1]!);
     } else {
       if (native.activeState === "inactive" && native.mainPid === null && ["gone", "previous-boot"].includes(observed) && value.state === "stopped") return { instance: selected, unit, operation, attemptId: null, reseed: null, noOp: true as const };
-      if (native.activeState !== "active" || native.mainProcessAttribution !== "service-process" && native.mainProcessAttribution !== "launcher" || observed !== "running" || value.state !== "running" || native.invocationId !== value.supervisorInvocationId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original process and active native unit could not be attributed together; no unit stop was submitted");
+      // A boot or automatic restart has no CLI caller to settle readiness. Stopping its exact
+      // active native incarnation needs process attribution, not a fabricated ready receipt.
+      if (native.activeState !== "active" || native.mainProcessAttribution !== "service-process" && native.mainProcessAttribution !== "launcher" || observed !== "running" || !["running", "starting"].includes(value.state) || native.invocationId !== value.supervisorInvocationId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original process and active native unit could not be attributed together; no unit stop was submitted");
     }
     const now = new Date().toISOString();
     const initial: ServiceUnitAction = { schemaVersion: 1, attemptId: randomUUID(), space, definition: definition.name, definitionRevision: definition.record.revision,

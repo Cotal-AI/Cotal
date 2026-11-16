@@ -605,6 +605,8 @@
     "smoke:delivery-boot-honesty": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-boot-honesty.smoke.ts",
     "smoke:delivery-pidfile-ownership": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/delivery-pidfile-ownership.smoke.ts",
     "smoke:systemd-supervision": "tsx implementations/cli/smoke/systemd-supervision.smoke.ts",
+    "smoke:service-restart:live": "tsx implementations/cli/smoke/service-restart-live.smoke.ts",
+    "smoke:foreground-broker-crash:live": "tsx implementations/cli/smoke/foreground-broker-crash-live.smoke.ts",
     "smoke:web-seed:live": "tsx implementations/cli/smoke/web-seed-live.smoke.ts",
     "smoke:delivery-cred:auth": "tsx packages/core/smoke/delivery-cred-confinement.smoke.ts",
     "smoke:delivery-reply-injection:auth": "tsx packages/core/smoke/delivery-reply-injection.smoke.ts",

@@ -65,8 +65,15 @@ export const serviceUnitEntry: Command = {
       catch { throw new CommandFailure("refused", "UNSUPPORTED", "the native unit entry is not a durable Cotal executable"); }
       if (!receipt || receipt.seededGeneration !== seedGeneration() || cli.length !== 2) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the unit's private store generation does not match this executable; no process replacement was attempted");
       assertPrivateSystemdGeneration(receipt.privateHome, receipt.seededGeneration, cli[1]!);
-      if (["starting", "stopping", "unknown"].includes(original.record.value.state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original unit attempt has no settled lifecycle outcome; no later invocation replaced its retained request");
       const prior = observeServiceProcess(original.record.value);
+      // An automatic or boot invocation has no CLI readiness caller to settle `starting`.
+      // A new native invocation may replace that exact dead process, but never an unknown
+      // launch, retained action, live process or stop whose outcome is still unresolved.
+      const deadNativeStart = original.record.value.state === "starting" && !action
+        && original.record.value.process !== undefined && original.record.value.supervisorInvocationId !== undefined
+        && original.record.value.supervisorInvocationId !== unit.invocationId
+        && ["gone", "previous-boot", "foreign-pid"].includes(prior);
+      if (["starting", "stopping", "unknown"].includes(original.record.value.state) && !deadNativeStart) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original unit attempt has no settled lifecycle outcome; no later invocation replaced its retained request");
       if (!["gone", "previous-boot", "foreign-pid"].includes(prior) && !(prior === "running" && original.record.value.process?.pid === self.pid && original.record.value.process.token === self.token)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a live or unresolved prior service incarnation is retained; the unit entry did not launch beside it");
       prepared = prepareProcessService(definition);
       if (!prepared.program || prepared.adapter) throw new CommandFailure("refused", "UNSUPPORTED", "the unit entry did not resolve an accepted direct executable; no adapter was loaded");

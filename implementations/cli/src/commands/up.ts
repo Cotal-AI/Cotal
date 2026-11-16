@@ -264,8 +264,8 @@ import {
   currentControllerAttempt, managerResumeAttempt, relaunchCommittedManager, settleControllerResume, startControllerMember, startControllerMembers,
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
-import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { acquireStackOperationLock, admittedStackRestore, processGone, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
+import { observeServiceProcess, serviceInstances, serviceInstanceStore } from "../lib/service-instances.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
@@ -793,7 +793,7 @@ function hangupForegroundStack(root: string): never {
  *  signal during it lets the start settle, then a stop signal runs that stop and a hangup leaves what
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
  *  The hold's end sets the exit code: 0 when another command completed the stop or preserve, 129 after
- *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
+ *  a hangup, 130 or 143 after a stop signal, and 5 after a confirmed unexpected broker exit. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
   claimForegroundHold(root);
   try { await holdStack(root, start); }
@@ -834,21 +834,38 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     const recorded = () => { try { return readStackJournal(root)?.journal.operation; } catch { return undefined; } };
     const held = recorded()?.id;
     let stopping = false;
-    const lifetime = setInterval(() => {
-      const operation = recorded();
-      if (stopping || !operation || operation.id === held || operation.phase !== "completed" || operation.kind !== "down" && operation.kind !== "preserve") return;
+    const release = () => {
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
-      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
-      process.exitCode = 0;
-      resolveHold();
+    };
+    const lifetime = setInterval(() => {
+      const operation = recorded();
+      if (stopping || !operation) return;
+      if (operation.id !== held && operation.phase === "completed" && (operation.kind === "down" || operation.kind === "preserve")) {
+        release();
+        process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
+        process.exitCode = 0;
+        resolveHold();
+        return;
+      }
+      // Only a completed start can establish unexpected broker death. A stop or preserve in
+      // flight owns that exit, and unreadable/missing records never prove that a process died.
+      try {
+        const journal = readStackJournal(root)?.journal;
+        if (!journal || journal.operation.phase !== "completed" || !["up", "resume"].includes(journal.operation.kind)) return;
+        const member = journal.members.find((row) => row.role === "broker");
+        const broker = member?.instanceId && serviceInstanceStore(journal.space).read(member.instanceId)?.record.value;
+        if (!broker || broker.definition !== member.definition || !broker.process || broker.state === "stopping" || broker.state === "stopped" || !processGone(observeServiceProcess(broker))) return;
+        release();
+        process.stderr.write(`The stack's broker exited unexpectedly. The mesh stays recorded; run \`cotal up --space ${journal.space}\` from ${root} to repair it. This foreground launcher exits 5 so its OS supervisor can restart it.\n`);
+        process.exitCode = 5;
+        resolveHold();
+      } catch { /* Unknown process or journal state is not a confirmed broker exit. */ }
     }, 1000);
     const stop = (signal: "SIGINT" | "SIGTERM") => {
       if (stopping) return;
-      stopping = true;
-      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
-      clearInterval(lifetime);
+      release();
       void stopForegroundStack(root, signal).finally(resolveHold);
     };
     const interrupt = () => stop("SIGINT");

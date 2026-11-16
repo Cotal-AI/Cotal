@@ -216,6 +216,11 @@ terminal leaves the stack running, and the same notice names `cotal down`. A sys
 runs the guarded stack stop, and a `TimeoutStopSec` long enough for that stop. The default
 `control-group` mode signals every member at the same time, and a manager signalled directly stops
 on its own, without the request-bound stop's receipts.
+After a completed controller start, a confirmed exit of the recorded broker makes the foreground
+launcher exit 5. The mesh record and companion services are retained for the next native supervisor
+invocation to repair. A live broker that is suspended or unresponsive does not count as dead.
+No broker restart runs inside Cotal. See [Supervise the stack](supervise-processes.mdx) for native
+restart policy and login, logout and reboot limits.
 
 A detached `up` interrupted by SIGINT, SIGTERM or SIGHUP stops where it is and exits 130, 143 or
 129. Once the controller start has begun, `up --json` also writes one envelope on stdout. It carries

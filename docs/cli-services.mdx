@@ -242,6 +242,12 @@ removes that unit. A preset is not installed as a unit in this release, the mana
 `install` of one refuses `UNSUPPORTED`, allocates nothing, and for a preset that runs in the
 foreground names the `ExecStart=` line, `cotal service start <name> --foreground`, for a unit of
 your own.
+New systemd units use `Restart=on-failure` and `RestartSec=5s`. A fresh native invocation can replace
+its exact dead process even when a boot-time start had no CLI caller to settle readiness.
+Unresolved stops, unknown launches and retained native actions still block replacement.
+Enablement does not verify login or reboot activation, which depends on the account's user-manager
+and linger policy. Existing unit files are not rewritten on upgrade. See
+[supervision limits](supervise-processes.mdx#unattended-operation).
 
 The sections [Local service definitions](#local-service-definitions),
 [Service presets](#service-presets) and
