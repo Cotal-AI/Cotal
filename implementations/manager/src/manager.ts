@@ -157,7 +157,7 @@ import {
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
+import { ManagerSessionPlane, openSessionLedgerKv, type AttachEndReason, type SessionServing } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
@@ -805,6 +805,24 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "resume-custody-unrecorded": "this manager stopped it: its custody reference could not be recorded on resume",
   "supervise-record-failed": "this manager stopped it: its supervise policy could not be recorded for a manager restart",
   "inline-snapshot-changed": "this manager retired it instead of restarting it: its inline persona snapshot changed after launch",
+};
+
+/** The SPEC 13.6 end reason a live attach session gets when this cause frees its seat. The causes
+ *  that free the slot in the same step that saw the seat's own process exit report `process-exit`.
+ *  A failed recovery frees it later, after its own stop, so it reports `target-despawn` with every
+ *  manager stop. */
+const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, AttachEndReason> = {
+  "process-exit": "process-exit",
+  "pi-crash-loop": "process-exit",
+  "supervise-crash-loop": "process-exit",
+  "inline-snapshot-changed": "process-exit",
+  "pi-recovery-failed": "target-despawn",
+  "supervise-recovery-failed": "target-despawn",
+  "session-bind-failed": "target-despawn",
+  "resume-session-rebind-failed": "target-despawn",
+  "carried-fork-refused": "target-despawn",
+  "resume-custody-unrecorded": "target-despawn",
+  "supervise-record-failed": "target-despawn",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -5718,10 +5736,10 @@ export class Manager {
     // with nothing left for that manager to adopt.
     if (!this.releasedSeatPending(a)) this.dropSeatRecord(a);
     if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
-    // End any live §13.6 attach session bound to THIS incarnation with the honest
-    // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
-    // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
-    this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, "target-despawn");
+    // End any live §13.6 attach session bound to THIS incarnation with the reason its cause names.
+    // Fires once per agent on every free path (despawn / self-stop / reap / exit) via the `agents`
+    // guard above; a no-op when no plane or no live session for the target.
+    this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, typeof cause === "string" ? FREE_SLOT_ATTACH_END[cause] : "target-despawn");
     // The turn relay's reap hook: every pending turn addressed to THIS incarnation is stamped
     // with the death, and its deadline terminal carries it as `agentDownAt`. The addressee is gone
     // and no successor may answer for it; the terminal is still the deadline's, not a new reason.

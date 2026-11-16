@@ -3991,11 +3991,11 @@ target's current screen, then streams live output in order. A degenerate or unpa
 dropped, never a session teardown.
 
 **Termination is honest and distinct**: every teardown surfaces an `end` frame naming a bounded reason,
-`process-exit` (the target exited), `closed` (a party closed), `expired` (the session TTL elapsed),
-`target-despawn` (the target lifecycle retired), `manager-restart` (the serving incarnation advanced its
-epoch). The session binds the target's `(principal, lifecycleUid)` and the serving epoch (§13.1): a
-successor incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct
-session.
+`process-exit` (the target's process exited on its own, even when its lifecycle then retires), `closed`
+(a party closed), `expired` (the session TTL elapsed), `target-despawn` (the target lifecycle was stopped
+or retired for any other cause), `manager-restart` (the serving incarnation advanced its epoch). The
+session binds the target's `(principal, lifecycleUid)` and the serving epoch (§13.1): a successor
+incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct session.
 
 ### 13.7 Contracts and discovery
 
