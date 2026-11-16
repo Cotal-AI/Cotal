@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
@@ -88,9 +88,18 @@ export function writeExecutionDescriptor(installedRoot: string, descriptor: Exec
   } finally { rmSync(temporary, { force: true }); }
 }
 
-/** Retire abandoned update data only under the installation's global update lock. */
-export function cleanupExecutionStore(installed: string, report: (line: string) => void = line => process.stderr.write(`${line}\n`)): void {
-  if ((process.platform !== "linux" && process.platform !== "darwin") || existsSync(join(installed, "desktop-runtime.json"))) return;
+export interface ConnectorSetCleanup {
+  readonly root: string;
+  readonly installRoot: string;
+  readonly current: string;
+  readonly previous?: string;
+  readonly holders: readonly { readonly version?: string; readonly state: "live" | "unknown" }[];
+}
+
+/** Retire abandoned update data and optional connector sets under one installation update lock. */
+export function cleanupExecutionStore(installed: string, report: (line: string) => void = line => process.stderr.write(`${line}\n`), sets?: ConnectorSetCleanup): void {
+  const executionSupported = (process.platform === "linux" || process.platform === "darwin") && !existsSync(join(installed, "desktop-runtime.json"));
+  if (!executionSupported && !sets) return;
   let release: (() => void) | undefined;
   let warned = false;
   const warn = (error: unknown): void => {
@@ -99,11 +108,27 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     report(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not remove old update data"}`);
   };
   try {
-    const store = executionStore(installed), info = lstatSync(store, { throwIfNoEntry: false });
-    if (!info || typeof process.getuid !== "function" || info.uid !== process.getuid()) return;
+    const store = executionStore(installed), info = executionSupported ? lstatSync(store, { throwIfNoEntry: false }) : undefined;
+    if (typeof process.getuid !== "function") {
+      if (sets) warn(new Error("connector sets retained because this platform cannot verify their owner"));
+      return;
+    }
+    if (info && info.uid !== process.getuid()) return;
     const uid = process.getuid();
-    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("store is not a real directory");
-    protectedExecutionEntry(store);
+    if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("store is not a real directory");
+    if (info) protectedExecutionEntry(store);
+    if (!info && !sets) return;
+    if (sets) {
+      if (lstatSync(installed).uid !== uid) return;
+      if (!isAbsolute(sets.root) || resolve(sets.root) !== sets.root || realpathSync.native(sets.root) !== sets.root || realpathSync.native(sets.installRoot) !== realpathSync.native(installed)) throw new Error("connector sets do not name this installation's canonical root");
+      for (let parent = dirname(sets.root); parent !== dirname(parent); parent = dirname(parent)) {
+        const stat = lstatSync(parent);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.uid !== uid && stat.uid !== 0) || ((stat.mode & 0o022) !== 0 && !(stat.uid === 0 && (stat.mode & 0o1000) !== 0))) throw new Error("connector set root has an unprotected ancestor");
+      }
+      const rootInfo = lstatSync(sets.root);
+      if (rootInfo.uid !== uid) return;
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (rootInfo.mode & 0o022) !== 0) throw new Error("connector set root is not a protected owned directory");
+    }
     const modules = dirname(installed), lock = inspectLock(join(modules, ".cotal-update.lock"));
     if (lock.state === "active") {
       if (lock.owner.pid !== process.pid || lock.owner.start !== processStartToken(process.pid)) return;
@@ -114,6 +139,7 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
         throw error;
       }
     }
+    if (info) {
     const names = readdirSync(store);
     const id = /^[a-f0-9]{32}$/;
     type Generation = ExecutionDescriptor["generation"];
@@ -202,6 +228,37 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       if (/^\.(?:installing|preparing)-[A-Za-z0-9]+$/.test(name) || (id.test(name) && !keep.has(name))) remove(join(store, name));
     }
     for (const row of transactions.filter(row => row.finished && row.path !== protectedJournal)) remove(row.directory);
+    }
+    if (sets) {
+      const version = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+      if (!version.test(sets.current) || (sets.previous !== undefined && !version.test(sets.previous)) || !Array.isArray(sets.holders)) throw new Error("invalid connector set retention record");
+      const keep = new Set([sets.current, ...(sets.previous ? [sets.previous] : [])]);
+      for (const retained of keep) {
+        const stat = lstatSync(join(sets.root, retained));
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o022) !== 0) throw new Error("current or previous connector set is not an owned protected directory");
+      }
+      for (const holder of sets.holders) {
+        if (!holder || !["live", "unknown"].includes(holder.state) || (holder.version !== undefined && !version.test(holder.version))) throw new Error("invalid connector set holder");
+        if (holder.version === undefined) return; // An unversioned live/unknown holder can hold any set.
+        keep.add(holder.version);
+      }
+      const ownedTree = (path: string): void => {
+        const rel = relative(sets.root, path);
+        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("connector set path escapes root");
+        const stat = lstatSync(path);
+        if (stat.uid !== uid || (!stat.isSymbolicLink() && (!stat.isDirectory() && !stat.isFile() || (stat.mode & 0o022) !== 0))) throw new Error(`not a protected owned connector set entry: ${path}`);
+        if (stat.isDirectory()) for (const name of readdirSync(path)) ownedTree(join(path, name));
+      };
+      for (const name of readdirSync(sets.root)) {
+        if (!version.test(name) || keep.has(name)) continue;
+        const path = join(sets.root, name);
+        try {
+          if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory()) throw new Error(`connector set is not a real directory: ${path}`);
+          ownedTree(path); rmSync(path, { recursive: true, force: true });
+        }
+        catch (error) { warn(error); }
+      }
+    }
   } catch (error) { warn(error); }
   finally { try { release?.(); } catch (error) { warn(error); } }
 }
