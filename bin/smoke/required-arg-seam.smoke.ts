@@ -556,7 +556,13 @@ const SEAMS: Seam[] = [
   // foreground-issuance-live adds an admin reader, managed-event-payloads adds an observer,
   // event-payload-legacy provisions a broker without the payload stream, and backup-event-payload
   // reads the fixture's native stream. Each explicitly states `tls: false` for its local broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 444, untypecheckedSites: 354 },
+  // 444/354 -> 448/357: book four existing calls. bin/daemon/manager.ts carries the
+  // resolved TLS decision on each auth arm. Three smoke calls state `tls: false` for their
+  // local brokers: history-read's teardown, gate-reconcile-auth's registration executor,
+  // and remote-registration-expiry's liveness observer.
+  // 448/357 -> 450/359: remote-run-renewal adds driver and mediator connections for its
+  // shared-renewal reconnect witness. Both use the fixture's plaintext broker with `tls: false`.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 450, untypecheckedSites: 359 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;
