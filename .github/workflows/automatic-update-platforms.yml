@@ -3,179 +3,55 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact product source commit
+        description: Exact already-packed product source
         type: string
         required: true
         default: b2b2638bbaf5751db726320a1bea2164361b1575
 permissions:
   contents: read
-env:
-  PRODUCT_SOURCE: b2b2638bbaf5751db726320a1bea2164361b1575
+  actions: read
 jobs:
-  guard:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Require the measurement ref and exact product source
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          MEASUREMENT_REF: ${{ github.ref }}
-          SOURCE_SHA: ${{ inputs.source_sha }}
-        run: |
-          test "$EVENT_NAME" = workflow_dispatch
-          test "$MEASUREMENT_REF" = refs/heads/measure/checkout-manager-current-main-6906
-          test "$SOURCE_SHA" = "$PRODUCT_SOURCE"
-  native:
-    needs: guard
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        include:
-          - { platform: linux, arch: x64, runner: ubuntu-24.04 }
-          - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
-          - { platform: darwin, arch: x64, runner: macos-15-intel }
-          - { platform: darwin, arch: arm64, runner: macos-15 }
-          - { platform: win32, arch: x64, runner: windows-latest }
-          - { platform: win32, arch: arm64, runner: windows-11-arm }
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.PRODUCT_SOURCE }}
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - name: Compile Unix host primitives
-        if: matrix.platform != 'win32'
-        shell: bash
-        run: |
-          node packages/seat/scripts/build-native.mjs --host
-          if [ '${{ matrix.platform }}' = darwin ]; then
-            node packages/workspace/scripts/build-native.mjs
-          fi
-      - name: Compile Windows host primitives and process identity
-        if: matrix.platform == 'win32'
-        shell: cmd
-        run: |
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          if not exist "%VSWHERE%" exit /b 1
-          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
-          if not defined VS exit /b 1
-          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
-          if errorlevel 1 exit /b 1
-          node packages/workspace/scripts/build-native.mjs
-          if errorlevel 1 exit /b 1
-          node packages/seat/scripts/build-native.mjs --host
-          if errorlevel 1 exit /b 1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-seat-${{ matrix.platform }}-${{ matrix.arch }}
-          path: packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        if: matrix.platform != 'linux'
-        with:
-          name: release-workspace-${{ matrix.platform }}-${{ matrix.arch }}
-          path: packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
-          if-no-files-found: error
-  pack:
-    needs: native
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.PRODUCT_SOURCE }}
-          path: product
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-      - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - run: pnpm install --frozen-lockfile --child-concurrency=2
-        working-directory: product
-      - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
-        working-directory: product
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: release-*
-          path: ${{ runner.temp }}/release-natives
-      - name: Assemble and guard complete source-matched native closure
-        working-directory: product
-        run: |
-          node scripts/seat-assemble-natives.mjs
-          node scripts/workspace-assemble-natives.mjs
-          node packages/seat/scripts/assert-shipped-natives.mjs
-          node packages/workspace/scripts/assert-shipped-natives.mjs
-        env:
-          NATIVE_SOURCE: ${{ env.PRODUCT_SOURCE }}
-          SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
-          SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
-          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
-          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-seat-darwin-arm64/peercred.node
-          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/release-natives/release-seat-win32-x64/peercred.node
-          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/release-natives/release-seat-win32-arm64/peercred.node
-          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/release-natives/release-workspace-win32-x64
-          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
-          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
-          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
-      - name: Pack candidate B once with ordinary prepublish guards
-        run: |
-          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/candidate" --version 0.164.1018 --source-root "$GITHUB_WORKSPACE/product"
-          node --input-type=module <<'NODE'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const root = process.env.RUNNER_TEMP + '/candidate/';
-          const manifest = JSON.parse(readFileSync(root + 'manifest.json'));
-          const bootstrap = JSON.parse(readFileSync(root + 'bootstrap.json'));
-          const expected = JSON.parse(readFileSync('product/.changeset/config.json')).fixed.flat().sort();
-          assert.equal(manifest.source, process.env.PRODUCT_SOURCE);
-          assert.equal(bootstrap.source, manifest.source);
-          assert.equal(bootstrap.version, '0.164.1018');
-          assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), expected);
-          assert(manifest.packages.every(pkg => pkg.version === '0.164.1018'));
-          NODE
-      - uses: actions/upload-artifact@v4
-        with:
-          name: installed-up-candidate
-          path: ${{ runner.temp }}/candidate
-          if-no-files-found: error
   proof:
-    needs: pack
+    if: github.ref == 'refs/heads/measure/checkout-manager-current-main-6906' && inputs.source_sha == 'b2b2638bbaf5751db726320a1bea2164361b1575'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - uses: actions/download-artifact@v4
+      - name: Reuse exact guarded candidate from original run
+        uses: actions/github-script@v8
         with:
-          name: installed-up-candidate
-          path: ${{ runner.temp }}/candidate
+          script: |
+            const assert=require('node:assert/strict');
+            const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
+            const {data:run}=await github.rest.actions.getWorkflowRun({...context.repo,run_id:43882152293});
+            assert.equal(run.head_sha,'0ac2c825730f472adf5ad57bc0f3075ca4f9e46d');
+            const {data:artifact}=await github.rest.actions.getArtifact({...context.repo,artifact_id:14233693519});
+            assert.equal(artifact.name,'installed-up-candidate');assert.equal(artifact.workflow_run.id,43882152293);
+            const digest='09f96530595d51dfd1a4a284870f1c78204912bda20f87679dadee5591a7ca36';
+            assert.equal(artifact.digest,'sha256:'+digest);assert(!artifact.expired);
+            const {data:archive}=await github.rest.actions.downloadArtifact({...context.repo,artifact_id:artifact.id,archive_format:'zip'});
+            const bytes=Buffer.from(archive);assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),digest);
+            const zip=path.join(process.env.RUNNER_TEMP,'installed-up-candidate.zip'),destination=path.join(process.env.RUNNER_TEMP,'candidate');
+            fs.writeFileSync(zip,bytes);fs.mkdirSync(destination);cp.execFileSync('unzip',['-q',zip,'-d',destination]);
+            const manifest=JSON.parse(fs.readFileSync(path.join(destination,'manifest.json')));
+            assert.equal(manifest.source,'b2b2638bbaf5751db726320a1bea2164361b1575');
+            assert(manifest.packages.every(p=>p.version==='0.164.1018'));
+            const out=path.join(process.env.RUNNER_TEMP,'installed-up');fs.mkdirSync(out);
+            fs.writeFileSync(path.join(out,'candidate-origin.json'),JSON.stringify({product:manifest.source,measurement:context.sha,artifact:artifact.id,run:43882152293,digest},null,2));
       - name: Run the two installed plain npm first-up cells
         shell: bash
         env:
-          COTAL_UP_ALLOW_RUN: '1'
           COTAL_UP_CANDIDATE: ${{ runner.temp }}/candidate
-          COTAL_UP_SOURCE_ROOT: ${{ github.workspace }}
           COTAL_UP_OUTPUT: ${{ runner.temp }}/installed-up
         run: |
           set -euo pipefail
-          mkdir -p "$COTAL_UP_OUTPUT"
           node scripts/plain-npm-up-proof.mjs 2>&1 | tee "$COTAL_UP_OUTPUT/stdout.log"
       - uses: actions/upload-artifact@v4
         if: always()

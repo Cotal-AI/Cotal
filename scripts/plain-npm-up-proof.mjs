@@ -53,7 +53,7 @@ async function cell(skip){
   assert(answer,'Actual Manager must answer through public ps');row.manager=answer;row.result='passed';
  }catch(e){row.result='failed';row.error=e.stack;throw e;}
  finally{
-  if(attempted){const down=await cli('public owned stack down',['down','--space',row.target.space,'--with-agents','--yes']);row.cleanup={exit:down.exit,signal:down.signal,timeout:down.timeout??false};if(down.exit!==0||down.signal||down.timeout){const broker=await cli('public partial-stack down without agents',['down','--space',row.target.space,'--yes']);row.partialCleanup={exit:broker.exit,signal:broker.signal,timeout:broker.timeout??false};if(broker.exit!==0||broker.signal||broker.timeout)report.cleanupFailure=d;}}
+  if(attempted){const down=await cli('public owned stack down',['down','--with-agents','--yes']);row.cleanup={exit:down.exit,signal:down.signal,timeout:down.timeout??false};if(down.exit!==0||down.signal||down.timeout){const broker=await cli('public partial-stack down without agents',['down','--yes']);row.partialCleanup={exit:broker.exit,signal:broker.signal,timeout:broker.timeout??false};if(broker.exit!==0||broker.signal||broker.timeout){report.cleanupFailure=d;row.result='failed-cleanup';}}}
   save();
  }
 }
