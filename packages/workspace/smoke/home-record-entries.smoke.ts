@@ -16,11 +16,7 @@ const literal = /homeCotalDir\(\),\s*"([^"]+)"/g;
 const found = new Map<string, string[]>();
 for (const file of files) {
   const source = readFileSync(resolve(repo, file), "utf8");
-  // The updater reads a legacy receipt here. It never creates this home entry.
-  const text = file === "bin/daemon/update-entry.ts"
-    ? source.replace('preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") });', "")
-    : source;
-  for (const m of text.matchAll(literal)) {
+  for (const m of source.matchAll(literal)) {
     const entry = m[1]!.split("/")[0]!;
     found.set(entry, [...(found.get(entry) ?? []), file]);
   }

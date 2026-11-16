@@ -867,14 +867,22 @@ if (process.platform === "linux") {
     // itself and its record entries are control paths there.
     const redirected = join(outer, "cloud");
     mkdirSync(join(redirected, "meshes", "hosted"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(redirected, "daemon", "retained"), { recursive: true, mode: 0o700 });
     mkdirSync(join(redirected, "cotal"), { mode: 0o700 });
     const underRedirected = (root: string) => run(["space", "create", "hosted", "--root", root, "--json"], { COTAL_HOME: redirected }, outer);
     const projectInHome = await underRedirected(join(redirected, "cotal"));
     check("a project folder beside a redirected home's records is a project of its own",
       projectInHome.status === 0 && existsSync(join(redirected, "cotal", ".cotal")) && !existsSync(join(redirected, ".cotal")), { status: projectInHome.status, stdout: projectInHome.stdout.slice(0, 400), stderr: projectInHome.stderr.slice(0, 400) });
-    const recordInHome = await underRedirected(join(redirected, "meshes", "hosted"));
-    check("a folder inside a redirected home's record entry is still refused as the home's control directory",
-      recordInHome.status === 2 && recordInHome.stdout.includes(`${join(redirected, "meshes", "hosted")} is in the control directory ${redirected}, which holds this machine's own records`) && !existsSync(join(redirected, "meshes", "hosted", ".cotal")), { status: recordInHome.status, stdout: recordInHome.stdout.slice(0, 400) });
+    for (const entry of [join("meshes", "hosted"), "daemon", join("daemon", "retained")]) {
+      const record = join(redirected, entry);
+      const recordInHome = await underRedirected(record);
+      check(`the redirected home's ${entry} record path is refused as the home's control directory`,
+        recordInHome.status === 2 && recordInHome.stdout.includes(`${record} is in the control directory ${redirected}, which holds this machine's own records`) && !existsSync(join(record, ".cotal")), { status: recordInHome.status, stdout: recordInHome.stdout.slice(0, 400) });
+      mkdirSync(join(record, ".cotal"), { mode: 0o700 });
+      const upInRecord = await run(["up", "--root", record, "--server", DEAD, "--no-manager", "--json"], { COTAL_HOME: redirected }, outer);
+      check(`up refuses the redirected home's ${entry} record path without writing project state`,
+        upInRecord.status === 2 && upInRecord.stdout.includes(`${record} is in the control directory ${redirected}, which holds this machine's own records`) && readdirSync(join(record, ".cotal")).length === 0, { status: upInRecord.status, stdout: upInRecord.stdout.slice(0, 400) });
+    }
     const homeItself = await underRedirected(redirected);
     check("a redirected home itself is still refused as a control directory",
       homeItself.status === 2 && homeItself.stdout.includes(`${redirected} is the control directory ${redirected}`) && !existsSync(join(redirected, ".cotal")), { status: homeItself.status, stdout: homeItself.stdout.slice(0, 400) });
