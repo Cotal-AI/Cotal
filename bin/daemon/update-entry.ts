@@ -107,7 +107,7 @@ const composed: Command = { ...command, async run(args) {
       preflightExecution: preflightExecutionUpdate,
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       prepareExecution: async (version: string, root: string) => {
-        const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = receipt.admission; hostedSpaces = [...receipt.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; });
+        const execution = await prepareExecutionUpdate(version, root, receipt => { targetReceipt = receipt; admission = receipt.admission; hostedSpaces = [...receipt.admission.hostedSpaces]; daemonObserved = receipt.daemon !== undefined; });
         replacementVersion = version;
         return execution;
       },

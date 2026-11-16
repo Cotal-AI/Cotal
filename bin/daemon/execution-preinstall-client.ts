@@ -10,8 +10,6 @@ export interface ExecutionPreinstallReceipt {
   readonly nonce: string;
   readonly installedEntry: string;
   readonly daemon?: { pid: number; start: string };
-  readonly hostedSpaces: readonly string[];
-  readonly occupied: number | null;
   readonly admission: UpdateAdmission;
 }
 
@@ -22,7 +20,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   const entry = realpathSync(join(root, meta.cotalPreinstall.entry));
   const rel = relative(realpathSync(root), entry);
   if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error("target pre-install entry escapes retained package");
-  const request: ExecutionPreinstallRequest = { v: 1, nonce: randomBytes(16).toString("hex"), installedEntry,
+  const request: ExecutionPreinstallRequest = { v: 1, admission: 1, nonce: randomBytes(16).toString("hex"), installedEntry,
     daemonArgv, flags: Object.fromEntries(Object.entries(flags).filter(([key, value]) => ["space", "server", "creds", "on"].includes(key) && typeof value === "string")),
   };
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
@@ -47,8 +45,7 @@ export async function targetExecutionPreinstall(root: string, installedEntry: st
   if (receipts.length !== 1) throw new Error("target pre-install checks returned no unique result");
   const receipt = JSON.parse(receipts[0]!.slice("COTAL_PREINSTALL_RESULT ".length)) as ExecutionPreinstallReceipt;
   if (receipt.v !== 1 || receipt.nonce !== request.nonce || receipt.installedEntry !== installedEntry ||
-      !Array.isArray(receipt.hostedSpaces) || receipt.hostedSpaces.some(space => typeof space !== "string") ||
-      !validUpdateAdmission(receipt.admission) || receipt.occupied !== receipt.admission.occupied || JSON.stringify(receipt.hostedSpaces) !== JSON.stringify(receipt.admission.hostedSpaces) ||
+      !validUpdateAdmission(receipt.admission) ||
       receipt.daemon !== undefined && (!Number.isSafeInteger(receipt.daemon.pid) || receipt.daemon.pid <= 0 || typeof receipt.daemon.start !== "string" || !receipt.daemon.start))
     throw new Error("target pre-install checks returned invalid evidence");
   return receipt;

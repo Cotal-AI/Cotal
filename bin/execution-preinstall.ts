@@ -7,7 +7,7 @@ import { readExecutionPreinstall, type ExecutionPreinstallRequest } from "./daem
 export async function executionPreinstall(input: string | undefined): Promise<void> {
   if (!input || Buffer.byteLength(input) > 64 * 1024) throw new Error("invalid execution pre-install request");
   const request = JSON.parse(input) as ExecutionPreinstallRequest;
-  if (!request || request.v !== 1 || typeof request.nonce !== "string" || !/^[a-f0-9]{32}$/.test(request.nonce) ||
+  if (!request || request.v !== 1 || (request.admission !== undefined && request.admission !== 1) || typeof request.nonce !== "string" || !/^[a-f0-9]{32}$/.test(request.nonce) ||
       typeof request.installedEntry !== "string" || !isAbsolute(request.installedEntry) ||
       !Array.isArray(request.daemonArgv) || request.daemonArgv.length < 2 || request.daemonArgv.some(item => typeof item !== "string" || item.includes("\0")) ||
       !request.flags || typeof request.flags !== "object" || Array.isArray(request.flags) ||

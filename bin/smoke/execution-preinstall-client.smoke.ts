@@ -10,7 +10,7 @@ try {
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", cotalPreinstall: { v: 1, entry: "./dist/check.js" } }));
   const installed = join(root, "installed.js");
   const check = join(root, "dist/check.js");
-  const prefix = "const r=JSON.parse(process.argv[2]);const receipt={v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:0,admission:{disposition:'restart-empty',occupied:0,hostedSpaces:[]}};";
+  const prefix = "const r=JSON.parse(process.argv[2]);if(r.admission!==1)throw Error('new reader omitted admission request');const receipt={v:1,nonce:r.nonce,installedEntry:r.installedEntry,admission:{disposition:'restart-empty',occupied:0,hostedSpaces:[]}};";
   const receipt = "console.log('COTAL_PREINSTALL_RESULT '+JSON.stringify(receipt));";
   for (const [label, code, expected] of [
     ["accepted", `${prefix}${receipt}`, undefined],
@@ -18,7 +18,7 @@ try {
     ["duplicate", `${prefix}${receipt}${receipt}`, /no unique result/],
     ["wrong nonce", `${prefix}receipt.nonce='unbound';${receipt}`, /invalid evidence/],
     ["wrong entry", `${prefix}receipt.installedEntry='/other/install';${receipt}`, /invalid evidence/],
-    ["negative seats", `${prefix}receipt.occupied=-1;${receipt}`, /invalid evidence/],
+    ["negative seats", `${prefix}receipt.admission.occupied=-1;${receipt}`, /invalid evidence/],
     ["malformed", "console.log('COTAL_PREINSTALL_RESULT {');", /JSON|Unexpected/],
     ["refused", "process.stderr.write('target policy refuses');process.exitCode=7;", /target policy refuses/],
     ["oversized", "process.stdout.write('x'.repeat(1024*1024+1));", /exceeded its limit/],
@@ -26,10 +26,12 @@ try {
     writeFileSync(check, code);
     const run = () => targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {});
     if (expected) await assert.rejects(run, expected, label);
-    else assert.equal((await run()).occupied, 0);
+    else assert.equal((await run()).admission.occupied, 0);
   }
-  writeFileSync(check, `${prefix}receipt.occupied=null;receipt.admission={disposition:'deferred',occupied:null,hostedSpaces:[],reason:'Manager state is unknown; restart deferred'};${receipt}`);
-  assert.equal((await targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {})).occupied, null, "unknown occupancy remains null");
+  writeFileSync(check, `${prefix}receipt.hostedSpaces=['legacy-space'];receipt.admission={disposition:'deferred',occupied:null,hostedSpaces:[],reason:'Manager state is unknown; restart deferred'};${receipt}`);
+  const deferred = await targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {});
+  assert.equal(deferred.admission.occupied, null, "new admission retains unknown occupancy independently");
+  assert.deepEqual(deferred.admission.hostedSpaces, []);
   for (const code of [
     "receipt.admission={disposition:'restart-empty',occupied:null,hostedSpaces:[]}",
     "receipt.admission={disposition:'deferred',occupied:0,hostedSpaces:[],reason:''}",
