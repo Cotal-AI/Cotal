@@ -37,6 +37,9 @@ const REFERENCE_BUILTINS: Record<string, unknown> = {
   entries: (o: object) => Object.entries(o),
   has: (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k),
   merge: (a: object, b: object) => ({ ...a, ...b }),
+  // The free array walk spells the method (§5.2), so the reference IS the method, length capture
+  // included: what the free spelling must match is what JavaScript answers.
+  map: (xs: unknown[], f: (x: unknown, i: number) => unknown) => xs.map((x, i) => f(x, i)),
   range: (n: number) => Array.from({ length: n }, (_, i) => i),
   sum: (xs: number[]) => xs.reduce((a, b) => a + b, 0),
   min: Math.min,
@@ -332,6 +335,12 @@ const ys = xs.map((x, i) => { if (i === 0) { xs.push(3); } return x * 10; });
 const seen = [];
 xs.forEach((x, i) => { if (i === 0) { xs.push(9); } seen.push(i); });
 log(xs, ys, seen);
+`);
+
+await same("the free map spells the method: a callback that appends does not grow its walk either", `
+const xs = [1, 2];
+const ys = map(xs, (x, i) => { if (i === 0) { xs.push(3); } return x * 10; });
+log(xs, ys);
 `);
 
 await same("replacement strings mean what JavaScript says: $-patterns, first vs all", `

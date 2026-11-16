@@ -492,7 +492,12 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       "map",
       higher("map", async (frame, list, f) => {
         const out: unknown[] = [];
-        for (let i = 0; i < list.length; i += 1) out.push(await f(frame, [list[i], i]));
+        // The free spelling is the method (§5.2), so it captures the length BEFORE the first call,
+        // as the method does and as JavaScript does: an element the callback appends is not visited
+        // (measured before the fix: a `push` inside the callback grew the walk, and a callback that
+        // appended every round never terminated).
+        const len = list.length;
+        for (let i = 0; i < len; i += 1) out.push(await f(frame, [list[i], i]));
         return born(out, frame.depth);
       }),
     ],
