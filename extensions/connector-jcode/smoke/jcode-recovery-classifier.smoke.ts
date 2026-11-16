@@ -3,6 +3,7 @@ import { HarnessError } from "@1jehuang/jcode-sdk";
 import {
   PERMANENT_BRIDGE_CONNECT_CAUSE_CODES,
   PERMANENT_BRIDGE_RECOVERY_CODES,
+  isJcodeBusyRefusal,
   permanentBridgeRecoveryFailure,
 } from "../src/host.js";
 
@@ -42,6 +43,13 @@ check(
 check(
   "an unknown HarnessError code retries inside the bounded window",
   !permanentBridgeRecoveryFailure(new HarnessError("future_sdk_code", "future refusal")),
+);
+// The text and code real Jcode 0.99.0 sent when it refused a manager turn as busy (#5918).
+check(
+  "only the native busy refusal of a plain send reads as one",
+  isJcodeBusyRefusal(new HarnessError("internal", "Already processing a message")) &&
+    !isJcodeBusyRefusal(new HarnessError("internal", "Cannot handle context_message while the session is busy. Try again after the current turn finishes.")) &&
+    !isJcodeBusyRefusal(new Error("Already processing a message")),
 );
 
 console.log(`JCODE RECOVERY CLASSIFIER SMOKE: ${passed} checks passed`);

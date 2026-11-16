@@ -3324,6 +3324,16 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
+  /** Undo {@link commitSurfacedTurns} for run turns whose dispatch the harness refused after
+   *  acknowledging it. The model never saw them, so they are offered again rather than yielding
+   *  `done` at the next turn boundary. A once task's confirmed handoff is never undone. */
+  unsurfaceTurns(goalIds: readonly string[]): void {
+    for (const id of goalIds) {
+      const t = this.activeTurns.get(id);
+      if (t && t.once === undefined) t.surfaced = false;
+    }
+  }
+
   /** Take the permit to hand these turns to the harness, at the dispatch site, after every gate
    *  that can return without sending and right before the native send, with no await between. All
    *  or nothing for the once task among them: false means another caller holds it or its handoff
