@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { recoverySnapshotProblem } from "../src/update-recovery.js";
+import type { UpdateRecovery } from "../src/updates.js";
 import { extensionInstallationRoot, extensionSetPaths, prepareExtensionSet, assertExtensionSetReadable, assertExtensionSetReady, holdExtensionSet, extensionSetCleanupSpec } from "../src/extension-set.js";
 
 const root = mkdtempSync(join(tmpdir(), "extension-set-"));
@@ -54,6 +56,11 @@ await prepareExtensionSet(async () => {
   assert.equal(readFileSync(manifest, "utf8"), inventory);
 }, { repair: true });
 assertExtensionSetReady();
+const snapshot = mkdtempSync(join(paths.set, ".update-snapshot-"));
+const recovery = { previous: paths.version, snapshot } as UpdateRecovery;
+assert.equal(recoverySnapshotProblem(recovery), undefined);
+assert.match(recoverySnapshotProblem({ ...recovery, previous: "0.0.0" })!, /does not belong/);
+assert.match(recoverySnapshotProblem({ ...recovery, snapshot: join(root, ".update-snapshot-foreign") })!, /does not belong/);
 const release = holdExtensionSet();
 const releaseSecond = holdExtensionSet();
 assert(extensionSetCleanupSpec().holders.some(holder => holder.version === paths.version && holder.state === "live"));
