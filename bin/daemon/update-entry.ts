@@ -318,7 +318,7 @@ const composed: Command = { ...command, async run(args) {
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (admission?.disposition === "deferred") {
-    console.log(`machine daemon activation deferred: ${admission.reason}; software update finished; run \`cotal daemon status\` to inspect what still needs a restart`);
+    console.log(`Software update finished. The daemon and its Managers keep running their current generation until restarted: ${admission.reason}`);
     return;
   }
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
