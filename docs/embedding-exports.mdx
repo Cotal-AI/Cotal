@@ -262,6 +262,26 @@ broker's authorization deadline. The returned `done` waits for admitted hooks wh
 ends and rejects an unexpected worker failure after those hooks settle.
 
 
+### Migration execution custody
+
+On Linux, `@cotal-ai/cli/migration-node` exports `captureMigrationNode` and
+`verifyMigrationNode`. They copy the running Node executable to an exclusive private `node`
+file beside a native execution generation, then verify its bytes and version without resolving
+its original path. The composition root's `migration-execution` adapter retains the caller's
+verified complete package with the existing generation store and binds both receipts in
+`launch.migrationExecution` of the existing maintenance resume document, leaving the Manager's
+inventory and its preserved-exit digest unchanged. It holds the root
+maintenance lock and the installation/update locks while recording that receipt. It changes no
+active execution descriptor, package version, daemon or connector set.
+
+These primitives do not remove retained copies. The coordinator must keep Node through rollback
+and remove its copy under the same locks only when the maintenance journal closes complete,
+not when forward migration commits. An unreferenced failed-attempt copy must be inventoried on
+the next run and removed only after proving no journal references it. That coordinator cleanup,
+full host capture and public activation are not implemented by these primitives. Other platforms
+refuse. `pnpm smoke:migration-execution:live` needs npm access, installs a published fixture in a
+private prefix, drives its ordinary updater, and retains its fixture and private command logs.
+
 ### Composition APIs
 
 **Seams and the wire** (all `@cotal-ai/core` unless noted)
