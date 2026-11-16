@@ -258,6 +258,7 @@ if (process.platform !== "win32") {
     setArgv(logicalEntry);
     Object.defineProperty(globalThis, key, {value: Object.freeze({logicalEntry, loadedEntry: logicalEntry, launchEntry}), configurable: true});
     check("a Manager child retains the validated pnpm global launch route", daemonArgv().at(-1) === launchEntry);
+    check("an ordinary seed or verifier child retains the validated pnpm global launch route", selfArgv().at(-1) === launchEntry);
   } finally {
     if (prior) Object.defineProperty(globalThis, key, prior);
     else Reflect.deleteProperty(globalThis, key);

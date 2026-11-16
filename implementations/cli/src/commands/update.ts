@@ -1239,7 +1239,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   return interrupted;
 
   async function reconcileVersion(version: string): Promise<boolean> {
-    const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);
+    const verified = execution ? (execution.verify(version), execution.entry) : rt.verifyGlobalEntry(root, version);
     const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
     delete repairEnv[EXT_UPDATE_PARENT_ENV];
     const result = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [verified, "update", ...targetArgv(target)], repairEnv, true);
