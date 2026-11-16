@@ -175,7 +175,9 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
 function verifyExtensionSet(paths: ReturnType<typeof extensionSetPaths>): void {
   const entries = JSON.parse(readFileSync(join(paths.extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; version: string }[] };
   for (const entry of entries.extensions) {
-    const metadata = JSON.parse(readFileSync(join(paths.extensions, "node_modules", entry.pkg, "package.json"), "utf8")) as { version?: string };
+    const installed = join(paths.extensions, "node_modules", entry.pkg);
+    if (!entry.pkg.startsWith("@cotal-ai/") && !lstatSync(installed, { throwIfNoEntry: false })) continue;
+    const metadata = JSON.parse(readFileSync(join(installed, "package.json"), "utf8")) as { version?: string };
     if (metadata.version !== entry.version || entry.pkg.startsWith("@cotal-ai/") && entry.version !== paths.version) throw new Error(`connector set verification failed for ${entry.pkg}; run \`cotal ext seed --repair\``);
   }
 }
