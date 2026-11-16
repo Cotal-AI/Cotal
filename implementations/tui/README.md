@@ -157,7 +157,8 @@ reads `<name> · <cols>x<rows> · keys go to <name>`, and the status bar reads
 
 Every key goes to the agent, `ctrl+c` and `ctrl+p` included. `esc` reaches it about 300 milliseconds
 late, because a second `esc` within that time closes the terminal instead, and then neither `esc`
-reaches the agent. The terminal closes on the conversation that was open, the keys go back where
+reaches the agent. Any other key or a paste in that time sends the `esc` at once, ahead of it. The
+terminal closes on the conversation that was open, the keys go back where
 they were, and the agent keeps running. While the attach opens, `esc` stops it. When the agent
 tracks the mouse, clicks and the wheel go to it; otherwise the wheel scrolls the terminal's
 scrollback.

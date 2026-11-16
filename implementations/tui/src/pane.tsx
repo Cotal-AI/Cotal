@@ -1,4 +1,4 @@
-import { EmbeddedTerminalRenderable, type BoxRenderable, type KeyEvent } from "@opentui/core"
+import { EmbeddedTerminalRenderable, type BoxRenderable, type KeyEvent, type PasteEvent } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createEffect, onCleanup, onMount } from "solid-js"
 import type { Attached } from "./live.js"
@@ -21,30 +21,43 @@ export const endedText = (reason: string) => ENDED[reason] ?? `the session broke
 
 /** An agent's terminal that keeps Esc Esc for the app. A lone Esc is held for `ESC_HOLD_MS` and then
  *  sent; a second one inside that window leaves, and neither reaches the agent. Two Escs that arrive
- *  in one read parse as alt+Esc, so that leaves too. Once the session has ended there is nothing to
- *  send to, and one Esc leaves. */
+ *  in one read parse as alt+Esc, so that leaves too. Any other key or a paste during the hold sends
+ *  the held Esc first, so the agent sees them in the order they were typed. Once the session has
+ *  ended there is nothing to send to, and one Esc leaves. */
 class PaneTerminal extends EmbeddedTerminalRenderable {
   leave = () => {}
   ended = false
-  private held: ReturnType<typeof setTimeout> | undefined
+  private held: { key: KeyEvent; timer: ReturnType<typeof setTimeout> } | undefined
 
   override handleKeyPress(key: KeyEvent): boolean {
-    if (key.name !== "escape" || key.ctrl || key.shift) return super.handleKeyPress(key)
+    if (key.name !== "escape" || key.ctrl || key.shift) {
+      if (key.eventType !== "release") this.sendHeld()
+      return super.handleKeyPress(key)
+    }
     if (key.eventType === "release") return true
     if (this.ended || this.held || key.meta) {
-      clearTimeout(this.held)
+      clearTimeout(this.held?.timer)
       this.held = undefined
       this.leave()
-    } else
-      this.held = setTimeout(() => {
-        this.held = undefined
-        super.handleKeyPress(key)
-      }, ESC_HOLD_MS)
+    } else this.held = { key, timer: setTimeout(() => this.sendHeld(), ESC_HOLD_MS) }
     return true
   }
 
+  override handlePaste(event: PasteEvent) {
+    this.sendHeld()
+    super.handlePaste(event)
+  }
+
+  private sendHeld() {
+    if (!this.held) return
+    const { key, timer } = this.held
+    clearTimeout(timer)
+    this.held = undefined
+    super.handleKeyPress(key)
+  }
+
   protected override destroySelf() {
-    clearTimeout(this.held)
+    clearTimeout(this.held?.timer)
     super.destroySelf()
   }
 }

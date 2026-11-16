@@ -4,8 +4,8 @@
  * attaches with `a` at 209x52 and 80x24 through the manager's real attach session and reads what the
  * person sees: the seat's screen in the middle column, typed text, a burst of keys and ctrl+c
  * reaching the seat, a lone esc reaching it after the hold, esc esc leaving with the seat still
- * running and neither esc delivered, the seat's PTY following the pane's size and a window resize,
- * the wheel scrolling the pane's scrollback, a session that ends when the seat exits, and the keys
+ * running and neither esc delivered, keys and a paste typed during the hold arriving after the esc,
+ * the seat's PTY following the pane's size and a window resize, the wheel scrolling the pane's scrollback, a session that ends when the seat exits, and the keys
  * in `?`. The manager is loaded from the manager's built package: this package does not
  * depend on it. No model runs. Captures are kept under the printed directory.
  *
@@ -296,6 +296,21 @@ try {
       const h = header(agent)(grown)
       check(`${size}: the pane and the seat's PTY follow a window resize`, !!h && Number(h[1]) > 60 && seatSize(grown) === `${h[1]}x${h[2]}`, grown)
     }
+
+    // Keys and a paste that follow a lone esc within the hold reach the seat after that esc.
+    keys("Escape")
+    await sleep(60)
+    keys("-l", "zz")
+    keys("Enter")
+    const typedAfter = await settle((f) => f.includes("esc 2") && f.includes("line zz"), "esc then zz at the seat")
+    check(`${size}: a key typed during the esc hold reaches the seat after the esc`, typedAfter.includes("esc 2") && typedAfter.indexOf("esc 2") < typedAfter.indexOf("line zz"), typedAfter)
+    keys("Escape")
+    await sleep(60)
+    tmux("set-buffer", "pp")
+    tmux("paste-buffer", "-p", "-t", "t")
+    keys("Enter")
+    const pastedAfter = await settle((f) => f.includes("esc 3") && f.includes("line pp"), "esc then a paste at the seat")
+    check(`${size}: a paste during the esc hold reaches the seat after the esc`, pastedAfter.includes("esc 3") && pastedAfter.indexOf("esc 3") < pastedAfter.indexOf("line pp"), pastedAfter)
 
     keys("-l", "quit")
     keys("Enter")
