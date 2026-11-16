@@ -16,12 +16,6 @@ model audit, resolve the seat through live presence first. Managed connectors pu
 holding manager in `card.meta["ai.cotal.manager.instance"]`. The caller addresses that instance,
 using only its existing credential. A class-only credential receives `permission-denied` on
 the instance rail. No caller retries the class queue to obtain a different answer.
-Managed static seats with `spawn`, `run` or `admin` also receive instance-only `describe` and
-`inspect` grants for their holding manager. This permits same-manager named inspection,
-model-pin audits and named despawn without granting reads on sibling managers or instance writes.
-The effective grants are checked against the spawner's issued ceiling before admission and minted
-unchanged on renewal. A class-only bounded spawner cannot delegate these instance reads.
-Role-only seats receive neither row. Existing seats need to be respawned to receive the grants.
 An unanswered owner produces `TARGET_UNAVAILABLE` naming the instance. An absent live name is
 `not-found`. A seat that reports no manager refuses owner resolution. Presence is a routing hint,
 not a grant, and an inspect response for a different lifecycle is rejected.
