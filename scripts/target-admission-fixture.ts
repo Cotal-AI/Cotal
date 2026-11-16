@@ -62,7 +62,7 @@ async function prepareUpdaterAdmission(context: Context) {
   return Object.assign(close, {
     customDaemon: official,
     async extensionInventory(stage: string) {
-      const script = `import{pathToFileURL}from'node:url';import{join}from'node:path';import{readFileSync}from'node:fs';const p=${JSON.stringify(pkg)};const boot=await import(pathToFileURL(join(p,'dist/cotal.js')).href);const selected=boot.selectExecutionProgram(p);const w=await import(pathToFileURL(join(selected.root,'node_modules/@cotal-ai/workspace/dist/index.js')).href);const set=w.extensionSetPaths();const rows=JSON.parse(readFileSync(join(set.extensions,'extensions.json'),'utf8')).extensions;console.log(JSON.stringify(rows.map(row=>({...row,installedPath:join(set.extensions,'node_modules',row.pkg)}))));`;
+      const script = `import{pathToFileURL}from'node:url';import{join}from'node:path';import{readFileSync}from'node:fs';const p=${JSON.stringify(pkg)};const boot=await import(pathToFileURL(join(p,'dist/cotal.js')).href);const selected=boot.selectExecutionProgram(p);const w=await import(pathToFileURL(join(selected.root,'node_modules/@cotal-ai/workspace/dist/index.js')).href);const set=typeof w.extensionSetPaths==='function'?w.extensionSetPaths():undefined;const extensions=set?set.extensions:w.extensionsDir();const rows=JSON.parse(readFileSync(join(extensions,'extensions.json'),'utf8')).extensions;console.log(JSON.stringify(rows.map(row=>({...row,installedPath:join(extensions,'node_modules',row.pkg)}))));`;
       const rows = JSON.parse(ok(await call(`read ${stage} selected connector inventory`, process.execPath, ["--input-type=module", "-e", script])).stdout);
       assert(Array.isArray(rows) && rows.length >= 8); return rows;
     },

@@ -29,7 +29,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams, type Connector, type EpCommandDef, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, EpEnvelopeError, createSpaceAuth, isReachable, mintCreds, newIdentity, registry, serverConfig, setupSpaceStreams, type Connector, type EpCommandDef, type LaunchOpts, type LaunchSpec, type Presence } from "@cotal-ai/core";
 import { authDir, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { ConsoleSession, clean, repoRoot, wait } from "./_console-pty.js";
@@ -102,18 +102,25 @@ recordMesh({ space, server: servers, root: root1, mode: "auth", ts: new Date().t
 
 const m1 = new Manager({ space, servers, runtime: "pty", workspaceRoot: root1 });
 const m2 = new Manager({ space, servers, runtime: "pty", workspaceRoot: root2 });
-// Observe the real handlers without replacing their result or bypassing the serve boundary.
+// Observe actual inspect routing and expose a controlled reachable ps error through the real endpoint.
+let failSecondPs = false;
 const inspected = [new Map<string, number>(), new Map<string, number>()];
 for (const [index, manager] of [m1, m2].entries()) {
   const observed = manager as ManagerLike & { managerServiceDefs(): EpCommandDef[] };
   const definitions = observed.managerServiceDefs.bind(observed);
-  observed.managerServiceDefs = () => definitions().map(def => def.command !== "inspect" ? def : {
+  observed.managerServiceDefs = () => definitions().map(def => {
+    if (index === 1 && def.command === "ps") return { ...def, handler: ctx => {
+      if (failSecondPs) throw new EpEnvelopeError("failed-precondition", "console reachable Manager error control");
+      return def.handler(ctx);
+    } };
+    return def.command !== "inspect" ? def : {
     ...def,
     handler: ctx => {
       const name = String(ctx.request.args?.name ?? "");
       inspected[index]!.set(name, (inspected[index]!.get(name) ?? 0) + 1);
       return def.handler(ctx);
     },
+  };
   });
 }
 let session: ConsoleSession | undefined;
@@ -170,6 +177,16 @@ try {
   check(":ps lists both managers during preservation instead of reporting silence or a fence",
     preservingRows && !preservingNotice.includes("gave no answer") && !preservingNotice.includes("new lifecycle/control work is fenced"), preservingNotice.slice(-500));
   await m2.abortPreservation("console-ps-preserving-repro");
+  await wait(3_300);
+  failSecondPs = true;
+  try {
+    m = s.mark();
+    await s.command("ps");
+    const surfaced = await s.waitFor(/console reachable Manager error control/, 30_000, m);
+    const notice = clean(s.out.slice(m));
+    check(":ps surfaces a reachable manager's real error instead of saying it gave no answer",
+      surfaced && !notice.includes("gave no answer"), notice.slice(-500));
+  } finally { failSecondPs = false; }
 
   // The presence qualifier on a REAL managed seat. console-status-row proves formatManagedRow
   // rewords `working`; nothing proved a real seat's row reaches that function, so the console
