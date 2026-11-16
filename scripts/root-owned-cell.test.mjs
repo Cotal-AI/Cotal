@@ -2,9 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { rootOwnedCell, rootOwnedAssertions } from './root-owned-cell.mjs';
 import {npmDebugTail} from './npm-debug-tail.mjs';
-import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+test('root proof checks its complete pinned npm before installation and retains silly diagnostics',()=>{
+ const source=readFileSync(new URL('./root-owned-cell.mjs',import.meta.url),'utf8');
+ assert(source.includes("assert.equal(npmVersion.stdout.trim(),'11.16.0'"));
+ assert(source.includes("[npm,'ls','-g','--depth=0']"));
+ assert(source.indexOf('verify root global npm tree before installation')<source.indexOf('await install(old)'));
+ assert(source.includes("'--loglevel=silly'"));
+});
 test('npm diagnostic tail bounds output and filters token and registry authentication lines',async()=>{
  const root=mkdtempSync(join(tmpdir(),'npm-log-')),logs=join(root,'cache/_logs');mkdirSync(logs,{recursive:true,mode:0o700});
  writeFileSync(join(logs,'2026-11-16T01_00_00_000Z-debug-0.log'),Array.from({length:300},(_,i)=>`line ${i}`).join('\n')+'\nnpm config //registry.npmjs.org/:_authToken=CANARY\nAuthorization: Bearer CANARY\nregistry password CANARY\nlast safe\n');

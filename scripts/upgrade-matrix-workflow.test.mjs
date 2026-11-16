@@ -11,6 +11,14 @@ import { matchSource16410Refusal, source16410Refusals } from './source-16410-ref
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
 const summary = workflow.jobs['release-summary'].steps.find(s => s.name === 'Verify expected coordinate census and assertion contract').run;
 const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
+test('root Node placement records and replaces old npm before copying instead of merging dependencies',()=>{
+  const setup=workflow.jobs['release-cells'].steps.find(step=>step.name==='Prepare root-owned Node installation').run;
+  const move=setup.indexOf('sudo rm -rf -- /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack');
+  const copy=setup.indexOf('sudo cp -a');
+  assert(move>=0&&copy>move);
+  assert(setup.indexOf('root-node-before.json')<move);
+  assert(setup.includes('sudo rm -f -- /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack'));
+});
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];

@@ -67,6 +67,7 @@ export async function packageLayoutCell({ layout, registry, output, nodePrefix }
       env.PNPM_HOME=join(home,'pnpm');mkdirSync(env.PNPM_HOME,{mode:0o700});
       report.pnpmVersion=ok(await call('pinned pnpm version','pnpm',['--version']),'pnpm version').stdout.trim();assert.equal(report.pnpmVersion,'11.28.2');
       ok(await call('actual pnpm setup','pnpm',['setup']),'pnpm setup');
+      env.PATH=join(env.PNPM_HOME,'bin')+delimiter+env.PATH;
       bin=ok(await call('pnpm global bin','pnpm',['bin','-g']),'pnpm bin').stdout.trim();
       env.PATH=bin+delimiter+env.PATH;cli=join(bin,'cotal');
       install=version=>call('pnpm global install '+version,'pnpm',['add','-g',`cotal-ai@${version}`,'--ignore-scripts']);

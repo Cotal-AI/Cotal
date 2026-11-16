@@ -81,7 +81,7 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   }
   const ok = (row, label) => { assert.equal(row.exit, 0, `${label}: ${row.stdout}${row.stderr}`); return row; };
   const install = async version => {
-    const result = await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=verbose']);
+    const result = await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=silly']);
     if(result.exit!==0){
       const moduleURL=pathToFileURL(join(import.meta.dirname,'npm-debug-tail.mjs')).href;
       const source=`import {npmDebugTail} from ${JSON.stringify(moduleURL)};console.log(JSON.stringify(await npmDebugTail(${JSON.stringify(rootHome)})));`;
@@ -126,6 +126,9 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
     const ownership = ok(await call('verify actual root-owned Node in /usr/local', true, [node, '--input-type=module', '-e', "import {statSync,realpathSync} from 'node:fs';const p=realpathSync(process.execPath);const s=statSync(p);if(!p.startsWith('/usr/local/')||s.uid!==0)throw Error('root-owned /usr/local Node required');console.log(JSON.stringify({path:p,uid:s.uid,version:process.versions.node}));"]), 'Node ownership');
     assert.equal(JSON.parse(ownership.stdout).version,'24.18.0','root proof must use pinned system Node');
     report.observations.push({ ownership: JSON.parse(ownership.stdout) });
+    const npmVersion=ok(await call('verify root npm release before installation',true,[npm,'--version']),'npm version');
+    assert.equal(npmVersion.stdout.trim(),'11.16.0','pinned Node must carry its own complete npm');
+    ok(await call('verify root global npm tree before installation',true,[npm,'ls','-g','--depth=0']),'global npm sanity');
     // A refused old updater is sufficient to create the old private-store lockout.
     for (const old of oldVersion === undefined ? [] : [oldVersion]) {
       assert(['0.164.16', '0.164.17'].includes(old), 'old root source must be an affected published release');

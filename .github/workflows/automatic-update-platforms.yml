@@ -513,6 +513,10 @@ jobs:
           test "$(node --version)" = v24.18.0
           node_root=$(node -p 'require("node:path").dirname(require("node:path").dirname(process.execPath))')
           test -d "$node_root/lib/node_modules/npm"
+          mkdir -p "$RUNNER_TEMP/upgrade-evidence"
+          node --input-type=module -e "import{existsSync,readFileSync,lstatSync}from'node:fs';const p='/usr/local/lib/node_modules/npm/package.json';console.log(JSON.stringify(existsSync(p)?{path:p,version:JSON.parse(readFileSync(p)).version,uid:lstatSync(p).uid,mode:lstatSync(p).mode&4095}:{path:p,state:'missing'}));" > "$RUNNER_TEMP/upgrade-evidence/root-node-before.json"
+          sudo rm -rf -- /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack
+          sudo rm -f -- /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
           sudo cp -a "$node_root/." /usr/local/
           sudo chown -R root:root /usr/local/bin/node /usr/local/lib/node_modules/npm
           test "$(/usr/local/bin/node --version)" = v24.18.0
