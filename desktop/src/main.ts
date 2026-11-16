@@ -370,7 +370,9 @@ let lastView = "";
 function announce(message: string): void { text("announcer", message); }
 
 function notice(message: string, error = false): void {
-  if (message) text("notice", message);
+  const node = el("notice");
+  if (message) { text("notice", message); node.setAttribute("data-testid", "notice"); }
+  else node.removeAttribute("data-testid");
   el("notice-wrap").classList.toggle("expanded", Boolean(message));
   el("notice").setAttribute("aria-hidden", String(!message));
   if (message || !window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) { el("notice").hidden = !message; if (!message) text("notice", ""); }
