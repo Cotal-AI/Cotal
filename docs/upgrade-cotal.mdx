@@ -47,7 +47,11 @@ process has exited or its PID belongs to a different process, it releases that u
 attempt. Each Manager acknowledgement has a ten-second deadline and failed releases are retried.
 A live updater, another live requester or an unknown process lifetime keeps the fence in place.
 Releases up to the release that ships this delegation cannot be repaired by downloading a newer target.
-Install the newer version manually with `npm install -g cotal-ai@latest`, then run `cotal update --self`.
+Install a release containing this fix with `npm install -g cotal-ai@<fixed-version>`, then run `cotal update --self`.
+This route was tested from public 0.164.18 to a packed fixed candidate after an interrupted updater
+left its Manager preserving. Both commands completed without an update error.
+The old Manager retained its process and generation, so replacing the CLI alone does not prove
+that an already-fenced old Manager is healthy.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning
