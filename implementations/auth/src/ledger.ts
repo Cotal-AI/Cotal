@@ -97,6 +97,8 @@ export interface ActorRow {
    *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant --full` supplies `>` for an
    *  omitted `--allow-publish`. */
   allowPublish: string[];
+  /** Durable restriction used by every native credential mint and renewal. */
+  eventPayloads?: false;
   /** Role (scopes the TASK-queue consumer), when the actor serves one. */
   role?: string;
   /** The spawning principal (`<owner>.<actor>` dot-form) when the ledger records one (audit link). */
@@ -170,6 +172,8 @@ function readRow(path: string, kind: ActorKind): ActorRow {
   if (parsed === null || typeof parsed !== "object" || parsed.ver !== LEDGER_VER)
     throw new Error(`${path}: unknown actor-grant version ${String((parsed as { ver?: unknown })?.ver)} (expected ${LEDGER_VER}) - refusing to guess at an authorization row`);
   assertDerivedOwnerToken(parsed.owner);
+  if (parsed.eventPayloads !== undefined && parsed.eventPayloads !== false)
+    throw new Error(`${path}: eventPayloads restriction must be false`);
   assertValidOwnerToken(parsed.actor);
   if (!Array.isArray(parsed.scope) || !Array.isArray(parsed.allowSubscribe) || !Array.isArray(parsed.allowPublish))
     throw new Error(`${path}: actor grant is missing explicit scope/allowSubscribe/allowPublish lists`);
@@ -273,6 +277,8 @@ function assertNotChatAlias(dir: string, owner: string, actor: string, writer: s
 }
 
 function assertRowInputs(row: Omit<ActorRow, "grantedAt">): void {
+  if (row.eventPayloads !== undefined && row.eventPayloads !== false)
+    throw new Error("grantActor: eventPayloads restriction must be false");
   if (row.parent !== undefined) {
     const parts = row.parent.split(".");
     if (parts.length !== 2) throw new Error(`grantActor: parent "${row.parent}" is not a principal (<owner>.<actor>)`);
@@ -750,6 +756,7 @@ export function ledgerAclResolver(dir: string): AclResolver {
     return {
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
+      ...(row.eventPayloads === false ? { eventPayloads: false as const } : {}),
       ...(row.role ? { role: row.role } : {}),
       lifecycleUid: t.act.lifecycleUid,
       // The CURRENT grant's capabilities, so the mint re-contains the bearer against the row

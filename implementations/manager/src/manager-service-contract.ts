@@ -1290,11 +1290,14 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  48 = `list-dir` lists bounded child directory names on the selected Manager's host.
  *
- *  49 = every `status.connectors` row requires `permissionRequests`, whether the connector relays its
+ *  49 = `spawn` takes `eventPayloads` to withhold tool arguments and results. The input schema
+ *  is closed, so a revision-48 contract rejects this field.
+ *
+ *  50 = every `status.connectors` row requires `permissionRequests`, whether the connector relays its
  *  harness's permission prompts to the agent's owner on this mesh. The status output schema is closed,
- *  so a revision-48 contract rejects it. */
+ *  so a revision-49 contract rejects it. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 49, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 50, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */

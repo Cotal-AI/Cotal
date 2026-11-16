@@ -13,7 +13,7 @@ import type { ComposerState } from "./compose.js"
 import { layoutFor } from "./layout.js"
 import type { Conn, FeedEntry, Managed, Mesh, Presence, Session } from "./live.js"
 import { safe } from "./safe.js"
-import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems, type Unread, unreadBySender } from "./screen.js"
+import { type Card, cardsFor, clock, conversationFeed, conversationKey, type DraftKey, draftKey, entryKey, type Mark, meshOf, type Open, openRowKey, overview, peerKey, peerOf, route, type Row, STATUS, treeItems, tuiName, type Unread, unreadBySender } from "./screen.js"
 import type { SpawnRequest, SpawnState } from "./spawn.js"
 import { PersonaDialog, SpawnForm } from "./spawn-form.js"
 import type { Talk } from "./talk.js"
@@ -113,7 +113,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     const m = mesh()
     return m ? conversationFeed(m, open(), talk()?.own() ?? { received: [], sent: [], earlier: [] }, FEED_ROWS) : []
   })
-  const senders = createMemo(() => new Map(feed().map((e) => [e.id, e.from.name])))
+  const senders = createMemo(() => new Map(feed().map((e) => [e.id, tuiName(e.from.name, e.from.id)])))
   // Each space's cards, gathered from every snapshot of it in this app run. A card stays until a reply
   // to it shows, so it outlives its message leaving the recent rows a snapshot's cards are read from.
   // The human's sent ids are kept the same way, so a reply to a post that has left those rows still
@@ -413,7 +413,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
     if (r?.kind !== "peer" || r.presence.card.kind !== "agent") return toast.show({ variant: "info", message: "Select an agent to stop it" })
     const m = managed()
     const row = m.phase === "rows" ? m.byId.get(r.presence.card.id) : undefined
-    if (!row || m.phase !== "rows") return toast.show({ variant: "info", message: `No manager on this space reports running ${r.presence.card.name}` })
+    if (!row || m.phase !== "rows") return toast.show({ variant: "info", message: `No manager on this space reports running ${tuiName(r.presence.card.name, r.presence.card.id)}` })
     const name = row.name
     const held = [...m.byId.values()].filter((o) => o.name === name).length
     if (held > 1) return toast.show({ variant: "warning", message: `${held} managed agents are named ${name}, and the app stops an agent by name, so it cannot pick one` })
@@ -600,7 +600,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       const mark = p.card.kind === "agent" ? STATUS[p.status].mark : "⚙"
       const tag = p.card.role ?? ""
       const fg = p.status === "offline" ? theme.text.faint : p.card.kind === "agent" ? nameFg(p.card) : theme.text.base
-      return { mark, markFg: statusFg(p), name: fit(p.card.name, width - tag.length - 5), tag: fit(tag, Math.max(0, width - 12)), fg }
+      return { mark, markFg: statusFg(p), name: fit(tuiName(p.card.name, p.card.id), width - tag.length - 5), tag: fit(tag, Math.max(0, width - 12)), fg }
     }
     const e = r.entry
     if (e.kind === "unusable") return { mark: "✗", markFg: theme.text.feedback.error.base, name: fit(baseName(e.source), width - 4), tag: "", fg: theme.text.feedback.error.base }
@@ -737,7 +737,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       >
         <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
           <text wrapMode="none" fg={lit() ? theme.text.base : nameFg(p.entry.from)} attributes={TextAttributes.BOLD}>
-            {p.entry.from.name}
+            {tuiName(p.entry.from.name, p.entry.from.id)}
             <span style={{ fg: lit() ? theme.hue.neutral[300] : theme.text.faint }}>{to() ? ` ${to()}` : ""}</span>
             <span style={{ fg: lit() ? theme.hue.neutral[300] : theme.text.muted }}>{answers()}</span>
             <span style={{ fg: mark() }}>{talk()?.mentionsYou(p.entry) ? "  @you" : ""}</span>
@@ -765,7 +765,8 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       if (c) return c.channel === undefined ? "all traffic" : `#${c.channel}`
       const o = open()
       if (o.kind === "role") return `role:${o.role}`
-      return peer()?.card.name ?? "gone from the roster"
+      const card = peer()?.card
+      return card ? tuiName(card.name, card.id) : "gone from the roster"
     }
     return (
       <>
@@ -787,7 +788,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           {(pr) => (
             <box flexShrink={0} marginBottom={1}>
               <Show when={pr().status === "waiting"}>
-                <text fg={theme.text.feedback.warning.base}>{`◐ ${pr().card.name} is waiting`}</text>
+                <text fg={theme.text.feedback.warning.base}>{`◐ ${tuiName(pr().card.name, pr().card.id)} is waiting`}</text>
                 <text fg={theme.text.base}>{pr().activity ? `“${pr().activity}”` : "It reported no question."}</text>
               </Show>
               <Show when={layout().kind === "two" && !composing()}>
@@ -895,7 +896,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         <text wrapMode="none" fg={dim() ?? gold()}>
           <span style={{ fg: dim() ?? theme.text.base }}>{`${p.n + 1} `}</span>
           {p.card.kind === "reply" ? "↩ " : "@ "}
-          <span style={{ fg: dim() ?? nameFg(e().from) }}>{fit(e().from.name, p.width - 8 - where().length)}</span>
+          <span style={{ fg: dim() ?? nameFg(e().from) }}>{fit(tuiName(e().from.name, e().from.id), p.width - 8 - where().length)}</span>
           <span style={{ fg: theme.text.faint }}>{`  ${where()}`}</span>
         </text>
         <text fg={dim() ?? theme.text.muted}>{fit(e().text.split("\n")[0]!, (p.width - 4) * 2)}</text>
@@ -913,7 +914,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
         <text wrapMode="none" fg={gold()}>
           <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
           {"• "}
-          <span style={{ fg: nameFg(newest().from) }}>{fit(newest().from.name, p.width - 8 - more().length)}</span>
+          <span style={{ fg: nameFg(newest().from) }}>{fit(tuiName(newest().from.name, newest().from.id), p.width - 8 - more().length)}</span>
           <span style={{ fg: theme.text.faint }}>{more() ? `  ${more()}` : ""}</span>
         </text>
         <text fg={theme.text.muted}>{fit(newest().text.split("\n")[0]!, (p.width - 4) * 2)}</text>
@@ -926,7 +927,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
       <text wrapMode="none" fg={theme.text.feedback.warning.base}>
         <span style={{ fg: theme.text.base }}>{`${p.n + 1} `}</span>
         {"◐ "}
-        <span style={{ fg: nameFg(p.agent.card) }}>{fit(p.agent.card.name, p.width - 8 - (p.agent.card.role?.length ?? 0))}</span>
+        <span style={{ fg: nameFg(p.agent.card) }}>{fit(tuiName(p.agent.card.name, p.agent.card.id), p.width - 8 - (p.agent.card.role?.length ?? 0))}</span>
         <span style={{ fg: theme.text.faint }}>{p.agent.card.role ? `  ${p.agent.card.role}` : ""}</span>
       </text>
       <text fg={theme.text.muted}>{fit(p.agent.activity ?? "reported no question", (p.width - 4) * 3)}</text>
@@ -983,7 +984,7 @@ export function Shell(props: { quit: (farewell?: string) => void; readCatalog: (
           <Show when={selected()}>
             {(a) => (
               <box flexShrink={0} marginTop={1}>
-                <Section title={a().card.kind === "agent" ? "AGENT" : "ENDPOINT"} right={fit(a().card.name, p.width - 16)} />
+                <Section title={a().card.kind === "agent" ? "AGENT" : "ENDPOINT"} right={fit(tuiName(a().card.name, a().card.id), p.width - 16)} />
                 <box height={1} flexShrink={0} />
                 <For each={overview(a(), now(), managed())}>{(f) => <Field label={f.label} value={f.value} fg={theme.text.base} />}</For>
               </box>

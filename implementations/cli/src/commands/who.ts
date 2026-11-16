@@ -196,6 +196,11 @@ export async function who(args: ParsedArgs): Promise<void> {
   );
 }
 
+/** The name a who row shows. A blank roster name is not a label, so the row uses the id. */
+export function whoLabel(name: string, id: string, role?: string | null): string {
+  return peerLabel({ name: name.trim() ? name : id, ...(role ? { role } : {}) });
+}
+
 const STATUS_TONE: Record<Presence["status"], Styled["tone"]> = { working: "ok", waiting: "waiting", idle: undefined, offline: "hint" };
 const STATUS_MARK: Record<Presence["status"], string> = { working: "●", waiting: "◐", idle: "○", offline: "⨯" };
 
@@ -217,7 +222,7 @@ function whoView(r: WhoResult, space: string, all: boolean, shared: ReadonlySet<
     const p = byId.get(row.id);
     const facts = p ? presenceFacts(p, now) : { condition: "", ages: "" };
     // A live manager shows by its name, or by `<host>/<runtime>` when it was started without one.
-    const label = p && isManager(p) ? `manager ${peerLabel({ name: managerLabel(p) })}` : peerLabel({ name: row.name, ...(row.role ? { role: row.role } : {}) });
+    const label = p && isManager(p) ? `manager ${peerLabel({ name: managerLabel(p) })}` : whoLabel(row.name, row.id, row.role);
     return {
       name: shared.has(row.id) ? `${label} [${row.id}]` : label,
       kind: row.sessionKind === "chat" ? "chat session" : row.kind,

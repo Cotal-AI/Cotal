@@ -59,6 +59,7 @@ export interface SessionState {
   /** The agent's own verified chat posts (feed rows with senderId === id and mode "chat"), oldest first, at most 500. */
   posts: StoredMessage[];
   load: "loading" | "ok" | "refused" | "failed";
+  payloadRead?: import("../api/types.js").PayloadReadFailure;
   /** Refused: the broker's text. Failed: the read's error. */
   reason?: string;
   /** Refused: the command that would grant this dashboard the read, when the mesh has one. */

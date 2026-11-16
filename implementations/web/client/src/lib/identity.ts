@@ -11,6 +11,11 @@ export interface Badge {
   slot: number;
 }
 
+/** The name a badge is drawn from. A blank name is not one, so the badge uses the id. */
+function badgeName(name: string, id: string): string {
+  return name.trim() ? name : id;
+}
+
 /** The badge text: the name's first character, uppercased, plus the digits of a trailing `_<n>`
  *  (`reviewer_2` gives "R2"). An empty name gives "". */
 export function initials(name: string): string {
@@ -37,11 +42,15 @@ function twoLetters(name: string): string {
  *  Offline rows, and live rows with no clash, keep `initials`. */
 export function badgeLetters(rows: readonly { id: string; name: string; status: Status }[]): Map<string, string> {
   const live = new Map<string, number>();
-  for (const r of rows) if (r.status !== "offline") live.set(initials(r.name), (live.get(initials(r.name)) ?? 0) + 1);
+  for (const r of rows) if (r.status !== "offline") {
+    const one = initials(badgeName(r.name, r.id));
+    live.set(one, (live.get(one) ?? 0) + 1);
+  }
   const out = new Map<string, string>();
   for (const r of rows) {
-    const one = initials(r.name);
-    out.set(r.id, r.status !== "offline" && (live.get(one) ?? 0) > 1 ? twoLetters(r.name) : one);
+    const source = badgeName(r.name, r.id);
+    const one = initials(source);
+    out.set(r.id, r.status !== "offline" && (live.get(one) ?? 0) > 1 ? twoLetters(source) : one);
   }
   return out;
 }
@@ -68,11 +77,11 @@ export function assignSlots(rows: readonly { id: string; name: string; status: S
   const taken = new Set<number>();
   const live = rows.filter((r) => r.status !== "offline").sort(byName);
   for (const r of live) {
-    let slot = slotOf(r.name);
+    let slot = slotOf(badgeName(r.name, r.id));
     if (taken.size < SLOTS) while (taken.has(slot)) slot = (slot % SLOTS) + 1;
     taken.add(slot);
     out.set(r.id, slot);
   }
-  for (const r of rows) if (r.status === "offline") out.set(r.id, slotOf(r.name));
+  for (const r of rows) if (r.status === "offline") out.set(r.id, slotOf(badgeName(r.name, r.id)));
   return out;
 }

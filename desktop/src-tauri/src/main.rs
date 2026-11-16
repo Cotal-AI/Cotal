@@ -17,6 +17,9 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
     let directory = executable
         .parent()
         .ok_or("the application has no directory")?;
+    if cotal_desktop::setup_state::interrupted(directory)? {
+        return Err("setup was interrupted, run the installer again".into());
+    }
     let node = directory.join(format!("{}.exe", cotal_desktop::NODE_SIDECAR));
     let runtime = directory.join("runtime");
     let entry = runtime.join("dist").join("daemon-native.js");
@@ -42,6 +45,10 @@ fn serve_windows_daemon() -> Result<i32, Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--updater-config") {
+        println!("{}", cotal_desktop::updater::compiled_config());
+        return;
+    }
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--remove-login") {
         use windows::{core::w, Win32::System::Registry::{RegDeleteKeyValueW, HKEY_CURRENT_USER}};

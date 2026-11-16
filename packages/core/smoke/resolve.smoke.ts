@@ -87,4 +87,15 @@ assert.doesNotThrow(() => assertValidName("review-general"));
 assert.doesNotThrow(() => assertValidName("Ada Lovelace"));
 for (const bad of ["", " bob", "bob ", "a/b", "a\nb"]) assert.throws(() => assertValidName(bad));
 
+{
+  const error = new AmbiguousPeerError("x", [
+    { id: "local.a", name: "\n", status: "idle", ts: 0 },
+    { id: "local.b", name: " ", status: "idle", ts: 0 },
+  ]);
+  assert.equal(error.message.includes("\n"), false);
+  assert.equal(error.message.includes("local.a"), true);
+  assert.equal(error.message.includes("local.b"), true);
+  assert.equal(new AmbiguousPeerError("bob", [{ id: "ID1", name: "bob", status: "idle", ts: 0 }, { id: "ID2", name: "bob", status: "idle", ts: 0 }]).message.includes("bob (ID1, idle)"), true);
+}
+
 console.log("resolve.smoke: all assertions passed");

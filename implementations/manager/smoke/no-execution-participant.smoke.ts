@@ -3,7 +3,7 @@ import * as auth from "../../auth/dist/index.js";
 // Native acceptance composition. The IdP publishes a real signed JWKS, auth-service owns
 // all grants/issuance, and the participant owns genuine PTY children. No provider/model runs.
 if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href);
+  (await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href)).startExecutionProgram();
 } else {
   await main();
 }

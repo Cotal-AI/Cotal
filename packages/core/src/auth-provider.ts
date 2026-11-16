@@ -482,6 +482,7 @@ export interface AuthProvider extends Extension {
     scope: string[];
     allowSubscribe: string[];
     allowPublish: string[];
+    eventPayloads?: false;
     role?: string;
     /** The spawning principal (`<owner>.<actor>` dot-form) — the grant's audit link. */
     parent?: string;
@@ -641,6 +642,9 @@ export interface SpaceCatalogConsumer extends Extension {
   readonly kind: "space-catalog-consumer";
   validate(snapshot: unknown, account: AuthSpaceCatalogAccount): void;
   apply(result: AuthSpaceCatalogResult): void;
+  /** Validate a deliberate account-origin migration without writes, returning its local commit.
+   * Session approval and identity pin checks belong to the auth provider before this call. */
+  prepareMigration?(oldAccount: AuthSpaceCatalogAccount, newAccount: AuthSpaceCatalogAccount, snapshot: unknown): () => void;
 }
 
 export function resolveSpaceCatalogConsumer(): SpaceCatalogConsumer {

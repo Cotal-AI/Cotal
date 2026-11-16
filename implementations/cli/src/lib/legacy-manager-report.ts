@@ -4,6 +4,13 @@ import { materializeFromManifest } from "@cotal-ai/workspace";
 export interface RunningManagerSeat {
   name: string;
   agent: string;
+  id?: string;
+}
+
+/** The name a legacy update lists for one seat. A missing or whitespace-only name is the id, then `(unnamed)`. */
+export function legacySeatLabel(seat: { name: string; id?: string }): string {
+  if (seat.name.trim()) return seat.name;
+  return seat.id !== undefined && seat.id.trim() ? seat.id : "(unnamed)";
 }
 
 export interface LegacyManagerReport {

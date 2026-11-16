@@ -25,9 +25,9 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, readUpdateRecovery, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
-import { openLoginBrowser, cloudAuthUrl } from "@cotal-ai/workspace";
-import { chooseAccount, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
+import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
+import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
@@ -41,6 +41,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
 export const daemonFlags = [
@@ -48,7 +49,7 @@ export const daemonFlags = [
   plainFlag,
   { name: "cloud", type: "boolean", description: "sign in to Cotal Cloud" },
   { name: "no-browser", type: "boolean", description: "print approval instructions without opening a browser" },
-  { name: "idp", type: "string", value: "<auth base URL>", description: "the provider's auth base URL, e.g. <origin>/api/auth" },
+  { name: "idp", type: "string", value: "<auth URL or name>", description: "the provider's auth base URL or issuer-authorized discovery hostname" },
   { name: "client-id", type: "string", value: "<id>", description: "the OAuth device-flow client id" },
   { name: "daemon-home", type: "string", value: "<abs dir>", completion: "files", description: "run or reach the daemon whose state lives in this directory (absolute, yours, mode 0700, not the Cotal home): its own sign-in, identity and registration, its own socket and lifetime lock. Without it, run or reach the default daemon, whose state lives in the Cotal home." },
   { name: "refresh", type: "boolean", description: "spaces: refresh catalogs through the daemon-held sign-in" },
@@ -59,20 +60,15 @@ export const daemonFlags = [
   { name: "space", short: "s", type: "string", value: "<s>", description: "target space (required except for status, where it selects one hosted Manager)" },
 ] as const satisfies readonly FlagSpec[];
 
-/** This binary's own version: the nearest package.json above this module (bin/ in a source run). */
-export function binVersion(): string {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 4; i++) {
-    try {
-      const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: string; version?: string };
-      if (pkg.name === "cotal-ai" && typeof pkg.version === "string") return pkg.version;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-    dir = dirname(dir);
-  }
-  throw new Error("cannot determine the cotal-ai version: no cotal-ai package.json above the daemon module");
-}
+const loadedBinVersion = (() => {
+  const root = dirname(dirname(fileURLToPath(import.meta.resolve("@cotal-ai/cli"))));
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+  if (pkg.name !== "@cotal-ai/cli" || typeof pkg.version !== "string" || !pkg.version) throw new Error("cannot determine the loaded daemon version");
+  return pkg.version;
+})();
+
+/** The daemon's captured loaded release, independent of canonical metadata publication. */
+export function binVersion(): string { return loadedBinVersion; }
 
 const peerUid = defaultPeerUid;
 const peerPid = defaultPeerPid;
@@ -169,20 +165,25 @@ async function status(args: ParsedArgs): Promise<void> {
   writeResult(presentation, { command: "daemon status", target: space ? { space } : null, result }, statusView);
 }
 
-/** Sign in through the running daemon. The daemon talks to the IdP and keeps the session; this
- *  process only shows the approval prompt and the result, and never sees a token. Ctrl-C or SIGTERM
- *  asks the daemon to cancel the attempt and waits for its answer. */
+/** Select the provider before approval or native setup effects. */
+async function daemonAccountChoice(args: ParsedArgs) {
+  if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
+  const idp = args.values.idp;
+  if (typeof idp === "string" && isDiscoveryName(idp)) {
+    const discoveryPins = await resolveDiscoveryLogin(idp);
+    return { url: discoveryPins.url, discoveryPins };
+  }
+  return chooseAccountChoice({ ...args, positionals: [] }, "login");
+}
+
+/** Sign in through the daemon, which retains the session. Cancellation waits for its answer. */
 async function login(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { idp?: string; "client-id"?: string };
-  if (values.idp !== undefined) {
-    try { normalizeIdpUrl(cloudAuthUrl(values.idp)); }
-    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
-  }
-  const chosen = await chooseAccount(args, "login");
+  const chosen = await daemonAccountChoice(args);
   if (chosen === undefined) return;
   let idp: string;
-  try { idp = normalizeIdpUrl(chosen); }
+  try { idp = normalizeIdpUrl(chosen.url); }
   catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
   recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
@@ -190,7 +191,7 @@ async function login(args: ParsedArgs): Promise<void> {
   let reply;
   try {
     reply = await loginFromCli({
-      paths, peerUid, peerPid, idp,
+      paths, peerUid, peerPid, idp, discoveryPins: chosen.discoveryPins,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve sign-in", blocks: [
@@ -380,12 +381,8 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
   if (!space && (values["no-manager"] || values.wait !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager and --wait require --space <s>");
   if (space && !SPACE_PATTERN.test(space)) throw new CommandFailure("refused", "USAGE_INVALID", "space must be 1-64 characters of [A-Za-z0-9_-]", { native: { code: "BAD_FIELD" } });
   if (args.values.cloud && values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
-  let idp: string | undefined;
-  if (args.values.cloud === true) idp = await chooseAccount(args, "login");
-  if (values.idp !== undefined) {
-    try { idp = normalizeIdpUrl(cloudAuthUrl(values.idp)); }
-    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
-  }
+  let choice = values.idp !== undefined || args.values.cloud === true ? await daemonAccountChoice(args) : undefined;
+  let idp = choice?.url;
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const waitSeconds = values.wait === undefined ? 900 : Number(values.wait);
   if (!Number.isInteger(waitSeconds) || waitSeconds < 0 || waitSeconds > 86400) throw new CommandFailure("refused", "USAGE_INVALID", "--wait takes whole seconds from 0 to 86400");
@@ -396,7 +393,8 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
     let installed = true;
     try { planUninstall(paths, home); } catch { installed = false; }
     if (!installed) {
-      idp = await chooseAccount(args, "login");
+      choice = await daemonAccountChoice(args);
+      idp = choice?.url;
       if (idp === undefined) return;
       newSignIn = true;
     }
@@ -417,7 +415,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
       if (providers.length !== 1) throw new CommandFailure("refused", "USAGE_INVALID", `The daemon is signed in to several providers (${providers.join(", ")}); pass --idp <url> to choose one`);
       idp = providers[0]!;
     }
-    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, existingSignInOnly: !newSignIn,
+    const r = await runAccountSetup({ paths, daemonHome: home, peerUid, peerPid, report, version: binVersion(), idp: idp!, discoveryPins: choice?.discoveryPins, existingSignInOnly: !newSignIn,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: p => { process.stderr.write(`Approve this machine\nOpen: ${p.verificationUriComplete}\nApproval code: ${p.userCode}\n`); openLoginBrowser(p.verificationUriComplete, args.values); },
     });
@@ -432,6 +430,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
     r = await runSetup({
       paths, daemonHome: home, space, peerUid, peerPid, waitSeconds, report, version: binVersion(), noManager: values["no-manager"] === true,
       ...(idp !== undefined ? { idp } : {}),
+      discoveryPins: choice?.discoveryPins,
       ...(values["client-id"] !== undefined ? { clientId: values["client-id"] } : {}),
       onPrompt: (p) => {
         process.stderr.write(`${renderReport({ sections: [{ title: "Approve this machine", blocks: [
@@ -457,11 +456,20 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
-  const { recoverInterruptedUpdate } = await import("@cotal-ai/cli/update");
-  // A paused update already failed its restoration and waits for `cotal update --self`. Trying it
-  // again on every service restart would stop the daemon each time. The daemon starts instead:
-  // status names the repair, and nothing activates or reconciles until the repair succeeds.
-  if (readUpdateRecovery()?.phase !== "paused" && await recoverInterruptedUpdate()) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
+  const { recoverExecutionUpdate } = await import("./execution-update.js");
+  // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
+  // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
+  let automaticCustodyPaused = false;
+  if (process.platform === "win32") {
+    const { cleanWindowsUpdate } = await import("./update-windows.js");
+    const disposition = cleanWindowsUpdate();
+    automaticCustodyPaused = disposition === "paused" || disposition === "pending";
+  }
+  const deferredRecovery = readUpdateRecovery();
+  const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
+  const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
+  if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
@@ -502,6 +510,34 @@ async function serve(args: ParsedArgs): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     let closed = false;
     let stopWatching = () => {};
+    let recoveryTimer: ReturnType<typeof setInterval> | undefined;
+    let recoveryBusy = false;
+    if (observedLiveUpdater) {
+      recoveryTimer = setInterval(() => {
+        if (closed || recoveryBusy) return;
+        const record = readUpdateRecovery();
+        if (!record) { clearInterval(recoveryTimer); return; }
+        if (liveUpdateClosureOwner(record)) return;
+        recoveryBusy = true;
+        clearInterval(recoveryTimer);
+        process.stderr.write("daemon: observed updater ended; checking guarded interrupted-update recovery\n");
+        void running.prepareGenerationRestart().then(() => recoverInterruptedUpdate(recoveryRuntime, true)).then(async restored => {
+          if (restored) {
+            process.stderr.write("daemon: interrupted update restored the previous installation; restarting the recorded service\n");
+            await updates?.close();
+            await running.close();
+            resolve();
+          } else if (readUpdateRecovery()) {
+            process.stderr.write("daemon: interrupted update remains paused; read daemon status and run `cotal update --self`\n");
+          } else process.stderr.write("daemon: updater completed; no interrupted-update recovery remains\n");
+        }).catch((error: unknown) => {
+          process.stderr.write(`daemon: guarded interrupted-update recovery refused: ${error instanceof Error ? error.message : String(error)}; run \`cotal update --self\`\n`);
+        }).finally(() => running.abortGenerationRestart().catch((error: unknown) => {
+          process.stderr.write(`daemon: interrupted-update admission release refused: ${error instanceof Error ? error.message : String(error)}\n`);
+        }));
+      }, 1000);
+      recoveryTimer.unref();
+    }
     void ownership.then(observation => {
       if (closed) return;
       const verified = observation.state === "owned";
@@ -523,7 +559,7 @@ async function serve(args: ParsedArgs): Promise<void> {
         resolve();
       }, (line) => process.stderr.write(`${line}\n`), (version, reason) => running.generationPending(version, reason), verified);
     });
-    const stop = () => { closed = true; provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
+    const stop = () => { closed = true; clearInterval(recoveryTimer); provenance.abort(); stopWatching(); void updates!.close().then(() => running.close()).then(resolve, reject); };
     void running.stopped.then(stop, reject);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);

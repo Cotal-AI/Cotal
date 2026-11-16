@@ -34,8 +34,15 @@ Without a terminal, or with `--yes`, `--no-input`, or `--json`, `scriptedInputs`
 from the flags and refuses a missing one. That refusal (`MissingFlags`) prints the scripted form
 without the command help.
 
-Setup refuses `--destination cloud` before anything else. The refusal gives the route a Cloud space
-takes. `cotal login` registers the space, and setup then runs with `--destination self-hosted`.
+On a terminal the destination question also offers Cloud. `askCloud` lists the registered spaces
+whose catalog came from the Cotal Cloud sign-in. With none it runs the registered `login` command
+with `--cloud` and reads the list again. It asks which space when there are several, and it asks for
+the project folder when the space is not bound to one. The answer is saved as a self-hosted
+destination, so the rest of setup is the same as for any registered space.
+
+Setup refuses the flag value `--destination cloud` before anything else, because a script cannot
+approve a sign-in. The refusal gives the scripted route. `cotal login` registers the space, and
+setup then runs with `--destination self-hosted`.
 
 `runtimeChoices` lists `pty`, every official runtime with its host tools from
 `OFFICIAL_RUNTIME_TOOLS`, and each installed third-party runtime. A script's runtimes are its
@@ -431,11 +438,12 @@ The generation is the `cotal-ai` version. On each run, the reconcile handles eac
 record:
 
 - It seeds a built-in that was never seeded.
-- It refreshes a still-installed built-in that it seeded (`source: "seeded"`) when the version
-  bumps (a semver compare) or under `--force`. It also refreshes one whose cached connector metadata
-  predates the setup ref.
-- It leaves an operator-managed official entry untouched on upgrade. That entry is a manual
-  `ext add` at a chosen version, with no seeded marker.
+- It refreshes a still-installed built-in when the version bumps (a semver compare), when its
+  manifest entry has a different version or no `seeded` marker, when its cached connector metadata
+  predates the setup ref, or under `--force`.
+- It brings any still-installed first-party operator extension (`@cotal-ai/*`) to the running
+  generation through the staged prefix installer, and refuses with `cotal update --self` if that
+  install cannot complete.
 - It leaves a deliberately removed built-in removed.
 
 `cotal update` runs the verify mode instead of `--force`:

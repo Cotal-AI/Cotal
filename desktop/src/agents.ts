@@ -44,11 +44,12 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement)
       }
       list.append(row);
     }
-    const values = [shortFolder(agent.name, 28), agent.application, `${shortFolder(agent.cwd, 32)} · ${agent.space}`,  agent.state === "running" ? runningFor(agent.startedAt) : "Exited"];
+    const shown = shownAgentName(agent.name);
+    const values = [shortFolder(shown, 28), agent.application, `${shortFolder(agent.cwd, 32)} · ${agent.space}`,  agent.state === "running" ? runningFor(agent.startedAt) : "Exited"];
     Array.from(row.children).forEach((node, i) => { if (node.textContent !== values[i]) node.textContent = values[i]!; });
-    (row.children[0] as HTMLElement).title = agent.name;
-    row.children[0]!.setAttribute("aria-label", agent.name);
-    row.title = `${agent.name} · ${agent.application}${agent.model ? ` · Model: ${agent.model}` : ""}`;
+    (row.children[0] as HTMLElement).title = shown;
+    row.children[0]!.setAttribute("aria-label", shown);
+    row.title = `${shown} · ${agent.application}${agent.model ? ` · Model: ${agent.model}` : ""}`;
     row.setAttribute("aria-label", `${row.title} · ${agent.cwd} · ${agent.space}`);
     (row.children[1] as HTMLElement).title = row.title;
     const folder = row.children[2] as HTMLElement; folder.title = agent.cwd; folder.setAttribute("aria-label", agent.cwd);
@@ -60,6 +61,11 @@ export function renderAgents(status: Record<string, unknown>, root: HTMLElement)
   }
 }
 
+/** The name a running-agent row shows. A missing or whitespace-only name is not one. This inventory
+ *  has no separate id, so the row says it is unnamed rather than inventing one. */
+export function shownAgentName(name: string): string {
+  return name.trim() ? name : "(unnamed)";
+}
 export function applicationName(value: string): string {
   return ({ "claude-code": "Claude Code", claude: "Claude Code", codex: "Codex", jcode: "Jcode", opencode: "OpenCode", pi: "pi", hermes: "Hermes" } as Record<string, string>)[value] ?? value;
 }

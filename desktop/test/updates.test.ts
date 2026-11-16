@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { installerLink, installerName, newerVersion, releaseUrl, updateNotice, updatePolicy, updateSummary, type UpdateStatus } from "../src/updates";
+import { accountHost, installerLink, installerName, newerVersion, releaseUrl, updateNotice, updatePolicy, updateSummary, type UpdateStatus } from "../src/updates";
+
+test("account labels recognize both Cloud auth URLs without branding custom providers", () => {
+  assert.equal(accountHost("https://cotal.cloud/api/auth"), "Cotal Cloud, cotal.cloud");
+  assert.equal(accountHost("https://cloud.cotal.ai/api/auth"), "Cotal Cloud, cloud.cotal.ai");
+  assert.equal(accountHost("https://example.com/api/auth"), "example.com");
+  assert.equal(accountHost("https://cotal.cloud/other"), "cotal.cloud");
+  assert.equal(accountHost(undefined), "No account selected");
+});
 
 const status: UpdateStatus = { channel: "desktop", current: "0.160.5", latest: "0.161.0", automatic: true, notify: true, lastCheck: "2026-11-11T22:00:00Z", lastResult: "available" };
 test("desktop notice tracks app version and Later hides only that release", () => {
@@ -21,7 +29,8 @@ test("update summary covers available current unchecked and failed", () => {
 test("each platform explains the control that can actually work", () => {
   for (const platform of ["darwin", "win32", "linux"]) {
     assert.equal(updatePolicy("desktop", platform).label, "Notify me about updates");
-    assert.match(updatePolicy("desktop", platform).description, /Installing it updates the app/);
+    assert.equal(updatePolicy("desktop", platform, true).label, "Install updates automatically");
+    assert.match(updatePolicy("desktop", platform, true).description, /downloads verified desktop updates/);
   }
   assert.equal(updatePolicy("npm", "linux").label, "Install updates automatically");
   for (const platform of ["darwin", "win32"]) assert.equal(updatePolicy("npm", platform).label, "Notify me about updates");

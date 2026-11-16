@@ -1,5 +1,229 @@
 # @cotal-ai/cli
 
+## 0.164.18
+
+### Patch Changes
+
+- 9b42da0: `cotal update --self` and the daemon's automatic update now work where the package manager's folders are group-writable, as the Homebrew Node's `lib` is and as npm under a umask of 0002 leaves the package, and where Node before 24.22 copied the new version with group-writable folders. 0.164.16 and 0.164.17 refused there with `unprotected execution entry`, and each automatic attempt left a 66 MB folder behind. Those two versions cannot update themselves on such a machine: run the installer again or `npm install -g cotal-ai@latest` once. Their automatic attempts now print that instruction and remove the leftover folders. Staging folders are removed after every update. Connector reconciliation no longer refuses its own staging folder under a umask of 0002 on a machine without `getfacl`. The daemon's automatic update now works after an earlier staged update: a 0.164.16 or 0.164.17 daemon that had updated itself once ended every later attempt with `staged update requires an installed npm or pnpm package` and kept showing `updating to <version>`; install the new version once by hand on such a machine, with the installer or `npm install -g cotal-ai@latest`. An updater that ends without recording an outcome is now counted as a failure and its last lines are shown in `cotal daemon status`. `cotal update --self` works again in a Linux session without `XDG_RUNTIME_DIR` when no daemon is running, and a refused staged update no longer leaves its copy of the new version behind. On a system-wide installation that root owns, an update by root, or only an attempt, left the generation store and the command private to root, so every other account got a permission error from `cotal`; the store is now as readable as the package beside it, its owner opens an older private one at the next start, and root repairs such a machine with `npm install -g cotal-ai@latest`.
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- e433bee: Reconcile installed extensions automatically after a manual `npm install -g` upgrade. When automatic updates are on, the background service's scheduled check finishes any pending extension reconciliation even when the CLI is already at the latest release, and the CLI launch gate brings operator-installed official extensions current alongside the built-in connectors or refuses with `cotal update --self` if it cannot.
+- f305af8: Stage complete execution generations before switching the installed CLI during updates.
+  
+  The updater checks the retained target before publication, keeps the original execution graph intact for running commands, refuses staged generation retention inside bundled desktop runtimes, normalizes execution identity paths with native realpaths across platforms, retires superseded active descriptors when an in-place global install takes over, and reports retained-generation provenance under `cotal status --verbose` and `--json`. Retained execution journals restore the previous selection without reinstalling the live package, while interrupted records from earlier releases keep their existing recovery path.
+- ae15dac: Start a stopped owned daemon service during manual `cotal update --self` across Linux, macOS, and Windows and require the daemon to answer at the target version before completing the update. When no daemon is running before a manual update, the updater checks that the recorded service belongs to this installation and is enabled before starting the systemd user service, LaunchAgent, or Windows scheduled task, leaving disabled or foreign-owned services stopped and waiting for readiness on enabled owned services instead of accepting a reconciliation child exit code alone.
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- 517000a: Keep Windows CLI installations current through a separate Task Scheduler update helper.
+  
+  The helper holds a no-breakaway native job until its accounting and full process list confirm it is empty. It then restarts the verified daemon service under one activation deadline and records activation separately from the installed release. Interrupted helpers pause automatic installation in the same boot and show a restart or manual-update remedy. A successful manual update or a later verified boot clears that pause. Desktop runtimes still use their signed installer.
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- 201785c: Reconcile update extensions in one staged prefix transaction.
+  
+  Install compatible changed packages together, retain every package and registration check, and promote the complete verified prefix once. Failed package installation or validation leaves the live prefix unchanged. A protected promotion journal recovers interrupted directory swaps before extension declarations are read.
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- 5fce3ef: Fix the closing step of `cotal update --self` on a machine with the service installed. Since 0.164.10 that step compared the restarted daemon with the release that started the update instead of the release now installed. On Windows the update ended with exit 3 and "Outcome unconfirmed" although the new release was installed and reconciled. The closing step compares the daemon with the installed release again, as it did up to 0.164.9. Scheduled updates were not affected.
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- 44ce7f5: Keep a running command's release identity tied to the code it loaded during staged updates.
+  
+  Publishing a new canonical package manifest no longer makes an older bootstrapped CLI report or reconcile as the new release. Embedded API calls retain their entry package's version and provenance.
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- 35db3ae: Keep the machine service responsive during manual updates.
+  
+  Daemon startup checks the updater's full closure identity before taking restoration ownership, so it can answer readiness without waiting on the updater's installation lock. If that updater ends without finishing, the running daemon performs the existing guarded recovery or reports why recovery remains paused. A paused installation whose rollback completed can reconcile through the newly installed CLI after acquiring fresh hosted-Manager admission, without reinstalling the older defective updater.
+- 082d0e6: Restore passing terminal coverage for persona control-character escaping.
+  Prepare the catalog's space before showing its source, and check the unprepared-folder refusal separately.
+- 0bf357b: Reduce self-update registry verification time and show progress before long update steps.
+  
+  Read independent package metadata in bounded batches and ask npm to verify several archives per invocation. Keep all package, version, dependency, recovery and lock checks, with a private cache for each command.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- 8d27412: Stop asking users to repair connector integrations after an update reports the installed packages are current.
+- 57aaed2: Standalone stacks with verified ownership now receive concrete manual cold-update commands.
+  
+  The update report preserves the recorded root, space, server, runtime and supported options, and explains that stopped seats are not restarted. It performs no shutdown and keeps the original refusal when the records cannot prove ownership or restart settings.
+- c2db3ac: Updates can continue after an interrupted update leaves an unusable snapshot record.
+  
+  Keep abandoned records in a timestamped folder without touching their snapshots. Fence live or unreadable owners, wait one hour for records without a valid owner, and report the same recovery guidance in status, notices and unattended updates.
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- 84f1298: Show a warning in cotal status when first-party extension versions differ from the CLI. Name the affected packages and recommend cotal update --self to reconcile the installation.
+- d826322: Allow updates when another user's container runs an unrelated Manager.
+  Preserve same-installation supervisors and refuse unresolved local custody with process-specific guidance.
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- 9905ad2: Sign in through an issuer-authorized product discovery name.
+  
+  `cotal login <name>` and daemon sign-in or setup with `--idp <name>` resolve the provider's HTTPS root document and require the issuer's own root to endorse the name with `discoveryNames`. The roots must agree on issuer and audience. The typed root may use its own HTTPS auth origin or the issuer root's complete IdP URL, and other third-origin URLs are refused before approval. Login proofs retain the typed root's pins. Saved accounts and catalog origin checks keep using the resolved IdP URL. Cloud defaults and explicit account migration keep their current behavior.
+- 50d24a9: Updates wait for a newly announced release that npm does not serve yet instead of reporting a failed installation.
+  
+  When npm returns ETARGET for the selected latest cotal-ai version, the updater leaves installed packages unchanged and reports that the release is still arriving. Manual updates exit successfully with a deferred message. Automatic updates retry on the next scheduled attempt without consuming the version's failure budget. Other npm resolution errors retain their existing failure handling.
+- e09456f: The macOS background service now installs updates automatically when automatic updates are on. It hands the existing guarded updater to a separate one-shot launchd job so restarting the service does not stop installation or extension reconciliation. Failed handoffs report their reason and the manual update command. A Mac on a version before this one needs one `cotal update --self`, and updates itself from then on.
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- e61e70d: `cotal history clear` purges the streams that are still on the broker when another requested stream is already gone. A missing chat stream no longer leaves direct messages in place under an unknown purge. When every requested stream is gone, the clear refuses with `TARGET_NOT_FOUND` and purges nothing.
+- e61e70d: `cotal history --dms` warns when the direct-message stream is not on the broker and reports a partial read. Channel history is still shown. A missing stream is no longer reported as a complete history with no direct messages.
+- d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
+  
+  The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- f775e30: Setup draws its splash, questions and notes for 80 columns when the terminal reports 0, instead of failing with an unknown outcome or stacking each letter on its own line.
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- ad89bcd: `cotal status` no longer waits while another `cotal` command changes the installation. It used to queue behind a `cotal setup`, `ext add`, `ext seed` or update that was preparing connectors, for as long as that took and up to five minutes, printing nothing. It now reports that command by process id, leaves the application rows unread, marks the report partial (exit 4) and returns at once. Run it again when that command finishes for the full report.
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- 30c1f57: A participant whose name is blank is shown by its id. This covers `cotal watch`, `who`, `endpoints`, `channel members`, `join`, `chat`, the console, the compose target and palette, the terminal UI, the dashboard badge, the connector roster, orientation and inbox, a Hermes injected turn, the offline notice, the ambiguous-name error and the pending delivery label. A blank name used to print as nothing or as a line break. The same now holds for a pi mention, a once-task spawner, space delete, a DM recipient in chat, the Manager list, a legacy seat, the attach picker, the preserve refusal, teardown, the join receipt, the console agent and confirm lines, a spawn result, an anycast take or DM result, a pane label in the Manager's browser console, and the principals `cotal chat --plain` names for a shared display name.
+- 653ca96: `cotal setup` lets you choose Cloud on a terminal. Before, the choice was listed but could not be selected, and its hint sent you to `cotal login` and the Self-hosted choice. Now Cloud sets up a space of your Cotal Cloud account: with no Cloud space registered on the machine it signs you in first, with several spaces it asks which one, and for a space no project uses yet it asks for the project folder. The flag value `--destination cloud` is still refused in a script, with the route through `cotal login` and `--destination self-hosted`.
+- e13f910: Finish manual updates after stopping agents with explicit consent, and show when installation reconciliation is pending.
+  
+  Terminal updates list affected agents and ask once before stopping them. Scripts can use `cotal update --self --stop-agents`. Automatic updates continue to defer without stopping agents.
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- 7d62677: `cotal history` does not show a sender or DM recipient name that is only whitespace. The row uses the id. `--json` keeps `from.name` as it was sent.
+- 91c9136: `cotal ps` does not show a seat or presence name that is only whitespace. The row uses the id. JSON keeps the name the manager or the presence record returned.
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+
 ## 0.163.5
 
 ### Patch Changes

@@ -1,5 +1,186 @@
 # @cotal-ai/runtime
 
+## 0.164.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/lang@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/lang@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+  - @cotal-ai/lang@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/lang@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+  - @cotal-ai/lang@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/lang@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/lang@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/lang@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/lang@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/lang@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+  - @cotal-ai/lang@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+  - @cotal-ai/lang@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+  - @cotal-ai/lang@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- 14e9268: `cotal run start` no longer says a start was refused when its reply was lost. If the request reached the manager but no reply came back before the deadline, the CLI printed "Request refused" and `TARGET_UNAVAILABLE`, though the manager had recorded and completed the run, so a retry started a second run. A `start`, `resume`, `answer` or `amend` whose request went out and drew no reply is now `OPERATION_UNKNOWN`, exit 3, with the advice to read the run or list the runs before running it again. A `cotal run` list or `cotal run show` in the same situation now fails with `OPERATION_FAILED`, exit 5, and no longer suggests restarting a manager that had just answered. A manager that did not answer before the request was sent, or that the broker found no subscriber for, is still `TARGET_UNAVAILABLE`.
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/lang@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+  - @cotal-ai/lang@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/lang@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+  - @cotal-ai/lang@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+  - @cotal-ai/lang@0.164.1
+
+## 0.164.0
+
+### Patch Changes
+
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+  - @cotal-ai/lang@0.164.0
+
 ## 0.163.5
 
 ### Patch Changes

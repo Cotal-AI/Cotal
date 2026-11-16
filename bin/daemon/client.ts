@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
 import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
-import { processBirth, readLifetimeRecord } from "./lifetime.js";
+import { observeLifetimeRecord, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { CommandFailure } from "@cotal-ai/workspace";
 
 /** Read or change shared update preferences, or run the existing cached check without installing. */
@@ -232,6 +232,19 @@ function isLockOwner(lock: string, pid: number, birth: string | undefined): bool
  *  not be established, so nothing may be sent. */
 const IDENTITY_STEPS = new Set(["GetNamedPipeServerProcessId", "OpenProcess", "GetProcessTimes", "OpenProcessToken", "GetTokenInformation", "ConvertSidToStringSidW"]);
 
+/** A refused Windows pipe whose original lifetime read contained zero bytes. It is never writable. */
+export class EmptyLifetimeRefusal extends EndpointRefusal {
+  constructor(message: string, readonly pid: number, readonly birth: string) {
+    super("PEER_NOT_LOCK_OWNER", message);
+  }
+}
+
+/** Shutdown waits may reobserve only the exact previously pinned lifetime, never treat it as absent. */
+export function isStoppingLifetime(error: unknown, owner: { readonly pid: number; readonly start?: string } | undefined): boolean {
+  return error instanceof EmptyLifetimeRefusal && owner?.start !== undefined && owner.start.length > 0
+    && error.pid === owner.pid && error.birth === owner.start;
+}
+
 /** Windows: open the daemon's pipe, which the native side authenticates, and keep it only when its
  *  server is this user and the holder of the lifetime lock. Nothing is written before both. */
 async function openPipe(paths: DaemonPaths, timeoutMs: number): Promise<Socket> {
@@ -254,13 +267,21 @@ async function openPipe(paths: DaemonPaths, timeoutMs: number): Promise<Socket> 
   };
   const own = windowsUserSid();
   if (peer.user !== own) refuse("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as ${peer.user}, not ${own}; nothing was sent`);
-  if (!isLockOwner(paths.lock, peer.pid, peer.birth)) refuse("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
+  const observation = observeLifetimeRecord(paths.lock);
+  const owner = observation.record;
+  if (!owner || owner.pid !== peer.pid || owner.start === undefined || peer.birth !== owner.start) {
+    const message = `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`;
+    closeSync(peer.fd);
+    if (observation.empty) throw new EmptyLifetimeRefusal(message, peer.pid, peer.birth);
+    throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", message);
+  }
   return adoptPipe(peer.fd);
 }
 
 export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> {
   readonly idp: string;
   readonly clientId?: string;
+  readonly discoveryPins?: { url: string; issuer: string; audience: string };
   readonly onPrompt: (prompt: LoginPrompt) => void;
   /** Aborting sends login-cancel for this attempt and waits for the daemon's answer. */
   readonly signal?: AbortSignal;
@@ -306,7 +327,7 @@ export async function loginViaDaemon(opts: LoginOptions): Promise<LoginReply> {
       sock.once("error", (e) => finish(e));
       if (opts.signal?.aborted) return finish(abandoned);
       opts.signal?.addEventListener("abort", onAbort, { once: true });
-      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
+      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.discoveryPins !== undefined ? { discoveryPins: opts.discoveryPins } : {}), ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
     });
   } finally {
     sock.destroy();

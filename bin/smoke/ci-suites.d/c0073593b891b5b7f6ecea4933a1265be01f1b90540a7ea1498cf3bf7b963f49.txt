@@ -1,0 +1,1 @@
+smoke:hosted-delivery-native-connections

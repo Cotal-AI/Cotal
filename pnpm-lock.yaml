@@ -693,14 +693,14 @@ importers:
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
       '@nats-io/kv':
-        specifier: ^3.4.0
-        version: 3.4.0
-      '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
 
@@ -750,6 +750,9 @@ importers:
         specifier: ^3.4.0
         version: 3.4.0
       '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/nats-core':
         specifier: ^3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
@@ -810,9 +813,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@4.4.3)
-      '@nats-io/nats-core':
-        specifier: ^3.4.0
-        version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -1032,15 +1032,15 @@ importers:
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
-      acorn:
-        specifier: ^8.15.0
-        version: 8.18.0
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
+      json-schema-library:
+        specifier: 11.6.16
+        version: 11.6.16
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -1048,6 +1048,9 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../smoke-kit
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
 
   packages/lang:
     dependencies:
@@ -2091,6 +2094,12 @@ packages:
     resolution: {integrity: sha512-9tAsd92yMVVGP+E+d8cM+wc0VnXuYZHNbWQi7TOe8k2neawmhiaFmVFbzyruejhOMa197/LbgvSED32ayUo3ZA==}
     peerDependencies:
       react: '>=16.0.0'
+
+  '@hyperjump/json-schema-formats@1.1.0':
+    resolution: {integrity: sha512-vLMIOwMThlgWgPJBV39Ds7kaTaygK0+UxjvQShTmKB8rRy8HXq472jnHP8/uaik+77HDx2M+W5Bvzhq6zFc2zQ==}
+
+  '@hyperjump/uri@1.4.1':
+    resolution: {integrity: sha512-AvzrZhbAXctdMe1WQXKtfymmK+nSTVE3f2edfMdAt4QwK8147HKPH+vr5AyzjEgReFetX5x5NGtIBYy/NO4tNQ==}
 
   '@isaacs/fs-minipass@4.0.1':
     resolution: {integrity: sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w==}
@@ -3250,6 +3259,9 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
+  '@sagold/json-pointer@7.2.1':
+    resolution: {integrity: sha512-8EX4r5Royl5M3qNPTh5W5njdOtRqbWgQfVv26DbzjGj2/55b60EqvbiqUIglzw7fADfY/Io6jDJxGNJHmC+g8g==}
+
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
 
@@ -4314,6 +4326,9 @@ packages:
     resolution: {integrity: sha512-GOJ158CUMnN6cSahsv4+ExARvIDuzzinFjkp0E9WtiBa5zcVeLozVkWaE4IzFcc+Y48Wp1EDlUZsXRyAztQcSg==}
     engines: {node: '>=12.17.0'}
 
+  fast-copy@4.3.1:
+    resolution: {integrity: sha512-CRzQaTFOFUs6PuhsAq7lk9Zqr995soJBcFNZlfJS/5keTSl1awREV9dZW4xS2nX4pWbhIIR0xp4h+J8PQxCkvg==}
+
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
@@ -4329,6 +4344,9 @@ packages:
 
   fast-uri@3.1.2:
     resolution: {integrity: sha512-rVjf7ArG3LTk+FS6Yw81V1DLuZl1bRbNrev6Tmd/9RaroeeRRJhAt7jg/6YFxbvAQXUCavSoZhPPj6oOx+5KjQ==}
+
+  fast-uri@4.2.3:
+    resolution: {integrity: sha512-I1PXwP5eAhlNlcdpjt9CgB59op2ZvZfxw+BkqGFVIUOgNpCVTcTqp3HhTX7brxj5vsip+nSY4nTvff+eIA76hg==}
 
   fast-wrap-ansi@0.2.2:
     resolution: {integrity: sha512-7F2Fl+TjRSenLqlU3UjSH0iyqopqoZIu7eZVpEirP2g1GtWa2G/ecEmBdgz31+Mxr+ELclgg6sokpSFIQiZ02Q==}
@@ -4615,6 +4633,10 @@ packages:
     resolution: {integrity: sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ==}
     engines: {node: '>=0.10.0'}
 
+  idn-hostname@15.1.19:
+    resolution: {integrity: sha512-pRGRbFpQWCptOBWw9Gn5DXtPdern5/XtdkcXdoEavjd+sh72jNm2eVI1eeysp64UisXPfaqoQrnLUKpSN4hJWw==}
+    engines: {node: '>=20.12.0 <21 || >=22.0.0'}
+
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
     engines: {node: '>= 4'}
@@ -4813,6 +4835,9 @@ packages:
 
   json-canonicalize@2.0.0:
     resolution: {integrity: sha512-yyrnK/mEm6Na3ChbJUWueXdapueW0p380RUyTW87XGb1ww8l8hU0pRrGC3vSWHe9CxrbPHX2fGUOZpNiHR0IIg==}
+
+  json-schema-library@11.6.16:
+    resolution: {integrity: sha512-DefZu5+3mP4JY0957Eaidr8fDC0ro2ObBz/9mOyyjHQnxLfpt1uevi3hDmzbYexWBiy3HEvtavMaUp90aNli6Q==}
 
   json-schema-to-ts@3.1.1:
     resolution: {integrity: sha512-+DWg8jCJG2TEnpy7kOm/7/AxaYoaRbjVB4LFZLySZlWn8exGs3A4OLJR966cVvU26N7X9TWxl+Jsw7dzAqKT6g==}
@@ -6160,6 +6185,9 @@ packages:
     resolution: {integrity: sha512-Qo+uWgilfSmAhXCMav1uYFynlQO7fMFiMVZsQqZRMIXp0O7rR7qjkj+cPvBHLgBqi960QCoo/PH2/6ZtVqKvrg==}
     hasBin: true
 
+  valid-url@1.0.9:
+    resolution: {integrity: sha512-QQDsV8OnSf5Uc30CKSwG9lnhMPe6exHtTXLRYX8uMwKENy640pU+2BgBL0LRbDh/eYRahNCS7aewCx0wf3NYVA==}
+
   validate-npm-package-name@7.0.2:
     resolution: {integrity: sha512-hVDIBwsRruT73PbK7uP5ebUt+ezEtCmzZz3F59BSr2F6OVFnJ/6h8liuvdLrQ88Xmnk6/+xGGuq+pG9WwTuy3A==}
     engines: {node: ^20.17.0 || >=22.9.0}
@@ -7365,6 +7393,13 @@ snapshots:
     dependencies:
       react: 19.3.1
 
+  '@hyperjump/json-schema-formats@1.1.0':
+    dependencies:
+      '@hyperjump/uri': 1.4.1
+      idn-hostname: 15.1.19
+
+  '@hyperjump/uri@1.4.1': {}
+
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
       minipass: 7.1.3
@@ -8513,6 +8548,8 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
+  '@sagold/json-pointer@7.2.1': {}
+
   '@sec-ant/readable-stream@0.4.1': {}
 
   '@shadcn/react@0.3.1(@types/react@19.3.0)(react@19.3.1)':
@@ -9522,6 +9559,8 @@ snapshots:
     dependencies:
       pure-rand: 8.4.0
 
+  fast-copy@4.3.1: {}
+
   fast-deep-equal@3.1.3: {}
 
   fast-glob@3.3.3:
@@ -9539,6 +9578,8 @@ snapshots:
       fast-string-truncated-width: 3.0.3
 
   fast-uri@3.1.2: {}
+
+  fast-uri@4.2.3: {}
 
   fast-wrap-ansi@0.2.2:
     dependencies:
@@ -9840,6 +9881,10 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  idn-hostname@15.1.19:
+    dependencies:
+      punycode: 2.3.1
+
   ignore@5.3.2: {}
 
   ignore@7.0.5: {}
@@ -10010,6 +10055,15 @@ snapshots:
       bignumber.js: 9.3.1
 
   json-canonicalize@2.0.0: {}
+
+  json-schema-library@11.6.16:
+    dependencies:
+      '@hyperjump/json-schema-formats': 1.1.0
+      '@sagold/json-pointer': 7.2.1
+      fast-copy: 4.3.1
+      fast-deep-equal: 3.1.3
+      fast-uri: 4.2.3
+      valid-url: 1.0.9
 
   json-schema-to-ts@3.1.1:
     dependencies:
@@ -11662,6 +11716,8 @@ snapshots:
   util-deprecate@1.0.2: {}
 
   uuid@14.0.0: {}
+
+  valid-url@1.0.9: {}
 
   validate-npm-package-name@7.0.2: {}
 

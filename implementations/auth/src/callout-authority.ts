@@ -253,6 +253,7 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
  *  their callout here, so they answer with the same options and the same limits. */
 export function serveCallout(nc: CalloutConnection, args: {
   space: string;
+  eventPayloadsWithheld?: boolean;
   /** The provider state dir holding the actor ledger. */
   dir: string;
   callout: Pick<CalloutAuth, "xkey" | "account">;
@@ -266,6 +267,7 @@ export function serveCallout(nc: CalloutConnection, args: {
   connectLimiter?: ConnectLimiter;
 }): { done: Promise<void> } {
   const { space, dir, callout, issuer, hooks } = args;
+  const resolveAcl = chatAwareAclResolver(dir, ledgerAclResolver(dir));
   return startAuthCallout(nc, {
     ...(args.serviceAuthority !== undefined ? { serviceAuthority: args.serviceAuthority } : {}),
     xkeySeed: callout.xkey.seed,
@@ -277,7 +279,7 @@ export function serveCallout(nc: CalloutConnection, args: {
     recordIssuance: hooks.recordIssuance,
     // A chat principal resolves from its closed row (the agent leaf, no role); every other
     // principal from the grant ledger.
-    permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing),
+    permissionsFor: calloutPermissions((token) => ({ ...resolveAcl(token), ...(args.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}) }), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing),
     log: (l) => console.error(l),
     ...(args.limits !== undefined ? { limits: args.limits } : {}),
     ...(args.connectLimiter !== undefined ? { connectLimiter: args.connectLimiter } : {}),

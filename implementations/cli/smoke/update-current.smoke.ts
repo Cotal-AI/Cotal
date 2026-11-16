@@ -16,6 +16,7 @@ const rt: UpdateRuntime = {
 assert.equal(await executeUpdate(true, rt), 0, "current package closure with no newer release reports legacy custody without refusing");
 assert.deepEqual(effects, ["custody"]);
 assert.match(output.join("\n"), /later update will require/i);
+assert.ok(output.some(line => line.includes("installed package closure is current")) && !output.some(line => line.includes("Run `cotal update` to repair connector integrations")), "a current no-op reports its observed current package closure without inventing connector repair work");
 for (const consistent of [false, true]) {
   const actions: string[] = [];
   const denied: UpdateRuntime = { ...rt, isCurrent: () => consistent,

@@ -15,7 +15,7 @@
  *   variant: high              # optional connector-defined model variant
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
  *   agent: jcode           # optional connector/harness pin (flag > file > COTAL_DEFAULT_AGENT > default)
- *   theme: dark            # any unmodelled key is kept verbatim in AgentDef.meta, so a
+ *   theme: dark            # unmodelled, non-reserved scalar keys are kept in AgentDef.meta, so a
  *                          #   connector can read its own launcher hints without core knowing them
  *   ---
  *   <the Markdown body is the persona — an appended system prompt>
@@ -77,6 +77,8 @@ export interface AgentDef {
    *  OpenCode config); a connector with no option surface fails loud. `--opt k=v` on the CLI, a
    *  manifest `launchOptions:`, or a nested `launchOptions:` block here all feed the same bag. */
   launchOptions?: Record<string, unknown>;
+  /** Publish tool arguments and results unless false or withheld by space policy. */
+  eventPayloads?: boolean;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
    *  cred's publish allow-list). `spawn` grants the manager's `spawnCallerCapabilities` ep rows
    *  and `run` the `runCallerCapabilities` rows (the run commands plus the spawn set). Default-deny
@@ -97,8 +99,8 @@ export interface AgentDef {
    *  file (legacy / operator-written) is admin-only, and a caller can never claim ownership of an
    *  existing file. Set once at creation (owner = creator), preserved on every later redefine. */
   owner?: string;
-  /** Frontmatter keys not modelled above, kept verbatim so a connector can read its own launcher
-   *  hints without core knowing about each one. */
+  /** Non-reserved scalar frontmatter keys not modelled above, kept verbatim so a connector can
+   *  read its own launcher hints without core knowing about each one. */
   meta?: Record<string, string>;
   /** Markdown body — the agent's persona / appended system prompt. */
   persona?: string;
@@ -129,7 +131,7 @@ export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
 /** Frontmatter keys {@link AgentDef} models. The parser keeps them out of `meta`, and the writer
  *  refuses a `meta` entry that names one, so a hint can never overwrite a field the file models. */
-const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "endpoints", "owner"]);
+const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "eventPayloads", "capabilities", "endpoints", "owner"]);
 
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
@@ -204,6 +206,12 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
         `agent file ${path}: "${old}" was renamed - use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
       );
 
+  for (const key of ["cwd", "worktree"])
+    if (key in fm)
+      throw new Error(
+        `agent file ${path}: "${key}" is not supported in frontmatter; the working directory comes from the spawn request (use --cwd)`,
+      );
+
   const subscribe = list("subscribe");
   const allowSubscribe = list("allowSubscribe");
   const allowPublish = list("allowPublish");
@@ -251,6 +259,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
   // Opaque connector-specific launch options — a mapping core never interprets (each connector
   // reads its own keys). A scalar/sequence here is a config error (it must be `key: value` pairs).
+  if (fm.eventPayloads !== undefined && typeof fm.eventPayloads !== "boolean")
+    throw new Error(`agent file ${path}: "eventPayloads" must be a boolean`);
   const launchOptionsRaw = fm["launchOptions"];
   let launchOptions: Record<string, unknown> | undefined;
   if (launchOptionsRaw !== undefined && launchOptionsRaw !== null) {
@@ -279,6 +289,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     model,
     variant,
     launchOptions,
+    eventPayloads: fm.eventPayloads as boolean | undefined,
     capabilities: list("capabilities"),
     endpoints: parsePersonaEndpoints(fm["endpoints"], `agent file ${path}`),
     owner: str("owner"),
@@ -318,6 +329,10 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   // all quoting/escaping (a value with a `:`/`#`/`[`/quote round-trips safely, which the old
   // hand-rolled writer had to special-case). `lineWidth: 0` keeps scalars on one line (no folding).
   const fm: Record<string, unknown> = { name: def.name };
+  if (def.eventPayloads !== undefined) {
+    if (typeof def.eventPayloads !== "boolean") throw new Error('saveAgentFile: "eventPayloads" must be a boolean');
+    fm.eventPayloads = def.eventPayloads;
+  }
   if (def.role) fm.role = def.role;
   if (def.kind) fm.kind = def.kind;
   if (def.description) fm.description = def.description;

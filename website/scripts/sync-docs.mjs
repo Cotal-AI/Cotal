@@ -79,7 +79,7 @@ const navigation = [
       ]),
     ]),
     group('Specification', [page('SPEC.md')]),
-    group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
+    group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'upgrade-matrix', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
   ] },
   { section: 'api-reference', title: 'API Reference', children: [
     page('docs/overview.mdx'),

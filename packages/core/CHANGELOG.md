@@ -1,5 +1,116 @@
 # @cotal-ai/core
 
+## 0.164.18
+
+No changes in this release.
+
+## 0.164.17
+
+No changes in this release.
+
+## 0.164.16
+
+No changes in this release.
+
+## 0.164.15
+
+No changes in this release.
+
+## 0.164.14
+
+No changes in this release.
+
+## 0.164.13
+
+No changes in this release.
+
+## 0.164.12
+
+No changes in this release.
+
+## 0.164.11
+
+No changes in this release.
+
+## 0.164.10
+
+### Patch Changes
+
+- 2a4d8fa: A host can replace one space's account record without rewriting the broker record every space shares. `replaceSpaceAccountAuth(store, record)` in `@cotal-ai/workspace` puts that space's account record through a `SecretStore` and writes no other key, for persisting a data signing-key rotation or rolling one back. It replaces an existing record only: it refuses when the broker record or the account record is missing, blank or outside the broker's chain, and when the replacement is another account, was issued by another operator, or holds a signing seed its claim does not trust. A record equal to the stored one is not written again, and after a write the record is read back. It is not atomic across keys, so the host must keep other writers of the space's trust records out for the call. `validateSpaceAccountAuth(broker, record, space?)` in `@cotal-ai/core` is the check it uses: the account checks of `validateSpaceAuth` for any space on a broker, where `validateSpaceAuth` accepts only the space the operator is named for.
+
+## 0.164.9
+
+### Patch Changes
+
+- 3664f96: Expose the native bindings of a hosted delivery context's data-account connections. `startDeliveryService` now returns a `DeliveryServiceHandle` whose `nativeConnections()` lists the server id and client id of the endpoint, membership-rw and timer-writer connections, so a host can compare them with the account's native census. It throws while a connection is down, redialing or adopting a credential, and reports none only after a successful close. `CotalEndpoint.nativeConnections()` and `MembershipFeedHandle.nativeDataConnections()` give the same bindings for one endpoint or one feed. No credential or connection object is returned.
+- a926514: `rotateDataAccountSigningKey` now keeps the account's policy. It used to re-issue the data-account claim from the stock defaults, so a rotation removed the account's connection limit, its leaf-node limit, every per-user revocation and its expiry. It now re-issues the claim as it stands with one new signing key as the whole signing-key set: subject, issuer, name, expiry, limits, revocations, imports and exports are kept, and a hibernated or retired claim stays hibernated or retired. A claim that cannot be re-issued whole refuses instead of losing something: one another operator signed, one for another account than the auth's account seed, an expired or not yet valid one, an invalid revocation map, a top-level JWT field outside the registered ones, and a scoped signing key. Callers that relied on a rotation to reset an account's limits or clear its revocations must now change the claim themselves.
+
+## 0.164.8
+
+No changes in this release.
+
+## 0.164.7
+
+### Patch Changes
+
+- 1c18181: Keep remote Manager registrations protected while their registration executor is connected.
+  
+  Host reconciliation now requires complete liveness evidence that both the target's serving principal and its separate registration executor are gone before changing its credential family or reopening its gate. The executor identity comes from the target gate, including for cross-owner recovery. Abandoned registrations remain recoverable, and incomplete evidence refuses recovery.
+
+## 0.164.6
+
+### Patch Changes
+
+- b86b5c5: Waking a space keeps its migration revocations, even after a long sleep. Static credentials can have no expiry, so removing an old wildcard fence could let a revoked credential connect again.
+
+## 0.164.5
+
+No changes in this release.
+
+## 0.164.4
+
+### Patch Changes
+
+- e61e70d: `cotal channel remove --purge` removes a channel's saved entry when the chat stream is already gone. The receipt says 0 messages were purged instead of reporting the change as unconfirmed.
+- e61e70d: `channel remove` reports a no-op when the channel registry bucket is already gone. It no longer says the change may have been applied.
+- e61e70d: `cotal clean history` purges the streams that are still on the broker when another requested stream is already gone. A missing chat stream no longer leaves direct messages in place under `stream not found`.
+- e61e70d: `cotal history --dms` warns when the direct-message stream is not on the broker and reports a partial read. Channel history is still shown. A missing stream is no longer reported as a complete history with no direct messages.
+- d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
+  
+  The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+
+## 0.164.3
+
+No changes in this release.
+
+## 0.164.2
+
+No changes in this release.
+
+## 0.164.1
+
+### Patch Changes
+
+- 30c1f57: A participant whose name is blank is shown by its id. This covers `cotal watch`, `who`, `endpoints`, `channel members`, `join`, `chat`, the console, the compose target and palette, the terminal UI, the dashboard badge, the connector roster, orientation and inbox, a Hermes injected turn, the offline notice, the ambiguous-name error and the pending delivery label. A blank name used to print as nothing or as a line break. The same now holds for a pi mention, a once-task spawner, space delete, a DM recipient in chat, the Manager list, a legacy seat, the attach picker, the preserve refusal, teardown, the join receipt, the console agent and confirm lines, a spawn result, an anycast take or DM result, a pane label in the Manager's browser console, and the principals `cotal chat --plain` names for a shared display name.
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- f01f90a: An agent with no read channels can still be started by a client older than 0.163.0. The credential may ask whether its own delivery durable exists. The durable stays absent, and the credential still cannot fetch or ack it.
+- 471b464: Agents on older hosts keep publishing tool names and times when their credentials cannot inspect the payload stream.
+  
+  Only a broker publish-permission refusal for the payload stream info request disables new payload publication. Other failures remain errors, and previously frozen payloads remain pending until their rail is available.
+- b16460a: Readers drop a presence row whose name is only whitespace. A blank name cannot identify the participant a refusal prints.
+
 ## 0.163.5
 
 ### Patch Changes

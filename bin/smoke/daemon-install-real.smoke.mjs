@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 if (process.env.COTAL_TEST_REAL_SERVICE !== "1" || process.env.GITHUB_ACTIONS !== "true"
   || process.env.RUNNER_ENVIRONMENT !== "github-hosted"
@@ -15,9 +15,15 @@ if (process.env.COTAL_TEST_REAL_SERVICE !== "1" || process.env.GITHUB_ACTIONS !=
   process.exit(2);
 }
 
-const { mkSecretDir } = await import("@cotal-ai/core");
-const { daemonPathsFor } = await import("../dist/daemon/endpoint.js");
-const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
+const packageRoot = process.env.COTAL_TEST_PACKAGE_ROOT ? resolve(process.env.COTAL_TEST_PACKAGE_ROOT) : fileURLToPath(new URL("..", import.meta.url));
+const cli = join(packageRoot, "dist", "cotal.js");
+const installedImport = name => pathToFileURL(join(packageRoot, "dist", "daemon", name)).href;
+const coreRoot = join(packageRoot, "node_modules", "@cotal-ai", "core");
+const coreManifest = JSON.parse(readFileSync(join(coreRoot, "package.json"), "utf8"));
+assert.equal(coreManifest.name, "@cotal-ai/core");
+assert.equal(coreManifest.version, JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version);
+const { mkSecretDir } = await import(pathToFileURL(join(coreRoot, "dist", "index.js")).href);
+const { daemonPathsFor } = await import(installedImport("endpoint.js"));
 assert.ok(existsSync(cli), "build the stock CLI first");
 const root = realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP, "cotal-service-")));
 mkSecretDir(root);
@@ -142,6 +148,27 @@ try {
   ok("start");
   const second = (await statusUntil(true)).body.result;
   check("start preserves the running instance", second.pid === first.pid && second.startedAt === first.startedAt);
+  if (process.platform === "win32") {
+    const seatRoot = join(packageRoot, "node_modules", "@cotal-ai", "seat");
+    const seatManifest = JSON.parse(readFileSync(join(seatRoot, "package.json"), "utf8"));
+    check("installed seat helper matches the installed CLI version", seatManifest.name === "@cotal-ai/seat"
+      && seatManifest.version === JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version);
+    const { processStartTime } = await import(pathToFileURL(join(seatRoot, "dist", "index.js")).href);
+    const beforeBirth = processStartTime(second.pid);
+    check("restart pins the old daemon's kernel birth", typeof beforeBirth === "string" && beforeBirth.length > 0);
+    const sourceBefore = readFileSync(plan.unitPath);
+    const receiptBefore = readFileSync(receipt);
+    const script = `process.argv=[process.execPath,${JSON.stringify(cli)}]; process.execArgv=[]; const {restartInstalled}=await import(${JSON.stringify(installedImport("install.js"))}); const {daemonPathsFor}=await import(${JSON.stringify(installedImport("endpoint.js"))}); await restartInstalled(daemonPathsFor(${JSON.stringify(home)}),${JSON.stringify(home)});`;
+    const restarted = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 240_000, maxBuffer: 256 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    report.calls.push({ verb: "restartInstalled", exit: restarted.status, signal: restarted.signal, stderr: (restarted.stderr ?? "").slice(0, 4096) });
+    if (restarted.error || restarted.signal || restarted.status === null) uncertain = true;
+    check("shipped installed restart completes", restarted.status === 0 && !restarted.error && !restarted.signal);
+    const replacement = (await statusUntil(true)).body.result;
+    const afterBirth = processStartTime(replacement.pid);
+    check("restart replaces the old kernel lifetime", typeof afterBirth === "string"
+      && (replacement.pid !== second.pid || afterBirth !== beforeBirth) && processStartTime(second.pid) !== beforeBirth);
+    check("restart retains the exact task source and receipt", readFileSync(plan.unitPath).equals(sourceBefore) && readFileSync(receipt).equals(receiptBefore));
+  }
   uninstallAttempted = true;
   const removed = ok("uninstall", "--yes");
   check("uninstall confirms the planned service", removed.state === "removed" && removed.unit === plan.unit);
@@ -162,7 +189,7 @@ try {
     uninstallAttempted = true;
     check("installed stopped daemon uninstall succeeds", ok("uninstall", "--yes").state === "removed");
     await verifyRemoved();
-    const delayed = spawnSync(process.execPath, [fileURLToPath(new URL("../dist/daemon-native.js", import.meta.url)), "daemon", "serve", "--daemon-home", home], {
+    const delayed = spawnSync(process.execPath, [join(dirname(cli), "daemon-native.js"), "daemon", "serve", "--daemon-home", home], {
       encoding: "utf8", timeout: 30_000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     });
     check("delayed native child after uninstall refuses", delayed.status !== null && delayed.status !== 0 && !delayed.error && !delayed.signal);

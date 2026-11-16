@@ -1,4 +1,4 @@
-import type { ValidateFunction } from "ajv";
+import type { ContractValidator } from "./contract-validator.js";
 import { contractDigest } from "./canonical.js";
 import { spacePrefix } from "./subjects.js";
 import { parseEpSubject, type ParsedEpRequest } from "./endpoint-subjects.js";
@@ -21,7 +21,7 @@ export interface ParsedDescribeObservation {
   replyExpected: boolean;
   deadlineMs?: number;
 }
-let voidValidator: ValidateFunction | undefined;
+let voidValidator: ContractValidator | undefined;
 
 /** Syntax and complete-JSON binding only. The caller must independently establish actual receipt. */
 export function parseDescribeObservation(space: string, subject: string, originalEnvelope: unknown): ParsedDescribeObservation {

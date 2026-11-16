@@ -433,6 +433,7 @@ export async function runCodexHost(): Promise<void> {
         // instead of leaving an outer copy that keeps writing the same value.
         const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor);
         const em = await AguiEmitter.start<CodexRecord>({
+          withholdPayloads: config.eventPayloadsWithheld,
           endpoint: agent.ep,
           wal,
           subjectFrontier,
@@ -878,6 +879,7 @@ export async function runCodexHost(): Promise<void> {
   };
 
   driver.on("turnStarted", () => {
+    agent.noteActivity();
     flushEvents();
     // Invalidate any prior turn's still-pending async boundary tail: a new turn owning presence
     // now means T(n-1)'s flush/status/pump must no longer publish a stale `idle` over this
@@ -899,6 +901,7 @@ export async function runCodexHost(): Promise<void> {
     completeTurn(status, owned);
   });
   driver.on("itemStarted", (item: ThreadItem) => {
+    agent.noteActivity();
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
@@ -908,9 +911,11 @@ export async function runCodexHost(): Promise<void> {
     }
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
+    agent.noteActivity();
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
+  driver.on("work", () => agent.noteActivity());
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
    *  replacement. From that moment the tail owns NOTHING: continuing would set the context id,

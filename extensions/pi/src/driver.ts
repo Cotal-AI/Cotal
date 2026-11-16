@@ -134,7 +134,8 @@ export class PiDriver {
 
   onMentionWake(item: InboxItem): void {
     if (this._state === "shuttingDown") return;
-    const who = item.fromRole ? `${item.fromName}/${item.fromRole}` : item.fromName;
+    const name = item.fromName.trim() ? item.fromName : item.fromId;
+    const who = item.fromRole ? `${name}/${item.fromRole}` : name;
     this.nudges.push(
       `Cotal: you were @mentioned on #${item.channel} by ${who} while focused. ` +
         "The body is held; read it with cotal_inbox and reply with cotal_send if warranted.",

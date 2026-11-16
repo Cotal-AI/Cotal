@@ -12,6 +12,7 @@ import {
   eventChannelPrincipal,
   resolvePeer as resolvePeerInRoster,
   peerLabel,
+  shownPeerName,
   CotalEndpoint,
   acquireLocalConsumer,
   type HeldLock,
@@ -20,6 +21,8 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
+  undeclaredArg,
+  undeclaredArgInstance,
   EP_UNANSWERED,
   controlReplyFrom,
   controlReplyFromThrown,
@@ -56,6 +59,7 @@ import { TURN_PULL_RETRY_MS } from "./turn-poll.js";
 import { ONCE_HANDOFF_MS, claimOnceHandoff, confirmOnceHandoff, endOnceHandoff, exitOnceSeat, onOnceHandoffTimeout, onceHandoffState, sealOnceHandoff, stopOnceHandoffTimer } from "./once.js";
 import { attributionSafe } from "./framing.js";
 import { invokeUserManager, withUserManagerListing } from "./manager-call.js";
+import { CONNECTOR_VERSION } from "./version.generated.js";
 
 // Attention modes + per-channel overrides are defined in core (they're published in presence now);
 // re-exported so connector consumers keep importing them from `@cotal-ai/connector-core`.
@@ -327,15 +331,28 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
 const MAX_ENDPOINT_NOTICES = 16;
 /** How many present names a DM miss lists before it starts counting them instead. */
 const NAMED_SIMILAR = 5;
-/** How many turns the run settled before this seat yielded them one session remembers. The
- *  manager serves a seat one turn at a time, so a short memory covers every late yield. */
+/** How many settled turns one session remembers. The manager serves a seat one turn at a time, so
+ *  a short memory covers every late yield. */
 const MAX_SETTLED_TURNS = 32;
 
-/** The refusal for a yield on a turn the run settled first, so a seat that was shown the turn
- *  learns why the run will not take its result instead of being told no turn exists. */
-function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unknown }): string {
+/** A turn that left this seat: the run settled it (its deadline, or its manager for a once task),
+ *  or this seat yielded it. */
+type SettledTurn = { deadlineAt?: number; once?: true; yielded?: "done" | "blocked" | "handoff" };
+
+/** The refusal for a yield on a turn that already settled, so a seat that was shown the turn
+ *  learns why the run will not take this result instead of being told no turn exists. */
+function settledTurnError(goalId: string, t: { deadlineAt?: number; once?: unknown; yielded?: SettledTurn["yielded"] }): string {
+  if (t.yielded !== undefined)
+    return `turn "${goalId}" was already yielded ${t.yielded} by this seat${t.yielded === "done" ? " (ending a session turn yields done)" : ""}, so this yield was not recorded`;
   const deadline = t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : "";
   return `turn "${goalId}" was already settled ${t.once !== undefined ? "by its manager" : "by the run"}${deadline}, so this yield was not recorded`;
+}
+
+/** Order two `x.y.z` releases by their numbers, ignoring a prerelease or build suffix. */
+function compareRelease(a: string, b: string): number {
+  const [x, y] = [a, b].map((v) => v.split(/[-+]/)[0]!.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if (x![i] !== y![i]) return (x![i] ?? 0) - (y![i] ?? 0);
+  return 0;
 }
 
 /** One relayed run turn this seat has pulled and not yet yielded. `surfaced` flips when the
@@ -604,9 +621,10 @@ export class MeshAgent extends EventEmitter {
    *  `done`). The pull is also the reconciler: a turn settled elsewhere (deadline, another yield
    *  path) vanishes from `turn-pending`, and the manager's notice for it brings the pull that drops it. */
   private activeTurns = new Map<string, ActiveTurn>();
-  /** Deadlines of turns the run settled before this seat yielded them, by goal id, so a late yield
-   *  is refused with {@link settledTurnError}. Bounded by {@link MAX_SETTLED_TURNS}. */
-  private settledTurns = new Map<string, { deadlineAt?: number; once?: true }>();
+  /** Turns that left this seat, by goal id: the run's settlement with its deadline, or this seat's
+   *  own yield, so a late yield is refused with {@link settledTurnError}. Bounded by
+   *  {@link MAX_SETTLED_TURNS}. */
+  private settledTurns = new Map<string, SettledTurn>();
   /** Goals whose yield the manager answered since the current pull began. That pull may have
    *  snapshotted a goal before its answer; taking it back would surface the settled turn again, and
    *  the next pull would record it as the run's settlement. */
@@ -2557,7 +2575,7 @@ export class MeshAgent extends EventEmitter {
     if (matches.length > 1)
       throw new Error(
         `"${target}" is ambiguous - ${matches.length} known peers share that name; ` +
-          `DM by instance id instead: ${matches.map(([id, n]) => `${n} (${id})`).join("; ")}`,
+          `DM by instance id instead: ${matches.map(([id, n]) => `${shownPeerName(n, id)} (${id})`).join("; ")}`,
       );
     const match = matches[0];
     return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
@@ -2930,6 +2948,9 @@ export class MeshAgent extends EventEmitter {
           outcome: "unknown",
           data: { goalId: submitted.requestId, submissionUnknown: true },
         };
+        const undeclared = undeclaredArg(e);
+        if (undeclared !== undefined && command !== "status")
+          return { ...controlReplyFromThrown(e, await this.undeclaredArgMessage(command, e, undeclared)), ...(e.outcome ? { outcome: e.outcome } : {}) };
         const unknownDefinition = command === "define-persona" && e.outcome !== "not-executed" &&
           e.code === "deadline-exceeded" && e.details?.some(d => d.kind === EP_UNANSWERED && d.command === command);
         const unknownYield = command === "turn-yield" && e.code === "deadline-exceeded" && e.outcome === "unknown" &&
@@ -2951,6 +2972,23 @@ export class MeshAgent extends EventEmitter {
       instanceId: r.responder?.instanceId,
       ...(r.reply.error?.outcome ? { outcome: r.reply.error.outcome } : {}),
     };
+  }
+
+  /** The refusal of an argument the manager's contract does not declare. This connector built the
+   *  args from its own release's schema, so the manager runs a different release. The version the
+   *  bound manager reports says which side to update; an unbound request names no manager to ask. */
+  private async undeclaredArgMessage(command: string, e: EpEnvelopeError, key: string): Promise<string> {
+    const head = `${e.code}: ${e.message}. The manager's ${command} does not take "${key}", which this connector at Cotal ${CONNECTOR_VERSION} sends`;
+    const instanceId = undeclaredArgInstance(e);
+    const answer = instanceId === undefined ? undefined : await this.managerInvoke("status", undefined, { instanceId }).catch(() => undefined);
+    const reported = answer?.ok === true && answer.instanceId === instanceId ? (answer.data as { version?: unknown } | undefined)?.version : undefined;
+    const manager = typeof reported === "string" && /^\d+\.\d+\.\d+/.test(reported) ? reported : undefined;
+    const updateManager = `on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "${key}", call again without it`;
+    if (manager === undefined) return `${head}, so the manager most likely runs an older Cotal: ${updateManager}`;
+    const order = compareRelease(CONNECTOR_VERSION, manager);
+    if (order > 0) return `${head}. The manager runs Cotal ${manager}, the older side: ${updateManager}`;
+    if (order < 0) return `${head}. The manager runs Cotal ${manager}, so this connector is the older side: run \`cotal update --self\` here and start a new session`;
+    return `${head}. The manager also reports Cotal ${manager}, so one side is another build of that version: reinstall that side`;
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
@@ -3251,6 +3289,7 @@ export class MeshAgent extends EventEmitter {
     // A once seat holds its task and nothing else (the manager refuses it any other turn).
     const once = waiting.find((t) => t.once !== undefined);
     if (once !== undefined) return { text: renderOnceTask({ goalId: once.goalId, payload: once.payload, spawner: once.once?.spawner, deadlineAt: once.deadlineAt }), goalIds: [once.goalId], once: true };
+    let asked = false;
     const blocks = waiting.map((t) => {
       let context = t.payload;
       let ask = "";
@@ -3259,12 +3298,15 @@ export class MeshAgent extends EventEmitter {
         if (typeof p.context === "string" && p.context.length > 0) context = p.context;
         ask = renderAskRequest(p);
       } catch { /* opaque payload — surface it as it came */ }
+      if (ask !== "") asked = true;
       return `— turn ${t.goalId}${t.deadlineAt !== undefined ? ` (deadline ${new Date(t.deadlineAt).toISOString()})` : ""}:\n${context}${ask}`;
     });
+    // The ask sentence only when a block above carries a route: a plain turn NAMED "ask"
+    // (`/turn:ask#0`) has none, and a seat told to answer one went looking for a question never sent.
     const text =
       `🎯 Cotal — a run handed you ${waiting.length === 1 ? "its turn" : `${waiting.length} turns`}:\n` +
       `${blocks.join("\n")}\n` +
-      `(Do the work now with your own tools. An ask must be answered through its native route above before ending your host turn. ` +
+      `(Do the work now with your own tools. ${asked ? "An ask must be answered through its native route above before ending your host turn. " : ""}` +
       `For ordinary turns, ending your turn yields "done" automatically; call cotal_yield when blocked or handing off an ordinary turn.)`;
     return { text, goalIds: waiting.map((t) => t.goalId) };
   }
@@ -3396,8 +3438,9 @@ export class MeshAgent extends EventEmitter {
     }
     this.activeTurns.delete(t.goalId);
     // A poll that ran while this yield was in flight saw the turn gone and took it for the run's
-    // settlement; the manager's answer says this yield settled it.
-    this.settledTurns.delete(t.goalId);
+    // settlement; the manager's answer says this yield settled it. Remembering the yield tells a
+    // later one, such as a worker's own after its session turn ended, that the turn already settled.
+    this.rememberSettled(t.goalId, { yielded: status });
     return r;
   }
 
@@ -3406,7 +3449,13 @@ export class MeshAgent extends EventEmitter {
     // A once task settled without this seat (its deadline, or a stop) ends its handoff too.
     if (t.once !== undefined) endOnceHandoff(this.onceUid(), t.goalId);
     this.activeTurns.delete(t.goalId);
-    this.settledTurns.set(t.goalId, { ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(t.once !== undefined ? { once: true as const } : {}) });
+    this.rememberSettled(t.goalId, { ...(t.deadlineAt !== undefined ? { deadlineAt: t.deadlineAt } : {}), ...(t.once !== undefined ? { once: true as const } : {}) });
+  }
+
+  /** Record a settled turn as the newest, which a yield naming no turn reports. */
+  private rememberSettled(goalId: string, settled: SettledTurn): void {
+    this.settledTurns.delete(goalId);
+    this.settledTurns.set(goalId, settled);
     if (this.settledTurns.size > MAX_SETTLED_TURNS) this.settledTurns.delete(this.settledTurns.keys().next().value!);
   }
 

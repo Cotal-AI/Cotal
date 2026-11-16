@@ -51,6 +51,7 @@ interface InstallOptions {
   readonly noManager?: boolean;
   readonly space?: string;
   readonly version?: string;
+  readonly omittedRelativePathEntries?: readonly string[];
   readonly paths: DaemonPaths;
   readonly daemonHome: string | undefined;
   readonly peerUid?: PeerUid;
@@ -62,6 +63,7 @@ export interface SetupOptions extends InstallOptions {
   readonly space: string;
   readonly idp?: string;
   readonly clientId?: string;
+  readonly discoveryPins?: { url: string; issuer: string; audience: string };
   /** Seconds to wait for the space owner's approval. 0 reports what it reached and stops. */
   readonly waitSeconds: number;
   /** Progress for a terminal, one line per step. */
@@ -75,21 +77,21 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Wait for the daemon to answer its endpoint after a start, so the steps below reach a live one. */
 async function waitForDaemon(opts: InstallOptions, seconds: number): Promise<void> {
   const deadline = Date.now() + seconds * 1000;
-  let last: unknown;
+  let notAnswering = false;
   for (;;) {
     try {
       const reply = await queryDaemon({ paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid });
       if (reply.ok && (!opts.version || reply.result.version === opts.version) && reply.result.protocol === DAEMON_PROTOCOL_VERSION) return;
-      last = reply.ok ? `the daemon still runs Cotal ${reply.result.version}` : reply.error;
+      notAnswering = false;
     } catch (e) {
       // NOT_RUNNING and PEER_NOT_LOCK_OWNER are both "not up yet" while a unit is starting.
       if (!(e instanceof EndpointRefusal) || (e.code !== "NOT_RUNNING" && e.code !== "PEER_NOT_LOCK_OWNER")) throw e;
-      last = e.message;
+      notAnswering = true;
     }
     if (Date.now() >= deadline) {
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the daemon did not answer ${opts.paths.socket} within ${seconds}s of being started; nothing was registered`, {
         remedy: "read its unit with systemctl --user status, then run this again",
-        ...(typeof last === "string" ? { native: { code: "NOT_ANSWERING" } } : {}),
+        ...(notAnswering ? { native: { code: "NOT_ANSWERING", detail: { waitSeconds: seconds } } } : {}),
       });
     }
     await sleep(250);
@@ -130,7 +132,7 @@ async function ensureInstalled(opts: InstallOptions, steps: SetupStep[]): Promis
         native: { code: "RUNNING_WITHOUT_UNIT" },
       });
     }
-    const installed = applyInstall(opts.paths, opts.daemonHome);
+    const installed = applyInstall(opts.paths, opts.daemonHome, opts.omittedRelativePathEntries);
     unit = installed.unit;
     outcome = "installed";
     detail = `${installed.unit} installed${installed.mechanism === "systemd-user" ? `, ${installed.lingerAlready ? "linger was already enabled" : "linger enabled"}` : ""}, restart ${installed.restart}, started by ${installed.wantedBy}`;
@@ -227,7 +229,7 @@ export async function runAccountSetup(opts: Omit<SetupOptions, "space" | "waitSe
   const discovery = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
   const signedIn = discovery.ok && !("event" in discovery) && "signedInProviders" in discovery.result
     && discovery.result.signedInProviders?.includes(opts.idp);
-  if (!signedIn) {
+  if (!signedIn || opts.discoveryPins) {
     if (opts.existingSignInOnly) throw new CommandFailure("refused", "AUTH_REQUIRED", "The daemon is not signed in; pass --idp <url> to connect an account");
     const signed = await loginFromCli(opts);
     if (!signed.ok) throw new CommandFailure("refused", "AUTH_REQUIRED", signed.message, { native: { code: signed.code } });
@@ -296,6 +298,7 @@ async function ensureSignedIn(opts: SetupOptions, steps: SetupStep[]): Promise<R
   opts.report("sign-in: approve this machine on another device", { step: "sign-in", outcome: "running", detail: "approve this machine on another device" });
   const reply = await loginFromCli({
     paths: opts.paths, peerUid: opts.peerUid, peerPid: opts.peerPid, idp: opts.idp,
+    discoveryPins: opts.discoveryPins,
     ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
     onPrompt: opts.onPrompt,
   });
@@ -376,6 +379,14 @@ export async function runSetup(opts: SetupOptions): Promise<SetupResult> {
   const steps: SetupStep[] = [];
   let discoveredSignIn = false;
   const unit = await ensureInstalled(opts, steps);
+  if (opts.discoveryPins) {
+    const listed = await exchangeDesktopRequest(opts, { op: "spaces" });
+    const provider = listed.ok && !("event" in listed) && "spaces" in listed.result
+      ? listed.result.spaces.find(entry => entry.space === opts.space)?.idp : undefined;
+    if (provider !== undefined && normalizeIdpUrl(provider) !== normalizeIdpUrl(opts.discoveryPins.url)) {
+      throw new CommandFailure("refused", "USAGE_INVALID", "--idp does not match the space's pinned sign-in provider; no sign-in was started and nothing was registered", { native: { code: "IDP_MISMATCH" } });
+    }
+  }
   if (!opts.noManager) {
     let discovered = await exchangeDesktopRequest(opts, { op: "spaces", refresh: true });
     const hasSpace = () => discovered.ok && !("event" in discovered) && "spaces" in discovered.result && discovered.result.spaces.some((entry) => entry.space === opts.space);

@@ -85,7 +85,8 @@ press on a message opens its actions from the bottom.
 | Topology | Agents and channels connected by channel membership, with links that glow as messages flow. |
 | Agent page | One agent at `#/agent/<id>`, with Work, Messages and Profile tabs. |
 
-The roster shows status by shape and color, role, activity, and harness.
+The roster shows status by shape and color, role, activity, and harness. A role that is only
+whitespace is shown as no role.
 The agent page, the panel's Agent tab and the waiting cards also show reported conditions,
 how long the status has stood, when the activity was set, and when the last work event occurred.
 Missing stamps stay undated. Ages use the same whole-unit rounding down as the CLI; a heartbeat
@@ -99,7 +100,8 @@ badge. The badge holds the first letter of the agent's name, plus its number whe
 one (`reviewer_2` reads R2), on one of eight colours chosen from the name. When two live agents land
 on one colour, the one later in name order takes the next free colour, so every browser draws the
 same colours for the same agents. When two live agents share a first letter, both badges take two
-letters (`lead` and `logic` read Le and Lo). An offline agent's badge turns grey and keeps its
+letters (`lead` and `logic` read Le and Lo). A name that is only whitespace is not used, so the
+letter and the colour come from the id. An offline agent's badge turns grey and keeps its
 letter. Below 26 pixels the badge is a colour dot with no letter. A message read from history has no
 verified sender, so its row gets no badge.
 
@@ -120,6 +122,9 @@ peek with the last three steps of its current turn and `Open <name>'s page`), by
 on a live message from an agent on the roster (the page opens on Work at that message,
 `#/agent/<id>/work/<message id>`), or by opening the channel `events.<owner>.<actor>` by name. A
 message read from history gets no View work.
+
+Work keeps tool names and times when a tool payload read times out, is refused, or fails.
+It identifies that read failure separately from payloads that were not received, and keeps any inputs or results already shown.
 
 Work shows what the agent publishes on its [event plane](claude-connector-reference.mdx#event-plane):
 its turns with how long each took, its tool calls grouped when no text sits between them, its text,
@@ -212,6 +217,7 @@ Invalid names are refused rather than rewritten into a different channel.
 
 Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
 The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
+Its complete body must arrive within ten seconds. Otherwise it returns `408`, closes the connection and leaves the channel unchanged.
 That route is not an action in the current service. Use the console or authorized CLI `channel remove` instead. A session-gate refusal also closes a request with an announced body.
 Ordinary bodyless requests keep their connection. The configured read-only service refuses deletion before reaching its mutation handler.
 

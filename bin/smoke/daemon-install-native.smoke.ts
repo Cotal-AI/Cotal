@@ -93,7 +93,7 @@ function recorder(answer: (call: Call) => Partial<NativeResult>): { run: NativeR
 
 // The physical path: macOS puts the temp dir under /var, a symlink, which a protected service
 // directory refuses as it would for a user, and the fixture home here stands in for a real one.
-const root = realpathSync(mkdtempSync(join(tmpdir(), "dni-")));
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), "dni-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
@@ -122,6 +122,16 @@ try {
     check("directory is carried by the bootstrap's arguments", text.includes(`<string>${xmlText(bootstrap)}</string><string>/Users/a</string><string>daemon</string><string>serve</string>`));
     const alias = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, "/usr/local/bin/cotal", "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
     check("a CLI alias still pins this package's bootstrap", alias.text.includes(`<string>${xmlText(bootstrap)}</string>`) && !alias.text.includes("/usr/local/bin/daemon-cwd.js"));
+    const logicalRoot = join(root, "logical/cotal-ai");
+    mkdirSync(join(logicalRoot, "dist"), { recursive: true });
+    writeFileSync(join(logicalRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "./dist/cotal.js" } }));
+    const logicalEntry = join(logicalRoot, "dist/cotal.js");
+    writeFileSync(logicalEntry, "");
+    Reflect.set(globalThis, Symbol.for("cotal.execution.identity"), Object.freeze({ logicalEntry, loadedEntry: logicalEntry }));
+    try {
+      const retained = renderLaunchAgent({ label: "ai.cotal.daemon", argv: [node, logicalEntry, "daemon", "serve"], searchPath: "/bin", workingDirectory: "/Users/a", logPath: "/log" });
+      check("a retained process pins the validated logical installation wrapper", retained.text.includes(`<string>${xmlText(join(logicalRoot, "dist/daemon-cwd.js"))}</string>`) && !retained.text.includes(`<string>${xmlText(bootstrap)}</string>`));
+    } finally { Reflect.deleteProperty(globalThis, Symbol.for("cotal.execution.identity")); }
     check("no unobservable WorkingDirectory property is emitted", !text.includes("<key>WorkingDirectory</key>"));
     check("LaunchAgent allows bounded Manager retirement", text.includes("<key>ExitTimeOut</key><integer>90</integer>"));
     check("KeepAlive and RunAtLoad are true", text.includes("<key>KeepAlive</key><true/>") && text.includes("<key>RunAtLoad</key><true/>"));
@@ -219,6 +229,26 @@ try {
     check("restarting a loaded owned job force-kickstarts only its exact target", JSON.stringify(r.calls.map(c => [c.file, ...c.args])) === JSON.stringify([
       ["/bin/launchctl", "print", target], ["/bin/launchctl", "kickstart", "-k", target],
     ]), r.calls);
+    for (const [labelText, stdout, expected] of [
+      ["absent entry is enabled", "disabled services = {\n}\n", true],
+      ["false entry is enabled", `disabled services = {\n\t"${label}" => false\n}\n`, true],
+      ["enabled entry is enabled", `disabled services = {\n\t"${label}" => enabled\n}\n`, true],
+      ["true entry is disabled", `disabled services = {\n\t"${label}" => true\n}\n`, false],
+      ["disabled entry is disabled", `disabled services = {\n\t"${label}" => disabled\n}\n`, false],
+    ] as const) {
+      const probe = recorder(call => call.args[0] === "print-disabled" ? { status: 0, stdout } : { status: 113 });
+      check(`launchd isEnabled: ${labelText}`, launchAgentService(probe.run, () => originalJob).isEnabled?.(receipt) === expected, probe.calls);
+    }
+    for (const [labelText, reply, expectedCode] of [
+      ["non-zero exit refuses TARGET_UNAVAILABLE", { status: 1, stdout: "", detail: "domain unavailable" }, "TARGET_UNAVAILABLE"],
+      ["missing block header refuses TARGET_UNAVAILABLE", { status: 0, stdout: `"${label}" => false\n` }, "TARGET_UNAVAILABLE"],
+      ["unparsed entry line refuses TARGET_UNAVAILABLE", { status: 0, stdout: `disabled services = {\n\tmalformed line\n\t"${label}" => false\n}\n` }, "TARGET_UNAVAILABLE"],
+      ["unrecognized token refuses TARGET_UNAVAILABLE", { status: 0, stdout: `disabled services = {\n\t"${label}" => maybe\n}\n` }, "TARGET_UNAVAILABLE"],
+      ["duplicate label refuses CONFLICT", { status: 0, stdout: `disabled services = {\n\t"${label}" => false\n\t"${label}" => true\n}\n` }, "CONFLICT"],
+    ] as const) {
+      const probe = recorder(call => call.args[0] === "print-disabled" ? reply : { status: 113 });
+      check(`launchd isEnabled refusal: ${labelText}`, code(() => launchAgentService(probe.run, () => originalJob).isEnabled?.(receipt)) === expectedCode, probe.calls);
+    }
     r.calls.length = 0;
     const refreshed = refreshedDaemonPath("launchd-agent", readFileSync(plist, "utf8"), "/new-bin:/bin")!;
     writeFileSync(plist, refreshed, { mode: 0o600 });
@@ -450,6 +480,19 @@ try {
     r.calls.length = 0;
     service.start(receipt);
     check("starting an inactive owned task submits one Run", schtasks(r.calls) === `/Run /TN ${name}`);
+    r.calls.length = 0;
+    service.startEnabled(receipt);
+    check("update starts only the enabled owned idle task", schtasks(r.calls) === `/Run /TN ${name}`);
+    task = { ...task, instances: 1 };
+    r.calls.length = 0;
+    service.startEnabled(receipt);
+    check("update observes a native running instance without restarting it", schtasks(r.calls) === "");
+    for (const changed of [{ enabled: false, instances: 0 }, { execute: "foreign", instances: 0 }, { userId: "S-1-5-18", instances: 0 }, { instances: undefined }]) {
+      task = { present: true, ...security, state: "Ready", actions: 1, ...recorded, ...changed };
+      r.calls.length = 0;
+      check("update refuses disabled changed or unknown task without native mutation", code(() => service.startEnabled(receipt)) !== "none" && schtasks(r.calls) === "");
+    }
+    task = { present: true, ...security, state: "Ready", actions: 1, ...recorded };
 
     check("a different recorded digest refuses CONFLICT", code(() => service.check({ ...receipt, unitSha256: "0".repeat(64) })) === "CONFLICT");
 
@@ -650,7 +693,7 @@ try {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
     for (const available of [false, true]) {
-      const dir = join(root, available ? "preview-ready" : "preview-missing-loginctl");
+      const dir = join(root, available ? "preview-ready" : "preview-no-loginctl");
       mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "daemon", "config", "runtime", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
       const daemonHome = join(dir, "daemon");

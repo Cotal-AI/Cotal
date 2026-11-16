@@ -20,7 +20,7 @@
     {
       "name": "S2 the row drops the role from its name/role label",
       "file": "implementations/cli/src/console/commands.ts",
-      "find": "${peerLabel(a)} · ${a.agent}",
+      "find": "${consoleLabel(a)} · ${a.agent}",
       "replace": "${a.name} · ${a.agent}",
       "expectRed": "the row leads with the peer's name/role label",
       "cell": "the row leads with the peer's name/role label",

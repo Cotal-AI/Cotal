@@ -19,7 +19,7 @@ import {
 } from "@cotal-ai/core";
 import { ENV_REFERENCE } from "@cotal-ai/connector-core";
 import { CLI_RECORD } from "./cli-record.js";
-import { desktopConfigPath, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
+import { desktopConfigPath, desktopNameClash, readDesktopEntry, writeDesktopEntry, type DesktopEntry } from "./desktop-config.js";
 import { claudeUserMcpServers } from "./user-mcp.js";
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -623,17 +623,19 @@ function desktopRow(signedIn?: SignedInSpace): ConnectorStatusRow | undefined {
   if (!path || !existsSync(dirname(path))) return undefined;
   const row = (state: ConnectorStatusRow["state"], text: string): ConnectorStatusRow => ({ label: "Claude Desktop", state, text });
   let entry: unknown;
+  let clash = "";
   try {
     entry = readDesktopEntry(path);
+    if (desktopNameClash(path)) clash = " A server named cotal in Claude Desktop's config uses the same name as the Claude Code plugin.";
   } catch (e) {
     return row("error", (e as Error).message);
   }
-  if (signedIn) return entry === undefined ? row("off", hostedConnector(signedIn)) : row("warn", `added, but Desktop ${hostedConnector(signedIn)}`);
-  if (entry === undefined) return row("off", "not added · run `cotal setup`");
+  if (signedIn) return entry === undefined ? row("off", hostedConnector(signedIn)) : row("warn", `added, but Desktop ${hostedConnector(signedIn)}${clash}`);
+  if (entry === undefined) return row(clash ? "warn" : "off", clash ? `not added.${clash}` : "not added · run `cotal setup`");
   const server = (entry as { args?: unknown }).args;
   const expected = join(marketplaceDir(), "cotal", "dist", "seat.cjs");
-  if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return row("warn", "stale · run `cotal setup`");
-  return row("ok", "added");
+  if (!Array.isArray(server) || server[0] !== expected || !existsSync(expected)) return row("warn", `stale · run \`cotal setup\`${clash}`);
+  return row(clash ? "warn" : "ok", `added${clash}`);
 }
 
 /** Whether setup may copy a server entry into the cotal config: the config reader must accept it

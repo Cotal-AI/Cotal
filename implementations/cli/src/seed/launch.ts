@@ -1,5 +1,5 @@
 import { writeSync } from "node:fs";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure } from "@cotal-ai/workspace";
 import { seedDir } from "./paths.js";
 import { reconcileSeededConnectors, seedStoreMoved } from "./reconcile.js";
 
@@ -22,7 +22,10 @@ export async function seedBeforeLaunch(): Promise<void> {
   try {
     await reconcileSeededConnectors();
   } catch (error) {
-    throw new CommandFailure("failed", "OPERATION_FAILED", `the connector seed failed, so up started no further process: ${(error as Error).message}`, { cause: error });
+    throw new CommandFailure("failed", "OPERATION_FAILED", `the connector seed failed, so up started no further process: ${(error as Error).message}`, {
+      cause: error,
+      ...(isCommandFailure(error) && error.remedy ? { remedy: error.remedy } : {}),
+    });
   }
   if (seedStoreMoved()) process.once("exit", (code) => {
     const note = code === 0 ? undefined : seedMoveNote();

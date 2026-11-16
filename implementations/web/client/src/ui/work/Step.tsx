@@ -25,6 +25,7 @@ export const Rise = createContext<(item: Keyed) => boolean>(() => false);
 export interface StepContext {
   row: RosterRow;
   toolStatus: boolean;
+  payloadRead?: import("../../api/types.js").PayloadReadFailure;
   compact: boolean;
   highlight?: string;
   nameOf: (id: string) => string;
@@ -41,7 +42,7 @@ const SETTLED: ReadonlySet<CallState> = new Set(["done", "failed", "called"]);
  *  When the last call of a run ends, the lines fold into the group: the group cross-fades in where the
  *  first line was, and the lines after it fold up beneath it (`ox-fold`) and leave once that animation
  *  ends. A group there at the first paint draws in place. */
-function ToolStep({ step, at, toolStatus, compact }: { step: WorkStep & { kind: "tools" }; at: CallAt; toolStatus: boolean; compact: boolean }) {
+function ToolStep({ step, at, toolStatus, compact, payloadRead }: { step: WorkStep & { kind: "tools" }; at: CallAt; toolStatus: boolean; compact: boolean; payloadRead?: import("../../api/types.js").PayloadReadFailure }) {
   const rises = useContext(Rise);
   const states = step.calls.map((c) => callState(c, { ...at, toolStatus }));
   const grouped = step.calls.length >= 2 && states.every((s) => SETTLED.has(s));
@@ -55,10 +56,10 @@ function ToolStep({ step, at, toolStatus, compact }: { step: WorkStep & { kind: 
   if (grouped) {
     return (
       <>
-        <ToolGroup key="group" calls={step.calls} at={at} toolStatus={toolStatus} line={compact} className={fade} />
+        <ToolGroup payloadRead={payloadRead} key="group" calls={step.calls} at={at} toolStatus={toolStatus} line={compact} className={fade} />
         {folding && (
           <div className="ox-fold" aria-hidden="true" style={{ "--fold-n": step.calls.length - 1 } as CSSProperties} onAnimationEnd={() => setFolding(false)}>
-            {step.calls.slice(1).map((c, i) => <ToolLine key={c.key} call={c} state={states[i + 1]!} />)}
+            {step.calls.slice(1).map((c, i) => <ToolLine payloadRead={payloadRead} key={c.key} call={c} state={states[i + 1]!} />)}
           </div>
         )}
       </>
@@ -68,7 +69,7 @@ function ToolStep({ step, at, toolStatus, compact }: { step: WorkStep & { kind: 
   return (
     <>
       {step.calls.map((c, i) => (
-        <ToolLine key={c.key} call={c} state={states[i]!} shimmer={i === latest} className={i > 0 && rises(c) ? "ui-in" : undefined} />
+        <ToolLine payloadRead={payloadRead} key={c.key} call={c} state={states[i]!} shimmer={i === latest} className={i > 0 && rises(c) ? "ui-in" : undefined} />
       ))}
     </>
   );
@@ -116,7 +117,7 @@ export function Step({ step, turn, trailing, ctx, condition }: {
     case "said":
       return <SaidBlock text={step.text} cut={step.cut} compact={ctx.compact} />;
     case "tools":
-      return <ToolStep step={step} at={{ turn, trailing, status: ctx.row.status }} toolStatus={ctx.toolStatus} compact={ctx.compact} />;
+      return <ToolStep payloadRead={ctx.payloadRead} step={step} at={{ turn, trailing, status: ctx.row.status }} toolStatus={ctx.toolStatus} compact={ctx.compact} />;
     case "post":
       return (
         <PostRow

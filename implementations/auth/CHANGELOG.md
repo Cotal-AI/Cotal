@@ -1,5 +1,204 @@
 # @cotal-ai/auth
 
+## 0.164.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/lang@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/lang@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+  - @cotal-ai/lang@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/lang@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+  - @cotal-ai/lang@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/lang@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/lang@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/lang@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/lang@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- cf93466: Expose native connection custody for a standalone auth authority plane. Hosts can compare tracked server/connection IDs with the broker's account census and await terminal connection closure, without receiving credentials or raw connection objects from that inventory.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/lang@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+  - @cotal-ai/lang@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- 1c18181: Keep remote Manager registrations protected while their registration executor is connected.
+  
+  Host reconciliation now requires complete liveness evidence that both the target's serving principal and its separate registration executor are gone before changing its credential family or reopening its gate. The executor identity comes from the target gate, including for cross-owner recovery. Abandoned registrations remain recoverable, and incomplete evidence refuses recovery.
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+  - @cotal-ai/lang@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- 9905ad2: Sign in through an issuer-authorized product discovery name.
+  
+  `cotal login <name>` and daemon sign-in or setup with `--idp <name>` resolve the provider's HTTPS root document and require the issuer's own root to endorse the name with `discoveryNames`. The roots must agree on issuer and audience. The typed root may use its own HTTPS auth origin or the issuer root's complete IdP URL, and other third-origin URLs are refused before approval. Login proofs retain the typed root's pins. Saved accounts and catalog origin checks keep using the resolved IdP URL. Cloud defaults and explicit account migration keep their current behavior.
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+  - @cotal-ai/lang@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- 250cff2: Expired migration approvals now name the migration command and the saved old auth URL to retry. Ordinary sign-in guidance is unchanged.
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/lang@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
+  
+  The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+  - @cotal-ai/lang@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/lang@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+  - @cotal-ai/lang@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+  - @cotal-ai/lang@0.164.1
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+  - @cotal-ai/lang@0.164.0
+
 ## 0.163.5
 
 ### Patch Changes

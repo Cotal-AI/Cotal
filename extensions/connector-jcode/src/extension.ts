@@ -11,9 +11,9 @@ import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource
 
 const FROM_BUILD = import.meta.url.includes("/dist/");
 const HOST_ENTRY = fileURLToPath(new URL(`./${FROM_BUILD ? "host.js" : "host-main.ts"}`, import.meta.url));
-const HOST_COMMAND = FROM_BUILD
-  ? process.execPath
-  : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+// Keep the seat in the process that receives signals. The tsx CLI can SIGKILL its child
+// after a 30 ms signal-acknowledgement window, interrupting the host's own shutdown.
+const HOST_ARGS = FROM_BUILD ? [HOST_ENTRY] : ["--import", import.meta.resolve("tsx"), HOST_ENTRY];
 
 type JcodeCatalogConfig = {
   providers?: Record<string, {
@@ -215,12 +215,12 @@ export const jcodeConnector: Connector = {
     // Creds, broker URL and the control token ride a 0600 file written after every refusal above.
     // Its directory is a launch artifact the launcher removes once the child has exited.
     const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     // The fork's provenance is the seat's own record of it, written when the host forks.
     return {
-      command: HOST_COMMAND,
-      args: [HOST_ENTRY],
+      command: process.execPath,
+      args: HOST_ARGS,
       env,
       control,
       ...(opts.resume ? { resumeRecordPath: jcodeForkRecordPath(seatHome) } : {}),

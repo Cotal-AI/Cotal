@@ -4,7 +4,8 @@
 // so the fold is deterministic and the recency kernel needs no stored EWMA state.
 
 import type { Presence, PresenceStatus } from "@cotal-ai/core";
-import { isChannelFamily, peerLabel, subjectMatches } from "@cotal-ai/core";
+import { isChannelFamily, subjectMatches } from "@cotal-ai/core";
+import { consoleLabel } from "../../label.js";
 import type { FeedDelivery, FeedEntry, MembershipView } from "../../mesh.js";
 
 export type TopoNodeKind = "agent" | "channel" | "service";
@@ -249,10 +250,10 @@ export function heatLevel(rate: number): 0 | 1 | 2 | 3 | 4 {
   return 4;
 }
 
-/** Display label for a node — the renderers' single label rule: an agent prints its shared
- *  {@link peerLabel}, a channel or service its #/@ prefix. */
+/** Display label for a node. An agent prints its name, or its id when that name is only whitespace.
+ *  A channel or service prints its #/@ prefix. */
 export function nodeLabel(n: TopoNode): string {
-  return n.kind === "channel" ? "#" + n.name : n.kind === "service" ? "@" + n.name : peerLabel(n);
+  return n.kind === "channel" ? "#" + n.name : n.kind === "service" ? "@" + n.name : consoleLabel(n);
 }
 
 /** The feed entries that flow over one edge, oldest-first (for inspectors/detail). */

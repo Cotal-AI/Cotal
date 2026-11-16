@@ -28,6 +28,17 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 
 type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string };
 
+/** The trailing `label=` on a candidate line. A blank name is not one: the line already prints the
+ *  subject principal as `from=`, and a role still follows that principal. A card with neither a name
+ *  nor a role adds no label. */
+export function pendingCandidateLabel(name: unknown, role: unknown, sender: string): string {
+  if (typeof name !== "string") return "";
+  const named = name.trim() ? name : undefined;
+  const roleText = typeof role === "string" && role.trim() ? role : undefined;
+  if (!named && !roleText) return "";
+  return `  label=${peerLabel({ name: named ?? sender, ...(roleText ? { role: roleText } : {}) })}`;
+}
+
 /** A short presence watch, the shape `send.ts` polls: an `offline` card still counts as a resolved
  *  peer (the recipient may be dead, that is exactly what this verb exists to inspect). */
 async function pollPresence(ep: CotalEndpoint, target: string): Promise<Presence | undefined> {
@@ -189,7 +200,7 @@ export async function runPending(args: ParsedArgs): Promise<void> {
               const sender = parseSubject(m.subject)?.sender;
               if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
               const card = body.from;
-              const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
+              const label = pendingCandidateLabel(card?.name, card?.role, sender);
               console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
               seen++;
               if (seen >= pendingCandidates) break;

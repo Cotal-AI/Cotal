@@ -26,8 +26,10 @@ Unsupported lockfile versions, dependency forms or incomplete dependency graphs 
 No receipt is rewritten to name the application release commit. Changed inputs or missing artifacts
 require fresh native builds; an API or validation failure refuses rather than using unverified bytes.
 
-Before you run the publish command, have the builds and a focused upgrade check ready. A fresh
-install that succeeds does not prove that an existing installation upgrades. CI, review rounds,
+Before you run the publish command, have the builds and a focused upgrade check ready. Run
+`pnpm smoke:manager-runtime-deps` after building. It checks every published package's emitted
+JavaScript against its production dependency declarations, including cold dynamic imports.
+A fresh install that succeeds does not prove that an existing installation upgrades. CI, review rounds,
 and the broad native test matrix are not required to publish unless the operator asks for them.
 
 ## Publish

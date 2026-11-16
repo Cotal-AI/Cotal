@@ -17,7 +17,7 @@ export interface UserBundle {
    *  bundle without `endpoints.url`, so the type carries what the check proved. */
   userAuth: UserAuthInfo & { endpoints: NonNullable<UserAuthInfo["endpoints"]> & { url: string } };
   /** Closed registration policy. No other key or value is accepted. */
-  policy?: { events: "required" };
+  policy?: { events?: "required"; eventPayloads?: "withheld" };
   /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
    *  the entry's root and records the PATH; the registry document never carries the blob. */
   sentinelCreds: string;
@@ -68,11 +68,15 @@ export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
     if (value === null || typeof value !== "object" || Array.isArray(value))
       return bad("✗ the user-auth bundle policy must be an object with exactly policy.events = \"required\"");
     const fields = Object.keys(value as Record<string, unknown>);
-    const extra = fields.find((key) => key !== "events");
+    const extra = fields.find((key) => key !== "events" && key !== "eventPayloads");
     if (extra) return bad(`✗ the user-auth bundle policy has unsupported field \"policy.${extra}\"`);
-    if ((value as { events?: unknown }).events !== "required")
-      return bad('✗ the user-auth bundle policy.events must be exactly "required"');
-    policy = { events: "required" };
+    const p = value as { events?: unknown; eventPayloads?: unknown };
+    if (p.events !== undefined && p.events !== "required")
+      return bad('✗ the user-auth bundle policy.events must be "required"');
+    if (p.eventPayloads !== undefined && p.eventPayloads !== "withheld")
+      return bad('✗ the user-auth bundle policy.eventPayloads must be "withheld"');
+    if (fields.length === 0) return bad("✗ the user-auth bundle policy is empty");
+    policy = { ...(p.events === "required" ? { events: "required" as const } : {}), ...(p.eventPayloads === "withheld" ? { eventPayloads: "withheld" as const } : {}) };
   }
   let userAuth: UserAuthInfo;
   try {

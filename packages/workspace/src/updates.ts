@@ -1,7 +1,9 @@
+import { clearWindowsUpdateAfterManualSuccess } from "./update-windows-state.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { homeCotalDir } from "./cotal-home.js";
+import { recoveryOwner, recoverySnapshotProblem } from "./update-recovery.js";
 
 /** Shared CLI and daemon update preferences, independent of telemetry. */
 export interface UpdateSettings {
@@ -20,6 +22,8 @@ export interface UpdateRecovery {
   readonly owner?: { readonly pid: number; readonly start: string; readonly nonce: string };
   readonly preparedRestart?: boolean;
   readonly snapshot?: string;
+  /** Protected execution journal for staged publication. Absent on published in-place records. */
+  readonly execution?: string;
   readonly renames?: readonly { readonly from: string; readonly to: string; readonly done: boolean }[];
   readonly reason: string;
   readonly recordedAt: string;
@@ -60,10 +64,11 @@ export function readUpdateRecovery(): UpdateRecovery | undefined {
   const record = value as UpdateRecovery;
   if (!record || record.v !== 1 || !["replacing", "restoring", "verified-ready", "paused"].includes(record.phase) ||
       ![record.previous, record.target, record.installed, record.reason, record.recordedAt].every(field => typeof field === "string")) throw new Error("invalid update recovery record in update-recovery.json");
-  if (record.owner && (!Number.isSafeInteger(record.owner.pid) || record.owner.pid <= 0 || typeof record.owner.start !== "string" || typeof record.owner.nonce !== "string")) throw new Error("invalid update transaction owner");
   if (record.preparedRestart !== undefined && typeof record.preparedRestart !== "boolean") throw new Error("invalid prepared restart evidence");
   if (record.snapshot !== undefined && typeof record.snapshot !== "string") throw new Error("invalid update snapshot path");
+  if (record.execution !== undefined && typeof record.execution !== "string") throw new Error("invalid update execution journal path");
   if (record.renames !== undefined && (!Array.isArray(record.renames) || record.renames.some(entry => !entry || typeof entry.from !== "string" || typeof entry.to !== "string" || typeof entry.done !== "boolean"))) throw new Error("invalid update rename journal");
+  if (record.owner && !recoveryOwner(record) && !recoverySnapshotProblem(record)) throw new Error("invalid update transaction owner");
   return record;
 }
 
@@ -75,6 +80,7 @@ export function writeUpdateRecovery(record: Omit<UpdateRecovery, "v" | "recorded
 export function recordUpdateCompletion(version: string, result: string, success: boolean): void {
   const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
   const automatic = process.env.COTAL_AUTO_UPDATE === "1";
+  if (success && !automatic && process.platform === "win32") clearWindowsUpdateAfterManualSuccess();
   save("update-attempt.json", { version, failures: success || !automatic ? 0 : previous?.failures ?? 1, result, next: Date.now() + (success ? 86400_000 : 3600_000) });
 }
 
@@ -85,11 +91,11 @@ export function recordUpdateReplacement(version: string): void {
   save("update-attempt.json", { version, failures: (previous?.failures ?? 0) + 1, result: `updating to ${version}`, next: Date.now() + 3600_000 });
 }
 
-/** Record an automatic attempt that did not begin replacement. */
-export function recordUpdateDeferral(version: string, reason: string, registry = false): void {
+/** Record an automatic attempt that did not begin replacement. Refund a resolution-only install refusal. */
+export function recordUpdateDeferral(version: string, reason: string, registry = false, refundReplacement = false): void {
   if (process.env.COTAL_AUTO_UPDATE !== "1") return;
   const previous = readRecord("update-attempt.json") as { failures?: number } | undefined;
-  save("update-attempt.json", { version, failures: previous?.failures ?? 0, deferred: reason, result: reason, next: Date.now() + (registry ? 3600_000 : 60_000) });
+  save("update-attempt.json", { version, failures: Math.max(0, (previous?.failures ?? 0) - (refundReplacement ? 1 : 0)), deferred: reason, result: reason, next: Date.now() + (registry ? 3600_000 : 60_000) });
 }
 
 /** Keep a tombstone so completion is an atomic write, rather than an unlink race. */

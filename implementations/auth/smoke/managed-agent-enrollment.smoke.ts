@@ -135,6 +135,7 @@ const enrollment = (overrides: Partial<RemoteManagedAgentEnrollmentRequest> = {}
     subscribe: ["general"],
     allowSubscribe: ["general"],
     allowPublish: ["general"],
+    eventPayloads: false,
   },
   identities,
   ...overrides,
@@ -224,7 +225,7 @@ try {
     grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise", "run", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"] });
     const ok = await outcome(() => enroll(enrollment()));
     check("POSITIVE CONTROL: a current registration with supervise authorizes the enrollment",
-      ok.value?.request.target.actor === "worker" && ok.value.request.instanceId === INSTANCE, ok);
+      ok.value?.request.target.actor === "worker" && ok.value.request.instanceId === INSTANCE && ok.value.request.target.eventPayloads === false, ok);
     check("the door answers the manager as the parent of an enrollment that names no spawn", ok.value?.parent === `${OWNER}.cli`, ok);
     const wider = await outcome(() => enroll(enrollment({ target: { ...enrollment().target, allowPublish: ["general", "secret"] } })));
     check("the door refuses a helper wider than its parent's grant, naming what the parent lacks",

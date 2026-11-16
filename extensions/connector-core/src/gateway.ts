@@ -214,6 +214,10 @@ export const GATEWAY_NAME_ATTEMPTS = 20;
  *  byte goes out when the wait ends: Claude Code gives a remote server 60 seconds to that byte,
  *  Cloudflare ends an origin response after about 100, and claude.ai ends a tool call after 240. */
 export const GATEWAY_WAIT_SECONDS = 50;
+/** How often a held `cotal_connect` asks the host again about a pending approval. */
+const APPROVAL_POLL_MS = 2000;
+/** What a held `cotal_connect` leaves of the wait bound for the connect that follows an approval. */
+const APPROVAL_SETTLE_SECONDS = 25;
 
 /** How an embedder tunes the surface for what sits in front of it. */
 export interface GatewayOptions {
@@ -235,6 +239,11 @@ export interface GatewayOptions {
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
+  /** How long `cotal_connect` holds one call while its permission request is pending, in whole
+   *  seconds. It asks the host again every 2 seconds with the same approval and returns connected
+   *  when the person approves. 0 returns the pending result at once, which is the default here.
+   *  {@link handleGatewayRequest} sets it for an endpoint with `approvalResume`. */
+  approvalHoldSeconds?: number;
   /** A way to wake the client other than a held `cotal_wait`, for an embedder whose client can be
    *  woken. Without it a conversation hears messages only when it calls a tool. */
   wake?: GatewayWake;
@@ -334,6 +343,15 @@ function wakeCount(agent: MeshAgent): number {
   return agent.inboxWake() + mentionsOf(agent).count;
 }
 
+/** Resolves true when `signal` aborts, false when `ms` elapses. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(true); }, { once: true });
+  });
+}
+
 /**
  * Resolve true once `agent` has something that should wake it, or false after `ms`, on abort, or
  * when the agent stops.
@@ -406,6 +424,10 @@ export function registerCotalGatewayTools(
   const waitSeconds = options.waitSeconds ?? GATEWAY_WAIT_SECONDS;
   if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {
     throw new Error(`waitSeconds must be a whole number of seconds, at least 1; got ${waitSeconds}`);
+  }
+  const approvalHoldSeconds = options.approvalHoldSeconds ?? 0;
+  if (!Number.isInteger(approvalHoldSeconds) || approvalHoldSeconds < 0) {
+    throw new Error(`approvalHoldSeconds must be a whole number of seconds, 0 or more; got ${approvalHoldSeconds}`);
   }
   const offered = options.tools ?? GATEWAY_TOOLS;
   for (const name of offered) if (!NATIVE_GATEWAY_TOOLS.has(name)) throw new Error(`the gateway cannot offer ${name}`);
@@ -532,37 +554,53 @@ export function registerCotalGatewayTools(
         }
         try {
           const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
-          const c = await host.open(account, candidate, context, selection, approvalId, space);
-          watch(c);
-          const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
-          const listening = wake ? `\n${wake.listening(c)}` : "";
-          // A conversation that joins here had no launch-time system prompt, so the connect result
-          // is where it is handed its bearings: the orientation card, then the shared briefing.
-          const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
-          return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
-          });
-        } catch (e) {
-          if (e instanceof ApprovalRequired) {
-            const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
-            const joined = e.space ?? space;
-            const message = `Permission approval required. This conversation is not connected.\n` +
-              (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
-              `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
-              `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
-              `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
-            // Some native clients give the model only structuredContent, not the text blocks.
-            const structuredContent = { v: 1, status: "pending", name: candidate,
-              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message,
-              ...(joined ? { space: joined } : {}) };
-            return {
-              content: [
-                { type: "text" as const, text: message },
-                { type: "text" as const, text: JSON.stringify(structuredContent) },
-              ],
-              structuredContent,
-            };
+          // A client that cannot be woken hears the decision only from a call. With a hold, this call
+          // asks the host again with the same approval until the person decides or the hold ends.
+          let resumeId = approvalId;
+          const deadline = Date.now() + approvalHoldSeconds * 1000;
+          for (;;) {
+            try {
+              const c = await host.open(account, candidate, context, selection, resumeId, space);
+              watch(c);
+              const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
+              const listening = wake ? `\n${wake.listening(c)}` : "";
+              // A conversation that joins here had no launch-time system prompt, so the connect result
+              // is where it is handed its bearings: the orientation card, then the shared briefing.
+              const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
+              return toContent({
+                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
+              });
+            } catch (e) {
+              if (!(e instanceof ApprovalRequired)) throw e;
+              const remaining = deadline - Date.now();
+              if (approvalHoldSeconds > 0 && remaining > 0 && !(await pause(Math.min(APPROVAL_POLL_MS, remaining), extra.signal))) {
+                resumeId = e.pending.approval.id;
+                continue;
+              }
+              const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+              const joined = e.space ?? space;
+              const next = approvalHoldSeconds > 0
+                ? `This call waited and the person has not decided. Call cotal_connect again with name ${JSON.stringify(candidate)}${resume} and the same requested permissions to keep waiting. That call does not start another request.`
+                : `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
+              const message = `Permission approval required. This conversation is not connected.\n` +
+                (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
+                `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
+                `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
+                next;
+              // Some native clients give the model only structuredContent, not the text blocks.
+              const structuredContent = { v: 1, status: "pending", name: candidate,
+                requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message,
+                ...(joined ? { space: joined } : {}) };
+              return {
+                content: [
+                  { type: "text" as const, text: message },
+                  { type: "text" as const, text: JSON.stringify(structuredContent) },
+                ],
+                structuredContent,
+              };
+            }
           }
+        } catch (e) {
           if (e instanceof NameTaken) {
             if (approvalId) return refuse("The approved name is no longer available. Nothing was connected; a different name requires a new permission approval.");
             continue;
@@ -765,6 +803,10 @@ export interface GatewayRequest {
   selection?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
+  /** See {@link GatewayOptions.approvalHoldSeconds}. With `approvalResume`, defaults to `waitSeconds`
+   *  less 25 seconds, never below 0: a client of this endpoint cannot be woken, and the connect that
+   *  follows an approval needs the rest of the bound. */
+  approvalHoldSeconds?: number;
 }
 
 /**
@@ -775,7 +817,8 @@ export interface GatewayRequest {
  * The endpoint is stateless. Each POST gets a fresh server and transport and a JSON response, so
  * nothing survives between requests except what the host stores. There is no server-initiated
  * stream and no session to end, so every other method answers 405, as the Streamable HTTP
- * transport allows. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
+ * transport allows. A `cotal_wait` call holds its POST open for up to `waitSeconds`. A `cotal_connect`
+ * call whose permission request is pending holds its POST open for up to `approvalHoldSeconds`.
  */
 export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest): Promise<void> {
   if (r.req.method !== "POST") {
@@ -788,7 +831,9 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
   // imported, which makes Node load its internal undici, and a process that serves only stdio never needs either.
   const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
-  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
+  const approvalHoldSeconds = r.approvalHoldSeconds
+    ?? (r.approvalResume ? Math.max(0, (r.waitSeconds ?? GATEWAY_WAIT_SECONDS) - APPROVAL_SETTLE_SECONDS) : 0);
+  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, approvalHoldSeconds, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
   if (r.events) {
     // MCP Events is a draft extension not yet named by the SDK's capability type.
     const capabilities: Parameters<typeof server.server.registerCapabilities>[0] & { events: Record<string, never> } = { events: {} };

@@ -33,7 +33,7 @@ import { mkSecretDir } from "@cotal-ai/core";
 import { lockExclusiveNb } from "@cotal-ai/seat";
 import { EndpointRefusal, assertSocketPathFits, checkDir, type DaemonPaths } from "../daemon/endpoint.js";
 import { serveDaemon, type RunningDaemon, type ServeOptions } from "../daemon/server.js";
-import { queryDaemon, type ClientCounters } from "../daemon/client.js";
+import { EmptyLifetimeRefusal, isStoppingLifetime, queryDaemon, type ClientCounters } from "../daemon/client.js";
 import { processBirth } from "../daemon/lifetime.js";
 
 let pass = 0, fail = 0;
@@ -192,6 +192,15 @@ try {
       const code = await refusalCode(queryDaemon({ paths: p, counters, timeoutMs: 2000 }));
       await new Promise((r) => setTimeout(r, 200));
       check("W3 a client refuses the squatter PEER_NOT_LOCK_OWNER and sends it 0 bytes", code === "PEER_NOT_LOCK_OWNER" && counters.bytesWritten === 0 && other.bytes() === 0, { code, received: other.bytes() });
+      const birth = processBirth(other.pid)!;
+      for (const [label, raw] of [["empty", ""], ["whitespace", " "], ["malformed", "{}"], ["other-holder", JSON.stringify({ v: 1, pid: other.pid + 1, start: birth, startedAt: "now" })], ["other-birth", JSON.stringify({ v: 1, pid: other.pid, start: "another", startedAt: "now" })]] as const) {
+        writeFileSync(p.lock, raw);
+        let refusal: unknown;
+        try { await queryDaemon({ paths: p, counters, timeoutMs: 2000 }); } catch (error) { refusal = error; }
+        check(`W3 ${label} record stays refused with zero request bytes`, refusal instanceof EndpointRefusal && refusal.code === "PEER_NOT_LOCK_OWNER" && counters.bytesWritten === 0 && other.bytes() === 0);
+        check(`W3 ${label} shutdown decision requires exact empty peer evidence`, isStoppingLifetime(refusal, { pid: other.pid, start: birth }) === (label === "empty") && (refusal instanceof EmptyLifetimeRefusal) === (label === "empty"));
+        check(`W3 ${label} never qualifies for a different pinned lifetime`, !isStoppingLifetime(refusal, { pid: other.pid, start: "different" }) && !isStoppingLifetime(refusal, { pid: other.pid + 1, start: birth }));
+      }
       await stop(other.proc);
     }
 

@@ -1,11 +1,88 @@
 # Upgrading a running deployment
 
+## Tool payload publication
+
+Upgrading starts publishing mapped tool inputs and results by default for Claude and Jcode seats
+with an event plane. Payload readers can now see local file content, command output and other
+tool content that was previously withheld. Review access before restarting seats. Authenticated
+spaces admit the owner, admins and holders of concrete foreign event-channel read grants to the
+separate payload rail. Chat wildcards do not grant that access. Open brokers provide no isolation.
+
+Pass `--no-event-payloads` at spawn, or set `eventPayloads: false` in the persona, to retain tool
+names, times and completion status without inputs or results. `--no-events` still disables the
+whole event plane where permitted. A registration may enforce
+`policy: { eventPayloads: "withheld" }`; a seat cannot weaken it. Registered Cotal tool payloads
+are excluded by identity. Other tools are not scanned for secret-shaped text.
+The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads`
+input. A revision-48 Manager's closed input schema rejects this field.
+
+Upgrade the broker setup and credentials with the clients: payloads use a separate `EVP_<space>`
+stream and broker rail. If a pre-upgrade space has no payload stream, the endpoint emits a
+`warning` event explaining that payloads are unavailable. Tool names, times and completion status
+continue on the public event channel without inputs or results. Upgrade the space's broker setup
+and credentials, then restart the seat to enable payload publication. Authorization, network and
+invalid stream configuration errors still fail startup rather than selecting this compatibility path.
+A previously frozen sibling publication refuses recovery while the payload rail is absent, even
+when its acknowledgement was recorded; restore the rail before restarting it.
+Ordinary-channel readers continue to see tool metadata only. WAL v4
+records sibling publication and its acknowledgement; older emitters refuse it. Older pending
+public frames migrate without invented payloads, and frozen public payload bodies still halt.
+Settle a pending sibling under its prior policy before enabling withholding. The live broker and
+stream limits produce explicit whole-value cut markers, not silent partial output.
+
+Other connectors carry safety controls, but their payload mappings and native acceptance, combined
+channel history and backup coverage remain deferred. The private consent path in
+[SPEC §13.19](../SPEC.md#1319-private-tool-results) remains separate, with unchanged activation
+requirements, for holders not admitted to the payload rail. See the
+[connector reference](claude-connector-reference.mdx#event-plane) for limits and recovery details.
+
 > **Guide** (informative) · **For:** operators upgrading a mesh that already exists · **See also:** [Interface stability](stability.md), [Run a mesh](run-a-mesh.mdx), [Identity and auth](identity-and-auth.mdx)
 
 [Interface stability](stability.md) says what the version numbers promise. This page says what to
 do when a deployment already exists, holds credentials, and cannot be torn down and recreated. Every
 release that breaks a running deployment gets a section here. Each section names what migrates on
 its own, what does not, and the order of the steps.
+
+## Self-update refused by 0.164.17
+
+`cotal update --self` in 0.164.16 and 0.164.17 refuses on two kinds of install and in one kind of
+session, and the daemon's automatic update refuses with it.
+
+The first is an npm install whose package folder, or a folder above it, is group-writable. The
+Homebrew Node keeps `lib` that way, and npm under a umask of 0002 creates the package that way. The
+command prints `unprotected execution entry: <path>`.
+
+The second is an install whose Node is older than 24.22 while the umask is 0002, the default for a
+user and its services on Ubuntu, Debian and Fedora. The command reports a refused staged
+pre-install check with `unprotected execution entry: <path>`. Each automatic attempt
+also leaves an `.installing-` folder of about 66 MB under `lib/.cotal-generations`, every 90
+seconds.
+
+The session is one on Linux that has no `XDG_RUNTIME_DIR`, such as a command run through `su` or
+`sudo -u`. The command reports a refused staged pre-install check because the variable is not set.
+
+Install the current version once by hand. An install from the installer runs it again:
+
+```bash
+curl -fsSL https://get.cotal.ai | sh
+```
+
+An npm install runs `npm install -g cotal-ai@latest`. From 0.164.18 the update no longer depends on
+those modes, and automatic updates resume. A stuck 0.164.16 or 0.164.17 daemon that reaches a
+newer release prints the same instruction in `cotal daemon status` and removes the leftover folders.
+
+A system-wide installation, one that root owns and other accounts run, has a further fault. After
+root runs `cotal update --self` there, the other accounts can no longer start `cotal`: the shell
+reports that permission is denied, or the command ends with an access error for a file under
+`lib/.cotal-generations`. Root installs the current version once with
+`npm install -g cotal-ai@latest`. From 0.164.18 the update keeps such an installation readable by
+the accounts that run it.
+
+A machine that reached 0.164.16 or 0.164.17 through `cotal update --self` has a second fault. Its
+daemon's automatic update ends with `staged update requires an installed npm or pnpm package`, and
+`cotal daemon status` stays at `updating to <version>`. Install the current version once by hand
+there too, with the same two commands. From 0.164.18 the daemon starts its updater at the installed
+command and automatic updates continue.
 
 ## Memory-backed derived membership after 0.163.0
 

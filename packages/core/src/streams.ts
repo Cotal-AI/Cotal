@@ -1,4 +1,5 @@
 import { drainAndClose } from "./connection-cleanup.js";
+import { eventPayloadStream } from "./event-payloads.js";
 import {
   jetstream,
   jetstreamManager,
@@ -252,8 +253,11 @@ export function standaloneConnectOpts(auth: StandaloneAuth): Record<string, unkn
 
 /** Native message-stream creation fields shared by bootstrap and schema planning. */
 export function spaceMessageStreamConfigs(space: string) {
-  return [chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)]
-    .map((stream) => canonicalBackupStreamConfig(space, stream));
+  return [
+    ...[chatStream(space), dmStream(space), taskStream(space), inboxStream(space), dlvStream(space)]
+      .map((stream) => canonicalBackupStreamConfig(space, stream)),
+    { ...canonicalBackupStreamConfig(space, chatStream(space)), name: eventPayloadStream(space), subjects: [`${spacePrefix(space)}.evp.>`] },
+  ];
 }
 
 /** Native durable registry-stream creation fields. The backup inventory stays independent. */
@@ -417,7 +421,7 @@ export async function createSpaceStreams(
     // The history limit of CHAT, INBOX, DLV and DM is the operator's (`cotal history limit`), so an
     // existing one of them is left as it is: an add over a different limit would refuse, and this
     // also runs on every open-mode connect. `setupSpaceStreams` checks their other settings.
-    if (historyLimitStreamOf(space, definition.name)) {
+    if (historyLimitStreamOf(space, definition.name) || definition.name === eventPayloadStream(space)) {
       try {
         await jsm.streams.info(definition.name);
         continue;
@@ -1151,9 +1155,18 @@ export async function clearSpaceHistory(opts: {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
-    const chat = (await jsm.streams.purge(chatStream(opts.space))).purged;
+    // A missing stream holds no retained messages. Keep going so a later stream is still purged.
+    const purgedOrZero = async (name: string): Promise<number> => {
+      try {
+        return (await jsm.streams.purge(name)).purged;
+      } catch (error) {
+        if (!isStreamNotFound(error)) throw error;
+        return 0;
+      }
+    };
+    const chat = await purgedOrZero(chatStream(opts.space));
     if (!opts.includeDms) return { chat };
-    const dm = (await jsm.streams.purge(dmStream(opts.space))).purged;
+    const dm = await purgedOrZero(dmStream(opts.space));
     return { chat, dm };
   } finally {
     await drainAndClose(nc);
@@ -1177,8 +1190,9 @@ export class ChannelRegistryRemovalFailed extends Error {
  *  all senders, via the `*` sender slot) from the chat stream, then drop the channel's
  *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
  *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
- *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
- *  registry bucket/key is a no-op — the purge alone already emptied the channel. Any other
+ *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing chat stream
+ *  has no retained messages, so the purge count is 0 and the registry entry is still removed.
+ *  A missing channel registry bucket/key is a no-op. Any other
  *  failure of the registry step throws {@link ChannelRegistryRemovalFailed}, because the purge has
  *  already happened. `removed` says whether this call deleted the channel's registry entry. */
 export async function clearChannel(opts: {
@@ -1195,9 +1209,15 @@ export async function clearChannel(opts: {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
     const jsm = await jetstreamManager(nc);
-    const { purged } = await jsm.streams.purge(chatStream(opts.space), {
-      filter: chatSubject(opts.space, "*", "*", opts.channel),
-    });
+    // A missing chat stream holds no retained messages. The registry entry is still removed.
+    let purged = 0;
+    try {
+      ({ purged } = await jsm.streams.purge(chatStream(opts.space), {
+        filter: chatSubject(opts.space, "*", "*", opts.channel),
+      }));
+    } catch (error) {
+      if (!isStreamNotFound(error)) throw error;
+    }
     let removed = false;
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));

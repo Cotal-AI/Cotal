@@ -15,7 +15,7 @@
  * ({@link writeServiceStatus}).
  */
 import type { Msg, NatsConnection, Subscription } from "@nats-io/transport-node";
-import type { ValidateFunction } from "ajv";
+import type { ContractValidator } from "./contract-validator.js";
 import { spacePrefix } from "./subjects.js";
 import {
   endpointToken, assertCommandToken, assertLifecycleToken, epClassQueueGroup,
@@ -92,7 +92,7 @@ interface ActiveDef {
   command: string;
   class: EpClass;
   digests?: { input: string; output: string };
-  validate: { args: ValidateFunction; output: ValidateFunction };
+  validate: { args: ContractValidator; output: ContractValidator };
   targeted: boolean;
   targetModes: ReadonlySet<string>;
   /** True iff the REGISTERED declaration carries a governed trait (§13.7): the pre-effect
@@ -708,8 +708,8 @@ const DESCRIBE_ANSWER_SCHEMA = {
  *  carrying any args is `bad-request` at the same pre-effect seam as every command, BEFORE the
  *  authorization-view lookup) and the declared {@link DescribeAnswer} output. Compiled once,
  *  lazily, through the same profile compiler every registered contract rides. */
-let describeValidate: { args: ValidateFunction; output: ValidateFunction } | undefined;
-function describeValidators(): { args: ValidateFunction; output: ValidateFunction } {
+let describeValidate: { args: ContractValidator; output: ContractValidator } | undefined;
+function describeValidators(): { args: ContractValidator; output: ContractValidator } {
   describeValidate ??= {
     args: compileContract({ root: VOID_SCHEMA }).validate,
     output: compileContract({ root: DESCRIBE_ANSWER_SCHEMA }).validate,

@@ -168,6 +168,15 @@ const row = (goalId: string, context: string, acceptedAt = Date.now()): PendingT
     (invokes.find((i) => i.command === "turn-yield")?.opts as { target?: { mode?: string } })?.target?.mode === "self",
     JSON.stringify(invokes.find((i) => i.command === "turn-yield")?.opts));
   check("the boundary sends no pull: the manager's notice for the yield brings the next turn", !invokes.slice(invokesBefore).some((i) => i.command === "turn-pending"));
+  // A worker that yields after its session turn ended, as one does after a reminder, is told the
+  // turn already settled as done rather than that it never held one.
+  const yieldTool = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_yield")!;
+  const late = await yieldTool.run(a, cfg, { status: "done", note: "claim", turn: "g3" });
+  const lateBare = await yieldTool.run(a, cfg, { status: "done", note: "claim" });
+  check("a yield after the turn end yielded done says the turn already settled, by id and without one",
+    late.isError === true && late.text === 'Couldn\'t yield: turn "g3" was already yielded done by this seat (ending a session turn yields done), so this yield was not recorded'
+      && lateBare.text === late.text && state.yields.filter((y) => y.goalId === "g3").length === 1,
+    { late: late.text, lateBare: lateBare.text, yields: state.yields });
   check("waiting is not a boundary: a blocked seat yields nothing", await (async () => {
     state.pending = [row("g3b", "more")];
     await poll();
@@ -356,6 +365,36 @@ for (const status of ["blocked", "handoff"] as const) {
   check("the schema, when the checkpoint carries one, is shown as the record wanted", text.includes("approved: boolean"), text.slice(0, 400));
   check("the escalation answer command is the hosted form too, with no caller-chosen `--by`",
     text.includes("cotal run answer r1 /checkpoint:approve#0 --value") && !text.includes("--by"), text.slice(0, 400));
+}
+
+// ── 6c) a plain turn is never told to answer an ask ─────────────────────────────────────────
+//
+// The footer named the ask route under every block. A user's seat given `turn(seat, { name: "ask" })`
+// read it as its own turn, reported the question, schema and route missing, and answered nothing.
+{
+  console.log("6c — the footer mentions the ask route only when a block above carries one");
+  const plain = rig();
+  plain.state.pending = [{
+    goalId: "g9", acceptedAt: Date.now(), deadlineAt: Date.now() + 60_000,
+    payload: JSON.stringify({ run: "r1", step: "/turn:ask#0", context: "the run context", noticeIds: [] }),
+  }];
+  await plain.poll();
+  const text = plain.a.peekPendingTurns()?.text ?? "";
+  check("a plain turn named `ask` gets the ordinary-turn footer and no ask sentence",
+    text.includes("the run context") && text.includes("For ordinary turns") && !text.includes("An ask must be answered"), text);
+  const mixed = rig();
+  const deadlineAt = Date.now() + 60_000;
+  mixed.state.pending = [
+    { goalId: "g10", acceptedAt: Date.now(), deadlineAt, payload: JSON.stringify({ run: "r1", step: "/turn:build#0", context: "the run context", noticeIds: [] }) },
+    {
+      goalId: "g11", acceptedAt: Date.now() + 1, deadlineAt,
+      payload: JSON.stringify({ run: "r1", step: "/ask:size#0", context: "the run context", noticeIds: [], ask: { token: "g11", schema: { estimate: "number" }, attempt: 1, attempts: 1, deadlineAt } }),
+    },
+  ];
+  await mixed.poll();
+  const both = mixed.a.peekPendingTurns()?.text ?? "";
+  check("a surface holding an ask beside a plain turn keeps the ask sentence",
+    both.includes("This turn is an ask") && both.includes("An ask must be answered through its native route above"), both);
 }
 
 // ── a pull that stops answering is SAID, once ────────────────────────────────────────────────
@@ -1501,7 +1540,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 59;
+const EXPECTED_CELLS = 62;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

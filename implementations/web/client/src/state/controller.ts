@@ -344,7 +344,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         // The sort is stable, so one message's frames keep their order.
         const sorted = merged === s.frames ? merged : merged.slice().sort((a, b) => timeOf(a.ts) - timeOf(b.ts));
         const capped = capFrames(sorted);
-        return settledOk({ ...s, frames: capped.frames, more: page.more || capped.dropped });
+        return settledOk({ ...s, frames: capped.frames, more: page.more || capped.dropped, payloadRead: page.payloadRead });
       });
     } catch (err) {
       if (!current()) return;

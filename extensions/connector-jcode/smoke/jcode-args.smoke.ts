@@ -64,7 +64,11 @@ try {
     process.exit(0);
   }
   const base = launch({ space: "space", name: "seat", events: false });
-  check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
+  check(
+    "starts the host directly in Node with the source loader",
+    base.command === process.execPath && base.args.length === 3 && base.args[0] === "--import" && base.args[1] === import.meta.resolve("tsx") && /host-main\.ts$/.test(base.args[2]),
+    { command: base.command, args: base.args },
+  );
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
   check("declares a bounded three-minute bootstrap window", jcodeConnector.readinessTimeoutMs === JCODE_READINESS_TIMEOUT_MS && JCODE_READINESS_TIMEOUT_MS === 180_000, jcodeConnector.readinessTimeoutMs);
   const here = dirname(fileURLToPath(import.meta.url));
@@ -229,7 +233,7 @@ try {
     "maps durable Jcode message blocks into one native AG-UI run",
     mapped?.runId === "run-1" &&
       mapped.events.map((event) => event.type).join(",") ===
-        "RUN_STARTED,REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT,REASONING_MESSAGE_END,TOOL_CALL_START,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_END",
+        "RUN_STARTED,REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT,REASONING_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_ARGS,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_END,TOOL_CALL_RESULT,CUSTOM",
     mapped,
   );
   mapper.forgetOpenRun("run-1");

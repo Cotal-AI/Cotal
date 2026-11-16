@@ -113,6 +113,7 @@ const baseCommands: Command[] = [
       { name: "root", flagNames: [], summary: "print the extension root directory", examples: [{ command: "cotal ext root", note: "print the folder extensions are installed in" }], usage: "cotal ext root", reads: true },
       { name: "seed", flagNames: ["repair", "reset", "force"], summary: "reconcile the built-in connectors", examples: [{ command: "cotal ext seed", note: "install or update the built-in connectors" }, { command: "cotal ext seed --repair", note: "recover the seed record from its backup" }], usage: "cotal ext seed [--repair|--reset|--force]" },
       { name: "__update-add", summary: "re-add one extension for a running update", hidden: true },
+      { name: "__stage-verify", summary: "verify one extension in its parent's staged prefix", hidden: true },
     ],
     flags: extFlags,
     outputs: ["json", "plain"],
@@ -915,4 +916,4 @@ export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUni
 export { launchAgent } from "./lib/manifest/live.js";
 
 // The machine daemon refreshes the same catalog while retaining its own sign-in session.
-export { prepareCatalogTargets, importAccountComputerSpace, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "./commands/sync.js";
+export { prepareCatalogTargets, prepareCatalogMigration, importAccountComputerSpace, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "./commands/sync.js";

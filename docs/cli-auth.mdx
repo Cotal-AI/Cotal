@@ -14,9 +14,51 @@ or a pipe. Use `cotal login --cloud` to select Cloud explicitly. Approve the pri
 A supported desktop session opens the link in your browser. Use `--no-browser` to open it
 elsewhere. Piped output does not open a browser.
 
-For another host, use `cotal login --idp <auth base URL>`. The Cotal Cloud origin
-`https://cloud.cotal.ai` is an explicit alias for `https://cloud.cotal.ai/api/auth`.
-Other provider URLs are used as written, without trying alternate auth paths.
+For another host, use `cotal login --idp <auth base URL>`. Fresh Cloud sign-ins use
+`https://cotal.cloud/api/auth`. The origins `https://cotal.cloud` and
+`https://cloud.cotal.ai` select their own `/api/auth` paths. Other provider URLs are
+used as written, without trying alternate auth paths.
+
+An upgrade leaves existing Cloud registrations on their saved address. To move a
+registered account deliberately, run:
+
+```bash
+cotal login --migrate-from https://cloud.cotal.ai/api/auth
+```
+
+The old issuer's root discovery document must endorse the new HTTPS origin with
+`nativeMigration: { version: 1, origin: "https://cotal.cloud" }`. The client reads
+complete pins from the new root and requests fresh device approval there. It checks
+the same issuer, subject, audience and catalog space identities before saving the
+new login and replacing registrations. It does not send the old bearer to the new
+origin. Existing service sessions and native retirement or renewal records remain
+on their saved authority. Cancellation or failed identity checks do not replace
+registrations. If the approval code expires, retry `cotal login --migrate-from <old auth URL>`.
+Session and registry persistence are separate writes.
+
+## Sign in through a discovery name
+
+Run `cotal login <name>` or `cotal daemon setup --idp <name>` with a lowercase DNS
+hostname. The client reads `https://<name>/.well-known/cotal-mesh`, then the root
+well-known document at the declared issuer's origin. Both documents must agree on
+`userAuth.idp.issuer` and `audience`. The typed root's HTTPS IdP URL must be on the
+typed name's origin or equal the issuer root's complete IdP URL. Other third-origin
+URLs are refused before device approval. The client keeps the typed root's pins.
+The issuer's own root must list the name
+in its optional top-level `discoveryNames` array. Its own hostname needs no listing.
+An unlisted name is refused before device approval, with both hosts named.
+
+Discovery requests carry no credentials, refuse redirects, and have a five-second
+whole-response deadline and a 64 KiB decoded body limit per document. Login and
+catalog storage use the resolved IdP URL, never the typed name. The approved token
+must match the discovered issuer and audience. Catalog endpoint origin checks do
+not change. Existing machines need no new login when a provider adds a name.
+
+This generic discovery flow does not change Cloud's default address or migrate an
+existing account. Cloud now uses `cotal.cloud` for its canonical auth address while
+retaining `https://cloud.cotal.ai` as its issuer. Providers may likewise have different
+issuer and auth origins under these discovery rules.
+Use the explicit migration command above to move saved Cloud registrations.
 
 Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
 

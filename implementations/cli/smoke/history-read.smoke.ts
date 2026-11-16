@@ -28,8 +28,11 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
+  channelBucket,
   chatStream,
   createSpaceAuth,
+  dialerFor,
+  dmStream,
   idFromCreds,
   isReachable,
   mintCreds,
@@ -39,6 +42,7 @@ import {
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
+  standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
@@ -671,6 +675,31 @@ try {
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
   }
 
+  // The registry bucket is already gone. Retained chat still makes this a channel the space has,
+  // so remove used to report an unconfirmed change instead of the no-op a missing entry is.
+  {
+    const posted = await run(["send", "-c", "bucketgone", "kept", "--space", space]);
+    const teardown = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: teardown, tls: false }), maxReconnectAttempts: 0 });
+    let deleted = false;
+    try {
+      const jsm = await jetstreamManager(nc);
+      const bucket = channelBucket(space);
+      for await (const name of jsm.streams.names()) {
+        if (!name.includes(bucket)) continue;
+        await jsm.streams.delete(name);
+        deleted = true;
+      }
+    } finally {
+      await nc.close();
+    }
+    const gone = await run(["channel", "remove", "bucketgone", "--yes", "--space", space, "--json"]);
+    const removed = (gone.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    check("removing a channel whose registry bucket is gone is a no-op, not an unconfirmed change",
+      posted.status === 0 && deleted && gone.status === 0 && gone.envelope?.outcome === "no-op" && removed === false, { posted: shown(posted), gone: shown(gone), deleted });
+  }
+  await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" } } } });
+
   // Only the chat stream is gone. Channel history cannot be read. A stored DM must still come back,
   // and the refusal that says to create every stream again, empty, would delete it. The clear above
   // purged the earlier note, so this cell stores a new one first.
@@ -702,6 +731,142 @@ try {
       "channel history still refuses TARGET_UNAVAILABLE when the chat stream is gone",
       channelGone.status === 2 && channelGone.envelope?.error?.code === "TARGET_UNAVAILABLE" && channelGone.envelope.error.message?.startsWith(`the streams of ${space} are not on its broker`) === true,
       shown(channelGone),
+    );
+  }
+  // Restore the chat stream removed above so this cell owns its deletion.
+  // Purging a saved channel must still remove the entry when that stream is gone.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const set = await run(["channel", "set", "ops", "--desc", "purge-gone", "--space", space, "--json"]);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.delete(chatStream(space)); }
+    finally { await nc.close(); }
+    const removed = await run(["channel", "remove", "ops", "--purge", "--yes", "--space", space, "--json"]);
+    const show = await run(["channel", "show", "ops", "--space", space, "--json"]);
+    const channels = (show.envelope?.result as { registry?: { channels?: Record<string, unknown> } } | null)?.registry?.channels;
+    const receipt = removed.envelope?.result as { removed?: boolean; purged?: number } | null;
+    check("channel remove --purge removes the saved entry when the chat stream is already gone",
+      set.status === 0 && removed.status === 0 && removed.envelope?.outcome === "ok" && receipt?.removed === true && receipt.purged === 0 && channels?.ops === undefined,
+      { set: shown(set), removed: shown(removed), show: shown(show) });
+  }
+
+  // Start with one stored DM, independent of earlier reads and clears.
+  // clean history must purge it even when the chat stream is gone.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const purgerCreds = await mintCreds(auth, newIdentity(), "purger");
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(purgerCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(purgerCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.purge(dmStream(space)); }
+    finally { await nc.close(); }
+    const note = `clean-dm-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, note);
+    await wait(400);
+    const drop = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(drop)).streams.delete(chatStream(space)); }
+    finally { await drop.close(); }
+    const cleared = await run(["clean", "history", "--force", "--dms"]);
+    const read = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    let dmLeft = -1;
+    try { dmLeft = (await (await jetstreamManager(read)).streams.info(dmStream(space))).state.messages; }
+    finally { await read.close(); }
+    check("clean history purges direct messages when the chat stream is already gone",
+      cleared.status === 0 && cleared.stdout.includes("cleared 0 channel messages") && /1 DM message/.test(cleared.stdout) && dmLeft === 0,
+      { cleared: shown(cleared), dmLeft });
+  }
+
+  // Restore streams and store what this clear needs before deleting either stream.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const note = `clear-dm-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, note);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const open = async () => connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    const messages = async (name: string) => {
+      const nc = await open();
+      try { return (await (await jetstreamManager(nc)).streams.info(name)).state.messages; }
+      finally { await nc.close(); }
+    };
+    const drop = async (name: string) => {
+      const nc = await open();
+      try { await (await jetstreamManager(nc)).streams.delete(name); }
+      finally { await nc.close(); }
+    };
+    const before = await messages(dmStream(space));
+    await drop(chatStream(space));
+    const chatOnly = await run(["history", "clear", "--yes", "--json"]);
+    const dmKept = await messages(dmStream(space));
+    check("history clear with only the chat stream gone refuses TARGET_NOT_FOUND and leaves direct messages",
+      chatOnly.status === 2 && chatOnly.envelope?.error?.code === "TARGET_NOT_FOUND" && chatOnly.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged" && before > 0 && dmKept === before,
+      { chatOnly: shown(chatOnly), before, dmKept });
+    const cleared = await run(["history", "clear", "--yes", "--dms", "--json"]);
+    const dmAfter = await messages(dmStream(space));
+    const acked = (cleared.envelope?.result as { acknowledged?: { stream: string; purged: number }[] } | null)?.acknowledged ?? [];
+    check("history clear --dms purges the direct messages when the chat stream is gone and names that stream",
+      cleared.status === 0 && cleared.envelope?.outcome === "ok" && cleared.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space))) && dmAfter === 0 && acked.some((row) => row.stream === dmStream(space) && row.purged === before),
+      { cleared: shown(cleared), before, dmAfter });
+    await drop(dmStream(space));
+    const none = await run(["history", "clear", "--yes", "--dms", "--json"]);
+    check("history clear --dms refuses TARGET_NOT_FOUND when the chat and direct-message streams are both gone",
+      none.status === 2 && none.envelope?.outcome === "refused" && none.envelope.error?.code === "TARGET_NOT_FOUND" && none.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged",
+      shown(none));
+  }
+
+  // All cells needing stored DMs have finished. Restore both streams for the inverse absence case.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const keptNote = `dm-stream-${randomUUID().slice(0, 8)}`;
+    await alice.multicast("channel stays", { channel: "general" });
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, keptNote);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.delete(dmStream(space)); }
+    finally { await nc.close(); }
+    const kept = await run(["history", "--dms", "--json"]);
+    const items = kept.envelope?.result?.items ?? [];
+    check(
+      "history --dms is partial when only the direct-message stream is gone, and channel history remains",
+      kept.status === 4 && kept.envelope?.outcome === "partial" && kept.envelope.warnings.some((w) => w.code === "DM_STREAM_ABSENT") && items.some((i) => i.text === "channel stays" && i.channel === "general") && !items.some((i) => i.text === keptNote),
+      shown(kept),
+    );
+    const general = await run(["history", "general", "--json"]);
+    check(
+      "channel history stays complete when only the direct-message stream is gone",
+      general.status === 0 && general.envelope?.completeness === "complete" && (general.envelope?.result?.items ?? []).some((i) => i.text === "channel stays"),
+      shown(general),
     );
   }
 } finally {

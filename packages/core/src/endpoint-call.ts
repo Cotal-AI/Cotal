@@ -94,7 +94,7 @@ export function buildRequest(
     // Nothing was published, so the refusal is `not-executed` (§13.3). A key the contract does not
     // declare is marked, with the instance the request binds, so a surface that knows both builds can
     // name the version skew and ask that instance which release it runs.
-    const property = op.contract.input.validate.errors?.[0]?.params?.additionalProperty;
+    const property = op.contract.input.validate.errors?.[0]?.additionalProperty;
     throw new EpEnvelopeError(e.code, e.message, typeof property === "string" ? [{ kind: EP_UNDECLARED_ARG, property, ...(op.bind !== undefined ? { instanceId: op.bind.instanceId } : {}) }] : undefined, "not-executed");
   }
   // The responder refuses these too (§13.3), but a caller that would emit an unservable request

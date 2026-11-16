@@ -31,23 +31,27 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { basename, delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import { delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { recordedSourceIdentity, recordedSourceMarked } from "./install-identity.js";
+import { nativeRun } from "./install-native-run.js";
+import { checkWindowsRecordedUnit } from "./ownership-win32.js";
 import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/core";
-import { codeSpan, CommandFailure, readLocalRecordSource } from "@cotal-ai/workspace";
+import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
-import { openVerified, readLine } from "./client.js";
+import { isStoppingLifetime, openVerified, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
-import { windowsUserSid } from "@cotal-ai/seat";
+import { lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
+import { assertDesktopSetupComplete } from "./desktop-setup.js";
 import { removeAllServiceRecords } from "./service-records.js";
 
 /** The native supervisor that runs the daemon: one per desktop OS. */
@@ -65,28 +69,17 @@ export interface UnitReceipt {
   readonly unitSha256: string;
   readonly installedAt: string;
   readonly daemonHome?: string;
+  readonly omittedRelativePathEntries?: readonly string[];
 }
 
-/** Where the receipt lives: beside the lifetime lock, in this daemon's own state directory. */
-export function unitReceiptFile(paths: Pick<DaemonPaths, "state">): string {
-  return join(paths.state, "service-unit.json");
-}
+import { readReceipt, unitReceiptFile } from "./install-receipt.js";
+export { unitReceiptFile } from "./install-receipt.js";
 
 /** `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for an explicit daemon home, derived
  *  the same way its socket directory is so the two always agree. */
 export function daemonUnitName(daemonHome: string | undefined): string {
   if (daemonHome === undefined) return "cotal-daemon.service";
   return `cotal-daemon-${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}.service`;
-}
-
-function readReceipt(paths: Pick<DaemonPaths, "state">): UnitReceipt | undefined {
-  let o: unknown;
-  try { o = JSON.parse(readFileSync(unitReceiptFile(paths), "utf8")); } catch { return undefined; }
-  if (!o || typeof o !== "object") return undefined;
-  const r = o as Record<string, unknown>;
-  if (r.v !== 1 || typeof r.unit !== "string" || typeof r.unitPath !== "string" || typeof r.unitSha256 !== "string" || typeof r.installedAt !== "string") return undefined;
-  if (r.mechanism !== undefined && r.mechanism !== "systemd-user" && r.mechanism !== "launchd-agent" && r.mechanism !== "scheduled-task") return undefined;
-  return { v: 1, ...(r.mechanism !== undefined ? { mechanism: r.mechanism } : {}), unit: r.unit, unitPath: r.unitPath, unitSha256: r.unitSha256, installedAt: r.installedAt, ...(typeof r.daemonHome === "string" ? { daemonHome: r.daemonHome } : {}) };
 }
 
 function writeReceipt(paths: DaemonPaths, receipt: UnitReceipt): void {
@@ -189,25 +182,6 @@ export interface NativeResult {
 /** Runs one native tool by absolute path with an argument vector, never through a shell. */
 export type NativeRun = (file: string, args: readonly string[], env?: NodeJS.ProcessEnv) => NativeResult;
 
-function nativeRun(file: string, args: readonly string[], env?: NodeJS.ProcessEnv): NativeResult {
-  const started = Date.now();
-  const result = spawnSync(file, args, { encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...(env ? { env } : {}) });
-  if (result.error || result.signal) {
-    const elapsedMs = Date.now() - started;
-    const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-    const reason = code === "ETIMEDOUT" ? "timed out after 30 s"
-      : code === "ENOBUFS" ? "exceeded its 256 KiB output limit"
-      : code ? `could not start or complete (${code})`
-      : `exited by signal ${result.signal}`;
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${basename(file)} ${reason} (elapsed ${elapsedMs} ms); no further native step was taken`, {
-      native: { code: code ?? result.signal ?? "NATIVE_TOOL_FAILED", detail: { elapsedMs, timeoutMs: 30_000, signal: result.signal } },
-    });
-  }
-  const stdout = typeof result.stdout === "string" ? result.stdout : "";
-  const stderr = typeof result.stderr === "string" ? result.stderr : "";
-  return { status: result.status, stdout, detail: (stderr.trim() || stdout.trim()).replace(/[\u0000-\u001f\u007f]+/gu, " ").slice(0, 300) };
-}
-
 /** What a macOS or Windows install would write and register, with no effect yet. */
 export interface NativePlan {
   readonly mechanism: Exclude<ServiceMechanism, "systemd-user">;
@@ -232,16 +206,17 @@ export interface NativeService {
   publish(plan: NativePlan): void;
   register(plan: NativePlan): void;
   check(receipt: UnitReceipt): void;
+  isEnabled?(receipt: UnitReceipt): boolean;
   start(receipt: UnitReceipt): void;
   restart(receipt: UnitReceipt, reload?: boolean): void;
   remove(receipt: UnitReceipt, preserveSource?: boolean): void;
 }
 
 /** This OS's per-user supervisor, or `undefined` on Linux, whose systemd route is below. */
-function nativeService(): NativeService | undefined {
+function nativeService(run: NativeRun = nativeRun): NativeService | undefined {
   if (process.platform === "linux") return undefined;
-  if (process.platform === "darwin") return launchAgentService(nativeRun);
-  if (process.platform === "win32") return scheduledTaskService(nativeRun);
+  if (process.platform === "darwin") return launchAgentService(run);
+  if (process.platform === "win32") return scheduledTaskService(run);
   throw new CommandFailure("refused", "UNSUPPORTED", `cotal daemon install supports Linux, macOS and Windows; this is ${process.platform}, and no other supervisor was substituted`);
 }
 
@@ -319,6 +294,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
 export interface InstallResult extends InstallPlan {
   /** systemd only: linger is on once the install returns. */
   readonly lingerEnabled?: boolean;
+  readonly omittedRelativePathEntries?: readonly string[];
   readonly state: "installed";
 }
 
@@ -330,16 +306,17 @@ export interface InstallResult extends InstallPlan {
  * is the first change the operator would have to undo. So a failure anywhere after that still
  * leaves a unit `uninstall` can find and remove, never an enabled unit nothing records.
  */
-export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined): InstallResult {
+export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined, omittedRelativePathEntries?: readonly string[]): InstallResult {
+  const omitted = omittedRelativePathEntries?.length ? { omittedRelativePathEntries } : {};
   const service = nativeService();
   if (service) {
     const plan = nativeInstallPlan(service, paths, daemonHome);
     mkSecretDir(paths.state);
     service.publish(plan);
-    writeReceipt(paths, { v: 1, mechanism: plan.mechanism, unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) });
+    writeReceipt(paths, { v: 1, mechanism: plan.mechanism, unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
     service.register(plan);
     const { mechanism, unit, unitPath, sha256, user, restart, wantedBy } = plan;
-    return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), state: "installed" };
+    return { mechanism, unit, unitPath, sha256, user, restart, wantedBy, ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted, state: "installed" };
   }
   const plan = planInstall(paths, daemonHome);
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
@@ -350,7 +327,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
   const unitDir = join(rendered.unitPath, "..");
   mkdirSync(unitDir, { recursive: true, mode: 0o700 });
   createSystemdSource(rendered.unitPath, rendered.bytes, rendered.sha256);
-  writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) });
+  writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
   if (!plan.lingerAlready) {
     const enabled = loginctl(["enable-linger", plan.user]);
     if (enabled.status !== 0 || !lingerEnabled(plan.user)) throw new CommandFailure("refused", "PERMISSION_DENIED", `linger could not be enabled for ${plan.user}, so the recorded unit was not enabled or started. Remove it with \`cotal daemon uninstall\`, enable linger with loginctl enable-linger ${plan.user} and run this again`);
@@ -359,7 +336,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined)
   submitSystemdUnitRegistration("reload", rendered.unit);
   submitSystemdUnitRegistration("enable", rendered.unit);
   submitSystemdUnitControl("start", rendered.unit);
-  return { ...plan, lingerEnabled: true, state: "installed" };
+  return { ...plan, lingerEnabled: true, ...omitted, state: "installed" };
 }
 
 export interface UninstallPlan {
@@ -370,15 +347,18 @@ export interface UninstallPlan {
 }
 
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
-  const service = nativeService();
+function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
+  const service = nativeService(run);
   const receipt = readReceipt(paths);
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
   const mechanism = receipt.mechanism ?? "systemd-user";
   if (mechanism !== (service ? service.mechanism : "systemd-user")) throw new CommandFailure("refused", "CONFLICT", `the recorded unit ${receipt.unit} is a ${mechanism} unit, which this OS does not run; nothing was removed`);
+  if (process.platform === "win32") {
+    checkWindowsRecordedUnit(paths, receipt, service!);
+    return { receipt, plan: { mechanism, unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt }, service };
+  }
   try { lstatSync(receipt.unitPath); }
   catch { throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the recorded unit file ${receipt.unitPath} is gone; nothing was removed. Delete ${unitReceiptFile(paths)} by hand to forget it`); }
-  if (mechanism === "scheduled-task" && receipt.unitPath !== join(paths.state, "service-task.xml")) throw new CommandFailure("refused", "CONFLICT", "the scheduled-task receipt names a definition outside this daemon state; nothing was changed");
   if (service) service.check(receipt);
   else {
     const unit = daemonUnitName(daemonHome);
@@ -432,6 +412,7 @@ export function planInstalledPathRefresh(paths: DaemonPaths, daemonHome?: string
 
 /** Start only the recorded, unchanged service. This does not restart an already-running daemon. */
 export async function startInstalled(paths: DaemonPaths, daemonHome: string | undefined, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
+  assertDesktopSetupComplete();
   if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, true);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.start(receipt);
@@ -439,49 +420,45 @@ export async function startInstalled(paths: DaemonPaths, daemonHome: string | un
   return plan;
 }
 
+/** Start only an enabled, same-installation POSIX unit or LaunchAgent during update, never overriding an operator disable. */
+export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: string | undefined): Promise<{ started: boolean; unit: string; state: string }> {
+  assertDesktopSetupComplete();
+  const recorded = recordedUnit(paths, daemonHome);
+  const identity = recordedDaemonIdentity(recorded);
+  if (!identity.same) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon source names another installation (${identity.installed}); update did not start it`);
+  const { receipt, plan, service } = recorded;
+  if (service) {
+    if (service.isEnabled && !service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
+    service.start(receipt);
+    return { started: true, unit: plan.unit, state: "enabled" };
+  }
+  const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"]);
+  if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
+  const state = read.stdout.trim();
+  if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} reported an empty UnitFileState; nothing was started`);
+  if (state !== "enabled") return { started: false, unit: plan.unit, state };
+  submitSystemdUnitControl("start", plan.unit);
+  return { started: true, unit: plan.unit, state: "enabled" };
+}
+
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
-export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string): boolean {
+export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): boolean {
   try { lstatSync(unitReceiptFile(paths)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  installedDaemonIdentity(paths, daemonHome);
+  if (expectedArgv) {
+    const { receipt, plan } = recordedUnit(paths, daemonHome);
+    recordedSourceIdentity(receipt, plan.mechanism, () => [...expectedArgv]);
+  } else installedDaemonIdentity(paths, daemonHome);
   return true;
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; current: string } {
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; installedEntry: string; current: string } {
   return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
 }
 
-function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; current: string } {
-  const bytes = readFileSync(receipt.unitPath);
-  const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
-  let argv: string[];
-  if (plan.mechanism === "systemd-user") {
-    const line = /^ExecStart=(.*)$/m.exec(bytes.toString("utf8"))?.[1];
-    if (!line) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon unit has no readable executable and entry");
-    argv = [...line.matchAll(/"((?:\\.|[^"\\])*)"|([^\s"]+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1").replaceAll("%%", "%").replaceAll("$$", "$"));
-  } else if (plan.mechanism === "launchd-agent") {
-    const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(bytes.toString("utf8"))?.[1] ?? "";
-    argv = [...array.matchAll(/<string>([^<]*)<\/string>/g)].map(match => decode(match[1]!));
-  } else {
-    const text = bytes.subarray(2).toString("utf16le");
-    const executable = decode(/<Command>([^<]*)<\/Command>/.exec(text)?.[1] ?? "");
-    const args = decode(/<Arguments>([^<]*)<\/Arguments>/.exec(text)?.[1] ?? "");
-    argv = [executable, ...[...args.matchAll(/"([^"]*)"|(\S+)/g)].map(match => match[1] ?? match[2]!)];
-  }
-  const expected = daemonServeArgv(receipt.daemonHome);
-  const coordinate = (args: string[]) => {
-    const daemon = args.indexOf("daemon");
-    const entry = daemon >= 2 ? args[daemon - 1]! : args[0]!;
-    return { executable: args[0], entry };
-  };
-  const installed = coordinate(argv), current = coordinate(expected);
-  // launchd pins the adjacent cwd bootstrap instead of cotal.js itself.
-  if (plan.mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
-  if (plan.mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
-  if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
-  const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
-  return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, current: `${current.executable} ${current.entry}` };
+function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; installedEntry: string; current: string } {
+  return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
 
 export interface DaemonOwnershipObservation {
@@ -496,16 +473,14 @@ export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: str
     const recorded = recordedUnit(paths, daemonHome);
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
-    const source = readFileSync(receipt.unitPath).toString(plan.mechanism === "scheduled-task" ? "utf16le" : "utf8");
-    const marked = plan.mechanism === "systemd-user" ? source.includes("Environment=COTAL_DAEMON_NATIVE_SERVICE=1")
-      : plan.mechanism === "launchd-agent" ? source.includes("<key>COTAL_DAEMON_NATIVE_SERVICE</key><string>1</string>")
-      : source.includes("daemon-native.js") || (source.includes("cotal-desktop.exe</Command>") && source.includes("<Arguments>--daemon"));
+    const marked = recordedSourceMarked(receipt, plan.mechanism);
     return marked ? { state: "owned", reason: "verified" } : { state: "not-owned", reason: "source-marker-absent" };
   } catch { return { state: "unknown", reason: "observation-failed" }; }
 }
 
 /** A delayed Windows native child must not publish after uninstall removed its installation. */
 export function admitWindowsNativeDaemon(paths: DaemonPaths, daemonHome?: string): void {
+  assertDesktopSetupComplete();
   const receipt = readReceipt(paths);
   if (!receipt || receipt.mechanism !== "scheduled-task" || receipt.daemonHome !== daemonHome ||
       receipt.unit !== scheduledTaskName(daemonHome, windowsUserSid()) || receipt.unitPath !== join(paths.state, "service-task.xml"))
@@ -525,12 +500,18 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
   return new Promise(resolve => {
     // Reuse the installer's exact source, identity and native-job checks. The worker's
     // default argv names this helper, so explicitly preserve the daemon's launch vector.
+    let expected: string[] | undefined;
+    if (process.platform === "win32") {
+      try { expected = daemonServeArgv(daemonHome); }
+      catch { resolve({ state: "unknown", reason: "observation-failed" }); return; }
+    }
     const worker = new Worker(`
       const { parentPort, workerData } = require('node:worker_threads');
       process.argv = workerData.argv;
       process.execArgv = workerData.execArgv;
-      import(workerData.module).then(m => parentPort.postMessage(m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
-    `, { eval: true, workerData: { module: import.meta.url, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv }, stdout: true, stderr: true });
+      if (workerData.execution) Object.defineProperty(globalThis, Symbol.for('cotal.execution.identity'), { value: Object.freeze(workerData.execution) });
+      import(workerData.module).then(m => parentPort.postMessage(workerData.expected ? m.observeWindowsOwnedService(workerData.paths, workerData.expected) : m.daemonStartedByOwnedService(workerData.paths, workerData.home))).catch(() => parentPort.postMessage({ state: 'unknown', reason: 'worker-failed' }));
+    `, { eval: true, workerData: { module: expected ? new URL("./ownership-win32.js", import.meta.url).href : import.meta.url, expected, paths, home: daemonHome, argv: process.argv, execArgv: process.execArgv, execution: executionIdentity() }, stdout: true, stderr: true });
     worker.stdout.resume(); worker.stderr.resume();
     let settled = false;
     const finish = (observation: DaemonOwnershipObservation) => {
@@ -551,11 +532,11 @@ export function observeDaemonOwnedService(paths: DaemonPaths, daemonHome?: strin
 }
 
 /** Send a restart handshake on the caller's already verified, pinned connection. */
-export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof openVerified>> | undefined, op: "daemon-stop" | "status", commit = false) {
+export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof openVerified>> | undefined, op: "daemon-stop" | "status", commit = false, timeoutMs = commit ? 5000 : 70_000) {
   const id = randomUUID().replaceAll("-", "");
   if (!socket) throw new Error("the pinned daemon connection is absent");
   socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op, ...(commit ? { commit: true } : {}) }));
-  const reply = JSON.parse(await readLine(socket, commit ? 5000 : 70_000)) as DaemonResponse;
+  const reply = JSON.parse(await readLine(socket, timeoutMs)) as DaemonResponse;
   const unacknowledged = () => new Error(`the pinned daemon did not acknowledge ${op}`);
   if (!reply || typeof reply !== "object" || reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || "event" in reply) throw unacknowledged();
   if (reply.ok === false) {
@@ -568,37 +549,77 @@ export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof o
   return reply.result;
 }
 
+/** An automatic helper's captured authority, retained until its single activation deadline. */
+export interface WindowsAutomaticRestart {
+  readonly deadline: number;
+  readonly receipt: string;
+  readonly pid: number;
+  readonly start: string;
+  readonly exited: () => boolean;
+}
+
 /** Restart the recorded Windows task only after the pinned daemon lifetime exits. */
-async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false): Promise<UninstallPlan> {
-  const { receipt, plan } = recordedUnit(paths, daemonHome);
+async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, expectedVersion?: string, report?: (detail: string) => void, startOnly = false, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+  const remaining = (limit: number): number => {
+    if (!automatic) return limit;
+    const left = automatic.deadline - Date.now();
+    if (left <= 0) throw new Error("Windows automatic activation deadline expired; release remains installed; use Start service");
+    return Math.min(limit, left);
+  };
+  const run: NativeRun = automatic ? (file, args, env) => nativeRun(file, args, env, remaining(30_000)) : nativeRun;
+  const recorded = () => recordedUnit(paths, daemonHome, run);
+  const { receipt, plan } = recorded();
   if (process.platform !== "win32" || plan.mechanism !== "scheduled-task") throw new CommandFailure("refused", "UNSUPPORTED", "Windows daemon restart requires the recorded scheduled task");
-  const task = scheduledTaskService(nativeRun);
+  if (automatic && JSON.stringify(receipt) !== automatic.receipt) throw new Error("the captured Windows installation changed before activation");
+  const task = scheduledTaskService(run);
+  if (automatic) {
+    const observed = task.inspect(receipt);
+    if (!observed.present || observed.enabled !== true) throw new Error("the captured Windows task is absent or disabled; activation refused");
+  }
   const before = readLifetimeRecord(paths.lock);
   let socket: Awaited<ReturnType<typeof openVerified>> | undefined;
-  try { socket = await openVerified({ paths }); }
-  catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+  try { socket = await openVerified({ paths, timeoutMs: remaining(5000) }); }
+  catch (error) {
+    if (!(error instanceof EndpointRefusal && (error.code === "NOT_RUNNING" || ((startOnly || automatic) && error.code === "PEER_NOT_LOCK_OWNER")))) throw error;
+  }
   socket?.on("error", () => {});
   const owner = readLifetimeRecord(paths.lock);
+  const priorOwner = automatic ? { pid: automatic.pid, start: automatic.start } : startOnly ? undefined : owner;
   let phase = "prepare";
   let pauseAttempted = false;
+  let stopCommitted = false;
   const progress = (detail: string) => { phase = detail; report?.(detail); };
   const startedAt = Date.now();
   const heartbeat = setInterval(() => report?.(`${phase} (${Math.floor((Date.now() - startedAt) / 1000)}s elapsed)`), 5000);
   let exclusion: ReturnType<typeof excludeLifetime> | undefined;
-  const request = (op: "daemon-stop" | "status", commit = false) => requestInstalledDaemon(socket, op, commit);
+  let startGate: number | undefined;
+  const request = (op: "daemon-stop" | "status", commit = false) => requestInstalledDaemon(socket, op, commit, remaining(commit ? 5000 : 70_000));
   try {
     let version = expectedVersion;
-    if (socket) {
+    if (socket && (!startOnly || (owner?.start && before?.pid === owner.pid && before.start === owner.start && processBirth(owner.pid) === owner.start))) {
     if (!owner?.start || before?.pid !== owner.pid || before.start !== owner.start || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed while opening its endpoint");
     const initial = await request("status");
-    if (startOnly) return plan;
+    if (automatic && (owner!.pid !== automatic.pid || owner!.start !== automatic.start)) {
+      if (!automatic.exited() || initial.version !== expectedVersion) throw new Error("another daemon lifetime replaced the captured generation");
+      if (JSON.stringify(recorded().receipt) !== automatic.receipt) throw new Error("the installation changed while observing the replacement");
+      const currentTask = task.inspect(receipt);
+      if (!currentTask.present || currentTask.enabled !== true || currentTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
+      return plan;
+    }
+    if (startOnly) {
+      if (expectedVersion !== undefined && initial.version !== expectedVersion) throw new Error("replacement version or protocol did not match");
+      const currentTask = task.inspect(receipt);
+      if (!currentTask.present || currentTask.enabled !== true || currentTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
+      return plan;
+    }
     version ??= initial.version;
     await request("daemon-stop");
     progress("pausing the owned scheduled task and confirming native instances stopped");
     pauseAttempted = true;
     await task.pause(receipt);
     phase = "stop-commit";
-    if (processBirth(owner.pid) === owner.start) {
+    if (processBirth(owner!.pid) === owner!.start) {
+      stopCommitted = true;
       try { await request("daemon-stop", true); }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -607,49 +628,69 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       }
     }
     progress("waiting for the old daemon lifetime to exit (up to 130s)");
-    const deadline = Date.now() + 130_000;
+    const deadline = Date.now() + remaining(130_000);
     for (;;) {
       let absent = false;
-      try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); }
+      try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); }
       catch (error) {
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(stopCommitted && isStoppingLifetime(error, owner)) && !(automatic && automatic.exited() && error instanceof EndpointRefusal && error.code === "PEER_NOT_LOCK_OWNER")) throw error;
       }
-      if (absent && processBirth(owner.pid) !== owner.start) break;
+      if (processBirth(owner!.pid) !== owner!.start) {
+        if (absent) break;
+        if (automatic && automatic.exited()) {
+          const currentLock = readLifetimeRecord(paths.lock);
+          if (currentLock?.start && (currentLock.pid !== owner!.pid || currentLock.start !== owner!.start)) break;
+        }
+      }
       if (Date.now() >= deadline) throw new Error("old daemon death and endpoint absence were not confirmed within 130s");
       await delay(100);
     }
-    } else if (owner?.start && processBirth(owner.pid) === owner.start) {
+    } else if (!startOnly && !(automatic && automatic.exited()) && owner?.start && processBirth(owner.pid) === owner.start) {
       throw new Error("the recorded live daemon has no verified listener");
     }
-    exclusion = excludeLifetime(paths.lock);
-    progress("verifying the recorded installation and owned task before startup");
-    try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
-    catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
-    const current = recordedUnit(paths, daemonHome).receipt;
-    if (JSON.stringify(current) !== JSON.stringify(receipt)) throw new Error("the installation changed during shutdown");
-    const native = task.inspect(receipt);
-    if (!native.present || native.instances !== 0) throw new Error("the owned task is absent or still has native instances");
-    // The replacement must acquire the lock itself. Never Run while holding exclusion.
-    exclusion.release(); exclusion = undefined;
-    progress("enabling and starting the verified owned scheduled task");
-    task.start(receipt);
+    if (automatic && !automatic.exited()) throw new Error("the captured Windows daemon kernel lifetime has not ended");
+    startGate = openSync(unitReceiptFile(paths), constants.O_RDWR);
+    const startOwner = lockExclusiveNb(startGate);
+    if (!startOwner) {
+      closeSync(startGate); startGate = undefined;
+      if (!startOnly && !automatic) throw new Error("another Windows daemon start is already in progress");
+    } else {
+      progress("verifying the recorded installation and owned task before startup");
+      const current = recorded().receipt;
+      if (JSON.stringify(current) !== JSON.stringify(receipt)) throw new Error("the installation changed during shutdown");
+      const native = task.inspect(receipt);
+      if (!native.present) throw new Error("the owned task is absent or still has native instances");
+      if (native.instances === 0) {
+        exclusion = excludeLifetime(paths.lock);
+        try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); throw new Error("a daemon endpoint still answers under lifetime exclusion"); }
+        catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
+        // The replacement must acquire the lock itself. Never Run while holding exclusion.
+        exclusion.release(); exclusion = undefined;
+        progress("enabling and starting the verified owned scheduled task");
+        if (automatic && !pauseAttempted) task.startEnabled(receipt);
+        else task.start(receipt);
+      } else if (!(startOnly || automatic) || native.instances !== 1 || native.enabled !== true) {
+        throw new Error("the owned task is absent or still has native instances");
+      }
+    }
     progress("waiting for a fresh daemon to answer (up to 60s)");
-    const readyUntil = Date.now() + 60_000;
+    const readyUntil = Date.now() + remaining(60_000);
     for (;;) {
       try {
         const prior = readLifetimeRecord(paths.lock);
-        const fresh = await openVerified({ paths, timeoutMs: 1000 });
+        const fresh = await openVerified({ paths, timeoutMs: remaining(1000) });
         try {
           const lifetime = readLifetimeRecord(paths.lock);
-          if (!lifetime?.start || prior?.pid !== lifetime.pid || prior.start !== lifetime.start || (lifetime.pid === owner?.pid && lifetime.start === owner.start) || processBirth(lifetime.pid) !== lifetime.start) throw new Error("no fresh stable kernel lifetime");
+          if (!lifetime?.start || prior?.pid !== lifetime.pid || prior.start !== lifetime.start || (lifetime.pid === priorOwner?.pid && lifetime.start === priorOwner.start) || processBirth(lifetime.pid) !== lifetime.start) throw new Error("no fresh stable kernel lifetime");
           const id = randomUUID().replaceAll("-", "");
           fresh.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "status" }));
-          const reply = JSON.parse(await readLine(fresh, 20_000)) as DaemonResponse;
+          const reply = JSON.parse(await readLine(fresh, remaining(20_000))) as DaemonResponse;
           if (reply.v !== DAEMON_PROTOCOL_VERSION || reply.id !== id || !reply.ok || "event" in reply || !("version" in reply.result) || (version !== undefined && reply.result.version !== version) || !("protocol" in reply.result) || reply.result.protocol !== DAEMON_PROTOCOL_VERSION) throw new Error("replacement version or protocol did not match");
           if (processBirth(lifetime.pid) !== lifetime.start) throw new Error("replacement exited during proof");
-          if (JSON.stringify(recordedUnit(paths, daemonHome).receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed during replacement startup");
-          task.check(receipt);
+          if (JSON.stringify(recorded().receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed during replacement startup");
+          const readyTask = task.inspect(receipt);
+          if (!readyTask.present || readyTask.enabled !== true || readyTask.instances !== 1) throw new Error("the replacement does not have one enabled native task instance");
           return plan;
         } finally { fresh.destroy(); }
       } catch (error) {
@@ -665,7 +706,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       recovery = await recoverPausedTask({
         pendingEnd: task.pendingEnd,
         unchanged() {
-          if (JSON.stringify(recordedUnit(paths, daemonHome).receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed");
+          if (JSON.stringify(recorded().receipt) !== JSON.stringify(receipt)) throw new Error("the installation changed");
         },
         async oldAnswers() {
           if (!socket || socket.destroyed || !owner?.start || processBirth(owner.pid) !== owner.start) return false;
@@ -675,7 +716,7 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
         },
         async absent() {
           exclusion ??= excludeLifetime(paths.lock);
-          try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw new Error("a daemon still answers"); }
+          try { const probe = await openVerified({ paths, timeoutMs: remaining(1000) }); probe.destroy(); throw new Error("a daemon still answers"); }
           catch (probeError) { if (!(probeError instanceof EndpointRefusal && probeError.code === "NOT_RUNNING")) throw probeError; }
           const native = task.inspect(receipt);
           if (!native.present || native.instances !== 0) throw new Error("native instances are not absent");
@@ -684,12 +725,12 @@ async function restartWindowsInstalled(paths: DaemonPaths, daemonHome?: string, 
       });
     } catch (recoveryError) { recovery += ` (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)})`; }
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `Windows daemon restart failed during ${phase}: ${error instanceof Error ? error.message : String(error)}; ${recovery}; the generation fence, source and receipt were retained`, { ...(error instanceof CommandFailure && error.native ? { native: error.native } : {}), remedy: "inspect \`cotal daemon status\` and the recorded task in Task Scheduler, then run setup again. Do not clear a restart fence through a replacement connection" });
-  } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); }
+  } finally { clearInterval(heartbeat); socket?.destroy(); exclusion?.release(); if (startGate !== undefined) closeSync(startGate); }
 }
 
 /** Restart only the source and native job recorded for this daemon. */
-export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void): Promise<UninstallPlan> {
-  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report);
+export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, reload = false, expectedVersion?: string, report?: (detail: string) => void, automatic?: WindowsAutomaticRestart): Promise<UninstallPlan> {
+  if (process.platform === "win32") return restartWindowsInstalled(paths, daemonHome, expectedVersion, report, false, automatic);
   const { receipt, plan, service } = recordedUnit(paths, daemonHome);
   if (service) service.restart(receipt, reload);
   else {
@@ -714,6 +755,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
   // stop only that listener, never a reused PID or a later daemon generation.
   const before = readLifetimeRecord(paths.lock);
   let socket;
+  let stopCommitted = false;
   try { socket = await openVerified({ paths }); }
   catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
   const owner = readLifetimeRecord(paths.lock);
@@ -746,6 +788,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     }
     if (socket && owner?.start && processBirth(owner.pid) === owner.start) {
       const id = randomUUID().replaceAll("-", "");
+      stopCommitted = true;
       socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "daemon-stop", commit: true }));
       try {
         const reply = JSON.parse(await readLine(socket, 5000)) as DaemonResponse;
@@ -769,7 +812,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
         if (error instanceof EndpointRefusal && error.code === "NOT_RUNNING") absent = true;
         // The native CI reproducer observed a connect reset while close() tears down
         // accepted sockets. It proves neither a live endpoint nor absence. Reobserve.
-        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
+        else if ((error as NodeJS.ErrnoException).code !== "ECONNRESET" && !(process.platform === "win32" && stopCommitted && isStoppingLifetime(error, owner))) throw error;
       }
       if (absent && (!socket || !owner || (owner.start && processBirth(owner.pid) !== owner.start)) && Date.now() >= observeUntil) break;
       if (Date.now() >= deadline) throw uncertain("daemon shutdown was not confirmed within 130s");

@@ -30,9 +30,16 @@ const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { spaceKey } = await import("@cotal-ai/workspace");
 const { readUpdateManagerIdentity } = await import("../src/lib/update-managers.js");
-const { isCliEntry } = await import("../src/lib/manager-proc.js");
+const { isCliEntry, supervisorInstallScope } = await import("../src/lib/manager-proc.js");
 const { fileURLToPath } = await import("node:url");
 assert.equal(isCliEntry(fileURLToPath(new URL("../../../bin/cotal.ts", import.meta.url))), true, "checkout entry remains attributable across bin/package.json");
+const ownEntry = (await import("node:fs")).realpathSync(process.argv[1]!);
+const uid = process.getuid!();
+assert.equal(supervisorInstallScope(process.pid, uid + 1, "node /unresolvable/foreign/cotal.js supervise", ownEntry), "foreign", "foreign user with no same-install entry is excluded");
+assert.equal(supervisorInstallScope(process.pid, uid + 1, `node ${ownEntry} supervise`, ownEntry), "local", "sudo supervisor of this installation still counts");
+assert.equal(supervisorInstallScope(process.pid, uid, `node ${ownEntry} supervise`, ownEntry), "local", "same-user supervisor of this installation still counts");
+assert.equal(supervisorInstallScope(process.pid, uid, "node cotal.js supervise", ownEntry), "unknown", "relative missing entry does not prove another installation");
+assert.equal(supervisorInstallScope(2147483647, uid, "node cotal.js supervise", ownEntry), "unknown", "unreadable namespace does not establish safety");
 const root = mkdtempSync(join(tmpdir(), "cotal-update-identity-"));
 try {
   mkdirSync(join(root, ".cotal", "auth"), { recursive: true });
@@ -65,5 +72,39 @@ if (process.platform === "linux") {
     await once(child, "exit");
     rmSync(fixture, { recursive: true, force: true });
   }
+  const relativeRoot = mkdtempSync(join(tmpdir(), "cotal-update-relative-"));
+  const relativeEntry = join(relativeRoot, "entry.mjs");
+  writeFileSync(relativeEntry, "setInterval(() => {}, 1000);\n");
+  const otherRoot = join(relativeRoot, "other");
+  mkdirSync(otherRoot);
+  writeFileSync(join(otherRoot, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "cotal.js" } }));
+  const otherEntry = join(otherRoot, "cotal.js");
+  writeFileSync(otherEntry, "");
+  const relativeChild = spawn(process.execPath, ["entry.mjs", "supervise", "--space", "relative-proof", "--server", "nats://127.0.0.1:9", otherEntry], { cwd: relativeRoot, stdio: "ignore" });
+  try {
+    await once(relativeChild, "spawn");
+    const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+    assert.throws(() => localUpdateManagers({ space: "relative-proof" }, relativeEntry), /missing identity/, "relative same-install entry is resolved before another absolute CLI argument can exclude it");
+  } finally {
+    relativeChild.kill();
+    await once(relativeChild, "exit");
+  }
+  try {
+    const { spawnSync } = await import("node:child_process");
+    const binary = join(relativeRoot, "changing-entry");
+    const compiled = spawnSync("cc", [fileURLToPath(new URL("./fixtures/supervisor-dumpability.c", import.meta.url)), "-o", binary], { encoding: "utf8" });
+    assert.equal(compiled.status, 0, `native dumpability fixture compiles: ${compiled.stderr}`);
+    const changing = spawn("./changing-entry", ["supervise", "--space", "permission-proof", "--server", "nats://127.0.0.1:9", otherEntry], { cwd: relativeRoot, stdio: "ignore" });
+    try {
+      await once(changing, "spawn");
+      const { localUpdateManagers } = await import("../src/lib/update-managers.js");
+      for (let attempt = 0; attempt < 50; attempt++) {
+        assert.throws(() => localUpdateManagers({ space: "permission-proof" }, binary), /local Manager continuity cannot be established/, "changing dumpability must refuse local custody, never silently exclude it");
+      }
+    } finally {
+      changing.kill();
+      await once(changing, "exit");
+    }
+  } finally { rmSync(relativeRoot, { recursive: true, force: true }); }
 }
 emitSentinel({ passed: counted.cells(), failed: 0 });

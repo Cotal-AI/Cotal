@@ -1,4 +1,6 @@
+import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
+import { nativeBindingAfter, nativeConnectionBinding, type NativeConnectionBinding } from "./native-connection.js";
 import { EventEmitter } from "node:events";
 import { drainAndClose } from "./connection-cleanup.js";
 import { randomUUID } from "node:crypto";
@@ -1014,6 +1016,11 @@ export class CotalEndpoint extends EventEmitter {
   private startPromise?: Promise<void>;
   /** Includes detached predecessors until their actual connection reports closed. */
   private readonly ownedConnections = new Set<NatsConnection>();
+  /** Whether the current connection has a binding to report: the last `transport` edge, cleared
+   *  when a reconnect is requested on it. Read by {@link nativeConnections}. */
+  private nativeBound = false;
+  /** Credential transactions running now. Each one opens a disposable connection for its proof. */
+  private credsTxnsRunning = 0;
   /** In-flight rebuild (drain+rebind) — serializes manual reconnect, the supervisor's
    *  closed(), and reestablishLoop so only ONE rebuild runs at a time (a second trigger
    *  coalesces onto the shared promise, never starts a parallel connectAndBind). */
@@ -1106,6 +1113,7 @@ export class CotalEndpoint extends EventEmitter {
 
   constructor(opts: EndpointOptions) {
     super();
+    this.on("transport", (state: TransportState) => { this.nativeBound = state.connected; });
     /** Did the dev/static branch fall through to a random connId? Set on every path that assigns
      *  `connId` so the ephemeral verdict below can never read an unassigned value. */
     let selfMintedConnId = false;
@@ -1681,7 +1689,11 @@ export class CotalEndpoint extends EventEmitter {
    *  outcome; the internal chain never rejects. */
   private credsTxn: Promise<unknown> = Promise.resolve();
   private runCredsTxn<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.credsTxn.then(fn, fn);
+    const counted = async (): Promise<T> => {
+      this.credsTxnsRunning++;
+      try { return await fn(); } finally { this.credsTxnsRunning--; }
+    };
+    const next = this.credsTxn.then(counted, counted);
     this.credsTxn = next.then(() => undefined, () => undefined);
     return next;
   }
@@ -2576,6 +2588,27 @@ export class CotalEndpoint extends EventEmitter {
       throw new Error(`endpoint stop closed the connection but the DM-only handler did not settle within ${this.dmOnly?.settleTimeoutMs ?? 30_000}ms; its copy stays unacked and handler custody must be retained`);
   }
 
+  /** The native binding of every connection this endpoint holds. A host compares the list with a
+   *  complete native census of the account to show that no other connection uses it. The list
+   *  proves neither liveness nor the absence of other connections. A stopped endpoint whose
+   *  connections all closed reports none. It throws while there is no settled answer: before
+   *  start, during a start, rebuild or stop, while a credential transaction or its connection swap
+   *  is pending, and while the connection is down or redialing. */
+  nativeConnections(): NativeConnectionBinding[] {
+    const unsettled = (why: string) => new Error(`endpoint connection inventory is unsettled: ${why}`);
+    if (this.startPromise !== undefined || this.rebuildPromise !== undefined || this.reconnecting)
+      throw unsettled("a start or rebuild is in flight");
+    const open = [...this.ownedConnections].filter((nc) => !nc.isClosed());
+    if (this.stopped) {
+      if (open.length > 0) throw unsettled("the endpoint stopped but a connection has not closed");
+      return [];
+    }
+    if (this.credsTxnsRunning > 0 || this.residentSwap !== undefined)
+      throw unsettled("a credential adoption is in flight");
+    if (!this.nc || !this.nativeBound) throw unsettled("the connection is down or redialing");
+    return open.map((nc) => nativeConnectionBinding(nc, "endpoint connection"));
+  }
+
   // ---- messaging -----------------------------------------------------------
 
   /** Multicast: broadcast to everyone on a channel. */
@@ -2810,6 +2843,52 @@ export class CotalEndpoint extends EventEmitter {
     return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
+  /** Publish a payload frame on this principal's forge-locked sibling event rail. */
+  async publishEventPayload(opts: { parts: Part[]; id: string; expectedLastSubjectSeq: number }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    assertIdToken(opts.id, "publish id");
+    if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
+      throw new Error("payload expectation must be a non-negative safe integer");
+    if (!opts.parts.length) throw new Error("payload frame requires parts");
+    const message = this.casEnvelope({ ...opts, channel: `events.${this.owner}.${this.actor}` });
+    assertPartsSerializable(message.parts);
+    const ack = await this.js.publish(eventPayloadSubject(this.space, this.owner, this.actor), JSON.stringify(message),
+      { msgID: opts.id, expect: { lastSubjectSequence: opts.expectedLastSubjectSeq } });
+    return { ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+  }
+
+  /** Read payload history through a single native-filtered consumer, never through CHAT. */
+  async eventPayloadHistory(owner: string, actor: string, opts?: { limit?: number; signal?: AbortSignal }): Promise<HistoryMessage[]> {
+    return (await this.streamHistory(eventPayloadStream(this.space),
+      [eventPayloadSubject(this.space, assertValidOwnerToken(owner), assertValidOwnerToken(actor))], opts?.limit ?? 100, undefined, opts?.signal))
+      .map(row => row.msg);
+  }
+
+  /** Verify the sibling stream and learn its actual message ceiling. A pre-upgrade space without
+   *  the stream or its info-read permission returns null and emits a warning. Other authorization,
+   *  transport and config errors throw. */
+  async eventPayloadLimit(): Promise<number | null> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    const stream = eventPayloadStream(this.space);
+    const info = await this.jsm.streams.info(stream).catch((err: unknown) => {
+      const denial = err instanceof PermissionViolationError ? err
+        : (err as { cause?: unknown } | null)?.cause;
+      const infoDenied = denial instanceof PermissionViolationError && denial.operation === "publish"
+        && denial.subject === `$JS.API.STREAM.INFO.${stream}`;
+      if (!infoDenied && !isJetStreamMissing(err, JetStreamApiCodes.StreamNotFound)) throw err;
+      const reason = infoDenied ? `missing publish permission on $JS.API.STREAM.INFO.${stream}` : `stream ${stream} is absent`;
+      this.emitRecoverable(new Error(
+        `event payloads unavailable: ${reason}; publishing tool names and times only. Upgrade the space's broker setup and credentials to enable payloads`,
+      ));
+      return null;
+    });
+    if (info === null) return null;
+    const { config } = info;
+    if (config.num_replicas !== 1) throw new Error("event payload stream requires one replica for serialized appends");
+    const limits = [this.maxPayload, config.max_msg_size, config.max_bytes].filter((n): n is number => typeof n === "number" && n > 0);
+    return Math.min(...limits);
+  }
+
   /** Unicast: direct message to one specific instance. */
   async unicast(
     instanceId: string,
@@ -2933,7 +3012,7 @@ export class CotalEndpoint extends EventEmitter {
           decoded = undefined;
         }
         const parsed = parseSubject(m.subject);
-        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
+        if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
           if (!isFromSubjectSender(decoded, parsed)) continue;
           decoded = authenticatedMessage(decoded, parsed);
         }
@@ -3972,6 +4051,19 @@ export class CotalEndpoint extends EventEmitter {
     };
   }
 
+  /** Whether this space's direct-message stream is on its broker. A missing stream is false.
+   *  Any other failure, including a permission denial, is raised. */
+  async dmStreamPresent(): Promise<boolean> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    try {
+      await (await jetstreamManager(this.nc)).streams.info(dmStream(this.space));
+      return true;
+    } catch (e) {
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+      return false;
+    }
+  }
+
   /** One coherent channel model for dashboards: every channel that has messages OR a registry
    *  entry (configured-but-empty), each tagged with its {@link ChannelConfig}. Works even on
    *  observer endpoints (no consumers needed). */
@@ -4446,7 +4538,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
+   * The newest `limit` chat messages across concrete channels or one channel family, oldest-first within the page,
    * each tagged with the channel the BROKER delivered it on.
    *
    * The CHAT stream interleaves every channel into one sequence space. Consumers take sets of
@@ -4461,24 +4553,25 @@ export class CotalEndpoint extends EventEmitter {
    * field, and this method ignores it: the tag is derived from the subject the broker routed the
    * message on, the same derivation {@link listChannels} uses to name a channel in the first place.
    *
-   * **Concrete channels only.** Filter subjects on one consumer may not overlap, and a wildcard
-   * channel subsumes its own subtree, so a wildcard here is refused rather than silently dropped or
-   * silently double-counted.
+   * A single channel family such as `events.>` uses one broker filter without enumerating its
+   * concrete channels. Otherwise every channel must be concrete: mixing a family with other
+   * filters, or using other wildcard patterns, is refused rather than risking overlapping filters.
    *
-   * **Observer/admin credentials only, and the broker is what says so.** A multi-filter create
+   * **The broker enforces read authority.** A multi-filter create
    * cannot encode its filter in the API subject, so it rides the bare
    * `$JS.API.CONSUMER.CREATE.<CHAT>` row that only the read-only dashboard profiles hold. An agent
    * credential pins the filter into the subject per channel and is denied here by the broker, which
    * is the correct answer: this method reads across channels, and an agent's read ACL is per
-   * channel.
+   * channel. A single filter uses the filter-bearing create subject, including a channel family,
+   * so the broker checks the credential's grant for that filter. No additional authority is minted.
    */
   async multiChannelHistory(
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
   ): Promise<{ channel: string; seq: number; msg: HistoryMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
-      if (!isConcreteChannel(channel))
-        throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
+      if (!isConcreteChannel(channel) && !(channels.length === 1 && isChannelFamily(channel)))
+        throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - name one channel family alone or concrete channels without wildcards`);
       // `chatSubject` builds the filter through `token()`, which REWRITES rather than refuses: it
       // maps a character a subject may not carry to `_`, trims each segment, and drops empty ones.
       // So "foo/bar" would filter on `foo_bar`, ".lead" on `lead`, and "team..b" on `team.b` - the
@@ -4860,6 +4953,11 @@ export class CotalEndpoint extends EventEmitter {
    *  the name was taken again since. The read moves to a free name, and the taken one stays out of use
    *  until such a consumer would have expired. */
   private async openHistoryReader(reader: HistoryReader, config: Partial<ConsumerConfig>): Promise<Consumer> {
+    // A single filter must ride the filter-bearing API subject so scoped read grants apply.
+    if (config.filter_subjects?.length === 1) {
+      const { filter_subjects, ...rest } = config;
+      config = { ...rest, filter_subject: filter_subjects[0] };
+    }
     const pool = reader.pool;
     for (;;) {
       // A reconnect under the auth callout moved this connection to new reader names, and its
@@ -5099,6 +5197,8 @@ export class CotalEndpoint extends EventEmitter {
         // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
         // from that old epoch says nothing about the replacement and must not flip its liveness.
         if (this.nc !== nc) continue;
+        // A requested reconnect is reported before the socket closes and `disconnect` follows.
+        if (nativeBindingAfter(s.type) === false) this.nativeBound = false;
         if (s.type === "disconnect") {
           this.emit("transport", { connected: false, server: s.server } satisfies TransportState);
           continue;
@@ -9028,7 +9128,7 @@ function isFromSubjectSender(msg: unknown, parsed: ParsedSubject): boolean {
  *  does the same (#388). The row's other fields pass through UNTOUCHED, so what the caller's
  *  row type already verified stays verified (#1413). */
 function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
-  if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
+  if (parsed.kind === "chat" || parsed.kind === "evp") return authenticatedChannelMessage(msg, parsed.rest);
   if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
   if (parsed.kind === "svc") return authenticatedAnycastMessage(msg, parsed.rest);
   return msg;

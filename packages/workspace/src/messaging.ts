@@ -1,4 +1,4 @@
-import { assertValidChannel } from "@cotal-ai/core";
+import { assertValidChannel, peerLabel } from "@cotal-ai/core";
 
 /** A message's time as a person reads it: the local time of day, with the local date when it is not
  *  today. `history` and `chat` both show times this way; a JSON document or `--stdio` record keeps
@@ -24,7 +24,11 @@ export function concreteChannelProblem(channel: string): string | undefined {
 }
 
 /** An offline presence card proves neither a surviving inbox nor a reconnectable lifecycle.
- *  The storage receipt cannot promise delivery after retirement (SPEC §8). */
+ *  The storage receipt cannot promise delivery after retirement (SPEC §8). A blank name is not
+ *  used: the warning names no participant and does not break onto another line. */
 export function offlineRecipientNotice(name: string): string {
-  return `${name} is offline. The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message. A new session or agent named ${name} does not receive it.`;
+  const stored = "The message is stored, but delivery is not confirmed. Only the same lifecycle can receive it, while its inbox still exists. If the session ended or its inbox was removed, it cannot receive this message.";
+  if (!name.trim()) return `This participant is offline. ${stored}`;
+  const shown = peerLabel({ name });
+  return `${shown} is offline. ${stored} A new session or agent named ${shown} does not receive it.`;
 }

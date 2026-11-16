@@ -477,6 +477,9 @@ export class BadRequest extends Error {}
  *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
 export class PayloadTooLarge extends Error {}
 
+/** A delete upload that did not finish within its total body deadline. */
+class BodyDeadlineExceeded extends Error {}
+
 /** A post the broker, or the operator's connection to it, refused. Neither the caller's fault nor
  *  this server's, so the frame answers 502 with the broker's own message, escaped by
  *  {@link escapeForOperator}. */
@@ -497,6 +500,7 @@ export class BrokerRefused extends Error {}
  *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
+const DELETE_BODY_DEADLINE_MS = 10_000;
 
 /** The only routes that read a request body. Every other route refuses an announced body. */
 const BODY_ROUTES = new Set(["/api/channel/delete", "/api/send"]);
@@ -716,11 +720,15 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
   | { event: "message"; data: { mode: DeliveryMode; senderId?: string; channel?: string; msg: CotalMessage } }
   | { event: "agent-frame"; agent: string; data: { id: string; msg: CotalMessage } }
   | null {
+  const parsed = parseSubject(subject);
+  if (parsed?.kind === "evp") {
+    if (!msg || parsed.sender !== msg.from?.id) return null;
+    return { event: "agent-frame", agent: parsed.sender, data: { id: parsed.sender, msg } };
+  }
   const mode = deliveryOf(subject);
   if (!mode || !msg) return null;
   // senderId is the subject's sender token, the *verified* publisher (the server policed who could
   // publish it), vs the advisory `from` in the payload.
-  const parsed = parseSubject(subject);
   const senderId = parsed?.sender;
   // The channel the broker actually POLICED, taken from the subject rather than the payload: a
   // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
@@ -900,6 +908,12 @@ export class SessionWatchers<F> {
  *  (an answer) and from any other failure (a 503 with the reason). */
 export class AgentEventsLate extends Error {}
 
+/** A payload-only read failure leaves the independently read metadata available. */
+export interface PayloadReadFailure {
+  status: "timeout" | "refused" | "failed";
+  reason: string;
+}
+
 /** One agent's newest frames within the deadline. Reads `limit + 1` from `events.<owner>.<actor>`
  *  with `channelHistory` and answers the newest `limit`, oldest first, with `more` when one more
  *  existed. A permission denial (`isPermissionDenied` from core) is an answer, `{ refused }` with the
@@ -920,22 +934,44 @@ export class AgentEventsLate extends Error {}
  *  no cursor, and this is the same credential the channel history route already reads with. */
 export async function agentEventsPage(
   source: {
+    eventPayloadHistory?(owner: string, actor: string, opts: { limit: number; signal: AbortSignal }): Promise<CotalMessage[]>;
     channelHistory(channel: string, opts: { limit: number; signal: AbortSignal; publisher: { owner: string; actor: string } }): Promise<CotalMessage[]>;
   },
   agent: { owner: string; actor: string },
   limit: number,
   grantFor: (channel: string, owner: string) => string | undefined,
   deadlineMs: number = AGGREGATION_DEADLINE_MS,
-): Promise<{ frames: CotalMessage[]; more: boolean } | { refused: string; grant?: string }> {
+): Promise<{ frames: CotalMessage[]; more: boolean; payloadRead?: PayloadReadFailure } | { refused: string; grant?: string }> {
   const channel = eventChannel(agent);
   const clock = deadline(deadlineMs);
   try {
     const publisher = { owner: agent.owner, actor: agent.actor };
     const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal, publisher }), clock.until);
     if (page === LATE) throw new AgentEventsLate(`${channel}: the read did not finish within ${deadlineMs}ms`);
-    const more = page.length > limit;
-    // Not `slice(-limit)`: at a limit of 0 that is `slice(-0)`, the whole page.
-    return { frames: more ? page.slice(page.length - limit) : page, more };
+    let payloads: CotalMessage[] = [];
+    let payloadRead: PayloadReadFailure | undefined;
+    if (source.eventPayloadHistory) {
+      try {
+        const result = await within(source.eventPayloadHistory(agent.owner, agent.actor, { limit: limit + 1, signal: clock.signal }), clock.until);
+        if (result !== LATE) payloads = result;
+        else payloadRead = { status: "timeout", reason: "Tool payload read timed out. Try again." };
+      } catch (e) {
+        payloadRead = clock.signal.aborted
+          ? { status: "timeout", reason: "Tool payload read timed out. Try again." }
+          : isPermissionDenied(e)
+            ? { status: "refused", reason: "Tool payload read refused. Ask the mesh owner to check payload access." }
+            : { status: "failed", reason: "Tool payload read failed. Try again." };
+      }
+    }
+    const seen = new Set<string>();
+    const tail = (rows: CotalMessage[]) => limit === 0 ? [] : rows.slice(-limit);
+    const merged = [...tail(page), ...tail(payloads)].filter(msg => {
+      if (seen.has(msg.id)) return false;
+      seen.add(msg.id);
+      return true;
+    }).sort((a, b) => a.ts - b.ts);
+    const more = page.length > limit || payloads.length > limit;
+    return { frames: merged, more, ...(payloadRead === undefined ? {} : { payloadRead }) };
   } catch (e) {
     if (e instanceof AgentEventsLate) throw e;
     if (isPermissionDenied(e)) {
@@ -1482,6 +1518,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   };
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
+  // A supplied observer credential can read only its owner's payload rail.
+  const payloadPrefix = `${spacePrefix(space)}.evp.`;
+  const payloadSubjects = conn.creds
+    ? (credsClaims(conn.creds).nats?.sub?.allow ?? []).filter(subject => subject.startsWith(payloadPrefix))
+    : [`${payloadPrefix}>`];
+  for (const subject of payloadSubjects) ep.tap(onTap, { subject });
 
   // The client build sits beside the compiled server in `dist/web`. Run from source, as the smokes
   // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.
@@ -1716,12 +1758,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
       if (lifecycle) return json(res, { error: "this service was explicitly configured read-only; no channel-purger authority or alternate transport was acquired", code: "PERMISSION_DENIED" }, 403);
-      const body = await readBody(req).catch((e: unknown) => {
+      const body = await readDeleteBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
         // refusal into `{}` here would answer "channel required", which tells the caller to add a
         // field it already sent and never mentions the size, so the loud refusal has to survive
         // this catch. A malformed body still means "channel required", unchanged.
-        if (e instanceof PayloadTooLarge) throw e;
+        if (e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded) throw e;
         return {} as { channel?: string };
       });
       const channel = typeof body.channel === "string" ? body.channel : "";
@@ -1786,7 +1828,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before
       // this split, a malformed query read in the log exactly like the dashboard breaking.
-      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
+      const status = e instanceof BodyDeadlineExceeded ? 408 : e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
       const caller = status < 500;
       console.error(c[caller ? "yellow" : "red"](lifecycle ? `native dashboard request ${caller ? "refused" : "failed"}; diagnostic body omitted` : `${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
@@ -1810,7 +1852,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       // WHAT THIS DOES NOT REACH. It is the connection this process owns. A reverse proxy that
       // buffers a request before forwarding it owns its own ingress bound, and `connection` is
       // hop-by-hop, so nothing here configures anything upstream of this server.
-      res.writeHead(status, e instanceof PayloadTooLarge
+      res.writeHead(status, e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded
         ? { "content-type": "application/json", connection: "close" }
         : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
@@ -2184,6 +2226,23 @@ function debounce(fn: () => void, ms: number): () => void {
     if (t) clearTimeout(t);
     t = setTimeout(fn, ms);
   };
+}
+
+/** Race the whole delete upload, not the gaps between chunks. On expiry the request frame sends
+ *  408 with Connection: close, ending the socket and its pending body reader after the reply.
+ *  Only the winning body can reach the purge; a late completion has no effect. */
+async function readDeleteBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new BodyDeadlineExceeded(
+      `request body did not finish within ${DELETE_BODY_DEADLINE_MS}ms`,
+    )), DELETE_BODY_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([readBody(req), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {

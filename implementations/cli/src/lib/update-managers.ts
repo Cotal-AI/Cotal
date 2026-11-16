@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/workspace";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
-import { isCliEntry } from "./manager-proc.js";
+import { isCliEntry, supervisorInstallScope, supervisorProcessUid } from "./manager-proc.js";
 import { serviceDefinitionStore } from "./service-definitions.js";
 
 export interface UpdateManager {
@@ -81,24 +81,15 @@ function managerStarted(token: string | undefined): string {
   }
 }
 
-function unprovenManagerEntry(pid: number, argv: readonly string[], cwd: string | undefined, pin: ProcessIdentityRecord | { pid: number }): never {
-  const command = argv.findIndex(arg => ["supervise", "__daemon-manager", "__service-manager", "__machine-manager"].includes(arg));
-  // Report observed launch arguments, not an invented canonical target for a deleted symlink.
-  const paths = argv.slice(1, command < 0 ? undefined : command).filter(arg => !arg.startsWith("-"));
-  const entries = paths.map(arg => {
-    const path = isAbsolute(arg) ? arg : cwd && !cwd.endsWith(" (deleted)") ? resolve(cwd, arg) : undefined;
-    if (!path) return `${JSON.stringify(arg)} (cannot resolve from working directory)`;
-    try { realpathSync(path); return `${JSON.stringify(arg)} (exists)`; }
-    catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      return `${JSON.stringify(arg)} (${code === "ENOENT" || code === "ENOTDIR" ? "path is gone" : `cannot inspect: ${code ?? "unknown error"}`})`;
-    }
-  });
-  throw new Error(`local Manager continuity cannot be established: Manager pid ${pid} has no proven CLI entry for this installation; started ${managerStarted("token" in pin ? pin.token : undefined)}; working directory ${JSON.stringify(cwd ?? "unavailable")}; launch entry arguments: ${entries.join(", ") || "unavailable"}; stop this process if it is a leftover, or run the update from the installation that owns it (restore that installation first if its launch entry is gone); a missing path does not prove another installation because it may have been a symlink into this one; no Manager instance was guessed`);
+function unprovenManagerEntry(pid: number, uid: number, pin: ProcessIdentityRecord | { pid: number }): never {
+  throw new Error(`local Manager continuity cannot be established: Manager pid ${pid}, user ${uid}, verb supervise has no proven CLI entry for this installation; started ${managerStarted("token" in pin ? pin.token : undefined)}; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; a missing path does not prove another installation because it may have been a symlink into this one; no Manager instance was guessed`);
 }
 
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
-export function localUpdateManagers(flags: { space?: unknown; server?: unknown; on?: unknown } = {}): UpdateManager[] {
+export function localUpdateManagers(
+  flags: { space?: unknown; server?: unknown; on?: unknown } = {},
+  installedEntry: string = entryScript(),
+): UpdateManager[] {
   if (process.platform !== "linux") throw new Error("install-wide Manager process census is supported only on Linux");
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
@@ -146,24 +137,37 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "ESRCH") continue;
-        try { if (lstatSync(`/proc/${entry}`).uid !== process.getuid?.()) continue; }
-        catch { continue; }
+        try { if (supervisorProcessUid(Number(entry)) !== process.getuid?.()) continue; }
+        catch { blocked(`cannot read process owner for pid ${entry}, user unavailable`); }
         blocked(`cannot read the command of pid ${entry}`);
       }
       if (commandIsCotalSupervisor(command) || /(?:^|\s)__machine-manager(?:\s|$)/.test(command)) pids.add(Number(entry));
     }
   }
-  const ownEntry = realpathSync(entryScript());
+  const ownEntry = realpathSync(installedEntry);
   const result = new Map<string, UpdateManager>();
   for (const pid of pids) {
     if (process.platform === "linux" && process.getuid) {
-      try { if (lstatSync(`/proc/${pid}`).uid !== process.getuid()) continue; }
+      try {
+        const uid = supervisorProcessUid(pid);
+        if (uid !== process.getuid()) {
+          const command = readProcessCommand(pid);
+          if (command.kind === "gone") continue;
+          if (command.kind !== "command" || supervisorInstallScope(pid, uid, command.command, ownEntry) !== "local") continue;
+        }
+      }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; blocked(`cannot inspect process owner for pid ${pid}`); }
     }
     const pin = identityRecord(pid);
     const command = readProcessCommand(pid);
     if (command.kind === "gone") continue;
     if (command.kind !== "command") blocked(`cannot read argv for Manager pid ${pid}`);
+    let uid: number;
+    try { uid = supervisorProcessUid(pid); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      blocked(`cannot inspect process owner for Manager pid ${pid}, user unavailable; stop it through its original host before retrying`);
+    }
     let argv = command.command.split(/\s+/), cwd: string | undefined;
     let env: Record<string, string> = {};
     if (process.platform === "linux") {
@@ -171,7 +175,10 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
         argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
         cwd = readlinkSync(`/proc/${pid}/cwd`);
         env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").filter(value => value.includes("=")).map(value => { const split = value.indexOf("="); return [value.slice(0, split), value.slice(split + 1)]; }));
-      } catch { if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue; blocked(`cannot read launch coordinates for Manager pid ${pid}`); }
+      } catch {
+        if ("token" in pin && assertRecordIdentity(pin).kind === "gone") continue;
+        blocked(`cannot read launch coordinates for Manager pid ${pid}, user ${uid}, verb supervise; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying`);
+      }
     }
     if (process.platform === "linux" && !argv.some(arg => ["supervise", "__daemon-manager", "__service-manager", "__machine-manager"].includes(arg))) continue;
     let loaded = false;
@@ -180,6 +187,7 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
       try { if (realpathSync(isAbsolute(arg) ? arg : resolve(cwd!, arg)) === ownEntry) loaded = true; } catch { /* Non-path argv is not install evidence. */ }
     }
     if (!loaded) {
+      if (supervisorInstallScope(pid, uid, command.command, ownEntry) === "foreign") continue;
       // A different resolvable cotal entry is affirmative evidence of another installation.
       const other = argv.some(arg => {
         if (!isAbsolute(arg) && !cwd) return false;
@@ -187,7 +195,7 @@ export function localUpdateManagers(flags: { space?: unknown; server?: unknown; 
         catch { return false; }
       });
       if (other) continue;
-      unprovenManagerEntry(pid, argv, cwd, pin);
+      unprovenManagerEntry(pid, uid, pin);
     }
     const recorded = known.get(pid);
     const hostedHome = argv.includes("__machine-manager") ? option(argv, "session-directory") : undefined;

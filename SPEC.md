@@ -1188,6 +1188,24 @@ Reference implementation:
 
 ## 9. NATS + JetStream security and authorization
 
+**Login discovery names.** A provider's root `/.well-known/cotal-mesh` document MAY
+carry an optional top-level `discoveryNames` array of canonical lowercase DNS hostnames
+(without a scheme, port, path, IP literal or trailing dot). A client resolving a typed
+name MUST fetch its document over HTTPS without credentials or redirects, then fetch
+the root document at the declared `userAuth.idp.issuer` origin under the same rules.
+The documents MUST agree on `userAuth.idp.issuer` and `audience`. The typed root's
+`userAuth.idp.url` MUST be HTTPS on the typed name's origin or equal the issuer
+root's complete IdP URL. A different third-origin URL MUST be refused before device
+approval. The client MUST retain the typed root's IdP pins. Unless the
+typed name is the issuer's own hostname, the issuer's own root MUST list it in
+`discoveryNames`. An unlisted name MUST be refused before requesting device approval,
+with both the typed name and issuer origin identified. The approved account MUST
+match the resolved issuer and audience before persistence. The name is discovery
+only: login storage and catalog account binding use the resolved IdP URL. This does
+not change endpoint origin checks or move existing registrations. The issuer and
+IdP URL MAY have different origins. Discovery clients MUST bound each response's
+elapsed time and decoded size. The reference client uses five seconds and 64 KiB.
+
 **On by default.** A space is provisioned with decentralized JWT auth. Open unauthenticated
 dev mode is available but out of scope for the security claims here. *(Informative
 operator-facing views of this section: [docs/identity-and-auth.mdx](docs/identity-and-auth.mdx),
@@ -1270,7 +1288,8 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 48.
+Revision 49 of the Manager cluster adds optional boolean `eventPayloads` to the closed `spawn`
+input; revision 48 rejects this field.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -2536,10 +2555,13 @@ closed `EvictionResult` per principal in request order; a garbled, foreign, miso
 contradictory result MUST NOT authorize. The participant never receives that credential. A
 `reconcile-registration` request MAY name another manager instance in the same space only to clear
 an abandoned governance-slot holder. The host MUST observe that target's frozen registration gate,
-prove the freeze-holder `gone` under a complete liveness sweep, run the normal registration repair
-with verified eviction, and refuse live, unknown, incomplete, unestablishable, or non-registration
-states. There is no force path. A participant credential still gains no direct authority over the
-target gate, records, family, or delivery-admin rail.
+prove both the freeze-holder and its distinct registration executor `gone` under complete liveness
+sweeps before any repair mutation, run the normal registration repair with verified eviction, and
+refuse live, unknown, incomplete, unestablishable, or non-registration states. The host MUST derive
+the executor principal from the target gate's owner and instance, never the requesting owner's
+identity. A complete sweep proves connection absence at observation time, not operating-system
+process death or exclusion of a later executor reconnect. There is no force path. A participant
+credential still gains no direct authority over the target gate, records, family, or delivery-admin rail.
 
 The bounded executor returned by `prepare` is renewable through `renew` for the same public nkey and
 current open registration. A remote manager MUST obtain a fresh executor before maintenance or clean
@@ -4255,7 +4277,8 @@ as true. A client that knows the space requires events can therefore refuse a co
 the agent's owner on this mesh (§8.2). A Manager reports true only on a user-auth mesh, the one mode
 whose interactive ledger rows can answer, and false on an open or static mesh. Before a client
 offers a permission mode that asks, it checks that the connector's row reads true. A row from an older Manager that omits the fact reads false, and so does
-a row built from an installed-extension cache written before the fact existed.
+a row built from an installed-extension cache written before the fact existed. The Manager cluster advances to
+revision 50 for this fact; a revision-49 status schema is closed and rejects it.
 
 **Manager inline persona.** The reference manager's `spawn` input takes an optional closed `persona`
 record: `prompt` (required, the persona body), `role`, `model`, `variant`, `description`,
@@ -4409,7 +4432,8 @@ ordinary conformance sets defined by the reference implementation; core knows on
 "endpoint".
 
 **Schemas.** Contract schemas are JSON Schema **2020-12**, validated by a real 2020-12
-validator (the reference implementation pins `ajv`), under this normative resource profile: a
+validator (the reference implementation pins `json-schema-library` for instances and uses `ajv`
+for schema meta-validation), under this normative resource profile: a
 schema is a **closed resource bundle**, either fully self-contained (local `$defs`/`#/…`
 refs) or referencing other contract-store artifacts **by digest** only. `$id`/`$anchor`/
 `$dynamicRef` resolve deterministically within the bundle; ambient HTTP/file/URI resolution
@@ -6319,12 +6343,47 @@ invalid, and a fresh terminal session still requires a supported terminal transp
 
 This optional, additive contract permits a verified human to consent to one holder reading a
 managed agent's future tool results through the endpoint control surface. It adds no public event
-payload: public `events.<owner>.<actor>` MUST continue to withhold `TOOL_CALL_ARGS` and
-`TOOL_CALL_RESULT`. Tool arguments, transcript scraping, a private HTTP result path and provider
-credentials in a client or sandbox are outside this contract.
+payload. The ordinary `events.<owner>.<actor>` channel MUST continue to withhold `TOOL_CALL_ARGS`
+and `TOOL_CALL_RESULT`; the separately authorized payload rail below does not change that rule.
+This consent path remains useful for a holder not admitted to that rail. Admission to either path
+MUST NOT imply admission to the other. Tool arguments, transcript scraping, a private HTTP result
+path and provider credentials in a client or sandbox are outside this consent contract.
 
-**Activation.** Acceptance of this subsection is not implementation or enablement. A deployment
-MUST NOT enable this path until the auth and host, Core and Manager, connector-core, and browser
+**Event payload rail.** Payload frames use `cotal.<space>.evp.<owner>.<actor>` and the independent
+`EVP_<space>` stream. Their envelope retains the corresponding event channel name, and their
+AG-UI frame retains its thread, epoch and sequence. The rail carries only `TOOL_CALL_ARGS` and
+`TOOL_CALL_RESULT`. On authenticated spaces, an owner may read its own actors' payloads and an
+admin may read all payloads. Foreign access requires a concrete `events.<owner>.<actor>` read
+grant. Ordinary chat wildcards, including event-channel patterns, MUST NOT confer payload reads.
+An open broker provides no such isolation. A writer may publish only its own principal's payloads.
+
+Publication is on by default where the connector maps payloads. Withholding MUST preserve the
+ordinary tool start, end and result-status events. A space policy requiring withholding MUST NOT
+be weakened by a seat. Cotal's registered tool inputs and results MUST be excluded by tool identity,
+not by scanning their text. Native connector mapping and qualification determine which other tools
+are supported; this revision does not claim complete connector coverage.
+
+The reference emitter bounds the encoded frame by the live broker maximum and the positive
+`max_msg_size` and `max_bytes` limits of the payload stream, which requires one replica. If a frame
+does not fit, it replaces each whole payload value with a JSON cut marker containing
+`cotalPayloadCut: true`, `originalBytes` and a lowercase hexadecimal `sha256` digest of that value.
+It MUST NOT publish an opaque partial value. Metadata that still exceeds the limit fails loudly.
+The payload stream starts with the chat stream's canonical retention configuration, independently
+of any operator changes to chat retention. A full space backup includes the payload stream and
+restores its retained frames without changing their owner and actor subjects or read grants.
+A registry-only backup excludes payload frames and restores an empty payload stream. Combined
+channel history coverage is not established by this revision.
+
+The reference WAL v4 freezes the sibling payload body and its acknowledgement with the public
+transaction. Payload publication precedes public publication, and the source cursor advances only
+after both are settled. Older pending public frames migrate without invented payloads. Older
+emitters refuse v4 rather than discard sibling work. A pending public body containing payload
+events still halts recovery. Switching to withholding while a sibling publication is pending is
+refused until that transaction is settled under its prior policy. Readers of the ordinary channel
+continue to receive metadata only; older readers do not acquire payload access by upgrading a writer.
+
+**Activation.** Acceptance of the private consent contract is not implementation or enablement.
+A deployment MUST NOT enable the private consent path until the auth and host, Core and Manager, connector-core, and browser
 caller owners have each landed and qualified their part, and a stock release carries those parts.
 A product surface additionally MUST qualify its own freshness and viewer checks. The prerequisites
 of §13.19.4 remain mandatory; without either, the serving commands MUST answer `unavailable`.
@@ -7628,8 +7687,9 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
-| 2026-11-13 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 49. An open mesh holds no prompt. |
+| 2026-11-13 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. An open mesh holds no prompt. |
 | 2026-11-13 | **An agent with no read channels keeps the info row on its delivery consumer (§8, Appendix B), additive.** The consumer is still not provisioned and the fetch and ack rows are still withheld. A client older than 0.163.0 asks `CONSUMER.INFO` during start and treats only an absent consumer as nothing to bind, so a refused read stopped its start. |
+| 2026-11-12 | **Tool payload rail (§13.19).** Separately authorized event payloads publish by default where mapped, with explicit withholding, registered Cotal-tool exclusions, bounded cut markers and durable sibling publication. The private consent path remains separate and its activation prerequisites are unchanged. |
 | 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |
 | 2026-11-10 | **A spawn-scoped `manager-caller` view lists its own agents (§9, §10), additive.** A person who may spawn on their own Manager could not list the agents they launched there. `ps` was not in the view unless the actor held `admin`, so `cotal ps` and `cotal status <agent>` were refused by the broker. A view whose actor holds `spawn` now carries `ps` on its one pinned instance, beside `status`, `models` and `resolve-cwd`. The Manager answers it with the caller's own owner's agents only, unless the caller holds `admin`. `slots` stays with `admin`, no class, scatter or other-instance row is added, and the standing `spawn` set is unchanged. |
 | 2026-11-09 | **A spawner hands on endpoint commands it holds (§13.7, §13.15, §14.8).** A persona's `endpoints` list names `{ endpoint, commands, instanceId? }` entries on the inline `spawn` record, on `define-persona` and in a catalog file. On a static space each command lowers to an untargeted caller capability, on the class rail or, with `instanceId`, on that instance's rail alone plus that instance's `describe`; the delegation bound measures it against the spawner's issued evidence (a run's spawn against its admission's ceiling), and the helper's mint and renewals grant it. A static agent mint refuses a targeted or journaled endpoint capability, because the static terminal has no obligation drain, and a copied static credential's reach until expiry is named as a known gap. A single-label endpoint and a reserved command are refused. A user-auth manager refuses the field, `[]` included. Manager cluster revision 47. |

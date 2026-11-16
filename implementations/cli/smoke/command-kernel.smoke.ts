@@ -6,7 +6,7 @@
 import "./update-isolation.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandUsage, findCommand, parseCommandArgs, registry, type Command } from "@cotal-ai/core";
@@ -21,6 +21,30 @@ import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext
 import { compareSemver } from "../src/seed/reconcile.js";
 
 const noop = async (): Promise<void> => {};
+
+// Login's migration option is a value flag on the registered command, not a positional.
+{
+  const providersBefore = new Set(registry.all("auth-provider").map(provider => provider.name));
+  await import("@cotal-ai/auth");
+  const login = registry.all<Command>("command").find(command => command.name === "login");
+  assert.ok(login);
+  assert.deepEqual(login.flags?.map(flag => `${flag.name}:${flag.type}`).sort(), [
+    "client-id:string", "cloud:boolean", "idp:string", "migrate-from:string", "no-browser:boolean", "plain:boolean",
+  ]);
+  const parsed = parseCommandArgs(login, ["--migrate-from", "https://old.example/api/auth", "--no-browser", "--plain"]);
+  assert.equal(parsed.values["migrate-from"], "https://old.example/api/auth");
+  assert.deepEqual(parsed.positionals, []);
+  assert.doesNotThrow(() => login.validate?.(parsed));
+  assert.throws(() => parseCommandArgs(login, ["--migrate-from"]));
+  const discovery = parseCommandArgs(login, ["product.example", "--no-browser", "--plain"]);
+  assert.deepEqual(discovery.positionals, ["product.example"]);
+  assert.doesNotThrow(() => login.validate?.(discovery));
+  for (const flags of [["--cloud"], ["--idp", "https://provider.example/auth"], ["--migrate-from", "https://old.example/auth"]])
+    assert.throws(() => login.validate?.(parseCommandArgs(login, ["product.example", ...flags])), /cannot be combined/);
+  for (const provider of registry.all("auth-provider")) {
+    if (!providersBefore.has(provider.name)) registry.unregister("auth-provider", provider.name);
+  }
+}
 
 function installed(pkg: string, version = "0.13.1", spec = pkg): InstalledExtension {
   return { pkg, version, spec, commands: [] };
@@ -76,6 +100,7 @@ function updateRuntime(opts: {
       const r = opts.npm?.(args, inherit) ?? { status: 0, stdout: '"0.13.1"' };
       return { stdout: "", stderr: "", ...r };
     },
+    npmAsync: async args => rt.npm(args),
     spawn: (file, args, env) => {
       events.push(`spawn:${file} ${args.join(" ")}`);
       const r = opts.spawn?.(file, args, env) ?? { status: 0 };
@@ -670,7 +695,7 @@ async function completionOut(positionals: string[]): Promise<string> {
 {
   const cmd = registry.all<Command>("command").find((candidate) => candidate.name === "update");
   assert.equal(cmd?.group, "Setup");
-  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "check", "json", "plain", "space", "server", "creds", "on"]);
+  assert.deepEqual(cmd?.flags?.map((flag) => flag.name), ["auto", "notify", "self", "stop-agents", "check", "json", "plain", "space", "server", "creds", "on"]);
   assert.equal(parseCommandArgs(cmd!, ["--self"]).values.self, true);
   assert.equal(parseCommandArgs(cmd!, ["--on", "inst_0123456789abcdefghijklmnopqrs"]).values.on, "inst_0123456789abcdefghijklmnopqrs", "update takes the manager pin every other manager command takes");
   assert.throws(
@@ -1207,9 +1232,11 @@ async function completionOut(positionals: string[]): Promise<string> {
         const requestedVersion = spec.slice(spec.lastIndexOf("@") + 1);
         assert.ok(Object.hasOwn(manifests, name), "only runtime first-party dependencies are queried");
         if (args[0] === "cache") {
-          downloaded.push(spec);
+          const specs = args.slice(2).filter(arg => !arg.startsWith("--"));
+          // --cache's directory is a value, not an archive spec.
+          downloaded.push(...specs.filter(spec => spec !== cache));
           assert.ok(args.includes("--ignore-scripts"));
-          if ((scenario === "root-404" && name === "cotal-ai") || (scenario === "transitive-404" && name === "@cotal-ai/core"))
+          if (specs.some(spec => (scenario === "root-404" && spec.startsWith("cotal-ai@")) || (scenario === "transitive-404" && spec.startsWith("@cotal-ai/core@"))))
             return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
@@ -1227,6 +1254,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.ok(caches.size === (scenario === "ready" ? 2 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
     if (scenario === "ready") {
       assert.deepEqual(downloaded, [version, "0.13.1"].flatMap(release => Object.keys(manifests).map(name => `${name}@${release}`)), "target and rollback transitive and optional archives are fetched once, despite peer cycles");
+      assert.equal(fixture.events.filter(event => event.startsWith("npm:cache add")).length, 2, "one bounded archive batch per four-package release replaces repeated npm startup");
       const lastFetch = fixture.events.findLastIndex(event => event.startsWith("npm:cache add"));
       assert.ok(lastFetch < fixture.events.findIndex(event => event.startsWith("claim-global:")), "readiness precedes global mutation custody");
     } else {
@@ -1236,6 +1264,110 @@ async function completionOut(positionals: string[]): Promise<string> {
       assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
     }
   }
+}
+
+// A staged rollback already retains the complete previous graph and needs no registry copy.
+{
+  const fixture = updateRuntime({
+    npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    releaseNpm: args => {
+      const spec = args[0] === "view" ? args[1] : args[2];
+      assert.ok(!spec.endsWith("@0.13.1"), "retained rollback must not request previous archives");
+      return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: "0.13.2", dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+    },
+  });
+  fixture.rt.prepareExecution = async () => ({ entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json", async preflight() {}, publish() {}, restore() {}, verify() {} });
+  assert.equal(await executeUpdate(true, fixture.rt), 0);
+  assert.ok(!fixture.events.some(event => event.startsWith("global:install:")), "npm must not reify the live package for staged publication");
+  assert.ok(fixture.events.some(event => event.includes("installing cotal-ai@0.13.2 beside the running version; this 0.13.1 process stays loaded until the new version is verified")));
+  assert.ok(fixture.events.some(event => /✓ new version installed and verified \(\d+\.\d s\)/.test(event)));
+  assert.ok(fixture.events.some(event => event.includes("Switching to cotal-ai@0.13.2")));
+  assert.ok(fixture.events.some(event => event.includes("✓ cotal-ai@0.13.2 in use and reconciled")));
+  assert.ok(!fixture.events.some(event => event.includes("installed globally") || event.includes("into npm's global installation")));
+}
+
+// Staged verification loads the live extension config, so rollback restores its snapshot first.
+{
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-staged-config-rollback-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const extensions = join(xdg, "cotal", "extensions");
+  mkdirSync(extensions, { recursive: true });
+  const manifest = join(extensions, "extensions.json"), original = '{"extensions":[]}';
+  writeFileSync(manifest, original);
+  try {
+    const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+    fixture.rt.prepareExecution = async () => ({
+      entry: "/global/node_modules/cotal-ai/dist/cotal.js", journal: "/private/execution.json",
+      async preflight() {},
+      publish() { writeFileSync(manifest, "{"); },
+      restore() {},
+      verify() { JSON.parse(readFileSync(manifest, "utf8")); },
+    });
+    assert.equal(await executeUpdate(true, fixture.rt), 1);
+    assert.equal(readFileSync(manifest, "utf8"), original, "captured config is restored before previous-generation verification");
+    assert.equal(readUpdateRecovery(), undefined, "successful rollback clears recovery");
+    assert.ok(fixture.events.some(event => event.includes("was restored and reconciled")));
+  } finally {
+    clearUpdateRecovery();
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
+// --- archive metadata overlaps only independent reads and preserves deterministic failure order ---
+{
+  const fixture = updateRuntime({ npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }) });
+  let active = 0, maximum = 0, completed = 0;
+  const caches = new Set<string>();
+  fixture.rt.npmAsync = async args => {
+    const cache = args[args.indexOf("--cache") + 1]!;
+    caches.add(cache);
+    active++; maximum = Math.max(maximum, active);
+    try {
+      const name = args[1]!.replace(/@0\.13\.2$/, "");
+      await new Promise(resolve => setTimeout(resolve, name.endsWith("first") ? 20 : 1));
+      assert.ok(existsSync(cache), "cache remains until every concurrent read ends");
+      completed++;
+      if (name !== "cotal-ai") return { status: 1, stdout: "", stderr: `unavailable ${name}` };
+      return { status: 0, stdout: JSON.stringify({ name, version: "0.13.2", dist: { tarball: "https://registry.example/root.tgz", integrity: "sha512-fixture" },
+        dependencies: { "@cotal-ai/first": "0.13.2", "@cotal-ai/second": "0.13.2", "@cotal-ai/third": "0.13.2" } }), stderr: "" };
+    } finally { active--; }
+  };
+  assert.equal(await executeUpdate(true, fixture.rt), 1);
+  assert.equal(maximum, 3, "metadata process concurrency is bounded at three");
+  assert.equal(completed, 4, "all in-flight requests settle before failure");
+  assert.ok(fixture.events.some(event => event.includes("metadata for @cotal-ai/first@0.13.2 is unavailable")), "first discovery-order failure wins, not fastest failure");
+  assert.ok([...caches].every(cache => !existsSync(cache)));
+  assert.ok(!fixture.events.some(event => event.startsWith("global:")));
+}
+
+// --- only the selected latest's structured npm ETARGET is a release deferral -------------------
+for (const [code, summary, deferred] of [
+  ["ETARGET", "No matching version found for cotal-ai@0.13.2.", true],
+  ["ETARGET", "No matching version found for cotal-ai@0.13.1.", false],
+  ["ETARGET", "No matching version found for @cotal-ai/core@0.13.2.", false],
+  ["ETARGET", "No matching version found for cotal-ai@^0.13.2.", false],
+  ["EACCES", "No matching version found for cotal-ai@0.13.2.", false],
+  ["ETARGET", "No matching version found for cotal-ai@0.13.20.", false],
+] as const) {
+  const fixture = updateRuntime({
+    npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    spawn: () => ({ status: 1 }),
+  });
+  let installs = 0;
+  fixture.rt.spawnGlobal = async (_root, operation, _file, args, _env, inherit) => {
+    fixture.events.push(`global:${operation}`);
+    if (operation === "reconcile") return { status: args[0].includes("/cotal-ai/") && !fixture.events.includes("rollback-install") ? 1 : 0, stdout: "", stderr: "" };
+    if (installs++ > 0) { fixture.events.push("rollback-install"); return { status: 0, stdout: "", stderr: "" }; }
+    assert.ok(args.includes("--json"));
+    assert.equal(inherit, false, "npm's structured result must be captured");
+    return { status: 1, stdout: JSON.stringify({ error: { code, summary } }), stderr: "" };
+  };
+  assert.equal(await executeUpdate(true, fixture.rt), deferred ? 0 : 1, `${code}: ${summary}`);
+  assert.equal(fixture.events.some(event => event.includes("release is still arriving")), deferred);
+  assert.equal(fixture.events.some(event => event === "global:reconcile"), !deferred, "only a real install failure enters repair");
 }
 
 // --- --self: exact checked artifact, alternate global root, verified child, status propagation ----
@@ -1664,6 +1796,11 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   assert.equal(managerLabel(row("manager", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an unnamed one shows by <host>/<runtime>");
   assert.equal(managerLabel(row("manager", { host: "pc" }, "busy")), "pc", "without a runtime in its activity, by its host");
   assert.equal(managerLabel(row("manager", {}, "supervisor (orca)")), "orca", "without a host, as a manager started by a cotal before 0.100.0, by its runtime");
+  assert.equal(managerLabel(row(" ", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "a whitespace manager name is shown by <host>/<runtime>");
+  assert.equal(managerLabel(row("", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "an empty manager name is shown by <host>/<runtime>");
+  assert.equal(managerLabel(row("\n", { host: "pc" }, "supervisor (tmux)")), "pc/tmux", "a newline manager name is shown by <host>/<runtime>");
+  assert.equal(managerLabel(row(" ada", { host: "pc" }, "supervisor (tmux)")), " ada", "a manager name with a leading space stays");
+  assert.equal(managerLabel(row(" ", {})), "u_own.manager_x", "a whitespace manager name with no host or runtime is the id");
   const { CommandFailure, commandFailureReport, renderReport } = await import("@cotal-ai/workspace");
   const hostless = new CommandFailure("refused", "PERMISSION_DENIED", "2 of your managers are live, and this command needs exactly one of them", { native: { detail: { managers: [{ name: "orca", instanceId: "c".repeat(30), host: null, activity: "supervisor (orca)", since: null }] } } });
   assert.match(renderReport(commandFailureReport(hostless), "plain"), /orca\s+c{30}\s+not reported \(started by an older cotal\)\s+supervisor \(orca\)/, "a manager with no host in its presence reads as started by an older cotal, not as a bare dash");

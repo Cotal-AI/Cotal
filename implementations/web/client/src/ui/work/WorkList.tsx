@@ -69,8 +69,9 @@ function openByDefault(items: readonly WorkItem[], highlight: string | undefined
  *  - `nameOf` names a roster id, for the "Sent to" of a direct message.
  *
  *  Names, statuses and activity come from the roster row, never from a frame. */
-export function WorkList({ work, row, highlight, compact = false, condition, nameOf }: {
+export function WorkList({ work, row, highlight, compact = false, condition, nameOf, payloadRead }: {
   work: Work;
+  payloadRead?: import("../../api/types.js").PayloadReadFailure;
   row: RosterRow;
   highlight?: string;
   compact?: boolean;
@@ -79,7 +80,7 @@ export function WorkList({ work, row, highlight, compact = false, condition, nam
 }) {
   const rises = useRising(work.items, row.id);
   const opened = openByDefault(work.items, highlight);
-  const ctx = { row, toolStatus: work.toolStatus, compact, nameOf, ...(highlight === undefined ? {} : { highlight }) };
+  const ctx = { row, payloadRead, toolStatus: work.toolStatus, compact, nameOf, ...(highlight === undefined ? {} : { highlight }) };
   const shown = (s: WorkItem) => !compact || (s.kind !== "prompt" && s.kind !== "reasoning");
   const last = work.items.at(-1);
   const step = (s: Exclude<WorkItem, WorkTurn>, turn: WorkTurn | undefined, trailing: boolean, cond: RunErrorCondition | undefined) => (
@@ -90,6 +91,7 @@ export function WorkList({ work, row, highlight, compact = false, condition, nam
   return (
     <Rise.Provider value={rises}>
       <Trace className={compact ? "ox-work ox-compact" : "ox-work"}>
+        {payloadRead && <PlaneNote>{payloadRead.reason} Work metadata is still shown.</PlaneNote>}
         {!work.toolStatus && (
           <PlaneNote>{`${row.name}'s connector reports which tools it calls but not when they finish, so Work can't show running, done or failed. A connector that reports tool results shows them here once ${row.name} restarts on it.`}</PlaneNote>
         )}

@@ -261,13 +261,19 @@ was. Its Next is `cotal down`, then `cotal up`, which starts the restored stack 
 
 ## Artifact contents
 
+Full backups retain tool arguments and results in the EVP payload stream. Restore preserves their
+owner and actor subjects without widening payload read permissions. Registry-only restores recreate
+EVP empty, as they do the other message streams.
+New artifacts use `cotal-space-backup/v3`. Restore also accepts `v2` artifacts without EVP and
+`v1` artifacts without EVP or workflow stores, recreating those omitted streams empty.
+
 Stopped client-managed KV ordered consumers are ephemeral read residue, not backup state. Backup
 ignores only the pinned client's exact stopped shapes: ordinary last-value watchers, a watcher of one
 subtree of its bucket such as the manager's goal index, and the whole-bucket scanner that uses
 all-history delivery to collapse concurrent tombstones. A bound consumer or any lookalike with a
 filter outside its bucket, another inbox, lifetime, or other config is still refused.
 
-`full` is the default and indivisible: channel registry, CHAT/DM/TASK/INBOX/DLV, ACL, MEMBERS, on
+`full` is the default and indivisible: channel registry, CHAT/EVP/DM/TASK/INBOX/DLV, ACL, MEMBERS, on
 a static-auth or open mesh the workflow run stores (the WFJ step journal, the records store and the
 run admission store), and validated durable checkpoints. `registry` is the sole partial artifact. Presence, derived membership
 feed, leases, native ephemeral/history consumers, credentials, keys, tokens, owner secrets, and actor

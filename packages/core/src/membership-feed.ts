@@ -1,4 +1,5 @@
 import { drainAndClose } from "./connection-cleanup.js";
+import { watchNativeConnection, type NativeConnectionBinding } from "./native-connection.js";
 /**
  * Authoritative channel-membership feed — the broker-sourced "who is subscribed to each channel"
  * the graph view draws (incl. silent readers and `live` channels that keep no enumerable roster).
@@ -108,6 +109,13 @@ export interface MembershipFeedHandle {
    *  preflight, the deadline elapses, or a closed conn B cannot be revived on the proven cache.
    *  Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
   reloadRwCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }>;
+  /** The native binding of the feed's data-account connection (conn B), for a host that compares
+   *  the account's connections with a native census. Conn A is in the system account and has no
+   *  place in that comparison. A stopped feed whose conn B closed reports none. Throws while conn B
+   *  is down or redialing, while an rw credential transaction runs (its proof opens a second
+   *  data-account connection, and its adoption redials conn B), and while a stop has not closed
+   *  conn B. */
+  nativeDataConnections(): NativeConnectionBinding[];
   stop(): Promise<void>;
 }
 
@@ -293,6 +301,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // miss connections.
   let connBDown = false;
   let connBDrops = 0;
+  let connBNative = watchNativeConnection(connB, "membership conn B");
   const watchConnB = (nc: NatsConnection): void => {
     void (async () => {
       for await (const s of nc.status()) {
@@ -326,8 +335,13 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // an explicit reload is proving B and then reporting B adopted. Runs `fn` after any in-flight txn
   // settles, whatever its outcome; the internal chain never rejects.
   let rwTxn: Promise<unknown> = Promise.resolve();
+  let rwTxnsRunning = 0;
   const runRwTxn = <T,>(fn: () => Promise<T>): Promise<T> => {
-    const next = rwTxn.then(fn, fn);
+    const counted = async (): Promise<T> => {
+      rwTxnsRunning++;
+      try { return await fn(); } finally { rwTxnsRunning--; }
+    };
+    const next = rwTxn.then(counted, counted);
     rwTxn = next.then(() => undefined, () => undefined);
     return next;
   };
@@ -401,6 +415,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
       connBDown = false;
       watchConnB(connB);
+      connBNative = watchNativeConnection(connB, "membership conn B");
       // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
       // predecessor. If stop already ran, drain the fresh dial here.
       if (rwStopped) {
@@ -716,6 +731,14 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
         return claims;
       });
       return { identity: rwSelfId, iat, exp };
+    },
+    nativeDataConnections() {
+      if (rwTxnsRunning > 0) throw new Error("membership conn B has no settled native binding: an rw credential transaction is in flight");
+      if (rwStopped) {
+        if (!connB.isClosed()) throw new Error("membership conn B has no settled native binding: the feed stopped but conn B has not closed");
+        return [];
+      }
+      return [connBNative.binding()];
     },
     async stop() {
       stopped = true;

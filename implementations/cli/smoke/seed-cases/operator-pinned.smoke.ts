@@ -1,7 +1,7 @@
-import { rmSync, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { rmSync, writeFileSync, join, REPO, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, listNames, seedGeneration, track, finishScenario } from "./harness.js";
 
 try {
-  // ── 9. operator-pinned official entry not auto-refreshed on upgrade (source-aware) ───────────────
+  // ── 9. operator-installed official entry brought to running generation on upgrade ───────────────
   {
     const cfg = track(freshCfg());
     listNames(cfg);
@@ -11,8 +11,22 @@ try {
     writeJson(mp, m);
     rmSync(join(seedDir(cfg), "stamp.json"), { force: true }); // simulate an upgrade → a refresh pass
     cotal(cfg, ["ext", "seed"]);
-    const hv = readJson(mp).extensions.find((e: { pkg: string }) => e.pkg === "@cotal-ai/connector-hermes")?.version;
-    check("source-aware: operator-pinned official version preserved (not auto-refreshed)", hv === "9.9.9", hv);
+    const entry = readJson(mp).extensions.find((e: { pkg: string }) => e.pkg === "@cotal-ai/connector-hermes");
+    check("source-aware: operator-installed official version reconciled to running generation", entry?.version === seedGeneration() && entry?.source === "seeded", entry);
+
+    m.extensions.push({ pkg: "@cotal-ai/tmux", version: "9.9.9", spec: "@cotal-ai/tmux@9.9.9", provides: [{ kind: "runtime", name: "tmux" }], commands: [], connectors: [], localProcesses: [], servicePresets: [] });
+    writeJson(mp, m);
+    const cliRun = cotal(cfg, ["runtimes", "--json"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
+    check("source-aware: CLI skew refusal names cotal update --self", cliRun.stdout.includes(`@cotal-ai/tmux is 9.9.9 and this cotal is ${seedGeneration()} - run \`cotal update --self\` to reconcile this installation`), cliRun.stdout);
+
+    const desktopMarker = join(REPO, "desktop-runtime.json");
+    writeFileSync(desktopMarker, "{}\n");
+    try {
+      const appRun = cotal(cfg, ["runtimes", "--json"], { COTAL_SKIP_CONNECTOR_SEED: "1" });
+      check("source-aware: desktop-runtime skew refusal states shared extension version without prescribing cotal update --self", appRun.stdout.includes(`this Cotal app runs ${seedGeneration()}, and another Cotal install on this account moved the shared extension @cotal-ai/tmux to 9.9.9`) && !appRun.stdout.includes("cotal update --self"), appRun.stdout);
+    } finally {
+      rmSync(desktopMarker, { force: true });
+    }
   }
 } finally {
   finishScenario();

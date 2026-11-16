@@ -67,6 +67,9 @@ export {
   CATALOG_FRESH_MS,
   deviceLogin,
   establishIdpSession,
+  stageIdpSession,
+  commitStagedIdpSession,
+  fetchStagedIdpSpaceCatalog,
   fetchIdpJwt,
   revokeIdpSession,
   loadIdpSession,
@@ -90,6 +93,8 @@ export {
   IdpSessionRejectedError,
   IdpRateLimitedError,
   type IdpSession,
+  type IdpLoginPins,
+  type StagedIdpSession,
   type DeviceLoginOpts,
   type DeviceLoginPrompt,
 } from "./login.js";
@@ -149,7 +154,7 @@ export {
   type ActorKind,
   type ActorRow,
 } from "./ledger.js";
-export { runAuthService, startAuthService, parseAuthHostManifest, type AuthHostEntry, type AuthServiceRuntimeOptions, type OpenAuthAuthorityPlaneOptions, type AuthServiceHandle, type PublicFaceInput, type PlatformControlInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_ACTIVATE_PATH, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type ManagedLifecycleActivationRequest, type ManagedLifecycleActivationResult, type AuthAuthorityPlane } from "./service.js";
+export { runAuthService, startAuthService, parseAuthHostManifest, type AuthHostEntry, type AuthServiceRuntimeOptions, type OpenAuthAuthorityPlaneOptions, type AuthAuthorityPlaneHandle, type AuthServiceHandle, type PublicFaceInput, type PlatformControlInput, openAuthAuthorityPlane, dispatchManagerAuthorityRequest, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx, handleToolResultHumanProof, type ToolResultHumanProofCtx, TOOL_RESULT_HUMAN_PROOF_PATH, handleToolResultConsent, TOOL_RESULT_CONSENT_PATH, JWKS_MAX_AGE_SEC, INTERACTIVE_RETIRE_PATH, CHAT_SESSION_PATHS, MANAGED_ACTIVATE_PATH, MANAGED_RETIRE_PATH, VERIFY_ENROLLMENT_PATH, composeUserBundle, finalizeUserBundleEndpoint, checkAdvertisedServer, checkAgentProvisioningUrl, type ManagedLifecycleActivationRequest, type ManagedLifecycleActivationResult, type AuthAuthorityPlane } from "./service.js";
 export { remoteManagerIssuerGrants } from "./authority-client.js";
 export { PLANE_CLAIM_REFUSED, PLANE_CLAIM_KEY, readPlaneClaim, planeClaimRefusal, type PlaneClaimRefusal, type PlaneClaimRow } from "./plane-claim.js";
 // The R1 connect-arm deny-new READ seam (SPEC 13.1): the reader grant builder, the sealed
@@ -199,7 +204,7 @@ export {
 export type { EndpointDeregisterGranter } from "./endpoint-deregister.js";
 export { cotalAuthProvider } from "./provider.js"; // self-registers the "auth-provider" extension
 import "./service-adapter.js"; // self-registers the native auth service preset and child
-export { chooseAccount } from "./commands.js";
+export { chooseAccount, chooseAccountChoice } from "./commands.js";
 import "./commands.js"; // self-registers `login` / `logout` / `actor` / `auth-service` into the core Registry
 // NB: writeEndpointGate (the D14 endpoint-registration stand-in) is deliberately NOT
 // re-exported here (import it directly from the module in smokes/provisioning). The public
@@ -228,7 +233,7 @@ export {
 // reached by importing the module directly (smokes do); nothing of it is on the package
 // surface.
 
-export type { AuthConnectionState, AuthServiceClosed } from "./owned-connections.js";
+export type { AuthConnectionState, AuthNativeConnection, AuthServiceClosed } from "./owned-connections.js";
 
 export { createToolResultConsentSigner, makeToolResultConsentRecorder, parseToolResultConsentInput, toolResultConsentKey, type ToolResultConsentInput, type ToolResultConsentSignerOptions, type ToolResultConsentRecorder } from "./tool-result-consent.js";
 

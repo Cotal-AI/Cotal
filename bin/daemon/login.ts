@@ -42,6 +42,7 @@ type Establish = typeof establishIdpSession;
 export interface LoginStart {
   readonly idp: string;
   readonly clientId?: string;
+  readonly discoveryPins?: { url: string; issuer: string; audience: string };
   readonly onPrompt: (attempt: string, prompt: LoginPrompt) => void;
   /** Deliver the terminal result to the requester. The attempt counts as settled, for a cancel's
    *  answer, only once this resolves, so a cancel ack never overtakes the result it reports. */
@@ -77,6 +78,7 @@ export function createLoginCoordinator(opts: { readonly sessionDir: string; read
       const r = await establish({
         dir: opts.sessionDir,
         idpUrl: req.idp,
+        expectedPins: req.discoveryPins && { idpUrl: req.discoveryPins.url, issuer: req.discoveryPins.issuer, audience: req.discoveryPins.audience },
         clientId: req.clientId ?? DEFAULT_CLIENT_ID,
         signal: abort.signal,
         onPrompt: (p) => req.onPrompt(id, {

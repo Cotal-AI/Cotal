@@ -200,7 +200,7 @@ export function AgentPage({ store, controller, id, tab, at, back, phone = false,
   const backTitle = `Back to ${back.label}`;
   const messageHref = formatRoute(messageRoute(id, self));
   const focus = () => focusComposer(target);
-  const list = <WorkList work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />;
+  const list = <WorkList payloadRead={session?.payloadRead} work={work} row={row} condition={condition} highlight={at} nameOf={nameOf} />;
 
   let body;
   if (load === "loading" && steps.length === 0) {

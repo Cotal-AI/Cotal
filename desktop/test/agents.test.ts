@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 const { JSDOM } = createRequire(import.meta.url)("jsdom");
-import { agentInventory, renderAgents, runningFor, shortFolder } from "../src/agents.js";
+import { agentInventory, renderAgents, runningFor, shortFolder, shownAgentName } from "../src/agents.js";
 const agent: { name: string; application: string; cwd: string; startedAt: string; state: string; model?: string } = { name: "writer", application: "codex", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" };
 const read = (space: string, agents = [agent]) => ({ space, state: "read", agents });
 test("none and unavailable are distinct", () => {
@@ -55,6 +55,30 @@ test("elapsed time does not invent negative runtime", () => {
   const start = Date.parse(agent.startedAt);
   assert.equal(runningFor(agent.startedAt, start - 1), "Just started");
   assert.equal(runningFor(agent.startedAt, start + 65 * 60_000), "1h 5m");
+});
+test("a blank agent name is unnamed and a name with a character stays", () => {
+  assert.equal(shownAgentName(" "), "(unnamed)");
+  assert.equal(shownAgentName(""), "(unnamed)");
+  assert.equal(shownAgentName("\n"), "(unnamed)");
+  assert.equal(shownAgentName(" ada"), " ada");
+  const dom = new JSDOM('<section class="connection-card"><section id="running-agents"><h2 id="agents-heading"></h2><p id="agents-empty"></p><p id="agents-unavailable"></p><ul id="agent-list"></ul></section></section>');
+  const prior = globalThis.document;
+  globalThis.document = dom.window.document;
+  try {
+    const root = dom.window.document.getElementById("running-agents")!;
+    renderAgents({ agents: [read("team", [{ ...agent, name: " " }])] }, root);
+    assert.equal(root.querySelector(".agent-name")?.textContent, "(unnamed)");
+    assert.equal(root.querySelector(".agent-name")?.getAttribute("aria-label"), "(unnamed)");
+    assert.equal(root.querySelector("li")?.getAttribute("aria-label")?.startsWith("(unnamed) ·"), true);
+  } finally { globalThis.document = prior; dom.window.close(); }
+  const kept = new JSDOM('<section class="connection-card"><section id="running-agents"><h2 id="agents-heading"></h2><p id="agents-empty"></p><p id="agents-unavailable"></p><ul id="agent-list"></ul></section></section>');
+  const keptDocument = globalThis.document;
+  globalThis.document = kept.window.document;
+  try {
+    const root = kept.window.document.getElementById("running-agents")!;
+    renderAgents({ agents: [read("team", [{ ...agent, name: " ada" }])] }, root);
+    assert.equal(root.querySelector(".agent-name")?.textContent, " ada");
+  } finally { globalThis.document = keptDocument; kept.window.close(); }
 });
 test("exited agents render with Exited status in the agent row", () => {
   const dom = new JSDOM('<section class="connection-card"><section id="running-agents"><h2 id="agents-heading"></h2><p id="agents-empty"></p><p id="agents-unavailable"></p><ul id="agent-list"></ul></section></section>');

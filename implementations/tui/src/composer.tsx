@@ -6,7 +6,7 @@ import { useTheme } from "../vendor/opencode/packages/tui/src/context/theme"
 import { DialogHeader, DialogLayout } from "../vendor/opencode/packages/tui/src/ui/dialog"
 import { edited, quotable, replyFrom, settled, submit, unquote, unsent, walk, type ComposerState, type Effect, type Tone } from "./compose.js"
 import type { FeedEntry, Mesh } from "./live.js"
-import { clock, conversationRecipient, draftKey, peerOf, type Open } from "./screen.js"
+import { clock, conversationRecipient, draftKey, peerOf, tuiName, type Open } from "./screen.js"
 import type { Talk } from "./talk.js"
 
 export { quoteRow } from "./compose.js"
@@ -58,7 +58,7 @@ export function Composer(props: {
     const r = recipient()
     if (!r) return "no recipient in all traffic"
     const peer = props.open.kind === "peer" ? peerOf(props.mesh, props.open.id) : undefined
-    if (peer?.status === "waiting" && r.kind === "peer" && r.principal === peer.card.id) return `answering ${peer.card.name}${ends()}`
+    if (peer?.status === "waiting" && r.kind === "peer" && r.principal === peer.card.id) return `answering ${tuiName(peer.card.name, peer.card.id)}${ends()}`
     return `${where(r)}${ends()}`
   }
 

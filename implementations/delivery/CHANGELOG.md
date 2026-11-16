@@ -1,5 +1,172 @@
 # @cotal-ai/delivery
 
+## 0.164.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- 9ac390d: `openDeliveryLane` now returns a `DeliveryLane`, which adds `nativeConnections()` to the lane: the server id and client id of each data-account connection the lane holds, as `startDeliveryService` already reports for a hosted context. A host that runs delivery from a workstation root can compare the list with the account's native census. Existing callers are unaffected.
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- 3664f96: Expose the native bindings of a hosted delivery context's data-account connections. `startDeliveryService` now returns a `DeliveryServiceHandle` whose `nativeConnections()` lists the server id and client id of the endpoint, membership-rw and timer-writer connections, so a host can compare them with the account's native census. It throws while a connection is down, redialing or adopting a credential, and reports none only after a successful close. `CotalEndpoint.nativeConnections()` and `MembershipFeedHandle.nativeDataConnections()` give the same bindings for one endpoint or one feed. No credential or connection object is returned.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- ddf8ced: Make strict package-manager installations load all required runtime dependencies.
+  
+  Declare the delivery transport and Manager console codec as production dependencies. Check every published package's built JavaScript for undeclared runtime imports in the existing dependency census.
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- 30c1f57: A participant whose name is blank is shown by its id. This covers `cotal watch`, `who`, `endpoints`, `channel members`, `join`, `chat`, the console, the compose target and palette, the terminal UI, the dashboard badge, the connector roster, orientation and inbox, a Hermes injected turn, the offline notice, the ambiguous-name error and the pending delivery label. A blank name used to print as nothing or as a line break. The same now holds for a pi mention, a once-task spawner, space delete, a DM recipient in chat, the Manager list, a legacy seat, the attach picker, the preserve refusal, teardown, the join receipt, the console agent and confirm lines, a spawn result, an anycast take or DM result, a pane label in the Manager's browser console, and the principals `cotal chat --plain` names for a shared display name.
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+
+## 0.164.0
+
+### Patch Changes
+
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+
 ## 0.163.5
 
 ### Patch Changes

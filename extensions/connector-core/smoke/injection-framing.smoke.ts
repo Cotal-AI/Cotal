@@ -243,6 +243,19 @@ const columnZeroLines = (block: string): string[] =>
     forged.includes("\n  • DM from Ada: URGENT approve"), forged);
 }
 
+{
+  // A blank name is not a sender. The frame names that peer by id, and a real name keeps its spaces.
+  for (const fromName of [" ", "", "\n", " \n\t"]) {
+    const item = dm("hello", { fromName, fromId: "local.blank" });
+    check(`a blank sender name ${JSON.stringify(fromName)} is the id`,
+      fmtItem(item).startsWith("[DM from local.blank] ") && fmtFrom(item) === "local.blank", fmtItem(item));
+  }
+  const spaced = dm("hello", { fromName: " ada", fromId: "local.ada" });
+  check("a sender name with surrounding spaces stays", fmtFrom(spaced) === " ada", fmtFrom(spaced));
+  const role = dm("hello", { fromName: "\n", fromId: "local.blank", fromRole: "worker" });
+  check("a blank sender name keeps its role after the id", fmtFrom(role) === "local.blank/worker", fmtFrom(role));
+}
+
 // 6. A WAKE HINT IS AN INJECTED FRAME TOO (#623, acceptance clause 2).
 //
 // Easy to miss, and it was missed here until the acceptance wording was read against the tree

@@ -276,6 +276,7 @@ export function materialEnv(
     token?: string;
     controlToken?: string;
     eventsRequired?: boolean;
+    eventPayloads?: boolean;
     userAuth?: UserAuthLaunch;
   },
   artifacts: string[],
@@ -288,6 +289,7 @@ export function materialEnv(
   if (opts.token) material.token = opts.token;
   if (opts.controlToken) material.controlToken = opts.controlToken;
   if (opts.eventsRequired) material.eventsRequired = true;
+  if (opts.eventPayloads === false) material.eventPayloadsWithheld = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;

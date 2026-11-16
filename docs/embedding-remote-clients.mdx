@@ -48,7 +48,14 @@ already knows it needs, so the person approves one request. Only the
 person's decision in the authority's authenticated UI is consent. The approved selection may differ
 from the proposal and must stay within their current authority. The empty approved selection still
 includes direct-message send and receive and own activity publication; disclose these before
-approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. An HTTP
+endpoint served with `approvalResume` cannot wake its client, so `cotal_connect` holds the call
+while the request is pending and asks the host again every 2 seconds with that same approval. A
+decision in that time returns the connected result. The hold lasts `approvalHoldSeconds`, by
+default `waitSeconds` less 25 seconds, which leaves the rest of the bound for the connect that
+follows an approval. Past the hold the pending result says a later call with the same
+`approval_id` waits again and does not start another request. A stdio server returns the pending
+result at once unless its embedder sets `approvalHoldSeconds`. Unsupported
 approval paths refuse before issuing a grant. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
@@ -174,8 +181,9 @@ compiles no code: the host passes validators it generated at build time with
 takes each cluster document with its recorded digest and schema roots, recomputes every digest and
 refuses a mismatch or a missing root before writing anything. It supports single-document closures
 only, so a command whose closure spans several documents refuses. The generated module imports
-Ajv's runtime helpers (`ajv/dist/runtime/*.js`), so the host's bundler must resolve `ajv` from
-where the host writes that module.
+`@cotal-ai/core/contract-validator` and prepares its fixed schemas with the same interpreter as Node.
+The host's bundler must resolve this entry from where it writes the module. Neither the module nor
+the interpreter generates code at runtime.
 
 ### Selected Manager caller
 

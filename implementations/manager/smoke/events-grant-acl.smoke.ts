@@ -403,6 +403,34 @@ try {
     const { parseResumeControlArgs } = await import("../src/resume.js");
     const entry = JSON.parse(JSON.stringify({ ...preserved, agents: [preserved!.agents[0]] }));
     delete entry.agents[0].launch.events;
+    delete entry.agents[0].launch.eventPayloads;
+    for (const version of ["cotal-manager-resume/v1", "cotal-manager-resume/v2"]) {
+      for (const choice of [undefined, true, false]) {
+        const document = structuredClone(entry);
+        document.version = version;
+        // v1 predates array-valued shareTools.
+        if (version === "cotal-manager-resume/v1") delete document.agents[0].launch.shareTools;
+        if (choice !== undefined) document.agents[0].launch.eventPayloads = choice;
+        let result: ReturnType<typeof parseResumeControlArgs> | undefined;
+        let error: string | undefined;
+        try { result = parseResumeControlArgs({ attemptId: "payload-compat", inventory: document }); }
+        catch (e) { error = String((e as Error).message); }
+        check(`${version} preserves payload choice ${String(choice)}`,
+          result !== undefined && result.inventory.agents[0]?.launch.eventPayloads === choice, error ?? result);
+      }
+    }
+    for (const invalid of ["false", null]) {
+      const document = structuredClone(entry);
+      document.agents[0].launch.eventPayloads = invalid;
+      let refused = false;
+      try { parseResumeControlArgs({ attemptId: "payload-invalid", inventory: document }); } catch { refused = true; }
+      check(`inventory refuses nonboolean payload choice ${String(invalid)}`, refused);
+    }
+    const unknown = structuredClone(entry);
+    unknown.agents[0].launch.unknownPayloadPolicy = false;
+    let unknownRefused = false;
+    try { parseResumeControlArgs({ attemptId: "payload-unknown", inventory: unknown }); } catch { unknownRefused = true; }
+    check("inventory still refuses unknown launch keys", unknownRefused);
     // The refusal this cell is about is a THROW, so it has to be caught here: an uncaught one would
     // abort the suite before either assertion printed, and a cell that never runs cannot fail.
     let parsed: ReturnType<typeof parseResumeControlArgs> | null = null;
@@ -714,8 +742,8 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 48;
-check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
+const EXPECTED = 58;
+check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

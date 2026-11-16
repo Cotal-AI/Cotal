@@ -57,6 +57,7 @@ import {
   withdrawOperationNote,
   hasUserAuthState,
   homeCotalDir,
+  installationWriter,
   cachedPreferences,
   loadLaunchPersonaFile,
   resolvePreference,
@@ -459,6 +460,13 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
+  const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
+  const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
+    code: "EXTENSION_VERSION_SKEW",
+    target: { version: machine.version, packages: skewedExtensions.map((item) => item.package) },
+    message: `extension version skew: ${skewedExtensions.map((item) => `${item.package} is ${item.version}`).join(", ")}; this cotal is ${machine.version}. Run \`${displayCmd()} update --self\` to reconcile this installation.`,
+  }] : [];
+  if (extensionWarnings.length) hints.push(`reconcile extension versions with \`${displayCmd()} update --self\``);
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
@@ -511,7 +519,7 @@ export async function status(args: ParsedArgs): Promise<void> {
       target: { space: result.selected.space ?? null, scope: values.all ? "all" : "selected" },
       result,
       completeness: parts ? "partial" : "complete",
-      warnings: [...gaps.warnings, ...invalidValues, ...survivors],
+      warnings: [...gaps.warnings, ...extensionWarnings, ...invalidValues, ...survivors],
       ...(parts ? { partial: { message: `status could not read ${parts === 1 ? "one part" : `${parts} parts`} of what it reports; the warnings name ${parts === 1 ? "it" : "each"}` } } : {}),
     },
     (result) => statusView(result, Boolean(values.verbose), Boolean(values.all) || Boolean(values.wide)),
@@ -649,7 +657,13 @@ async function readMachine(selected: Selected, gaps: Gaps, hints: string[]): Pro
   } catch (e) {
     gaps.add("CONNECTORS_UNREADABLE", `the installed connectors could not be listed: ${(e as Error).message}`);
   }
-  if (connectors) {
+  // Loading a connector's provider waits for a command that is changing the installation. Status is
+  // a read: it reports that command and leaves the rows unread.
+  const writer = connectors ? installationWriter() : undefined;
+  if (writer) {
+    gaps.add("INSTALLATION_CHANGING", `another cotal command (pid ${writer.pid}) is changing this installation, so the application rows were not read`, { pid: writer.pid });
+    hints.push("run `cotal status` again when that command finishes");
+  } else if (connectors) {
     const signedIn = selected.ok && selected.target.mode === "user" ? await signedInSpace(selected.target) : undefined;
     for (const r of await connectorStatusRows(connectors, signedIn)) integrations.push({ name: r.label, state: r.state, text: r.text });
   }
@@ -1625,7 +1639,7 @@ function brokerExecutable(m: StatusResult["machine"]): string {
 function machineSection(m: StatusResult["machine"]): Section {
   const tone = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
   const rows: [string, Cell][] = [
-    ["cotal-ai", cell(`v${m.version} (${m.install.kind === "source" ? "source checkout" : m.install.kind}: ${m.install.root})`, "ok")],
+    ["cotal-ai", cell(`v${m.version} (${m.install.kind === "source" ? "source checkout" : m.install.kind}: ${m.install.root}${m.install.note ? ` · ${m.install.note}` : ""})`, "ok")],
     ["NATS", m.nats === "missing" ? cell("missing", "failed") : cell(brokerExecutable(m), m.natsProblem ? "failed" : "ok")],
     ...m.integrations.map((r): [string, Cell] => [r.name, cell(r.text, tone[r.state])]),
   ];

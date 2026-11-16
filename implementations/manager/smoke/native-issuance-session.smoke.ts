@@ -6,7 +6,7 @@ import * as auth from "../../auth/dist/index.js";
 // its callout. Added cells read the persisted row with a full-grant TEST-account reader and assert
 // the row's exp is the redeemed session grant's expiry (the inner JWT's bound expiry).
 if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href);
+  (await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href)).startExecutionProgram();
 } else {
   await main();
 }

@@ -50,6 +50,7 @@ function workflow(dir, previous = 'v9.8.6', dependencies = true) {
   const tools = join(dir, 'tools'), temp = join(dir, 'temp'), scripts = join(dir, 'scripts');
   for (const path of [tools, temp, scripts]) mkdirSync(path);
   copyFileSync(script, join(scripts, 'release-notes-detail.mjs'));
+  copyFileSync(join(root, 'scripts/main-entry.mjs'), join(scripts, 'main-entry.mjs'));
   if (dependencies) symlinkSync(join(root, 'node_modules'), join(dir, 'node_modules'), 'dir');
   writeFileSync(join(tools, 'gh'), `#!/bin/sh
 case "$1:$2" in

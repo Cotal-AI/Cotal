@@ -2,8 +2,7 @@
  * The browser control entry (`@cotal-ai/core/browser-control`): describe and invoke ANY endpoint from
  * a strict-CSP page, with no Node built-in and no runtime code generation.
  *
- * The package root compiles a described service's §13.7 schema closures with Ajv at runtime, which a
- * `script-src 'self'` page forbids. Here the HOST supplies the validators instead, generated at its
+ * The HOST supplies the fixed schema validators it supports, generated at its
  * own build time by `@cotal-ai/core/browser-validators-build` for the endpoint contracts it calls.
  * A closure digest is the closure's identity, so the generated validator for a digest IS that
  * closure's validator. A cluster or closure the host did not generate refuses as
@@ -34,8 +33,8 @@ import { managerCallerBinding } from "./manager-caller.js";
 // package root would hold a second EpEnvelopeError class, and `instanceof` would miss every error.
 export { EpEnvelopeError, unansweredRequest, replyRefusedBeforeEffect } from "./endpoint-error.js";
 
-/** One validator emitted by the build-time generator (Ajv standalone, the §13.7 profile options). */
-export type BrowserValidator = ((data: unknown) => boolean) & { errors?: Array<{ instancePath?: string; message?: string }> | null };
+/** One validator prepared from a build-time checked schema closure. */
+export type BrowserValidator = import("./contract-validator.js").ContractValidator;
 
 /** One cluster document the generator verified against its recorded digest. */
 export interface BrowserCluster {

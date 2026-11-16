@@ -1,5 +1,107 @@
 # @cotal-ai/connector-core
 
+## 0.164.18
+
+No changes in this release.
+
+## 0.164.17
+
+No changes in this release.
+
+## 0.164.16
+
+No changes in this release.
+
+## 0.164.15
+
+No changes in this release.
+
+## 0.164.14
+
+No changes in this release.
+
+## 0.164.13
+
+No changes in this release.
+
+## 0.164.12
+
+### Patch Changes
+
+- 152dceb: A surfaced run turn tells the seat to answer an ask through its native route only when a block above carries one. A plain `turn`, including one named `ask`, gets only the ordinary-turn footer, so a seat no longer goes looking for a question, schema or answer route that was never sent.
+
+## 0.164.11
+
+No changes in this release.
+
+## 0.164.10
+
+No changes in this release.
+
+## 0.164.9
+
+No changes in this release.
+
+## 0.164.8
+
+No changes in this release.
+
+## 0.164.7
+
+No changes in this release.
+
+## 0.164.6
+
+No changes in this release.
+
+## 0.164.5
+
+### Patch Changes
+
+- fab6162: A manager-op tool refused by a manager on an older release now explains why. Before, `cotal_persona` or `cotal_spawn` sent to an older manager returned only the raw schema error, `must NOT have additional properties`. The refusal now names the argument that manager does not take and this connector's version, and asks the bound manager for its version. When the manager is older, it names `cotal update --self` on the manager's host and then `cotal manager restart`, or, for an argument you set, calling again without it. When the connector is older, it names `cotal update --self` here and a new session.
+- 3ed7f12: A clearing `cotal_inbox` read now shows a current mention of you ahead of older channel posts. When older posts filled the receivable window, the read that followed a mention's wake returned those posts and held the mention back, with nothing in the reply saying so. Direct messages still come first. When they hold a mention back, the held note now counts it, for example `3 more messages held (2 direct, 1 mentioning you)`.
+
+## 0.164.4
+
+### Patch Changes
+
+- 7b4f4b4: A `cotal_inbox` peek shows a newer direct message before an older one that fills the receivable window. A clearing read still delivers the older message first.
+- 1013fed: `cotal_yield` for a turn this seat already yielded now says so. Ending a session turn yields `done` for every turn it was shown, so a worker that yields afterwards, for example after a workflow reminder, was told `no active turn "<id>" on this seat`, or `no turn is active` without an id, as if it had never held the turn. It now reads `turn "<id>" was already yielded done by this seat (ending a session turn yields done), so this yield was not recorded`, with or without the id.
+
+## 0.164.3
+
+### Patch Changes
+
+- 688601b: The inbox warning about messages stamped ahead of the session clock names a sender by id when that sender's name is missing or only whitespace.
+
+## 0.164.2
+
+No changes in this release.
+
+## 0.164.1
+
+### Patch Changes
+
+- 30c1f57: A participant whose name is blank is shown by its id. This covers `cotal watch`, `who`, `endpoints`, `channel members`, `join`, `chat`, the console, the compose target and palette, the terminal UI, the dashboard badge, the connector roster, orientation and inbox, a Hermes injected turn, the offline notice, the ambiguous-name error and the pending delivery label. A blank name used to print as nothing or as a line break. The same now holds for a pi mention, a once-task spawner, space delete, a DM recipient in chat, the Manager list, a legacy seat, the attach picker, the preserve refusal, teardown, the join receipt, the console agent and confirm lines, a spawn result, an anycast take or DM result, a pane label in the Manager's browser console, and the principals `cotal chat --plain` names for a shared display name.
+- 85da7da: A hosted `cotal_connect` holds the call open while a person decides a permission request. If they approve in that time, the call returns connected. The call asks the host again every 2 seconds and stops 25 seconds before the wait bound. After that, a later call with the same approval id waits again and does not start another request.
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- f1376f1: Tell agents in their briefing to use their mesh tools rather than the cotal command line. Workflow runs are pointed at `cotal_run` instead of `cotal run start`, and `cotal_spawn` drops the unaudited-pin command-line recovery hint.
+- 471b464: Agents on older hosts keep publishing tool names and times when their credentials cannot inspect the payload stream.
+  
+  Only a broker publish-permission refusal for the payload stream info request disables new payload publication. Other failures remain errors, and previously frozen payloads remain pending until their rail is available.
+
 ## 0.163.5
 
 ### Patch Changes

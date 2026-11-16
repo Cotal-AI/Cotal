@@ -64,11 +64,14 @@ export interface SendAnswer {
  *  without trusting the sender's clock. Entries read from history carry none. */
 export type FeedMessage = { mode: "chat" | "unicast" | "anycast"; senderId?: string; channel?: string; msg: CotalMessage; arrivedAt?: number };
 
+/** A payload-only read failure, independent of metadata availability. */
+export interface PayloadReadFailure { status: "timeout" | "refused" | "failed"; reason: string }
+
 /** One read of an agent's event channel, `GET /api/agents/<id>/events`: its newest frame messages,
  *  oldest first, with `more` when the channel held more than were asked for. A read the broker
  *  refused is an answer, not a failure: `refused` is the broker's own text and `grant` the command
  *  that would let this dashboard read the channel, when the mesh has one. */
-export type AgentEventsPage = { frames: CotalMessage[]; more: boolean } | { refused: string; grant?: string };
+export type AgentEventsPage = { frames: CotalMessage[]; more: boolean; payloadRead?: PayloadReadFailure } | { refused: string; grant?: string };
 
 /** A frame message from an agent this page watches, as the `agent-frame` feed event carries it. `id`
  *  is the roster id the server took from the event channel's subject. */

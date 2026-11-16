@@ -21,7 +21,7 @@ import { StatusWord } from "../Status.tsx";
 const BEAT_MS = 1000;
 
 /** What the Work events row says for each value of the card's `ai.cotal.events`. */
-const WORK_EVENTS = { on: "Published. Tool names, status and times only.", off: "Not published" } as const;
+const WORK_EVENTS = { on: "Published. Tool inputs and results appear when payload access is permitted.", off: "Not published" } as const;
 
 /** The Profile tab of an agent's page (mock C "Every tab", `tpl-profile-logic`): the approved Agent
  *  tab at reading width.

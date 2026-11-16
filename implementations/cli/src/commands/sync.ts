@@ -194,6 +194,62 @@ function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   writeSecretFileAtomic(path, row.registration.sentinelCreds);
 }
 
+/** Prepare an auth-base origin migration without writing local state. The caller must prove the
+ * new session's audience against the old session's pins before calling. Slugs cannot change.
+ * Commit refuses registry changes since preparation. Credential and individual registry writes
+ * are atomic separately, not as a cross-file transaction. Old sessions and authority stay intact. */
+export function prepareCatalogMigration(oldAccount: AuthSpaceCatalogAccount, newAccount: AuthSpaceCatalogAccount, newSnapshot: unknown): () => void {
+  if (!oldAccount.issuer || !oldAccount.sub || oldAccount.issuer !== newAccount.issuer || oldAccount.sub !== newAccount.sub)
+    throw new Error("catalog migration requires the same issuer and subject");
+  const oldOrigin = new URL(canonicalIdpUrl(oldAccount.idpUrl, "old account IdP URL")).origin;
+  const newOrigin = new URL(canonicalIdpUrl(newAccount.idpUrl, "new account IdP URL")).origin;
+  if (oldOrigin === newOrigin || !oldAccount.ownerKey || !newAccount.ownerKey || oldAccount.ownerKey === newAccount.ownerKey)
+    throw new Error("catalog migration requires a changed auth-base origin and owner");
+  // Detach the plan from the caller's mutable objects, including the validator's normalization.
+  const snapshot: unknown = structuredClone(newSnapshot);
+  validateCatalogSnapshot(snapshot, newAccount);
+  const account = { ...newAccount };
+  const readState = (): MeshEntry[] => {
+    const state = readMeshRegistry();
+    if (state.unusable.length) throw new Error("catalog migration requires an undamaged registry");
+    return state.entries.sort((a, b) => a.space.localeCompare(b.space));
+  };
+  const before = readState();
+  const serialized = JSON.stringify(before);
+  const owned = before.filter((entry) => entry.catalogOwner === oldAccount.ownerKey);
+  const byId = new Map<string, MeshEntry>();
+  for (const entry of owned) {
+    if (entry.origin !== "catalog" || !entry.catalogId || byId.has(entry.catalogId))
+      throw new Error("catalog migration requires unique catalog-owned stable space IDs");
+    byId.set(entry.catalogId, entry);
+  }
+  if (owned.length !== snapshot.spaces.length)
+    throw new Error("catalog migration must preserve the owned space ID set");
+  const seen = new Set<string>();
+  const planned = snapshot.spaces.map((row) => {
+    if (seen.has(row.id)) throw new Error("catalog migration repeats a space ID");
+    seen.add(row.id);
+    const old = byId.get(row.id);
+    if (!old || old.space !== row.slug || old.catalogSlug !== row.slug)
+      throw new Error("catalog migration must preserve owned space IDs and slugs");
+    if ("unavailable" in row) throw new Error("catalog migration cannot migrate an unavailable owned space");
+    if (!old.userAuth || old.userAuth.idp.audience !== row.registration.userAuth.idp.audience)
+      throw new Error("catalog migration must preserve the registration audience");
+    if (!old.userAuth.endpoints?.url)
+      throw new Error("catalog migration requires an old exchange endpoint");
+    assertRegistrationAccountBinding({ ...row.registration, userAuth: { ...old.userAuth, endpoints: { ...old.userAuth.endpoints, url: old.userAuth.endpoints.url } } }, oldAccount, `old catalog entry "${old.space}"`);
+    const next = entryFor(account, row, old);
+    if (old.userAuth.sentinelCredsPath) next.userAuth!.sentinelCredsPath = old.userAuth.sentinelCredsPath;
+    return { next, row };
+  });
+  return () => {
+    if (JSON.stringify(readState()) !== serialized)
+      throw new Error("catalog migration registry changed after preparation");
+    for (const { next, row } of planned) writeCatalogCredential(next, row);
+    recordMeshes(planned.map(({ next }) => next));
+  };
+}
+
 function sameEntry(a: MeshEntry, b: MeshEntry): boolean {
   const clean = (m: MeshEntry) => ({ ...m, ts: undefined, catalogFetchedAt: undefined, catalogError: undefined });
   return JSON.stringify(clean(a)) === JSON.stringify(clean(b));
@@ -485,6 +541,7 @@ const spaceCatalogConsumer: SpaceCatalogConsumer = {
   kind: "space-catalog-consumer",
   name: "workspace",
   validate: validateCatalogSnapshot,
+  prepareMigration: prepareCatalogMigration,
   apply: (result) => void consume(result, true),
 };
 

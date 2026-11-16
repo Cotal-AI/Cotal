@@ -34,7 +34,7 @@ import { constants } from "node:fs";
 import { createConnection } from "node:net";
 import { processStartToken } from "@cotal-ai/core";
 import { lockExclusiveNb, processStartTime } from "@cotal-ai/seat";
-import { codeSpan, shellPath } from "@cotal-ai/workspace";
+import { codeSpan, shellPath, win32ProcessBinding } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
 /** The socket a holder published, identified by the inode it is, not by its path alone. */
@@ -51,7 +51,17 @@ export interface SocketGeneration {
  * Undefined when there is no such process.
  */
 export function processBirth(pid: number): string | undefined {
-  return process.platform === "linux" ? processStartToken(pid) : processStartTime(pid);
+  if (process.platform === "linux") return processStartToken(pid);
+  const token = processStartTime(pid);
+  if (token === undefined || process.platform !== "win32") return token;
+  let pin;
+  try {
+    pin = win32ProcessBinding().pinProcess(pid);
+    return pin.exited() || pin.token !== token ? undefined : token;
+  } catch (error) {
+    if (error instanceof Error && /\(Windows error (?:5|87)\)/.test(error.message)) return undefined;
+    throw error;
+  } finally { pin?.close(); }
 }
 
 /** What a holder writes through the locked descriptor. `socket` is absent until it publishes one. */
@@ -89,13 +99,18 @@ function parse(raw: string): LockRecord | undefined {
   return { v: 1, pid: r.pid, ...start, startedAt: r.startedAt, socket: { path: s.path, dev: s.dev, ino: s.ino } };
 }
 
+/** One original record read. Only zero bytes establish an empty lifetime record. */
+export function observeLifetimeRecord(path: string): { readonly empty: boolean; readonly record?: LockRecord } {
+  try {
+    const raw = readFileSync(path, "utf8");
+    return raw.length === 0 ? { empty: true } : { empty: false, record: parse(raw) };
+  } catch { return { empty: false }; }
+}
+
 /** The record at `path`, for a client deciding whether the process answering a socket is its
  *  holder. Undefined when there is none, when it is unreadable, or when it is not one of ours. */
 export function readLifetimeRecord(path: string): LockRecord | undefined {
-  try {
-    const raw = readFileSync(path, "utf8");
-    return raw.trim() ? parse(raw) : undefined;
-  } catch { return undefined; }
+  return observeLifetimeRecord(path).record;
 }
 
 /** Exclude new starters during uninstall without writing or clearing the holder's record. */

@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../shadcn/tooltip.tsx";
 import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "../shadcn/trace.tsx";
 import { FailedTip } from "./FailedTip.tsx";
 import { useNow } from "./useNow.ts";
+import { ToolPayloads } from "./ToolPayloads.tsx";
 
 const KIND_ICON: Readonly<Record<ToolKind, IconSvgElement>> = {
   command: CommandLineIcon,
@@ -25,8 +26,8 @@ const KIND_ICON: Readonly<Record<ToolKind, IconSvgElement>> = {
 export const kindIcon = (kind: ToolKind): IconSvgElement => KIND_ICON[kind];
 
 /** What a failed call's tooltip says. The marker carries only that the call returned an error. */
-const FAILED_COMMAND = "The connector reports the call returned an error. It doesn't publish the error text or the command.";
-const FAILED_OTHER = "The connector reports the call returned an error. It doesn't publish the error text or the tool's input.";
+const FAILED_COMMAND = "The connector reports the call returned an error. Open Input or Result for any received payload.";
+const FAILED_OTHER = "The connector reports the call returned an error. Open Input or Result for any received payload.";
 
 /** The icon for a call in `state`: the spinner while it runs, the cross when it failed, the hourglass
  *  while it waits, the struck circle when no result arrived, and otherwise its kind's. */
@@ -53,7 +54,7 @@ function callIcon(call: ToolCall, state: CallState) {
  *
  *  When the state changes the line mounts afresh and cross-fades in (`useXfade`), so the spinner,
  *  title and time turn into the final ones together. The name, title and times are React text. */
-export function ToolLine({ call, state, shimmer = true, className }: { call: ToolCall; state: CallState; shimmer?: boolean; className?: string }) {
+export function ToolLine({ call, state, shimmer = true, className, payloadRead }: { call: ToolCall; state: CallState; shimmer?: boolean; className?: string; payloadRead?: import("../../api/types.js").PayloadReadFailure }) {
   const now = useNow(state === "running");
   const fade = useXfade(state);
   const tone = state === "running" ? (shimmer ? "running" : undefined) : state === "failed" ? "error" : state === "pending" || state === "noResult" ? "pending" : undefined;
@@ -87,6 +88,5 @@ export function ToolLine({ call, state, shimmer = true, className }: { call: Too
       )}
     </TraceLine>
   );
-  if (state !== "failed") return line;
-  return <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />;
+  return <div className="ox-call">{state !== "failed" ? line : <FailedTip line={line} words={call.kind === "command" ? FAILED_COMMAND : FAILED_OTHER} />}<ToolPayloads call={call} payloadRead={payloadRead} /></div>;
 }

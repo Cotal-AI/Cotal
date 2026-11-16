@@ -35,7 +35,7 @@ export function startCodexPersonalEvents(agent: MeshAgent, config: AgentConfig, 
     mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
     const source = new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(path), start);
     const emitter = await AguiEmitter.start<CodexRecord>({
-      endpoint: agent.ep, wal, subjectFrontier, source, map: mapper.map,
+      endpoint: agent.ep, withholdPayloads: config.eventPayloadsWithheld, wal, subjectFrontier, source, map: mapper.map,
       onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable rollout record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
     });
     // A log with no cursor would otherwise take its boundary from the file's later end.

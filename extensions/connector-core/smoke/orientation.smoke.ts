@@ -115,6 +115,21 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     "cotal_roster names a working peer's progress as unknown");
 }
 
+{
+  const agent = agentStub({
+    roster: [
+      presence("local.blank", " \n", "worker"),
+      presence("local.ada", " ada"),
+    ],
+  });
+  const roster = cotalToolSpecs(cfg({ creds: "CREDS" })).find((spec) => spec.name === "cotal_roster")!;
+  const result = await roster.run(agent, cfg({ creds: "CREDS" }), {});
+  assert.match(result.text, /local\.blank\/worker — idle/, result.text);
+  assert.match(result.text, / ada — idle/, result.text);
+  assert.equal(result.text.includes("\n"), true);
+  assert.equal(/\/worker — idle/.test(result.text.replace("local.blank/worker — idle", "")), false, result.text);
+}
+
 // 4c — #1229: a failed roster read is part of the rendering. The rows are last-known, a missing
 // name is not an absence verdict, and the read's own error (here the missing grant) is printed.
 {
@@ -283,6 +298,21 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
     "a textual working peer must expose that no outside progress observation exists");
   assert.ok(!o.peers.summary.includes("alice"), "self not in the peer summary");
   assert.equal(o.unread.total, 3);
+}
+
+// A blank name is not a peer label. The summary uses the id, and a role still follows it.
+{
+  const roster = [
+    presence("ALICEID0000000000000000000000000000000000000", "alice", "reviewer"),
+    presence("local.blank", " \n", "worker"),
+    presence("local.empty", ""),
+    presence("local.space", " ada"),
+  ];
+  const o = await orient(agentStub({ roster }), cfg({ creds: "CREDS" }), [], 1);
+  assert.match(o.peers.summary, /local\.blank\/worker \(idle\)/, o.peers.summary);
+  assert.match(o.peers.summary, /local\.empty \(idle\)/, o.peers.summary);
+  assert.match(o.peers.summary, / ada \(idle\)/, o.peers.summary);
+  assert.equal(o.peers.summary.includes("\n"), false, o.peers.summary);
 }
 
 // 5 — the shared connector bootstrap is exported and points agents at the tool.

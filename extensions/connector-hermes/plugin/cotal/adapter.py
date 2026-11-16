@@ -28,7 +28,7 @@ from gateway.config import Platform, PlatformConfig
 from . import hooks, replies
 from .bridge_client import get_client
 from .resume import seed_chat
-from .framing import format_injection
+from .framing import format_injection, shown_sender
 
 logger = logging.getLogger(__name__)
 # How many delivered messages a turn reply can still name as the one it answers.
@@ -193,7 +193,7 @@ class CotalAdapter(BasePlatformAdapter):
 
     async def _inject(self, msg: dict) -> None:
         kind = msg.get("kind")
-        sender = msg.get("fromName") or "peer"
+        sender = shown_sender(msg)
 
         if kind == "channel":
             ch = msg.get("channel") or "general"

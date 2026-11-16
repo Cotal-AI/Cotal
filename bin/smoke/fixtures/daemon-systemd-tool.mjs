@@ -1,4 +1,5 @@
 // Subprocess fixture only: never invokes systemd or changes linger. Records operation names, not argv.
+import { spawnSync } from "node:child_process";
 import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync } from "node:fs";
 import { basename } from "node:path";
 const context = JSON.parse(readFileSync(process.env.DAEMON_UNIT_FIXTURE, "utf8"));
@@ -30,5 +31,13 @@ if (basename(process.argv[1]) === "loginctl") {
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);
+  if (operation === "start" && context.nativeEntry) {
+    spawnSync(process.execPath, [context.nativeEntry, "daemon", "serve"], {
+      cwd: context.home,
+      env: { ...process.env, HOME: context.home, COTAL_HOME: context.cotal, XDG_CONFIG_HOME: context.config, XDG_RUNTIME_DIR: context.rt, DO_NOT_TRACK: "1" },
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+  }
 }
 appendFileSync(context.calls, JSON.stringify({ operation }) + "\n");

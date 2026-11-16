@@ -181,25 +181,25 @@ try {
   });
 
   const fenceAccount = fromPublic(space.account.pub), fenceOperator = fromSeed(enc(broker.operator.seed));
-  const recentFence = nowSeconds() - 60, expiredFence = nowSeconds() - 86_411;
+  const recentFence = nowSeconds() - 60, agedFence = nowSeconds() - 86_411;
   const recentFenceTemplate = await encodeAccount(activeClaims.name, fenceAccount, {
     ...activeClaims.nats,
     revocations: { [revokedUser]: nowSeconds() - 10, "*": recentFence },
   }, { signer: fenceOperator });
-  const expiredFenceTemplate = await encodeAccount(activeClaims.name, fenceAccount, {
+  const agedFenceTemplate = await encodeAccount(activeClaims.name, fenceAccount, {
     ...activeClaims.nats,
-    revocations: { [revokedUser]: nowSeconds() - 10, "*": expiredFence },
+    revocations: { [revokedUser]: nowSeconds() - 10, "*": agedFence },
   }, { signer: fenceOperator });
   fenceAccount.clear(); fenceOperator.clear();
   await nextSecond();
-  await cell("wake retains a live wildcard fence, expires an old fence, and keeps per-user revocations in both", async () => {
+  await cell("wake retains recent and aged wildcard fences with every per-user revocation", async () => {
     const iat = nowSeconds();
     const recent = decode<Account>(await wakeAccountClaim(broker, recentFenceTemplate, iat));
-    const expired = decode<Account>(await wakeAccountClaim(broker, expiredFenceTemplate, iat));
+    const aged = decode<Account>(await wakeAccountClaim(broker, agedFenceTemplate, iat));
     assert.equal(recent.nats.revocations?.["*"], recentFence);
     assert.equal(recent.nats.revocations?.[revokedUser], decode<Account>(recentFenceTemplate).nats.revocations?.[revokedUser]);
-    assert.equal(expired.nats.revocations?.["*"], undefined);
-    assert.equal(expired.nats.revocations?.[revokedUser], decode<Account>(expiredFenceTemplate).nats.revocations?.[revokedUser]);
+    assert.equal(aged.nats.revocations?.["*"], agedFence);
+    assert.equal(aged.nats.revocations?.[revokedUser], decode<Account>(agedFenceTemplate).nats.revocations?.[revokedUser]);
   });
 
   await nextSecond();

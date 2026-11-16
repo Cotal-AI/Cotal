@@ -1,16 +1,15 @@
 /**
- * A daemon whose update is paused must start and name the repair. An interrupted update that
- * cannot be restored stops the daemon once, records the pause, and the next start serves.
+ * Unusable abandoned update records retire on startup. Unknown owners keep serving while paused.
  * Every path is private to this suite.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
-const root = mkdtempSync(join(tmpdir(), "daemon-paused-update-"));
+const root = mkdtempSync(join(tmpdir(), "dpu-"));
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))),
   HOME: join(root, "home"), XDG_CONFIG_HOME: join(root, "config"), COTAL_HOME: join(root, "cotal"), XDG_RUNTIME_DIR: join(root, "rt"),
   DO_NOT_TRACK: "1", COTAL_NO_UPDATE_CHECK: "1" };
@@ -42,22 +41,28 @@ const counted = countedAssert(assert);
 const check = (value: unknown, label: string) => counted.assert.ok(value, label);
 let running: ReturnType<typeof serve> | undefined;
 try {
-  // An interrupted update with nothing to restore from: the first start stops and records the pause.
-  writeFileSync(journal, JSON.stringify(record("replacing")), { mode: 0o600 });
-  const first = serve();
-  check(await first.ready === false, "an update that cannot be restored stops the first start");
-  check(await first.exited !== 0, "that start exits with a failure");
-  check(JSON.parse(readFileSync(journal, "utf8")).phase === "paused", "the failed restoration is recorded as paused");
-
-  // The service's next start meets the paused update and serves.
+  const bytes = JSON.stringify(record("replacing"));
+  writeFileSync(journal, bytes, { mode: 0o600 });
   running = serve();
-  check(await running.ready === true, `a paused update does not stop the daemon: ${running.output().slice(-400)}`);
+  check(await running.ready === true, `an unusable dead-owner record retires and the daemon serves: ${running.output().slice(-400)}`);
+  check(!existsSync(journal), "retirement removes the active recovery record");
+  const retained = readdirSync(env.COTAL_HOME).filter(name => name.startsWith("update-recovery-retained-"));
+  check(retained.length === 1 && readFileSync(join(env.COTAL_HOME, retained[0]!, "update-recovery.json"), "utf8") === bytes, "retirement retains the original recovery bytes");
+  check(running.output().includes("Retained unusable interrupted-update records in"), "startup reports the retained folder");
+  running.child.kill("SIGTERM"); await running.exited;
+
+  // An unowned record starts its observation bound without preventing daemon service.
+  const { owner: _owner, ...unowned } = record("paused");
+  const unownedBytes = JSON.stringify(unowned);
+  writeFileSync(journal, unownedBytes, { mode: 0o600 });
+  running = serve();
+  check(await running.ready === true, `an unowned update does not stop the daemon: ${running.output().slice(-400)}`);
   const status = await cli("status", "--json");
   const doc = JSON.parse(status.out);
   check(status.code === 0 && doc.result.state === "ready", "status answers while the update is paused");
   check(doc.result.update.automatic === false, "automatic updates are off while paused");
-  check(String(doc.result.update.lastResult).includes("automatic updates paused") && String(doc.result.update.lastResult).includes("cotal update --self"), "status names the pause and the repair command");
-  check(JSON.parse(readFileSync(journal, "utf8")).phase === "paused", "serving does not clear or rewrite the paused journal");
+  check(String(doc.result.update.lastResult).includes("automatic updates paused") && String(doc.result.update.lastResult).includes("seconds remaining"), "status names the observation wait and time remaining");
+  check(readFileSync(journal, "utf8") === unownedBytes, "serving does not rewrite the unowned journal bytes");
   check(running.child.exitCode === null, "the daemon is still running");
 } finally {
   if (running?.child.exitCode === null) { running.child.kill("SIGTERM"); await running.exited; }

@@ -170,6 +170,10 @@ the connector declares a two-minute readiness window for this check and the mesh
 
 ## Event plane
 
+The shared launch and emitter carry payload-withholding safety controls. This release does not
+qualify OpenCode payload mapping or native payload acceptance. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
+
 A spawned session publishes a structured account of what it did: run
 boundaries per turn, assistant text, and each tool call with its start and its end. Tool
 arguments and tool results are not republished onto this channel.

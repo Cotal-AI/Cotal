@@ -73,7 +73,7 @@ import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
-import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
+import { OwnedConnections, type AuthConnectionState, type AuthNativeConnection, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { calloutLimits, type AuthCalloutLimits } from "./callout.js";
 import { runCalloutHost } from "./callout-host.js";
@@ -93,7 +93,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { deregisterUserEndpoint, type EndpointDeregisterGranter } from "./endpoint-deregister.js";
-import { parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
+import { parsePrincipalKey, parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
@@ -443,6 +443,8 @@ async function supervisorGeneration(session: IssuerSession, space: string, owner
 /** Trusted composition policy for unpinned interactive manager-caller requests. No request or CLI
  *  flag sets it. The local-primary policy refuses an unavailable local Manager without substitution. */
 export interface AuthServiceRuntimeOptions {
+  /** Trusted space restriction applied to every native payload publish grant. */
+  eventPayloadsWithheld?: boolean;
   interactiveManagerSelection?: "local-primary";
   /** Process-lifetime cancellation custody quotas. No eviction or automatic restart on exhaustion. */
   runCancelLimits?: RunCancelLimits;
@@ -456,6 +458,8 @@ function runtimeSelection(options: AuthServiceRuntimeOptions): AuthServiceRuntim
   if (!options || typeof options !== "object" || Array.isArray(options))
     throw new Error("auth-service runtime options must be an object");
   const selection = options.interactiveManagerSelection;
+  if (options.eventPayloadsWithheld !== undefined && typeof options.eventPayloadsWithheld !== "boolean")
+    throw new Error("eventPayloadsWithheld must be a boolean when present");
   if (selection !== undefined && selection !== "local-primary")
     throw new Error('interactiveManagerSelection must be "local-primary" when present');
   return selection;
@@ -519,6 +523,15 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
   };
 }
 
+/** The standalone data-account plane's local connection custody, without a callout or HTTP face. */
+export interface AuthAuthorityPlaneHandle extends AuthAuthorityPlane {
+  /** Tracked live-client bindings only. A host compares these with a complete native account census;
+   * the list alone proves neither liveness nor absence of other connections or issuers. */
+  nativeConnections(): AuthNativeConnection[];
+  /** Resolves only after successful plane-close ordering and all tracked connections have ended. */
+  readonly closed: Promise<AuthServiceClosed>;
+}
+
 /**
  * Open the authority plane — the PRODUCTION connect/exchange composition (exported so the live
  * deny-new smoke exercises exactly what the daemon runs). Boot order is the readiness contract:
@@ -531,8 +544,27 @@ export interface OpenAuthAuthorityPlaneOptions extends AuthServiceRuntimeOptions
  * These are STATIC data-account users (signed by the data-account signing key), so they never
  * transit the auth callout — the callout cannot deadlock on its own reader.
  */
-export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions): Promise<AuthAuthorityPlane> {
-  return await openAuthAuthorityPlaneWithCustody(opts);
+export async function openAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions): Promise<AuthAuthorityPlaneHandle> {
+  const owned = new OwnedConnections();
+  let plane: AuthAuthorityPlane;
+  try {
+    plane = await openAuthAuthorityPlaneWithCustody(opts, (nc, label) => owned.track(nc, label));
+  } catch (cause) {
+    try { await owned.closeRemaining(); owned.complete(); await owned.closed; }
+    catch (cleanup) { throw new AggregateError([cause, cleanup], "auth authority open failed and its connections did not close"); }
+    throw cause;
+  }
+  return {
+    ...plane,
+    nativeConnections: () => owned.nativeConnections(),
+    closed: owned.closed,
+    close: async () => {
+      await plane.close();
+      await owned.closeRemaining();
+      owned.complete();
+      await owned.closed;
+    },
+  };
 }
 
 /** The hosted door over a plane's service endpoint host: refused before entry unless the context is
@@ -1667,6 +1699,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const result = await principalOracle(principal);
             return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };
           },
+          probeRegistrationExecutor: async (holderPrincipal) => {
+            const target = parsePrincipalKey(holderPrincipal);
+            if (!target || holderPrincipal !== remoteManagerServePrincipal(target.owner, authorized.targetInstanceId))
+              return { state: "unestablishable", detail: "the target gate does not name its canonical remote Manager serve principal" };
+            const principal = principalKey(target.owner, remoteManagerActors(authorized.targetInstanceId).executor).key;
+            const result = await principalOracle(principal);
+            return { state: result.state, detail: `${principal}: ${result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}`}` };
+          },
           evictHolders: async (holders) => (await evictHolders(holders)).map((e) => e.verifiedGone),
           log,
         });
@@ -1777,6 +1817,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             scope: t.capabilities ?? [],
             allowSubscribe,
             allowPublish: t.allowPublish ?? [],
+            ...(t.eventPayloads === false || opts.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}),
             ...(t.role !== undefined ? { role: t.role } : {}),
             ...(t.label !== undefined ? { label: t.label } : {}),
             parent: spawner.parent,
@@ -2389,8 +2430,8 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
   // layout fact is workspace-owned (userAuthStateDir); this daemon never touches `.cotal/auth/auth.json`.
   const root = lifecycle?.root ?? findCotalRoot();
   // A replica never reads or writes the space's one discovery file: that file names the primary.
-  if (spaces !== undefined && calloutOnly) return runCalloutHost({ manifest: spaces, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
-  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, ...(limits !== undefined ? { limits } : {}) }, store);
+  if (spaces !== undefined && calloutOnly) return runCalloutHost({ manifest: spaces, server, root, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(limits !== undefined ? { limits } : {}) }, store);
+  if (calloutOnly) return runAuthCalloutReplica({ space, server, root, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(limits !== undefined ? { limits } : {}) }, store);
   if (spaces !== undefined) {
     if (lifecycle) throw new Error("auth-service: the auth-service service preset runs one space - run --spaces from the auth-service entry or an embedder's runAuthService call");
     return runAuthServiceHost({ manifest: spaces, server, root, runtime: options, ...(limits !== undefined ? { limits } : {}) }, store);
@@ -2432,6 +2473,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore, opti
     // The CLI composition's local manager is this workspace root's persisted instance, re-read per
     // selection exactly as before. A hosted context passes no local manager at all.
     localManager: () => loadManagerInstanceIdentity(root, space),
+    eventPayloadsWithheld: options.eventPayloadsWithheld,
     ...(interactiveManagerSelection !== undefined ? { interactiveManagerSelection } : {}),
     ...(options.runCancelLimits !== undefined ? { runCancelLimits: options.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry } : {}),
@@ -2604,6 +2646,7 @@ async function openAuthServiceLane(o: {
     ...(o.publicFace !== null ? { publicFace: o.publicFace } : {}),
     ...(endpoints.option !== undefined ? { serviceEndpoints: endpoints.option } : {}),
     localManager: () => loadManagerInstanceIdentity(root, space),
+    eventPayloadsWithheld: o.runtime.eventPayloadsWithheld,
     ...(selection !== undefined ? { interactiveManagerSelection: selection } : {}),
     ...(o.runtime.runCancelLimits !== undefined ? { runCancelLimits: o.runtime.runCancelLimits } : {}),
     ...(registry !== undefined ? { registry, ...(o.runtime.registryCredentialTtlSeconds !== undefined ? { registryCredentialTtlSeconds: o.runtime.registryCredentialTtlSeconds } : {}) } : {}),
@@ -2936,6 +2979,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log,
     localManager: o.localManager,
+    eventPayloadsWithheld: o.eventPayloadsWithheld,
     ...(o.interactiveManagerSelection !== undefined ? { interactiveManagerSelection: o.interactiveManagerSelection } : {}),
     ...(o.runCancelLimits !== undefined ? { runCancelLimits: o.runCancelLimits } : {}),
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
@@ -2971,6 +3015,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     // fresh bearer too.
     const connectLimiter = new ConnectLimiter(o.connectLimits);
     serveCallout(nc as never, {
+      eventPayloadsWithheld: o.eventPayloadsWithheld,
       space,
       dir,
       callout,
@@ -3084,6 +3129,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
         server: face.advertisedServer ?? server,
         idp: { url: idp.url, issuer: idp.issuer, audience: idp.audience },
         sentinelCreds: callout.sentinelCreds,
+        eventPayloadsWithheld: o.eventPayloadsWithheld,
         ...(face.agentProvisioningUrl ? { agentProvisioningUrl: face.agentProvisioningUrl } : {}),
       });
       const pub = createServer(makePublicHandler(ctx, makePublicPolicy(face.trustedProxy), bundle));
@@ -4509,6 +4555,7 @@ function checkPublicFace(face: PublicFaceInput): string | undefined {
  *  empty — the daemon finalizes it with {@link finalizeUserBundleEndpoint} after the public
  *  listener binds. */
 export function composeUserBundle(args: {
+  eventPayloadsWithheld?: boolean;
   space: string;
   server: string;
   idp: { url: string; issuer: string; audience: string };
@@ -4522,6 +4569,7 @@ export function composeUserBundle(args: {
     space: args.space,
     server: args.server,
     tlsRequired: true,
+    ...(args.eventPayloadsWithheld === true ? { policy: { eventPayloads: "withheld" } } : {}),
     userAuth: {
       // The same provider name the LOCAL arm records — one exported constant rather than a
       // literal repeated here and in provider.ts, so a remote entry cannot come to name a

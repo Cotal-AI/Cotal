@@ -95,6 +95,7 @@ import {
   issuedSpawnerStanding,
   withIssuerSession,
   renderOnceTask,
+  shownSpawner,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
@@ -543,6 +544,8 @@ export interface ManagerOptions {
   onServiceIdentity?: (identity: ManagerServiceIdentity) => void | Promise<void>;
   /** The selected registration requires every launched connector session to publish events. */
   eventsRequired?: boolean;
+  /** Trusted registration policy withholds tool payloads for every seat. */
+  eventPayloadsWithheld?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
   /** The broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
@@ -884,6 +887,7 @@ export interface ManagerResumeAgent {
     capabilities?: string[];
     endpoints?: PersonaEndpoint[];
     events: boolean;
+    eventPayloads?: boolean;
     shareTools?: readonly string[];
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -1010,6 +1014,7 @@ export interface StartAgentOpts {
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
+  eventPayloads?: boolean;
   /** #373: set by `opStart` when a non-owner, non-admin caller omitted `events` and the plane was served
    *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
   eventsNotice?: string;
@@ -1088,6 +1093,7 @@ interface ManagedLaunch {
   /** The persona's endpoint commands, as minted. Renewal re-mints their rows. */
   endpoints?: PersonaEndpoint[];
   events: boolean;
+  eventPayloads?: boolean;
   shareTools?: readonly string[];
   forkSource?: string;
   /** Read from {@link resumeRecordPath} once the seat has written it, then kept. */
@@ -1197,6 +1203,7 @@ function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
  *  hosted arm. */
 interface ProvisionUserAgentOpts {
+  eventPayloads?: boolean;
   spawner?: string;
   specOwner?: string;
   subscribe?: string[];
@@ -1647,6 +1654,7 @@ export class Manager {
   private readonly name: string;
   private readonly workspaceRoot: string;
   private readonly eventsRequired: boolean;
+  private readonly eventPayloadsWithheld: boolean;
   /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The operator-set per-owner seat ceiling (see {@link ManagerOptions.seatCap}). */
@@ -2057,6 +2065,7 @@ export class Manager {
     this.workspaceRoot = opts.workspaceRoot ?? findCotalRoot();
     this.onServiceIdentity = opts.onServiceIdentity;
     this.eventsRequired = opts.eventsRequired === true;
+    this.eventPayloadsWithheld = opts.eventPayloadsWithheld === true;
     this.maxSessions = opts.maxSessions;
     this.seatCap = opts.seatCap ?? DEFAULT_SEAT_CAP;
     this.remoteAuthority = opts.remoteAuthority;
@@ -2155,8 +2164,7 @@ export class Manager {
     const asked = kind?.trim();
     if (!this.installedExtensions || this.executionState.kind === "none" || !asked || asked === "auto" || asked === "pty" || asked === this.runtime.kind) return;
     if (!manifestExtensionNames("runtime").includes(asked)) throw new Error(runtimeInstallHint(asked));
-    if (registry.all<RuntimeProvider>("runtime").some((provider) => provider.name === asked)) return;
-    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name) });
+    await materializeFromManifest<RuntimeProvider>({ kind: "runtime", name: asked }, { hint: (ref) => runtimeInstallHint(ref.name), expectedGeneration: this.expectedConnectorGeneration });
   }
 
   /** The backend one seat launches, restarts, and is reaped through. An omitted or blank choice is
@@ -3726,6 +3734,7 @@ export class Manager {
         capabilities: a.launch.capabilities,
         ...(a.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(a.launch.endpoints) } : {}),
         events: a.launch.events,
+        eventPayloads: a.launch.eventPayloads,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         ...(this.forkProvenance(a) ? { resumed: this.forkProvenance(a) } : {}),
@@ -3747,8 +3756,8 @@ export class Manager {
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
    *  in-process seats a default stop cannot detach. A manager exit is
    *  a mass agent-exit, and without this its agents' footprints (creds files + `dm_`/`dlv_` durables + ACL
-   *  rows) would orphan exactly as the per-agent exit path prevents. Hard-stop each child (an exit has no
-   *  time for the graceful grace window) and AWAIT its deprovision — bounded per agent (`withTimeout`) and
+   *  rows) would orphan exactly as the per-agent exit path prevents. Stop each child gracefully, so its
+   *  own shutdown runs before the runtime escalates, and AWAIT its deprovision — bounded per agent (`withTimeout`) and
    *  best-effort (`allSettled` + a loud log), so one slow/failed teardown can neither hang nor abort exit.
    *  The creds file is dropped even if the broker teardown fails (see {@link deprovision}). Deliberately
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
@@ -3756,12 +3765,17 @@ export class Manager {
     const failures: string[] = [];
     const stopped: ManagedAgent[] = [];
     for (const a of managed) {
-      // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
-      // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
+      // Free the slot and stop each the way an operator stop does. `stopHandle` is best-effort (never
+      // throws — see it), so one bad stop can't strand the rest, and every snapshot entry is
+      // deprovisioned below regardless. A hard kill never runs the seat's shutdown, so a helper that
+      // has left the process group keeps running after `cotal down`. The runtime still escalates to
+      // SIGKILL after its grace.
       this.recordContinuityAtStop(a, "shutdown");
-      this.agents.delete(a.name);
-      this.dropSeatRecord(a);
-      const refused = this.stopHandle(a, false);
+      if (process.platform !== "win32" || a.handle.kind !== "pty") {
+        this.agents.delete(a.name);
+        this.dropSeatRecord(a);
+      }
+      const refused = this.stopHandle(a, true);
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }
@@ -3775,6 +3789,10 @@ export class Manager {
     await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
+        if (process.platform === "win32" && a.handle.kind === "pty") {
+          this.agents.delete(a.name);
+          this.dropSeatRecord(a);
+        }
         this.logSeatReaped(a, { kind: "stopped-shutdown" });
       } catch (e) {
         failures.push(`${a.name}: ${rejectionText(e)}`);
@@ -3930,6 +3948,7 @@ export class Manager {
         allowPublish: launch.allowPublish,
         capabilities: launch.capabilities,
         events: launch.events,
+        eventPayloads: launch.eventPayloads,
         shareTools: launch.shareTools,
         forkSource: launch.forkSource,
         sessionId: launch.sessionId,
@@ -4912,7 +4931,7 @@ export class Manager {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
         if (denied) throw new EpEnvelopeError("permission-denied", denied, undefined, "not-executed");
-        return unwrap(this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
+        return unwrap(await this.despawnAuthorized(a, args(ctx).graceful !== false, true, callerOf(ctx)));
       }),
       attach: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -4966,7 +4985,7 @@ export class Manager {
       // The reserved goal cancel (SPEC 13.6 item 4), served for the relay: the goal ref is the
       // authenticated caller's own, so a run withdraws only the turns it submitted.
       cancel: (ctx) => this.serveGated(ctx, () => this.serveTurnCancel(ctx)),
-      stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
+      stopSelf: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, async () => unwrap(await this.opDefinePersona(args(ctx), callerOf(ctx), false, ctx.subject.caller))),
       removePersona: (ctx) => this.serveGated(ctx, () => {
         const r = this.opRemovePersona(args(ctx), callerOf(ctx), false);
@@ -5166,11 +5185,14 @@ export class Manager {
    *  per spawn + non-forgeable in auth mode), never a peer — so it's structurally incapable of
    *  hitting another agent. Non-managed callers (human CLI, the manager itself, observers) find
    *  no match and get a loud error, not a silent no-op. */
-  private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply {
+  private opStopSelf(callerId: string, args: Record<string, unknown>): ControlReply | Promise<ControlReply> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const target = [...this.agents.values()].find((a) => this.managedPrincipal(a) === callerId);
     if (!target) return { ok: false, error: `self-stop: caller ${callerId} is not a managed agent` };
     const graceful = args.graceful !== false;
+    if (process.platform === "win32" && target.handle.kind === "pty") {
+      return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
+    }
     this.stopHandle(target, graceful);
     this.trackStoppedHandle(target, true, { kind: "stopped-self" });
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
@@ -5199,16 +5221,38 @@ export class Manager {
     // durable terminal begins.
     a.terminalizing = true;
     try {
-      if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
       // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
       // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
       // close; the free path's own teardown joins the same flight.
       if (a.handedOff) this.trackDeprovision(this.teardownTarget(a));
       else a.handle.stop({ graceful });
+      // The runtime captured its cohort synchronously before the cooperative
+      // request can let a root exit and orphan its already-running children.
+      if (graceful && process.platform === "win32" && a.control) controlShutdown(a.control);
     } catch (e) {
       const failure = rejectionText(e);
       console.error(`stop ${a.name} (${a.id}): ${failure}`);
       return failure;
+    }
+  }
+
+  /** Windows PTY stops release their name only after the captured process cohort and PTY exited. */
+  private async stopWindowsSeat(a: ManagedAgent, graceful: boolean, floor: boolean, cause: FreeSlotStopCause): Promise<void> {
+    if (a.once) a.once.stopReason ??= onceStopReason(cause);
+    const failure = this.stopHandle(a, graceful);
+    this.lifecycleInFlight++;
+    try {
+      if (failure !== undefined) throw new Error(failure);
+      await this.awaitHandleExit(a.handle);
+      this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
+      this.freeSlot(a, floor, cause, true);
+    } catch (error) {
+      const detail = `Windows stop could not prove the captured process tree exited: ${rejectionText(error)}`;
+      this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
+      this.unverifiedStops.push({ name: a.name, id: a.id, handle: a.handle, authoritative: true, error: detail });
+      throw new EpEnvelopeError("unavailable", detail, undefined, "unknown");
+    } finally {
+      this.releaseLifecycle();
     }
   }
 
@@ -5223,9 +5267,10 @@ export class Manager {
    * slot lingering. A recursive reap (`requireAuthoritativeExit`) instead keeps the slot until the
    * wait proves exit: nobody asked for those children to be gone, so they stay managed until the
    * runtime says otherwise, and a runtime that cannot prove exit records an unverified stop. */
-  private trackStoppedHandle(a: ManagedAgent, floor: boolean, cause: FreeSlotStopCause, requireAuthoritativeExit = false): void {
+  private trackStoppedHandle(a: ManagedAgent, floor: boolean, cause: FreeSlotCause, requireAuthoritativeExit = false): void {
+    if (process.platform === "win32" && a.handle.kind === "pty") requireAuthoritativeExit = true;
     // What a once seat's task is cancelled with if this stop ends it before the task has a terminal.
-    if (a.once) a.once.stopReason ??= onceStopReason(cause);
+    if (a.once && typeof cause !== "string") a.once.stopReason ??= onceStopReason(cause);
     if (!a.handle.waitForExit) {
       // Preserve ordinary external-runtime stop behavior, but retain enough evidence for a later
       // maintenance prepare to fail if that runtime still cannot prove the surface disappeared.
@@ -5245,8 +5290,12 @@ export class Manager {
     if (!requireAuthoritativeExit) this.freeSlot(a, floor, cause, true);
     this.lifecycleInFlight++;
     void this.awaitHandleExit(a.handle)
-      .then(() => this.freeSlot(a, floor, cause, true)) // no-op once an accepted stop already freed it
+      .then(() => {
+        this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
+        this.freeSlot(a, floor, cause, true);
+      }) // no-op once an accepted stop already freed it
       .catch((e) => {
+        this.unverifiedStops = this.unverifiedStops.filter((stopped) => stopped.handle !== a.handle);
         this.unverifiedStops.push({
           name: a.name,
           id: a.id,
@@ -5327,6 +5376,7 @@ export class Manager {
         scope,
         allowSubscribe: opts.allowSubscribe,
         allowPublish: opts.allowPublish ?? [],
+        ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
         role: opts.role,
         parent: spawnerPr ? opts.spawner : undefined,
         label: opts.label,
@@ -5425,6 +5475,7 @@ export class Manager {
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
         allowSubscribe: opts.allowSubscribe,
         ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+        ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       },
       ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
     };
@@ -6255,7 +6306,7 @@ export class Manager {
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
     this.stopHandle(a, false);
-    this.freeSlot(a, true, "carried-fork-refused");
+    this.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
   private readManagedSession(a: ManagedAgent): string {
@@ -6496,6 +6547,9 @@ export class Manager {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
     if (this.maintenanceState !== "active") return;
+    // A Windows stop owns the exit proof and its truthful reap cause. The raw
+    // terminal event must not release a slot while cohort verification is pending.
+    if (process.platform === "win32" && a.handle.kind === "pty" && a.terminalizing) return;
     // A replacement is proving readiness under this row. Its own wait owns a failed
     // relaunch; treating that exit as a seat death would free the slot mid-recovery.
     if (a.restart?.recovering && !a.terminalizing) return;
@@ -6618,6 +6672,8 @@ export class Manager {
     // !== false`, so omission ARMS the plane — a gate on the explicit bit alone is bypassed by
     // omitting it. The gate is on the DECISION, and it runs before connector resolution and
     // before `startAgent` (which mints credentials), so a refusal provisions nothing.
+    if (args.eventPayloads !== undefined && typeof args.eventPayloads !== "boolean")
+      return Promise.resolve({ ok: false, error: "eventPayloads must be a boolean" });
     const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
     let eventsNotice: string | undefined;
     let events: boolean | undefined = requestedEvents;
@@ -6664,6 +6720,7 @@ export class Manager {
         resumeClaim: args.resumeClaim as string | undefined,
         resumeAgent: args.resumeAgent as string | undefined,
         events,
+        eventPayloads: args.eventPayloads as boolean | undefined,
         eventsNotice,
         cwd: args.cwd as string | undefined,
         prompt: args.prompt as string | undefined,
@@ -6845,7 +6902,7 @@ export class Manager {
     agent: string,
     shareTools: readonly string[] | undefined,
     harness: { binaries?: Readonly<Record<string, string>> },
-  ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "mcpServersExclusive" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "workspaceRoot"> {
+  ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "mcpServersExclusive" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "eventPayloads" | "workspaceRoot"> {
     return {
       space: this.space,
       servers: this.servers,
@@ -6859,6 +6916,7 @@ export class Manager {
       envAllow: spawnEnvAllow(cotalConfig),
       resolvedBinaries: harness.binaries,
       eventsRequired: this.eventsRequired,
+      ...(this.eventPayloadsWithheld ? { eventPayloads: false } : {}),
       // So a connector that keeps per-agent local state can root it at the workspace, not the
       // (possibly per-agent) launch cwd.
       workspaceRoot: this.workspaceRoot,
@@ -6910,10 +6968,10 @@ export class Manager {
     return undefined;
   }
 
-  /** How a once task names who sent it: the spawner's roster name, else its principal. */
+  /** How a once task names who sent it: the spawner's roster name, or its principal when that name is missing or only whitespace. */
   private spawnerName(spawner: string | undefined): string {
     const id = spawner ?? this.ep.ref().id;
-    return this.ep.getRoster().find((p) => p.card.id === id)?.card.name ?? id;
+    return shownSpawner(this.ep.getRoster().find((p) => p.card.id === id)?.card.name, id);
   }
 
   /** The refusal for an event-plane choice the registration policy or the connector cannot meet.
@@ -7589,6 +7647,9 @@ export class Manager {
     // The AG-UI event plane is on unless the launch explicitly opted out. A connector that cannot
     // emit one is refused further down, before anything is minted.
     const events = this.eventsRequired || opts.events !== false;
+    if (this.eventPayloadsWithheld && opts.eventPayloads === true)
+      return { ok: false, error: "space policy withholds event payloads" };
+    const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
     // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
     // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
@@ -7923,6 +7984,7 @@ export class Manager {
       let enrolled: ProvisionedUserAgent["enrolled"];
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
+          eventPayloads,
           spawner,
           specOwner: opts.owner,
           subscribe,
@@ -8003,6 +8065,7 @@ export class Manager {
         const creds = await this.withIssuer((i) =>
           this.withProvisioner((prov) =>
             provisionAgent(prov, this.auth!, identity, {
+              eventPayloads,
               subscribe,
               allowSubscribe,
               allowPublish,
@@ -8088,6 +8151,7 @@ export class Manager {
         // file that may have changed since.
         endpoints: copyPersonaEndpoints(personaEndpoints) ?? [],
         events,
+        eventPayloads,
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -8100,7 +8164,7 @@ export class Manager {
           throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
         handle = runtime.spawnDelegated(
-          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },
+          { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
       } else {
@@ -8165,6 +8229,7 @@ export class Manager {
           capabilities,
           ...(personaEndpoints?.length ? { endpoints: copyPersonaEndpoints(personaEndpoints) } : {}),
           events,
+          eventPayloads,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           ...(opts.resume !== undefined && spec?.resumeRecordPath ? { resumeRecordPath: spec.resumeRecordPath } : {}),
@@ -8283,7 +8348,7 @@ export class Manager {
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
           this.stopHandle(managed, false);
-          this.freeSlot(managed, true, "carried-fork-refused");
+          this.trackStoppedHandle(managed, true, "carried-fork-refused");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
           return { ok: false, error: refused };
         }
@@ -8306,7 +8371,7 @@ export class Manager {
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
             this.stopHandle(managed, false);
-            this.freeSlot(managed, true, "session-bind-failed");
+            this.trackStoppedHandle(managed, true, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -8319,7 +8384,7 @@ export class Manager {
           } catch (error) {
             const detail = `${managed.name} joined, but supervise cannot cover a manager restart for it: ${rejectionText(error)}`;
             this.stopHandle(managed, false);
-            this.freeSlot(managed, true, "supervise-record-failed");
+            this.trackStoppedHandle(managed, true, "supervise-record-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
           }
@@ -8864,6 +8929,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           endpoints: copyPersonaEndpoints(entry.launch.endpoints) ?? [],
           events: entry.launch.events,
+          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);
@@ -8949,6 +9015,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
           events: entry.launch.events,
+          eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
           ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
@@ -9406,7 +9473,11 @@ export class Manager {
     const name = String(args.name ?? "").trim();
     const a = this.agents.get(name);
     if (!a) return { ok: false, error: `no agent "${name}"` };
-    return this.despawnCore(a, caller, admin, args.graceful !== false);
+    try {
+      return await this.despawnCore(a, caller, admin, args.graceful !== false);
+    } catch (error) {
+      return { ok: false, error: rejectionText(error) };
+    }
   }
 
   /** The ONE named-terminal core both doors share: the ctl named `stop`
@@ -9424,7 +9495,13 @@ export class Manager {
    *  `trackStoppedHandle(a, !admin)` disposition. The reap line names `caller` — the AUTHENTICATED
    *  wire principal the door already resolved — so an operator reading the log can tell one peer's
    * despawn from another's. */
-  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply {
+  private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply | Promise<ControlReply> {
+    if (process.platform === "win32" && a.handle.kind === "pty") {
+      return this.stopWindowsSeat(a, graceful, trackNonAdmin, { kind: "stopped-requested", requester: caller }).then(() => {
+        void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate");
+        return { ok: true, data: { name: a.name, stopped: true, graceful } };
+      });
+    }
     this.stopHandle(a, graceful);
     this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // Cancel a live spawn goal
@@ -9465,7 +9542,7 @@ export class Manager {
       // The host's retirement closed this UID's provider handle before its barrier, so the stop only
       // reaps the slot, and its hold clears with the confirmation.
       const slot = this.agents.get(name);
-      if (slot?.lifecycleUid === target.lifecycleUid) this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
+      if (slot?.lifecycleUid === target.lifecycleUid) await this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
       // The host owns the grant and the footprint, but the secret family enrollUserAgent wrote here
       // is this participant's, and no teardown arm of a delegated seat removes it.
       const unshredded: CleanupFailure[] = [];
@@ -12143,6 +12220,7 @@ export class Manager {
         capabilities: entry.launch.capabilities,
         ...(entry.launch.endpoints?.length ? { endpoints: copyPersonaEndpoints(entry.launch.endpoints) } : {}),
         events: entry.launch.events,
+        eventPayloads: this.eventPayloadsWithheld ? false : entry.launch.eventPayloads,
         shareTools: entry.launch.shareTools,
         forkSource: entry.launch.forkSource,
         ...(entry.launch.resumed ? { resumed: entry.launch.resumed } : {}),
@@ -12584,6 +12662,7 @@ export class Manager {
     const issued = a.issued;
     const creds = await this.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
+        eventPayloads: this.eventPayloadsWithheld ? false : a.launch.eventPayloads,
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         role: a.role,

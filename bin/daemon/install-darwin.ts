@@ -18,11 +18,11 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDirNoSymlink, realDirNoSymlink } from "@cotal-ai/core";
 import { darwinLaunchdJob, type DarwinLaunchdLookup } from "@cotal-ai/seat";
-import { CommandFailure } from "@cotal-ai/workspace";
+import { CommandFailure, logicalExecutionEntry } from "@cotal-ai/workspace";
 import { assertSystemdSource, createSystemdSource } from "@cotal-ai/cli";
 import type { NativePlan, NativeRun, NativeService, UnitReceipt } from "./install.js";
 
@@ -37,14 +37,8 @@ export function launchAgentLabel(daemonHome: string | undefined): string {
   return `ai.cotal.daemon.${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}`;
 }
 
-/** XML character data: bounded, without controls or code points XML cannot carry, and escaped. */
-export function xmlText(value: string): string {
-  if (!value || value.length > 4096 || /[\u0000-\u001f\u007f]/u.test(value) || [...value].some((scalar) => {
-    const cp = scalar.codePointAt(0)!;
-    return cp >= 0xd800 && cp <= 0xdfff || cp === 0xfffe || cp === 0xffff;
-  })) throw new CommandFailure("refused", "USAGE_INVALID", "the daemon job needs bounded XML text without control or invalid Unicode characters; no job bytes were prepared");
-  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
-}
+import { xmlText } from "./install-xml.js";
+export { xmlText } from "./install-xml.js";
 
 export interface LaunchAgentInput {
   readonly label: string;
@@ -67,8 +61,9 @@ export function renderLaunchAgent(input: LaunchAgentInput): { text: string; sha2
   }
   // launchd's job dictionary omits WorkingDirectory. Carry it in the exact argument vector instead;
   // this entry changes directory before importing the CLI, including any cwd-sensitive setup.
-  // Resolve our entry from this module, not argv's CLI symlink (a global install may live in bin/).
-  const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
+  // The validated daemon argv names the logical installation, including from a retained process.
+  const logical = logicalExecutionEntry();
+  const bootstrap = logical ? join(dirname(logical), "daemon-cwd.js") : fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
   const argv = [...input.argv.slice(0, daemon - 1), bootstrap, input.workingDirectory, ...input.argv.slice(daemon)];
   const entry = (key: string, value: string) => `<key>${key}</key>${str(value)}`;
   const text = [
@@ -197,6 +192,31 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     },
     check(receipt: UnitReceipt) {
       owned(receipt);
+    },
+    isEnabled(receipt: UnitReceipt): boolean {
+      const id = uid();
+      owned(receipt);
+      const read = run(LAUNCHCTL, ["print-disabled", `gui/${id}`]);
+      if (read.status !== 0) {
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `launchd's GUI domain gui/${id} did not confirm disabled services for ${receipt.unit} (${read.detail}); nothing was started`);
+      }
+      const match = /^\s*disabled services = \{([\s\S]*)\}\s*$/.exec(read.stdout);
+      if (!match) {
+        throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `launchd's GUI domain gui/${id} returned an unparsed print-disabled block for ${receipt.unit}; nothing was started`);
+      }
+      const matches: string[] = [];
+      for (const rawLine of match[1]!.split("\n")) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const entry = /^"([^"\r\n]+)" => (true|false|disabled|enabled)$/.exec(line);
+        if (!entry) {
+          throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `launchd's GUI domain gui/${id} returned an unparsed disabled entry (${line}) while checking ${receipt.unit}; nothing was started`);
+        }
+        if (entry[1] === receipt.unit) matches.push(entry[2]!);
+      }
+      if (matches.length > 1) throw new CommandFailure("refused", "CONFLICT", `launchd returned duplicate disabled entries for ${receipt.unit}; nothing was started`);
+      const token = matches[0] ?? "false";
+      return token === "false" || token === "enabled";
     },
     start(receipt: UnitReceipt) {
       const id = uid();

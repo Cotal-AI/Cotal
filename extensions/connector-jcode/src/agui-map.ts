@@ -9,6 +9,9 @@ import {
   textMessageEnd,
   textMessageStart,
   toolCallEnd,
+  toolCallArgs,
+  toolCallResult,
+  toolResultMarker,
   toolCallStart,
   type AguiEvent,
   type RecordMapper,
@@ -167,12 +170,17 @@ export function createJcodeMapper(opts: {
               timestamp,
               ...timeMeta,
             }),
+            toolCallArgs({ toolCallId: part.id, delta: JSON.stringify(part.input ?? null), timestamp }),
           );
           return;
         }
         if (message.role === "user" && part.type === "tool_result" && typeof part.tool_use_id === "string" && part.tool_use_id.length > 0) {
           tools.delete(part.tool_use_id);
-          events.push(toolCallEnd({ toolCallId: part.tool_use_id, timestamp, ...timeMeta }));
+          events.push(
+            toolCallEnd({ toolCallId: part.tool_use_id, timestamp, ...timeMeta }),
+            toolCallResult({ messageId: observationId, toolCallId: part.tool_use_id, content: typeof part.content === "string" ? part.content : JSON.stringify(part.content ?? null), timestamp, cotal: { isError: part.is_error === true } }),
+            toolResultMarker({ toolCallId: part.tool_use_id, isError: part.is_error === true, timestamp }),
+          );
         }
       });
     }

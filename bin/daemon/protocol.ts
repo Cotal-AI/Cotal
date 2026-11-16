@@ -34,7 +34,7 @@ const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readon
   "managers-prepare-restart": { required: [], optional: [] },
   "managers-abort-restart": { required: [], optional: [] },
   spaces: { required: [], optional: ["refresh"] },
-  "login-start": { required: ["idp"], optional: ["clientId"] },
+  "login-start": { required: ["idp"], optional: ["clientId", "discoveryPins"] },
   logout: { required: ["idp"], optional: [] },
   "login-cancel": { required: ["attempt"], optional: [] },
   "connect-check": { required: ["space"], optional: [] },
@@ -66,7 +66,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "managers-abort-restart" }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "spaces"; readonly refresh?: boolean }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "status" }
-  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string }
+  | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-start"; readonly idp: string; readonly clientId?: string; readonly discoveryPins?: { url: string; issuer: string; audience: string } }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "login-cancel"; readonly attempt: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "connect-check"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "register"; readonly space: string }
@@ -299,7 +299,22 @@ export function parseRequest(line: string): ParsedRequest {
   }
   if (op === "logout") return { ok: true, request: { v, id, op, idp } };
   if (obj.clientId !== undefined && (typeof obj.clientId !== "string" || !obj.clientId.trim() || obj.clientId.length > MAX_CLIENT_ID)) return bad(id, `clientId must be a non-empty string of at most ${MAX_CLIENT_ID} characters`);
-  return { ok: true, request: { v, id, op, idp, ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
+  let discoveryPins: { url: string; issuer: string; audience: string } | undefined;
+  if (obj.discoveryPins !== undefined) {
+    const pins = obj.discoveryPins;
+    if (!pins || typeof pins !== "object" || Array.isArray(pins)) return bad(id, "discoveryPins must contain url, issuer and audience");
+    const p = pins as Record<string, unknown>;
+    if (Object.keys(p).length !== 3 || !["url", "issuer", "audience"].every(key => typeof p[key] === "string" && (p[key] as string).trim().length > 0)) return bad(id, "discoveryPins must contain only non-empty url, issuer and audience strings");
+    try {
+      for (const value of [p.url, p.issuer] as string[]) {
+        const u = new URL(value);
+        if (value !== value.trim() || u.protocol !== "https:" || u.username || u.password || value.includes("?") || value.includes("#")) throw new Error("invalid pins");
+      }
+      if (normalizeIdpUrl(p.url as string) !== idp) throw new Error("provider mismatch");
+    } catch { return bad(id, "discoveryPins must use HTTPS URLs and match idp"); }
+    discoveryPins = { url: p.url as string, issuer: p.issuer as string, audience: p.audience as string };
+  }
+  return { ok: true, request: { v, id, op, idp, ...(discoveryPins ? { discoveryPins } : {}), ...(obj.clientId !== undefined ? { clientId: obj.clientId as string } : {}) } };
 }
 
 export function encode(msg: DaemonResponse | DaemonRequest): string {

@@ -21,9 +21,11 @@ cotal setup [--destination <local|self-hosted>] [-H|--harness <connector>] [--ru
 cotal setup --skills
 ```
 
+A terminal that reports 0 columns gets the splash, questions and notes drawn for 80 columns.
+
 | Flag | Default | Meaning |
 |---|---|---|
-| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. `cloud` is refused before anything is written or contacted, and the refusal names that route: `cotal login`, then `--destination self-hosted --space <name>`. |
+| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. The flag value `cloud` is refused before anything is written or contacted, because the Cloud sign-in needs a terminal. The refusal names the scripted route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
@@ -42,8 +44,13 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 `--yes` never turns it into startup. On a terminal it asks for each input no flag gave: destination,
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
-answers kept, and Cancel saves nothing. Cloud is listed but cannot be chosen. Its hint says to sign
-in with `cotal login` and choose Self-hosted, because a Cloud space is registered here when you sign in.
+answers kept, and Cancel saves nothing.
+
+Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
+this machine, setup signs you in first: it prints the approval link and code, opens your browser,
+and waits for your approval, as `cotal login` does. With several spaces it asks which one. A space
+that no project uses yet asks for the project folder your agents work in. A space already set up in
+a project keeps that project.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
@@ -95,7 +102,7 @@ uses the registered manager's persona catalog; `--on` pins its manager instance
 through credential issuance and launch. It uploads no local persona file. Without detach,
 the terminal opens that allocated incarnation's native view. If it disappears before attachment,
 setup reports the confirmed join and an incomplete view, not a healthy attached terminal. Leaving
-the view sends no stop request.
+the view sends no stop request. The joined receipt shows the agent's id when that agent's name is missing or only whitespace.
 
 `result.startup` separates the requested self-hosted manager pin, native stack-command
 return, joined-agent receipt and any classified failure. A declined Start keeps the
@@ -134,11 +141,13 @@ stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. 
 ## update [#update]
 
 Update preferences are saved in the Cotal home. `cotal update --auto off` disables automatic
-installation and `cotal update --auto on` enables it on eligible Linux installs. Automatic
-installation is available on Linux in this release. On macOS, Windows and other platforms,
-run `cotal update --self` to install manually. Daily checks, update notices and their settings
-remain available on every platform. Bare `cotal update --auto` reports the saved setting and
-the platform limit. On Linux, enabling or reading an enabled setting also checks the daemon's
+installation and `cotal update --auto on` enables it on eligible Linux, macOS and Windows installs.
+Automatic installation is on by default and requires the machine daemon service.
+Older macOS and Windows versions need one manual `cotal update --self` before they can schedule
+updates through the new helper. Other unsupported platforms still require manual updates.
+Daily checks, update notices and their settings remain available on every platform.
+Bare `cotal update --auto` reports the saved setting and the platform limit.
+On Linux, macOS and Windows, enabling or reading an enabled setting also checks the daemon's
 schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
 An answering daemon without an active automatic schedule is reported separately, including one
 paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
@@ -146,9 +155,22 @@ the command installs and starts nothing.
 `cotal update --notify off` silences notices independently, and `--notify on` enables them.
 `COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
 
-The desktop app's bundled runtime checks for newer versions but never runs npm updates. Its notices
-point to the signed desktop installer. `cotal update --auto on` has no effect on that runtime;
-update the desktop app instead.
+On Windows, an interrupted helper in the same boot pauses automatic installation. Status and
+notices tell you to restart the computer or run `cotal update`. A successful manual update clears
+that attempt's pause. A later boot permits the existing interrupted-update recovery before another
+automatic attempt. Boot identity uses the OS-loader sequence, not the wall clock.
+
+The desktop app's bundled runtime never runs npm updates. In a configured updater build,
+**Install updates automatically** uses the same saved preference as `cotal update --auto`.
+A build without an updater key keeps its release summary, installer link and **Notify me about updates**
+control. Settings explains that this build updates through the installer. Configured macOS and Windows builds
+request the manifest again on **Check now** rather than using the automatic daily cache.
+They download and replace the installation only before a window appears, with all windows hidden,
+or after **Restart to update**. Sign-in, setup and connection operations hold that work back.
+The app relaunches after replacement, then waits for the target background service and ready
+inventories before reporting success. Linux deb/rpm builds still use the installer.
+There is no automatic rollback.
+The app does not change a separately installed command line.
 
 Interactive commands print a one-line update notice on stderr from a daily cached registry check.
 The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
@@ -235,6 +257,9 @@ recovery guidance instead of suggesting another update that would meet the same 
 
 ### Manager continuity
 
+When `update --self` finds no newer release and verifies the installed package closure is current,
+it reports that no connector reconciliation ran. It does not suggest a repair it did not observe.
+
 If an older updater refuses an answering hosted Manager as `starting`, install the fixed release
 with npm directly in the same installation prefix. For an installer-managed Unix installation,
 run `npm install -g --prefix "$HOME/.local/share/cotal" cotal-ai@<version>` using its Node runtime.
@@ -279,7 +304,16 @@ holds when every recorded mesh is down and none is selected. A remote user mesh,
 `cotal supervise` process that loaded this install may be serving its space. A supervisor whose
 command names another install's CLI entry is untouched by replacing this one, so it is no custody
 here, the same as a manager that runs on another machine. A node binary or a loader argument does
-not name that entry. A supervisor started without `--space`
+not name that entry. A supervisor under another numeric user ID counts only when an absolute
+argument resolves to this installation's CLI entry. This keeps a supervisor launched through sudo
+against the same installation in the continuity check. For the same user, a different mount
+namespace excludes an unresolved entry, but a namespace difference alone never excludes a shared
+entry. Remaining uncertainty refuses before a remote Manager is selected and names the process
+ID, numeric user ID and its stop command.
+The Linux census reads the effective user ID from kernel process status, not the ownership of its
+proc directory, which can change when a process becomes non-dumpable. A partial launch-coordinate
+read refuses rather than discarding a possible same-installation relative entry.
+A supervisor started without `--space`
 serves the space its `COTAL_SPACE` names, so a service unit's manager for another mesh does not count
 as this one's. When such a process runs here, that
 manager is read like a local one, and a `legacy` verdict's `Next` line names
@@ -304,7 +338,7 @@ way, one registration at a time. A selector flag still reports
 one manager. A manager without a
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
-for every seat. This report sends no stop, preservation-commit, or replacement command.
+for every seat. A seat whose name is missing or only whitespace is listed by its id, or as `(unnamed)` when the inventory has no id. This report sends no stop, preservation-commit, or replacement command.
 It does not preserve a running PTY on a legacy manager. The built-in pty runtime spawns
 in-process on every platform and reports `legacy`. On Linux it still adopts seats that an earlier
 manager left under a detached custodian, but it starts no new custodian. An incompatible native
@@ -313,8 +347,20 @@ manager left under a detached custodian, but it starts no new custodian. An inco
 
 ### CLI upgrade
 
-With `--self`, the selected running manager is reported before any global install. When a newer
-release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
+With `--self`, the selected running manager is reported before any global install.
+For daemon-hosted Managers whose agents cannot survive replacement, a terminal lists the agents
+and their reported idle times, then asks once whether to stop them and continue. Missing activity
+measurements are shown as unavailable. Save their work before answering yes. Use
+`cotal update --self --stop-agents` to give the same consent without a prompt. Without a terminal
+or this flag, the update refuses without stopping agents. Automatic updates always defer and name
+the blocking agents.
+
+If a previous update replaced the CLI but left first-party extensions on older versions,
+`cotal --version` and `cotal update --check` report pending reconciliation and the repair command.
+Run `cotal update --self` again to reconcile the installed generation. The same agent-consent
+checks apply even when no newer CLI is available.
+
+When a newer release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
 of its first-party runtime dependency closure through npm, using a temporary cache and no install
 scripts. Each registry request has a 15-second timeout and no retries. Missing archives or invalid
 metadata refuse before global installation or connector reconciliation, with a registry propagation
@@ -403,7 +449,8 @@ cotal join --link <url> | --token <t>
 | `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A bare join on a static mesh only, one or the other: when the session's issued credential ends. Without either it has no expiry, and it is retired when you leave. Refused with `--link`, `--token` or `--creds`, and on a user-auth or open mesh |
 
 An interactive presence: join a space under your own name and role, without launching an agent
-harness. A `--link` supplies the where and the auth in one value. See
+harness. Another participant whose name is only whitespace is shown as the id, in the roster,
+on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
@@ -491,6 +538,13 @@ When linking siblings, only a missing package directory can be skipped with a wa
 without metadata, or a dangling package link, is damaged and still refuses.
 Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
 installed copies, rather than turning them into links to their source or the built-in seed store.
+
+One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
+`ext seed` or an update does that, a command that needs a connector waits for it. After one second
+of waiting the command says so on stderr:
+`waiting for another cotal command (pid <id>) to finish changing this installation`.
+`cotal status` does not wait. It names that command, leaves the application rows unread and exits 4
+with a partial report: `another cotal command (pid <id>) is changing this installation, so the application rows were not read`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,

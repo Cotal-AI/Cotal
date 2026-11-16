@@ -12,7 +12,7 @@
  * here only map its outcome to the invocation-time code (`bad-request`, distinct from
  * registration-time `contract-invalid`).
  */
-import type { ValidateFunction } from "ajv/dist/2020.js";
+import type { ContractValidator, ContractValidationError } from "./contract-validator.js";
 import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
 import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
@@ -563,14 +563,11 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
   );
 }
 
-/** The first AJV error as refusal prose: where (`instancePath`, root as "/"), its message, and -
- *  when the keyword is `additionalProperties` - WHICH property was rejected, which AJV carries
- *  only in `params.additionalProperty`. A closed-contract refusal that does not name the key turns
- *  a caller/manager version skew into a guessing game: the operator cannot tell which key to drop
- *  or which side to upgrade. Shared by the args and output sides so the two render in lockstep. */
-function firstErrorDetail(first: { instancePath?: string; message?: string; params?: Record<string, unknown> } | undefined | null): string {
+/** Render the first structured validation failure, including an undeclared property's original
+ * name. Shared by input and output boundaries. No property is recovered by splitting a pointer. */
+function firstErrorDetail(first: ContractValidationError | undefined | null): string {
   if (!first) return "";
-  const extra = typeof first.params?.additionalProperty === "string" ? `: ${JSON.stringify(first.params.additionalProperty)}` : "";
+  const extra = typeof first.additionalProperty === "string" ? `: ${JSON.stringify(first.additionalProperty)}` : "";
   return `: ${first.instancePath || "/"} ${first.message ?? ""}${extra}`;
 }
 
@@ -587,7 +584,7 @@ function firstErrorDetail(first: { instancePath?: string; message?: string; para
  *  ({@link import("./schema-profile.js").compileContract}), which is where the COMPILE-time DoS
  *  lives - not the only place a DoS lives, see the note on `reportValidateBudget` - and where
  *  a false positive fails loudly instead of lying to a caller. */
-export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
+export function assertArgsValid(validate: ContractValidator, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
   const startedCpu = cpuNow();
   const started = Date.now();
@@ -608,7 +605,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
  *  `bad-request`. The §13.8 budget is REPORTED, not enforced, for the same reason as the args side
  *  ({@link reportValidateBudget}). A void output is `undefined`, validated as `null` against the
  *  void schema, mirroring the args side. */
-export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
+export function assertOutputValid(validate: ContractValidator, data: unknown): void {
   const value = data === undefined ? null : data;
   const startedCpu = cpuNow();
   const started = Date.now();

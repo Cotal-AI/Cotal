@@ -72,12 +72,17 @@ export function conversationKey(open: Open): string {
 export type DraftKey = string & { readonly __draftKey: unique symbol }
 export const draftKey = (space: string, open: Open) => `${space}\0${conversationKey(open)}` as DraftKey
 
+/** A name the terminal app can print. A blank name is not one, so the row uses the id. */
+export function tuiName(name: string | undefined, id: string): string {
+  return name !== undefined && name.trim() ? name : id
+}
+
 /** Where writing in a conversation goes: its channel, the peer's exact principal or its role. All
  *  traffic and catalog rows have none. Derived on every read, so a draft never follows the human to
  *  another conversation. */
 export function conversationRecipient(open: Open, mesh: Mesh): Recipient | undefined {
   if (open.kind === "channel") return open.channel === undefined ? undefined : { kind: "channel", channel: open.channel }
-  if (open.kind === "peer") return { kind: "peer", principal: open.id, name: peerOf(mesh, open.id)?.card.name ?? open.id }
+  if (open.kind === "peer") return { kind: "peer", principal: open.id, name: tuiName(peerOf(mesh, open.id)?.card.name, open.id) }
   if (open.kind === "role") return { kind: "role", role: open.role }
   return undefined
 }

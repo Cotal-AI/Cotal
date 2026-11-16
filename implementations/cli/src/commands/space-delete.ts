@@ -20,6 +20,11 @@ import { verdictSection } from "../lib/verdict.js";
 
 interface DeletionStream { name: string; kind: "stream" | "bucket" | "object-store"; state: "present" | "absent"; messages: number | null }
 interface PresenceImpact { id: string; name: string | null; status: string | null; lastHeartbeat: number | null }
+
+/** The name a presence row shows. A missing or whitespace-only name is the principal. */
+export function spacePresenceLabel(name: string | null, id: string): string {
+  return typeof name === "string" && name.trim() ? name : id;
+}
 /** A workflow run the delete removes. `state` is its recorded status, `no status recorded` when it
  *  has none, or `unreadable`. */
 interface DeletionRun { runId: string; endpoint: string; state: string }
@@ -206,7 +211,7 @@ function previewView(data: Awaited<ReturnType<typeof readSpaceDeletion>>["result
     { title: "Live space impact", blocks: [{ kind: "fields", rows: [["Space", data.space], ["Recorded broker", data.recordedBroker ?? "not displayable"], ["Mode", data.recordedMode], ["TLS", data.recordedTlsRequired ? "required" : "not required"], ["Broker server ID", data.serverId], ["Identity", data.identity], ["Observed at", data.observedAt], ["Presence entries", String(data.presences.length)]] }, { kind: "lines", lines: ["Native reads were not atomic. Presence records are observations, not liveness or membership authority."] }] },
     { title: "First-party streams and buckets", blocks: [{ kind: "table", columns: [{ key: "name", label: "Name" }, { key: "kind", label: "Kind" }, { key: "state", label: "State" }, { key: "messages", label: "Messages" }], rows: data.streams.slice(0, 100).map((stream) => ({ name: stream.name, kind: stream.kind, state: stream.state, messages: stream.messages === null ? "-" : String(stream.messages) })) }, ...(data.streams.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${data.streams.length} targets; --json retains every row.`] }] : [])] },
     ...(data.runs.unfinished.length ? [{ title: "Workflow runs that have not finished", blocks: runBlocks(data.runs.unfinished, false) }] : []),
-    { title: "Presence entries", blocks: [{ kind: "table", columns: [{ key: "id", label: "Principal" }, { key: "name", label: "Name" }, { key: "status", label: "Reported status" }, { key: "ts", label: "Heartbeat (epoch ms)" }], rows: data.presences.slice(0, 100).map((peer) => ({ id: peer.id, name: peer.name ?? "-", status: peer.status ?? "-", ts: peer.lastHeartbeat === null ? "-" : String(peer.lastHeartbeat) })) }, ...(data.presences.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${data.presences.length} entries; --json retains every row.`] }] : []), { kind: "lines", lines: ["This preview deleted nothing. A separate apply rechecks the native target and requires confirmation."] }] },
+    { title: "Presence entries", blocks: [{ kind: "table", columns: [{ key: "id", label: "Principal" }, { key: "name", label: "Name" }, { key: "status", label: "Reported status" }, { key: "ts", label: "Heartbeat (epoch ms)" }], rows: data.presences.slice(0, 100).map((peer) => ({ id: peer.id, name: spacePresenceLabel(peer.name, peer.id), status: peer.status ?? "-", ts: peer.lastHeartbeat === null ? "-" : String(peer.lastHeartbeat) })) }, ...(data.presences.length > 100 ? [{ kind: "lines" as const, lines: [`Showing 100 of ${data.presences.length} entries; --json retains every row.`] }] : []), { kind: "lines", lines: ["This preview deleted nothing. A separate apply rechecks the native target and requires confirmation."] }] },
   ] };
 }
 

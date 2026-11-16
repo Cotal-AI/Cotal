@@ -1,6 +1,9 @@
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export type Request = { op: string; space?: string; idp?: string; refresh?: boolean; enabled?: boolean; name?: string; auto?: boolean; notify?: boolean; version?: string };
-export const COTAL_CLOUD_IDP = "https://cloud.cotal.ai/api/auth";
+export const COTAL_CLOUD_IDP = "https://cotal.cloud/api/auth";
+export function isCotalCloudIdp(provider: string | undefined): boolean {
+  return provider === COTAL_CLOUD_IDP || provider === "https://cloud.cotal.ai/api/auth";
+}
 export interface SetupProgress { step: "install" | "sign-in" | "discover" | "manager" | "applications" | "register" | "connect"; outcome: string; detail: string; applications?: readonly string[] }
 export interface Frame { v: 1; event: "result" | "login-prompt" | "setup-progress"; progress?: SetupProgress; line?: string; ok?: boolean; result?: Record<string, unknown>; prompt?: Record<string, unknown>; error?: { code: string; message: string; remedy?: string; native?: { code: string } }; code?: string; message?: string }
 
@@ -21,15 +24,57 @@ export function machinesUrl(provider: string, spaceId: string, instanceId: strin
 }
 
 export interface ComputerSpace { space: string; desired: boolean; observed: string; lastRefusal?: string }
+/** States a space passes through without anyone acting. A space that was just turned on reports `not-requested` while its Manager boots. */
+const PASSING_SPACE_STATE: Record<string, string> = {
+  "not-requested": "Starting",
+  connecting: "Starting",
+  starting: "Starting",
+  restarting: "Starting",
+  stopping: "Stopping",
+};
+/** States a space stays in until someone acts. */
+const SETTLED_SPACE_STATE: Record<string, string> = {
+  refused: "Refused",
+  ended: "Ended by the space",
+  conflict: "Registration conflict",
+  "credential-expired": "Credential expired",
+  "credential-not-yet-valid": "Credential not yet valid",
+  disconnected: "Disconnected",
+  unavailable: "Unreachable",
+  "local-state-error": "Local records unusable",
+  "account-mismatch": "Account mismatch",
+  "not-signed-in": "Not signed in",
+  "not-registered": "Not registered on this computer",
+  unsupported: "Unsupported by this space",
+  stopped: "Stopped",
+};
+const OWN_SPACE_STATE = ["connected", "approval-pending", "removed on this computer"];
+/** Whether this app has decided what to show for a state the daemon reports. */
+export function spaceStateKnown(observed: string): boolean {
+  return OWN_SPACE_STATE.includes(observed) || Object.hasOwn(PASSING_SPACE_STATE, observed) || Object.hasOwn(SETTLED_SPACE_STATE, observed);
+}
 export function computerSpaceState(row: ComputerSpace, ready = false): string {
   if (row.lastRefusal) return row.lastRefusal;
   if (row.observed === "connected") return ready ? "Connected" : "Starting";
   if (row.observed === "approval-pending") return "Waiting for owner approval";
   if (row.observed === "removed on this computer") return "Removed on this computer";
-  return "Starting";
+  return SETTLED_SPACE_STATE[row.observed] ?? PASSING_SPACE_STATE[row.observed] ?? "Starting";
+}
+export type ComputerSummary = "connected" | "attention" | "starting" | "idle";
+/** One answer for the window title and the tray, so the two cannot disagree. */
+export function computerSummary(rows: readonly ComputerSpace[], anyConnected: boolean): ComputerSummary {
+  if (anyConnected) return "connected";
+  if (rows.some(row => Boolean(row.lastRefusal) || Object.hasOwn(SETTLED_SPACE_STATE, row.observed))) return "attention";
+  if (rows.some(row => row.desired && row.observed !== "removed on this computer")) return "starting";
+  return "idle";
 }
 export function computerSpaces(account: { spaces: ComputerSpace[] }): ComputerSpace[] {
   return account.spaces.filter(row => row.desired || row.observed === "connected" || row.observed === "removed on this computer");
+}
+
+export function statusPollDelayMs(hidden: boolean, hostSupport: string | undefined): number {
+  if (hidden) return 60_000;
+  return hostSupport === "supported" ? 1000 : 10_000;
 }
 
 export function canonicalProvider(value: string): string {
@@ -40,6 +85,14 @@ export function canonicalProvider(value: string): string {
 }
 
 export interface ComputerAccount { idpUrl?: string; sub?: string; label?: string; mode: string; hostSupport: string; spaces: ComputerSpace[] }
+
+/** The name the settings account line shows beside the host. A missing or whitespace-only label is not
+ *  one, so the line uses the subject. Both blank leaves the host by itself. */
+export function shownAccountLabel(label: string | undefined, sub: string | undefined): string | undefined {
+  if (label && label.trim()) return label;
+  if (sub && sub.trim()) return sub;
+  return undefined;
+}
 export function activeComputerAccount(account: ComputerAccount & { accounts?: ComputerAccount[] } | undefined, provider?: string): ComputerAccount | undefined {
   if (!account?.accounts) return account;
   if (provider) return account.accounts.find(item => item.idpUrl !== undefined && canonicalProvider(item.idpUrl) === canonicalProvider(provider));
@@ -74,6 +127,16 @@ export function keptCredentialsNotice(result: Record<string, unknown>): string {
 
 export interface AccountSpace { space: string; label: string; catalogId?: string; kind?: string; role?: string }
 
+/** The name a space row shows. A missing or whitespace-only label is not one, so the row uses the space id. */
+export function shownSpaceLabel(label: string | undefined, space: string): string {
+  return label && label.trim() ? label : space;
+}
+
+/** The kind chip beside a space. A missing or whitespace-only kind is not one, so the chip says Space. */
+export function shownSpaceKind(kind: string | undefined): string {
+  return kind && kind.trim() ? kind : "Space";
+}
+
 /** Discovery selects a target, but never grants consent to connect. */
 export function initialSpace(spaces: readonly AccountSpace[], requested?: string): string | undefined {
   const linked = requested && spaces.find(item => item.space === requested || item.catalogId === requested);
@@ -94,7 +157,7 @@ export function connectionView(state: string): { title: string; description: str
   }
 }
 
-export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces"; label: string }
+export interface RefusalView { title: string; description: string; action: "login" | "connect" | "refresh" | "spaces" | "install"; label: string }
 export function refusalView(code: string, applications: readonly string[] = []): RefusalView {
   switch (code) {
     case "NO_AVAILABLE_CONNECTOR": return { title: "No agent application found", description: `Install ${applications.length ? new Intl.ListFormat("en", { type: "disjunction" }).format(applications) : "a supported agent application"}. Make sure it opens in your login terminal, then check again.`, action: "connect", label: "Check again" };
@@ -102,7 +165,10 @@ export function refusalView(code: string, applications: readonly string[] = []):
     case "DENIED": return { title: "Sign-in was declined", description: "This computer was not approved in your browser. You can try again when you are ready.", action: "login", label: "Try sign-in again" };
     case "EXPIRED": return { title: "Your code has expired", description: "This code can no longer approve your sign-in. Get a new code to continue in your browser.", action: "login", label: "Get a new code" };
     case "CREDENTIAL_EXPIRED": return { title: "Sign in again", description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.", action: "login", label: "Sign in again" };
-    case "NOT_ANSWERING": case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
+    case "SETUP_INTERRUPTED": return { title: "Setup was interrupted", description: "Run the installer again to finish updating Cotal.", action: "refresh", label: "Check again" };
+    case "NOT_RUNNING": return { title: "The background service is not running", description: "Start it again to continue.", action: "install", label: "Start service" };
+    case "NOT_ANSWERING": return { title: "The background service has not started", description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.", action: "refresh", label: "Check status" };
+    case "UNREACHABLE": return { title: "We cannot reach your connection", description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.", action: "refresh", label: "Try again" };
     case "NO_SPACES": return { title: "No spaces in this account", description: "Create a space in your Cotal host’s dashboard, or ask a space owner for access. Then refresh your spaces to continue.", action: "spaces", label: "Refresh spaces" };
     case "APPROVAL_PENDING": return { title: "Waiting for owner approval", description: "The space owner needs to approve this computer. Ask them to review the request, then check its status.", action: "refresh", label: "Check approval" };
     case "VERSION_MISMATCH": return { title: "Your connection needs an update", description: "This app and the background service have different versions. Update the connection when no agent sessions are running.", action: "connect", label: "Update connection" };

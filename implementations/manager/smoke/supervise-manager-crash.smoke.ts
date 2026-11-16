@@ -33,17 +33,20 @@ import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
 // always reaches its completion line.
 const CELLS = [
   "the first manager starts a supervised seat and records it with no restart counted",
-  "the supervised pty owns one seat process before the manager crash",
+  "the supervised ptys own two seat processes before the manager crash",
   "a turn is accepted against the supervised seat",
   "the successor is the same logical manager instance",
   "the successor restarts the supervised seat as one restart of its policy",
-  "the restarted pty has one replacement process and no surviving predecessor",
+  "the restarted ptys have two replacement processes and no surviving predecessor",
   "the restarted seat heartbeats under the same principal and lifecycle uid after the crash",
   "the restarted incarnation pulls the turn the dead manager accepted",
   "the restarted incarnation yields that turn",
   "the record counts the manager crash against the policy",
   "a crash past the budget retires the seat instead of restarting it",
   "the spent record is removed",
+  "both payload choices are recorded before the crash",
+  "both payload choices survive the manager restart and reach the connector",
+  "the withheld seat also retires after its restart budget is spent",
 ];
 let pass = 0, fail = 0;
 const graded = new Set<string>();
@@ -77,6 +80,7 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN)); const root = join(d
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true }); saveSpaceAuth(authDir(root), auth);
 // No role: the suite's spawner holds no issued evidence, so it hands on no role (SPEC 13.15).
 writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n");
+writeFileSync(join(root, ".cotal", "agents", "withheld.md"), "---\nname: withheld\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\n");
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" }); const releaseBroker = teardownOnSignal(broker, dir);
 let daemon: DeliveryDaemon | undefined; const managers: ChildProcess[] = [];
@@ -127,6 +131,9 @@ try {
       ...(opts.target ? { target: { mode: "owner" as const, owner: DEV_OWNER, actor: opts.target.actor, lifecycleUid: opts.target.lifecycleUid } } : {}),
     }, { deadlineMs: 20_000, currentEpoch: async () => 0 }).then((r) => r.reply, asValue);
   const spawned = await call("spawn", { name: "worker", agent: "supervise-crash-stub", cwd: repo, events: false, supervise: { restarts: 1, windowMs: 600_000 } }, { id: "spawn-worker".padEnd(43, "s") });
+  const withheldSpawn = await call("spawn", { name: "withheld", agent: "supervise-crash-stub", cwd: repo, events: false, eventPayloads: false, supervise: { restarts: 1, windowMs: 600_000 } }, { id: "spawn-withheld".padEnd(43, "s") });
+  await until(() => readSeatRecord(root, space, "withheld") !== undefined, 60_000);
+  const withheldBefore = readSeatRecord(root, space, "withheld");
   // The record is written once the seat is ready and armed, so it is the readiness signal here.
   let before: ReturnType<typeof readSeatRecord>;
   await until(() => (before = readSeatRecord(root, space, "worker")) !== undefined, 60_000);
@@ -138,8 +145,11 @@ try {
   const uid = identity?.lifecycleUid ?? "";
   const acceptedToken = identity?.mode === "static" ? identity.issued?.acceptedToken ?? "" : "";
   const principal = principalKey(DEV_OWNER, actor).key;
+  check("both payload choices are recorded before the crash",
+    (withheldSpawn as { ok?: boolean }).ok === true && before?.agent.launch.eventPayloads === true && withheldBefore?.agent.launch.eventPayloads === false,
+    { before, withheldBefore, withheldSpawn });
   const beforePids = seatPids();
-  check("the supervised pty owns one seat process before the manager crash", beforePids.length === 1, beforePids);
+  check("the supervised ptys own two seat processes before the manager crash", beforePids.length === 2, beforePids);
 
   const goalId = "crash-turn".padEnd(43, "c");
   const accepted = await call("turn", { payload: JSON.stringify({ run: "r1", step: "turn:worker", context: "do the thing" }), deadlineMs: 600_000 }, { id: goalId, target: { actor, lifecycleUid: uid } });
@@ -154,9 +164,20 @@ try {
   let afterPids: number[] = [];
   const oneReplacement = await until(() => {
     afterPids = seatPids();
-    return afterPids.length === 1 && !beforePids.includes(afterPids[0]!);
+    return afterPids.length === 2 && afterPids.every((pid) => !beforePids.includes(pid));
   }, 10_000);
-  check("the restarted pty has one replacement process and no surviving predecessor", oneReplacement, { beforePids, afterPids });
+  check("the restarted ptys have two replacement processes and no surviving predecessor", oneReplacement, { beforePids, afterPids });
+
+  await until(() => successor.stderr().includes("withheld: restarted under the same lifecycle after its manager stopped (1/1)"), 90_000);
+  const withheldAfter = readSeatRecord(root, space, "withheld");
+  const launches = readFileSync(join(root, "payload-launches.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as { name: string; eventPayloads?: boolean });
+  check("both payload choices survive the manager restart and reach the connector",
+    readSeatRecord(root, space, "worker")?.agent.launch.eventPayloads === true && withheldAfter?.agent.launch.eventPayloads === false &&
+    withheldAfter.agent.identity.lifecycleUid === withheldBefore?.agent.identity.lifecycleUid &&
+    ["worker", "withheld"].every((name) => {
+      const calls = launches.filter((launch) => launch.name === name);
+      return calls.length >= 2 && calls.every((launch) => launch.eventPayloads === (name === "worker"));
+    }), { withheldBefore, withheldAfter, launches });
 
   const watcherId = newIdentity();
   const watcher = new CotalEndpoint({ space, servers, creds: await mintCreds(auth, watcherId, "observer"), card: { id: watcherId.id, name: "watcher", role: "observer", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: true, watchChannels: false });
@@ -199,6 +220,8 @@ try {
   check("a crash past the budget retires the seat instead of restarting it", retired, third.stderr().slice(-3000));
   const removed = await until(() => !existsSync(join(root, ".cotal", "seat-records", space, "worker.json")), 30_000);
   check("the spent record is removed", removed);
+  const withheldRetired = await until(() => /withheld: the supervised seat its previous manager left was not restarted \(its supervise restart budget is spent/.test(third.stderr()) && !existsSync(join(root, ".cotal", "seat-records", space, "withheld.json")), 90_000);
+  check("the withheld seat also retires after its restart budget is spent", withheldRetired, third.stderr().slice(-3000));
 
 } catch (error) {
   for (const name of CELLS) if (!graded.has(name)) check(name, false, `not reached: ${(error as Error).message}`);

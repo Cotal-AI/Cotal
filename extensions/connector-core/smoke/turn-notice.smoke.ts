@@ -128,10 +128,13 @@ const seatCon: Connector = {
 };
 registry.register(seatCon);
 // The pty runtime would own a terminal; these seats only need stdout, so a pipe runtime spawns them.
+// It declares that it streams no terminal: the spawn goal's terminal carries that flag, and an
+// undefined one is not JSON the goal can commit.
 registry.register({
   kind: "runtime", name: "pipe", available: () => true,
   create: () => ({
     kind: "pipe",
+    streamsTerminal: false,
     spawn(name: string, spec: LaunchSpec, cwd: string) {
       const child = spawnProcess(spec.command, spec.args, { cwd, env: spec.env, stdio: ["ignore", "pipe", "pipe"] });
       procs.push(child);
@@ -219,12 +222,14 @@ try {
   };
 
   console.log("0. the manager spawns two seats; each is a real MeshAgent on its minted credential");
+  const spawns: Record<string, unknown> = {};
   for (const name of ["seata", "seatb"]) {
     const goal = `spawn-${name}`.padEnd(43, "s");
     const r = await call("spawn", { name, agent: "turn-seat", cwd: repoRoot, events: false }, { id: goal });
     const fact = await resultOf(goal, 60_000);
-    if ((r as { ok?: boolean }).ok !== true || fact?.state !== "succeeded") console.log(`    spawn ${name}: ${JSON.stringify({ r, fact }).slice(0, 600)}`);
+    if ((r as { ok?: boolean }).ok !== true || fact?.state !== "succeeded") spawns[name] = { r, fact };
   }
+  check("both spawn goals committed succeeded", Object.keys(spawns).length === 0, spawns);
   const armed = await until(() => eventOf("seata", "armed") !== undefined && eventOf("seatb", "armed") !== undefined, 30_000);
   check("both seats started and armed their turn relay", armed, Object.fromEntries(events));
   const seatA = M.agents.get("seata")!, seatB = M.agents.get("seatb")!;
@@ -344,7 +349,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 16;
+const EXPECTED_CELLS = 17;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "TURN NOTICE SMOKE OK ✅" : "TURN NOTICE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

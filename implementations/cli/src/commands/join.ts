@@ -35,6 +35,12 @@ import { withProvisioner } from "../lib/provisioner.js";
 import { resolveSpace } from "../lib/status.js";
 import { activityDetail, c, presenceDetail, statusBadge, stderrLine } from "../ui.js";
 
+/** The name a join line shows for another participant. A blank name is not one, so the line uses the id. */
+export function joinPeerLabel(card: { name: string; id?: string; role?: string }): string {
+  const name = card.name.trim() ? card.name : card.id ?? card.name;
+  return peerLabel({ name, ...(card.role ? { role: card.role } : {}) });
+}
+
 // The plan's stale-cred fail-fast gate: an unprovisioned / auth-rejected join is ONE classified
 // refusal instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
 // BEFORE ep.start) and ep.start itself. Known TLS negotiation refusal is classified here too.
@@ -343,7 +349,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
     }
   };
 
-  const who = (card: { name: string; role?: string }) => c.bold(peerLabel(card));
+  const who = (card: { name: string; id?: string; role?: string }) => c.bold(joinPeerLabel(card));
 
   // A post on a durable channel reaches this session twice under one id: once on the live channel
   // subscription and once from the Plane-3 backstop. SPEC §4 makes the receiver deduplicate by id,
@@ -525,13 +531,14 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
             if (!peer) print(c.red(`no peer named "${target}" present`));
             else {
               await ep.unicast(peer.card.id, text);
-              print(`${c.magenta("(DM)")} ${c.dim("you →")} ${c.bold(peer.card.name)}: ${text}`);
-              if (peer.status === "offline") print(c.yellow(offlineRecipientNotice(peer.card.name)));
+              const label = joinPeerLabel({ name: peer.card.name, id: peer.card.id });
+              print(`${c.magenta("(DM)")} ${c.dim("you →")} ${c.bold(label)}: ${text}`);
+              if (peer.status === "offline") print(c.yellow(offlineRecipientNotice(label)));
             }
           } catch (e) {
             if (!(e instanceof AmbiguousPeerError)) throw e;
             print(c.red(`"${target}" is ambiguous - DM by instance id:`));
-            for (const cand of e.candidates) print(c.dim(`  ${cand.name} (${cand.status})  ${cand.id}`));
+            for (const cand of e.candidates) print(c.dim(`  ${joinPeerLabel({ name: cand.name, id: cand.id })} (${cand.status})  ${cand.id}`));
           }
         }
       } else if (line.startsWith("/anycast ")) {

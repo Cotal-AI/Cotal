@@ -1,6 +1,49 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice } from "../src/model.ts";
+import { COTAL_CLOUD_IDP, isCotalCloudIdp, initialSpace, approvalUrl, connectionView, refusalView, requireResult, onboardingLink, launchReady, machinesUrl, keptCredentialsNotice, shownSpaceLabel, shownSpaceKind, shownAccountLabel, statusPollDelayMs } from "../src/model.ts";
+
+test("a blank space label is the space id and a label with a character stays", () => {
+  assert.equal(shownSpaceLabel(" ", "team"), "team");
+  assert.equal(shownSpaceLabel("", "team"), "team");
+  assert.equal(shownSpaceLabel("\n", "team"), "team");
+  assert.equal(shownSpaceLabel(undefined, "team"), "team");
+  assert.equal(shownSpaceLabel(" ada", "team"), " ada");
+  assert.equal(shownSpaceLabel("My team", "team"), "My team");
+  assert.equal(shownSpaceKind(" "), "Space");
+  assert.equal(shownSpaceKind(""), "Space");
+  assert.equal(shownSpaceKind("\n"), "Space");
+  assert.equal(shownSpaceKind(undefined), "Space");
+  assert.equal(shownSpaceKind(" ada"), " ada");
+  assert.equal(shownSpaceKind("team"), "team");
+});
+
+test("a blank account label is the subject and a label with a character stays", () => {
+  assert.equal(shownAccountLabel(" ", "user-1"), "user-1");
+  assert.equal(shownAccountLabel("", "user-1"), "user-1");
+  assert.equal(shownAccountLabel("\n", "user-1"), "user-1");
+  assert.equal(shownAccountLabel(undefined, "user-1"), "user-1");
+  assert.equal(shownAccountLabel(" ", " "), undefined);
+  assert.equal(shownAccountLabel(" ada", "user-1"), " ada");
+  assert.equal(shownAccountLabel("Ada", "user-1"), "Ada");
+});
+
+test("status poll delay uses 60 s while hidden and 1 s or 10 s while visible", () => {
+  assert.equal(statusPollDelayMs(false, "supported"), 1000);
+  for (const hostSupport of ["unsupported", "unknown", undefined]) {
+    assert.equal(statusPollDelayMs(false, hostSupport), 10_000);
+  }
+  for (const hostSupport of ["supported", "unsupported", "unknown", undefined]) {
+    assert.equal(statusPollDelayMs(true, hostSupport), 60_000);
+  }
+});
+
+test("Cloud identity recognizes only the canonical and legacy auth URLs", () => {
+  assert.equal(isCotalCloudIdp(COTAL_CLOUD_IDP), true);
+  assert.equal(isCotalCloudIdp("https://cloud.cotal.ai/api/auth"), true);
+  for (const provider of [undefined, "https://cotal.cloud/other", "https://cloud.cotal.ai/other", "http://cotal.cloud/api/auth", "https://cotal.cloud.evil.test/api/auth", "https://example.com/api/auth"]) {
+    assert.equal(isCotalCloudIdp(provider), false);
+  }
+});
 
 test("account targeting prefers the link, personal space, only space, then asks", () => {
   const personal = { space: "mine", catalogId: "sp_mine", label: "Mine", kind: "personal" };
@@ -84,6 +127,24 @@ test("expired credentials and pending approval refusals map to their recovery ac
     description: "Your saved sign-in has expired. Approve this computer in your browser to reconnect.",
     action: "login",
     label: "Sign in again",
+  });
+  assert.deepEqual(refusalView("NOT_RUNNING"), {
+    title: "The background service is not running",
+    description: "Start it again to continue.",
+    action: "install",
+    label: "Start service",
+  });
+  assert.deepEqual(refusalView("NOT_ANSWERING"), {
+    title: "The background service has not started",
+    description: "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.",
+    action: "refresh",
+    label: "Check status",
+  });
+  assert.deepEqual(refusalView("UNREACHABLE"), {
+    title: "We cannot reach your connection",
+    description: "The host or background service is not answering. Check your network and the exact next step in Details, then try again.",
+    action: "refresh",
+    label: "Try again",
   });
   assert.deepEqual(refusalView("APPROVAL_PENDING"), {
     title: "Waiting for owner approval",

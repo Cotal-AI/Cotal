@@ -102,6 +102,8 @@ jobs:
         run: pnpm smoke:docs
       - name: Unit tests
         run: pnpm test
+      - name: Upgrade matrix planning and evidence guards
+        run: pnpm smoke:upgrade-matrix
       - name: Validator lock acquisition source controls
         run: node --test --test-reporter=tap --test-concurrency=1 scripts/ci-validator-lock-acquisition.test.mjs
       - name: Remaining schema direct-engine diagnostic

@@ -334,7 +334,7 @@ const messagesSeed = (): Partial<DashboardState> => ({
   };
   same("3.5 Profile says whether the agent publishes work events: published for on, not published for off, not reported when the card is silent",
     [await workEvents("on"), await workEvents("off"), await workEvents()],
-    [["Published. Tool names, status and times only.", ""], ["Not published", ""], ["not reported", "ui-nr"]]);
+    [["Published. Tool inputs and results appear when payload access is permitted.", ""], ["Not published", ""], ["not reported", "ui-nr"]]);
 }
 {
   const { root, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session() } }, { tab: "profile" });

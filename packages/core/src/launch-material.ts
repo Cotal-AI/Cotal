@@ -71,6 +71,8 @@ export type LaunchMaterial = {
   controlToken?: string;
   /** The selected registration requires this session's structured event plane. */
   eventsRequired?: boolean;
+  /** Trusted decision to withhold tool payloads while retaining status events. */
+  eventPayloadsWithheld?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
   userAuth?: UserAuthLaunch;
 };
@@ -167,6 +169,10 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
     if (raw.eventsRequired !== true)
       throw new Error(`launch material: ${path} has eventsRequired that is not exactly true`);
     material.eventsRequired = true;
+  }
+  if (raw.eventPayloadsWithheld !== undefined) {
+    if (raw.eventPayloadsWithheld !== true) throw new Error(`launch material: ${path} has eventPayloadsWithheld that is not true`);
+    material.eventPayloadsWithheld = true;
   }
   if (raw.userAuth !== undefined) {
     const u = raw.userAuth;

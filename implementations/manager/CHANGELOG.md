@@ -1,5 +1,203 @@
 # @cotal-ai/manager
 
+## 0.164.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/seat@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/seat@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- e433bee: Reconcile installed extensions automatically after a manual `npm install -g` upgrade. When automatic updates are on, the background service's scheduled check finishes any pending extension reconciliation even when the CLI is already at the latest release, and the CLI launch gate brings operator-installed official extensions current alongside the built-in connectors or refuses with `cotal update --self` if it cannot.
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+  - @cotal-ai/seat@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/seat@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+  - @cotal-ai/seat@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- e2c838e: Stop Windows `pty` seats even when they have not written to their terminal. On Windows, stopping a `pty` seat now pins the launched root process, snapshots and pins its descendant process tree before cooperative shutdown grace, terminates any surviving members through their retained process handles after grace, and frees the seat only after every captured process and the PTY have exited.
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/seat@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/seat@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/seat@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/seat@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/seat@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+  - @cotal-ai/seat@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- 1c18181: Keep remote Manager registrations protected while their registration executor is connected.
+  
+  Host reconciliation now requires complete liveness evidence that both the target's serving principal and its separate registration executor are gone before changing its credential family or reopening its gate. The executor identity comes from the target gate, including for cross-owner recovery. Abandoned registrations remain recoverable, and incomplete evidence refuses recovery.
+- ddf8ced: Make strict package-manager installations load all required runtime dependencies.
+  
+  Declare the delivery transport and Manager console codec as production dependencies. Check every published package's built JavaScript for undeclared runtime imports in the existing dependency census.
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+  - @cotal-ai/seat@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+  - @cotal-ai/seat@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/seat@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+  - @cotal-ai/seat@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- 31efd24: `cotal down` stops a process-bound seat gracefully, and a jcode seat signals its private daemon before the rest of its shutdown. A hard kill left that daemon running after the seat's terminal process was gone.
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/seat@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+  - @cotal-ai/seat@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- 30c1f57: A participant whose name is blank is shown by its id. This covers `cotal watch`, `who`, `endpoints`, `channel members`, `join`, `chat`, the console, the compose target and palette, the terminal UI, the dashboard badge, the connector roster, orientation and inbox, a Hermes injected turn, the offline notice, the ambiguous-name error and the pending delivery label. A blank name used to print as nothing or as a line break. The same now holds for a pi mention, a once-task spawner, space delete, a DM recipient in chat, the Manager list, a legacy seat, the attach picker, the preserve refusal, teardown, the join receipt, the console agent and confirm lines, a spawn result, an anycast take or DM result, a pane label in the Manager's browser console, and the principals `cotal chat --plain` names for a shared display name.
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+  - @cotal-ai/seat@0.164.1
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+  - @cotal-ai/seat@0.164.0
+
 ## 0.163.5
 
 ### Patch Changes

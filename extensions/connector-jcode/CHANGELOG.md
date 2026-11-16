@@ -1,5 +1,93 @@
 # @cotal-ai/connector-jcode
 
+## 0.164.18
+
+No changes in this release.
+
+## 0.164.17
+
+No changes in this release.
+
+## 0.164.16
+
+No changes in this release.
+
+## 0.164.15
+
+No changes in this release.
+
+## 0.164.14
+
+No changes in this release.
+
+## 0.164.13
+
+No changes in this release.
+
+## 0.164.12
+
+No changes in this release.
+
+## 0.164.11
+
+No changes in this release.
+
+## 0.164.10
+
+No changes in this release.
+
+## 0.164.9
+
+No changes in this release.
+
+## 0.164.8
+
+No changes in this release.
+
+## 0.164.7
+
+### Patch Changes
+
+- ad8d996: Jcode seats launched from a source checkout can finish graceful shutdown without a wrapper killing the host.
+  
+  Source launches load TypeScript directly in Node instead of using the tsx command-line signal forwarder. Published compiled-host launches are unchanged.
+
+## 0.164.6
+
+No changes in this release.
+
+## 0.164.5
+
+No changes in this release.
+
+## 0.164.4
+
+No changes in this release.
+
+## 0.164.3
+
+### Patch Changes
+
+- 31efd24: `cotal down` stops a process-bound seat gracefully, and a jcode seat signals its private daemon before the rest of its shutdown. A hard kill left that daemon running after the seat's terminal process was gone.
+
+## 0.164.2
+
+No changes in this release.
+
+## 0.164.1
+
+No changes in this release.
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
 ## 0.163.5
 
 No changes in this release.

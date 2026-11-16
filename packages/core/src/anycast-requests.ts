@@ -133,12 +133,24 @@ function holderOf(t: AnycastHolderRef): AnycastHolderRef {
   return { id: t.id, name: t.name };
 }
 
+/** The name a take notice shows. A missing or whitespace-only name is the holder's id. */
+function shownHolderName(name: string, id: string): string {
+  const ident = id.trim() ? id : "(unnamed)";
+  return name.trim() ? name : ident;
+}
+
+/** A holder as the notice prints it. A real name stays in front of the id. */
+function holderText(h: AnycastHolderRef): string {
+  const ident = h.id.trim() ? h.id : "(unnamed)";
+  return h.name.trim() ? `${h.name} (${ident})` : ident;
+}
+
 function noticeEvent(row: AnycastRecord, notice: AnycastNotice): OutboxEvent {
   const { taker, previous, role, seq } = notice;
   const text = notice.event === "taken"
-    ? `${taker.name} (${taker.id}) took your @${role} request (seq ${seq}).`
-    : `${previous!.name} (${previous!.id}) did not confirm your @${role} request (seq ${seq}) before its ack wait ran out, ` +
-      `and ${taker.name} (${taker.id}) took it. ${previous!.name} may already have started it.`;
+    ? `${holderText(taker)} took your @${role} request (seq ${seq}).`
+    : `${holderText(previous!)} did not confirm your @${role} request (seq ${seq}) before its ack wait ran out, ` +
+      `and ${holderText(taker)} took it. ${shownHolderName(previous!.name, previous!.id)} may already have started it.`;
   return { key: `anycast.${anycastRecordKey(row.epoch, row.seq).slice(2)}.${row.rev}`, text, notice };
 }
 
@@ -175,7 +187,7 @@ export function decideTake(
     return { reply: { ok: true }, next };
   }
   return {
-    reply: { ok: false, code: "taken", error: `request seq ${t.seq} was taken by ${current.name} (${current.id}) on delivery ${current.count}` },
+    reply: { ok: false, code: "taken", error: `request seq ${t.seq} was taken by ${holderText(current)} on delivery ${current.count}` },
   };
 }
 

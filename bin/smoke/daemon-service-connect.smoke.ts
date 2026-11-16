@@ -2826,6 +2826,97 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--update-stop-agents-repro")) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const caller = { versionSkew: (text: string) => text, roster: async () => [] };
+          const pin = { instanceId: manager.instanceId };
+          const started = await askManager(caller, ON, target.server, "start", { name: "idle_update_seat", agent: "daemon-smoke", events: false, persona: { prompt: "Owned updater regression, no model.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, pin);
+          assert.equal(started.ok, true, started.error);
+          let updateLatest = "0.164.1";
+          const metadata = createHttpServer(async (req, res) => {
+            if (req.url?.endsWith(".tgz")) {
+              const upstream = await fetch(`https://registry.npmjs.org${req.url}`);
+              res.writeHead(upstream.status); res.end(Buffer.from(await upstream.arrayBuffer())); return;
+            }
+            res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: updateLatest }, versions: { [updateLatest]: { name: "cotal-ai", version: updateLatest } } }));
+          });
+          await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+          try {
+            const updating = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+            let text = "";
+            updating.stdout.on("data", chunk => { text += String(chunk); });
+            updating.stderr.on("data", chunk => { text += String(chunk); });
+            const code = await new Promise<number | null>(resolve => updating.once("close", resolve));
+            console.log("UPDATE_STOP_AGENTS baseline", JSON.stringify({ code, text }));
+            assert.notEqual(code, 0);
+            assert.match(text, /cannot preserve running agents.*idle_update_seat/);
+            const status = await askManager(caller, ON, target.server, "managerStatus", undefined, target.auth, "owner", 10_000, pin);
+            assert.equal((status.data as { agentCount: number }).agentCount, 1, "refusal must leave owned seat alive");
+            if (process.argv.includes("--after-fix")) {
+              const deferred = await ask(paths.socket, { op: "managers-prepare-restart" }, 30_000);
+              assert.equal(deferred.ok, false);
+              assert.match(JSON.stringify(deferred), /idle_update_seat/, "unattended deferral names blocking agents");
+            }
+            if (process.argv.includes("--pending-reconcile-repro")) {
+              updateLatest = fixtureVersion;
+              const manifestFile = join(prefix, "extensions.json");
+              const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
+              manifest.extensions.push({ pkg: "@cotal-ai/tmux", version: "0.161.1", spec: "@cotal-ai/tmux@0.161.1", provides: [{ kind: "runtime", name: "tmux" }], commands: [], connectors: [] });
+              writeFileSync(manifestFile, JSON.stringify(manifest));
+              const pending = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+              let pendingText = "";
+              pending.stdout.on("data", chunk => { pendingText += String(chunk); });
+              pending.stderr.on("data", chunk => { pendingText += String(chunk); });
+              await new Promise<void>(resolve => pending.once("close", () => resolve()));
+              console.log("UPDATE_PENDING same generation", pendingText);
+              assert.match(pendingText, /cannot preserve running agents/);
+              if (!process.argv.includes("--after-fix")) {
+                manifest.extensions.pop();
+                writeFileSync(manifestFile, JSON.stringify(manifest));
+              }
+            }
+            if (process.argv.includes("--after-fix")) {
+              const terminal = process.argv.includes("--terminal-consent");
+              if (terminal) {
+                const command = [process.execPath, cliEntry, "update", "--self", "--space", ON].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" ");
+                const declined = spawn("script", ["-q", "-e", "-c", command, "/dev/null"], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["pipe", "pipe", "pipe"] });
+                let declinedText = "", declinedAnswered = false;
+                declined.stdout.on("data", chunk => { declinedText += String(chunk); if (!declinedAnswered && declinedText.includes("[y/N]")) { declinedAnswered = true; declined.stdin.write("no\n"); } });
+                declined.stderr.on("data", chunk => { declinedText += String(chunk); });
+                assert.notEqual(await new Promise<number | null>(resolve => declined.once("close", resolve)), 0);
+                const occupied = await askManager(caller, ON, target.server, "managerStatus", undefined, target.auth, "owner", 10_000, pin);
+                assert.equal((occupied.data as { agentCount: number }).agentCount, 1, "terminal decline preserves the seat");
+              }
+              if (process.argv.includes("--pending-reconcile-repro")) {
+                env.COTAL_ALLOW_CHECKOUT_SEED = "1";
+                writeFileSync(join(root, "repair.npmrc"), "@cotal-ai:registry=https://registry.npmjs.org/\n");
+                env.npm_config_userconfig = join(root, "repair.npmrc");
+              }
+              const approvedArgs = [cliEntry, "update", "--self", ...(terminal ? [] : ["--stop-agents"]), "--space", ON];
+              const approved = terminal
+                ? spawn("script", ["-q", "-e", "-c", [process.execPath, ...approvedArgs].map(value => `'${value.replaceAll("'", "'\\''")}'`).join(" "), "/dev/null"], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["pipe", "pipe", "pipe"] })
+                : spawn(process.execPath, approvedArgs, { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["pipe", "pipe", "pipe"] });
+              let approvedText = "", answered = false;
+              approved.stdout.on("data", chunk => { approvedText += String(chunk); if (terminal && !answered && approvedText.includes("[y/N]")) { answered = true; approved.stdin.write("yes\n"); } });
+              approved.stderr.on("data", chunk => { approvedText += String(chunk); });
+              const approvedCode = await new Promise<number | null>(resolve => approved.once("close", resolve));
+              console.log("UPDATE_STOP_AGENTS consent", JSON.stringify({ code: approvedCode, text: approvedText }));
+              if (process.argv.includes("--pending-reconcile-repro")) {
+                assert.equal(approvedCode, 0, approvedText);
+                assert.match(approvedText, /Built-in connectors/, "same-version pending update must reach guarded reconciliation");
+                const repaired = JSON.parse(readFileSync(join(prefix, "extensions.json"), "utf8"));
+                assert.equal(repaired.extensions.find((entry: { pkg: string }) => entry.pkg === "@cotal-ai/tmux")?.version, fixtureVersion);
+              }
+              assert.doesNotMatch(approvedText, /cannot preserve running agents/);
+              const empty = await askManager(caller, ON, target.server, "managerStatus", undefined, target.auth, "owner", 10_000, pin);
+              assert.equal((empty.data as { agentCount: number }).agentCount, 0, "explicit consent stops the owned seat before replacement");
+            }
+          } finally {
+            await askManager(caller, ON, target.server, "stop", { name: "idle_update_seat" }, target.auth, "owner", 20_000, pin);
+            await new Promise<void>(resolve => metadata.close(() => resolve()));
+          }
+          return;
+        }
         if (manualAdmissionRace) {
           const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
           const caller = { versionSkew: (text: string) => text, roster: async () => [] };

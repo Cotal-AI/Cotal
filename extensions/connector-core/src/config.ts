@@ -82,6 +82,8 @@ export interface AgentConfig {
   turnRelay?: false;
   /** The trusted registration requires this session's event plane. */
   eventsRequired?: boolean;
+  /** Trusted or explicit local decision to retain status without tool payloads. */
+  eventPayloadsWithheld?: boolean;
   /** Per-channel attention DEFAULTS (operator, one-way from the agent file): channels to receive but
    *  never wake on ({@link quiet}) / to drop on receive ({@link muted}). Seeds {@link MeshAgent}'s
    *  runtime map; the runtime never writes them back. Concrete channels within {@link allowSubscribe}.
@@ -388,6 +390,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     // enforces it under auth; in open mode posting is unrestricted regardless.
     allowPublish: resolvedAllowPub,
     eventsRequired,
+    eventPayloadsWithheld: material?.eventPayloadsWithheld === true || envFlag(env, "COTAL_EVENT_PAYLOADS") === false,
     quiet: resolvedQuiet,
     muted: resolvedMuted,
     kind: assertValidKind(env.COTAL_KIND?.trim() || def?.kind || "agent"),

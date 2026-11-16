@@ -362,6 +362,7 @@ export interface RemoteManagedAgentEnrollmentRequest {
     subscribe?: string[];
     allowSubscribe?: string[];
     allowPublish?: string[];
+    eventPayloads?: false;
   };
   /** The spawn request this enrollment answers, when a caller asked for it: the request subject the
    *  manager served, and the run whose driver sent it. The host bounds the helper by the caller it
@@ -704,7 +705,7 @@ function parseTokenHash(value: unknown, what: string): string {
 function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean): DelegatedUserLaunchTarget {
   if (target === null || typeof target !== "object" || Array.isArray(target)) enrollmentError(what, "requires a target");
   const t = target as Record<string, unknown>;
-  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish", ...(withTokenHash ? ["tokenHash"] : [])]);
+  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish", "eventPayloads", ...(withTokenHash ? ["tokenHash"] : [])]);
   for (const key of Object.keys(t))
     if (!targetAllowed.has(key)) enrollmentError(what, `target carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (typeof t.actor !== "string" || t.actor.length === 0) enrollmentError(what, "target requires a non-empty actor");
@@ -721,6 +722,8 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
       if (typeof cap !== "string" || !/^[A-Za-z0-9_:-]{1,64}$/.test(cap))
         enrollmentError(what, "target.capabilities must contain only 1-64 character capability tokens");
   }
+  if (t.eventPayloads !== undefined && t.eventPayloads !== false)
+    enrollmentError(what, "target.eventPayloads must be false when present");
   const subscribe = parseEnrollmentList(t.subscribe, what, "subscribe");
   const allowSubscribe = parseEnrollmentList(t.allowSubscribe, what, "allowSubscribe");
   const allowPublish = parseEnrollmentList(t.allowPublish, what, "allowPublish");
@@ -732,6 +735,7 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
     ...(subscribe !== undefined ? { subscribe } : {}),
     ...(allowSubscribe !== undefined ? { allowSubscribe } : {}),
     ...(allowPublish !== undefined ? { allowPublish } : {}),
+    ...(t.eventPayloads === false ? { eventPayloads: false as const } : {}),
   };
 }
 

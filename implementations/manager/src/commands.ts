@@ -637,8 +637,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // pre-policy manual entry learns it from its pinned exchange, and a refusal there must never
   // pre-empt the `--server` mismatch or the missing-login sentence the operator can act on.
   let eventsRequired = target.eventsRequired;
+  let eventPayloadsWithheld = target.policy?.eventPayloads === "withheld";
   try {
-    eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
+    const policy = await refreshRegistrationPolicy(target);
+    eventsRequired = policy?.events === "required";
+    eventPayloadsWithheld = policy?.eventPayloads === "withheld";
   } catch (e) {
     if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
@@ -698,6 +701,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       space,
       servers: server,
       eventsRequired,
+      eventPayloadsWithheld,
       runtime,
       execution,
       consolePort,

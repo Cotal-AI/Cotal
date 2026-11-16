@@ -12,10 +12,10 @@
  */
 import type { Presence, PresenceStatus } from "./types.js";
 import { LINE_BREAK } from "./peer-label.js";
-import { peerLabel } from "./peer-label.js";
+import { peerLabel, shownPeerName } from "./peer-label.js";
 import { isWellFormedUnicode } from "./canonical-json.js";
 
-export { peerLabel };
+export { peerLabel, shownPeerName };
 
 /** A peer that matched an ambiguous name — structural, so each surface renders it itself.
  *  The full `id` is the authoritative, routable address. */
@@ -37,7 +37,7 @@ export class AmbiguousPeerError extends Error {
   ) {
     super(
       `"${target}" is ambiguous - ${candidates.length} peers share that name: ` +
-        candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join("; ") +
+        candidates.map((c) => `${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`).join("; ") +
         `. Re-send to the exact instance id.`,
     );
     this.name = "AmbiguousPeerError";

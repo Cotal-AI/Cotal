@@ -115,7 +115,7 @@ gets `PERMISSION_DENIED` and the folder that hosts it, when this folder holds no
 
 For a stopped seat with a runtime custody reference, shutdown carries that reference into retirement so the runtime can reap its recorded work before footprint cleanup.
 
-Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops process-bound seats, releases seats the runtime can leave running, and applies retained-state policy to preserved seats. For a seat selected for stop, the runtime must prove exit before the manager releases its lease or service registration. A stop that
+Normal `SIGINT`/`SIGTERM` uses the sparing stop policy. The manager stops process-bound seats gracefully, so a seat can stop a helper that has left its process group before the runtime escalates to SIGKILL. It releases seats the runtime can leave running, and applies retained-state policy to preserved seats. For a seat selected for stop, the runtime must prove exit before the manager releases its lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
 an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
 once and its error names the refusal as `stop failed: <message>`. A manager that a controller stack
@@ -561,6 +561,9 @@ stops agents or restarts a service.
 
 Refusals before replacement do not count as failed installations. A busy computer retries after
 60 seconds. Registry or extension-closure unavailability retries after one hour.
+If npm reports `ETARGET` for the `cotal-ai` version just selected as latest, the release is
+still arriving. No packages are replaced, the failure count is unchanged, and the next attempt
+retries after one hour. An `ETARGET` for another package or version remains a failed installation.
 An attempt that begins replacement and does not reach the target version counts as a failure
 and waits one hour before retry. Two such failures of one version stop installation
 attempts for that version until a newer release appears or a person repairs it manually.
@@ -786,9 +789,11 @@ Sign-in and space forms appear only when needed. Five named progress steps use s
 reports, while original diagnostics and exact refusals remain under Details. Missing applications
 name the applications checked and offer Check again to rerun setup. Machine-service approval is separate.
 After installing or starting its recorded background service, the app waits up to 15 seconds for
-the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` and directs you to
-`cotal daemon status` for diagnostics. The service remains installed; the timeout does not ask
-you to install it again or report it as ready.
+the daemon to answer. A timeout reports `DEPENDENCY_UNAVAILABLE` (`NOT_ANSWERING`), includes a
+startup refusal from that launch's `daemon.log` when one was written, and offers Check status in
+the app. While that screen is shown, a `NOT_RUNNING` status check keeps it on screen, and a `ready`
+answer clears it. The service remains installed; the timeout does not ask you to install it again
+or report it as ready.
 
 `setup` validates its arguments, including the space name, before installing or starting the service
 or changing connector state. Space names use 1 to 64 letters, digits, underscores or hyphens.
@@ -894,6 +899,10 @@ registration request and identity. Removal failures exit non-zero and keep the i
 for retry. The lifetime lock file and unrelated records remain. Remote records may remain until you
 remove the computer in the dashboard. A later install has no Manager or machine-service connection
 to resume from those removed intents. Pause and rename are not implemented.
+On Windows, uninstall and installed restart keep waiting when the same pinned process lifetime
+still answers after clearing its lifetime record. Nothing is sent on that refused connection.
+A different process, birth or nonempty record still refuses. Completion requires endpoint absence
+and the old process lifetime to have ended within the existing shutdown deadline.
 
 Setup reuses completed stages but probes an existing Manager again, pinned to its recorded instance,
 before reporting launch-readiness. If the running daemon's version or protocol differs from the
@@ -1031,6 +1040,10 @@ entry cannot load at all, Task Scheduler's last result is the diagnostic and no 
 Install refuses before preparing a task if its launch entry is missing or is not a file.
 Task lookup imports ScheduledTasks and Microsoft.PowerShell.Utility by name before querying the
 task and serializing its result, avoiding automatic module discovery for those commands.
+The Windows ownership observer loads only the read-only task and recorded-source checks in its
+worker. It reads the current SID, source digest, registered action and principal afresh on each
+observation. It does not load CLI commands or Manager startup code, and its 65-second observation
+budget and refusal behavior are unchanged.
 Native service tools have a 30-second budget. A tool that cannot complete refuses
 `DEPENDENCY_UNAVAILABLE` and names a timeout, output overflow, startup error code or terminating
 signal with elapsed time. JSON output includes the native code, elapsed milliseconds and budget

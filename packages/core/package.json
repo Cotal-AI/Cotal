@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/core",
   "description": "The Cotal protocol: endpoint, subjects, message types, the NATS client layer, and the extension contracts.",
-  "version": "0.163.5",
+  "version": "0.164.18",
   "license": "Apache-2.0",
   "keywords": [
     "cotal",
@@ -79,12 +79,16 @@
     "./browser-validators-build": {
       "types": "./dist/browser-validators-build.d.ts",
       "import": "./dist/browser-validators-build.js"
+    },
+    "./contract-validator": {
+      "types": "./dist/contract-validator.d.ts",
+      "import": "./dist/contract-validator.js"
     }
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm smoke:seat-idle-results && tsx smoke/presence-heartbeat.smoke.ts && tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls && node --test smoke/advisory-lock.test.mjs",
+    "test": "pnpm smoke:seat-idle-results && tsx smoke/presence-heartbeat.smoke.ts && tsx smoke/native-nkey-signing.smoke.ts && tsx smoke/resolve.smoke.ts && tsx smoke/once-spawner.smoke.ts && tsx smoke/registry-aliases.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls && pnpm smoke:schema-conformance-20 && pnpm smoke:schema-conformance && node --test smoke/advisory-lock.test.mjs",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
     "smoke:seat-idle-load": "tsx smoke/seat-idle-load.smoke.ts",
     "smoke:seat-idle-results": "tsx smoke/seat-idle-results.smoke.ts",
@@ -92,10 +96,12 @@
     "prepublishOnly": "pnpm run build",
     "smoke:schema-own-properties": "node smoke/schema-own-properties.public.mjs --gate partial",
     "smoke:schema-own-properties-controls": "node smoke/schema-own-properties.public.mjs --gate controls",
+    "smoke:schema-conformance": "node smoke/schema-conformance.public.mjs",
     "smoke:schema-conformance-20": "node smoke/schema-own-properties.public.mjs --gate full"
   },
   "devDependencies": {
-    "@cotal-ai/smoke-kit": "workspace:*"
+    "@cotal-ai/smoke-kit": "workspace:*",
+    "esbuild": "^0.28.1"
   },
   "dependencies": {
     "@nats-io/jetstream": "^3.4.0",
@@ -105,9 +111,9 @@
     "@nats-io/nats-core": "^3.4.0",
     "@nats-io/nkeys": "^2.0.3",
     "@nats-io/transport-node": "^3.4.0",
-    "acorn": "^8.15.0",
     "ajv": "^8.20.0",
     "json-canonicalize": "2.0.0",
+    "json-schema-library": "11.6.16",
     "yaml": "^2.9.0"
   },
   "files": [

@@ -34,9 +34,19 @@ const err = (text: string): ToolResult => ({ text, isError: true });
 /** How many holders a `cotal_anycast` result names before it counts the rest. */
 const NAMED_HOLDERS = 8;
 
-/** A holder by name and id. Both reach this from peers or the record, so neither may break a line. */
+/** A participant name safe for one line. A missing or whitespace-only name is the id. */
+function shownParticipant(name: string, id: string): string {
+  if (name.trim()) return attributionSafe(name);
+  const ident = attributionSafe(id);
+  return ident.trim() ? ident : "(unnamed)";
+}
+
+/** A holder by name and id. Both reach this from peers or the record, so neither may break a line.
+ *  A missing or whitespace-only name is the holder's id. */
 function holderLabel(h: { id: string; name: string }): string {
-  return `${attributionSafe(h.name)} (${attributionSafe(h.id)})`;
+  const ident = attributionSafe(h.id);
+  const shownId = ident.trim() ? ident : "(unnamed)";
+  return h.name.trim() ? `${attributionSafe(h.name)} (${shownId})` : shownId;
 }
 
 /** The holders of a role, by name and id, from one roster read; `when` says which read. */
@@ -52,7 +62,7 @@ const TAKEN_MEANS =
   "Taken means that holder's connector was about to show it to its agent, not that the agent read, ran or finished it.";
 
 function takenFollowUp(taker: { id: string; name: string }): string {
-  return `Ask ${attributionSafe(taker.name)} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
+  return `Ask ${shownParticipant(taker.name, taker.id)} with cotal_dm about the work, or use cotal_run for work you need followed to the end.`;
 }
 
 const UNKNOWN_OUTCOME =
@@ -367,13 +377,26 @@ export function renderInbox(opts: {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
   const peek = opts.peek ?? false;
   const warning = opts.warning ?? "";
+  const strictIds = opts.strictIds ?? new Set<string>();
   const rank = (i: InboxItem): number => {
+    const current = i.mentionsMe && !i.historical;
     // A peek does not clear, so an old direct message that fills the window must not hide a current
-    // mention. A clearing read keeps direct messages ahead of channel traffic.
-    if (peek && i.mentionsMe && !i.historical) return -1;
-    return i.kind !== "channel" ? 0 : i.historical ? 2 : 1;
+    // mention. A clearing read keeps direct messages ahead of channel traffic, and a current mention
+    // ahead of the rest of it, so older posts do not fill the read that follows the mention's wake.
+    // The in-order recall lane keeps its order.
+    if (peek && current) return -1;
+    if (i.kind !== "channel") return 0;
+    if (current && !strictIds.has(i.recvKey)) return 0.5;
+    return i.historical ? 2 : 1;
   };
-  const ordered = [...opts.items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
+  // A peek does not clear, so an older message that fills the window must not hide a newer one of
+  // the same kind. A reply that walks an ordered lane keeps receive order so its mark stays a prefix.
+  const orderedLane = opts.strictIds !== undefined && opts.items.some((item) => opts.strictIds?.has(item.recvKey));
+  const ordered = [...opts.items].sort((a, b) => {
+    const byRank = rank(a) - rank(b);
+    if (byRank !== 0 || !peek || orderedLane) return byRank;
+    return b.ts - a.ts;
+  });
 
   // WHY THIS AGREES WITH THE ASSEMBLED REPLY, and what would break the agreement. Deliverability is
   // decided here and delivery is decided by `assemble`, and the two can only agree because both
@@ -420,7 +443,6 @@ export function renderInbox(opts: {
   // message too large for any response must not block the mail behind it. Then assemble for real
   // and give back trailing items until the finished string fits, which is the part no future writer
   // to the response body can slip past.
-  const strictIds = opts.strictIds ?? new Set<string>();
   const shown: InboxItem[] = [];
   let used = 0;
   let strictGap = false; // the in-order lane stops at its first gap; the free lane steps over its own
@@ -580,6 +602,8 @@ function heldNote(
   const parts: string[] = [];
   if (waiting) {
     const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.recvKey)).length;
+    // Direct messages can hold back the mention that woke the reader, so the note says it waits.
+    const mentions = held.filter((i) => i.mentionsMe && !i.historical && !stuckIds.has(i.recvKey)).length;
     // Under peek nothing is cleared, so the next call returns THIS window again. Telling a peeking
     // caller to call again for the next batch is a promise the read cannot keep, and an obedient
     // caller loops on it forever.
@@ -587,7 +611,7 @@ function heldNote(
       ? "A peek clears nothing, so calling again returns this same window; read without peek to take it and see the next."
       : "Call cotal_inbox again for the next batch.";
     parts.push(
-      `${waiting} more message${waiting === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. ${next}`,
+      `${waiting} more message${waiting === 1 ? "" : "s"} held (${dms} direct${mentions ? `, ${mentions} mentioning you` : ""}). This response was capped at the receivable window, and nothing held was cleared. ${next}`,
     );
   }
   if (stuck.length) {
@@ -759,9 +783,9 @@ const NAMED_AHEAD = 3;
 /** Say that recall items were withheld because this session will not take responsibility for
  *  remembering them, and name who sent them, so a peer spending that bound is visible rather than
  *  silent. Not a drop: nothing was cleared and the stream still holds them. */
-function aheadNote(items: readonly InboxItem[]): string {
+export function aheadNote(items: readonly InboxItem[]): string {
   if (!items.length) return "";
-  const senders = [...new Set(items.map((i) => attributionSafe(i.fromName).slice(0, 40)))];
+  const senders = [...new Set(items.map((i) => attributionSafe((i.fromName.trim() ? i.fromName : i.fromId.trim() ? i.fromId : "(unnamed)")).slice(0, 40)))];
   const named = senders.slice(0, NAMED_AHEAD).join(", ");
   const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
   const one = items.length === 1;
@@ -901,6 +925,13 @@ export function sendResult(channel: string, mentions: readonly string[], receipt
     ? "Others see it once they join; tell them where it is."
     : "This channel doesn't replay history, so agents who join later won't see this post. Tell them where it is, and post again once they have joined.";
   return `Posted to ${at}, a new channel${mentions.length ? `, and mentioned ${named}` : ""}.${hint} ${later}`;
+}
+
+/** The name a spawn result shows. A missing or whitespace-only name is the seat's id. */
+export function shownSpawnName(name: string, id: string | undefined, role?: string): string {
+  if (name.trim()) return peerLabel({ name, role });
+  const ident = id !== undefined && id.trim() ? id : "(unnamed)";
+  return role !== undefined && role.trim() ? peerLabel({ name: ident, role }) : ident;
 }
 
 /** The `cotal_spawn` line for a seat the manager reports started: who it is, where it is and the next
@@ -1140,7 +1171,7 @@ export function cotalToolSpecs(
       name: "cotal_roster",
       title: "Cotal: who's present",
       description:
-        "List the agents currently present in your Cotal space, with their role, status, and current activity.",
+        "List the agents currently present in your Cotal space, with their role, status, and current activity. A name that is only whitespace is shown as that participant's id.",
       async run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
         // #1229: rendering never refuses, but it must not present a last-known roster as a
@@ -1154,7 +1185,8 @@ export function cotalToolSpecs(
         // The session's own row is not one of them: a DM to its name reaches the other peer.
         const shared = sharedNameIds(roster, { selfId: agent.id });
         const lines = roster.map((p) => {
-          const who = peerLabel(p.card);
+          const name = p.card.name.trim() ? p.card.name : p.card.id;
+          const who = peerLabel({ name, ...(p.card.role ? { role: p.card.role } : {}) });
           const isMe = p.card.id === agent.id;
           const me = isMe ? ` (you${agent.attention !== "open" ? `, ${agent.attention}` : ""})` : "";
           const id = shared.has(p.card.id) ? ` — id: ${p.card.id}` : "";
@@ -1188,7 +1220,7 @@ export function cotalToolSpecs(
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. A peek shows a current mention of you before older direct messages that fill that window, and still clears nothing. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then a current mention of you, then other channel traffic, with replayed history last. A peek shows a current mention of you before older direct messages too, and still clears nothing. A peek shows a newer direct message or role request before an older one that fills that window, and still clears nothing. When the window holds a mention back, the reply says so. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is delivered in parts: once no smaller mail is waiting, each call carries the next part of it, a peek shows the current part without moving on, and the message is cleared only after its last part goes out. In focus mode it also pulls back the channel chatter held since you entered focus. If exclusion tracking makes a channel's focus recall unsafe, new non-historical mentions on that unmuted channel wake to pull their buffered bodies, never automatic injection, including on quiet channels. Ambient handling is unchanged, and the incomplete-recall warning still names unsafe channels. " +
         "When the connection is not ready, the reply says so and still returns locally buffered messages; an empty local buffer does not prove no new mesh messages exist. Exhausted channel drop tracking is reported even with an empty inbox; non-historical mentions on unmuted channels wake to pull their buffered bodies while ambient traffic stays suppressed. " +
         "If your stored copies reached their limit, 1000 unless an operator set another, the reply says earlier channel posts may have been dropped and that channel history may still hold them. A peek keeps that line for the next read.",
       schema: {
@@ -1447,19 +1479,20 @@ export function cotalToolSpecs(
         try {
           const { recipient, ack, recipientStatusAtSend } = await agent.dm(to, msg, { replyTo });
           const dup = ack.duplicate ? " duplicate publication." : "";
+          const who = recipient.name.trim() ? recipient.name : shownParticipant(recipient.name, recipient.id);
           const unrostered = recipientStatusAtSend === "unrostered"
-            ? ` ${recipient.name} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`
+            ? ` ${who} has no roster row: it messaged you from a connection that never joined the roster or has left it, so the space's DM history keeps this DM under its id and it may never reach an inbox.`
             : "";
           // The DM durable belongs to the recipient's lifecycle (SPEC §8): the same session gets it on
           // reconnect, and a new spawn under that name starts after it.
           const offline = recipientStatusAtSend === "offline"
-            ? ` ${recipient.name} is offline: the DM is delivered when ${recipient.name} reconnects, and a new agent spawned as ${recipient.name} does not receive it.`
+            ? ` ${who} is offline: the DM is delivered when ${who} reconnects, and a new agent spawned as ${who} does not receive it.`
             : "";
-          return ok(`Sent to ${recipient.name}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
+          return ok(`Sent to ${who}.${unrostered}${offline} Other agents can't read it. If others could use it, post it on the task's channel.${dup}`);
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
-              .map((c) => `  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`)
+              .map((c) => `  • ${c.name.trim() ? peerLabel(c) : c.id} (${c.status}) — id: ${c.id}`)
               .join("\n");
             return err(
               `"${e.target}" is ambiguous — ${e.candidates.length} peers share that name. ` +
@@ -1843,7 +1876,7 @@ export function cotalToolSpecs(
         once: z
           .boolean()
           .optional()
-          .describe("Run `prompt` as the new peer's one task, then stop the peer. The task reaches the peer as a relayed turn rather than a kickoff, and the peer is stopped when it ends that turn or when the deadline passes. Needs `prompt`. A Claude Code peer takes the task only when its startup shows channels on; otherwise the spawn fails at startup and says why."),
+          .describe("Run `prompt` as the new peer's one task, then stop the peer. The task reaches the peer as a relayed turn rather than a kickoff, and the peer is stopped when it ends that turn or when the deadline passes. The turn names who started the seat by id when that name is missing or only whitespace. Needs `prompt`. A Claude Code peer takes the task only when its startup shows channels on; otherwise the spawn fails at startup and says why."),
         deadline: z
           .string()
           .optional()
@@ -1894,7 +1927,8 @@ export function cotalToolSpecs(
           } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
-          const who = peerLabel({ name: actual, role });
+          const seatId = typeof d?.id === "string" ? d.id : d?.actor;
+          const who = shownSpawnName(actual, seatId, role);
           // Make the rename unmissable: a colliding caller must see it asked for `name` but got
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
@@ -1918,7 +1952,7 @@ export function cotalToolSpecs(
             };
           }
           if (pending)
-            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
+            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${shownSpawnName(actual, seatId)}, and cotal_despawn it if it never joins.`);
           // A once spawn names its task, so the spawner can read how it ended.
           const task = d?.once
             ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
@@ -2008,7 +2042,7 @@ export function cotalToolSpecs(
       name: "cotal_yield",
       title: "Cotal: yield a run turn",
       description:
-        "Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.\n\nUsually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{\"status\":\"blocked\",\"note\":\"<what prevents progress>\"}`. To hand the assigned turn to another agent, call `{\"status\":\"handoff\",\"to\":\"<agent-name>\",\"note\":\"<handoff context>\"}`.\n\nWhen you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.",
+        "Report the outcome of a workflow turn assigned to you. Use this only when your context contains a pending run turn; it does not start a workflow or resolve a checkpoint/ask.\n\nUsually finish your session turn normally: that yields `done` automatically. If you cannot progress, call `{\"status\":\"blocked\",\"note\":\"<what prevents progress>\"}`. To hand the assigned turn to another agent, call `{\"status\":\"handoff\",\"to\":\"<agent-name>\",\"note\":\"<handoff context>\"}`.\n\nWhen you hold several assigned turns, pass `turn` with the exact goal id from the relevant run-turn context block. Without `turn`, the oldest turn already shown to your session is selected. A turn that has not been shown cannot be yielded, and neither can one the run already settled, such as a turn whose deadline elapsed: that refusal names the turn and its deadline. A turn already yielded, including by the automatic `done` when your session turn ended, is refused the same way, and the refusal says how it was yielded. A successful reply confirms the turn was yielded, not that the whole workflow completed; the run's coordinator can inspect progress with `cotal_run` status.",
       schema: {
         status: z
           .enum(["done", "blocked", "handoff"])

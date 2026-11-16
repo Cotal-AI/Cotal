@@ -172,6 +172,12 @@ const groupBy = (root: ParentNode) => Array.from(root.querySelectorAll("[role=ra
   ok("2.14 an offline row is dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && !david.classList.contains("v3-arow-off") && d.querySelector(".v3-arow-off .ui-av-off") !== null);
   const hostless = view({ roster: [entry("local.h", "hollow", "idle", { connector: "pi" })] });
   ok("2.15 an agent that reports no host shows none", rowByName(hostless, "hollow").querySelector(".v3-meta") === null);
+  const blankRole = view({ roster: [entry("local.b", "blank", "idle", { connector: "claude-code", role: " " }), entry("local.n", "newline", "idle", { role: "\n" }),
+    entry("local.e", "edge", "idle", { kind: "endpoint", role: " ", host: "mbp-david" })] });
+  same("2.15b a whitespace role reads as no role: no empty text and no separator in front of the harness or host",
+    [textOf(rowByName(blankRole, "blank").querySelector(".v3-aname span")), textOf(rowByName(blankRole, "newline").querySelector(".v3-aname span")),
+      Array.from(blankRole.querySelectorAll(".v3-epsec .v3-eprow")).map((r) => textOf(r.querySelector("span:not(.ui-av)")))],
+    ["Claude Code", "", ["mbp-david"]]);
   const picked = parse(renderToString(inShell(createElement(AgentsView, { store: seed(), selected: "local.rev", clock: () => NOW }))));
   ok("2.16 the row an address or the panel selected is marked, and no other", rowByName(picked, "reviewer").getAttribute("aria-current") === "true"
     && picked.querySelectorAll('.v3-arow[aria-current="true"]').length === 1 && david.getAttribute("aria-current") === null);
@@ -503,12 +509,12 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     textOf(step?.querySelector('[data-slot="trace-title"]')) === "Running a command"
       && /^Bash · \d+s$/.test(textOf(step?.querySelector('[data-slot="trace-description"]')))
       && step?.querySelector('[data-slot="spinner"]') !== null
-      && step?.parentElement?.previousElementSibling?.classList.contains("v3-aact")
+      && step?.closest(".ox-now-w")?.previousElementSibling?.classList.contains("v3-aact")
       && textOf(link) === "View work" && link?.getAttribute("href") === formatRoute({ view: "agent", id: "local.dav", tab: "work" })
       && row.querySelector("a") === null && JSON.stringify(c.held()) === JSON.stringify(["local.dav"]),
     { step: step?.outerHTML, held: c.held() });
   ok("11.4b the step is hidden from assistive tech, so no live region sits inside the row's button and the button's name holds still",
-    step !== null && step.parentElement?.getAttribute("aria-hidden") === "true" && [...row.querySelectorAll('[role="status"]')].every((e) => e.closest('[aria-hidden="true"]') !== null));
+    step !== null && step.closest(".ox-now-w")?.getAttribute("aria-hidden") === "true" && [...row.querySelectorAll('[role="status"]')].every((e) => e.closest('[aria-hidden="true"]') !== null));
   ok("11.5 the activity line above it is presence's own text and never shimmers",
     textOf(row.querySelector(".v3-aact")) === "Editing packages/core/src/presence.ts" && row.querySelector(".v3-aact.ox-shimmer, .v3-aact .ox-shimmer") === null);
   await live.unmount();

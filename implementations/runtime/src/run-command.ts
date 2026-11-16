@@ -704,6 +704,23 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
   return `the manager registered for this space did not answer on the ${rail} rail (${detail}). The ${rail} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${rail}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, restart it on a build that serves ${rail}`;
 }
 
+/** What to do before running a start, resume, answer or amend again whose outcome is unknown. */
+const UNCONFIRMED_REMEDY = "read the run with `cotal run show`, or list the runs with `cotal run`, before trying again; it was not retried";
+
+/** A hosted verb whose manager drew no answer. Silence before the request went out, or a broker
+ *  that saw no responder, changed nothing, so the target is unavailable. A request that was
+ *  published and then went unanswered followed a describe the manager answered on the same rail,
+ *  so the manager runs: a read failed, and a start, resume, answer or amend may have been recorded,
+ *  because the manager does not stop when the caller stops waiting, so it is unknown. */
+export function unansweredHostFailure(command: string, space: string, e: EpEnvelopeError): CommandFailure {
+  const options = { target: { space }, native: { code: e.code } };
+  if (e.outcome === "unknown" && (command === "run-status" || command === "run-ps"))
+    return new CommandFailure("failed", "OPERATION_FAILED", `${e.code}: ${e.message}. The manager answered on this rail just before, so it runs and did not reply in time`, { ...options, remedy: "a read changes nothing, so it is safe to run again" });
+  if (e.outcome === "unknown")
+    return new CommandFailure("unknown", "OPERATION_UNKNOWN", `${e.code}: ${e.message}; the manager may already have recorded it`, { ...options, remedy: UNCONFIRMED_REMEDY });
+  return new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { ...options, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
+}
+
 /** The manager's refusal codes that say it acted on nothing. */
 const REFUSED_BEFORE_EFFECT: Readonly<Record<string, RefusalCode>> = {
   "permission-denied": "PERMISSION_DENIED", "not-found": "TARGET_NOT_FOUND", "failed-precondition": "LIFECYCLE_BLOCKED",
@@ -734,7 +751,7 @@ export function managerRefusal(command: string, space: string, args: Record<stri
   if (command === "run-status" && err?.code === "resource-exhausted")
     return new CommandFailure("refused", "UNSUPPORTED", message, { ...options, remedy: `read the run from its project folder with ${localJournal(args)}` });
   if (command === "run-status" || command === "run-ps") return new CommandFailure("failed", "OPERATION_FAILED", message, options);
-  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: "read the run with `cotal run show`, or list the runs with `cotal run`, before trying again; it was not retried" });
+  return new CommandFailure("unknown", "OPERATION_UNKNOWN", message, { ...options, remedy: UNCONFIRMED_REMEDY });
 }
 
 /** nats.js refuses a frame over the broker's `max_payload` before writing any of it. */
@@ -832,10 +849,9 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // is refused here, against that contract, before it is sent.
     if (e instanceof EpEnvelopeError && command === "run-status" && e.code === "bad-request" && /additional properties: "journal"/.test(e.message))
       throw new CommandFailure("refused", "UNSUPPORTED", "this manager is from release 0.99.3 or earlier and reads no journal page, so this command cannot read the run through it", { target: { space: t.space }, remedy: `upgrade that manager, or read the run from its project folder with ${localJournal(args)}` });
-    // No answer is an unavailable target, not a usage error. Only this machine's records can name a
-    // manager that runs and does not answer, and `cotal status` reads them.
-    if (e instanceof EpEnvelopeError && unansweredRequest(e))
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", unansweredManagerRefusal(e), { target: { space: t.space }, native: { code: e.code }, remedy: "cotal status shows whether this space's manager answers; a stack manager that runs but does not answer is named there with its pid and the way to end it" });
+    // No answer is not a usage error. Only this machine's records can name a manager that runs and
+    // does not answer, and `cotal status` reads them.
+    if (e instanceof EpEnvelopeError && unansweredRequest(e)) throw unansweredHostFailure(command, t.space, e);
     if (e instanceof EpEnvelopeError) {
       console.error(`${e.code}: ${e.message}`);
       process.exit(1);

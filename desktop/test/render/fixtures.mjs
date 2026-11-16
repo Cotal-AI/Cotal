@@ -14,7 +14,19 @@ export function nativeStub(scenario) {
     transformCallback(fn) { callbacks.set(++next, fn); return next; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(command, args) {
-      if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return null; }
+      if (command === "app_update_check") {
+        state.appChecks = [...(state.appChecks ?? []), { manual: args?.manual === true }];
+        if (state.nativeCheckError) throw new Error("Native check unavailable");
+        if (state.nativeCheckPending) await new Promise(() => {});
+        return state.appUpdate ?? { phase: "unconfigured" };
+      }
+      if (command === "app_update_receipt") return state.appReceipt;
+      if (command === "app_update_apply") {
+        state.appApplies = [...(state.appApplies ?? []), { explicit: args.explicit }];
+        return state.appUpdate ?? { phase: "unconfigured" };
+      }
+      if (command === "app_update_download") { state.appDownloads = (state.appDownloads ?? 0) + 1; return state.appUpdate = { phase: "ready", version: state.appUpdate.version }; }
+      if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return state.startedHidden ? false : true; }
       if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
       if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
       if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
@@ -27,13 +39,18 @@ export function nativeStub(scenario) {
         if (state.loading) await new Promise(() => {});
         return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
       }
+      if (request.op === "update-policy") { if (state.policyError) throw new Error("Preference unavailable"); if (request.auto !== undefined) state.autoUpdates = request.auto; return ok({ auto: state.autoUpdates !== false }); }
       if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
       if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
       if (request.op === "update-check") return ok({ update: state.update });
-      if (request.op === "install") { if (state.installWait) await new Promise(() => {}); state.installed = true; return ok({ installed: true }); }
+      if (request.op === "install") {
+        if (state.installWait) await new Promise(() => {});
+        if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
+        state.installed = true; return ok({ installed: true });
+      }
       if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
-      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "NOT_ANSWERING", "The background service did not answer. Check the host connection before retrying.");
-      if (request.op === "status") return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) });
+      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
+      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) }); }
       if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
       if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
       if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
@@ -107,6 +124,66 @@ const reachable = async page => {
 const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
 const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
 export const scenarios = [
+  { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },
+    act: page => page.click('#open-settings'), expect: async page => { assert.match(await page.locator('#settings-update-summary').textContent(), /An app operation is still running/); } },
+  { name: 'mac-apply-visible', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0' } },
+    act: page => page.click('#open-settings'), expect: async page => {
+      assert.equal(await page.locator('#restart-update').isVisible(), true);
+      assert.match(await page.locator('#settings-update-summary').textContent(), /Restart to update/);
+      assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0);
+      await page.click('#restart-update');
+      assert.equal(await page.evaluate(() => window.__renderState.appApplies.at(-1).explicit), true);
+    } },
+
+  ...["available", "current", "failed", "notify-off", "pending", "native-error", "policy-error"].map(mode => ({
+    name: `installer-only-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, nativeCheckPending: mode === "pending", nativeCheckError: mode === "native-error", policyError: mode === "policy-error",
+      update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}), ...(mode === "failed" ? { latest: undefined, lastResult: "check failed" } : {}), notify: mode !== "notify-off" } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#update-preference-label").textContent(), "Notify me about updates");
+      assert.equal(await page.locator("#update-preference").isChecked(), mode !== "notify-off");
+      assert.equal(await page.locator("#update-preference").isEnabled(), true);
+      assert.equal(await page.locator("#settings-update-summary").textContent(), mode === "current" ? "You are up to date." : mode === "failed" ? "The update check failed. Try again." : "Version 0.161.0 is available.");
+      if (!["pending", "native-error", "policy-error"].includes(mode)) assert.match(await page.locator("#update-policy").textContent(), /This build updates through the installer/);
+      if (mode === "notify-off") {
+        await page.check("#update-preference");
+        await page.waitForFunction(() => window.__renderState.update.notify === true);
+        assert.equal(await page.evaluate(() => window.__renderState.autoUpdates), undefined, "notify does not write shared auto");
+      }
+      await page.click("#open-settings");
+      assert.equal(await page.locator("#update-banner").isVisible(), !["current", "failed"].includes(mode));
+    },
+  })),
+  ...["current", "failed"].map(phase => ({
+    name: `app-manual-check-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, autoUpdates: false, appUpdate: { phase, checkedAt: Date.now(), reason: "Network unavailable" }, update },
+    act: async page => { await page.click("#open-settings"); await page.click("#check-updates"); },
+    expect: async page => { assert.deepEqual(await page.evaluate(() => window.__renderState.appChecks), [{ manual: false }, { manual: true }]); },
+  })),
+
+  ...["checking", "current", "downloading", "ready", "preparing", "unconfigured", "failed", "off"].map(phase => ({
+    name: `app-updater-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, autoUpdates: phase !== "off", update,
+      appUpdate: { phase: phase === "off" ? "available" : phase, ...(phase === "preparing" || phase === "unconfigured" || phase === "current" || phase === "checking" ? {} : { version: "0.161.0" }), downloaded: 25, total: 100, ...(phase === "failed" ? { reason: "Signature verification failed" } : {}) } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#settings-update-summary").getAttribute("data-update-state"), phase === "unconfigured" ? null : phase === "off" ? "available" : phase);
+      assert.equal(await page.locator("#update-preference-label").textContent(), phase === "unconfigured" ? "Notify me about updates" : "Install updates automatically");
+      assert.equal(await page.locator("#update-preference").isChecked(), phase !== "off");
+      if (phase === "off") { assert.match(await page.locator("#settings-update-summary").textContent(), /Automatic updates are off/); assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0); }
+      if (phase === "preparing") {
+        assert.equal(await page.locator("#settings-update-summary").textContent(), "The newest release is still being prepared.");
+        assert.equal(await page.evaluate(() => window.__renderState.trayUpdate ?? null), null);
+        assert.equal(await page.locator("#settings-download-row").isVisible(), false);
+      }
+      if (phase === "unconfigured") {
+        assert.equal(await page.locator("#settings-update-summary").textContent(), "Version 0.161.0 is available.");
+        assert.match(await page.locator("#update-policy").textContent(), /This build updates through the installer/);
+      }
+      if (phase === "failed") assert.match(await page.locator("#settings-update-summary").textContent(), /Signature verification failed/);
+    },
+  })),
   { name: "connected-short-spaces-padding", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } } },
   { name: "connected-short-spaces-6", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } }, expect: async page => {
     const inline = await page.locator('[data-testid="connected-space-row"] > span').evaluateAll(copies => copies.every(copy => {
@@ -456,6 +533,12 @@ export const scenarios = [
   { name: "expired", state: { expired: true }, act: page => page.click("#login"), expect: async page => assert.equal(await page.locator("#recover .icon-spinner").count(), 0) },
   { name: "declined", state: { loginError: "DENIED" }, act: page => page.click("#login") },
   { name: "offline", state: { installed: true, signedIn: true, offline: true } },
+  { name: "service-not-answering", state: { installNotAnswering: true }, act: signIn, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service has not started");
+    assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
+    assert.equal(await page.locator("#recover").textContent(), "Check status");
+    assert.equal(await page.locator("#refusal-detail").textContent(), "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+  } },
   { name: "no-spaces", state: { empty: true }, act: signIn },
   { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
     assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
@@ -491,6 +574,17 @@ export const scenarios = [
   { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
   { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
   { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
+  { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    await page.evaluate(() => window.__emitTauri("desktop-hidden", null));
+    const afterHide = await page.evaluate(() => window.__renderState.statusRequests);
+    await page.waitForTimeout(1500);
+    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterHide, "hidden window does not run the 1 s status poll");
+    await page.evaluate(() => window.__emitTauri("desktop-tray-open", null));
+    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterHide);
+    const afterTray = await page.evaluate(() => window.__renderState.statusRequests);
+    await page.evaluate(() => window.__emitTauri("desktop-shown", null));
+    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterTray);
+  } },
 ];
 
 // Audit regressions use the same real UI entry points as the original fixtures.

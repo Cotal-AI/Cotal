@@ -424,6 +424,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   const handle: HookHandle = async (agent, ev, ctx): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
     try {
+      // Only the main session's work dates this seat. Notifications and lifecycle resets are not progress.
+      if (ev.agent_id === undefined && (event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolBatch" || event === "Stop"))
+        agent.noteActivity();
       switch (event) {
         case "PermissionRequest": {
           const desk = deps.permissions?.();
