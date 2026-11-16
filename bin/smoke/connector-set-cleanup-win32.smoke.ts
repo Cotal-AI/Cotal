@@ -68,6 +68,7 @@ if (process.platform === "win32") {
     const installedRootRetentions: { owner: string; warning: string | null }[] = [];
     create("0.0.7");
     for (const owner of [foreignSid, "S-1-5-32-544", "S-1-5-18"]) {
+      if (owner === sid) continue; // Matching token ownership is covered by the successful own-root collection.
       const changed = spawnSync("icacls.exe", [installed, "/setowner", `*${owner}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true });
       assert.equal(changed.status, 0, changed.stdout + changed.stderr);
       const warningCount: number = warnings.length;
