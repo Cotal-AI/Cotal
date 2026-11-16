@@ -16,7 +16,8 @@ mkdirSync(output,{mode:0o700});
 const home=join(output,'home'),state=join(output,'state'),config=join(output,'config'),runtime=join(output,'runtime'),prefix=join(output,'prefix'),project=join(output,'project');
 for(const dir of [home,state,config,runtime,prefix,project])mkdirSync(dir,{mode:0o700});
 const env={...process.env};for(const key of Object.keys(env))if(key.startsWith('COTAL_'))delete env[key];
-Object.assign(env,{HOME:home,COTAL_HOME:state,XDG_CONFIG_HOME:config,XDG_RUNTIME_DIR:runtime,DO_NOT_TRACK:'1',COTAL_TELEMETRY:'off',COTAL_SKIP_CONNECTOR_SEED:'1',npm_config_cache:join(output,'npm-cache')});
+Object.assign(env,{HOME:home,COTAL_HOME:state,XDG_CONFIG_HOME:config,XDG_RUNTIME_DIR:runtime,DO_NOT_TRACK:'1',COTAL_TELEMETRY:'off',COTAL_SKIP_CONNECTOR_SEED:'1',npm_config_cache:join(output,'npm-cache'),npm_config_prefix:prefix});
+process.umask(0o022);
 const calls=[];
 async function call(label,file,args){
  const row={label,file,args,status:null,signal:null,stdout:'',stderr:'',timeout:false};calls.push(row);
