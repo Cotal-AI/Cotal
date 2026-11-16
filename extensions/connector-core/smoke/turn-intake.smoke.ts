@@ -285,6 +285,30 @@ for (const status of ["blocked", "handoff"] as const) {
   check("the turn re-surfaces on the next frame instead", a.peekPendingTurns()?.goalIds[0] === "g4");
 }
 
+// ── 4b) a refused dispatch hands its turns back ────────────────────────────────────────────────
+// Jcode acknowledges a send before it refuses it as busy. The acknowledgement committed the surface,
+// so the seat yielded `done` at its next boundary for a turn the model never saw (#5918).
+{
+  console.log("4b — unsurfacing a refused dispatch offers its turns again and arms no done");
+  const { a, state, poll } = rig();
+  state.pending = [row("g4b", "work the refusal dropped")];
+  await poll();
+  a.commitSurfacedTurns(["g4b"]);
+  a.unsurfaceTurns(["g4b"]);
+  check("the handed-back turn wakes the seat and is offered on the next frame",
+    a.pendingWake() === 1 && a.peekPendingTurns()?.goalIds[0] === "g4b", a.pendingWake());
+  await a.setStatus("working");
+  await a.setStatus("idle");
+  await tick();
+  check("the boundary yields nothing for the handed-back turn", state.yields.length === 0, JSON.stringify(state.yields));
+  a.commitSurfacedTurns(["g4b"]);
+  await a.setStatus("working");
+  await a.setStatus("idle");
+  await tick();
+  check("once a later dispatch surfaces it, its boundary yields done",
+    state.yields.length === 1 && state.yields[0]?.goalId === "g4b" && state.yields[0]?.status === "done", JSON.stringify(state.yields));
+}
+
 // ── 5) explicit yields: selection, handoff validation, refusal handling ───────────────────────
 {
   console.log("5 — yieldTurn selects the oldest surfaced turn, validates handoffs, and survives a refusal");
@@ -1540,7 +1564,7 @@ await spawn(
   }
 }
 
-const EXPECTED_CELLS = 62;
+const EXPECTED_CELLS = 65;
 const ran = pass + fail;
 console.log(`\nturn-intake.smoke: ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -161,6 +161,13 @@ export function jcodeTurnCondition(error: unknown, since = Date.now()): Presence
   return { code, source, message: error.message, since };
 }
 
+/** Jcode acknowledges a plain send with `message_accepted` before it checks whether this connection
+ *  is still processing a message, and then refuses the send with this error. The acknowledgement is
+ *  therefore no proof that the model received the text. */
+export function isJcodeBusyRefusal(error: unknown): boolean {
+  return error instanceof HarnessError && error.message.includes("Already processing a message");
+}
+
 function privateAgentHome(space: string, name: string): string {
   const root = process.env.COTAL_JCODE_HOME?.trim();
   if (!root) throw new Error("COTAL_JCODE_HOME is not set — the connector must pin the agent's Jcode home");
@@ -608,6 +615,10 @@ export async function runJcodeHost(): Promise<void> {
    *  finishes cleanly. A soft_interrupt `ok` proves the live recipient session queued the text; it
    *  does not prove the model consumed it yet, so the turn boundary remains the sole ack site. */
   let surfacedIds: string[] = [];
+  /** Plain sends written on the host's connection. Jcode reports a busy refusal as a session error
+   *  with no request id, and that error also ends the run already in flight. A run can attribute
+   *  the refusal to its own send only when no later plain send was written. */
+  let plainSends = 0;
   // A client-only recovery leaves accepted work owned by the same native session.
   // In particular an old run() rejecting on client close must not discard that ledger.
   let nativeTreePreserved = false;
@@ -1131,6 +1142,7 @@ export async function runJcodeHost(): Promise<void> {
     relayTurnCondition(null);
     publishInboundHealth();
     let turnClient: JcodeClient | undefined;
+    let ownSend = 0;
     try {
       turnClient = client;
       // This is the dispatch boundary. A return above leaves the kickoff owned and unsent. Once
@@ -1163,6 +1175,7 @@ export async function runJcodeHost(): Promise<void> {
         // manager settled meanwhile, or a seat that began stopping, sends nothing.
         if (stopping || !agent.claimTurns(turnIds))
           throw new Error("the once task ended, or the seat began stopping, while its send waited at the dispatch gate; nothing was sent");
+        ownSend = ++plainSends;
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
@@ -1238,6 +1251,10 @@ export async function runJcodeHost(): Promise<void> {
     } catch (error) {
       closeEventRun(error as Error);
       await events?.settled();
+      // Jcode acknowledged this send before refusing it, so the acceptance marked its run turns
+      // surfaced although the model never saw them. Offer them again; left surfaced, they would end
+      // on a `done` for work nobody did, or wait out their deadline (#5918).
+      if (isJcodeBusyRefusal(error) && ownSend === plainSends) agent.unsurfaceTurns(turnIds);
       if (!nativeTreePreserved || (!reconnecting && client === turnClient)) {
         agent.releaseInFlight(surfacedIds);
         surfacedIds = [];
@@ -1609,6 +1626,7 @@ export async function runJcodeHost(): Promise<void> {
             `[cotal-jcode] soft interrupt is not answering; delivering ${items.length} queued automatic ` +
               `message(s) as a queued Harness turn instead\n`,
           );
+          plainSends++;
           await current.sendMessage(session, injection);
         } finally {
           current.off("message_accepted", onAccepted);
