@@ -8,7 +8,8 @@ import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { EndpointRefusal } from "../daemon/endpoint.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "../daemon/install.js";
-import { executeUpdate, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
+import { currentParentWaits } from "../daemon/update-entry.js";
+import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -68,6 +69,48 @@ function scripted(steps: (Reply | Error)[]) {
   const run = scripted([status("1.0.0")]);
   await waitForInstalledDaemonGeneration("2.0.0", { installed: () => false, query: run.query });
   assert.equal(run.calls(), 0);
+}
+
+// A version change prints the wait once across the parent and its reconcile child: the child
+// waits without printing, because a current parent prints. A current install has only the tail wait.
+{
+  for (const newer of [true, false]) {
+    const globalPrefix = join(root, `count-${newer}`);
+    const globalModules = join(globalPrefix, "lib", "node_modules");
+    mkdirSync(globalModules, { recursive: true, mode: 0o700 });
+    const lines: string[] = [];
+    const say = (line: string) => { if (line.includes("waiting up to") || line.includes("service is")) lines.push(line); };
+    const child = async (env: NodeJS.ProcessEnv) => {
+      const prior = console.log;
+      console.log = (line?: unknown) => say(String(line));
+      const currentParent = currentParentWaits(env, process.pid, true);
+      try {
+        await waitForInstalledDaemonGeneration("0.13.2", {
+          installed: () => true, timeoutMs: 1_000, quiet: currentParent,
+          query: (async () => status("0.13.2")) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+        });
+      } finally { console.log = prior; }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const rt: UpdateRuntime = {
+      ...updateRuntime, env: {}, pid: process.pid, version: () => "0.13.1", checkout: () => false, installPrefix: () => globalPrefix,
+      reportRunningManager: async () => "none", reconcile: async () => {}, refreshConnectors: async () => [],
+      extensions: () => [], claimUpdatePass: () => () => {}, claimGlobalUpdate: () => () => {},
+      verifyGlobalEntry: (_r, v) => join(globalModules, `cotal-${v}.js`),
+      npm: args => args[0] === "view" ? { status: 0, stdout: newer ? '"0.13.2"' : '"0.13.1"', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${globalModules}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
+      npmAsync: async args => {
+        const spec = args[1]!;
+        const v = spec.slice(spec.lastIndexOf("@") + 1);
+        return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
+      },
+      spawnGlobal: async (_r, op, _f, _a, env) => op === "reconcile" && env.COTAL_UPDATE_PARENT ? child(env) : { status: 0, stdout: "", stderr: "" },
+      waitForInstalledGeneration: async () => { say("machine daemon: waiting up to 120s"); },
+      out: say, err: say,
+    };
+    await update({ values: { self: true }, positionals: [] } as never, rt);
+    if (rt.generationWaited !== true) say("machine daemon: waiting up to 120s");
+    assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1, newer ? "parent and child print the wait once" : "a current install prints the wait once");
+  }
 }
 
 // A stale recorded service is knowable before either replacement or connector writes.

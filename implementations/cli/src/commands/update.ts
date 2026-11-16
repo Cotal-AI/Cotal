@@ -166,6 +166,8 @@ export interface UpdateRuntime {
   err(message: string): void;
   stdout(message: string): void;
   stderr(message: string): void;
+  /** Set when a manual version-changing update has already waited for the installed generation. */
+  generationWaited?: boolean;
 }
 
 export { installedCliVersion };
@@ -462,7 +464,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
-    if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt, target);
+    if (latest.ok && compareSemver(latest.version, current) > 0) {
+      const code = await upgradeAndReconcile(latest.version, current, rt, target);
+      if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
+      return code;
+    }
     if (latest.ok && rt.isCurrent?.()) {
       try {
         const custody = await rt.reportRunningManager(target);

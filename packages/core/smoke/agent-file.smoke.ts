@@ -224,6 +224,33 @@ for (const [k, v] of [["model", "   "], ["name", "bob"], ["owner", "mallory-id"]
 const hinted = reread(join(dir, "hinted.md"), { name: "hinted", subscribe: [], model: "valid", meta: { theme: "dark", retries: "3" } });
 ok("unknown scalar hints round-trip beside a modeled model", hinted.model === "valid" && JSON.stringify(hinted.meta) === JSON.stringify({ theme: "dark", retries: "3" }), hinted);
 
+// Directory selection belongs to the spawn request, regardless of the frontmatter value's type.
+for (const key of ["cwd", "worktree"]) {
+  const reason = `"${key}" is not supported in frontmatter; the working directory comes from the spawn request (use --cwd)`;
+  for (const [index, value] of ["../other-tree", '""', "null", "false", "0", "[]", "{}"].entries()) {
+    const file = join(dir, `directory-${key}-${index}.md`);
+    writeFileSync(file, `---\nname: worker\nsubscribe: []\n${key}: ${value}\n---\nbody\n`);
+    let error = "";
+    try { loadAgentFile(file); } catch (e) { error = (e as Error).message; }
+    ok(`load refuses ${key}: ${value} with launch guidance`, error === `agent file ${file}: ${reason}`, error);
+  }
+
+  const prompt = `---\n${key}: ../other-tree\n---\nbody`;
+  let promptError = "";
+  try { composeWirePersona({ name: "worker", prompt }); } catch (e) { promptError = (e as Error).message; }
+  ok(`wire persona frontmatter refuses ${key}`, promptError === `prompt-frontmatter: agent file <prompt>: ${reason}`, promptError);
+
+  const target = join(dir, `save-directory-${key}`, "worker.md");
+  const definition: AgentDef = { name: "worker", subscribe: [], meta: { [key]: "../other-tree" } };
+  let saveError = "";
+  try { saveAgentFile(target, definition); } catch (e) { saveError = (e as Error).message; }
+  ok(`saving meta.${key} is refused before creating its directory`,
+    saveError === `it would not load: ${reason}` && !existsSync(join(dir, `save-directory-${key}`)), saveError);
+  const before = readFileSync(p, "utf8");
+  try { saveAgentFile(p, definition); } catch { /* the refused save must preserve the existing file */ }
+  ok(`saving meta.${key} leaves an existing file unchanged`, readFileSync(p, "utf8") === before);
+}
+
 // 10) A file saved with CRLF line endings or a UTF-8 BOM, as Windows editors and git's autocrlf
 //     write it, reads as the LF file does. Both used to fail the frontmatter fence.
 const lf = "---\nname: crlf\nrole: reviewer\nsubscribe: [general]\n---\nReviews code.\nSecond line.\n";

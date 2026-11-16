@@ -477,6 +477,9 @@ export class BadRequest extends Error {}
  *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
 export class PayloadTooLarge extends Error {}
 
+/** A delete upload that did not finish within its total body deadline. */
+class BodyDeadlineExceeded extends Error {}
+
 /** A post the broker, or the operator's connection to it, refused. Neither the caller's fault nor
  *  this server's, so the frame answers 502 with the broker's own message, escaped by
  *  {@link escapeForOperator}. */
@@ -497,6 +500,7 @@ export class BrokerRefused extends Error {}
  *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
+const DELETE_BODY_DEADLINE_MS = 10_000;
 
 /** The only routes that read a request body. Every other route refuses an announced body. */
 const BODY_ROUTES = new Set(["/api/channel/delete", "/api/send"]);
@@ -1754,12 +1758,12 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
     // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
       if (lifecycle) return json(res, { error: "this service was explicitly configured read-only; no channel-purger authority or alternate transport was acquired", code: "PERMISSION_DENIED" }, 403);
-      const body = await readBody(req).catch((e: unknown) => {
+      const body = await readDeleteBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
         // refusal into `{}` here would answer "channel required", which tells the caller to add a
         // field it already sent and never mentions the size, so the loud refusal has to survive
         // this catch. A malformed body still means "channel required", unchanged.
-        if (e instanceof PayloadTooLarge) throw e;
+        if (e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded) throw e;
         return {} as { channel?: string };
       });
       const channel = typeof body.channel === "string" ? body.channel : "";
@@ -1824,7 +1828,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before
       // this split, a malformed query read in the log exactly like the dashboard breaking.
-      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
+      const status = e instanceof BodyDeadlineExceeded ? 408 : e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
       const caller = status < 500;
       console.error(c[caller ? "yellow" : "red"](lifecycle ? `native dashboard request ${caller ? "refused" : "failed"}; diagnostic body omitted` : `${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
@@ -1848,7 +1852,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
       // WHAT THIS DOES NOT REACH. It is the connection this process owns. A reverse proxy that
       // buffers a request before forwarding it owns its own ingress bound, and `connection` is
       // hop-by-hop, so nothing here configures anything upstream of this server.
-      res.writeHead(status, e instanceof PayloadTooLarge
+      res.writeHead(status, e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded
         ? { "content-type": "application/json", connection: "close" }
         : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
@@ -2222,6 +2226,23 @@ function debounce(fn: () => void, ms: number): () => void {
     if (t) clearTimeout(t);
     t = setTimeout(fn, ms);
   };
+}
+
+/** Race the whole delete upload, not the gaps between chunks. On expiry the request frame sends
+ *  408 with Connection: close, ending the socket and its pending body reader after the reply.
+ *  Only the winning body can reach the purge; a late completion has no effect. */
+async function readDeleteBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new BodyDeadlineExceeded(
+      `request body did not finish within ${DELETE_BODY_DEADLINE_MS}ms`,
+    )), DELETE_BODY_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([readBody(req), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {

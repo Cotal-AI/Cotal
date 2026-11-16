@@ -418,6 +418,9 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   const handle: HookHandle = async (agent: MeshAgent, ev: HookEvent): Promise<Record<string, unknown>> => {
     const event = ev.hook_event_name ?? "";
     try {
+      // Only the main session's work dates this seat. Notifications and lifecycle resets are not progress.
+      if (ev.agent_id === undefined && (event === "UserPromptSubmit" || event === "PreToolUse" || event === "PostToolBatch" || event === "Stop"))
+        agent.noteActivity();
       switch (event) {
         // A new session replaces the one an earlier frame's once task rode on. That task is sealed
         // before anything here awaits, so a late receipt for the old frame cannot confirm it.
