@@ -585,15 +585,20 @@ Removing an extension that owns a running local process is refused with its proc
 declares under every mesh root, and a record folder it creates there is mode `0700`, even with a
 group-writable umask.
 
-Loading an installed extension takes the same locks as `add`, `remove` and `cotal update`. When another
-`cotal` process holds them, the load waits up to five seconds in total (one deadline for both locks)
-without blocking the waiting process, then refuses. A running `cotal update`, `cotal ext add` or
-`cotal ext remove` holds the update-pass lock as well as the install/remove lock, so the load refuses with
-"another extension update or mutation is in progress (pid N) - retry once it finishes". The install/remove
-text, "extension install/remove is in progress (pid N) - retry after the active `cotal ext` command
-finishes", appears only when the update-pass lock is free but a live process still holds the
-install/remove lock itself, for example an update child that outlived its `cotal update` parent. Re-run
-the command once the other one has finished.
+Loading an installed extension first waits for the installation closure held by another command,
+including another extension load. It leaves peer links and module evaluation untouched until the
+holder releases, then continues. A non-update holder has a five-minute wait limit and gets the
+one-second notice above. A running update has a two-minute limit and prints
+`waiting for a Cotal update to finish`.
+
+After that barrier, the load takes the update-pass and install/remove locks with one shared
+five-second deadline. It refuses with
+`another extension update or mutation is in progress (pid <id>) - retry once it finishes` if the
+update-pass lock stays held. The install/remove text,
+``extension install/remove is in progress (pid <id>) - retry after the active `cotal ext` command finishes``,
+appears when the update-pass lock is free but a live process still holds the install/remove lock,
+for example an update child that outlived its `cotal update` parent. Re-run the command once the
+other one has finished.
 
 
 ### Connector seeding [#built-in-connectors-are-seeded-extensions]

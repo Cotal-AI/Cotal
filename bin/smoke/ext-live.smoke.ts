@@ -191,7 +191,7 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
   );
 }
 
-// -- B3: the cross-process lock covers rebind + complete module evaluation --------------------------
+// -- B3: a competing load waits on the closure through rebind + complete module evaluation ----------
 {
   const ready = join(sandbox, "materialize-ready");
   const release = join(sandbox, "materialize-release");
@@ -202,33 +202,51 @@ ok("ext list starts empty", /No extensions installed\./.test(cotal(["ext", "list
     `import { existsSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { registry } from "@cotal-ai/core";
-writeFileSync(${JSON.stringify(ready)}, "ready");
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
 while (!existsSync(${JSON.stringify(release)})) await sleep(10);
 registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run: async () => console.log("barrier-ok") });
 `,
   );
   let stdout = "";
   let stderr = "";
-  const first = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox });
+  const first = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox, timeout: 30_000 });
   first.stdout.on("data", (data) => (stdout += data.toString()));
   first.stderr.on("data", (data) => (stderr += data.toString()));
   const firstDone = new Promise<number | null>((resolve) => first.on("close", resolve));
-  const deadline = Date.now() + 10_000;
-  while (!existsSync(ready) && Date.now() < deadline) await sleep(20);
+  let secondDone: Promise<number | null> | undefined;
+  let secondStdout = "";
+  let secondStderr = "";
+  let firstStatus: number | null = null;
+  let secondStatus: number | null = null;
   try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(ready) && Date.now() < deadline) await sleep(20);
     ok("first materializer reaches top-level await while holding the prefix lock", existsSync(ready), stderr);
-    const blocked = cotal(["hello-ext"]);
-    ok(
-      "a competing materializer fails before rebinding the active host's peer",
-      blocked.status === 1 && /(install\/remove|update or mutation) is in progress/.test(blocked.stderr) && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core")),
-      blocked.stderr,
-    );
+    const owner = readFileSync(ready, "utf8");
+    const peerBefore = lstatSync(peer);
+    const second = spawn(realNode, [tsxCli, binCotal, "hello-ext"], { env, cwd: sandbox, timeout: 30_000 });
+    second.stdout.on("data", (data) => (secondStdout += data.toString()));
+    second.stderr.on("data", (data) => (secondStderr += data.toString()));
+    let secondClosed = false;
+    secondDone = new Promise<number | null>((resolve) => second.on("close", (status) => { secondClosed = true; resolve(status); }));
+    const notice = `waiting for another cotal command (pid ${owner}) to finish changing this installation`;
+    const waitDeadline = Date.now() + 10_000;
+    while (!secondClosed && !secondStderr.includes(notice) && Date.now() < waitDeadline) await sleep(20);
+    ok("a competing materializer announces the closure holder and stays waiting",
+      !secondClosed && secondStderr.includes(notice) && secondStdout === "", secondStdout + secondStderr);
+    ok("the waiting materializer neither rebinds the peer nor evaluates the module",
+      lstatSync(peer).ino === peerBefore.ino && lstatSync(peer).mtimeMs === peerBefore.mtimeMs
+        && realpathSync(peer) === realpathSync(resolve(import.meta.dirname, "..", "..", "packages", "core"))
+        && readFileSync(ready, "utf8") === owner, secondStderr);
   } finally {
     writeFileSync(release, "release");
+    firstStatus = await firstDone;
+    if (secondDone) secondStatus = await secondDone;
+    writeFileSync(installedIndex, good);
   }
-  const firstStatus = await firstDone;
   ok("the lock holder completes after its module evaluation barrier releases", firstStatus === 0 && /barrier-ok/.test(stdout), stdout + stderr);
-  writeFileSync(installedIndex, good);
+  ok("the waiting materializer resumes successfully after the holder releases",
+    secondStatus === 0 && /barrier-ok/.test(secondStdout), secondStdout + secondStderr);
 }
 
 // -- C: run with LIVE specs ------------------------------------------------------------------------
