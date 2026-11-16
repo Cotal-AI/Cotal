@@ -73,7 +73,7 @@ const composed: Command = { ...command, async run(args) {
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   try {
-  await update(args, { ...updateRuntime,
+  const runtime = { ...updateRuntime,
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
       executionGlobalRoot: () => dirname(executionInstallRoot()),
@@ -131,11 +131,11 @@ const composed: Command = { ...command, async run(args) {
         if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
       }
     };
-  }, waitForInstalledGeneration: async version => {
+  }, waitForInstalledGeneration: async (version: string) => {
     await waitForInstalledDaemonGeneration(version, {
       lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
     });
-  }, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
+  }, reportRunningManager: (flags: Record<string, unknown>) => withRemoteExchangeRetry(async () => {
     const recovery = readUpdateRecovery();
     if (recovery?.preparedRestart && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
       const release = claimUpdateClosureAccess();
@@ -270,14 +270,17 @@ const composed: Command = { ...command, async run(args) {
       for (const row of blockedAgents) await row.stop();
     }
     return localVerdict;
-  }) });
+  }) };
+  await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
   // This process keeps the release it loaded. The daemon must run the selected or installed release.
   const expectedVersion = replacementVersion ?? installedCliVersion();
-  if (!daemonObserved) {
+  // A version-changing update already waited for the installed generation before it returned.
+  // Waiting again prints the same line a second time in this process.
+  if (!daemonObserved && runtime.generationWaited !== true) {
     if (args.values.self === true) {
       await waitForInstalledDaemonGeneration(expectedVersion, {
         lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
