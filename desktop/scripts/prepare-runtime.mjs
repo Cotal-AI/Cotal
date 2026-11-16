@@ -37,7 +37,7 @@ function traceEsm(entry) {
     if (visited.has(cur)) continue;
     visited.add(cur);
     const src = readFileSync(cur, 'utf8');
-    for (const match of src.matchAll(/(?:(?:import|export)\s+[^"']*from\s+|import\s+)["']([^"']+)["']/g)) {
+    for (const match of src.matchAll(/(?:(?:import|export)\s*[^"']*from\s*|import\s*)["']([^"']+)["']/g)) {
       if (match[1].startsWith('.')) {
         const next = resolve(dirname(cur), match[1]);
         if (existsSync(next) && statSync(next).isFile()) queue.push(next);
@@ -47,6 +47,7 @@ function traceEsm(entry) {
   return visited;
 }
 const esToolkitKeep = traceEsm(join(deploy, 'node_modules', 'es-toolkit', 'dist', 'compat', 'index.mjs'));
+const jsonSchemaLibraryKeep = traceEsm(join(deploy, 'node_modules', 'json-schema-library', 'dist', 'index.mjs'));
 
 function shouldPruneFile(rel, abs) {
   if (rel.startsWith('seeded-connectors/')) return false;
@@ -63,6 +64,7 @@ function shouldPruneFile(rel, abs) {
   if (rel.startsWith('node_modules/ses/dist/') || rel.startsWith('node_modules/ses/src-xs/')) return true;
   if (rel.startsWith('node_modules/@modelcontextprotocol/sdk/dist/cjs/')) return true;
   if (rel.startsWith('node_modules/es-toolkit/') && rel !== 'node_modules/es-toolkit/package.json' && rel !== 'node_modules/es-toolkit/LICENSE' && !esToolkitKeep.has(abs)) return true;
+  if (rel.startsWith('node_modules/json-schema-library/') && rel !== 'node_modules/json-schema-library/package.json' && !jsonSchemaLibraryKeep.has(abs)) return true;
   return false;
 }
 
