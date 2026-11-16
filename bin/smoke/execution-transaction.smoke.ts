@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
+import { cleanupExecutionStore } from "../execution-store.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
 if (["linux", "darwin"].includes(process.platform)) {
@@ -30,6 +32,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     const store = executionStore(installed);
     mkdirSync(join(store, ".installing-Zz9999/lib"), { recursive: true, mode: 0o700 });
     mkdirSync(join(store, ".preparing-Yy8888"), { mode: 0o700 });
+    cleanupExecutionStore(installed);
     const staging = executionStagingPrefix(installed);
     assert.deepEqual(readdirSync(store), [staging.slice(store.length + 1)], "a new staging folder replaces the abandoned ones");
     rmSync(staging, { recursive: true });
@@ -63,6 +66,22 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(selectExecutionProgram(installed).root, installed);
     assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version, "0.1.0");
     assert.equal(readFileSync(join(installed, "dist/cotal-program.js"), "utf8"), oldProgram);
+    const plain = join(scratch, "plain/lib/node_modules/cotal-ai"), repo = join(import.meta.dirname, "../..");
+    cpSync(join(repo, "bin/dist"), join(plain, "dist"), { recursive: true });
+    cpSync(join(repo, "bin/package.json"), join(plain, "package.json"));
+    symlinkSync(join(repo, "bin/node_modules"), join(plain, "node_modules"));
+    const unreadableStore = executionStore(plain);
+    mkdirSync(unreadableStore, { mode: 0o700 });
+    const inaccessibleDescriptor = executionDescriptorPath(plain), originalDescriptor = "unreadable old descriptor\n";
+    writeFileSync(inaccessibleDescriptor, originalDescriptor);
+    chmodSync(unreadableStore, 0);
+    try {
+      const version = spawnSync(process.execPath, [join(plain, "dist/cotal.js"), "--version"], { env: process.env, cwd: scratch, encoding: "utf8", timeout: 15_000 });
+      assert.equal(version.status, 0, version.stderr);
+      assert.equal(version.stdout.split("\n")[0], `cotal-ai ${JSON.parse(readFileSync(join(plain, "package.json"), "utf8")).version}`);
+      assert.equal(lstatSync(unreadableStore).mode & 0o777, 0, "a plain start never changes an unreadable store");
+    } finally { chmodSync(unreadableStore, 0o700); }
+    assert.equal(readFileSync(inaccessibleDescriptor, "utf8"), originalDescriptor, "the unreadable descriptor is left intact");
     console.log("execution transaction: publication and rollback preserve canonical product bytes");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }

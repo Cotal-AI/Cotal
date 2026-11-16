@@ -313,7 +313,6 @@ export function register(on) {
     return next(e);
   });
   on('tool.call', async ($, e, next) => {
-    let input = e;
     if (e.agentId === undefined && /^mcp__(cotal|plugin_cotal_cotal)__cotal_connect$/.test(e.tool)) {
       const session = await $.session.id();
       try {
@@ -326,9 +325,10 @@ export function register(on) {
         await relayNative($, nativeBinding);
         void listen($);
       } catch { return { deny: 'Cotal could not bind this native conversation to its local server. No identity was requested.' }; }
-      input = { ...e, context: session };
+      // The bound session is already on the local server. Leaving the tool input unchanged lets a
+      // host that rejects a hook-edited call admit the first connect.
     }
-    const result = await next(input);
+    const result = await next(e);
     if (e.agentId === undefined && !next.signal.aborted) await submit($, true);
     return result;
   });

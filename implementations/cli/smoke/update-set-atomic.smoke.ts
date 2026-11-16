@@ -4,11 +4,12 @@ import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { emitSentinel, skipSuite } from '@cotal-ai/smoke-kit';
 
 // Real CLI/natives/npm path. Only the second requested package install is refused by a transparent
 // package-manager fixture, so the failure happens after the first connector's ordinary transaction.
 if (process.platform === 'win32') {
-  console.log('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
+  skipSuite('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
 } else {
 const root = mkdtempSync(join(tmpdir(), 'update-set-'));
 try {
@@ -52,5 +53,6 @@ for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readd
 console.log('whole-set successful update repairs every selected package');
 const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
 assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], `file:../seed/store/${generation}/claude`);
+emitSentinel({ passed: 2, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }

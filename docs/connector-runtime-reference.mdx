@@ -124,6 +124,24 @@ Each CLI, connector, or web renderer owns its wording. Compact maps and DM picke
 `cotal ps`, `cotal endpoints`, `cotal console`, `cotal join`, and `cotal_roster` show reported conditions with their ages and the age of `activeAt`.
 The last four also show the age of `statusSince` and date the activity separately through `activitySince`.
 Changing status does not make an old activity recent.
+
+Connectors relay harness work into the existing presence `activeAt` timestamp, independently of the optional event plane:
+
+| Connector | Work events |
+| --- | --- |
+| Claude Code | Main-session prompt submission, tool start, completed tool batch, and successful turn end |
+| Codex | Turn start, item start and completion, assistant and reasoning deltas, and command or file-change output |
+| OpenCode 1.x | Busy events, text, reasoning and tool part updates during the owned turn, and tool starts |
+| OpenCode 2.x | Owned execution starts, completed model steps, and tool starts |
+| Hermes | Model-call start and completion, and tool starts |
+| Jcode | Native session work events, including tokens and tools |
+| pi | Agent start, assistant text, thinking and tool-call deltas, and tool execution start, output and completion |
+
+A heartbeat, notification, retry status or session reset does not advance this timestamp.
+Connectors with only boundary hooks cannot report tokens between those boundaries.
+An old `activeAt` dates the last reported work; it cannot distinguish a slow provider from a hung one.
+Missing means no work event was reported. The existing progress wording remains unchanged.
+
 The shared timestamp rules are in the [CotalEndpoint reference](embedding-endpoints.mdx#presence-metadata).
 Each printed condition code or activity stays on one line, escapes control characters and line separators as `\uXXXX`, and is limited to 200 characters.
 

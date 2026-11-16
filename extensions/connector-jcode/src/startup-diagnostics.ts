@@ -17,6 +17,7 @@ export type JcodeConnectorFailureCode =
   | "provider_payment_required"
   | "provider_forbidden"
   | "provider_rate_limited"
+  | "provider_client_error"
   | "provider_request_failed";
 
 /** A bounded connector-owned startup refusal. Only its allow-listed code is rendered publicly. */
@@ -290,6 +291,12 @@ export function classifyReadinessFailure(error: unknown): JcodeConnectorError | 
     /^  status: 429 Too Many Requests\r?$/m.test(error.message)
   ) {
     return new JcodeConnectorError("provider_rate_limited", "Jcode provider rate-limited the readiness request");
+  }
+  if (
+    error.message.startsWith("internal: OpenAI-compatible chat request failed\n") &&
+    /^  status: 4[0-9]{2}(?: [^\r\n]*)?\r?$/m.test(error.message)
+  ) {
+    return new JcodeConnectorError("provider_client_error", "Jcode provider refused the readiness request with HTTP 4xx");
   }
   return undefined;
 }

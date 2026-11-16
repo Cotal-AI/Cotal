@@ -39,6 +39,16 @@ Rollback restores captured connector configuration before verifying the previous
 It releases its own admission fences even when the daemon still runs the target generation.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
 An unwritable installation refuses before staging and names the owning install command.
+Update attempts, successful publications and daemon startup retire abandoned staging and completed
+transactions under the update lock. All execution generations remain, including earlier generations
+that loaded processes may still use. Another account's store is untouched; a cleanup warning does not fail the update.
+Normal command startup does not collect old update data.
+When the installation supplies connector-version sets, the same locked cleanup keeps its current
+and previous sets and every recorded live or unknown version. An unknown holder without a version
+keeps all sets. The caller classifies the existing process-lifetime records; cleanup does not infer
+that a running Manager has changed versions.
+An older transaction without a completion marker stays with a warning until a later successful
+publication explicitly supersedes its validated history for the same installation.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
 
 Publication changes only the canonical bootstrap. A protected descriptor in the retained store
@@ -55,8 +65,7 @@ loaded generation without stopping seats. New launches still enforce extension g
 compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
 and consent checks.
 
-Current and previous execution generations are retained. Older generations remain when their
-holders cannot be proved absent. The update that first installs this support still runs the
+All execution generations are retained. The update that first installs this support still runs the
 older updater. The desktop app's bundled runtime updates through its signed platform installer
 and refuses staged execution retention. Windows keeps its existing in-place update route and
 does not use retained publication.
