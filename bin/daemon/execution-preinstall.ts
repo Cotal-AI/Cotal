@@ -24,9 +24,10 @@ async function readLegacyExecutionPreinstall(request: ExecutionPreinstallRequest
   preflightInstalledDaemon({ state: join(homeCotalDir(), "daemon") }, undefined, request.daemonArgv);
   return withRemoteExchangeRetry(async () => {
     const readOne = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: request.installedEntry });
-    const paths = daemonPaths();
-    let reply;
-    try { reply = await queryDaemon({ paths }); }
+    // A session with no runtime directory cannot reach a daemon socket, which is the same answer
+    // as a daemon that is not running.
+    let paths, reply;
+    try { paths = daemonPaths(); reply = await queryDaemon({ paths }); }
     catch (error) {
       if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
       await reportRunningManagers(request.flags, readOne, flags => localUpdateManagers(flags, request.installedEntry));
