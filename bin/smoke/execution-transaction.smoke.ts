@@ -3,6 +3,7 @@ import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readF
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
+import { cleanupExecutionStore } from "../execution-store.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
 if (["linux", "darwin"].includes(process.platform)) {
@@ -30,6 +31,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     const store = executionStore(installed);
     mkdirSync(join(store, ".installing-Zz9999/lib"), { recursive: true, mode: 0o700 });
     mkdirSync(join(store, ".preparing-Yy8888"), { mode: 0o700 });
+    cleanupExecutionStore(installed);
     const staging = executionStagingPrefix(installed);
     assert.deepEqual(readdirSync(store), [staging.slice(store.length + 1)], "a new staging folder replaces the abandoned ones");
     rmSync(staging, { recursive: true });

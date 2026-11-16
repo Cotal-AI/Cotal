@@ -103,6 +103,8 @@ export interface ExecutionReplacement {
   verify(version: string): void;
   /** Remove a retained target that was never published. */
   discard?(): void;
+  /** Complete retained publication bookkeeping after successful reconciliation. */
+  complete?(): void;
 }
 
 export interface UpdateRuntime {
@@ -332,9 +334,10 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           return true;
         }
         let entry: string;
+        let recoveredExecution: ExecutionReplacement | undefined;
         if (record.execution) {
           if (!rt.recoverExecution) throw new Error("this binary cannot recover a staged execution transaction; rerun its installer");
-          const execution = rt.recoverExecution(record.execution);
+          const execution = recoveredExecution = rt.recoverExecution(record.execution);
           execution.restore();
           execution.verify(record.previous);
           entry = execution.entry;
@@ -356,6 +359,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
         }
         snapshot.discard();
         clearUpdateRecovery();
+        recoveredExecution?.complete?.();
         rt.out(`Restored cotal-ai@${record.previous} after an interrupted update.`);
         return true;
       } finally { releaseGlobal(); }
@@ -1229,6 +1233,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   snapshot.discard();
   clearUpdateRecovery();
   recordUpdateCompletion(targetVersion, `updated to ${targetVersion}`, true);
+  execution?.complete?.();
   if (stagedExecution) rt.out(c.green(`✓ cotal-ai@${targetVersion} in use and reconciled`));
   else rt.out(c.green(`✓ cotal-ai@${targetVersion} installed globally and reconciled`));
   return interrupted;
@@ -1257,6 +1262,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
           snapshot.discard();
           clearUpdateRecovery();
           recordUpdateCompletion(targetVersion, `repaired and updated to ${targetVersion}`, true);
+          execution?.complete?.();
           rt.out(c.green(`✓ cotal-ai@${targetVersion} repaired and reconciled`));
           return interrupted;
         }
@@ -1284,6 +1290,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
       snapshot.discard();
       clearUpdateRecovery();
       recordUpdateCompletion(targetVersion, `update failed; restored and reconciled ${current}`, false);
+      execution?.complete?.();
       rt.err(`Update failed; cotal-ai@${current} was restored and reconciled. Run \`cotal update --self\` to try again.`);
       return interrupted || failureStatus;
     } catch (error) {
