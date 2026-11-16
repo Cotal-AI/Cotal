@@ -184,8 +184,8 @@ export async function reproduce6385(options) {
     report.targetReady = daemon?.state === 'ready' && daemon?.version === registry.identity.targetVersion;
     const afterSuccess = report.observations.filter(row => row.at >= successAt);
     report.faultObserved = options.fault === 'hang'
-      ? afterSuccess.filter(row => row.mainPid > 1 && row.daemon?.exit !== 0 && row.records['daemon/daemon.log'].text?.includes('6385 test-package hang reached before serveDaemon')).length >= 2
-      : afterSuccess.some(row => row.records['daemon/daemon.log'].text?.includes('6385 test-package exit reached before serveDaemon') && (/ExecMainStatus=86(?:\n|$)/.test(row.unit?.stdout ?? '') || /status=86/.test(row.journal?.stdout ?? '')));
+      ? afterSuccess.filter(row => row.mainPid > 1 && row.daemon?.exit !== 0 && (row.records['daemon/daemon.log'].text?.includes('6385 test-package hang reached before serveDaemon') || row.journal?.stdout.includes('6385 test-package hang reached before serveDaemon'))).length >= 2
+      : afterSuccess.some(row => (row.records['daemon/daemon.log'].text?.includes('6385 test-package exit reached before serveDaemon') || row.journal?.stdout.includes('6385 test-package exit reached before serveDaemon')) && (/ExecMainStatus=86(?:\n|$)/.test(row.unit?.stdout ?? '') || /status=86/.test(row.journal?.stdout ?? '')));
     report.reproduced = report.schedulerRecordedSuccess && report.targetSelected && !report.targetReady && report.faultObserved;
     report.result = report.reproduced ? 'reproduced' : 'not-reproduced';
   } catch (error) {
