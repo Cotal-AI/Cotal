@@ -8,7 +8,9 @@ import { pathToFileURL } from 'node:url';
 
 // Recovery measurement only. Run once per route on a fresh disposable native runner, never the laptop.
 // node --import tsx stuck-native-before.mts REPO ROOT BASE_A BASE_B FIXED npm|installer [registered|absent]
-const [repo, root, baseA, baseB, fixed, route, standin = 'registered'] = process.argv.slice(2);
+const [repo, root, baseA, baseB, fixed, route, standin = 'registered', activation = 'immediate'] = process.argv.slice(2);
+assert(['immediate', 'passive120'].includes(activation), 'known observation mode required');
+assert(activation !== 'passive120' || route === 'npm' && standin === 'registered', 'passive observation requires registered npm case');
 assert(['registered', 'absent'].includes(standin), 'controlled connector state required');
 assert(['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', 'requires admitted disposable GitHub-hosted POSIX runner');
 assert(repo && root && process.env.RUNNER_TEMP && resolve(root).startsWith(resolve(process.env.RUNNER_TEMP) + '/'), 'private runner temp root required');
@@ -16,7 +18,7 @@ assert(route === 'npm' || route === 'installer', 'one route per fresh runner');
 assert(!existsSync(root), 'fresh before-state required');
 process.umask(0o077);
 mkdirSync(root, { mode: 0o700 });
-const report: any = { kind: 'official18-owned-native-recovery', platform: process.platform, route, standin, startedAt: new Date().toISOString(), calls: [], observations: [], harnessSource: process.env.GITHUB_SHA };
+const report: any = { kind: 'official18-owned-native-recovery', platform: process.platform, route, standin, activation, startedAt: new Date().toISOString(), calls: [], observations: [], harnessSource: process.env.GITHUB_SHA };
 const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const guard = () => { const d = statfsSync(root); assert(d.bavail * d.bsize >= 25769803776, 'STOP: less than 24 GiB before install or install-capable command'); };
@@ -173,6 +175,23 @@ try {
     assert.equal(hash(readFileSync(installer)), receipt.sha256); assert.equal(receipt.source, registry.identity.source);
     report.installer = receipt;
     report.replacement = await call('source-bound installer rerun', 'sh', [installer, '--version', report.target, '--no-setup', '--no-modify-path'], 300000, { COTAL_INSTALL_DIR: prefix, COTAL_BIN_DIR: join(root, 'bin') });
+  }
+  if (activation === 'passive120') {
+    // No CLI, version probe, daemon query, native command or process probe during this interval.
+    const started = Date.now();
+    report.passive = { startedAt: new Date(started).toISOString(), durationMs: 120000, callsAtStart: report.calls.length }; save();
+    await pause(120000);
+    Object.assign(report.passive, { endedAt: new Date().toISOString(), elapsedMs: Date.now() - started, callsAtEnd: report.calls.length });
+    assert.equal(report.passive.callsAtEnd, report.passive.callsAtStart, 'nothing is launched during passive observation');
+    report.passive.after = await observe('autonomous native state after120s with no command');
+    const row = report.passive.after;
+    report.passive.recovered = row.daemon.version === report.target && row.daemon.state === 'ready'
+      && row.managers.some((m: any) => m.space === report.participant.space && m.state === 'answering')
+      && row.fence?.prepared === false;
+    report.passive.oldDaemonAlive = birth(report.before.daemon.pid) === report.before.daemon.start;
+    report.passive.oldManagerAlive = birth(report.beforeManager.pid) === report.beforeManager.start;
+    save();
+    assert(report.passive.recovered && !report.passive.oldDaemonAlive && !report.passive.oldManagerAlive, 'autonomous activation must complete before ANY new CLI command');
   }
   report.version = await cotal('public new software version', ['--version']);
   assert(report.version.exit === 0 && report.version.stdout.startsWith(`cotal-ai ${report.target}\n`), 'new software must really be selected');

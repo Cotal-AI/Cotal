@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         route: [npm]
-        standin: [registered, absent]
+        standin: [registered]
     env:
       DO_NOT_TRACK: '1'
       COTAL_TELEMETRY: 'off'
@@ -103,7 +103,7 @@ jobs:
           ROUTE: ${{ matrix.route }}
           STANDIN: ${{ matrix.standin }}
         run: |
-          node --import tsx scripts/stuck-native-before.mts "$GITHUB_WORKSPACE" "$RUNNER_TEMP/stuck-$ROUTE" "$RUNNER_TEMP/legacy-a" "$RUNNER_TEMP/legacy-b" "$RUNNER_TEMP/fixed" "$ROUTE" "$STANDIN"
+          node --import tsx scripts/stuck-native-before.mts "$GITHUB_WORKSPACE" "$RUNNER_TEMP/stuck-$ROUTE" "$RUNNER_TEMP/legacy-a" "$RUNNER_TEMP/legacy-b" "$RUNNER_TEMP/fixed" "$ROUTE" "$STANDIN" passive120
       - name: Hash public evidence only
         if: always()
         env:
@@ -117,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stuck-native-pair-${{ matrix.standin }}
+          name: stuck-native-passive120-${{ matrix.standin }}
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/stuck-${{ matrix.route }}/result.json
