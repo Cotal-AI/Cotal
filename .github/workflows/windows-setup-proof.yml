@@ -125,7 +125,7 @@ jobs:
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
       - name: Build synthetic next candidate in warm tree
-        if: steps.plan.outputs.measure_6879 != 'true'
+        if: steps.plan.outputs.version_pr != 'true' || steps.plan.outputs.measure_6879 == 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -166,7 +166,7 @@ jobs:
             throw "Synthetic next setup bundle carries desktop-runtime.json version $bundledVersion instead of $nextVersion"
           }
       - uses: actions/upload-artifact@v4
-        if: steps.plan.outputs.measure_6879 != 'true'
+        if: steps.plan.outputs.version_pr != 'true' || steps.plan.outputs.measure_6879 == 'true'
         with:
           name: setup-synthetic-next
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
