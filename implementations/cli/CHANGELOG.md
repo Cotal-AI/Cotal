@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.165.0
+
+### Patch Changes
+
+- 8cddd39: Staged updates now remove abandoned staging folders and finished transactions while keeping all execution generations.
+  Cleanup runs under the installation's update lock when an update starts, after it succeeds, and when the daemon starts. It skips another account's store and reports removal failures without failing the update.
+- Updated dependencies [6c77c15]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

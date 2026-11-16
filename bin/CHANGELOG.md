@@ -1,5 +1,29 @@
 # cotal-ai
 
+## 0.165.0
+
+### Patch Changes
+
+- 8cddd39: Staged updates now remove abandoned staging folders and finished transactions while keeping all execution generations.
+  Cleanup runs under the installation's update lock when an update starts, after it succeeds, and when the daemon starts. It skips another account's store and reports removal failures without failing the update.
+- 7d0e4f8: Daemon login and setup now report invalid provider URLs as usage refusals without echoing or recording the rejected URL. Validation runs before account selection or native setup effects, and help consistently describes auth URLs and discovery hostnames.
+- Updated dependencies [6c77c15]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [8cddd39]
+- Updated dependencies [7ecfa90]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/cli@0.165.0
+  - @cotal-ai/manager@0.165.0
+  - @cotal-ai/connector-core@0.165.0
+  - @cotal-ai/auth@0.165.0
+  - @cotal-ai/delivery@0.165.0
+  - @cotal-ai/registry@0.165.0
+  - @cotal-ai/runtime@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/seat@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

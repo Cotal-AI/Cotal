@@ -1,5 +1,25 @@
 # @cotal-ai/core
 
+## 0.165.0
+
+### Minor Changes
+
+- 0fa02a8: Correct contract validation for admitted JSON Schema 2020-12 references and evaluated annotations.
+  
+  Instance validation now uses json-schema-library 11.6.16, while Ajv retains schema meta-validation.
+  The synchronous validator exposes backend-neutral errors instead of Ajv metadata. Generated browser
+  contract modules import the shared interpreter and must be regenerated with this release.
+- 9eb591d: Agent files now refuse `cwd` and `worktree` frontmatter instead of silently ignoring the requested directory.
+  Set the directory on the spawn request with `--cwd`. Other unmodeled scalar hints still round-trip through `meta`.
+
+### Patch Changes
+
+- 6c77c15: Read the newest chat messages across a channel family without listing every concrete channel.
+  `CotalEndpoint.multiChannelHistory(["events.>"], { limit })` uses one broker filter and returns
+  the same subject-tagged, stream-ordered rows as the equivalent concrete-channel read.
+  The family must be the only filter, and the broker still enforces the caller's existing grants.
+- ab8290f: A refusal for a missing required property names the property again, for example `must have required property 'windowMs'`.
+
 ## 0.164.18
 
 No changes in this release.

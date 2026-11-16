@@ -1,5 +1,20 @@
 # @cotal-ai/manager
 
+## 0.165.0
+
+### Patch Changes
+
+- 7ecfa90: Restore named inspection, model-pin audits and helper shutdown for managed static control sessions on their holding manager.
+  
+  Keep instance reads within the spawner's issued authority, preserve workflow starter ceilings without adding implicit reads to run-spawned helpers, and renew each seat with its original issued scope.
+- Updated dependencies [6c77c15]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/seat@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

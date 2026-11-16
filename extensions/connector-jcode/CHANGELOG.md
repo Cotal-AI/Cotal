@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.165.0
+
+### Patch Changes
+
+- 5028254: Provider HTTP 4xx readiness refusals now report a client-error category instead of an unknown startup failure. Existing authentication, payment, permission, rate-limit and model-refusal diagnostics keep their categories, and provider response text stays private.
+
 ## 0.164.18
 
 No changes in this release.
