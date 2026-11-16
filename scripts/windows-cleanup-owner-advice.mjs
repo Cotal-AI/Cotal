@@ -136,7 +136,9 @@ async function restart(label) {
   const task = await verifyTask(`${label}-verify`);
   const birth = parse(requireOK(await powershell(`${label}-old-lifetime`, `$p=Get-Process -Id ${before.pid} -ErrorAction Stop; @{birth=$p.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()} | ConvertTo-Json -Compress`, 30_000)))?.birth;
   assert.ok(birth);
-  requireOK(await run(`${label}-task-end`, join(process.env.SystemRoot, 'System32/schtasks.exe'), ['/End', '/TN', task.unit], 30_000));
+  observation(`${label}-verified-unit`, { unit: task.unit });
+  requireOK(await daemon('uninstall', '--yes'));
+  owned = false;
   const deadline = Date.now() + 30_000;
   let gone = false;
   do {
@@ -147,6 +149,10 @@ async function restart(label) {
   } while (Date.now() < deadline);
   observation(`${label}-old-lifetime-gone`, { pid: before.pid, birth, gone });
   assert.ok(gone, 'Old daemon lifetime did not end');
+  const installed = await daemon('install');
+  owned = existsSync(receiptPath);
+  if (owned) await verifyTask(`${label}-reinstalled-task`);
+  requireOK(installed);
   requireOK(await daemon('start'));
   await ready(`${label}-ready`, before.pid);
   await capture(label);
