@@ -1016,7 +1016,7 @@ export async function matrixCell(options) {
             for (let i = 0; i < 60 && !existsSync(join(cotalHome, 'update-check.json')); i++) await delay(1000);
             for (const [name, fields] of [['update-check.json', ['checkedAt', 'firstSeenAt', 'attemptedAt']], ['update-attempt.json', ['next']]]) {
               const file = join(cotalHome, name), before = json(file), after = { ...before };
-              for (const field of fields) after[field] = Date.now() - 7200000;
+              for (const field of fields) after[field] = Date.now() - (field === 'checkedAt' ? 25 * 3600000 : 7200000);
               save(join(output, `${id}-staged-${name}-clock.json`), { before, after });
               save(file, after);
             }

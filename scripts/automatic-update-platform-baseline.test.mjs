@@ -547,7 +547,15 @@ test('real product cache refresh requires success checkedAt older than one day, 
     const now = Date.now(), initial = { v: 1, latest: '0.164.7', checkedAt: now - 7200000, firstSeenAt: now - 7200000, attemptedAt: now - 7200000 };
     writeFileSync(join(cotal, 'update-check.json'), JSON.stringify(initial));
     assert.deepEqual(await run(), initial, 'two-hour success cache is intentionally reused');
-    writeFileSync(join(cotal, 'update-check.json'), JSON.stringify({ ...initial, checkedAt: now - 25 * 3600000 }));
+    const source=readFileSync(new URL('./automatic-update-platform-baseline.mjs',import.meta.url),'utf8');
+    const block=source.split("const selectedBefore = inspectInstalledUpdateRoute")[1].split('const deadline =')[0];
+    const expression=/for \(const field of fields\) after\[field\] = Date\.now\(\) - ([^;]+);/.exec(block)?.[1];
+    assert(expression,'staged scheduler clock stimulus missing');
+    const age=Function('field',`return ${expression}`);
+    assert(age('checkedAt')>24*3600000);
+    assert.equal(age('attemptedAt'),7200000);
+    assert(!/after\.failures|after\[['"]failures['"]\]/.test(block),'clock stimulus cannot rewrite failure count');
+    writeFileSync(join(cotal, 'update-check.json'), JSON.stringify({ ...initial, checkedAt: now-age('checkedAt') }));
     const refreshed = await run();
     assert.equal(refreshed.latest, '0.164.7'); assert(refreshed.attemptedAt >= now); assert(refreshed.checkedAt >= now);
     assert.equal(refreshed.firstSeenAt, initial.firstSeenAt);
