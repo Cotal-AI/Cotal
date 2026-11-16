@@ -17,5 +17,7 @@ export function windowsSetOwnedByCurrentUser(path: string): boolean {
   if (!/^S-1-[0-9-]+$/.test(sid)) throw new Error("Windows connector set owner query returned no valid SID");
   const after = lstatSync(path);
   if (!after.isDirectory() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || before.birthtimeMs !== after.birthtimeMs) throw new Error("connector set root changed during Windows ownership query");
-  return sid === win32ProcessBinding().userSid();
+  if (sid === win32ProcessBinding().userSid()) return true;
+  if (sid === "S-1-5-32-544" || sid === "S-1-5-18") throw new Error(`connector set directory ${path} is owned by ${sid}, not this account; run this installation's \`cotal ext seed --repair\` as its owning account`);
+  return false;
 }

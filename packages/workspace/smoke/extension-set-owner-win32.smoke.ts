@@ -32,7 +32,18 @@ try {
   assert.equal(ownResult, true);
   assert.equal(foreignResult, false);
   assert.match(reparseError, /real directory|reparse/);
-  const result = { platform: process.platform, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, accountRemoved: false };
+  const privilegedOwners: { sid: string; path: string; error: string }[] = [];
+  for (const [name, owner] of [["administrators", "S-1-5-32-544"], ["system", "S-1-5-18"]] as const) {
+    const path = join(root, name);
+    mkdirSync(path);
+    const change = spawnSync("icacls.exe", [path, "/setowner", `*${owner}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true });
+    assert.equal(change.status, 0, change.stdout + change.stderr);
+    let error = "";
+    try { windowsSetOwnedByCurrentUser(path); } catch (cause) { error = String(cause); }
+    assert(error.includes(path) && error.includes(owner) && error.includes("cotal ext seed --repair"), error);
+    privilegedOwners.push({ sid: owner, path, error });
+  }
+  const result = { platform: process.platform, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, privilegedOwners, accountRemoved: false };
   ps(`Remove-LocalUser -Name ${literal(account)}`); created = false;
   result.accountRemoved = true;
   const output = process.env.COTAL_OWNER_PROBE_OUTPUT;
