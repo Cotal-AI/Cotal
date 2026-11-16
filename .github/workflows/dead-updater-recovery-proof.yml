@@ -23,7 +23,7 @@ jobs:
     env:
       DO_NOT_TRACK: '1'
       COTAL_TELEMETRY: 'off'
-      FIXED_SOURCE: 0ed6cc3c6a5deb3e130448746874e0b308e633bb
+      FIXED_SOURCE: e537efa5cb8e6f8b2267327be202ea74249503b2
       LEGACY_SOURCE: 8cddd397a05afc15842c0a2402beb2a983b226c7
     steps:
       - uses: actions/checkout@v6
@@ -59,12 +59,12 @@ jobs:
           const api=async path=>{const r=await fetch('https://api.github.com/repos/Cotal-AI/Cotal/'+path,{headers:{Authorization:'Bearer '+process.env.GH_TOKEN,Accept:'application/vnd.github+json'}});assert(r.ok,'GitHub artifact query failed: '+r.status);return r.json();};
           const deadline=Date.now()+25*60*1000;
           for(;;){
-            const run=await api('actions/runs/43935096341');
+            const run=await api('actions/runs/43923750778');
             assert.equal(run.head_sha,process.env.FIXED_SOURCE,'producer head changed');
-            const rows=await api('actions/runs/43935096341/artifacts?per_page=100');
+            const rows=await api('actions/runs/43923750778/artifacts?per_page=100');
             const matches=rows.artifacts.filter(a=>a.name==='release-candidate'&&!a.expired);
             assert(matches.length<=1,'ambiguous candidate artifact');
-            if(matches.length){const a=matches[0];assert.match(a.digest,/^sha256:[a-f0-9]{64}$/);writeFileSync(process.env.RUNNER_TEMP+'/A-producer-artifact.json',JSON.stringify({run:43935096341,source:run.head_sha,id:a.id,digest:a.digest},null,2));appendFileSync(process.env.GITHUB_OUTPUT,'artifact='+a.id+'\n');break;}
+            if(matches.length){const a=matches[0];assert.match(a.digest,/^sha256:[a-f0-9]{64}$/);writeFileSync(process.env.RUNNER_TEMP+'/A-producer-artifact.json',JSON.stringify({run:43923750778,source:run.head_sha,id:a.id,digest:a.digest},null,2));appendFileSync(process.env.GITHUB_OUTPUT,'artifact='+a.id+'\n');break;}
             assert(!(run.status==='completed'&&run.conclusion!=='success'),'A producer failed before candidate artifact');
             assert(Date.now()<deadline,'A artifact wait expired, no alternate source allowed');
             await new Promise(r=>setTimeout(r,30000));
@@ -74,7 +74,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
-          run-id: 43935096341
+          run-id: 43923750778
           artifact-ids: ${{ steps.candidate.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/fixed
