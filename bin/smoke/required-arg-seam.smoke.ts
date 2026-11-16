@@ -560,7 +560,9 @@ const SEAMS: Seam[] = [
   // resolved TLS decision on each auth arm. Three smoke calls state `tls: false` for their
   // local brokers: history-read's teardown, gate-reconcile-auth's registration executor,
   // and remote-registration-expiry's liveness observer.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 448, untypecheckedSites: 357 },
+  // 448/357 -> 449/358: reconnect-missing-inbox-auth adds its target-pinned teardown connection,
+  // which states `tls: false` for the suite's loopback broker.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 449, untypecheckedSites: 358 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

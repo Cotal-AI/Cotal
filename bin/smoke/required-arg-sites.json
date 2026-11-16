@@ -12,6 +12,7 @@
   "extensions/connector-core/smoke/event-payload-legacy.smoke.ts": 1,
   "extensions/connector-core/smoke/idle-seat-connects.smoke.ts": 3,
   "extensions/connector-core/smoke/manager-connect-deadline.smoke.ts": 1,
+  "extensions/connector-core/smoke/reconnect-missing-inbox-auth.smoke.ts": 1,
   "extensions/connector-core/smoke/turn-notice.smoke.ts": 4,
   "extensions/connector-core/smoke/user-manager-transport.smoke.ts": 7,
   "extensions/connector-core/src/manager-call.ts": 2,

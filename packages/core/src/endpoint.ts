@@ -534,11 +534,12 @@ export interface DmOnlyOptions {
   settleTimeoutMs?: number;
 }
 
-/** A DM-only endpoint's own `dm_` durable does not exist. The endpoint never creates it. */
+/** This endpoint's own `dm_` durable does not exist. A DM-only endpoint, and any endpoint on an
+ *  authenticated mesh, binds the durable its provisioner created and never creates one. */
 export class DmDurableMissingError extends Error {
   readonly code = "dm-durable-missing" as const;
   constructor(readonly stream: string, readonly durable: string) {
-    super(`dm-durable-missing: durable "${durable}" on stream "${stream}" does not exist; a DM-only endpoint binds an existing durable and never creates one`);
+    super(`dm-durable-missing: durable "${durable}" on stream "${stream}" does not exist; this endpoint binds an existing durable and never creates one`);
     this.name = "DmDurableMissingError";
   }
 }
@@ -7955,7 +7956,15 @@ export class CotalEndpoint extends EventEmitter {
         inactiveThresholdMs: this.inactiveThresholdMs,
       });
     }
-    await this.pump(dmStream(this.space), dmDurable(this.owner, this.actor, ownUid), { inbox: true });
+    const dm = dmDurable(this.owner, this.actor, ownUid);
+    try {
+      await this.pump(dmStream(this.space), dm, { inbox: true });
+    } catch (e) {
+      // Auth mode cannot create the durable, so every rebind fails the same way until the session is
+      // replaced. The typed error lets a caller name that route instead of a bare "consumer not found".
+      if (this.authed && isConsumerNotFound(e)) throw new DmDurableMissingError(dmStream(this.space), dm);
+      throw e;
+    }
 
     // Plane-3 (SPEC §8): bind + pump our per-member DELIVER durable (`dlv_<id>`) — the re-authorized
     // durable-backstop channel copies the trusted reader transfers to us. No-op when it isn't present

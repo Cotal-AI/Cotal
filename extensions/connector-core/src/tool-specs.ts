@@ -2421,7 +2421,7 @@ export function cotalToolSpecs(
       name: "cotal_reconnect",
       title: "Cotal: reconnect to the mesh",
       description:
-        "Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status. If channel drop tracking is exhausted, reports transport recovery with persistent channel degradation and the need to restart the session. Direct messages, anycast and fresh unmuted mentions remain available.",
+        "Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status. If channel drop tracking is exhausted, reports transport recovery with persistent channel degradation and the need to restart the session. Direct messages, anycast and fresh unmuted mentions remain available. On an authenticated mesh, if this session's direct-message inbox is gone from the broker, reports that reconnecting cannot restore it and that restarting or respawning the session does.",
       async run(agent) {
         const r = await agent.reconnect();
         return r.ok ? ok(r.message) : err(r.message);
