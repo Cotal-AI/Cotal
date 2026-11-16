@@ -374,7 +374,7 @@ function compileWithinBudget(bundle: SchemaBundle): ContractValidator {
     const meta = new ProfileAjv(AJV_PROFILE_OPTIONS);
     for (const [digest, member] of Object.entries(bundle.members ?? {}))
       meta.addSchema(member as object, `cotal:${digest}`);
-    meta.validateSchema(bundle.root as AnySchema, true);
+    meta.addSchema(bundle.root as AnySchema);
     return prepareContractValidator(bundle);
   } catch (error) {
     throw new ContractInvalidError(`schema does not compile under the 2020-12 profile: ${(error as Error).message}`);
