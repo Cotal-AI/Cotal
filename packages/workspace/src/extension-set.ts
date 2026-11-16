@@ -99,8 +99,18 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
   try {
     if (existsSync(paths.ready) && !options.repair) { assertExtensionSetReady(); return await reconcile(); }
     if (existsSync(paths.ready) && options.repair) {
-      try { assertExtensionSetReady(); return await reconcile(); }
-      catch (error) { if (!existsSync(join(paths.extensions, "extensions.json"))) rmSync(paths.ready); else throw error; }
+      let valid = true;
+      try { assertExtensionSetReady(); } catch { valid = false; }
+      if (valid) return await reconcile();
+      const aside = `${paths.ready}.invalid.${randomBytes(8).toString("hex")}`;
+      renameSync(paths.ready, aside);
+      if (existsSync(join(paths.extensions, "extensions.json"))) {
+        preparing = true;
+        const value = await reconcile();
+        verifyExtensionSet(paths);
+        publishReady(paths);
+        return value;
+      }
     }
     if (!existsSync(pending)) {
       const install = join(paths.root, "install.json");
@@ -150,22 +160,30 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
     legacy.release(); legacy = undefined;
     preparing = true;
     const value = await reconcile();
-    const entries = JSON.parse(readFileSync(join(paths.extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; version: string }[] };
-    for (const entry of entries.extensions) {
-      const metadata = JSON.parse(readFileSync(join(paths.extensions, "node_modules", entry.pkg, "package.json"), "utf8")) as { version?: string };
-      if (metadata.version !== entry.version || entry.pkg.startsWith("@cotal-ai/") && entry.version !== paths.version) throw new Error(`connector set verification failed for ${entry.pkg}; run \`cotal ext seed --repair\``);
-    }
+    verifyExtensionSet(paths);
     const install = join(paths.root, "install.json");
     const previous = sourceVersion;
     const next = `${install}.${randomBytes(8).toString("hex")}`;
     writeFileSync(next, JSON.stringify({ installRoot: paths.installRoot, current: paths.version, ...(previous && previous !== paths.version ? { previous } : {}) }), { flag: "wx", mode: 0o600 });
     renameSync(next, install);
-    const temporary = `${paths.ready}.${randomBytes(8).toString("hex")}`;
-    writeFileSync(temporary, JSON.stringify({ installRoot: paths.installRoot, version: paths.version }), { flag: "wx", mode: 0o600 });
-    renameSync(temporary, paths.ready);
+    publishReady(paths);
     rmSync(pending);
     return value;
   } finally { preparing = false; legacy?.release(); lock.release(); }
+}
+
+function verifyExtensionSet(paths: ReturnType<typeof extensionSetPaths>): void {
+  const entries = JSON.parse(readFileSync(join(paths.extensions, "extensions.json"), "utf8")) as { extensions: { pkg: string; version: string }[] };
+  for (const entry of entries.extensions) {
+    const metadata = JSON.parse(readFileSync(join(paths.extensions, "node_modules", entry.pkg, "package.json"), "utf8")) as { version?: string };
+    if (metadata.version !== entry.version || entry.pkg.startsWith("@cotal-ai/") && entry.version !== paths.version) throw new Error(`connector set verification failed for ${entry.pkg}; run \`cotal ext seed --repair\``);
+  }
+}
+
+function publishReady(paths: ReturnType<typeof extensionSetPaths>): void {
+  const temporary = `${paths.ready}.${randomBytes(8).toString("hex")}`;
+  writeFileSync(temporary, JSON.stringify({ installRoot: paths.installRoot, version: paths.version }), { flag: "wx", mode: 0o600 });
+  renameSync(temporary, paths.ready);
 }
 
 const startToken = (pid: number) => process.platform === "win32" ? nativeWin32CreationToken(pid) : processStartToken(pid);
