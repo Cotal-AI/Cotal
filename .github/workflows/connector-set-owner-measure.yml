@@ -1,5 +1,7 @@
 name: Connector set Windows ownership measurement
 on:
+  push:
+    branches: [measure/connector-set-windows-owner]
   workflow_dispatch:
 permissions:
   contents: read
