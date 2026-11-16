@@ -105,6 +105,7 @@ import {
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
 import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { extensionSetPaths } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -1870,7 +1871,8 @@ try {
       removeMesh(ON);
       check("H0 requested space is absent from local registry before setup", findMesh(ON) === undefined);
       deleteIdpSession(home, idpUrl);
-      const prefix = join(root, "config", "cotal", "extensions");
+      const connectorSet = extensionSetPaths();
+      const prefix = upgrading ? join(root, "config", "cotal", "extensions") : connectorSet.extensions;
       const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
       mkdirSync(pkg, { recursive: true });
       writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
@@ -1884,11 +1886,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
       else if (!upgrading) {
-        const seed = join(root, "config", "cotal", "seed");
+        const seed = connectorSet.seed;
         mkdirSync(seed, { recursive: true, mode: 0o700 });
         for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
         writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: fixtureVersion }));
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
+        writeFileSync(connectorSet.ready, JSON.stringify({ installRoot: connectorSet.installRoot, version: fixtureVersion }), { mode: 0o600 });
+        writeFileSync(join(connectorSet.root, "install.json"), JSON.stringify({ installRoot: connectorSet.installRoot, current: fixtureVersion, versions: [fixtureVersion] }), { mode: 0o600 });
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
