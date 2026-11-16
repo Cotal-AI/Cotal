@@ -14,6 +14,7 @@ import {
   peerLabel,
   shownPeerName,
   CotalEndpoint,
+  DmDurableMissingError,
   acquireLocalConsumer,
   type HeldLock,
   BASELINE_LIFECYCLE_ENDPOINT,
@@ -1256,6 +1257,10 @@ export class MeshAgent extends EventEmitter {
         : `Reconnected ✓ (${this.config.name}@${this.config.space})`;
       return { ok: true, message: `${message}${stalled}` };
     } catch (e) {
+      if (e instanceof DmDurableMissingError) {
+        this.handleEndpointWarning(e);
+        return { ok: false, message: `Reconnect failed: ${missingInboxIssue(e)}` };
+      }
       return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically — or run /reconnect to retry now.` };
     }
   }
@@ -4024,6 +4029,9 @@ export class MeshAgent extends EventEmitter {
   }
 
   private handleEndpointWarning(error: Error): void {
+    // The rebind loop reports a failed attempt as a warning. A missing DM durable fails every attempt
+    // until the session is replaced, so it is the current connection failure, not a passing one.
+    if (error instanceof DmDurableMissingError && !this._connected && !this._stopping) this.lastConnectionError = missingInboxIssue(error);
     this.logEndpointNotice("warning", error);
   }
 
@@ -4057,6 +4065,14 @@ export interface RosterRead {
  *  one failure differently. */
 export function presenceReadCondition(failure: Error): string {
   return `the presence read failed (${failure.message})`;
+}
+
+/** Why an authenticated session whose DM durable is gone cannot reconnect, and what restores it. The
+ *  route comes first because the orientation card shows only the first 300 characters. */
+function missingInboxIssue(e: DmDurableMissingError): string {
+  return "this session's direct-message inbox is missing on the broker, and on an authenticated mesh only a new launch " +
+    "creates one, so reconnecting cannot restore it. Restart this session, or respawn it if a manager launched it. " +
+    `Missing durable "${e.durable}" on stream "${e.stream}". Retries continue in case a broker restore brings it back.`;
 }
 
 /** Names already known that differ from `channel` by one insertion, deletion, or substitution. */

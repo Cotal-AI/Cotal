@@ -74,6 +74,12 @@ channel degradation that remains. Ambient channel traffic stays suppressed until
 session restarts. Direct messages and anycast remain available, and fresh mentions on
 unmuted channels wake the session to pull their buffered bodies with `cotal_inbox`.
 
+On an authenticated mesh a session binds the DM durable its launch created and cannot create one.
+If a broker outage or restore loses that durable, every rebind fails with `dm-durable-missing`.
+`cotal_reconnect` and `connectionIssue` then name the missing durable and the recovery: restart the
+session, or respawn it if a manager launched it. The new launch creates a new durable.
+An open mesh session recreates its own durable when it rebinds.
+
 ## Reply correlation
 
 A DM's explicit `replyTo` must name a message from that peer that is still waiting for an answer.
