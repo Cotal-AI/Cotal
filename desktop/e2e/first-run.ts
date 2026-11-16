@@ -767,7 +767,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
           loginCells.result?.cellC?.appIntegrity?.level === "Medium" &&
           loginCells.result?.cellC?.hklmRemained === true &&
           loginCells.result?.cellC?.hkcuPresent === false &&
-          loginCells.result?.cellC?.checked === true &&
+          loginCells.result?.cellC?.checked === false &&
           loginCells.result?.cellC?.loginError === "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there." &&
           loginCells.result?.cellD?.preservedOnEnable === true &&
           loginCells.result?.cellD?.preservedOnDisable === true);

@@ -602,10 +602,10 @@ public static class FilteredAppLauncher {
             $filteredSettings = $null
             for ($settingsIdx = 0; $settingsIdx -lt 40; $settingsIdx++) {
                 try { $filteredSettings = Invoke-Self 'read-login-settings' $filteredPid } catch { $filteredSettings = $null }
-                if ($filteredSettings -and $filteredSettings.result.checked -eq $true) { break }
+                if ($filteredSettings -and $filteredSettings.result.checked -eq $false) { break }
                 Start-Sleep -Milliseconds 250
             }
-            if (-not ($filteredSettings -and $filteredSettings.result.checked -eq $true)) { throw 'Filtered app did not show Open at login checked.' }
+            if (-not ($filteredSettings -and $filteredSettings.result.checked -eq $false)) { throw 'Filtered app did not keep Open at login unchecked.' }
             $filteredEntries = Invoke-Self 'login-entry' $filteredPid
             $expectedError = 'An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.'
             $cellsProgress['cellC'] = [ordered]@{
@@ -620,7 +620,7 @@ public static class FilteredAppLauncher {
             }
             $diagnostics.Add([ordered]@{ cellC = $cellsProgress['cellC'] })
             Save-CellsProgress
-            if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $true -or $filteredSettings.result.loginError -cne $expectedError) {
+            if ($filteredEntries.result.appIntegrity.level -cne 'Medium' -or !$filteredEntries.result.hklm.present -or !$filteredEntries.result.hklm.matchesExpected -or $filteredEntries.result.hkcu.present -or $filteredSettings.result.checked -ne $false -or $filteredSettings.result.loginError -cne $expectedError) {
                 throw "Cell (c) failed: integrity=$($filteredEntries.result.appIntegrity.level) hklm=$($filteredEntries.result.hklm.present) hkcu=$($filteredEntries.result.hkcu.present) checked=$($filteredSettings.result.checked) loginError=$($filteredSettings.result.loginError)"
             }
             $filteredProc = $null
