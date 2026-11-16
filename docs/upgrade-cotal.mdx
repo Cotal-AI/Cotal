@@ -29,15 +29,20 @@ does not start a command.
 
 On a writable POSIX npm or pnpm installation, `cotal update --self` prepares a complete target
 package and its dependencies in retained storage before changing the selected execution.
-It runs installed read-only checks and the target's declared pre-install checks first.
-Linux also reads the install-wide process census. macOS reads the daemon's hosted Managers,
-the selected target and registered spaces without invoking the Linux-only census.
-A refused check leaves the installed package and connector state unchanged.
+The verified target's declared read-only admission decides Manager, discovery, auth and continuity policy.
+The installed transaction checks archive integrity, entry confinement, its install binding and the native
+daemon's authenticated process lifetime. An unreadable identity or a target refusal leaves the installed
+package and connector state unchanged. Offline auth or unknown Manager work defers activation without
+pretending the work count is zero. The software update can finish while loaded processes keep their code.
+The target identifies any agents that need stop consent before an owned daemon restart.
 The initial admission verifies the daemon lifetime from those checks. Rollback after a daemon
 restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
-A successful manual update waits for the target daemon generation, not its updater's loaded version.
+A successful manual update waits for an authorized target daemon generation. Deferred activation
+names what still needs a restart and leaves that daemon and its Managers running.
+Releases up to the release that ships this delegation cannot be repaired by downloading a newer target.
+Install the newer version manually with `npm install -g cotal-ai@latest`, then run `cotal update --self`.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning

@@ -7,7 +7,7 @@ import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 import { executionCopyModesEnv, executionInventory, executionSha256 } from "../cotal.js";
 import { daemonServeArgv } from "./install.js";
-import { readExecutionPreinstall } from "./execution-preinstall.js";
+import { observeUpdateDaemon, sameUpdateDaemon } from "./update-lifetime.js";
 import { targetExecutionPreinstall, type ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
 
 export function executionInstallRoot(): string {
@@ -47,6 +47,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   } finally { rmSync(staging, { recursive: true, force: true }); }
   let journal: string | undefined;
   let accepted = false;
+  let admittedDaemon: ExecutionPreinstallReceipt["daemon"];
   const getJournal = () => {
     if (!accepted) throw new Error("execution journal requested before target checks accepted");
     return journal ??= journalExecutionTransaction(installed, generation, executionIdentity()?.launchEntry ?? logicalExecutionEntry());
@@ -57,12 +58,16 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     async preflight(flags) {
       const installedEntry = logicalExecutionEntry()!;
       const daemonArgv = daemonServeArgv(undefined);
-      const floor = await readExecutionPreinstall({ v: 1, nonce: "0".repeat(32), installedEntry, daemonArgv, flags });
+      const before = await observeUpdateDaemon();
       const receipt = await targetExecutionPreinstall(generation.root, installedEntry, daemonArgv, flags);
-      if (JSON.stringify(floor.daemon) !== JSON.stringify(receipt.daemon)) throw new Error("machine daemon lifetime changed during target pre-install checks");
+      if (!sameUpdateDaemon(before, receipt.daemon) || !sameUpdateDaemon(before, await observeUpdateDaemon())) throw new Error("machine daemon lifetime changed during target pre-install checks");
       if (executionSha256(JSON.stringify(executionInventory(generation.root))) !== generation.inventorySha256) throw new Error("target changed during pre-install checks");
       checked(receipt);
+      admittedDaemon = before;
       accepted = true;
+    },
+    async beforePublish() {
+      if (!accepted || !sameUpdateDaemon(admittedDaemon, await observeUpdateDaemon())) throw new Error("machine daemon lifetime changed before execution publication");
     },
     publish() {
       if (executionSha256(JSON.stringify(executionInventory(generation.root))) !== generation.inventorySha256) throw new Error("target changed before execution publication");

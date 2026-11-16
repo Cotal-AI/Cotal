@@ -32,6 +32,7 @@ import {
   liveUpdateClosureOwner,
   recoveryProcessStartToken,
   observeUnownedRecovery,
+  type UpdateAdmission,
 } from "@cotal-ai/workspace";
 import { retainUnusableRecovery } from "../lib/update-recovery-state.js";
 import { readUpdatePending } from "../lib/update-pending.js";
@@ -98,6 +99,8 @@ export interface ExecutionReplacement {
   readonly entry: string;
   readonly journal: string;
   preflight(target: Record<string, unknown>): Promise<void>;
+  /** Reobserve immutable admission identities immediately before publication. */
+  beforePublish?(): Promise<void>;
   publish(): void;
   restore(): void;
   verify(version: string): void;
@@ -139,6 +142,10 @@ export interface UpdateRuntime {
   verifyExtension(entry: InstalledExtension, generation: string): string | undefined;
   claimUpdatePass(): () => void;
   preparedRestart?(): boolean;
+  /** Data issued by the verified staged target, after consent/preparation. */
+  admission?(): UpdateAdmission | undefined;
+  /** Persist the target's activation decision before the selected execution changes. */
+  recordActivation?(version: string): void;
   /** Reserve empty hosted Manager admission after continuity checks, before replacement. */
   prepareReplacement?(): Promise<() => Promise<void>>;
   /** Validate recorded local service ownership before replacing packages or reconciling connectors. */
@@ -1169,7 +1176,15 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     rt.out(c.dim(`installing cotal-ai@${targetVersion} into npm's global installation; this ${current} process remains loaded until the verified global copy takes over`));
   }
   recordUpdateReplacement(targetVersion);
-  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path, ...(execution ? { execution: execution.journal } : {}) });
+  try { await execution?.beforePublish?.(); }
+  catch (error) {
+    snapshot.discard(); clearUpdateRecovery(); execution?.discard?.();
+    rt.err(`staged publication refused: ${message(error)}; no installed packages were changed`);
+    return 1;
+  }
+  const admission = rt.admission?.();
+  rt.recordActivation?.(targetVersion);
+  writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, ...(admission ? { admission } : {}), snapshot: snapshot.path, ...(execution ? { execution: execution.journal } : {}) });
   const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json"]);
   const installStarted = Date.now();
   const installed: CommandResult = execution ? (() => {

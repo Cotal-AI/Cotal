@@ -10,7 +10,7 @@ try {
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", cotalPreinstall: { v: 1, entry: "./dist/check.js" } }));
   const installed = join(root, "installed.js");
   const check = join(root, "dist/check.js");
-  const prefix = "const r=JSON.parse(process.argv[2]);const receipt={v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:0};";
+  const prefix = "const r=JSON.parse(process.argv[2]);const receipt={v:1,nonce:r.nonce,installedEntry:r.installedEntry,hostedSpaces:[],occupied:0,admission:{disposition:'restart-empty',occupied:0,hostedSpaces:[]}};";
   const receipt = "console.log('COTAL_PREINSTALL_RESULT '+JSON.stringify(receipt));";
   for (const [label, code, expected] of [
     ["accepted", `${prefix}${receipt}`, undefined],
@@ -27,6 +27,16 @@ try {
     const run = () => targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {});
     if (expected) await assert.rejects(run, expected, label);
     else assert.equal((await run()).occupied, 0);
+  }
+  writeFileSync(check, `${prefix}receipt.occupied=null;receipt.admission={disposition:'deferred',occupied:null,hostedSpaces:[],reason:'Manager state is unknown; restart deferred'};${receipt}`);
+  assert.equal((await targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {})).occupied, null, "unknown occupancy remains null");
+  for (const code of [
+    "receipt.admission={disposition:'restart-empty',occupied:null,hostedSpaces:[]}",
+    "receipt.admission={disposition:'deferred',occupied:0,hostedSpaces:[],reason:''}",
+    "receipt.occupied=1;receipt.admission={disposition:'consent-stop',occupied:1,hostedSpaces:[],inventory:[]}",
+  ]) {
+    writeFileSync(check, `${prefix}${code};${receipt}`);
+    await assert.rejects(() => targetExecutionPreinstall(root, installed, [process.execPath, installed, "daemon", "serve"], {}), /invalid evidence/);
   }
   if (process.argv.includes("--deadline")) {
     writeFileSync(check, "process.on('SIGTERM',()=>{});setInterval(()=>{},1000);");
