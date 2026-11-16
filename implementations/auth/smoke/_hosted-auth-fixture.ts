@@ -44,6 +44,8 @@ export interface HostedAuthFixture {
    *  preloads one more operator-signed account, as provisioning another tenant does; `maxPayload`
    *  replaces the broker-wide payload limit. Returns once nats-server has logged the reload. */
   reloadBroker(change?: { addAccount?: boolean; maxPayload?: number }): Promise<void>;
+  stopBrokerTraffic?(): void;
+  resumeBrokerTraffic?(): void;
   close(): Promise<void>;
 }
 
@@ -109,6 +111,8 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
   return {
     servers, dir, accounts,
     ...(wsPort !== undefined ? { wsServers: `ws://127.0.0.1:${wsPort}` } : {}),
+    stopBrokerTraffic() { if (!nats.kill("SIGSTOP")) throw new Error("owned fixture broker did not pause"); },
+    resumeBrokerTraffic() { if (!nats.kill("SIGCONT")) throw new Error("owned fixture broker did not resume"); },
     async stopBroker() {
       await killAndAwaitExit(nats, "SIGTERM");
       nats.unref();
@@ -143,6 +147,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
       return { store, accountPublicKey: auth.account.pub };
     },
     async close() {
+      nats.kill("SIGCONT");
       await killAndAwaitExit(nats, "SIGKILL");
       if (peer) await killAndAwaitExit(peer, "SIGKILL");
       releasePeer?.();

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { parse } from 'yaml';
-import { planRelease } from './upgrade-matrix-plan.mjs';
+import { planRelease, targetAdmissionCells } from './upgrade-matrix-plan.mjs';
 import { knownRefusals } from './upgrade-matrix-refusals.mjs';
 import { matchSource16410Refusal, source16410Refusals } from './source-16410-refusal.mjs';
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
@@ -14,9 +14,9 @@ const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
   const cells = workflow.jobs['release-cells'];
-  assert.equal(plan.matrix.include.length, 40);
-  assert.equal(cells.strategy['max-parallel'], plan.matrix.include.length);
-  assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next']);
+  assert.equal(targetAdmissionCells(plan).length, 20);
+  assert.equal(cells.strategy['max-parallel'], 20);
+  assert.deepEqual(cells.needs, ['select', 'release-pack', 'release-next', 'admission-legacy-pack']);
   assert.equal(cells.strategy['fail-fast'], false);
   assert.equal(cells['runs-on'], '${{ matrix.runner }}');
   assert(plan.matrix.include.some(cell => cell.platform === 'darwin'));
@@ -38,7 +38,7 @@ test('paired next-hop builders are explicit in both phases and stamp B and C bef
   assert(!next.steps.some(step => step.run?.includes('pnpm --workspace-concurrency 3 build')));
   assert(next.steps.some(step => step.run?.includes('node scripts/pack-candidate-next.mjs --source-root')));
   assert(next.steps.some(step => step.run?.includes('--offset 2000')));
-  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 40);
+  assert.equal(workflow.jobs['release-cells'].strategy['max-parallel'], 20);
   for (const job of ['release-native', 'release-pack', 'release-next']) assert(workflow.jobs[job]);
 });
 test('paired routes preserve ordinary published arguments and bind artifact receipts', () => {
