@@ -456,11 +456,13 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
+  process.stderr.write(`daemon timing serve.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
+  process.stderr.write(`daemon timing recovery.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   let automaticCustodyPaused = false;
   if (process.platform === "win32") {
     const { cleanWindowsUpdate } = await import("./update-windows.js");
@@ -471,7 +473,9 @@ async function serve(args: ParsedArgs): Promise<void> {
   const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
   if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  process.stderr.write(`daemon timing cleanup-spec.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
+  process.stderr.write(`daemon timing cleanup.return-hold.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
@@ -507,6 +511,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  process.stderr.write(`daemon timing serve.ready unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {

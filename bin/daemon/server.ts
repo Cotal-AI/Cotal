@@ -114,6 +114,7 @@ function listen(server: Server, path: string): Promise<void> {
 }
 
 export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
+  process.stderr.write(`daemon timing hold.return-serve.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   assertSupportedPlatform();
   // Refuse local IdP configuration before publishing readiness or resuming any connection.
   idpTimeoutMs();
@@ -125,7 +126,9 @@ export async function serveDaemon(opts: ServeOptions): Promise<RunningDaemon> {
   ensureStateDir(paths, uid);
   const lock = holdLifetime(paths.lock);
   try {
+    process.stderr.write(`daemon timing admission.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
     opts.admit?.();
+    process.stderr.write(`daemon timing admission.return unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
     return await serveLocked(opts, uid, lock);
   } catch (e) {
     // A failed start keeps any predecessor socket evidence it has not consumed or rejected.
@@ -256,7 +259,10 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       const managerResult = (run: () => DaemonStatus | HostedManager | ServiceConnectionResult | Promise<DaemonStatus | HostedManager | ServiceConnectionResult>) => {
-        replyTask(Promise.resolve().then(run).then((result) => write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result }), (error: unknown) => {
+        replyTask(Promise.resolve().then(run).then((result) => {
+          if (req.op === "status" && counters.statusAnswered === 1) process.stderr.write(`daemon timing first-status.result unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
+          return write({ v: DAEMON_PROTOCOL_VERSION, id: req.id, ok: true, result });
+        }, (error: unknown) => {
           counters.requestsRefused++;
           const cause = String(error instanceof Error ? error.message : error).replace(/\u001b\[[0-9;]*m/g, "").replace(/eyJ[A-Za-z0-9_.-]*/g, "<redacted>").slice(0, 1000);
           log(`daemon: ${req.op} refused: ${cause}`);
@@ -282,6 +288,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
         return;
       }
       if (req.op === "status") {
+        if (counters.statusAnswered === 0) process.stderr.write(`daemon timing first-status.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
         counters.statusAnswered++;
         managerResult(async () => {
           await Promise.all(managers.all().map((manager) => managers.refresh(manager.space)));
