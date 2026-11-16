@@ -36,14 +36,14 @@ function receiver(state: Pick<Receiver, "maintenanceState" | "leaseStopping" | "
   const manager = new Manager({ space: "status-observation", runtime: "pty", workspaceRoot: process.cwd() });
   const self = manager as unknown as Receiver;
   Object.assign(self, state);
-  // Existing accepted lifecycle work must neither grow nor drain when a snapshot is read.
+  // Status temporarily counts its own admitted read, then restores existing lifecycle work.
   self.lifecycleInFlight = 3;
   self.psOwnerFilter = async (subject, admin) => {
     assert.deepEqual(subject, caller);
     assert.equal(admin, false);
     return subject.owner;
   };
-  self.managerStatusData = (owner) => { assert.equal(self.lifecycleInFlight, 3); return { owner }; };
+  self.managerStatusData = (owner) => { assert.equal(self.lifecycleInFlight, 4); return { owner }; };
   self.list = (owner) => { assert.equal(self.lifecycleInFlight, 3); return [{ owner }]; };
   const defs = self.managerServiceDefs();
   const call = (command: string) => {
@@ -98,6 +98,19 @@ await check("a throwing observation leaves accepted lifecycle work untouched", a
   await assert.rejects(async () => call("status"), /status failed/);
   await assert.rejects(async () => call("ps"), /ps failed/);
   assert.equal(self.lifecycleInFlight, 3);
+});
+
+await check("a preserving status counts itself and releases the normal zero-work drain", async () => {
+  const { self, call } = receiver({ maintenanceState: "preserving", resumeRequired: false, leaseStopping: false });
+  self.lifecycleInFlight = 0;
+  let drained = false;
+  self.lifecycleDrainWaiters.push(() => { drained = true; });
+  self.managerStatusData = (owner) => { assert.equal(self.lifecycleInFlight, 1); return { owner }; };
+  assert.deepEqual(await call("status"), { owner: caller.owner });
+  assert.equal(self.lifecycleInFlight, 0);
+  assert.equal(drained, true);
+  assert.equal(self.lifecycleDrainWaiters.length, 0);
+  assert.equal(self.maintenanceState, "preserving");
 });
 
 console.log(`\nstatus observation smoke: ${passed} checks passed`);
