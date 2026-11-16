@@ -79,10 +79,18 @@ function safePath(root, file, privateFixtureRoot) {
   assert(!stat.isSymbolicLink(), 'symlink refused');
   return stat;
 }
-function bytes(root, file, limit = LIMIT, privateFixtureRoot) {
+function bytes(root, file, limit = LIMIT, privateFixtureRoot, packageReads) {
   const before = safePath(root, file,privateFixtureRoot);
   assert(before.isFile() && before.nlink === 1, 'not an exclusive regular file');
-  if (process.getuid) assert.equal(before.mode & 0o022, 0, 'writable file refused');
+  if (process.getuid && (before.mode&0o022)!==0) {
+    assert(privateFixtureRoot&&packageReads,'writable file refused');
+    assert.equal(before.mode&0o7777,0o664,'installed package file must be 0664');
+    const boundary=directory(privateFixtureRoot);
+    assert.equal(boundary.mode&0o7777,0o700,'fixture boundary must be private 0700');
+    assert(file.startsWith(privateFixtureRoot+'/'),'package file escaped private fixture');
+    for(let parent=dirname(file);parent!==privateFixtureRoot;parent=dirname(parent))directory(parent,privateFixtureRoot);
+    packageReads.push({path:file,uid:before.uid,mode:before.mode&0o7777,privateFixtureRoot});
+  }
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync(fd);
@@ -99,9 +107,10 @@ function bytes(root, file, limit = LIMIT, privateFixtureRoot) {
 const failure = error => ({ state: error?.code === 'ENOENT' ? 'missing' : error?.code === 'ETIMEDOUT' || error?.name === 'AbortError' ? 'timeout' : 'error', error: clean(error?.code === 'ERR_ASSERTION' ? error.message : error?.code ?? error?.message ?? 'diagnostic error') });
 
 export function inspectInstalledUpdateRoute(pkg, platform = process.platform, {privateFixtureRoot} = {}) {
+  const packageReads=[];
   const pkgRoot = realpathSync.native(resolve(pkg));
   directory(pkgRoot,privateFixtureRoot);
-  const pkgManifestBytes = bytes(pkgRoot, join(pkgRoot, 'package.json'),LIMIT,privateFixtureRoot);
+  const pkgManifestBytes = bytes(pkgRoot, join(pkgRoot, 'package.json'),LIMIT,privateFixtureRoot,packageReads);
   const pkgManifest = JSON.parse(pkgManifestBytes);
   assert.equal(pkgManifest.name, 'cotal-ai', 'unexpected package');
   assert.match(pkgManifest.version, /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/);
@@ -113,6 +122,7 @@ export function inspectInstalledUpdateRoute(pkg, platform = process.platform, {p
       selectedCliVersion: packageManagerRecordVersion,
       packageManagerRecordVersion,
       updateRoute: 'in-place',
+      ...(packageReads.length?{packageReads}:{}),
     };
   }
   const modulesDir = dirname(pkgRoot);
@@ -131,11 +141,12 @@ export function inspectInstalledUpdateRoute(pkg, platform = process.platform, {p
         selectedCliVersion: packageManagerRecordVersion,
         packageManagerRecordVersion,
         updateRoute: 'in-place',
+        ...(packageReads.length?{packageReads}:{}),
       };
     }
     throw error;
   }
-  const bootstrapBytes = bytes(pkgRoot, join(pkgRoot, 'dist/cotal.js'),LIMIT,privateFixtureRoot);
+  const bootstrapBytes = bytes(pkgRoot, join(pkgRoot, 'dist/cotal.js'),LIMIT,privateFixtureRoot,packageReads);
   const bootstrapSha256 = createHash('sha256').update(bootstrapBytes).digest('hex');
   const active = JSON.parse(activeText);
   assert.equal(active?.v, 1, 'unsupported active generation schema');
@@ -170,6 +181,7 @@ export function inspectInstalledUpdateRoute(pkg, platform = process.platform, {p
     generationId,
     inventorySha256,
     stagedProgramSha256,
+    ...(packageReads.length?{packageReads}:{}),
   };
 }
 
@@ -245,6 +257,7 @@ async function capture(options) {
       selectedCliVersion: value.selectedCliVersion,
       packageManagerRecordVersion: value.packageManagerRecordVersion,
       updateRoute: value.updateRoute,
+      packageReads:value.packageReads,
       ...archive('installed-version', JSON.stringify(value)),
     };
   });

@@ -56,8 +56,17 @@ test('owned npm0002 layout is observable only inside an explicit private fixture
   assert.equal(lstatSync(f.pkg).mode&0o777,0o775,'observer must not repair measured modes');
   assert.equal(lstatSync(f.globalRoot).mode&0o777,0o775);
 });
+test('private umask package manifest stays observable without changing its measured 0664 mode', async () => {
+  const f=fixture();
+  chmodSync(f.pkg,0o775);
+  chmodSync(join(f.pkg,'package.json'),0o664);
+  const result=await captureDaemonDiagnostics({...f.options,privateFixtureRoot:f.home});
+  assert.equal(row(result,'installed-version').state,'archived');
+  assert.deepEqual(row(result,'installed-version').packageReads,[{path:join(f.pkg,'package.json'),uid:process.getuid(),mode:0o664,privateFixtureRoot:f.home}]);
+  assert.equal(lstatSync(join(f.pkg,'package.json')).mode&0o777,0o664);
+});
 test('private package observation never waives credential/output/file protection or boundary ownership', async () => {
-  for(const kind of ['boundary','sticky','world-write','alias','outside','config','output','file']){
+  for(const kind of ['boundary','sticky','world-write','alias','outside','config','output','file','lock']){
     const f=fixture();chmodSync(f.pkg,0o775);chmodSync(f.globalRoot,0o775);
     let boundary=f.home;
     if(kind==='boundary')chmodSync(f.home,0o755);
@@ -67,9 +76,11 @@ test('private package observation never waives credential/output/file protection
     if(kind==='outside')boundary=f.output;
     if(kind==='config')chmodSync(f.config,0o775);
     if(kind==='output')chmodSync(f.output,0o775);
-    if(kind==='file')chmodSync(join(f.pkg,'package.json'),0o664);
+    if(kind==='file')chmodSync(join(f.pkg,'package.json'),0o666);
+    if(kind==='lock'){writeFileSync(join(f.globalRoot,'.cotal-update.lock'),'{}');chmodSync(join(f.globalRoot,'.cotal-update.lock'),0o664);}
     const result=await captureDaemonDiagnostics({...f.options,privateFixtureRoot:boundary});
     if(kind==='file')assert.equal(row(result,'installed-version').state,'error');
+    else if(kind==='lock')assert.equal(row(result,'.cotal-update.lock').state,'error');
     else assert.equal(row(result,'roots').state,'error',kind);
     assert.equal(f.children.size,0);
   }

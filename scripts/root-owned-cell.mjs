@@ -81,7 +81,18 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   }
   const ok = (row, label) => { assert.equal(row.exit, 0, `${label}: ${row.stdout}${row.stderr}`); return row; };
   const install = async version => {
-    const result = ok(await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=verbose']), 'root installation');
+    const result = await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=verbose']);
+    if(result.exit!==0){
+      const moduleURL=pathToFileURL(join(import.meta.dirname,'npm-debug-tail.mjs')).href;
+      const source=`import {npmDebugTail} from ${JSON.stringify(moduleURL)};console.log(JSON.stringify(await npmDebugTail(${JSON.stringify(rootHome)})));`;
+      const diagnostic=await call('archive bounded root npm failure log',true,[node,'--input-type=module','-e',source]);
+      if(diagnostic.exit===0){
+        const tail=JSON.parse(diagnostic.stdout),artifact=`root-npm-${version}-debug-tail.txt`;
+        writeFileSync(join(output,artifact),tail.text,{flag:'wx',mode:0o600});
+        report.observations.push({npmDebug:{artifact,lines:tail.lines,sourceBytes:tail.sourceBytes,tailTruncated:tail.tailTruncated,sha256:createHash('sha256').update(tail.text).digest('hex')}});
+      }else report.observations.push({npmDebug:{state:'unavailable',exit:diagnostic.exit}});
+    }
+    ok(result,'root installation');
     const source = "import {lstatSync,readFileSync} from 'node:fs';import {createHash} from 'node:crypto';const p='/usr/local/lib/node_modules/cotal-ai';const info=lstatSync(p);const read=n=>{const b=readFileSync(p+'/'+n);return {sha256:createHash('sha256').update(b).digest('hex'),mode:lstatSync(p+'/'+n).mode&4095}};console.log(JSON.stringify({uid:info.uid,mode:info.mode&4095,version:JSON.parse(readFileSync(p+'/package.json')).version,manifest:read('package.json'),bootstrap:read('dist/cotal.js')}));";
     const observation = JSON.parse(ok(await call('record root-installed source bytes and ownership', true, [node, '--input-type=module', '-e', source]), 'installed source identity').stdout);
     assert.equal(observation.uid, 0, 'global package must be root owned');
