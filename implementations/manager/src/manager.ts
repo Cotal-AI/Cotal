@@ -4586,25 +4586,13 @@ export class Manager {
     }
   }
 
-  /** `status` only: {@link serveGated}, except that a fully preserved manager, and an active one
-   *  launched for a resume that has not committed it yet, still answer it. A preserved-exit stop's
-   *  caller-attributed preview needs the preserved manager's stop impact, and a resumed service's
-   *  readiness reads the same status; the maintenance fence refuses every other command in both
-   *  states. The read is counted in `lifecycleInFlight` like any admitted operation and released in
-   *  `finally`, so a drain waits at most for one status snapshot; the membership gate still
-   *  applies. `preserving` and a stopping manager stay fenced. Status writes nothing. */
+  /** `status` and `ps` read snapshots in every maintenance state while the endpoint still serves.
+   *  They keep the authenticated membership gate and each handler's owner filter, but neither admit
+   *  lifecycle work nor join its drain, so observations cannot delay preservation or its abort. */
   private async serveObservation<T>(ctx: EpServeContext, fn: () => T | Promise<T>): Promise<T> {
-    const preserved = this.maintenanceState === "preserved" && !this.resumeRequired;
-    const resumePending = this.maintenanceState === "active" && this.resumeRequired;
-    if (this.leaseStopping || !preserved && !resumePending) return this.serveGated(ctx, fn);
     const membership = this.lifecycleMembershipRefusal(principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key);
     if (membership) throw new EpEnvelopeError("permission-denied", membership, undefined, "not-executed");
-    this.lifecycleInFlight++;
-    try {
-      return await fn();
-    } finally {
-      this.releaseLifecycle();
-    }
+    return await fn();
   }
 
   /** The ep door's ADMIN flag for a caller. Static mesh: `true` — the
@@ -4852,7 +4840,7 @@ export class Manager {
       // A remote Manager files every seat under its own owner, so only a user mesh's shared local
       // Manager narrows the count, and status never waits on a remote admin check.
       status: (ctx) => this.serveObservation(ctx, async () => this.managerStatusData(this.remoteAuthority ? undefined : await this.psOwnerFilter(ctx.subject.caller, false))),
-      ps: (ctx) => this.serveGated(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
+      ps: (ctx) => this.serveObservation(ctx, async () => this.list(await this.psOwnerFilter(ctx.subject.caller, false))),
       inspect: (ctx) => this.serveGated(ctx, async () => {
         const name = String(args(ctx).name ?? "").trim();
         const row = this.list(await this.psOwnerFilter(ctx.subject.caller, false)).find((x) => x.name === name);

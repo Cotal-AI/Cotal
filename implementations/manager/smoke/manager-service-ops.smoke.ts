@@ -18,8 +18,8 @@
  *  5. definePersona (content-only write, ownership-checked; on a static space only the manager's
  *     own seats own what they define), models (normalized catalogs), purge, attach (ws url),
  *     launch/resume-family negatives (the shared cores answer with the exact shared-core refusals),
- *     and the preservation fence: after `preparePreservation` the ep door refuses ordinary ops
- *     (`unavailable`, the SHARED maintenance fence) until `abortPreservation`.
+ *     and the preservation fence: after `preparePreservation` status and ps still answer, while
+ *     lifecycle control refuses (`unavailable`, the SHARED maintenance fence) until abort.
  *  6. The ep door is the ONLY control door (1d): there is no legacy ctl rail to dual-serve.
  *  7. The 1c.2b operator instrument: a `control-caller-admin` one-shot resolves the surface over
  *     the GENERIC describe/store path (describe-BOUND default currency, no epoch stub) and tears
@@ -955,8 +955,12 @@ try {
     const plan = rPrep.reply.data as { state?: string; inventory?: { agents?: unknown[] } };
     check("preparePreservation returns the plan (inventory built, no child stopped)",
       rPrep.reply.ok === true && typeof plan?.state === "string" && Array.isArray(plan?.inventory?.agents), rPrep.reply);
-    const rFenced = await A.call("ps");
-    check("while preserving, ordinary ep ops refuse (unavailable — the SHARED maintenance fence)",
+    const rStatus = await A.call("status");
+    check("while preserving, status still answers", rStatus.reply.ok === true, rStatus.reply);
+    const rList = await A.call("ps");
+    check("while preserving, ps still answers", rList.reply.ok === true && Array.isArray(rList.reply.data), rList.reply);
+    const rFenced = await A.call("spawn", { name: "fenced", agent: "e2e-stub" });
+    check("while preserving, lifecycle control refuses through the maintenance fence",
       rFenced.reply.ok === false && rFenced.reply.error?.code === "unavailable", rFenced.reply);
     const rAbort = await A.call("abort-preservation", { attemptId: "ep-attempt-1" });
     check("abortPreservation restores active", rAbort.reply.ok === true && (rAbort.reply.data as { state: string }).state === "active", rAbort.reply);

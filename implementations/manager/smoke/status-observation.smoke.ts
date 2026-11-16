@@ -1,95 +1,104 @@
-// The `status` observation gate. A preserved manager, and an active
-// one launched for a resume that has not committed, still answer `status` through the F5(a)
-// membership gate, as a read counted in `lifecycleInFlight` and released when it returns or
-// throws. Preserving, stopping and every other state go through the shared fence unchanged. The
-// gate runs on a minimal receiver: no broker, endpoint or child process is started.
+// Status and ps stay observable through maintenance without admitting lifecycle work.
+// Drive the real service definitions and gates with local snapshot readers, without a broker
+// or child process. The constructed subject stands in for endpoint-authenticated caller context.
 import { strict as assert } from "node:assert";
-import { EpEnvelopeError } from "@cotal-ai/core";
+import { EpEnvelopeError, type EpCommandDef, type EpServeContext } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { Manager } from "../src/manager.js";
 
 let passed = 0;
-async function check(name: string, run: () => Promise<boolean> | boolean): Promise<void> {
-  assert.ok(await run(), name);
+async function check(name: string, run: () => Promise<void> | void): Promise<void> {
+  await run();
   passed++;
   console.log(`  ok ${name}`);
 }
 
-type Ctx = { subject: { caller: { owner: string; actor: string } } };
+type Snapshot = { owner: string | undefined };
 type Receiver = {
   maintenanceState: "active" | "preserving" | "preserved";
   leaseStopping: boolean;
   resumeRequired: boolean;
   lifecycleInFlight: number;
   lifecycleDrainWaiters: Array<() => void>;
-  fenced: number;
-  refused?: string;
-  lifecycleMembershipRefusal(caller: string): string | undefined;
-  releaseLifecycle(): void;
-  serveGated<T>(ctx: Ctx, fn: () => T | Promise<T>): Promise<T>;
+  retiredPrincipals: Set<string>;
+  managerServiceDefs(): EpCommandDef[];
+  psOwnerFilter(caller: { owner: string; actor: string }, admin: boolean): Promise<string | undefined>;
+  managerStatusData(owner: string | undefined): Snapshot;
+  list(owner: string | undefined): Snapshot[];
 };
 
-const prototype = Manager.prototype as unknown as {
-  serveObservation<T>(this: Receiver, ctx: Ctx, fn: () => T | Promise<T>): Promise<T>;
-  releaseLifecycle(this: Receiver): void;
-};
-const ctx: Ctx = { subject: { caller: { owner: "u_owner", actor: "operator" } } };
+const caller = { owner: "u_owner", actor: "operator", uid: "00112233445566778899aabbccddeeff" };
+const ctx = (command: string): EpServeContext => ({
+  subject: { caller, command }, request: { args: {} },
+} as EpServeContext);
 
-function receiver(state: Pick<Receiver, "maintenanceState"> & Partial<Pick<Receiver, "leaseStopping" | "resumeRequired" | "refused">>): Receiver {
-  return {
-    leaseStopping: false, resumeRequired: false, lifecycleInFlight: 0, lifecycleDrainWaiters: [], fenced: 0, ...state,
-    lifecycleMembershipRefusal(caller) { return caller === "u_owner.operator" ? this.refused : "unexpected caller key"; },
-    releaseLifecycle() { prototype.releaseLifecycle.call(this); },
-    async serveGated() { this.fenced++; throw new EpEnvelopeError("unavailable", "fenced"); },
+function receiver(state: Pick<Receiver, "maintenanceState" | "leaseStopping" | "resumeRequired">) {
+  const manager = new Manager({ space: "status-observation", runtime: "pty", workspaceRoot: process.cwd() });
+  const self = manager as unknown as Receiver;
+  Object.assign(self, state);
+  // Existing accepted lifecycle work must neither grow nor drain when a snapshot is read.
+  self.lifecycleInFlight = 3;
+  self.psOwnerFilter = async (subject, admin) => {
+    assert.deepEqual(subject, caller);
+    assert.equal(admin, false);
+    return subject.owner;
   };
+  self.managerStatusData = (owner) => { assert.equal(self.lifecycleInFlight, 3); return { owner }; };
+  self.list = (owner) => { assert.equal(self.lifecycleInFlight, 3); return [{ owner }]; };
+  const defs = self.managerServiceDefs();
+  const call = (command: string) => {
+    const def = defs.find((entry) => entry.command === command);
+    assert.ok(def, `${command} is served`);
+    return def.handler(ctx(command));
+  };
+  return { self, call };
 }
 
-const serve = <T>(self: Receiver, fn: () => T | Promise<T>) => prototype.serveObservation.call(self, ctx, fn);
-
-await check("a preserved manager answers status as a counted read", async () => {
-  const self = receiver({ maintenanceState: "preserved" });
-  let during = -1;
-  const answer = await serve(self, () => { during = self.lifecycleInFlight; return "status"; });
-  return answer === "status" && during === 1 && self.lifecycleInFlight === 0 && self.fenced === 0;
-});
-
-await check("an active manager with a pending resume answers status", async () => {
-  const self = receiver({ maintenanceState: "active", resumeRequired: true });
-  return await serve(self, () => "status") === "status" && self.lifecycleInFlight === 0 && self.fenced === 0;
-});
-
-await check("a throwing status read still releases its count", async () => {
-  const self = receiver({ maintenanceState: "preserved" });
-  await assert.rejects(serve(self, () => { throw new Error("read failed"); }), /read failed/);
-  return self.lifecycleInFlight === 0;
-});
-
-await check("a released read wakes a waiting drain", async () => {
-  const self = receiver({ maintenanceState: "preserved" });
-  let woke = false;
-  await serve(self, () => { self.lifecycleDrainWaiters.push(() => { woke = true; }); return "status"; });
-  return woke && self.lifecycleInFlight === 0;
-});
-
-await check("the membership gate still refuses a retired caller", async () => {
-  const self = receiver({ maintenanceState: "preserved", refused: "the caller's lifecycle is retired" });
-  await assert.rejects(serve(self, () => "status"), (error: unknown) => error instanceof EpEnvelopeError && error.code === "permission-denied");
-  return self.lifecycleInFlight === 0 && self.fenced === 0;
-});
-
-for (const [name, state] of [
-  ["preserving", { maintenanceState: "preserving" }],
-  ["a stopping preserved manager", { maintenanceState: "preserved", leaseStopping: true }],
-  ["a stopping manager with a pending resume", { maintenanceState: "active", resumeRequired: true, leaseStopping: true }],
-  ["a preserved manager whose resume is pending", { maintenanceState: "preserved", resumeRequired: true }],
-  ["an ordinary active manager", { maintenanceState: "active" }],
-] as const) {
-  await check(`${name} goes through the shared fence`, async () => {
-    const self = receiver(state);
-    await assert.rejects(serve(self, () => "status"));
-    return self.fenced === 1 && self.lifecycleInFlight === 0;
-  });
+for (const maintenanceState of ["active", "preserving", "preserved"] as const) {
+  for (const resumeRequired of [false, true]) {
+    for (const leaseStopping of [false, true]) {
+      const state = { maintenanceState, resumeRequired, leaseStopping };
+      const label = `${maintenanceState}, resume=${resumeRequired}, stopping=${leaseStopping}`;
+      const { self, call } = receiver(state);
+      await check(`status and ps answer with owner scoping in ${label}`, async () => {
+        let drained = false;
+        self.lifecycleDrainWaiters.push(() => { drained = true; });
+        assert.deepEqual(await call("status"), { owner: caller.owner });
+        assert.deepEqual(await call("ps"), [{ owner: caller.owner }]);
+        assert.equal(self.lifecycleInFlight, 3);
+        assert.equal(drained, false);
+        assert.equal(self.maintenanceState, maintenanceState);
+        assert.equal(self.resumeRequired, resumeRequired);
+        assert.equal(self.leaseStopping, leaseStopping);
+      });
+      await check(`retired membership still refuses both observations in ${label}`, async () => {
+        self.retiredPrincipals.add(`${caller.owner}.${caller.actor}`);
+        for (const command of ["status", "ps"]) {
+          await assert.rejects(async () => call(command), (error: unknown) =>
+            error instanceof EpEnvelopeError && error.code === "permission-denied" && error.outcome === "not-executed");
+        }
+        assert.equal(self.lifecycleInFlight, 3);
+        self.retiredPrincipals.clear();
+      });
+      if (maintenanceState !== "active" || resumeRequired || leaseStopping) {
+        await check(`lifecycle control remains fenced in ${label}`, async () => {
+          await assert.rejects(async () => call("spawn"), (error: unknown) =>
+            error instanceof EpEnvelopeError && error.code === "unavailable" && error.outcome === "not-executed");
+          assert.equal(self.lifecycleInFlight, 3);
+        });
+      }
+    }
+  }
 }
+
+await check("a throwing observation leaves accepted lifecycle work untouched", async () => {
+  const { self, call } = receiver({ maintenanceState: "preserving", resumeRequired: false, leaseStopping: false });
+  self.managerStatusData = () => { throw new Error("status failed"); };
+  self.list = () => { throw new Error("ps failed"); };
+  await assert.rejects(async () => call("status"), /status failed/);
+  await assert.rejects(async () => call("ps"), /ps failed/);
+  assert.equal(self.lifecycleInFlight, 3);
+});
 
 console.log(`\nstatus observation smoke: ${passed} checks passed`);
 emitSentinel({ passed, failed: 0 });
