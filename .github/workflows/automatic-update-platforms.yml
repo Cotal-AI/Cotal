@@ -10,66 +10,8 @@ permissions:
   contents: read
   actions: read
 jobs:
-  third:
-    if: github.ref == 'refs/heads/measure/windows-cleanup-owner-advice' && inputs.source_sha == '2cc295ebe45f9215f7604d441c3236a2e8188265'
-    runs-on: windows-2022
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.source_sha }}
-          path: product
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-      - uses: dtolnay/rust-toolchain@stable
-      - run: pnpm install --frozen-lockfile
-        working-directory: product
-      - name: Stamp only the third hosted installer
-        working-directory: product
-        run: pnpm exec node ../scripts/stamp-owner-advice-next.mjs
-      - name: Build ordinary source-matched Windows primitives
-        shell: cmd
-        working-directory: product
-        run: |
-          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
-          if not defined VS exit /b 1
-          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
-          if errorlevel 1 exit /b 1
-          node packages/workspace/scripts/build-native.mjs
-          if errorlevel 1 exit /b 1
-          node packages/seat/scripts/build-native.mjs --host
-          if errorlevel 1 exit /b 1
-      - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
-        working-directory: product
-      - run: pnpm --filter cotal-ai seeded-connectors
-        working-directory: product
-      - run: pnpm --dir desktop prepare:runtime
-        working-directory: product
-      - run: pnpm --dir desktop check:runtime
-        working-directory: product
-      - run: pnpm --dir desktop exec tauri build --bundles nsis
-        working-directory: product
-      - name: Verify third installer version
-        working-directory: product
-        shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          $setup=@(Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe')
-          if($setup.Count -ne 1 -or $setup[0].Name -cne 'Cotal_0.164.3018_x64-setup.exe'){throw 'Third installer version mismatch'}
-          $manifest=(& 7z e -so $setup[0].FullName '*desktop-runtime.json' -r) -join "`n"
-          if($LASTEXITCODE -ne 0 -or ($manifest | ConvertFrom-Json).version -cne '0.164.3018'){throw 'Bundled third runtime version mismatch'}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: owner-advice-third
-          path: product/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
-          if-no-files-found: error
   observation:
-    needs: third
+    if: github.ref == 'refs/heads/measure/windows-cleanup-owner-advice' && inputs.source_sha == '2cc295ebe45f9215f7604d441c3236a2e8188265'
     runs-on: windows-2022
     timeout-minutes: 55
     steps:
@@ -89,11 +31,14 @@ jobs:
             const {data:run}=await github.rest.actions.getWorkflowRun({...context.repo,run_id:43860543912});
             assert.equal(run.head_sha,source);assert.equal(run.path,'.github/workflows/windows-setup-proof.yml');
             const artifacts=[
-              {id:14224402097,name:'setup-candidate',sha256:'cab3fd85d80e3b80dad26ae17f602ef99cf2c6e10251e6b7d6e7aa4d49158fc3',version:'0.164.1018'},
-              {id:14224537668,name:'setup-synthetic-next',sha256:'b416dc287bf5615e58b7a36711603958e2f8dae65ba469a3b9a21582d6c4a3c0',version:'0.164.2018'}];
+              {id:14224402097,name:'setup-candidate',run:43860543912,sha256:'cab3fd85d80e3b80dad26ae17f602ef99cf2c6e10251e6b7d6e7aa4d49158fc3',version:'0.164.1018'},
+              {id:14224537668,name:'setup-synthetic-next',run:43860543912,sha256:'b416dc287bf5615e58b7a36711603958e2f8dae65ba469a3b9a21582d6c4a3c0',version:'0.164.2018'},
+              {id:14228353387,name:'owner-advice-third',run:43870928447,sha256:'1ff639039376649df24fd5e2a4ed53bdba56377ec0837ae6fdfc7ebe19e72398',version:'0.164.3018'}];
+            const {data:third}=await github.rest.actions.getWorkflowRun({...context.repo,run_id:43870928447});
+            assert.equal(third.head_sha,'aca44c8bd193852139b47efa3f0ca33d4d3fca57');
             for(const item of artifacts){
               const {data:a}=await github.rest.actions.getArtifact({...context.repo,artifact_id:item.id});
-              assert.equal(a.name,item.name);assert.equal(a.workflow_run.id,43860543912);assert.equal(a.digest,'sha256:'+item.sha256);assert(!a.expired);
+              assert.equal(a.name,item.name);assert.equal(a.workflow_run.id,item.run);assert.equal(a.digest,'sha256:'+item.sha256);assert(!a.expired);
               const {data:b}=await github.rest.actions.downloadArtifact({...context.repo,artifact_id:item.id,archive_format:'zip'});
               assert.equal(sha(Buffer.from(b)),item.sha256);fs.writeFileSync(path.join(out,item.version+'.zip'),Buffer.from(b));
             }
@@ -103,10 +48,6 @@ jobs:
             const response=await fetch(asset.browser_download_url);assert(response.ok);const bytes=Buffer.from(await response.arrayBuffer());
             assert.equal(sha(bytes),asset.digest.slice(7));fs.writeFileSync(path.join(out,asset.name),bytes);
             fs.writeFileSync(path.join(out,'origin.json'),JSON.stringify({source,product:'fae81a8237c06d374255bb7560ab0454ff799e02',measurement:context.sha,artifacts,published:{name:asset.name,id:asset.id,digest:asset.digest}},null,2));
-      - uses: actions/download-artifact@v4
-        with:
-          name: owner-advice-third
-          path: ${{ runner.temp }}/owner-advice-inputs/third
       - name: Bind all four actual installer inputs
         shell: pwsh
         run: |
@@ -114,6 +55,7 @@ jobs:
           $out=Join-Path $env:RUNNER_TEMP 'owner-advice-inputs'
           Expand-Archive -LiteralPath "$out/0.164.1018.zip" -DestinationPath "$out/first"
           Expand-Archive -LiteralPath "$out/0.164.2018.zip" -DestinationPath "$out/second"
+          Expand-Archive -LiteralPath "$out/0.164.3018.zip" -DestinationPath "$out/third"
           $origin=Get-Content -Raw "$out/origin.json" | ConvertFrom-Json
           $rows=@()
           foreach($r in @(@{version='0.164.18';path="$out/Cotal_0.164.18_x64-setup.exe";source='v0.164.18';kind='published'},@{version='0.164.1018';path="$out/first/Cotal_0.164.1018_x64-setup.exe";source='${{ inputs.source_sha }}';kind='fixed-observed'},@{version='0.164.2018';path="$out/second/Cotal_0.164.2018_x64-setup.exe";source='${{ inputs.source_sha }}';kind='fixed-observed'},@{version='0.164.3018';path="$out/third/Cotal_0.164.3018_x64-setup.exe";source='${{ inputs.source_sha }}';kind='fixed-observed'})){

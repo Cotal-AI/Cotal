@@ -251,7 +251,8 @@ try {
   requireOK(await powershell('elevated-token', `$i=[Security.Principal.WindowsIdentity]::GetCurrent();$p=[Security.Principal.WindowsPrincipal]::new($i); & "$env:SystemRoot\\System32\\whoami.exe" /groups /fo csv; if(!$p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Elevated runner required'}`, 30_000));
   // A fresh machine is required. Refuse rather than replace unknown user state.
   assert.ok(!existsSync(root) && !existsSync(home), 'Pre-existing Cotal installation/config is foreign');
-  requireOK(await powershell('task-preflight', `$s=New-Object -ComObject Schedule.Service;$s.Connect();$tasks=@($s.GetFolder('\\').GetTasks(1) | Where-Object {$_.Name -like '*cotal*'});if($tasks.Count){throw 'Pre-existing Cotal scheduled task'}`, 30_000));
+  const tasks = requireOK(await run('task-preflight', join(process.env.SystemRoot, 'System32/schtasks.exe'), ['/Query', '/FO', 'CSV', '/NH'], 30_000));
+  assert(!tasks.stdout.split(/\r?\n/).some(line => /^"[^"]*cotal/i.test(line)), 'Pre-existing Cotal scheduled task');
   for (const [index, row] of rows.entries()) {
     version = row.version;
     if (index === 1) {
