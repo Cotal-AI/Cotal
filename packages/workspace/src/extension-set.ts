@@ -11,7 +11,7 @@ import { protectedLocalDirectory, readLocalRecordSource } from "./protected-reco
 const version = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
 function pnpmContentPath(path: string): boolean {
-  return /[/\\\\]store[/\\\\]v[0-9]+[/\\\\]links[/\\\\]@[/\\\\]cotal-ai[/\\\\]/.test(path);
+  return /[/\\\\]store[/\\\\]v[0-9]+[/\\\\]links[/\\\\]@[/\\\\]cotal-ai[/\\\\][^/\\\\]+[/\\\\][^/\\\\]+[/\\\\]node_modules[/\\\\]cotal-ai(?:[/\\\\]dist[/\\\\]cotal\.js)?$/.test(path);
 }
 
 /** Stable package-manager destination, including pnpm's link outside its versioned virtual store. */
@@ -20,7 +20,8 @@ export function extensionInstallationRoot(packageRoot: string): string {
   if (pnpmContentPath(root)) throw new Error(`pnpm connector installation requires its validated global launch entry, not ${root}`);
   const parts = root.split(/[\\/]/);
   const retained = parts.lastIndexOf(".cotal-generations");
-  if (retained >= 0) return extensionInstallationRoot(join(parts.slice(0, retained).join("/") || "/", "node_modules", "cotal-ai"));
+  if (retained >= 0 && retained + 3 === parts.length && /^[a-f0-9]{32}$/.test(parts[retained + 1] ?? "") && parts[retained + 2] === "cotal-ai")
+    return extensionInstallationRoot(join(parts.slice(0, retained).join("/") || "/", "node_modules", "cotal-ai"));
   const global = parts.findIndex((part, index) => part === "global" && /^v[0-9]+$/.test(parts[index + 1] ?? "") && parts[index + 3] === "node_modules" && parts[index + 4] === "cotal-ai");
   if (global >= 0 && global + 5 === parts.length) return join(parts.slice(0, global + 2).join("/") || "/", "node_modules", "cotal-ai");
   const at = parts.lastIndexOf(".pnpm");
