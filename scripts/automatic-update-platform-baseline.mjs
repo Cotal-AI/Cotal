@@ -393,7 +393,7 @@ export async function matrixCell(options) {
   env.TMPDIR = join(root, 'tmp');
   mkdirSync(env.TMPDIR, { mode: 0o700 });
   if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
-  if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
+  if (daemonHostedManager || options['dead-updater'] === 'true') Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
   report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
@@ -583,7 +583,7 @@ export async function matrixCell(options) {
     }
     if (options.prepare !== undefined) {
       assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
-      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, call, cotal, check, report });
+      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, prefix, call, cotal, daemon, check, report, output, cli, options });
       assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
     }
     if (containerManager) {
@@ -856,6 +856,7 @@ export async function matrixCell(options) {
       check('candidate source CLI matches packed artifact', true, report.candidateSourceInvocation);
       overlay.activateTarget();
     }
+    if (compositionCleanup?.beforeUpdate) await compositionCleanup.beforeUpdate();
     let update;
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') {
@@ -1174,6 +1175,7 @@ export async function matrixCell(options) {
       report.refusal = report.assertions.filter(row => !row.passed).map(row => row.name).join('\n') || report.targetUpgradeAcceptance;
       return report;
     }
+    if (compositionCleanup?.afterUpdate) await compositionCleanup.afterUpdate(update);
     const expectedVersion = launchdProof === 'off-before-tick' ? report.source : report.target;
     report.expectedVersion = expectedVersion;
     report.update = update;
