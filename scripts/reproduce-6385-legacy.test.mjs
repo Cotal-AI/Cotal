@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ambiguous, guard, pinMetadata, preservation, sha256, statusEvidence } from './reproduce-6385-legacy.mjs';
+import { ageObservedSchedule, ambiguous, guard, opportunitySettled, pinMetadata, preservation, sha256, statusEvidence } from './reproduce-6385-legacy.mjs';
 
 const hosted = { env: { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_OS: 'Linux', RUNNER_TEMP: '/runner/temp', GITHUB_RUN_ID: '1' }, platform: 'linux', uid: 1001, os: 'ID=ubuntu\n' };
 test('hosted nonroot Ubuntu guard rejects each disallowed environment', () => {
@@ -47,14 +47,28 @@ test('effectful exports guard before effects, marker never manufactured, clocks 
   const source = readFileSync(new URL('./reproduce-6385-legacy.mjs', import.meta.url), 'utf8');
   for (const signature of ['export function command(file, args, env, timeoutMs = 180000)', 'export async function publishedRegistry()', 'export async function runLegacy(options)']) assert(source.includes(`${signature} {\n  guard();`));
   assert(!/writeFileSync\(marker/.test(source));
-  assert(source.includes("check.latest === '0.160.3' && Number.isFinite(check.firstSeenAt)"));
-  assert(source.includes("['mask', '--runtime', nativePlan.unit]"));
-  assert(source.includes('assertNoFixtureProcesses([root, state, config])'));
-  assert(source.includes('report.originalMarkerSha256, report.broken.marker.sha256'));
-  assert(source.includes("for (const route of ['npm', 'installer'])"));
-  assert(source.includes('row.nextUpdate = await cotal'));
-  assert(source.indexOf('observe historical scheduler after clock aging') > source.indexOf('attempt.next = Date.now()'));
+  assert(source.includes('ageObservedSchedule(JSON.parse(readFileSync(checkPath)), before.attempt, target)'));
+  assert(source.includes('index < 3'));
+  assert(source.includes('documented npm latest reinstall'));
+  assert(source.includes('latest-to-latest scheduler check, not a newer-release replacement'));
+  assert(!source.includes('copyBarrier') && !source.includes('installer rerun'));
+  assert(source.indexOf('read-only clock reload') > source.indexOf('JSON.stringify(aged.attempt)'));
   assert(source.includes("'clock stimulus must not restart daemon'"));
   assert(!source.includes('/cmdline'));
-  assert(source.includes("report.result = 'reproduction-not-observed'"));
+  assert(!source.includes('writeFileSync(marker'));
+});
+
+test('aging keeps real target and failure budget including two-failure stop', () => {
+  const check = { latest: '0.160.3', firstSeenAt: 100, checkedAt: 200, attemptedAt: 300 };
+  const attempt = { version: '0.160.3', failures: 2, result: 'version 0.160.3 failed twice; waiting for a newer version or manual update', next: 400 };
+  const aged = ageObservedSchedule(check, attempt, check.latest, 100000000);
+  assert.equal(aged.attempt.failures, 2);
+  assert.equal(aged.attempt.version, attempt.version);
+  assert.equal(aged.attempt.result, attempt.result);
+  assert.equal(attempt.next, 400);
+  assert.equal(aged.attempt.next, 10000000);
+  assert.throws(() => ageObservedSchedule(check, attempt, 'other'));
+  assert.equal(opportunitySettled(attempt, attempt, { state: 'ready', version: '0.160.2' }, check.latest), true);
+  assert.equal(opportunitySettled({ failures: 0 }, { failures: 0, result: 'updating to 0.160.3' }, { state: 'ready', version: '0.160.2' }, check.latest), false);
+  assert.equal(opportunitySettled(attempt, attempt, { state: 'starting' }, check.latest), false);
 });

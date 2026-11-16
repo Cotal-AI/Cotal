@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -85,24 +85,19 @@ export async function publishedRegistry() {
 export function preservation(files) {
   return files.map(path => ({ path, exists: existsSync(path), ...(existsSync(path) ? { sha256: sha256(readFileSync(path)) } : {}) }));
 }
-/** Never read process command lines. Unknown same-user file/cwd custody blocks replacement. */
-export function assertNoFixtureProcesses(roots, ownPid = process.pid) {
-  const owned = path => roots.some(root => path === root || path.startsWith(root + '/'));
-  const observed = [];
-  for (const name of readdirSync('/proc').filter(n => /^\d+$/.test(n))) {
-    if (Number(name) === ownPid) continue;
-    const proc = `/proc/${name}`;
-    try {
-      if (lstatSync(proc).uid !== process.getuid()) continue;
-      for (const entry of ['cwd', 'exe', ...readdirSync(join(proc, 'fd')).map(fd => `fd/${fd}`)]) {
-        try { const target = readlinkSync(join(proc, entry)); assert(!owned(target), `fixture still held by pid ${name} (${entry})`); }
-        catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
-      }
-      observed.push(Number(name));
-    } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
-  }
-  return observed;
+export function ageObservedSchedule(check, attempt, target, now = Date.now()) {
+  assert.equal(check.latest, target, 'only a genuinely observed release may be aged');
+  assert(Number.isFinite(check.firstSeenAt), 'observed release timestamp required');
+  assert(Number.isInteger(attempt.failures) && attempt.failures >= 0, 'real failure budget required');
+  const aged = now - 25 * 3600000;
+  return { check: { ...check, firstSeenAt: aged, checkedAt: aged, attemptedAt: aged }, attempt: { ...attempt, next: aged } };
 }
+export function opportunitySettled(before, after, status, target) {
+  if (status?.state !== 'ready') return false;
+  if (status.version === target && !/^updating to /.test(after.result)) return true;
+  return after.failures > before.failures || /failed twice; waiting for a newer version/.test(after.result) || after.result === 'up to date';
+}
+
 
 export async function runLegacy(options) {
   guard();
@@ -113,7 +108,7 @@ export async function runLegacy(options) {
   const root = mkdtempSync(join(temp, 'legacy-6385-'));
   mkdirSync(output, { mode: 0o700 });
   const prefix = join(root, 'prefix'), state = join(home, '.cotal'), config = join(home, '.config/cotal');
-  const report = { schema: 2, source: '0.160.2', target: '0.160.3', calls: [], routes: [], startedAt: new Date().toISOString(), root, result: 'incomplete' };
+  const report = { schema: 3, source: '0.160.2', target: '0.160.3', calls: [], opportunities: [], startedAt: new Date().toISOString(), root, result: 'incomplete' };
   const persist = () => writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   const env = { PATH: `${prefix}/bin:${process.env.PATH}`, HOME: home, USER: process.env.USER, LOGNAME: process.env.LOGNAME, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), DO_NOT_TRACK: '1', NO_COLOR: '1' };
   const registry = await publishedRegistry(); env.npm_config_registry = registry.url;
@@ -129,7 +124,8 @@ export async function runLegacy(options) {
   const cotal = (label, args, required = false) => call(label, cli, args, required);
   async function snapshot(label) {
     const m = existsSync(marker) ? readFileSync(marker) : undefined;
-    const record = { at: new Date().toISOString(), marker: m ? { sha256: sha256(m), ambiguous: ambiguous(m), value: JSON.parse(m) } : { absent: true }, preservation: preservation(canaries ?? []) };
+    const attemptPath = join(state, 'update-attempt.json');
+    const record = { at: new Date().toISOString(), marker: m ? { sha256: sha256(m), ambiguous: ambiguous(m), value: JSON.parse(m) } : { absent: true }, preservation: preservation(canaries ?? []), attempt: existsSync(attemptPath) ? JSON.parse(readFileSync(attemptPath)) : null };
     if (nativePlan) record.unit = await ctl(`${label}: native state`, ['show', nativePlan.unit, '--property=LoadState,ActiveState,SubState,MainPID,ExecMainStatus,NRestarts,ControlGroup'], false);
     record.daemon = await cotal(`${label}: daemon status`, ['daemon', 'status', '--json']);
     record.cli = await cotal(`${label}: version`, ['--version']);
@@ -142,22 +138,49 @@ export async function runLegacy(options) {
     assert.equal(sha256(readFileSync(nativePlan.unitPath)), current.unitSha256);
     return current;
   }
-  async function stopBarrier(label) {
-    verifyOwnedUnit();
-    // The exclusive hosted account, disabled owned service, ended direct children and
-    // full process/file census stay under this runner's control through each copy/swap.
-    await ctl(`${label}: disable and stop owned service`, ['disable', '--now', nativePlan.unit]);
-    await ctl(`${label}: hold native restart exclusion`, ['mask', '--runtime', nativePlan.unit]);
-    const status = await ctl(`${label}: stopped custody`, ['show', nativePlan.unit, '--property=ActiveState,MainPID,ControlGroup']);
-    assert(/^MainPID=0$/m.test(status.stdout), 'daemon must have exited before fixture copy');
-    const group = /^ControlGroup=(.*)$/m.exec(status.stdout)?.[1];
-    if (group && existsSync(`/sys/fs/cgroup${group}`)) {
-      const walk = path => { if (existsSync(join(path, 'cgroup.procs'))) assert.equal(readFileSync(join(path, 'cgroup.procs'), 'utf8').trim(), '', 'service still has descendants'); for (const e of readdirSync(path, { withFileTypes: true })) if (e.isDirectory()) walk(join(path, e.name)); };
-      walk(`/sys/fs/cgroup${group}`);
+  async function observeOpportunity(label, target) {
+    const checkPath = join(state, 'update-check.json'), attemptPath = join(state, 'update-attempt.json');
+    const learnedUntil = Date.now() + 120000;
+    if (existsSync(checkPath)) {
+      const current = JSON.parse(readFileSync(checkPath));
+      if (current.latest !== target) {
+        // Expire freshness only. The next scheduler check must discover the new tag itself.
+        current.checkedAt = current.attemptedAt = Date.now() - 25 * 3600000;
+        writeFileSync(checkPath, JSON.stringify(current) + '\n', { mode: 0o600 });
+      }
     }
-    const m = existsSync(marker) ? JSON.parse(readFileSync(marker)) : undefined;
-    for (const pid of [m?.owner, m?.pid].filter(Number.isSafeInteger)) assert(!existsSync(`/proc/${pid}`), `recorded updater pid ${pid} still exists, copy refused`);
-    return { at: new Date().toISOString(), scanned: assertNoFixtureProcesses([root, state, config]), nativeState: status.stdout };
+    while (Date.now() < learnedUntil) {
+      if (existsSync(checkPath) && JSON.parse(readFileSync(checkPath)).latest === target) break;
+      await cotal(`${label}: observe registry learning`, ['daemon', 'status', '--json']);
+      await delay(3000);
+    }
+    const before = await snapshot(`${label}: before`);
+    assert(before.attempt, 'real attempt record required');
+    const aged = ageObservedSchedule(JSON.parse(readFileSync(checkPath)), before.attempt, target);
+    writeFileSync(checkPath, JSON.stringify(aged.check) + '\n', { mode: 0o600 });
+    writeFileSync(attemptPath, JSON.stringify(aged.attempt) + '\n', { mode: 0o600 });
+    const reload = await cotal(`${label}: read-only clock reload`, ['daemon', 'status', '--json'], true);
+    assert.equal(JSON.parse(reload.stdout).result.pid, JSON.parse(before.daemon.stdout).result.pid, 'clock stimulus must not restart daemon');
+    const row = { label, target, before, aged, reload, samples: [] }; report.opportunities.push(row); persist();
+    const until = Date.now() + 6 * 60000;
+    let settledAt;
+    while (Date.now() < until) {
+      const observed = await snapshot(`${label}: scheduler observation`);
+      row.samples.push(observed); row.final = observed; persist();
+      if (observed.marker.ambiguous) { row.outcome = 'ambiguous'; break; }
+      const status = statusEvidence(observed.daemon.stdout);
+      if (observed.attempt && observed.attempt.next > aged.attempt.next && opportunitySettled(before.attempt, observed.attempt, status, target)) {
+        settledAt ??= Date.now();
+        // A failure count can change before native recovery finishes. Require a stable
+        // ready minute so an old daemon answering mid-update is not a final outcome.
+        if (Date.now() - settledAt >= 60000) {
+          row.outcome = /failed twice; waiting/.test(observed.attempt.result) ? 'failure-budget-stop' : status.version === target ? 'target-ready' : 'restored-or-retained';
+          break;
+        }
+      } else settledAt = undefined;
+      await delay(5000);
+    }
+    row.outcome ??= 'observation-bound'; persist(); return row;
   }
   try {
     writeFileSync(join(home, '.npmrc'), `registry=${registry.url}\nprefix=${prefix}\ncache=${env.npm_config_cache}\n`, { mode: 0o600, flag: 'wx' });
@@ -185,76 +208,48 @@ export async function runLegacy(options) {
     report.before = initial;
     assert.equal(statusEvidence(initial.daemon.stdout).version, '0.160.2'); assert.equal(statusEvidence(initial.daemon.stdout).state, 'ready');
     assert.equal(statusEvidence(initial.daemon.stdout).update.automatic, true, 'historical scheduler must actually be enabled');
-    const waitMs = Number(options.waitMs ?? 12 * 60000);
-    assert(Number.isFinite(waitMs) && waitMs >= 60000 && waitMs <= 15 * 60000, 'historical observation bound is 1 to 15 minutes');
-    const deadline = Date.now() + waitMs; let aged = false;
-    while (Date.now() < deadline) {
-      const checkPath = join(state, 'update-check.json'), attemptPath = join(state, 'update-attempt.json');
-      if (!aged && existsSync(checkPath)) {
-        const check = JSON.parse(readFileSync(checkPath));
-        if (check.latest === '0.160.3' && Number.isFinite(check.firstSeenAt)) {
-          report.learnedClock = { original: check, at: new Date().toISOString() };
-          check.checkedAt = check.firstSeenAt = check.attemptedAt = Date.now() - 25 * 3600000;
-          writeFileSync(checkPath, JSON.stringify(check) + '\n', { mode: 0o600 });
-          if (existsSync(attemptPath)) { const attempt = JSON.parse(readFileSync(attemptPath)); attempt.next = Date.now() - 25 * 3600000; writeFileSync(attemptPath, JSON.stringify(attempt) + '\n', { mode: 0o600 }); }
-          aged = true; persist();
-          // 0.160.2 reloads attempt state from disk only when status is read while idle.
-          // A read-only observation admits the aged deadline, without restarting the service.
-          const reload = await cotal('observe historical scheduler after clock aging', ['daemon', 'status', '--json'], true);
-          report.clockReload = { ...reload, status: statusEvidence(reload.stdout) };
-          assert.equal(JSON.parse(reload.stdout).result.pid, JSON.parse(initial.daemon.stdout).result.pid, 'clock stimulus must not restart daemon');
-          persist();
-        }
-      }
-      if (existsSync(marker) && ambiguous(readFileSync(marker))) break;
-      await delay(3000);
+    for (let index = 0; index < 3; index++) {
+      const row = await observeOpportunity('historical automatic opportunity ' + (index + 1), '0.160.3');
+      if (row.outcome === 'ambiguous' || row.outcome === 'observation-bound') break;
     }
-    report.broken = await snapshot('original broken state');
-    report.journal = await call('historical service journal', 'journalctl', ['--user', '--no-pager', '-u', nativePlan.unit, '--since', report.startedAt, '-n', '200']);
-    if (!report.broken.marker.ambiguous) { report.result = 'reproduction-not-observed'; return report; }
-    assert.equal(JSON.parse(readFileSync(join(prefix, 'lib/node_modules/cotal-ai/package.json'))).version, '0.160.3');
-    report.copyBarrier = await stopBarrier('preserve broken original');
-    const original = join(root, 'original'); mkdirSync(original, { mode: 0o700 });
-    const surfaces = [{ name: 'prefix', live: prefix }, { name: 'state', live: state }, { name: 'config', live: config }];
-    for (const s of surfaces) cpSync(s.live, join(original, s.name), { recursive: true, verbatimSymlinks: true, preserveTimestamps: true, errorOnExist: true, force: false });
-    report.originalMarkerSha256 = sha256(readFileSync(join(original, 'prefix/lib/node_modules/.cotal-update-child')));
-    assert.equal(report.originalMarkerSha256, report.broken.marker.sha256);
+    report.historicalOpportunityCount = report.opportunities.length;
+    report.historicalComplete = report.opportunities.length === 3 && report.opportunities.every(row => !['ambiguous', 'observation-bound'].includes(row.outcome));
+    report.beforeWayOut = await snapshot('after historical automatic opportunities');
+    report.journal = await call('historical service journal', 'journalctl', ['--user', '--no-pager', '-u', nativePlan.unit, '--since', report.startedAt, '-n', '250']);
     const latestResponse = await fetch('https://registry.npmjs.org/cotal-ai/latest', { signal: AbortSignal.timeout(30000) }); assert(latestResponse.ok);
     const latest = await latestResponse.text(); report.publishedLatest = JSON.parse(latest).version;
     report.latestReceipt = { at: new Date().toISOString(), sha256: sha256(latest), version: report.publishedLatest };
     registry.setLatest(report.publishedLatest);
-    const installerResponse = await fetch('https://get.cotal.ai', { signal: AbortSignal.timeout(30000) }); assert(installerResponse.ok);
-    const installerBytes = Buffer.from(await installerResponse.arrayBuffer()); assert(installerBytes.length < 1024 * 1024);
-    const installer = join(output, 'installer.sh'); writeFileSync(installer, installerBytes, { mode: 0o600 }); report.installer = { url: 'https://get.cotal.ai', sha256: sha256(installerBytes) };
-    for (const route of ['npm', 'installer']) {
-      if (route === 'installer') {
-        report.restoreBarrier = await stopBarrier('restore same original for installer');
-        for (const s of surfaces) { renameSync(s.live, join(root, `npm-after-${s.name}`)); cpSync(join(original, s.name), s.live, { recursive: true, verbatimSymlinks: true, preserveTimestamps: true, errorOnExist: true, force: false }); }
-        assert.equal(sha256(readFileSync(marker)), report.originalMarkerSha256);
-        verifyOwnedUnit();
-      }
-      await ctl(`${route}: release native restart exclusion`, ['unmask', '--runtime', nativePlan.unit]);
-      await ctl(`${route}: reenable original service`, ['enable', '--now', nativePlan.unit]);
-      const row = { route, inputMarkerSha256: sha256(readFileSync(marker)), before: await snapshot(`${route} copy before`) }; report.routes.push(row); persist();
-      if (route === 'npm') row.reinstall = await call('current published reinstall', 'npm', ['install', '-g', 'cotal-ai@latest', '--no-audit', '--no-fund'], false, 600000);
-      else { env.COTAL_INSTALL_DIR = prefix; env.COTAL_BIN_DIR = join(prefix, 'bin'); row.reinstall = await call('installer rerun', 'sh', [installer, '--version', report.publishedLatest, '--no-setup', '--no-modify-path'], false, 600000); delete env.COTAL_INSTALL_DIR; delete env.COTAL_BIN_DIR; }
-      row.afterReinstall = await snapshot(`${route} after reinstall`);
-      row.updateSelf = await cotal(`${route}: existing current self update`, ['update', '--self']);
-      row.afterUpdate = await snapshot(`${route} after self update`);
-      row.nextUpdate = await cotal(`${route}: next actual self update`, ['update', '--self']);
-      row.final = await snapshot(`${route} final`);
-      row.canariesIntact = JSON.stringify(row.final.preservation) === JSON.stringify(report.canaries.before);
-      row.markerGone = row.final.marker.absent === true;
-      row.daemonRunning = statusEvidence(row.final.daemon.stdout).state === 'ready';
-      row.nextUpdateSucceeded = row.nextUpdate.exit === 0 && !row.nextUpdate.timedOut;
-      persist();
+    report.wayOut = {};
+    report.wayOut.reinstall = await call('documented npm latest reinstall', 'npm', ['install', '-g', 'cotal-ai@latest', '--no-audit', '--no-fund'], false, 600000);
+    report.wayOut.afterReinstall = await snapshot('after documented reinstall');
+    // Existing upgrade docs prescribe current update --self after installing the fixed release.
+    // Preserve its instruction/refusal verbatim. No marker clearing, new repair or forced restart.
+    report.wayOut.updateSelf = await cotal('installed release documented update self', ['update', '--self']);
+    report.wayOut.publicStatus = await cotal('installed release public status', ['status']);
+    report.wayOut.final = await snapshot('after installed release instructions');
+    const readyUntilAfter = Date.now() + 120000;
+    while (Date.now() < readyUntilAfter && statusEvidence(report.wayOut.final.daemon.stdout).version !== report.publishedLatest) {
+      await delay(3000);
+      report.wayOut.final = await snapshot('observe installed release native activation');
     }
-    report.result = 'observed';
+    const ready = statusEvidence(report.wayOut.final.daemon.stdout);
+    report.wayOut.canariesIntact = JSON.stringify(report.wayOut.final.preservation) === JSON.stringify(report.canaries.before);
+    report.wayOut.markerGone = report.wayOut.final.marker.absent === true;
+    report.wayOut.daemonRunning = ready.state === 'ready';
+    if (ready.state === 'ready' && ready.version === report.publishedLatest) {
+      report.wayOut.automaticObservation = await observeOpportunity('after reinstall automatic scheduling', report.publishedLatest);
+      const final = report.wayOut.automaticObservation.final;
+      report.wayOut.automaticEnabled = statusEvidence(final.daemon.stdout).update.automatic === true;
+      report.wayOut.automaticCheckSucceeded = final.attempt?.result === 'up to date' && report.wayOut.automaticEnabled;
+      report.wayOut.proofLimit = 'latest-to-latest scheduler check, not a newer-release replacement';
+    } else report.wayOut.automaticUnmeasured = 'installed instructions did not leave latest daemon ready';
+    report.result = report.historicalComplete ? 'observed' : 'partial';
   } catch (error) { report.result = 'blocked'; report.error = String(error.stack).slice(0, 6000); }
   finally {
     persist();
     if (serviceOwned && receipt) {
-      try { verifyOwnedUnit(); await ctl('release owned native exclusion for uninstall', ['unmask', '--runtime', nativePlan.unit]); report.cleanup = await cotal('owned native service uninstall', ['daemon', 'uninstall', '--yes', '--json']); }
+      try { verifyOwnedUnit(); report.cleanup = await cotal('owned native service uninstall', ['daemon', 'uninstall', '--yes', '--json']); }
       catch (error) { report.cleanupError = error.message; }
     }
     report.registryRequests = registry.requests; await registry.close();
@@ -265,6 +260,6 @@ export async function runLegacy(options) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const args = process.argv.slice(2), options = {};
-  for (let i = 0; i < args.length; i += 2) { assert(['--output', '--wait-ms'].includes(args[i]) && args[i + 1]); options[args[i] === '--output' ? 'output' : 'waitMs'] = args[i + 1]; }
+  for (let i = 0; i < args.length; i += 2) { assert(args[i] === '--output' && args[i + 1]); options.output = args[i + 1]; }
   const report = await runLegacy(options); console.log(JSON.stringify({ result: report.result })); process.exitCode = report.result === 'observed' ? 0 : 1;
 }
