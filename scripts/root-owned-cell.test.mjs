@@ -12,6 +12,11 @@ test('root proof checks its complete pinned npm before installation and retains 
  assert(source.indexOf('verify root global npm tree before installation')<source.indexOf('await install(old)'));
  assert(source.includes("'--loglevel=silly'"));
  assert(source.includes("umask 0022; exec"));
+ assert(source.includes("'--umask=022'"));
+ assert(source.includes("ROOT_NPM_PROCESS"));
+ assert(source.includes("receipt.umask!==0o22"));
+ assert(source.includes("observation.manifest.mode,0o644"));
+ assert(source.includes("observation.bootstrap.mode,0o755"));
  assert(source.includes("ancestors.push({path:at,uid:s.uid"));
 });
 test('npm diagnostic tail bounds output and filters token and registry authentication lines',async()=>{
