@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { globalConfigDir, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
+  CommandFailure, isCommandFailure, jsonFlag, plainFlag, presentationOf, protectedLocalDirectory, renderReport, writeResult, type OutputWarning,
   cmdSpawnSpec,
   beginGlobalUpdateChild,
   processStartToken,
@@ -241,7 +241,15 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
       remedy: "update the desktop app with its signed platform installer; no npm self-update was attempted",
     });
   }
-  if (args.values.self === true) rt.preflightExecution?.();
+  if (args.values.self === true) {
+    try { rt.preflightExecution?.(); }
+    catch (error) {
+      if (isCommandFailure(error)) throw error;
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `This installation cannot update itself from this account: ${message(error)}; no changes were made`, {
+        native: { outcome: "not-executed" },
+      });
+    }
+  }
   if (await recoverInterruptedUpdate(rt)) return;
   // A folder above the config folder is not one this command repairs. Refuse it before the mode
   // repair and before seeding, so a refusal writes nothing and does not replace the binary.
