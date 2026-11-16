@@ -209,7 +209,7 @@ jobs:
           name: setup-candidate
           path: candidate
       - uses: actions/download-artifact@v4
-        if: matrix.cell == 'installed-candidate-to-next' || matrix.cell == 'app-installed' || matrix.cell == 'app-update-mode'
+        if: matrix.cell == 'installed-candidate-to-next' || matrix.cell == 'app-installed' || matrix.cell == 'app-update-mode' || matrix.cell == 'bridge-hard-exit'
         with:
           name: setup-synthetic-next
           path: next-candidate

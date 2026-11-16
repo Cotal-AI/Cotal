@@ -3,7 +3,9 @@
 // status-watch bridge (node.exe running cotal.js daemon desktop), then kills
 // only cotal-desktop.exe with TerminateProcess. Two seconds later it records
 // every process whose image is under the install folder. The required result is
-// no node.exe from that folder. It then runs the next version's installer over
+// that the bridge pid is gone and no process whose command line carries
+// "daemon desktop" remains. The service is its own node.exe from the same
+// folder and is recorded, not counted. It then runs the next version's installer over
 // the same folder and requires setup code 0, the service answering at the new
 // version, and the app starting. A surviving bridge is the finding: the script
 // records it and stops before the installer, and changes no product code.
@@ -121,16 +123,17 @@ try {
 
   const after = await installFolderProcesses();
   report.processesAfterKill = after.processes;
-  const survivors = after.processes.filter(row => row.name.toLowerCase() === 'node.exe');
-  report.bridgeSurvived = survivors.length > 0;
-  report.bridgeExit = { pid: bridge.pid, alive: survivors.some(row => row.pid === bridge.pid), recordedAt: exit.exitAt };
+  const bridges = after.processes.filter(row => /daemon desktop/.test(row.commandLine));
+  report.serviceAfterKill = after.processes.filter(row => row.name.toLowerCase() === 'node.exe' && !/daemon desktop/.test(row.commandLine));
+  report.bridgeSurvived = bridges.length > 0;
+  report.bridgeExit = { pid: bridge.pid, alive: bridges.some(row => row.pid === bridge.pid), recordedAt: exit.exitAt };
   save();
-  if (survivors.length > 0) {
-    report.finding = 'bridge survived the app: node.exe from the install folder is still running two seconds after TerminateProcess on cotal-desktop.exe';
+  if (bridges.length > 0) {
+    report.finding = 'bridge survived the app: a process whose command line carries "daemon desktop" is still running two seconds after TerminateProcess on cotal-desktop.exe';
     save();
     throw new Error(report.finding);
   }
-  check('No node.exe from the install folder two seconds after the app died', true);
+  check('Bridge pid is gone and no daemon desktop process remains two seconds after the app died', true);
 
   const setup = await run(next, ['/S'], 420_000);
   const diagnostic = JSON.parse(readText(join(process.env.LOCALAPPDATA, 'CotalSetup', 'result.json')));
