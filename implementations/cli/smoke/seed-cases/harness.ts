@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, posix, win32 } from "node:path";
-import { defaultAgentType } from "@cotal-ai/workspace";
+import { defaultAgentType, extensionSetPaths } from "@cotal-ai/workspace";
 import { isPathSpec } from "../../src/commands/ext.js";
 import { seedGeneration, seedStorePath } from "../../src/seed/paths.js";
 import { stageSeedPayload } from "../../src/seed/store.js";
@@ -67,8 +67,8 @@ function fakeCotal(path: string, version: string): void {
   chmodSync(path, 0o755);
 }
 const freshCfg = (): string => mkdtempSync(join(tmpdir(), "cotal-seed-smoke-"));
-const seedDir = (cfg: string) => join(cfg, "cotal", "seed");
-const manifestPath = (cfg: string) => join(cfg, "cotal", "extensions", "extensions.json");
+const seedDir = (cfg: string) => extensionSetPaths(join(cfg, "cotal")).seed;
+const manifestPath = (cfg: string) => join(extensionSetPaths(join(cfg, "cotal")).extensions, "extensions.json");
 const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8"));
 const writeJson = (p: string, v: unknown) => writeFileSync(p, JSON.stringify(v));
 /** A boot through the seed gate: a command that is not a read, so the gate reconciles before it runs.

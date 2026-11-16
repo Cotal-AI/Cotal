@@ -22,7 +22,9 @@ const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_
 const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 120000 });
 const seed = run(['ext', 'seed']);
 assert.equal(seed.status, 0, seed.stderr);
-const prefix = join(config, 'cotal/extensions');
+const located = run(['ext', 'root']);
+assert.equal(located.status, 0, located.stderr);
+const prefix = located.stdout.trim();
 for (const pkg of ['connector-claude-code', 'connector-opencode']) writeFileSync(join(prefix, 'node_modules/@cotal-ai', pkg, 'damage.txt'), 'previous damaged bytes\n');
 const digest = (directory: string): string => {
   const hash = createHash('sha256');

@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
+import { extensionSetPaths } from "@cotal-ai/workspace";
 
 const BIN = join(import.meta.dirname, "..", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -24,6 +25,7 @@ const VERSION = (JSON.parse(readFileSync(join(import.meta.dirname, "..", "packag
 const home = mkdtempSync(join(tmpdir(), "cotal-docs-ext-"));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 const xdg = join(home, ".config");
+const extensionRoot = extensionSetPaths(join(xdg, "cotal")).extensions;
 
 type Envelope = {
   outcome: string;
@@ -147,7 +149,7 @@ for (const [args, why] of [
 
 // ── ext: the listing ─────────────────────────────────────────────────────────────────────────────
 {
-  const root = join(xdg, "cotal", "extensions");
+  const root = extensionRoot;
   const empty = run(["ext", "--json"]);
   const er = empty.envelope?.result as { kind: string; root: string; items: unknown[] } | undefined;
   check("bare ext --json is one envelope naming the root, empty on a fresh machine", empty.status === 0 && empty.envelope?.command === "ext" && empty.envelope.target === null && er?.kind === "extensions" && er.root === root && er.items.length === 0, shown(empty));
@@ -177,7 +179,7 @@ for (const [args, why] of [
 // ── ext: root stays raw; the other subcommands refuse the listing's flags ────────────────────────
 {
   const root = run(["ext", "root"]);
-  check("ext root prints only the path", root.status === 0 && root.stdout === `${join(xdg, "cotal", "extensions")}\n`, shown(root));
+  check("ext root prints only the path", root.status === 0 && root.stdout === `${extensionRoot}\n`, shown(root));
   // Only the listing declares structured output, so the other modes refuse its flags as text, and keep
   // their own exits.
   for (const args of [["ext", "root", "--json"], ["ext", "root", "--plain"], ["ext", "remove", "x", "--json"], ["ext", "seed", "--plain"]]) {

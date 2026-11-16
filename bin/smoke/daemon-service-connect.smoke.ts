@@ -105,6 +105,7 @@ import {
   saveServiceKeys, startAuthService, cotalAuthProvider, mintServiceCallerPayloadObserverCreds, type AuthServiceHandle,
 } from "@cotal-ai/auth";
 import { connectionEvictorCredsKey, deliveryCredsKey, membershipObserverCredsKey, membershipRwCredsKey, findMesh, removeMesh, recordMesh, resolveControlTarget, spaceSegment, userAuthStateDir, workspaceSecretStore, type MeshEntry } from "@cotal-ai/workspace";
+import { extensionSetPaths } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { startDeliveryService } from "@cotal-ai/delivery";
 import { freePort, killAndAwaitExit, skipSuite, teardownOnSignal, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
@@ -1870,7 +1871,8 @@ try {
       removeMesh(ON);
       check("H0 requested space is absent from local registry before setup", findMesh(ON) === undefined);
       deleteIdpSession(home, idpUrl);
-      const prefix = join(root, "config", "cotal", "extensions");
+      const connectorSet = extensionSetPaths();
+      const prefix = upgrading ? join(root, "config", "cotal", "extensions") : connectorSet.extensions;
       const pkg = join(prefix, "node_modules", "daemon-smoke-connector");
       mkdirSync(pkg, { recursive: true });
       writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "daemon-smoke-connector", version: "1.0.0", type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": ">=0.1.0" } }));
@@ -1884,11 +1886,13 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
       const cleanSeed = process.argv.includes("--hosted-seed-repro") || process.argv.includes("--daemon-seed-repro");
       if (cleanSeed) rmSync(prefix, { recursive: true });
       else if (!upgrading) {
-        const seed = join(root, "config", "cotal", "seed");
+        const seed = connectorSet.seed;
         mkdirSync(seed, { recursive: true, mode: 0o700 });
         for (const file of ["authority.json", "authority.bak.json"]) writeFileSync(join(seed, file), JSON.stringify({ everSeeded: ["claude", "opencode", "codex", "hermes", "jcode", "pi", "web"] }));
         writeFileSync(join(seed, "witness.json"), JSON.stringify({ initialized: true, firstGeneration: fixtureVersion }));
         writeFileSync(join(seed, "stamp.json"), JSON.stringify({ generation: fixtureVersion }));
+        writeFileSync(connectorSet.ready, JSON.stringify({ installRoot: connectorSet.installRoot, version: fixtureVersion }), { mode: 0o600 });
+        writeFileSync(join(connectorSet.root, "install.json"), JSON.stringify({ installRoot: connectorSet.installRoot, current: fixtureVersion, versions: [fixtureVersion] }), { mode: 0o600 });
       }
       const env: NodeJS.ProcessEnv = { USER: "smoke", LOGNAME: "smoke", PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: rtDir, TMPDIR: scratchParent, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1", DO_NOT_TRACK: "1", COTAL_TELEMETRY: "off", NO_COLOR: "1" };
       env.PATH = env.PATH!.split(":").filter(entry => entry.startsWith("/")).join(":");
@@ -3464,12 +3468,73 @@ process.exit(result.status ?? 93);
             const released = await ask(paths.socket, { op: "manager-start", space: ON });
             const resumed = resultOf(released);
             check("Ownership final B abort permits admission to same Manager", released.ok === true && resumed.state === "answering" && resumed.instanceId === manager.instanceId && resumed.pid === manager.pid, released);
+            // Abandoned callers are released through the daemon's authenticated process lifetimes.
+            // A living caller's fence and a foreign installation's Manager remain untouched.
+            const deadPrepared = await request(a, "managers-prepare-restart");
+            check("6887 dead updater A prepares real hosted Manager", deadPrepared.ok === true, deadPrepared);
+            const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+            const fencedStatus = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+            check("6887 prepared Manager refuses ordinary control", !fencedStatus.ok && String(fencedStatus.error).includes("preserving mode"), fencedStatus);
+            await killAndAwaitExit(a, "SIGKILL");
+            const freshAbort = await request(b, "managers-abort-restart");
+            check("6887 fresh caller B releases dead updater A daemon fence", freshAbort.ok === true && resultOf(freshAbort).update?.restartEvidence === undefined, freshAbort);
+            const unfencedAfterAbort = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+            check("6887 Manager answers after fresh caller B releases dead updater A fence", unfencedAfterAbort.ok === true, unfencedAfterAbort);
+            const secondPrepared = await request(b, "managers-prepare-restart");
+            check("6887 updater B prepares real hosted Manager before dying", secondPrepared.ok === true, secondPrepared);
+            const secondFenced = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+            check("6887 second prepared Manager refuses ordinary control", !secondFenced.ok && String(secondFenced.error).includes("preserving mode"), secondFenced);
+            const metadata = createHttpServer((_req, res) => res.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+            await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+            try {
+              const runCliUpdate = async (self = false) => {
+                const updating = spawn(process.execPath, [cliEntry, "update", ...(self ? ["--self"] : []), "--space", ON], { cwd: root, env: { ...env, COTAL_ALLOW_CHECKOUT_SEED: "1", npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000, killSignal: "SIGKILL" });
+                let text = "";
+                updating.stdout.on("data", chunk => { text += String(chunk); });
+                updating.stderr.on("data", chunk => { text += String(chunk); });
+                const code = await new Promise<number | null>(resolve => updating.once("close", resolve));
+                return { code, text };
+              };
+              const liveOwnerUpdate = await runCliUpdate();
+              const stillFenced = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+              check("6887 cotal update leaves a living updater's Manager fence intact", !stillFenced.ok && String(stillFenced.error).includes("preserving mode"), { liveOwnerUpdate, stillFenced });
+              await killAndAwaitExit(b, "SIGKILL");
+              const releasedUpdate = await runCliUpdate();
+              console.log("  6887 stale preserving release update", JSON.stringify(releasedUpdate));
+              check("6887 cotal update releases stale preserving fence on owned Manager and exits 0", releasedUpdate.code === 0 && releasedUpdate.text.includes(`instance ${manager.instanceId} answered`), releasedUpdate);
+              const unfencedStatus = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+              check("6887 owned Manager answers after stale preserving release", unfencedStatus.ok === true, unfencedStatus);
+              try {
+                seedUnitReceipt("/Applications/Cotal.app/Contents/Resources/cli/dist/cotal.js", true);
+                const preinstall = spawn(process.execPath, [join(repo, "bin/dist/execution-preinstall.js"), JSON.stringify({ v: 1, nonce: "0".repeat(32), installedEntry: cliEntry, daemonArgv: [process.execPath, cliEntry, "daemon", "serve"], flags: { space: ON } })], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], timeout: 30_000, killSignal: "SIGKILL" });
+                let preinstallText = "", preinstallError = "";
+                preinstall.stdout.on("data", chunk => { preinstallText += String(chunk); });
+                preinstall.stderr.on("data", chunk => { preinstallError += String(chunk); });
+                const preinstallCode = await new Promise<number | null>(resolve => preinstall.once("close", resolve));
+                const preinstallLine = preinstallText.split("\n").find(line => line.startsWith("COTAL_PREINSTALL_RESULT "));
+                const preinstallReceipt = preinstallLine ? JSON.parse(preinstallLine.slice("COTAL_PREINSTALL_RESULT ".length)) : undefined;
+                check("6887 real target preinstall excludes foreign hosted custody", preinstallCode === 0 && preinstallReceipt?.occupied === 0 && preinstallReceipt?.hostedSpaces?.length === 0, { preinstallCode, preinstallReceipt, preinstallError });
+                for (const self of [false, true]) {
+                  const foreignUpdate = await runCliUpdate(self);
+                  console.log("  6887 foreign daemon update", JSON.stringify({ self, ...foreignUpdate }));
+                  const afterForeign = resultOf(await ask(paths.socket, { op: "status" }, 10_000));
+                  check(`6887 cotal update${self ? " --self" : ""} sends no prepare or fence to a foreign daemon and names its Manager in one line`, foreignUpdate.code === 0 && foreignUpdate.text.includes(`hosted Manager ${ON}: instance ${manager.instanceId} belongs to another Cotal installation`) && foreignUpdate.text.includes("left running") && afterForeign.update?.restartEvidence?.prepared === false && afterForeign.update?.restartEvidence?.managers?.every((row: any) => row.fenced === false), { foreignUpdate, afterForeign });
+                  const foreignManager = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, ON, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+                  check(`6887 foreign Manager still answers after update${self ? " --self" : ""}`, foreignManager.ok === true && afterForeign.managers?.some((row: any) => row.instanceId === manager.instanceId && row.pid === manager.pid), { foreignManager, managers: afterForeign.managers });
+                }
+              } finally {
+                seedUnitReceipt(cliEntry, true);
+              }
+            } finally {
+              await new Promise<void>(resolve => metadata.close(() => resolve()));
+            }
           } finally {
             try {
-              const aborts = await Promise.allSettled(updaters.map(child => request(child, "managers-abort-restart")));
+              const liveUpdaters = updaters.filter(child => child.exitCode === null && child.signalCode === null);
+              const aborts = await Promise.allSettled(liveUpdaters.map(child => request(child, "managers-abort-restart")));
               for (const [index, aborted] of aborts.entries()) {
                 check("Ownership finally explicitly aborts its own preparation", aborted.status === "fulfilled" && aborted.value.ok === true,
-                  { pid: updaters[index]?.pid, ...(aborted.status === "fulfilled" ? { reply: aborted.value } : { failure: String(aborted.reason) }) });
+                  { pid: liveUpdaters[index]?.pid, ...(aborted.status === "fulfilled" ? { reply: aborted.value } : { failure: String(aborted.reason) }) });
               }
             } finally {
               await Promise.all(updaters.map(async (child) => { await killAndAwaitExit(child, "SIGKILL"); }));

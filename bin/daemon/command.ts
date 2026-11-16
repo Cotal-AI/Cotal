@@ -21,7 +21,7 @@
  * predecessor published (`lifetime.ts`). `state: "ready"` means the local control listener is bound
  * and verified; it says nothing about any mesh or Cloud connection.
  */
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
@@ -458,6 +458,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
+  const { holdExtensionSet, assertExtensionSetReadable, extensionSetPaths, extensionSetCleanupSpec } = await import("@cotal-ai/workspace");
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");
@@ -473,7 +474,7 @@ async function serve(args: ParsedArgs): Promise<void> {
   const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
   if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
-  if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
+  if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot(), undefined, extensionSetCleanupSpec());
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
@@ -500,15 +501,23 @@ async function serve(args: ParsedArgs): Promise<void> {
     }
     return stopObservation;
   };
+  let releaseConnectorSet: (() => void) | undefined;
+  const acquireConnectorSet = () => {
+    if (updateRuntime.checkout() || releaseConnectorSet) return;
+    assertExtensionSetReadable();
+    if (existsSync(extensionSetPaths().ready)) releaseConnectorSet = holdExtensionSet();
+  };
   try {
-    running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,
+    acquireConnectorSet();
+    running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => { acquireConnectorSet(); return updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }; }, acquireConnectorSet, version: binVersion(), peerUid, stopAllowed,
       ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
+    releaseConnectorSet?.();
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
-  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  updates = automaticUpdates({ version: binVersion(), acquireConnectorSet, eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {
@@ -568,6 +577,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
   });
+  releaseConnectorSet?.();
 }
 
 async function run(args: ParsedArgs): Promise<void> {

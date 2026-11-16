@@ -2,8 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
-import { globalConfigDir } from "@cotal-ai/core";
+import { loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked, extensionSetPaths, assertExtensionSetReady, seedWriterKind } from "@cotal-ai/workspace";
 import { selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
@@ -21,18 +20,22 @@ export class ReplacedDaemonGeneration extends Error {
   }
 }
 
-export async function reconcileHostedConnectors(version: string): Promise<void> {
+export async function reconcileHostedConnectors(version: string, acquireConnectorSet: () => void = () => {}): Promise<void> {
   if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
+  // Checkouts cannot seed a released connector set and their Managers have no set to hold.
+  if (seedWriterKind() === "checkout") return;
+  acquireConnectorSet();
   try {
-    const stamp = JSON.parse(readFileSync(join(globalConfigDir(), "seed", "stamp.json"), "utf8"));
+    const stamp = JSON.parse(readFileSync(join(extensionSetPaths().seed, "stamp.json"), "utf8"));
     const skewed = loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
-    if (stamp?.generation === version && !skewed) return;
+    if (stamp?.generation === version && !skewed) { assertExtensionSetReady(); return; }
   } catch (error) {
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await reconcileInstalledGeneration();
+  acquireConnectorSet();
 }
 
 function packageFile(): string {

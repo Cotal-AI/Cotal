@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
+import { claimGlobalNpmUpdateLock, readUpdateRecovery, windowsSetOwnedByCurrentUser, windowsSetTreeOwnership } from "@cotal-ai/workspace";
 import { inspectLock, processStartToken } from "@cotal-ai/core";
 import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
@@ -88,8 +88,6 @@ export function writeExecutionDescriptor(installedRoot: string, descriptor: Exec
   } finally { rmSync(temporary, { force: true }); }
 }
 
-const reportedConnectorOwnership = new Set<string>();
-
 export interface ConnectorSetCleanup {
   readonly root: string;
   readonly installRoot: string;
@@ -111,35 +109,23 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
   };
   try {
     const store = executionStore(installed), info = executionSupported ? lstatSync(store, { throwIfNoEntry: false }) : undefined;
-    if (typeof process.getuid !== "function") {
-      if (sets && isAbsolute(sets.root) && resolve(sets.root) === sets.root && realpathSync.native(sets.root) === sets.root
-        && realpathSync.native(sets.installRoot) === realpathSync.native(installed)) {
-        const keep = new Set([sets.current, sets.previous, ...sets.holders.map(holder => holder.version)]);
-        if (!sets.holders.some(holder => holder.version === undefined)) {
-          const retained = readdirSync(sets.root).filter(name => /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(name) && !keep.has(name));
-          if (retained.length && !reportedConnectorOwnership.has(sets.root)) {
-            reportedConnectorOwnership.add(sets.root);
-            warn(new Error(`kept connector sets ${retained.join(", ")} because their owner could not be verified on Windows`));
-          }
-        }
-      }
-      return;
-    }
-    if (info && info.uid !== process.getuid()) return;
-    const uid = process.getuid();
+    const windows = process.platform === "win32";
+    if (!windows && typeof process.getuid !== "function") throw new Error("connector set cleanup requires native ownership support");
+    const uid = windows ? undefined : process.getuid!();
+    if (info && info.uid !== uid) return;
     if (info && (!info.isDirectory() || info.isSymbolicLink())) throw new Error("store is not a real directory");
     if (info) protectedExecutionEntry(store);
     if (!info && !sets) return;
     if (sets) {
-      if (lstatSync(installed).uid !== uid) return;
+      if (windows ? !windowsSetOwnedByCurrentUser(installed) : lstatSync(installed).uid !== uid) return;
       if (!isAbsolute(sets.root) || resolve(sets.root) !== sets.root || realpathSync.native(sets.root) !== sets.root || realpathSync.native(sets.installRoot) !== realpathSync.native(installed)) throw new Error("connector sets do not name this installation's canonical root");
       for (let parent = dirname(sets.root); parent !== dirname(parent); parent = dirname(parent)) {
         const stat = lstatSync(parent);
-        if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.uid !== uid && stat.uid !== 0) || ((stat.mode & 0o022) !== 0 && !(stat.uid === 0 && (stat.mode & 0o1000) !== 0))) throw new Error("connector set root has an unprotected ancestor");
+        if (!stat.isDirectory() || stat.isSymbolicLink() || (!windows && ((stat.uid !== uid && stat.uid !== 0) || ((stat.mode & 0o022) !== 0 && !(stat.uid === 0 && (stat.mode & 0o1000) !== 0))))) throw new Error("connector set root has an unprotected ancestor");
       }
       const rootInfo = lstatSync(sets.root);
-      if (rootInfo.uid !== uid) return;
-      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (rootInfo.mode & 0o022) !== 0) throw new Error("connector set root is not a protected owned directory");
+      if (windows ? !windowsSetOwnedByCurrentUser(sets.root) : rootInfo.uid !== uid) return;
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (!windows && (rootInfo.mode & 0o022) !== 0)) throw new Error("connector set root is not a protected owned directory");
     }
     const modules = dirname(installed), lock = inspectLock(join(modules, ".cotal-update.lock"));
     if (lock.state === "active") {
@@ -218,7 +204,7 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       const keep = new Set([sets.current, ...(sets.previous ? [sets.previous] : [])]);
       for (const retained of keep) {
         const stat = lstatSync(join(sets.root, retained));
-        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o022) !== 0) throw new Error("current or previous connector set is not an owned protected directory");
+        if (!stat.isDirectory() || stat.isSymbolicLink() || (windows ? !windowsSetOwnedByCurrentUser(join(sets.root, retained)) : stat.uid !== uid || (stat.mode & 0o022) !== 0)) throw new Error("current or previous connector set is not an owned protected directory");
       }
       for (const holder of sets.holders) {
         if (!holder || !["live", "unknown"].includes(holder.state) || (holder.version !== undefined && !version.test(holder.version))) throw new Error("invalid connector set holder");
@@ -228,6 +214,11 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       const ownedTree = (path: string): void => {
         const rel = relative(sets.root, path);
         if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("connector set path escapes root");
+        if (windows) {
+          const ownership = windowsSetTreeOwnership(path);
+          if (!ownership.owned) throw new Error(`owners ${ownership.owners.join(", ") || "unknown"}, reparse points ${ownership.reparsePoints}`);
+          return;
+        }
         const stat = lstatSync(path);
         if (stat.uid !== uid || (!stat.isSymbolicLink() && (!stat.isDirectory() && !stat.isFile() || (stat.mode & 0o022) !== 0))) throw new Error(`not a protected owned connector set entry: ${path}`);
         if (stat.isDirectory()) for (const name of readdirSync(path)) ownedTree(join(path, name));
@@ -239,7 +230,7 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
           if (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory()) throw new Error(`connector set is not a real directory: ${path}`);
           ownedTree(path); rmSync(path, { recursive: true, force: true });
         }
-        catch (error) { warn(error); }
+        catch (error) { warn(windows ? new Error(`kept connector set directory ${path}: ${error instanceof Error ? error.message : "owner unknown or removal failed"}; run this installation's \`cotal ext seed --repair\` as its owning account`) : error); }
       }
     }
   } catch (error) { warn(error); }

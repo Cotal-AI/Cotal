@@ -33,8 +33,10 @@ try {
     assert.equal(listed.status, 0, listed.stderr);
     const inventory = JSON.parse(listed.stdout).result.items;
     assert.equal(inventory[0].version, "2.0.0");
-    assert.equal(readFileSync(join(config, "cotal/extensions/node_modules/promotion-crash-fixture/whole-generation"), "utf8"), "2.0.0");
-    assert(!existsSync(join(config, "cotal/.extensions-promotion.json")));
+    const prefix = run(["ext", "root"]);
+    assert.equal(prefix.status, 0, prefix.stderr);
+    assert.equal(readFileSync(join(prefix.stdout.trim(), "node_modules/promotion-crash-fixture/whole-generation"), "utf8"), "2.0.0");
+    assert(!existsSync(join(prefix.stdout.trim(), "..", ".extensions-promotion.json")));
     console.log(`${phase}: actual killed writer recovered complete new prefix through fresh CLI`);
   }
   emitSentinel({ passed: 2, failed: 0 });

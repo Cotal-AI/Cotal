@@ -561,10 +561,12 @@ Move the file aside so Cotal can create the folder when it next saves configurat
 
 #### Shared extension storage
 
-`extensions/` and `seed/store/` are operator-global. Every space, project, and checkout shares them.
-Their location follows the configuration directory above, including `$XDG_CONFIG_HOME` and, on
-Windows, `%APPDATA%`. A fresh project isolates `.cotal/` but does not isolate these stores.
-`COTAL_HOME` does not move them.
+`cotal ext add`, `remove`, `list` and connector seeding apply only to the installation that runs them.
+Each installation keeps sets under `installs/<install-id>/sets/<version>/`; a running Manager reads its
+own loaded version's set. Installations do not synchronize their extensions. The first migration copies
+the current inventory and removal choices, leaving the legacy `extensions/` and `seed/` unchanged.
+Their location still follows the configuration directory above, including `$XDG_CONFIG_HOME` and,
+on Windows, `%APPDATA%`. `COTAL_HOME` does not move them.
 
 A CLI from a source checkout refuses to write, stamp, or garbage-collect the seed store. Checkout
 entries include `pnpm cotal`, `tsx bin/cotal.ts`, `node bin/cotal.ts`, and their suite children. The

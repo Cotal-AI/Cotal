@@ -102,7 +102,7 @@ try {
     const store = seedStoreDir();
     check(
       "seed store path follows XDG_CONFIG_HOME, not COTAL_HOME",
-      store.startsWith(join(xdg, "cotal", "seed", "store")) && !store.startsWith(cotalHome),
+      store.startsWith(join(xdg, "cotal", "installs")) && store.endsWith(join("seed", "store")) && !store.startsWith(cotalHome),
       store,
     );
   }
@@ -137,10 +137,10 @@ try {
 
   {
     process.argv[1] = checkoutEntry();
-    const xdg = sandboxXdg();
+    sandboxXdg();
     delete process.env.COTAL_ALLOW_CHECKOUT_SEED;
     const generation = "0.99.0";
-    const dest = join(xdg, "cotal", "seed", "store", generation, "opencode");
+    const dest = join(seedStoreDir(), generation, "opencode");
     const result = threw(() => stageSeedPayload(generation, "opencode"));
     check(
       "checkout: staging an operator-global seed payload is refused",
@@ -150,7 +150,7 @@ try {
     check(
       "checkout: the refusal names the store path, the declined generation, and the isolation remedy",
       result.ok &&
-        result.message.includes(join(xdg, "cotal", "seed", "store")) &&
+        result.message.includes(seedStoreDir()) &&
         result.message.includes(generation) &&
         result.message.includes("XDG_CONFIG_HOME") &&
         result.message.includes("COTAL_HOME"),
@@ -177,9 +177,9 @@ try {
 
   {
     process.argv[1] = checkoutEntry();
-    const xdg = sandboxXdg();
+    sandboxXdg();
     delete process.env.COTAL_ALLOW_CHECKOUT_SEED;
-    const stale = join(xdg, "cotal", "seed", "store", "0.38.0", "opencode");
+    const stale = join(seedStoreDir(), "0.38.0", "opencode");
     mkdirSync(stale, { recursive: true });
     writeJson(join(stale, "package.json"), { name: "@cotal-ai/connector-opencode", version: "0.38.0" });
     const result = threw(() => gcSeedStore("0.99.0", []));
@@ -191,7 +191,7 @@ try {
     check(
       "checkout: GC refusal names the store path, the declined generation, and the isolation remedy",
       result.ok &&
-        result.message.includes(join(xdg, "cotal", "seed", "store")) &&
+        result.message.includes(seedStoreDir()) &&
         result.message.includes("0.99.0") &&
         result.message.includes("XDG_CONFIG_HOME") &&
         result.message.includes("COTAL_HOME"),
@@ -211,9 +211,9 @@ try {
 
   {
     process.argv[1] = unknownEntry();
-    const xdg = sandboxXdg();
+    sandboxXdg();
     delete process.env.COTAL_ALLOW_CHECKOUT_SEED;
-    const dest = join(xdg, "cotal", "seed", "store", "0.99.0", "opencode");
+    const dest = join(seedStoreDir(), "0.99.0", "opencode");
     const result = threw(() => stageSeedPayload("0.99.0", "opencode"));
     check(
       "unknown identity: staging is refused rather than treated as a released install",
@@ -231,9 +231,9 @@ try {
 
   {
     process.argv[1] = checkoutEntry();
-    const xdg = sandboxXdg();
+    sandboxXdg();
     delete process.env.COTAL_ALLOW_CHECKOUT_SEED;
-    const dest = join(xdg, "cotal", "seed", "store", "0.99.0", "opencode");
+    const dest = join(seedStoreDir(), "0.99.0", "opencode");
     const result = threw(() => stageSeedPayload("0.99.0", "opencode", { force: true }));
     check(
       "checkout --force still refuses: force is not the opt-in",
@@ -244,9 +244,9 @@ try {
 
   {
     process.argv[1] = checkoutEntry();
-    const xdg = sandboxXdg();
+    sandboxXdg();
     process.env.COTAL_ALLOW_CHECKOUT_SEED = "0";
-    const dest = join(xdg, "cotal", "seed", "store", "0.99.0", "opencode");
+    const dest = join(seedStoreDir(), "0.99.0", "opencode");
     const result = threw(() => stageSeedPayload("0.99.0", "opencode"));
     check(
       "checkout: a non-1 COTAL_ALLOW_CHECKOUT_SEED is not an opt-in",
@@ -263,7 +263,7 @@ try {
     const dest = stageSeedPayload(generation, "opencode");
     check(
       "released install: staging still writes the sandboxed payload",
-      existsSync(join(dest, "package.json")) && dest.startsWith(join(xdg, "cotal", "seed", "store", generation)),
+      existsSync(join(dest, "package.json")) && dest.startsWith(join(seedStoreDir(), generation)) && dest.startsWith(join(xdg, "cotal", "installs")),
       dest,
     );
   }
@@ -276,7 +276,7 @@ try {
     const dest = stageSeedPayload(generation, "opencode");
     check(
       "opt-in: COTAL_ALLOW_CHECKOUT_SEED=1 lets a checkout write a sandboxed payload",
-      existsSync(join(dest, "package.json")) && dest.startsWith(join(xdg, "cotal", "seed", "store", generation)),
+      existsSync(join(dest, "package.json")) && dest.startsWith(join(seedStoreDir(), generation)) && dest.startsWith(join(xdg, "cotal", "installs")),
       dest,
     );
     const pkg = JSON.parse(readFileSync(join(dest, "package.json"), "utf8")) as { name?: string };

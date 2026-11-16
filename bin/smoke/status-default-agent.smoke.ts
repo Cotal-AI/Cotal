@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReachable } from "@cotal-ai/core";
-import { recordMesh } from "@cotal-ai/workspace";
+import { extensionSetPaths, recordMesh } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Exercise the shipped CLI in a private home against a broker this suite alone owns.
@@ -46,7 +46,7 @@ try {
   await awaitBrokerReady(() => isReachable(server), { servers: server, attempts: 50, delayMs: 100 });
   recordMesh({ space: "defaults", server, root: project, mode: "open", ts: new Date().toISOString() });
   const guidanceConfig = join(root, "guidance-config");
-  const manifest = join(guidanceConfig, "cotal", "extensions");
+  const manifest = extensionSetPaths(join(guidanceConfig, "cotal")).extensions;
   mkdirSync(manifest, { recursive: true, mode: 0o700 });
   writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@rig/app", version: "0.0.0", spec: "@rig/app@0.0.0", provides: [{ kind: "connector", name: "app" }], commands: [], connectors: [{ name: "app", requires: [], eventPlane: false, setup: null }] }] }));
   const guidance = cli(["status", "--plain"], { XDG_CONFIG_HOME: guidanceConfig });

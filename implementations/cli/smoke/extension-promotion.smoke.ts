@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { extensionSetPaths } from "@cotal-ai/workspace";
 import { recoverExtensionPromotion, assertStageVerifier, stageExtensions } from "../src/lib/extension-stage.js";
 
 const originalConfig = process.env.XDG_CONFIG_HOME;
@@ -26,8 +27,8 @@ if (process.platform !== "win32") {
   try {
     writeFileSync(join(stage.prefix, "whole"), "new");
     stage.promote();
-    assert.equal(readFileSync(join(physical, "cotal", "extensions", "whole"), "utf8"), "new");
-    assert(!existsSync(join(linked, "cotal", ".extensions-promotion.json")));
+    assert.equal(readFileSync(join(extensionSetPaths().extensions, "whole"), "utf8"), "new");
+    assert(!existsSync(join(extensionSetPaths().set, ".extensions-promotion.json")));
   } finally { stage.discard(); }
   console.log("promotion through a private symlinked config root preserves its physical prefix");
   passed++;
@@ -43,7 +44,7 @@ if (process.platform !== "win32") {
     const root = mkdtempSync(join(tmpdir(), "promotion-umask-"));
     roots.push(root);
     process.env.XDG_CONFIG_HOME = root;
-    if (existing) { mkdirSync(join(root, "cotal", "extensions", "node_modules"), { recursive: true, mode: 0o755 }); writeFileSync(join(root, "cotal", "extensions", "package.json"), "{}", { mode: 0o644 }); }
+    if (existing) { mkdirSync(join(extensionSetPaths().extensions, "node_modules"), { recursive: true, mode: 0o755 }); writeFileSync(join(extensionSetPaths().extensions, "package.json"), "{}", { mode: 0o644 }); }
     const previous = process.umask(0o002);
     try {
       const stage = stageExtensions();
@@ -58,7 +59,7 @@ for (const state of ["prepared", "old-renamed", "new-promoted"] as const) {
   const root = mkdtempSync(join(tmpdir(), "promotion-state-"));
   roots.push(root);
   process.env.XDG_CONFIG_HOME = root;
-  const config = join(root, "cotal"); mkdirSync(config, { mode: 0o700 });
+  const config = extensionSetPaths().set; mkdirSync(config, { recursive: true, mode: 0o700 });
   const live = join(config, "extensions"), stage = join(config, ".extensions.stage-proof.ready"), old = join(config, ".extensions.rollback-proof");
   mkdirSync(live); writeFileSync(join(live, "whole"), "old");
   mkdirSync(stage); writeFileSync(join(stage, "whole"), "new");

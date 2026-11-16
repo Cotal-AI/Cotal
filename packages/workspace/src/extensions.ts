@@ -3,12 +3,12 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
-import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
 import { globalConfigDirProblem } from "./cotal-config.js";
 import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
 import type { ServicePreset } from "./service-preset.js";
 import { serviceAdapterDeclaration } from "./service-adapter.js";
+import { assertExtensionSetReadable, extensionSetPaths } from "./extension-set.js";
 
 /**
  * Operator-installed extensions (`cotal ext add <npm-package>`): the workstation state.
@@ -92,9 +92,9 @@ export interface ExtensionsManifest {
   readonly extensions: readonly InstalledExtension[];
 }
 
-/** The extensions prefix: `<config>/cotal/extensions` — its own npm installation root. */
+/** The loaded installation and version's extensions prefix, with its own npm installation root. */
 export function extensionsDir(): string {
-  return join(globalConfigDir(), "extensions");
+  return extensionSetPaths().extensions;
 }
 
 export function extensionsManifestPath(): string {
@@ -122,6 +122,10 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
  *  unreachable file is a loud error (never treat installed extensions as absent — commands would
  *  silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
+  // Such a folder can hold no inventory. Leave its refusal to command dispatch, which also
+  // preserves help, version and docs without trying to inspect a connector migration lock.
+  if (globalConfigDirProblem()) return { extensions: [] };
+  assertExtensionSetReadable();
   const p = extensionsManifestPath();
   let parsed: unknown;
   try {

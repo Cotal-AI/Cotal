@@ -22,6 +22,11 @@ import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
+  const runningDesktop = options['running-desktop-beside-cli'] !== undefined;
+  if (runningDesktop) {
+    assert.equal(options['running-desktop-beside-cli'], 'true', 'running-desktop-beside-cli accepts only true');
+    assert(disposable && process.platform === 'linux' && options.candidate && options['candidate-next'] && options['desktop-runtime'] && options['desktop-node'] && typeof options.prepare === 'function' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && options['next-hop-source'] === 'candidate' && options['stopped-daemon-before-update'] === undefined && options['disabled-daemon-before-update'] === undefined && options['follow-on-action'] === undefined, 'running-desktop-beside-cli requires disposable Linux paired npm daemon self, released desktop Node and real participant preparation without stop, disable or follow-on');
+  }
   if (options['candidate-next'] === undefined) {
     if (options['stopped-daemon-before-update'] !== undefined) {
       assert.equal(options['stopped-daemon-before-update'], 'true', 'stopped-daemon-before-update accepts only true');
@@ -45,7 +50,7 @@ export function candidateNextOptions(options, disposable = hosted) {
     assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && followOnAction === undefined && options['disabled-daemon-before-update'] === undefined, 'stopped-daemon-before-update requires candidate next hop, npm layout, daemon state and self method without follow-on action');
   }
   if (options['desktop-runtime'] !== undefined) {
-    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && options['stopped-daemon-before-update'] === 'true' && process.platform === 'linux', 'candidate-next desktop-runtime requires Linux stopped-daemon-before-update');
+    assert(mode === 'candidate' && options.layout === 'npm' && options.state === 'daemon' && options.method === 'self' && (options['stopped-daemon-before-update'] === 'true' || runningDesktop) && process.platform === 'linux', 'candidate-next desktop-runtime requires Linux stopped-daemon-before-update or explicit running-desktop-beside-cli');
   }
   if (options['disabled-daemon-before-update'] !== undefined) {
     assert.equal(options['disabled-daemon-before-update'], 'true', 'disabled-daemon-before-update accepts only true');
@@ -58,6 +63,49 @@ export function candidateNextOptions(options, disposable = hosted) {
   if (mode === 'candidate' && followOnAction !== 'installer') assert.equal(options.layout, 'npm', 'fresh candidate next cells use npm layout');
   if (mode === '0.164.10') assert.equal(options.source, '0.164.10');
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
+}
+
+export function standaloneSeatAttributed(reply, instanceId, name) {
+  if (reply.exit !== 0 || reply.signal !== null || reply.timeout !== false) return false;
+  try {
+    const result = JSON.parse(reply.stdout).result;
+    return result.kind === 'seats' && result.managers?.length === 1
+      && result.managers[0].instanceId === instanceId && result.managers[0].state === 'answered'
+      && result.items?.filter(row => row.name === name && row.instanceId === instanceId && row.status === 'running').length === 1;
+  } catch { return false; }
+}
+
+export function extensionRootObservation(reply) {
+  assert(reply.exit === 0 && reply.signal === null && reply.timeout === false, 'ext root must succeed');
+  const root = reply.stdout.trim();
+  assert(root && resolve(root) === root && !/[\r\n]/.test(root), 'ext root must return one absolute path');
+  const match = /[/\\]installs[/\\]([a-f0-9]{1,16})[/\\]sets[/\\]([^/\\]+)[/\\]extensions$/.exec(root);
+  return { root, id: match?.[1] ?? null, version: match?.[2] ?? null, layout: match ? 'version-set' : 'legacy', response: reply };
+}
+
+export function compareDesktopCatalogs(before, after, instanceId) {
+  const reasons = [];
+  const decode = (value, stage) => {
+    if (!value || value.signal !== null || value.timeout !== false || ![0, 4].includes(value.exit)) { reasons.push(`${stage} did not return a complete or partial catalog response`); return; }
+    try {
+      const envelope = JSON.parse(value.stdout);
+      if (envelope.result?.answeringManagerInstanceId !== instanceId || !Array.isArray(envelope.result.items)) throw new Error('wrong Manager or missing catalog items');
+      return envelope;
+    } catch { reasons.push(`${stage} has no valid pinned catalog response`); }
+  };
+  const prior = decode(before, 'before'), current = decode(after, 'after');
+  if (prior && current) {
+    if (before.exit !== after.exit) reasons.push('catalog exit changed');
+    if (prior.outcome !== current.outcome || prior.completeness !== current.completeness) reasons.push('catalog outcome or completeness changed');
+    for (const item of prior.result.items) {
+      const next = current.result.items.filter(row => row.agent === item.agent);
+      if (next.length !== 1) { reasons.push(`${item.agent}: catalog missing or ambiguous after update`); continue; }
+      if (item.error !== next[0].error) reasons.push(`${item.agent}: catalog error changed`);
+      if (item.supported === true && next[0].supported !== true) reasons.push(`${item.agent}: catalog support lost`);
+      if (!Array.isArray(item.models) || !Array.isArray(next[0].models) || item.models.some(model => !next[0].models.some(row => JSON.stringify(row) === JSON.stringify(model)))) reasons.push(`${item.agent}: catalog models lost`);
+    }
+  }
+  return { passed: reasons.length === 0, reasons, beforeExit: before?.exit, afterExit: after?.exit };
 }
 
 export function assertPublishedPairTarget(options, observed, frozen) {
@@ -153,7 +201,7 @@ export async function observeHostedManager({space, timeoutMs, observations, read
 }
 
 /** Only the explicitly recorded local test fixture may retain its original generation. */
-export function extensionVersionChecks({extensions, before, target, fixture, installed}) {
+export function extensionVersionChecks({extensions, before, target, fixture, installed, roots}) {
   const prior = fixture && before.filter(entry => entry.pkg === fixture.pkg);
   const owned = fixture?.pkg === 'cotal-upgrade-native-fixture' && prior?.length === 1
     && prior[0].spec === fixture.spec && prior[0].version === fixture.version
@@ -170,8 +218,12 @@ export function extensionVersionChecks({extensions, before, target, fixture, ins
     if (matches.length !== 1) return false;
     const current = matches[0];
     if (!isFixture(entry)) return current.version === target;
+    const copied = roots?.source?.layout === 'version-set' && roots?.after?.layout === 'version-set'
+      && roots.source.id === roots.after.id && roots.after.version === target
+      && fixture.path === join(roots.source.root, 'node_modules', fixture.pkg) && fixture.realpath === fixture.path
+      && current.path === join(roots.after.root, 'node_modules', fixture.pkg) && current.realpath === current.path;
     return entry.spec === fixture.spec && entry.version === fixture.version
-      && current.path === fixture.path && current.realpath === fixture.realpath && current.version === fixture.version
+      && ((current.path === fixture.path && current.realpath === fixture.realpath) || copied) && current.version === fixture.version
       && Object.keys(current.files ?? {}).length === Object.keys(fixture.files).length
       && Object.entries(fixture.files).every(([name, hash]) => current.files?.[name] === hash);
   });
@@ -394,6 +446,7 @@ export async function matrixCell(options) {
   mkdirSync(env.TMPDIR, { mode: 0o700 });
   if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
   if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
+  if (options['desktop-runtime']) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
   report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
@@ -569,7 +622,7 @@ export async function matrixCell(options) {
       report.refusal = "Published 0.155.0 has no automatic-update settings (--auto is unknown), so this state cannot be constructed through its CLI.";
       return report;
     }
-    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state)) {
+    if (['configured', 'daemon', 'agent', 'concurrent', 'stale-extensions'].includes(state) && !(desktopRuntime && options['stopped-daemon-before-update'] !== 'true')) {
       ok(await cotal('seed published connectors', ['ext', 'seed']), 'connector setup');
       ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
     }
@@ -657,6 +710,7 @@ export async function matrixCell(options) {
       writeFileSync(seat, daemonHostedManager
         ? `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';import {execFile} from 'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`
         : `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,...(e.COTAL_CREDS?{creds:readFileSync(e.COTAL_CREDS,'utf8')}:{}),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
+      if (!daemonHostedManager) writeFileSync(join(fixture, 'record-seat.mjs'), 'export {};\n');
       const recorder = daemonHostedManager ? writeHostedSeatRecorder(fixture, seat) : undefined;
       const launchedSeat = recorder?.launcher ?? seat;
       const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
@@ -669,7 +723,8 @@ export async function matrixCell(options) {
         assert(typeof space === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(space), 'prepared participant must name its space');
         report.managerHost = { mode: 'daemon-hosted', space };
         ok(await cotal('register daemon-hosted stand-in connector', ['ext', 'add', fixture]), 'hosted stand-in registration');
-        const fixturePath = join(config, 'extensions/node_modules/cotal-upgrade-native-fixture');
+        report.fixtureExtensionRoot = extensionRootObservation(await cotal('daemon-hosted fixture extension root', ['ext', 'root']));
+        const fixturePath = join(report.fixtureExtensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
         const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
         const fixtureMetadata = json(join(fixturePath, 'package.json'));
         assert.equal(fixtureMetadata.name, 'cotal-upgrade-native-fixture');
@@ -709,6 +764,16 @@ export async function matrixCell(options) {
         ok(await cotal('start local space', ['up', '--detach', '--space', 'upgrade-proof']), 'local stack');
         ok(await cotal('spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', 'upgrade-proof']), 'stand-in spawn');
         report.agentBefore = ok(await cotal('confirm native stand-in seat', ['ps', '--space', 'upgrade-proof', '--json']), 'stand-in ps').stdout;
+        const beforeSeats = JSON.parse(report.agentBefore).result;
+        assert(beforeSeats.kind === 'seats' && beforeSeats.managers?.length === 1 && beforeSeats.managers[0].state === 'answered', 'standalone seat must have one answering Manager');
+        report.managerHost.instanceId = beforeSeats.managers[0].instanceId;
+        assert(report.managerHost.instanceId, 'standalone Manager must have an instance id');
+        report.managerHost.modelsBefore = await cotal('models on standalone Manager before CLI update', ['models', '--on', report.managerHost.instanceId, '--space', 'upgrade-proof', '--json']);
+        report.fixtureExtensionRoot = extensionRootObservation(await cotal('standalone fixture extension root', ['ext', 'root']));
+        const fixturePath = join(report.fixtureExtensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
+        const fixtureMetadata = json(join(fixturePath, 'package.json'));
+        const files = Object.fromEntries(['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'].map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
+        report.ownedLocalFixture = {pkg: fixtureMetadata.name, spec: fixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files};
       } else {
         env.MATRIX_HOLD = '1';
         holderPromise = cotal('concurrent real extension writer', ['ext', 'add', fixture]);
@@ -733,7 +798,16 @@ export async function matrixCell(options) {
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
       report.daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
-      report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', method === 'self' || launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      const priorAutoSkip = env.COTAL_SKIP_CONNECTOR_SEED;
+      if (desktopRuntime) env.COTAL_SKIP_CONNECTOR_SEED = '1';
+      try {
+        report.automaticSettings = ok(await cotal('set automatic updates before native service', ['update', '--auto', method === 'self' || launchdProof === 'off-before-tick' ? 'off' : 'on']), 'automatic settings');
+      } finally {
+        if (desktopRuntime) {
+          if (priorAutoSkip === undefined) delete env.COTAL_SKIP_CONNECTOR_SEED;
+          else env.COTAL_SKIP_CONNECTOR_SEED = priorAutoSkip;
+        }
+      }
       if (windowsPolicy) report.policyBaseline.settingsBeforeInstall = json(join(cotalHome, 'update-settings.json'));
       installedService = true;
       ok(await daemon('native install', ['daemon', 'install', '--json']), 'native installation');
@@ -768,14 +842,50 @@ export async function matrixCell(options) {
         assert.equal(report.daemonBefore.update.channel, 'desktop');
         assert.equal(report.daemonBefore.update.automatic, false);
         assert(unitText.includes(desktopRuntime), 'native service source must name actual released desktop runtime');
+        if (options['stopped-daemon-before-update'] !== 'true' && report.participant?.space) {
+          const space = report.participant.space;
+          const desktopFixture = join(root, 'desktop-standin');
+          mkdirSync(desktopFixture, { mode: 0o700 });
+          save(join(desktopFixture, 'package.json'), { name: 'cotal-upgrade-native-fixture', version: report.target, type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } });
+          writeFileSync(join(desktopFixture, 'seat.mjs'), 'setInterval(()=>{},1000);\n');
+          writeFileSync(join(desktopFixture, 'record-seat.mjs'), 'export {};\n');
+          writeFileSync(join(desktopFixture, 'index.js'), "import {registry} from '@cotal-ai/core';registry.register({kind:'connector',name:'desktop-standin',requires:['node'],buildLaunch:()=>({command:process.execPath,args:['-e','setInterval(()=>{},1000)']})});\n");
+          ok(await daemon('seed desktop runtime connectors before Manager setup', ['ext', 'seed']), 'desktop connector seed');
+          ok(await daemon('register desktop stand-in connector', ['ext', 'add', desktopFixture]), 'desktop stand-in registration');
+          report.desktop.extensionRoot = extensionRootObservation(await daemon('released desktop extension root', ['ext', 'root']));
+          const fixturePath = join(report.desktop.extensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
+          const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
+          const fixtureMetadata = json(join(fixturePath, 'package.json'));
+          const files = Object.fromEntries(fixtureFiles.map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
+          report.desktop.ownedLocalFixture = { pkg: fixtureMetadata.name, spec: desktopFixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files };
+          const desktopSetup = ok(await daemon('start desktop-hosted Manager before CLI update', hostedManagerCommand(space)), 'desktop Manager setup');
+          const setupResult = JSON.parse(desktopSetup.stdout).result;
+          assert.equal(setupResult.manager?.state, 'answering');
+          assert(setupResult.manager?.instanceId, 'desktop setup must return answering Manager identity');
+          report.desktop.hostedManager = { space, instanceId: setupResult.manager.instanceId, setup: desktopSetup };
+          report.desktop.modelsAfterSetup = await cotal('models on desktop-hosted Manager immediately after setup', ['models', '--on', setupResult.manager.instanceId, '--space', space, '--json']);
+          const statusWithManager = ok(await daemon('native status with desktop Manager before', ['daemon', 'status', '--json']), 'native status with desktop Manager');
+          report.daemonBefore = JSON.parse(statusWithManager.stdout).result;
+          ok(await cotal('seed CLI installation beside released desktop Manager', ['ext', 'seed']), 'separate CLI connector seed');
+          ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
+        }
       }
       if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
         // Native custody observation runs asynchronously after the socket first becomes ready.
         await waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining));
       }
     }
-    report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
-    const sourceInventory = () => [join(pkg, 'package.json'), cli, join(config, 'extensions/extensions.json'), ...report.extensionsBefore.map(entry => join(config, 'extensions/node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
+    report.extensionRoots = { source: extensionRootObservation(await cotal('source CLI extension root', ['ext', 'root'])) };
+    const sourceExtensionRoot = report.extensionRoots.source.root;
+    if (report.desktop?.ownedLocalFixture) {
+      const original = report.desktop.ownedLocalFixture;
+      const path = join(sourceExtensionRoot, 'node_modules', original.pkg);
+      const files = Object.fromEntries(Object.keys(original.files).map(name => [name, digest(readFileSync(join(path, name)))]));
+      assert.deepEqual(files, original.files, 'migrated desktop fixture bytes must remain unchanged');
+      report.ownedLocalFixture = { ...original, path, realpath: realpathSync(path), files };
+    }
+    report.extensionsBefore = existsSync(join(sourceExtensionRoot, 'extensions.json')) ? json(join(sourceExtensionRoot, 'extensions.json')).extensions : [];
+    const sourceInventory = () => [join(pkg, 'package.json'), cli, join(sourceExtensionRoot, 'extensions.json'), ...report.extensionsBefore.map(entry => join(sourceExtensionRoot, 'node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
     if (policy) report.policyInventoryBefore = sourceInventory();
     report.sourceInventoryBeforeAction = sourceInventory();
     report.targetBeforeAction = report.target;
@@ -796,7 +906,7 @@ export async function matrixCell(options) {
       launchdObserver = observeMacHandoff({ home: cotalHome, daemonHome: report.daemonHome, output, id, native, control: killControl, intervalMs: killControl ? 20 : 100 });
       await launchdObserver.sample();
       report.launchdProof = { kind: launchdProof, publicTarget: report.target };
-      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(sourceExtensionRoot, 'extensions.json')) ? digest(readFileSync(join(sourceExtensionRoot, 'extensions.json'))) : undefined };
     }
     if (options['stopped-daemon-before-update'] === 'true') {
       const stopCommand = process.platform === 'linux'
@@ -851,6 +961,14 @@ export async function matrixCell(options) {
       assert(disabledPassed, 'native daemon must be confirmed disabled and stopped before manual update');
     }
     await captureServiceEvidence('before-update');
+    if (report.desktop?.hostedManager && options['running-desktop-beside-cli'] === 'true') {
+      const { space, instanceId } = report.desktop.hostedManager;
+      report.desktop.modelsBeforeUpdate = await cotal('models on desktop-hosted Manager immediately before CLI update', ['models', '--on', instanceId, '--space', space, '--json']);
+      const bytes = Buffer.from(JSON.stringify({ afterSetup: report.desktop.modelsAfterSetup, beforeUpdate: report.desktop.modelsBeforeUpdate }));
+      const artifact = `${id}-desktop-models-before-update.txt`;
+      writeFileSync(join(output, artifact), bytes, { flag: 'wx', mode: 0o600 });
+      report.desktop.modelsBeforeCommands = { artifact, bytes: bytes.length, sha256: digest(bytes) };
+    }
     if (nextHopMode === 'candidate') {
       report.candidateSourceInvocation = candidateSourceIdentity({ pkg, cli, identity: report.candidateNext, argv: [cli, 'update', '--self'] });
       check('candidate source CLI matches packed artifact', true, report.candidateSourceInvocation);
@@ -912,10 +1030,12 @@ export async function matrixCell(options) {
             npmInstall = ok(await npmCall('manual npm install follow-on target', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.target}`, '--no-audit', '--no-fund']), 'manual npm follow-on install');
             const bareVersion = await cotal('bare manual npm CLI version observation', ['--version']);
             const bareRoute = inspectInstalledUpdateRoute(pkg, process.platform);
-            const bareManifest = join(config, 'extensions/extensions.json');
+            report.extensionRoots.followOn = extensionRootObservation(await cotal('follow-on CLI extension root', ['ext', 'root']));
+            const followOnExtensionRoot = report.extensionRoots.followOn.root;
+            const bareManifest = join(followOnExtensionRoot, 'extensions.json');
             const bareExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const bareInstalledExtensions = bareExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -947,7 +1067,7 @@ export async function matrixCell(options) {
             }
             const refusalExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const refusalInstalledExtensions = refusalExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -957,7 +1077,7 @@ export async function matrixCell(options) {
             const launchGateTmuxRow = launchGateRuntimes.exit === 0 ? JSON.parse(launchGateRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
             const launchGateExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const launchGateInstalledExtensions = launchGateExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1001,7 +1121,7 @@ export async function matrixCell(options) {
             const scheduledDaemonStatus = await daemon('manual npm daemon status after scheduled reconciliation', ['daemon', 'status', '--json']);
             const scheduledExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const scheduledInstalledExtensions = scheduledExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1090,7 +1210,7 @@ export async function matrixCell(options) {
       } else if (launchdProof === 'off-before-tick') {
         await delay(70000);
         await launchdObserver.sample();
-        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(sourceExtensionRoot, 'extensions.json')) ? digest(readFileSync(join(sourceExtensionRoot, 'extensions.json'))) : undefined };
         check('off control keeps installation inventory unchanged', JSON.stringify(inventory) === JSON.stringify(offInventory), { before: offInventory, after: inventory });
         check('off control never hands off an updater job', !launchdObserver.observations.some(x => x.records?.['update-launchd.json'] || x.records?.['update-launchd-result.json']), launchdObserver.observations.length);
         report.launchdProof.observationMs = 70000;
@@ -1161,10 +1281,12 @@ export async function matrixCell(options) {
         check('public installer replaces original prefix with target', json(join(pkg, 'package.json')).version === report.target, prefix);
         const selected = await call('public installer selected launcher', launcher, ['--version']);
         check('public installer launcher selects target', selected.exit === 0 && cliReportsVersion(selected.stdout, report.target), selected);
-        const escapedExtensions = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+        report.extensionRoots.installerEscape = extensionRootObservation(await cotal('public installer escape CLI extension root', ['ext', 'root']));
+        const escapedExtensionRoot = report.extensionRoots.installerEscape.root;
+        const escapedExtensions = existsSync(join(escapedExtensionRoot, 'extensions.json')) ? json(join(escapedExtensionRoot, 'extensions.json')).extensions : [];
         report.installerEscape.extensions = escapedExtensions;
         const seeded = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'].map(name => `@cotal-ai/${name}`);
-        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(config, 'extensions/node_modules', entry.pkg, 'package.json')) && json(join(config, 'extensions/node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
+        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(escapedExtensionRoot, 'node_modules', entry.pkg, 'package.json')) && json(join(escapedExtensionRoot, 'node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
         check('public installer status exits zero', (await call('public installer status', launcher, ['status'])).exit === 0, null);
         check('public installer leaves no recovery', !existsSync(join(cotalHome, 'update-recovery.json')), null);
         report.installerEscape.accepted = report.assertions.every(row => row.passed);
@@ -1194,17 +1316,19 @@ export async function matrixCell(options) {
       ? installedRoute.packageManagerRecordVersion === expectedVersion
       : !['npm', 'installer'].includes(options['follow-on-action']) && method !== 'installer' && options['first-install'] !== 'true' && installedRoute.packageManagerRecordVersion === expectedPackageManagerVersion);
     check('CLI version is target', routeMatches, installedRoute.selectedCliVersion);
-    const manifest = join(config, 'extensions/extensions.json');
+    report.extensionRoots.after = extensionRootObservation(await cotal('after CLI extension root', ['ext', 'root']));
+    const afterExtensionRoot = report.extensionRoots.after.root;
+    const manifest = join(afterExtensionRoot, 'extensions.json');
     const extensions = existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     const installedExtensions = extensions.map(entry => {
-      const path = join(config, 'extensions/node_modules', entry.pkg);
+      const path = join(afterExtensionRoot, 'node_modules', entry.pkg);
       const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
       const files = entry.pkg === report.ownedLocalFixture?.pkg ? Object.fromEntries(Object.keys(report.ownedLocalFixture.files).map(name => [name, existsSync(join(path, name)) ? digest(readFileSync(join(path, name))) : null])) : {};
       return {pkg: entry.pkg, path, realpath: existsSync(path) ? realpathSync(path) : null, version: metadata?.version, files};
     });
-    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions});
+    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions, roots: report.extensionRoots});
     report.installedExtensionVersions = installedExtensions;
     check('every recorded extension is at target', versions.recorded, extensions.map(({ pkg, version }) => ({ pkg, version })));
     const version = await cotal('selected CLI version assertion', ['--version']);
@@ -1218,6 +1342,16 @@ export async function matrixCell(options) {
     if (container) {
       const current = JSON.parse(ok(await call('foreign container after host upgrade', 'docker', ['inspect', container.id]), 'foreign container preservation').stdout)[0];
       check('foreign container Manager remains running and untouched', current.Id === container.id && current.Config.Labels['cotal.upgrade.cell'] === container.label && current.State.Running === true && current.State.Pid === container.pid && current.State.StartedAt === container.startedAt, { before: container, after: current.State });
+    }
+    if (state === 'agent' && !daemonHostedManager && update.exit === 0) {
+      const { space, instanceId } = report.managerHost;
+      report.managerHost.modelsAfter = await cotal('models on standalone Manager after CLI update', ['models', '--on', instanceId, '--space', space, '--json']);
+      report.managerHost.catalogs = compareDesktopCatalogs(report.managerHost.modelsBefore, report.managerHost.modelsAfter, instanceId);
+      check('standalone catalogs do not regress after CLI update', report.managerHost.catalogs.passed, report.managerHost.catalogs);
+      report.managerHost.spawnAfter = await cotal('spawn new stand-in agent on original standalone Manager', ['spawn', '--agent', 'upgrade-standin', '--on', instanceId, '--name', 'upgrade-proof-after', '--detach', '--no-events', '--space', space]);
+      check('original standalone Manager launches a new agent after update', report.managerHost.spawnAfter.exit === 0 && report.managerHost.spawnAfter.signal === null && report.managerHost.spawnAfter.timeout === false, report.managerHost.spawnAfter);
+      report.managerHost.psAfter = await cotal('attribute new stand-in seat to original standalone Manager', ['ps', '--on', instanceId, '--space', space, '--json']);
+      check('new standalone seat belongs to original Manager', standaloneSeatAttributed(report.managerHost.psAfter, instanceId, 'upgrade-proof-after'), report.managerHost.psAfter);
     }
     if (daemonHostedManager) {
       let observed, current;
@@ -1298,6 +1432,35 @@ export async function matrixCell(options) {
           check('released desktop inventory unchanged', verifyDesktopRuntime(desktopRuntime).sha256 === desktopHash, desktopHash);
           const current = json(join(report.daemonHome, 'service-unit.json'));
           check('CLI update preserves original desktop service source', current.unit === receipt.unit && current.unitPath === receipt.unitPath && current.unitSha256 === receipt.unitSha256, current);
+          if (report.desktop.hostedManager) {
+            const { space, instanceId } = report.desktop.hostedManager;
+            const secondUpdate = await cotal('second cotal update beside desktop daemon', ['update']);
+            const secondSelfUpdate = await cotal('second cotal update --self beside desktop daemon', ['update', '--self']);
+            const statusAfterSecond = await daemon('native status after second CLI update', ['daemon', 'status', '--json']);
+            const afterSecond = statusAfterSecond.exit === 0 ? JSON.parse(statusAfterSecond.stdout).result : undefined;
+            const managerAfter = afterSecond?.managers?.find(row => row.space === space);
+            const modelsAfter = await cotal('models on desktop-hosted Manager after CLI updates', ['models', '--on', instanceId, '--space', space, '--json']);
+            const followUpBytes = Buffer.from(JSON.stringify({ modelsAfterSetup: report.desktop.modelsAfterSetup, modelsBeforeUpdate: report.desktop.modelsBeforeUpdate, firstAfter: after, secondUpdate, secondSelfUpdate, statusAfterSecond, modelsAfter }));
+            const followUpCommands = { artifact: `${id}-desktop-beside-cli-followup.txt`, bytes: followUpBytes.length, sha256: digest(followUpBytes) };
+            writeFileSync(join(output, followUpCommands.artifact), followUpBytes, { flag: 'wx', mode: 0o600 });
+            report.desktop.followUp = {
+              secondUpdate,
+              secondSelfUpdate,
+              statusAfterSecond,
+              modelsAfter,
+              commands: followUpCommands,
+              firstUpdateLeftNoFence: after?.update?.restartEvidence?.prepared === false,
+              secondUpdatePassed: secondUpdate.exit === 0 && secondUpdate.signal === null && secondUpdate.timeout === false,
+              secondSelfUpdatePassed: secondSelfUpdate.exit === 0 && secondSelfUpdate.signal === null && secondSelfUpdate.timeout === false,
+              managerStillAnswering: managerAfter?.state === 'answering' && managerAfter?.instanceId === instanceId && managerAfter?.restarts === 0 && afterSecond?.update?.restartEvidence?.prepared === false,
+              catalogs: compareDesktopCatalogs(report.desktop.modelsBeforeUpdate, modelsAfter, instanceId),
+            };
+            check('CLI update leaves no restart fence on foreign desktop daemon', report.desktop.followUp.firstUpdateLeftNoFence, after?.update?.restartEvidence);
+            check('second cotal update beside desktop daemon exits zero', report.desktop.followUp.secondUpdatePassed, secondUpdate);
+            check('second cotal update --self beside desktop daemon exits zero', report.desktop.followUp.secondSelfUpdatePassed, secondSelfUpdate);
+            check('desktop-hosted Manager still answers after CLI updates', report.desktop.followUp.managerStillAnswering, { managerAfter, restartEvidence: afterSecond?.update?.restartEvidence });
+            check('desktop-hosted catalogs do not regress after CLI update', report.desktop.followUp.catalogs.passed, report.desktop.followUp.catalogs);
+          }
         }
       }
     }
@@ -1354,7 +1517,7 @@ export async function matrixCell(options) {
     } else if (nextHopMode && (options['disabled-daemon-before-update'] === 'true' || Boolean(desktopRuntime))) {
       report.nextHop.passed = report.nextHop.passed === true && report.assertions.every(row => row.passed);
     }
-    if (compositionCleanup && !daemonHostedManager) {
+    if (compositionCleanup && !daemonHostedManager && !report.desktop?.hostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
@@ -1416,6 +1579,13 @@ export async function matrixCell(options) {
         report.managerHost.diagnosticsAfterStop = archiveHostedDiagnostics({ fixture: join(root, 'native-fixture'), cotalHome, space: report.managerHost.space, output, id, stage: 'after-stop' });
       } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
+    if (report.desktop?.hostedManager && !uncertain) {
+      try {
+        report.desktop.hostedManager.stop = await daemon('stop desktop-hosted Manager', ['daemon', 'service-disconnect', '--space', report.desktop.hostedManager.space, '--json']);
+        check('desktop-hosted Manager stop succeeds', report.desktop.hostedManager.stop.exit === 0, report.desktop.hostedManager.stop);
+        ok(report.desktop.hostedManager.stop, 'desktop Manager cleanup');
+      } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+    }
     if (installedService) {
       report.cleanup = 'retained for disposable runner teardown';
       if (!uncertain && receipt && existsSync(join(report.daemonHome, 'service-unit.json'))) {
@@ -1430,10 +1600,10 @@ export async function matrixCell(options) {
         } catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
       }
     }
-    if (compositionCleanup && daemonHostedManager) {
+    if (compositionCleanup && (daemonHostedManager || report.desktop?.hostedManager)) {
       try {
         await compositionCleanup();
-        report.compositionCleanup = report.managerHost?.stop?.exit === 0
+        report.compositionCleanup = (report.managerHost?.stop?.exit === 0 || report.desktop?.hostedManager?.stop?.exit === 0)
           ? 'owned composition stopped after confirmed hosted Manager removal'
           : 'owned composition stopped; hosted Manager removal not confirmed';
       }
@@ -1444,7 +1614,7 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
-    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
+    report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit ?? report.desktop?.hostedManager?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) && (!report.desktop?.hostedManager || report.desktop.hostedManager.stop?.exit === 0) };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
     if (options['expect-recovery-refusal'] === 'true') report.expectedRefusal = { kind: 'paused-snapshot reconciliation', passed: expectedRecoveryRefusal(report) };

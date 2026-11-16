@@ -4,6 +4,50 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
+test('extension root observations retain raw replies and never invent legacy ids or versions', () => {
+  const reply = root => ({exit: 0, signal: null, timeout: false, stdout: root + '\n', stderr: ''});
+  const root = join(tmpdir(), 'config', 'installs', 'abcdef0123456789', 'sets', '0.164.1018', 'extensions');
+  const observed = baseline.extensionRootObservation(reply(root));
+  assert.equal(observed.root, root);
+  assert.equal(observed.id, 'abcdef0123456789');
+  assert.equal(observed.version, '0.164.1018');
+  assert.deepEqual(observed.response, reply(root));
+  const legacy = baseline.extensionRootObservation(reply(join(tmpdir(), 'config', 'extensions')));
+  assert.equal(legacy.id, null);
+  assert.equal(legacy.version, null);
+  assert.equal(legacy.layout, 'legacy');
+  for (const invalid of [{...reply(root), exit: 1}, {...reply(root), timeout: true}, {...reply(root), signal: 'SIGTERM'}, reply('relative'), reply(root + '\nother')]) assert.throws(() => baseline.extensionRootObservation(invalid));
+});
+
+test('standalone new seat attribution requires the pinned answering Manager and successful raw ps', () => {
+  const reply = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {kind: 'seats', managers: [{instanceId: 'original', state: 'answered'}], items: [{name: 'new-seat', instanceId: 'original', status: 'running'}]}})};
+  assert.equal(baseline.standaloneSeatAttributed(reply, 'original', 'new-seat'), true);
+  assert.equal(baseline.standaloneSeatAttributed(reply, 'other', 'new-seat'), false);
+  assert.equal(baseline.standaloneSeatAttributed(reply, 'original', 'old-seat'), false);
+  for (const invalid of [{...reply, exit: 4}, {...reply, timeout: true}, {...reply, signal: 'SIGTERM'}, {...reply, stdout: '{'}]) assert.equal(baseline.standaloneSeatAttributed(invalid, 'original', 'new-seat'), false);
+  for (const mutate of [r => r.managers.push({...r.managers[0]}), r => r.managers[0].state = 'silent', r => r.items.push({...r.items[0]}), r => r.items[0].instanceId = 'other', r => r.items[0].status = 'exited', r => r.kind = 'slots']) {
+    const body = JSON.parse(reply.stdout); mutate(body.result);
+    assert.equal(baseline.standaloneSeatAttributed({...reply, stdout: JSON.stringify(body)}, 'original', 'new-seat'), false);
+  }
+});
+
+test('real driver reads installation roots and checks standalone catalogs before launching a new pinned seat', () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  for (const label of ['source CLI extension root', 'after CLI extension root', 'follow-on CLI extension root', 'released desktop extension root']) assert(source.includes(label));
+  assert(source.includes("join(sourceExtensionRoot, 'extensions.json')"));
+  assert(source.includes("join(afterExtensionRoot, 'node_modules', entry.pkg)"));
+  assert(source.includes("join(followOnExtensionRoot, 'node_modules', entry.pkg)"));
+  assert(source.includes('report.desktop.ownedLocalFixture ='));
+  const pin = source.indexOf('report.managerHost.instanceId = beforeSeats.managers[0].instanceId');
+  const before = source.indexOf('models on standalone Manager before CLI update');
+  const update = source.indexOf("update = await cotal('upgrade under test'");
+  const after = source.indexOf('models on standalone Manager after CLI update');
+  const spawn = source.indexOf('spawn new stand-in agent on original standalone Manager');
+  assert(pin > 0 && before > pin && update > before && after > update && spawn > after);
+  assert(source.includes('compareDesktopCatalogs(report.managerHost.modelsBefore, report.managerHost.modelsAfter, instanceId)'));
+  assert(source.includes("['ps', '--on', instanceId, '--space', space, '--json']"));
+});
+
 test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
   const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
   const extensions = [before[0], {...before[1], version: '0.164.1011'}];
@@ -55,6 +99,30 @@ test('owned fixture invariant uses real immutable file bytes and the driver reco
   assert(driver.includes("check('recorded extension package versions match target', versions.installed"));
 });
 
+test('copied local fixture requires the same observed installation and exact target set with unchanged bytes', () => {
+  const source = {root: join(tmpdir(), 'installs', '0123456789abcdef', 'sets', '1.0.0', 'extensions'), id: '0123456789abcdef', version: '1.0.0', layout: 'version-set'};
+  const after = {...source, root: join(tmpdir(), 'installs', source.id, 'sets', '2.0.0', 'extensions'), version: '2.0.0'};
+  const entry = {pkg: 'cotal-upgrade-native-fixture', spec: '/owned/source', version: '1.0.0'};
+  const fixture = {...entry, path: join(source.root, 'node_modules', entry.pkg), files: {'package.json':'p','index.js':'i','seat.mjs':'s','record-seat.mjs':'r'}};
+  fixture.realpath = fixture.path;
+  const installed = [{pkg: entry.pkg, path: join(after.root, 'node_modules', entry.pkg), version: entry.version, files: {...fixture.files}}];
+  installed[0].realpath = installed[0].path;
+  const args = {extensions:[entry], before:[entry], target:'2.0.0', fixture, installed, roots:{source, after}};
+  assert.deepEqual(baseline.extensionVersionChecks(args), {recorded:true, installed:true});
+  for (const change of [
+    v => {v.roots.after.id = 'foreign';},
+    v => {v.roots.after.version = '3.0.0';},
+    v => {v.installed[0].path = '/foreign/package';},
+    v => {v.installed[0].realpath = '/foreign/package';},
+    v => {v.fixture.path = '/foreign/source';},
+    v => {v.installed[0].files['seat.mjs'] = 'changed';},
+    v => {delete v.installed[0].files['record-seat.mjs'];},
+  ]) {
+    const value = structuredClone(args); change(value);
+    assert.equal(baseline.extensionVersionChecks(value).installed, false);
+  }
+});
+
 test('hosted Manager observation retries only the explicit rate refusal within its original bound', async () => {
   let now = 0, reads = 0;
   const reply = state => ({exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {managers: [{space: 'space', instanceId: 'manager', state, reason: '✗ actor cli of owner u_qdvahusrmtf2a7iyw3oyzwk45q is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors'}]}})});
@@ -90,6 +158,40 @@ test('candidate-owned next hop admission requires explicit paired hosted manual 
   assert.throws(()=>baseline.candidateNextOptions(options,false));
   assert.equal(baseline.candidateNextOptions({...options,source:'0.164.10',layout:'installer','next-hop-source':'0.164.10'},true),'source-0.164.10');
   assert.throws(()=>baseline.candidateNextOptions({...options,source:'0.164.9','next-hop-source':'0.164.10'},true));
+});
+
+test('running desktop neighbor requires explicit complete paired coordinate', { skip: process.platform !== 'linux' }, () => {
+  const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.18', layout:'npm',state:'daemon',method:'self', 'desktop-runtime':'/desktop/runtime', 'desktop-node':'/desktop/node', 'running-desktop-beside-cli':'true', prepare() {}};
+  assert.equal(baseline.candidateNextOptions(options,true),'candidate');
+  for (const change of [{'running-desktop-beside-cli':undefined},{'running-desktop-beside-cli':'false'},{candidate:undefined},{'candidate-next':undefined},{'desktop-runtime':undefined},{'desktop-node':undefined},{prepare:undefined},{prepare:'fixture'},{layout:'installer'},{state:'configured'},{method:'scheduler'},{'next-hop-source':'0.164.10'},{'next-hop-phase':undefined},{'stopped-daemon-before-update':'true'},{'disabled-daemon-before-update':'true'},{'follow-on-action':'self'}]) {
+    assert.throws(()=>baseline.candidateNextOptions({...options,...change},true),JSON.stringify(change));
+  }
+  assert.throws(()=>baseline.candidateNextOptions(options,false));
+});
+
+test('running desktop catalogs are recorded before update and retained beside independent no-regression assertion', () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  const setup = source.indexOf("models on desktop-hosted Manager immediately after setup");
+  const baseline = source.indexOf("models on desktop-hosted Manager immediately before CLI update");
+  const update = source.indexOf("update = await cotal('upgrade under test'");
+  const after = source.indexOf("models on desktop-hosted Manager after CLI updates");
+  assert(setup > 0 && baseline > setup && update > baseline && after > update);
+  assert(source.includes('modelsAfterSetup: report.desktop.modelsAfterSetup, modelsBeforeUpdate: report.desktop.modelsBeforeUpdate'));
+  assert(source.includes("managerStillAnswering: managerAfter?.state === 'answering'"));
+  assert(source.includes('compareDesktopCatalogs(report.desktop.modelsBeforeUpdate, modelsAfter, instanceId)'));
+});
+
+test('desktop catalog comparison accepts stable complete or partial and rejects regression or unknown evidence', () => {
+  const reply = (exit, items, extra = {}) => ({ exit, signal: null, timeout: false, stdout: JSON.stringify({ outcome: exit === 0 ? 'ok' : 'partial', completeness: exit === 0 ? 'complete' : 'partial', result: { answeringManagerInstanceId: 'manager', items }, ...extra }) });
+  const complete = reply(0, [{agent:'claude', supported:true, models:[{id:'model'}]}]);
+  const partial = reply(4, [{agent:'claude', supported:false, models:[], error:'existing failure'}]);
+  assert.equal(baseline.compareDesktopCatalogs(complete, complete, 'manager').passed, true);
+  assert.equal(baseline.compareDesktopCatalogs(partial, partial, 'manager').passed, true);
+  for (const after of [partial, reply(0, []), reply(0, [{agent:'claude', supported:true, models:[]}]), reply(0, [{agent:'claude', supported:false, models:[{id:'model'}]}]), {...complete, signal:'SIGTERM'}, {...complete, timeout:true}, {...complete, stdout:'{'}, reply(0, [{agent:'claude', supported:true, models:[{id:'model'}]}], {result:{answeringManagerInstanceId:'other',items:[]}})]) {
+    assert.equal(baseline.compareDesktopCatalogs(complete, after, 'manager').passed, false);
+  }
+  assert.equal(baseline.compareDesktopCatalogs(partial, reply(4, [{agent:'claude', supported:false, models:[], error:'new failure'}]), 'manager').passed, false);
+  assert.equal(baseline.compareDesktopCatalogs(undefined, complete, 'manager').passed, false);
 });
 
 function hostedChainOptions() {

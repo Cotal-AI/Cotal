@@ -872,7 +872,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   );
   if (!report) return "none";
   if (options.retainGraph) {
-    console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation; no restart or seat stop is requested. New launches remain subject to the extension generation check.`);
+    console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation and connector set; no restart or seat stop is requested.`);
     return "none";
   }
   const remedy = typeof flags.creds === "string" ? undefined : recordedStackRemedy(target.root, target.space, target.server, (status.data ?? {}) as { instanceId?: unknown; lifecycleUid?: unknown });
@@ -1247,7 +1247,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   return interrupted;
 
   async function reconcileVersion(version: string): Promise<boolean> {
-    const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);
+    const verified = execution ? (execution.verify(version), execution.entry) : rt.verifyGlobalEntry(root, version);
     const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
     delete repairEnv[EXT_UPDATE_PARENT_ENV];
     const result = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [verified, "update", ...targetArgv(target)], repairEnv, true);

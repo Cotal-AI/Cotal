@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <sddl.h>
+#include <aclapi.h>
 #include <node_api.h>
 #include <math.h>
 #include <stdint.h>
@@ -276,6 +277,74 @@ static napi_value user_sid(napi_env env, napi_callback_info info) {
   napi_status status = napi_create_string_utf16(env, (const char16_t *)text, NAPI_AUTO_LENGTH, &value);
   LocalFree(text);
   return status == napi_ok ? value : NULL;
+}
+
+static int same_directory(BY_HANDLE_FILE_INFORMATION *before, BY_HANDLE_FILE_INFORMATION *after,
+                          FILE_ID_INFO *before_id, FILE_ID_INFO *after_id) {
+  return (after->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+    (after->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 &&
+    before_id->VolumeSerialNumber == after_id->VolumeSerialNumber &&
+    memcmp(before_id->FileId.Identifier, after_id->FileId.Identifier, sizeof(before_id->FileId.Identifier)) == 0 &&
+    CompareFileTime(&before->ftCreationTime, &after->ftCreationTime) == 0;
+}
+
+// Read only one real directory, never its link target. Keep the owner and attributes bound to the
+// same retained handle, then prove that the path still names that directory before returning.
+static napi_value directory_owner_sid(napi_env env, napi_callback_info info) {
+  size_t argc = 1, length = 0, copied = 0;
+  napi_value arg, result = NULL;
+  napi_valuetype type;
+  if (napi_get_cb_info(env, info, &argc, &arg, NULL, NULL) != napi_ok || argc != 1 ||
+      napi_typeof(env, arg, &type) != napi_ok || type != napi_string ||
+      napi_get_value_string_utf16(env, arg, NULL, 0, &length) != napi_ok || length == 0 || length > 32767u)
+    return refuse(env, "directory owner reader needs one path");
+  wchar_t *path = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (length + 1) * sizeof(wchar_t));
+  if (path == NULL) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return fail(env, "directory owner path allocation"); }
+  if (napi_get_value_string_utf16(env, arg, (char16_t *)path, length + 1, &copied) != napi_ok ||
+      copied != length || wcslen(path) != length) {
+    HeapFree(GetProcessHeap(), 0, path);
+    return refuse(env, "directory owner path must not contain NUL");
+  }
+  HANDLE directory = INVALID_HANDLE_VALUE, current = INVALID_HANDLE_VALUE;
+  PSECURITY_DESCRIPTOR descriptor = NULL;
+  PSID owner = NULL;
+  wchar_t *sid = NULL;
+  BY_HANDLE_FILE_INFORMATION before, after, named;
+  FILE_ID_INFO before_id, after_id, named_id;
+  const char *step = NULL;
+  DWORD code = ERROR_SUCCESS;
+  DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+  DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+  directory = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
+  if (directory == INVALID_HANDLE_VALUE) { step = "CreateFileW directory owner"; goto done; }
+  if (!GetFileInformationByHandle(directory, &before)) { step = "directory owner identity"; goto done; }
+  if (!GetFileInformationByHandleEx(directory, FileIdInfo, &before_id, sizeof(before_id))) { step = "directory owner file ID"; goto done; }
+  if (!same_directory(&before, &before, &before_id, &before_id)) {
+    SetLastError(ERROR_INVALID_DATA); step = "directory owner requires a real directory without reparse points"; goto done;
+  }
+  code = GetSecurityInfo(directory, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, NULL, NULL, NULL, &descriptor);
+  if (code != ERROR_SUCCESS) { SetLastError(code); step = "GetSecurityInfo directory owner"; goto done; }
+  if (owner == NULL || !IsValidSid(owner)) { SetLastError(ERROR_INVALID_SID); step = "directory owner SID"; goto done; }
+  if (!ConvertSidToStringSidW(owner, &sid)) { step = "ConvertSidToStringSidW directory owner"; goto done; }
+  if (!GetFileInformationByHandle(directory, &after)) { step = "directory owner final identity"; goto done; }
+  if (!GetFileInformationByHandleEx(directory, FileIdInfo, &after_id, sizeof(after_id))) { step = "directory owner final file ID"; goto done; }
+  current = CreateFileW(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
+  if (current == INVALID_HANDLE_VALUE) { step = "CreateFileW directory owner final path"; goto done; }
+  if (!GetFileInformationByHandle(current, &named)) { step = "directory owner final path identity"; goto done; }
+  if (!GetFileInformationByHandleEx(current, FileIdInfo, &named_id, sizeof(named_id))) { step = "directory owner final path file ID"; goto done; }
+  if (!same_directory(&before, &after, &before_id, &after_id) || !same_directory(&before, &named, &before_id, &named_id)) {
+    SetLastError(ERROR_INVALID_DATA); step = "directory changed during owner query"; goto done;
+  }
+  if (napi_create_string_utf16(env, (const char16_t *)sid, NAPI_AUTO_LENGTH, &result) != napi_ok) result = NULL;
+done:
+  code = GetLastError();
+  if (current != INVALID_HANDLE_VALUE) CloseHandle(current);
+  if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
+  if (sid != NULL) LocalFree(sid);
+  if (descriptor != NULL) LocalFree(descriptor);
+  HeapFree(GetProcessHeap(), 0, path);
+  if (step != NULL) { SetLastError(code); return fail(env, step); }
+  return result;
 }
 
 // Defined in win32-system-id.cpp: Windows' documented system ID for this app's publisher, through
@@ -630,6 +699,7 @@ NAPI_MODULE_INIT() {
     { "pinProcess", NULL, pin_process, NULL, NULL, NULL, napi_enumerable, NULL },
     { "processTree", NULL, process_tree, NULL, NULL, NULL, napi_enumerable, NULL },
     { "userSid", NULL, user_sid, NULL, NULL, NULL, napi_enumerable, NULL },
+    { "directoryOwnerSid", NULL, directory_owner_sid, NULL, NULL, NULL, napi_enumerable, NULL },
     { "systemId", NULL, system_id, NULL, NULL, NULL, napi_enumerable, NULL },
     { "bootId", NULL, boot_id, NULL, NULL, NULL, napi_enumerable, NULL },
     { "accounting", NULL, accounting, NULL, NULL, NULL, napi_enumerable, NULL },

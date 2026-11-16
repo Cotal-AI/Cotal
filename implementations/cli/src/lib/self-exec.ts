@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { cmdSpawnSpec, executionIdentity, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
 import { shellWord } from "./endpoint-errors.js";
 
@@ -61,7 +61,7 @@ export function selfArgv(): string[] {
     );
   // The daemon heap flags belong to the daemon a launcher started, not to the CLI's invocation, so
   // a daemon's own re-exec of an ordinary command does not pass them on.
-  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), entry];
+  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), executionIdentity()?.launchEntry ?? entry];
 }
 
 /** The node flags every daemon launcher puts on the daemon it starts: the manager, delivery and
@@ -77,7 +77,7 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
  *  still wins. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
-  const logical = logicalExecutionEntry();
+  const logical = executionIdentity()?.launchEntry ?? logicalExecutionEntry();
   return [node!, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
 

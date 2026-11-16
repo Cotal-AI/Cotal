@@ -126,8 +126,8 @@ if (["linux", "darwin"].includes(process.platform)) {
     const startup = readFileSync(new URL("../daemon/command.ts", import.meta.url), "utf8");
     const update = readFileSync(new URL("../daemon/update-entry.ts", import.meta.url), "utf8");
     const completion = readFileSync(new URL("../daemon/execution-update.ts", import.meta.url), "utf8");
-    assert(startup.indexOf("cleanupExecutionStore(executionInstallRoot())") > startup.indexOf("await recoverInterruptedUpdate(recoveryRuntime, true)"));
-    assert(update.indexOf("cleanupExecutionStore(executionInstallRoot())") < update.indexOf("await update(args,"));
+    assert(startup.indexOf("cleanupExecutionStore(executionInstallRoot(), undefined, extensionSetCleanupSpec())") > startup.indexOf("await recoverInterruptedUpdate(recoveryRuntime, true)"));
+    assert(update.indexOf("cleanupExecutionStore(executionInstallRoot(), undefined, extensionSetCleanupSpec())") < update.indexOf("await update(args,"));
     assert(completion.includes("completeExecutionTransaction(installed, journal)"));
     const bootstrap = readFileSync(new URL("../cotal.ts", import.meta.url), "utf8");
     assert(!bootstrap.includes("cleanupExecutionStore("), "normal bootstrap launch cannot collect gigabytes");

@@ -546,6 +546,13 @@ of waiting the command says so on stderr:
 `cotal status` does not wait. It names that command, leaves the application rows unread and exits 4
 with a partial report: `another cotal command (pid <id>) is changing this installation, so the application rows were not read`.
 
+`ext add`, `ext remove`, `ext list` and seeding apply to the installation that runs them.
+Each installation keeps a separate set for each loaded version under
+`installs/<install-id>/sets/<version>/`. A running Manager keeps using its loaded version's set,
+including for new launches. Installations do not synchronize extensions. On first migration each
+starts from a copy of the existing inventory and removal choices, leaving the legacy store unchanged.
+A missing or incomplete own set refuses with `cotal ext seed --repair`.
+
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
 `cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
@@ -632,13 +639,14 @@ A seed that fails names the connector and the reason, such as npm missing from P
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
 the last seed failed, and why, or was interrupted.
 
-When a newer `cotal` advances the operator-global seed store to its generation, it prints one
+When a newer `cotal` creates its own version's seed store, it prints one
 migration line naming the old and new generations, the exact CLI entry that wrote the store, the
 commit timestamp, and `seed/stamp.json`. That writer and timestamp are kept in the stamp, so a later
 older CLI refusal can say which executable wrote the generation it will not overwrite and when.
 Legacy generation-only stamps remain readable; their refusal simply has no writer provenance to add.
 
-An older `cotal` refuses a seed store written by a newer version. The refusal names the store's
+The downgrade refusal still protects a copied source stamped by a newer release. It does not
+select another installation's set or overwrite a running Manager's set. The refusal names the store's
 `seed` folder and the `extensions` folder beside it, and says to restore both from a backup taken
 before the store moved to the newer generation; the two versions are context. When it can verify a
 sufficient `cotal` executable on PATH or at the installer's `~/.local/bin/cotal` location, the

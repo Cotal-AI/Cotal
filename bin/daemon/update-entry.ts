@@ -15,7 +15,7 @@ import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
-import { logicalExecutionEntry } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, extensionSetCleanupSpec } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
@@ -63,6 +63,7 @@ registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
   let hostedSpaces: string[] = [];
   let daemonObserved = false;
+  let daemonOwned = false;
   let preparedRestart = false;
   let currentPackages = false;
   let askedToStop = false;
@@ -74,7 +75,7 @@ const composed: Command = { ...command, async run(args) {
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   try {
-  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot(), undefined, extensionSetCleanupSpec());
   await update(args, { ...updateRuntime,
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
@@ -115,7 +116,7 @@ const composed: Command = { ...command, async run(args) {
       if (targetReceipt.daemon ? !lifetime?.start || lifetime.pid !== targetReceipt.daemon.pid || lifetime.start !== targetReceipt.daemon.start || processBirth(lifetime.pid) !== lifetime.start : lifetime !== undefined)
         throw new Error("machine daemon lifetime changed after target pre-install checks; retry the update");
     }
-    if (!daemonObserved || !paths) {
+    if (!daemonObserved || !daemonOwned || !paths) {
       targetAdmissionChecked = true;
       return async () => {};
     }
@@ -171,11 +172,27 @@ const composed: Command = { ...command, async run(args) {
       return "none";
     }
     let managers;
+    let unownedSource = "no recorded user service";
     try {
-      const reply = await queryDaemon({ paths: daemonPaths() });
+      const paths = daemonPaths();
+      let reply = await queryDaemon({ paths });
       if (!reply.ok) throw new Error(`machine daemon custody is unreadable: ${reply.error.message}`);
       daemonObserved = true;
-      if (process.platform === "win32") await captureWindowsGeneration(daemonPaths());
+      if (existsSync(unitReceiptFile(paths))) {
+        const installation = installedDaemonIdentity(paths);
+        daemonOwned = installation.same;
+        if (!installation.same) unownedSource = installation.installedEntry;
+      } else {
+        daemonOwned = false;
+      }
+      if (daemonOwned && (!recovery || !recovery.preparedRestart)) {
+        try {
+          await managerViaDaemon({ paths }, { op: "managers-abort-restart" });
+          const refreshed = await queryDaemon({ paths });
+          if (refreshed.ok) reply = refreshed;
+        } catch { /* Evaluated per hosted Manager below. */ }
+      }
+      if (process.platform === "win32") await captureWindowsGeneration(paths);
       managers = reply.result.managers ?? [];
     } catch (error) {
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
@@ -184,11 +201,40 @@ const composed: Command = { ...command, async run(args) {
       }
       throw error;
     }
+    const active = managers.filter((manager) => manager.pid !== undefined);
+    if (!daemonOwned) {
+      hostedSpaces = [];
+      for (const manager of active) {
+        console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId ?? "(unidentified)"} belongs to another Cotal installation (${unownedSource}); left running`);
+      }
+      let localVerdict: "none" | "legacy" = "none";
+      if (process.platform === "linux" && typeof flags.creds !== "string") {
+        const on = await updateManagerPin(flags, "cotal update");
+        for (const manager of localUpdateManagers({ ...flags, ...(on === undefined ? {} : { on }) })) {
+          if (active.some(hosted => hosted.instanceId === manager.instanceId)) continue;
+          if (typeof flags.space === "string" && flags.space !== manager.space) continue;
+          if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
+          if (on !== undefined && on !== manager.instanceId) continue;
+          if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
+          if (await (retainsExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+        }
+      } else {
+        if (!active.length || typeof flags.space === "string" && !active.some(manager => manager.space === flags.space) || typeof flags.creds === "string") {
+          if (await (retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags)) === "legacy") return "legacy";
+        } else if (typeof flags.space !== "string") {
+          const { readMeshRegistry } = await import("@cotal-ai/workspace");
+          for (const entry of readMeshRegistry().entries) {
+            if (active.some(manager => manager.space === entry.space)) continue;
+            if (await (retainsExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: entry.space }) === "legacy") return "legacy";
+          }
+        }
+      }
+      return localVerdict;
+    }
     // Updating this installation restarts the machine daemon, including spaces not selected by flags.
     for (const manager of managers) {
       if (manager.pid === undefined) console.log(`hosted Manager ${manager.space}: ${manager.state}; no live child, skipped`);
     }
-    const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
     if (!active.length) return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
@@ -200,7 +246,13 @@ const composed: Command = { ...command, async run(args) {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
         return askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
       });
-      if (!reply.ok) throw new Error(reply.error ?? "hosted Manager status did not answer");
+      if (!reply.ok) {
+        if (/manager is in preserving mode/.test(reply.error ?? "")) {
+          console.log(`hosted Manager ${manager.space}: instance ${manager.instanceId} could not be released from preserving mode (${reply.error}); run \`cotal daemon setup --space ${manager.space}\` to restore it`);
+          continue;
+        }
+        throw new Error(reply.error ?? "hosted Manager status did not answer");
+      }
       const status = reply.data as { agentCount?: number; custody?: string; stopImpact?: { agents: { name: string }[] } };
       if (!currentPackages && status.custody === "legacy" && status.agentCount !== 0) {
         const instanceId = manager.instanceId;
@@ -287,7 +339,7 @@ const composed: Command = { ...command, async run(args) {
     }
     return;
   }
-  if (currentPackages) return;
+  if (currentPackages || !daemonOwned) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");

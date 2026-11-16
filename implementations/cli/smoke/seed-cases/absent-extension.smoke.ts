@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { bindExtensionPeers } from "@cotal-ai/workspace";
-import { boot, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
+import { bindExtensionPeers, extensionSetPaths } from "@cotal-ai/workspace";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, tmpdir, join, check, cotal, freshCfg, seedDir, manifestPath, readJson, writeJson, track, finishScenario } from "./harness.js";
 
 // A third-party extension recorded in the manifest whose package directory is gone: never installed
 // there, or pruned by npm as extraneous because the prefix's package.json does not list it. Either
@@ -25,11 +25,14 @@ const SPEC = `https://fixture.invalid/cotal-absent-ext-1.0.0.tgz?token=${TOKEN}`
  *  `onDisk` the package directory is also present in the prefix, so npm finds it extraneous. */
 function fixture(onDisk: boolean): { cfg: string; dir: string } {
   const cfg = track(freshCfg());
-  const prefix = join(cfg, "cotal", "extensions");
+  const initial = cotal(cfg, ["ext", "seed"]);
+  if (initial.status !== 0) throw new Error(initial.stderr);
+  const prefix = extensionSetPaths(join(cfg, "cotal")).extensions;
   mkdirSync(prefix, { recursive: true });
   writeJson(join(prefix, "package.json"), { name: "cotal-extensions", private: true, dependencies: {} });
+  const prior = readJson(manifestPath(cfg));
   writeJson(manifestPath(cfg), {
-    extensions: [{
+    extensions: [...prior.extensions, {
       pkg: PKG, version: "1.0.0", spec: SPEC, commands: [],
       provides: [{ kind: "connector", name: "fixture-absent" }],
       connectors: [{ name: "fixture-absent", requires: [], eventPlane: false, setup: null }],
@@ -79,7 +82,7 @@ try {
     // `node` and nothing else on PATH, so the seed child's `npm install` cannot start.
     const bin = track(mkdtempSync(join(tmpdir(), "cotal-seed-no-npm-")));
     symlinkSync(process.execPath, join(bin, "node"));
-    const failed = boot(cfg, { PATH: bin });
+    const failed = cotal(cfg, ["ext", "seed", "--force"], { PATH: bin });
     check("absent extension recovery: a seed without npm fails and keeps its cursor", failed.status !== 0 && existsSync(cursorPath(cfg)), failed.stderr);
     const refused = cotal(cfg, ["ext", "remove", PKG]);
     check("absent extension recovery: remove is refused until the failed seed is repaired",
@@ -97,7 +100,7 @@ try {
   {
     const cfg = track(freshCfg());
     const first = cotal(cfg, ["ext", "seed", "--reset"]);
-    const prefix = join(cfg, "cotal", "extensions");
+    const prefix = extensionSetPaths(join(cfg, "cotal")).extensions;
     const hermes = join(prefix, "node_modules", "@cotal-ai", "connector-hermes");
     // Still a prefix dependency: npm restores it during the first add, before any relink reads it.
     rmSync(hermes, { recursive: true, force: true });
@@ -123,7 +126,7 @@ try {
     const prior = process.env.XDG_CONFIG_HOME;
     process.env.XDG_CONFIG_HOME = cfg;
     try {
-      const modules = join(cfg, "cotal", "extensions", "node_modules", "@fixture");
+      const modules = join(extensionSetPaths(join(cfg, "cotal")).extensions, "node_modules", "@fixture");
       const failure = (owners: string[], operation: string, onAbsent?: (owner: string) => void): string => {
         try {
           bindExtensionPeers(owners, operation, { force: true, onAbsent });
