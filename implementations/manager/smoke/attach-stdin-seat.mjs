@@ -45,7 +45,7 @@ const ep = new CotalEndpoint({
   space: e.COTAL_SPACE,
   servers: e.COTAL_SERVERS,
   creds: readFileSync(e.COTAL_CREDS, "utf8"),
-  card: { id: e.COTAL_ID, name: e.COTAL_NAME, role: "worker", kind: "agent" },
+  card: { id: e.COTAL_ID, name: e.COTAL_NAME, role: "worker", kind: "agent", meta: { "ai.cotal.manager.instance": e.COTAL_MANAGER_INSTANCE } },
   lifecycleUid: e.COTAL_LIFECYCLE_UID,
   channels: [],
   consume: false,
