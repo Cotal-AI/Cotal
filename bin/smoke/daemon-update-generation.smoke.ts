@@ -8,7 +8,7 @@ import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { EndpointRefusal } from "../daemon/endpoint.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "../daemon/install.js";
-import { executeUpdate, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
+import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
@@ -68,6 +68,37 @@ function scripted(steps: (Reply | Error)[]) {
   const run = scripted([status("1.0.0")]);
   await waitForInstalledDaemonGeneration("2.0.0", { installed: () => false, query: run.query });
   assert.equal(run.calls(), 0);
+}
+
+// A manual version change waits once in the parent and reports that, so the composed command
+// does not wait again. A current install reports no wait, and its tail wait stays the one line.
+{
+  for (const newer of [true, false]) {
+    const globalPrefix = join(root, `count-${newer}`);
+    const globalModules = join(globalPrefix, "lib", "node_modules");
+    mkdirSync(globalModules, { recursive: true, mode: 0o700 });
+    const lines: string[] = [];
+    let waits = 0;
+    const rt: UpdateRuntime = {
+      ...updateRuntime, env: {}, version: () => "0.13.1", checkout: () => false, installPrefix: () => globalPrefix,
+      reportRunningManager: async () => "none", reconcile: async () => {}, refreshConnectors: async () => [],
+      extensions: () => [], claimUpdatePass: () => () => {}, claimGlobalUpdate: () => () => {},
+      verifyGlobalEntry: (_r, v) => join(globalModules, `cotal-${v}.js`),
+      npm: args => args[0] === "view" ? { status: 0, stdout: newer ? '"0.13.2"' : '"0.13.1"', stderr: "" } : args[0] === "root" ? { status: 0, stdout: `${globalModules}\n`, stderr: "" } : { status: 0, stdout: "", stderr: "" },
+      npmAsync: async args => {
+        const spec = args[1]!;
+        const v = spec.slice(spec.lastIndexOf("@") + 1);
+        return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
+      },
+      spawnGlobal: async () => ({ status: 0, stdout: "", stderr: "" }),
+      waitForInstalledGeneration: async () => { waits += 1; lines.push("machine daemon: waiting up to 120s"); },
+      out: line => lines.push(line), err: line => lines.push(line),
+    };
+    await update({ values: { self: true }, positionals: [] } as never, rt);
+    if (rt.generationWaited !== true) { waits += 1; lines.push("machine daemon: waiting up to 120s"); }
+    assert.equal(waits, 1, newer ? "a version change prints the wait once" : "a current install prints the wait once");
+    assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1);
+  }
 }
 
 // A stale recorded service is knowable before either replacement or connector writes.
