@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {packageLayoutCell,pnpmGlobalPackage} from './package-layout-cell.mjs';
-import {mkdtempSync,mkdirSync,writeFileSync,realpathSync,linkSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,realpathSync,linkSync,readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {inspectInstalledUpdateRoute} from './daemon-cell-diagnostics.mjs';
+test('pnpm after-path and shim receipts are saved before route observation',()=>{
+ const source=readFileSync(new URL('./package-layout-cell.mjs',import.meta.url),'utf8');
+ const receipt=source.indexOf('report.installationAfter=');
+ const observer=source.indexOf('report.route=inspectInstalledUpdateRoute');
+ assert(receipt>0&&receipt<observer);
+ assert(source.slice(receipt,observer).includes("writeFileSync(join(output,'package-layout.json')"));
+ assert(source.includes('report.pnpmGroupAfter=pnpmGlobalPackage(JSON.parse(report.packageManagerAfter))'));
+});
 test('pnpm isolated group package hardlinks retain a private observation receipt',()=>{
  const root=mkdtempSync(join(tmpdir(),'pnpm-route-')),group=join(root,'hash-target'),pkg=join(group,'node_modules/cotal-ai');
  mkdirSync(pkg,{recursive:true,mode:0o700});

@@ -111,13 +111,18 @@ export async function packageLayoutCell({ layout, registry, output, nodePrefix }
     const extensionVersions=report.extensions.map(entry=>({pkg:entry.pkg,recorded:entry.version,installed:JSON.parse(readFileSync(join(home,'config/cotal/extensions/node_modules',entry.pkg,'package.json'),'utf8')).version}));
     check('recorded extensions reach target',extensionVersions.length>=7&&extensionVersions.every(entry=>entry.recorded===report.targetVersion&&entry.installed===report.targetVersion),extensionVersions);
     report.status=await call('installed target public status',cli,['status']);check('public status healthy',report.status.exit===0,report.status);
+    if(layout==='pnpm'){
+      report.packageManagerAfter=ok(await call('pnpm global list after','pnpm',['list','-g','--json']),'pnpm list after').stdout;
+      report.pnpmGroupAfter=pnpmGlobalPackage(JSON.parse(report.packageManagerAfter));
+      report.installationAfter={prefix,bin,pkg:report.pnpmGroupAfter.path,cli,shimSha256:createHash('sha256').update(readFileSync(cli)).digest('hex')};
+      writeFileSync(join(output,'package-layout.json'),JSON.stringify(report,null,2),{mode:0o600});
+    }
     report.route=inspectInstalledUpdateRoute(pkg,process.platform,{privateFixtureRoot:root});
     report.packageReads=report.route.packageReads;
     check('selected route reaches target',report.route.selectedCliVersion===report.targetVersion,report.route);
     report.store=inspectGenerationStore(join(dirname(dirname(realpathSync(pkg))),'.cotal-generations'),{required:report.route.updateRoute==='staged'});
     check('generation store protected',report.store.passed,report.store);
-    if(layout==='pnpm')report.packageManagerAfter=ok(await call('pnpm global list after','pnpm',['list','-g','--json']),'pnpm list after').stdout;
-    else report.prefixAfter=ok(await call('nvm npm prefix after',join(nodePrefix,'bin/npm'),['config','get','prefix']),'nvm prefix after').stdout.trim();
+    if(layout==='nvm')report.prefixAfter=ok(await call('nvm npm prefix after',join(nodePrefix,'bin/npm'),['config','get','prefix']),'nvm prefix after').stdout.trim();
     check('package-manager layout remains selected',layout==='pnpm'?JSON.parse(report.packageManagerAfter).length>0:report.prefixAfter===prefix,report.installation);
     report.passed=report.assertions.every(row=>row.passed);
   }catch(error){report.passed=false;report.error=error.message;}
