@@ -3,16 +3,24 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact already-packed product source
         type: string
         required: true
-        default: b2b2638bbaf5751db726320a1bea2164361b1575
+        default: dc78960217785242b01f5536da908d466ad44e1f
+      candidate_run:
+        type: string
+        required: true
+      candidate_artifact:
+        type: string
+        required: true
+      candidate_digest:
+        type: string
+        required: true
 permissions:
   contents: read
   actions: read
 jobs:
   proof:
-    if: github.ref == 'refs/heads/measure/checkout-manager-current-main-6906' && inputs.source_sha == 'b2b2638bbaf5751db726320a1bea2164361b1575'
+    if: github.ref == 'refs/heads/measure/checkout-manager-current-main-6906' && inputs.source_sha == 'dc78960217785242b01f5536da908d466ad44e1f'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -24,29 +32,32 @@ jobs:
         with:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
-      - name: Reuse exact guarded candidate from original run
+      - name: Reuse new candidate's exact guarded release closure
         uses: actions/github-script@v8
+        env:
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          CANDIDATE_ARTIFACT: ${{ inputs.candidate_artifact }}
+          CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+          PRODUCT_SOURCE: ${{ inputs.source_sha }}
         with:
           script: |
             const assert=require('node:assert/strict');
             const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
-            const {data:run}=await github.rest.actions.getWorkflowRun({...context.repo,run_id:43882152293});
-            assert.equal(run.head_sha,'0ac2c825730f472adf5ad57bc0f3075ca4f9e46d');
-            const {data:artifact}=await github.rest.actions.getArtifact({...context.repo,artifact_id:14233693519});
-            assert.equal(artifact.name,'installed-up-candidate');assert.equal(artifact.workflow_run.id,43882152293);
-            const digest='09f96530595d51dfd1a4a284870f1c78204912bda20f87679dadee5591a7ca36';
-            assert.equal(artifact.digest,'sha256:'+digest);assert(!artifact.expired);
-            const {data:archive}=await github.rest.actions.downloadArtifact({...context.repo,artifact_id:artifact.id,archive_format:'zip'});
+            const runId=Number(process.env.CANDIDATE_RUN),id=Number(process.env.CANDIDATE_ARTIFACT),digest=process.env.CANDIDATE_DIGEST.replace(/^sha256:/,'');
+            assert(Number.isSafeInteger(runId)&&runId>0&&Number.isSafeInteger(id)&&id>0);assert.match(digest,/^[a-f0-9]{64}$/);
+            const {data:run}=await github.rest.actions.getWorkflowRun({...context.repo,run_id:runId});
+            assert.equal(run.head_sha,process.env.PRODUCT_SOURCE);assert.equal(run.path,'.github/workflows/automatic-update-platforms.yml');
+            const {data:artifact}=await github.rest.actions.getArtifact({...context.repo,artifact_id:id});
+            assert.equal(artifact.name,'release-candidate');assert.equal(artifact.workflow_run.id,runId);assert.equal(artifact.digest,'sha256:'+digest);assert(!artifact.expired);
+            const {data:archive}=await github.rest.actions.downloadArtifact({...context.repo,artifact_id:id,archive_format:'zip'});
             const bytes=Buffer.from(archive);assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),digest);
             const zip=path.join(process.env.RUNNER_TEMP,'installed-up-candidate.zip'),destination=path.join(process.env.RUNNER_TEMP,'candidate');
             fs.writeFileSync(zip,bytes);fs.mkdirSync(destination);cp.execFileSync('unzip',['-q',zip,'-d',destination]);
             const manifest=JSON.parse(fs.readFileSync(path.join(destination,'manifest.json')));
-            assert.equal(manifest.source,'b2b2638bbaf5751db726320a1bea2164361b1575');
-            assert(manifest.packages.every(p=>p.version==='0.164.1018'));
+            assert.equal(manifest.source,process.env.PRODUCT_SOURCE);assert(manifest.packages.every(p=>p.version==='0.165.0'));
             const out=path.join(process.env.RUNNER_TEMP,'installed-up');fs.mkdirSync(out);
-            fs.writeFileSync(path.join(out,'candidate-origin.json'),JSON.stringify({product:manifest.source,measurement:context.sha,artifact:artifact.id,run:43882152293,digest},null,2));
-      - name: Run the two installed plain npm first-up cells
-        shell: bash
+            fs.writeFileSync(path.join(out,'candidate-origin.json'),JSON.stringify({product:manifest.source,measurement:context.sha,artifact:id,run:runId,digest},null,2));
+      - name: Require FIRST up success in both inherited environments
         env:
           COTAL_UP_CANDIDATE: ${{ runner.temp }}/candidate
           COTAL_UP_OUTPUT: ${{ runner.temp }}/installed-up
@@ -57,9 +68,5 @@ jobs:
         if: always()
         with:
           name: installed-plain-npm-first-up
-          path: |
-            ${{ runner.temp }}/installed-up/*.json
-            ${{ runner.temp }}/installed-up/*.log
-            ${{ runner.temp }}/installed-up/*.txt
-            ${{ runner.temp }}/installed-up/*.md
+          path: ${{ runner.temp }}/installed-up/
           if-no-files-found: error

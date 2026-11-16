@@ -48,7 +48,9 @@ async function cell(skip){
   ok(await run('plain npm candidate replacement','npm',['i','-g',`cotal-ai@${main.version}`,'--no-audit','--no-fund']));assert.equal(json(pkg).version,main.version);assert.equal(realpathSync(join(paths.prefix,'bin/cotal')),row.originalBin);
   const args=['up','--space',space,'--server',server,'--open','--detach'];attempted=true;
   const first=await cli('FIRST candidate command: up',args);
-  if(first.exit!==0){assert(skip,'Normal first up must succeed');assert(!first.timeout&&!first.signal,'Unknown outcome is not refusal');const text=first.stdout+'\n'+first.stderr;assert(text.includes('cotal ext seed --repair'),'Refusal lacks literal repair');row.literalRepair='cotal ext seed --repair';ok(await cli('literal printed repair SAME environment',['ext','seed','--repair']));assert.equal(env.COTAL_SKIP_CONNECTOR_SEED,'1');ok(await cli('up after literal repair SAME environment',args));}else ok(first);
+  ok(first); // Legitimate first up must succeed even with an inherited skip from the old version.
+  row.firstUpSucceeded = true;
+  if(skip) assert.equal(env.COTAL_SKIP_CONNECTOR_SEED,'1');
   let answer;for(let n=0;n<20;n++){const r=await cli('public Manager ps',['ps','--space',space,'--json']);if(r.exit===0&&!r.timeout&&!r.signal){const body=JSON.parse(r.stdout).result;if(body?.kind==='seats'&&body.managers?.length===1&&body.managers[0].state==='answered'&&body.managers[0].instanceId){answer=body.managers[0];break}}await delay(500)}
   assert(answer,'Actual Manager must answer through public ps');row.manager=answer;row.result='passed';
  }catch(e){row.result='failed';row.error=e.stack;throw e;}
