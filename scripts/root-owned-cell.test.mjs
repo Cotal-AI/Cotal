@@ -48,3 +48,21 @@ test('fixed normal-account refusal must leave no staging folders or store growth
  report.observations[1].afterNormalRefusal={passed:false,logicalBytes:100};
  assert.equal(rootOwnedAssertions(report,cell).passed,false);
 });
+test('administrator acceptance requires npm process mask, complete protected ancestry and file modes',()=>{
+ const prefix='/usr/lib/cotal-root-node';
+ const cell={sourceVersion:'0.164.18',requiredAssertions:['root-owned-install']};
+ const installed={uid:0,version:cell.sourceVersion,manifest:{mode:0o644},bootstrap:{mode:0o755},ancestors:[prefix+'/lib/node_modules/cotal-ai',prefix+'/lib/node_modules',prefix+'/lib',prefix,'/usr/lib','/usr','/'].map(path=>({path,real:path,uid:0,gid:0,mode:0o755,directory:true,symlink:false}))};
+ const original={passed:true,observations:[{npmProcess:{uid:0,umask:0o22},version:cell.sourceVersion},{ownership:{uid:0,path:prefix+'/bin/node'}},{installed}]};
+ assert.equal(rootOwnedAssertions(original,cell).passed,true);
+ for(const change of [
+  report=>{report.observations[0].npmProcess.umask=0;},
+  report=>{report.observations.shift();},
+  report=>{report.observations[2].installed.ancestors[0].mode=0o777;},
+  report=>{report.observations[2].installed.ancestors[4].gid=1001;},
+  report=>{report.observations[2].installed.manifest.mode=0o666;},
+  report=>{report.observations[2].installed.bootstrap.mode=0o777;},
+ ]){
+  const report=structuredClone(original);change(report);
+  assert.equal(rootOwnedAssertions(report,cell).passed,false);
+ }
+});
