@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -76,7 +76,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(existsSync(pendingJournal), false);
 
     // An earlier release had no previous field or completed marker. Its validated publication
-    // chain supplies the replaced generation before completed journals can be removed.
+    // chain supplies the replaced generation, but not proof that another home's recovery ended.
     const legacySource = retainExecutionGeneration(installed, source);
     const legacyJournal = journalExecutionTransaction(installed, legacySource);
     publishExecutionTransaction(installed, legacyJournal);
@@ -84,9 +84,12 @@ if (["linux", "darwin"].includes(process.platform)) {
     delete descriptor.previous;
     writeFileSync(executionDescriptorPath(installed), JSON.stringify(descriptor));
     clean();
-    assert.equal(existsSync(legacyJournal), false);
+    assert.equal(existsSync(legacyJournal), true, "legacy completion is not inferred from this home's absent recovery");
     assert.equal(JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8")).previous.id, third.id);
     assert.equal(existsSync(third.root), true);
+    completeExecutionTransaction(installed, legacyJournal);
+    clean();
+    assert.equal(existsSync(legacyJournal), false, "explicit completion is the installation-wide retirement authority");
 
     mkdirSync(join(store, ".installing-Lk1234"));
     const workspace = new URL("../../packages/workspace/dist/index.js", import.meta.url).href;
@@ -123,6 +126,30 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert(completion.includes("completeExecutionTransaction(installed, journal)"));
     const bootstrap = readFileSync(new URL("../cotal.ts", import.meta.url), "utf8");
     assert(!bootstrap.includes("cleanupExecutionStore("), "normal bootstrap launch cannot collect gigabytes");
+
+    const otherInstall = join(scratch, "shared/lib/node_modules/cotal-ai");
+    cpSync(installed, otherInstall, { recursive: true });
+    // An in-place package-manager copy has no descriptor in its new store yet.
+    const legacy: { journal: string; root: string }[] = [];
+    for (const version of ["0.5.0", "0.6.0", "0.7.0"]) {
+      writeFileSync(join(source, "package.json"), JSON.stringify({ name: "cotal-ai", version, bin: { cotal: "./dist/cotal.js" } }));
+      const retained = retainExecutionGeneration(otherInstall, source);
+      const journal = journalExecutionTransaction(otherInstall, retained);
+      publishExecutionTransaction(otherInstall, journal);
+      legacy.push({ journal, root: retained.root });
+    }
+    const homeA = join(scratch, "home-a"), homeB = join(scratch, "home-b");
+    mkdirSync(homeA, { mode: 0o700 }); mkdirSync(homeB, { mode: 0o700 });
+    const env = (home: string) => ({ ...process.env, HOME: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: join(home, "config") });
+    const paused = spawnSync(process.execPath, ["--input-type=module", "-e", `const{claimUpdateClosureAccess,writeUpdateRecovery}=await import(${JSON.stringify(workspace)});const release=claimUpdateClosureAccess();try{writeUpdateRecovery({previous:'0.4.0',target:'0.5.0',installed:'0.5.0',phase:'paused',reason:'cross-home smoke',execution:${JSON.stringify(legacy[0].journal)}})}finally{release()}`], { env: env(homeA), encoding: "utf8" });
+    assert.equal(paused.status, 0, paused.stderr);
+    const module = new URL("../dist/execution-store.js", import.meta.url).href;
+    const otherHome = spawnSync(process.execPath, ["--input-type=module", "-e", `const{cleanupExecutionStore}=await import(${JSON.stringify(module)});cleanupExecutionStore(${JSON.stringify(otherInstall)});`], { env: env(homeB), encoding: "utf8" });
+    assert.equal(otherHome.status, 0, otherHome.stderr);
+    assert.equal(otherHome.stderr.trim().split("\n").length, 1);
+    assert.equal(existsSync(join(homeA, ".cotal/update-recovery.json")), true);
+    assert.equal(existsSync(legacy[0].journal), true, "different Cotal home cannot retire an unmarked paused journal");
+    assert.equal(existsSync(legacy[0].root), true, "different Cotal home cannot retire the paused target");
     console.log("execution store cleanup: active and previous retained, completed and abandoned data retired, pending recovery and foreign lock preserved");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }

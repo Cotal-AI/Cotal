@@ -146,7 +146,7 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
     for (const { record, name } of descriptors) {
       keep.add(record.generation.id);
       // Older releases recorded the replaced generation only in their publication journal.
-      const journal = transactions.filter(row => row.record.target.id === record.generation.id && row.path !== protectedJournal);
+      const journal = transactions.filter(row => row.record.target.id === record.generation.id && executionDescriptorPath(row.record.installed) === join(store, name) && row.path !== protectedJournal);
       if (!record.previous && journal.length === 1 && !recovery) {
         const previous = journal[0].record.previous.descriptor?.generation;
         if (previous) {
@@ -159,18 +159,8 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
         }
       }
       if (record.previous) keep.add(record.previous.id);
-      if (!recovery) {
-        let selected: string | undefined = record.generation.id;
-        const visited = new Set<string>();
-        while (selected && !visited.has(selected)) {
-          visited.add(selected);
-          const rows = transactions.filter(row => row.record.target.id === selected);
-          if (rows.length !== 1) break;
-          rows[0].finished = true;
-          selected = rows[0].record.previous.descriptor?.generation.id;
-        }
-      }
     }
+    if (transactions.some(row => row.record.completed !== true)) warn(new Error("unmarked transaction retained because completion is not proven for every Cotal home"));
     for (const row of transactions.filter(row => !row.finished || row.path === protectedJournal)) {
       keep.add(row.record.target.id);
       if (row.record.previous.descriptor) keep.add(row.record.previous.descriptor.generation.id);
