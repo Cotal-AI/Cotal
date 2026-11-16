@@ -73,7 +73,7 @@ jobs:
             if (machineShapes) {
               assert.equal(event.inputs.phase, 'candidate');
               assert.equal(event.inputs.target_version, '0.164.18');
-              assert.equal(event.inputs.source_sha, '5647889ee4404cecb1cbcbe14e57ee14295166ac');
+              assert.equal(event.inputs.source_sha, '2d4cd50384a70569add09e058780b37b97012a1e');
               assert.equal(event.inputs.profile, 'bounded');
             }
             let source, phase;
@@ -152,7 +152,7 @@ jobs:
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
             const allCells = boundedCells(plan);
-            const shapeIDs = ['linux-installer-candidate-next-staged-scheduler', 'linux-npm-candidate-next-staged-scheduler', 'darwin-npm-candidate-next-staged-scheduler', 'linux-installer-source-0.164.16-staged-refusal', 'linux-installer-source-0.164.17-staged-refusal', 'linux-npm-root-owned-candidate-next', 'linux-npm-root-owned-source-0.164.16-recovery', 'linux-npm-root-owned-source-0.164.17-recovery', 'linux-pnpm-candidate-next-pnpm-layout', 'linux-npm-candidate-next-nvm-layout'];
+            const shapeIDs = ['linux-installer-candidate-next-staged-scheduler', 'linux-npm-candidate-next-staged-scheduler', 'darwin-npm-candidate-next-staged-scheduler', 'linux-npm-root-owned-candidate-next', 'linux-npm-root-owned-source-0.164.16-recovery', 'linux-npm-root-owned-source-0.164.17-recovery', 'linux-pnpm-candidate-next-pnpm-layout'];
             const cells = machineShapes ? allCells.filter(cell => shapeIDs.includes(cell.id)) : allCells;
             if (machineShapes) assert.deepEqual(cells.map(cell => cell.id), shapeIDs);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
