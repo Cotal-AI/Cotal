@@ -459,7 +459,9 @@ immediately before store mutation and never includes secret seeds. Restore never
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
 source needs explicit `--accept-missing-source`. Without it, the restore refuses `TARGET_NOT_FOUND`
-(exit 2), names the missing path and changes nothing. A default `.cotal/nats` that is a symbolic
+(exit 2), names the missing path and changes nothing. With it, the store is rebuilt at its recorded
+path, a custom `--store-dir` included, and later startups reopen it there. A `--store-dir` naming another
+path is refused before staging. A default `.cotal/nats` that is a symbolic
 link to the recorded source is that source, so the restore runs in place at the real path and the
 link keeps naming it. Quarantine and target restores use current canonical
 configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a

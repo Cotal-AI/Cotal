@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the runs a restore of an older backup rolled back, the other account a restore leaves in the store it set aside, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the disaster restore of a lost custom store, the runs a restore of an older backup rolled back, the other account a restore leaves in the store it set aside, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -815,6 +815,43 @@ async function missingPidfileListenerScenario(): Promise<void> {
   }
 }
 
+/** #7049: a preserved custom store that is lost is rebuilt at the path its cut records. With
+ *  `--accept-missing-source` and no `--store-dir`, the restore chose `.cotal/nats` and failed
+ *  `OPERATION_UNKNOWN` before staging. Another `--store-dir` is refused before staging. */
+async function missingCustomSourceScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-custom-source-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-custom-source-home-")));
+  const artifact = join(root, "space-backup");
+  const store = join(root, "registry-target");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "backup_missing_custom_source";
+  const { run } = sandboxRun(root, home);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  };
+  try {
+    must("up on a custom store", run("up", "--detach", "--open", "--server", server, "--space", space, "--store-dir", store));
+    must("send a message to keep", run("send", "-c", "preserved", "history-before-backup", "--space", space));
+    must("down --preserve-state", run("down", "--preserve-state"));
+    must("backup create", run("backup", "create", artifact));
+    renameSync(store, join(root, "saved-source"));
+    const elsewhere = run("backup", "restore", artifact, "--accept-missing-source", "--store-dir", join(root, "elsewhere"), "--json");
+    assert.equal(elsewhere.status, 1, `another --store-dir is a usage refusal\n${elsewhere.stdout}${elsewhere.stderr}`);
+    assert.match(elsewhere.stdout, /rebuilds it at its recorded path/);
+    assert.equal(readMaintenanceJournal(root)?.state, "ready", "the refusal left the preserved cut ready");
+    const restored = run("backup", "restore", artifact, "--accept-missing-source", "--json");
+    assert.equal(restored.status, 0, `a consented restore with no --store-dir rebuilds the recorded store\n${restored.stdout}${restored.stderr}`);
+    assert.equal((JSON.parse(restored.stdout) as { result: { store: string } }).result.store, store);
+    const kept = JSON.parse(run("history", "preserved", "--space", space, "--json").stdout) as { result: { items: { text: string }[] } };
+    assert.deepEqual(kept.result.items.map((item) => item.text), ["history-before-backup"], "the restored store serves the retained message");
+    must("down", run("down", "--yes"));
+  } finally {
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
 async function preservationCommitCrashScenario(): Promise<void> {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-preserve-commit-crash-root-")));
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-preserve-commit-crash-home-")));
@@ -1179,6 +1216,7 @@ async function linkedStoreScenario(): Promise<void> {
 
 await missingPidfileListenerScenario();
 await linkedStoreScenario();
+await missingCustomSourceScenario();
 await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();

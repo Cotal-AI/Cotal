@@ -1011,9 +1011,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
     if (lockedOverlap) throw lockedOverlap;
     // The cut records its source by real path, so a default .cotal/nats that links there is that
-    // source and is restored in place, not taken for an alternate target.
+    // source and is restored in place, not taken for an alternate target. A missing source is rebuilt
+    // where the cut records it, the only target its disaster restore takes (#7049).
     const defaultStore = join(root, ".cotal", "nats");
-    targetPath = resolve(flags["store-dir"] ?? (controller || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    const rebuild = source.state === "missing";
+    targetPath = resolve(flags["store-dir"] ?? (controller || rebuild || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    if (rebuild && targetPath !== journal.source.path)
+      throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that
