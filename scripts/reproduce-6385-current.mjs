@@ -56,6 +56,7 @@ export async function verifyClosure(directory, version) {
 export async function reproduce6385(options) {
   assert.deepEqual(Object.keys(options).sort(), ['candidate', 'candidate-next', 'fault', 'output']);
   assert(['exit', 'hang'].includes(options.fault));
+  hostedGuard();
   const output = resolve(options.output);
   mkdirSync(output, { recursive: true, mode: 0o700 });
   const report = { schema: 1, source: source6385, fault: options.fault, tier: 'synthetic package fault, real native scheduler', startedAt: new Date().toISOString(), calls: [], observations: [] };
@@ -70,7 +71,6 @@ export async function reproduce6385(options) {
   const cotal = argv => run(process.execPath, [cli, ...argv]);
   const ok = result => { assert.equal(result.exit, 0, JSON.stringify(result)); assert(!result.timeout); return result; };
   try {
-    hostedGuard();
     const home = realpathSync(homedir());
     const cotalHome = join(home, '.cotal'), config = join(home, '.config/cotal');
     assert(!existsSync(cotalHome) && !existsSync(config), 'dedicated fresh account required before mutation');
@@ -94,7 +94,7 @@ export async function reproduce6385(options) {
     const pkg = join(prefix, 'lib/node_modules/cotal-ai');
     cli = join(pkg, 'dist/cotal.js');
     env.PATH = `${join(prefix, 'bin')}:${env.PATH}`;
-    ok(await cotal(['ext', 'seed']));
+    ok(await run(process.execPath, [cli, 'ext', 'seed'], 180000));
     ok(await cotal(['update', '--auto', 'on']));
     const plan = JSON.parse(ok(await cotal(['daemon', 'install', '--dry-run', '--json'])).stdout).result;
     assert.equal(plan.state, 'would-install');
@@ -104,7 +104,7 @@ export async function reproduce6385(options) {
     owned = true;
     registry.activateTarget();
     report.targetActivatedAt = Date.now(); persist();
-    ok(await cotal(['daemon', 'install', '--json']));
+    ok(await run(process.execPath, [cli, 'daemon', 'install', '--json'], 180000));
     const daemonHome = plan.daemonHome ?? join(cotalHome, 'daemon');
     receipt = json(join(daemonHome, 'service-unit.json'));
     assert.equal(receipt.unit, plan.unit);
@@ -184,8 +184,8 @@ export async function reproduce6385(options) {
     report.targetReady = daemon?.state === 'ready' && daemon?.version === registry.identity.targetVersion;
     const afterSuccess = report.observations.filter(row => row.at >= successAt);
     report.faultObserved = options.fault === 'hang'
-      ? afterSuccess.filter(row => row.mainPid > 1 && row.daemon?.exit !== 0 && row.journal?.stdout.includes('6385 test-package hang reached before serveDaemon')).length >= 2
-      : afterSuccess.some(row => row.journal?.stdout.includes('6385 test-package exit reached before serveDaemon') && (/ExecMainStatus=86(?:\n|$)/.test(row.unit?.stdout ?? '') || /status=86/.test(row.journal?.stdout ?? '')));
+      ? afterSuccess.filter(row => row.mainPid > 1 && row.daemon?.exit !== 0 && row.records['daemon/daemon.log'].text?.includes('6385 test-package hang reached before serveDaemon')).length >= 2
+      : afterSuccess.some(row => row.records['daemon/daemon.log'].text?.includes('6385 test-package exit reached before serveDaemon') && (/ExecMainStatus=86(?:\n|$)/.test(row.unit?.stdout ?? '') || /status=86/.test(row.journal?.stdout ?? '')));
     report.reproduced = report.schedulerRecordedSuccess && report.targetSelected && !report.targetReady && report.faultObserved;
     report.result = report.reproduced ? 'reproduced' : 'not-reproduced';
   } catch (error) {
