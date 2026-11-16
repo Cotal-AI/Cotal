@@ -1020,6 +1020,22 @@ export async function matrixCell(options) {
               save(join(output, `${id}-staged-${name}-clock.json`), { before, after });
               save(file, after);
             }
+            const discoveryDeadline=Date.now()+120000;
+            let discovered;
+            do {
+              await delay(5000);
+              ok(await daemon('staged scheduler target discovery',['daemon','status','--json']),'staged scheduler target discovery');
+              discovered=json(join(cotalHome,'update-check.json'));
+              if(discovered.latest===report.target)break;
+            }while(Date.now()<discoveryDeadline);
+            assert.equal(discovered?.latest,report.target,'scheduler must discover actual follow-on before aging release hold');
+            report.stagedSchedulerDiscovery={target:report.target,check:discovered,observedAt:Date.now()};
+            for(const [name,fields]of[['update-check.json',['firstSeenAt']],['update-attempt.json',['next']]]){
+              const file=join(cotalHome,name),before=json(file),after={...before};
+              for(const field of fields)after[field]=Date.now()-7200000;
+              save(join(output,`${id}-staged-${name}-hold-clock.json`),{before,after});
+              save(file,after);
+            }
             const deadline = Date.now() + 300000;
             let selected, status, attempt;
             do {

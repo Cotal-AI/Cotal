@@ -92,7 +92,8 @@ These options refuse outside disposable hosted runners.
 For an umask probe, read-only package diagnostics accept owned package-manager directories inside
 the cell's private fixture root. They preserve the measured modes. Credentials, evidence files and
 retained generations keep their write-protection checks. The staged-scheduler probe expires the
-24-hour successful registry cache before observing the follow-on release. It does not change failure counts.
+24-hour successful registry cache before observing the follow-on release. After the daemon discovers
+that release itself, the probe ages its release-hold timer. It does not change versions or failure counts.
 A Linux no-runtime-directory probe removes `XDG_RUNTIME_DIR` only from the updater child.
 With a live daemon it expects the named refusal before staging and verifies the original daemon lifetime.
 Without a daemon it requires the normal update result. Diagnostic and cleanup commands keep their runtime directory.
