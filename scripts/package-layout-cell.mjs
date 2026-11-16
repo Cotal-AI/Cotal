@@ -6,6 +6,24 @@ import { dirname, join, delimiter } from 'node:path';
 import { inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
 
+/** pnpm 11 gives each global install a group, selected by an active hash symlink. */
+export function pnpmGlobalPackage(listing) {
+  assert(Array.isArray(listing)&&listing.length<=1000,'pnpm global group census exceeds bound');
+  const matches=[];
+  for(const group of listing){
+    const dependency=group.dependencies?.['cotal-ai'];
+    if(!dependency)continue;
+    assert(typeof dependency.path==='string'&&dependency.path.startsWith('/'),'pnpm list must identify installed package path');
+    const path=dependency.path;
+    const metadata=JSON.parse(readFileSync(join(path,'package.json')));
+    assert.equal(metadata.name,'cotal-ai');
+    assert.equal(metadata.version,dependency.version);
+    matches.push({group:group.path,path:realpathSync(path)});
+  }
+  assert.equal(matches.length,1,'one active pnpm cotal-ai installation group required');
+  return matches[0];
+}
+
 export function packageLayoutAssertions(report,cell){
   const calls=report.calls??[];
   const clean=row=>row?.exit===0&&row.signal===null&&row.timeout===false;
@@ -75,8 +93,8 @@ export async function packageLayoutCell({ layout, registry, output, nodePrefix }
     ok(await install(report.sourceVersion),'source install');
     if(layout==='pnpm'){
       const globalRoot=ok(await call('pnpm actual global root','pnpm',['root','-g']),'pnpm root').stdout.trim();
-      pkg=realpathSync(join(globalRoot,'cotal-ai'));prefix=globalRoot;
       report.packageManagerBefore=ok(await call('pnpm global list before','pnpm',['list','-g','--json']),'pnpm list').stdout;
+      report.pnpmGroup=pnpmGlobalPackage(JSON.parse(report.packageManagerBefore));pkg=report.pnpmGroup.path;prefix=globalRoot;
     }
     report.installation={prefix,bin,pkg:realpathSync(pkg),cli,shimSha256:createHash('sha256').update(readFileSync(cli)).digest('hex')};
     const sourceManifest=JSON.parse(readFileSync(join(pkg,'package.json')));assert.equal(sourceManifest.version,report.sourceVersion);

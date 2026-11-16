@@ -20,8 +20,10 @@ export function rootOwnedAssertions(report, cell) {
   const assertions={
     'root-update-success':update?.root===true&&clean(update)&&update.exit===0,
     'normal-account-versions':version(cell.sourceVersion)&&version(cell.targetVersion),
-    'owning-command-refusal':refusal?.root===false&&clean(refusal)&&refusal.exit!==0&&/owning command: npm install -g --prefix \/usr\/local cotal-ai@latest/.test(refusal.stdout+refusal.stderr),
-    'root-owned-install':observations.some(row=>row.ownership?.uid===0&&row.ownership.path.startsWith('/usr/local/'))&&observations.some(row=>row.installed?.uid===0&&row.installed.version===cell.sourceVersion),
+    'owning-command-refusal':refusal?.root===false&&clean(refusal)&&refusal.exit!==0&&/owning command: npm install -g --prefix \/opt\/cotal-root-node cotal-ai@latest/.test(refusal.stdout+refusal.stderr),
+    'root-owned-install':observations.some(row=>row.ownership?.uid===0&&row.ownership.path.startsWith('/opt/cotal-root-node/'))&&observations.some(row=>row.installed?.uid===0&&row.installed.version===cell.sourceVersion&&
+      JSON.stringify(row.installed.ancestors?.map(item=>item.path))===JSON.stringify(['/opt/cotal-root-node/lib/node_modules/cotal-ai','/opt/cotal-root-node/lib/node_modules','/opt/cotal-root-node/lib','/opt/cotal-root-node','/opt','/'])&&
+      row.installed.ancestors.every(item=>item.uid===0&&item.directory&&!item.symlink&&item.real===item.path&&item.mode===0o755)),
     'readable-generation-metadata':modes?.passed===true&&mode('/.cotal-generations',0o755)&&mode('/dist/cotal.js',0o755)&&records.length>=2&&records.every(row=>row.uid===0&&row.mode===0o644),
     'private-journals':modes?.passed===true&&modes.entries.filter(row=>row.path.includes('/.transaction-')).every(row=>row.mode===(row.kind==='directory'?0o700:0o600)),
     'generation-store-protected':store?.passed===true,
@@ -43,7 +45,7 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
   assert.equal(process.platform, 'linux');
   assert(process.getuid() !== 0, 'proof driver must remain the normal runner account');
-  const node = '/usr/local/bin/node', npm = '/usr/local/bin/npm', prefix = '/usr/local';
+  const node = '/opt/cotal-root-node/bin/node', npm = '/opt/cotal-root-node/bin/npm', prefix = '/opt/cotal-root-node';
   const pkg = join(prefix, 'lib/node_modules/cotal-ai'), cli = join(prefix, 'bin/cotal');
   const rootHome = join(process.env.RUNNER_TEMP, 'root-install-home');
   const userHome = join(process.env.RUNNER_TEMP, 'normal-install-home');
@@ -51,13 +53,13 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   assert(/^[a-f0-9]{40}$/.test(identity.source), 'immutable root proof source required');
   if (oldVersion !== undefined) assert(['0.164.16', '0.164.17'].includes(oldVersion), 'unsupported old root source');
   assert(/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(registry.url), 'owned paired loopback registry required');
-  const report = { cleanup: { owner: 'disposable hosted runner teardown', retained: ['/usr/local/lib/node_modules/cotal-ai', '/usr/local/lib/.cotal-generations', rootHome, userHome], noServiceRequested: true, commandOutcomesKnown: false }, source: identity.source, sourceManifestSha256: identity.sourceManifestSha256, targetManifestSha256: identity.targetManifestSha256, followOnManifestSha256: identity.followOnManifestSha256, calls: [], observations: [], assertions: [] };
+  const report = { cleanup: { owner: 'disposable hosted runner teardown', retained: ['/opt/cotal-root-node/lib/node_modules/cotal-ai', '/opt/cotal-root-node/lib/.cotal-generations', rootHome, userHome], noServiceRequested: true, commandOutcomesKnown: false }, source: identity.source, sourceManifestSha256: identity.sourceManifestSha256, targetManifestSha256: identity.targetManifestSha256, followOnManifestSha256: identity.followOnManifestSha256, calls: [], observations: [], assertions: [] };
   const check = (name, passed, observed) => report.assertions.push({ name, passed, observed });
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith('COTAL_')) delete env[key];
   const assignments = home => [
     `HOME=${home}`, `COTAL_HOME=${home}/.cotal`, `XDG_CONFIG_HOME=${home}/config`, `TMPDIR=${home}/tmp`,
-    'PATH=/usr/local/bin:/usr/bin:/bin', 'DO_NOT_TRACK=1', 'COTAL_TELEMETRY=off', 'COTAL_SKIP_CONNECTOR_SEED=1',
+    'PATH=/opt/cotal-root-node/bin:/usr/bin:/bin', 'DO_NOT_TRACK=1', 'COTAL_TELEMETRY=off', 'COTAL_SKIP_CONNECTOR_SEED=1',
     `npm_config_registry=${registry.url}`, `npm_config_cache=${home}/cache`,
   ];
   async function call(label, root, argv, timeoutMs = 180000) {
@@ -81,7 +83,7 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   }
   const ok = (row, label) => { assert.equal(row.exit, 0, `${label}: ${row.stdout}${row.stderr}`); return row; };
   const install = async version => {
-    const result = await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=silly']);
+    const result = await call(`root npm install ${version}`, true, ['/bin/sh','-c','umask 0022; exec "$@"','root-install',npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=silly']);
     if(result.exit!==0){
       const moduleURL=pathToFileURL(join(import.meta.dirname,'npm-debug-tail.mjs')).href;
       const source=`import {npmDebugTail} from ${JSON.stringify(moduleURL)};console.log(JSON.stringify(await npmDebugTail(${JSON.stringify(rootHome)})));`;
@@ -93,17 +95,19 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
       }else report.observations.push({npmDebug:{state:'unavailable',exit:diagnostic.exit}});
     }
     ok(result,'root installation');
-    const source = "import {lstatSync,readFileSync} from 'node:fs';import {createHash} from 'node:crypto';const p='/usr/local/lib/node_modules/cotal-ai';const info=lstatSync(p);const read=n=>{const b=readFileSync(p+'/'+n);return {sha256:createHash('sha256').update(b).digest('hex'),mode:lstatSync(p+'/'+n).mode&4095}};console.log(JSON.stringify({uid:info.uid,mode:info.mode&4095,version:JSON.parse(readFileSync(p+'/package.json')).version,manifest:read('package.json'),bootstrap:read('dist/cotal.js')}));";
+    const source = "import {lstatSync,readFileSync,realpathSync} from 'node:fs';import {dirname} from 'node:path';import {createHash} from 'node:crypto';const p='/opt/cotal-root-node/lib/node_modules/cotal-ai';const ancestors=[];for(let at=p;;at=dirname(at)){const s=lstatSync(at);ancestors.push({path:at,uid:s.uid,gid:s.gid,mode:s.mode&4095,real:realpathSync(at),directory:s.isDirectory(),symlink:s.isSymbolicLink()});if(at==='/')break;}const info=lstatSync(p);const read=n=>{const b=readFileSync(p+'/'+n);return {sha256:createHash('sha256').update(b).digest('hex'),mode:lstatSync(p+'/'+n).mode&4095}};console.log(JSON.stringify({uid:info.uid,mode:info.mode&4095,ancestors,version:JSON.parse(readFileSync(p+'/package.json')).version,manifest:read('package.json'),bootstrap:read('dist/cotal.js')}));";
     const observation = JSON.parse(ok(await call('record root-installed source bytes and ownership', true, [node, '--input-type=module', '-e', source]), 'installed source identity').stdout);
     assert.equal(observation.uid, 0, 'global package must be root owned');
     assert.equal(observation.version, version);
+    report.observations.push({installed:observation});
+    writeFileSync(join(output,'root-owned.json'),JSON.stringify(report,null,2),{mode:0o600});
+    assert(observation.ancestors.every(row=>row.uid===0&&row.directory&&!row.symlink&&row.path===row.real&&row.mode===0o755),'administrator prefix ancestor ownership or modes differ');
     if (version === identity.sourceVersion) {
       const packed = identity.sourcePackages.find(row => row.name === 'cotal-ai');
       assert(packed?.files, 'packed source identity missing');
       assert.equal(observation.manifest.sha256, packed.files['package.json']);
       assert.equal(observation.bootstrap.sha256, packed.files['dist/cotal.js']);
     }
-    report.observations.push({ installed: observation });
     return result;
   };
   const version = async expected => {
@@ -118,12 +122,12 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   }
   async function census() {
     const moduleURL = pathToFileURL(join(import.meta.dirname, 'generation-store-census.mjs')).href;
-    const source = `import {inspectGenerationStore} from ${JSON.stringify(moduleURL)};console.log(JSON.stringify(inspectGenerationStore('/usr/local/lib/.cotal-generations')));`;
+    const source = `import {inspectGenerationStore} from ${JSON.stringify(moduleURL)};console.log(JSON.stringify(inspectGenerationStore('/opt/cotal-root-node/lib/.cotal-generations')));`;
     return JSON.parse(ok(await call('root reads full generation census', true, [node, '--input-type=module', '-e', source]), 'store census').stdout);
   }
   try {
     for (const home of [rootHome, userHome]) ok(await call('prepare isolated account home', home === rootHome, ['/bin/mkdir', '-m', '700', '-p', home, join(home, '.cotal'), join(home, 'config'), join(home, 'tmp')]), 'account home');
-    const ownership = ok(await call('verify actual root-owned Node in /usr/local', true, [node, '--input-type=module', '-e', "import {statSync,realpathSync} from 'node:fs';const p=realpathSync(process.execPath);const s=statSync(p);if(!p.startsWith('/usr/local/')||s.uid!==0)throw Error('root-owned /usr/local Node required');console.log(JSON.stringify({path:p,uid:s.uid,version:process.versions.node}));"]), 'Node ownership');
+    const ownership = ok(await call('verify actual root-owned Node in /opt/cotal-root-node', true, [node, '--input-type=module', '-e', "import {statSync,realpathSync} from 'node:fs';const p=realpathSync(process.execPath);const s=statSync(p);if(!p.startsWith('/opt/cotal-root-node/')||s.uid!==0)throw Error('root-owned /opt/cotal-root-node Node required');console.log(JSON.stringify({path:p,uid:s.uid,version:process.versions.node}));"]), 'Node ownership');
     assert.equal(JSON.parse(ownership.stdout).version,'24.18.0','root proof must use pinned system Node');
     report.observations.push({ ownership: JSON.parse(ownership.stdout) });
     const npmVersion=ok(await call('verify root npm release before installation',true,[npm,'--version']),'npm version');
@@ -161,7 +165,7 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
     assert(identity.followOnVersion && typeof registry.activateFollowOn === 'function', 'normal-account updater proof requires a visible newer target');
     registry.activateFollowOn();
     const refused = await call('normal account own updater refusal', false, [cli, 'update', '--self']);
-    check('normal updater names owning npm command', refused.exit !== 0 && /owning command: npm install -g --prefix \/usr\/local cotal-ai@latest/.test(refused.stdout + refused.stderr), refused);
+    check('normal updater names owning npm command', refused.exit !== 0 && /owning command: npm install -g --prefix \/opt\/cotal-root-node cotal-ai@latest/.test(refused.stdout + refused.stderr), refused);
     const afterNormalRefusal=await census();
     report.observations.push({afterNormalRefusal});
     check('fixed refusal leaves no staging or generation-store growth',afterNormalRefusal.passed&&afterNormalRefusal.logicalBytes===store.logicalBytes,{before:store,after:afterNormalRefusal});

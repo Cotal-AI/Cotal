@@ -11,6 +11,8 @@ test('root proof checks its complete pinned npm before installation and retains 
  assert(source.includes("[npm,'ls','-g','--depth=0']"));
  assert(source.indexOf('verify root global npm tree before installation')<source.indexOf('await install(old)'));
  assert(source.includes("'--loglevel=silly'"));
+ assert(source.includes("umask 0022; exec"));
+ assert(source.includes("ancestors.push({path:at,uid:s.uid"));
 });
 test('npm diagnostic tail bounds output and filters token and registry authentication lines',async()=>{
  const root=mkdtempSync(join(tmpdir(),'npm-log-')),logs=join(root,'cache/_logs');mkdirSync(logs,{recursive:true,mode:0o700});
