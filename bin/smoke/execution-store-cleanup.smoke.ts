@@ -11,6 +11,11 @@ import { completeExecutionTransaction, journalExecutionTransaction, publishExecu
 if (["linux", "darwin"].includes(process.platform)) {
   process.umask(0o022);
   const scratch = mkdtempSync(join(tmpdir(), "execution-cleanup-"));
+  // The recovery record, the closure lock and cleanup's recovery check all read the Cotal home, so
+  // the suite runs under a home of its own and never reads or writes the caller's.
+  const ownHome = join(scratch, "home");
+  mkdirSync(ownHome, { mode: 0o700 });
+  Object.assign(process.env, { HOME: ownHome, COTAL_HOME: join(ownHome, ".cotal"), XDG_CONFIG_HOME: join(ownHome, "config") });
   const installed = join(scratch, "prefix/lib/node_modules/cotal-ai");
   const source = join(scratch, "source/cotal-ai");
   const warnings: string[] = [];

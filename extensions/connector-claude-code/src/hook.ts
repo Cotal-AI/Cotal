@@ -6,7 +6,8 @@
  * control socket and prints the reply. Two answers settle an event here instead:
  * a call to another Cotal path's tool ({@link otherCotalPath}), and a hosted
  * connection used outside the session that opened it ({@link connectionOwner}).
- * It never blocks the session.
+ * It never blocks the session, except a permission prompt, which the relay holds
+ * until the prompt is answered while Claude's own dialog stays open.
  */
 // The subpath, not the package root: the root's graph reaches the NATS client, zod and yaml, which
 // this process would load on every lifecycle event without using.
@@ -14,8 +15,10 @@ import { runHookRelay } from "@cotal-ai/connector-core/relay";
 import { otherCotalPath } from "./one-path.js";
 import { connectionOwner } from "./connection-owner.js";
 import { observePersonalHook } from "./native-binding.js";
+import { isPermissionRequest } from "./permission-hook.js";
 
 const owner = connectionOwner(process.env.CLAUDE_PLUGIN_DATA);
 void runHookRelay((event, session) => otherCotalPath(event, session) ?? owner(event, session),
   async (event, session) => { if (!session.managed) await observePersonalHook(event); },
+  { holds: isPermissionRequest },
 ).catch(() => process.exit(0));

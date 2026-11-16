@@ -75,7 +75,8 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // The personal Codex local-mesh suite needs the same Codex CLI.
 // 20 → 21 on 2026-11-13: the deleted-manager-entry fixture runs a self-contained installed cotal-ai
 // directory and an approved nats-server named by two variables, which no CI job supplies.
-const EXPECTED_EXEMPTIONS = 21;
+// 21 → 22: the live Claude permission cell drives a logged-in claude CLI and spends model tokens.
+const EXPECTED_EXEMPTIONS = 22;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 /** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
  *  date tied to that investigated debt. Premise
@@ -96,6 +97,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
   "smoke:claude-plugin-refresh:live": standing("drives the real claude CLI on PATH against a scratch Claude config"),
   "smoke:claude-registration-home:live": standing("drives the real claude CLI against isolated profiles and Cotal homes"),
+  "smoke:claude-permission-requests:live": standing("drives a logged-in claude CLI in tmux against a scratch Claude config, and spends model tokens"),
   "smoke:auth-oracle-order:live": standing("takes an installed npm prefix and a new evidence directory as arguments"),
   "smoke:deleted-manager-entry": standing("needs an installed cotal-ai directory and an approved nats-server (COTAL_DELETED_MANAGER_INSTALL, COTAL_DELETED_MANAGER_BROKER)"),
   "smoke:backup-usermode:live": brokenExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),

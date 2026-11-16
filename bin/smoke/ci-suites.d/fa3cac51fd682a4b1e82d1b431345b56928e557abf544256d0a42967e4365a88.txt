@@ -1,0 +1,2 @@
+# The hook relay holds a permission prompt past its 2 s deadline, every other event still fails open, and a killed hook aborts its handler.
+smoke:hook-relay-hold

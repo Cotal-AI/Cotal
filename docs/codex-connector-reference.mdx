@@ -40,7 +40,14 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   broker address and latest connection error; it never opens an offline-looking TUI.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) when the turn
   completes, and also when the operator interrupts it (Escape in the attached TUI): that dismisses
-  the batch rather than redelivering it. A failed turn retries with backoff, and an unknown terminal
+  the batch rather than redelivering it. A failed turn retries with backoff for three turns total,
+  counting the first attempt and two retries for each buffered message. Broker redelivery of the
+  same nonempty message id does not reset that budget. At the limit, the host log and seat status
+  name the paused message ids and `cotal_inbox` as the way to read them. The messages stay
+  unacknowledged, not discarded or reported as handled, and new messages can still start turns.
+  The pause lasts while those messages remain in this host's bounded inbox, across app-server
+  restarts but not a host-process restart. An empty message id has no cross-delivery identity and
+  cannot share a retry budget across broker copies. An unknown terminal
   outcome (a missing or unrecognized status) leaves the batch un-acked with no retry of its own. If
   the Codex app-server itself dies, the host restarts it in place (same mesh identity, credential,
   and durable) and re-drives the un-acked batch into the new thread; a crash *loop* (more than 3 in

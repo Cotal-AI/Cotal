@@ -210,13 +210,15 @@ export function calloutPermissions(
     }
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
-    const { scope: _rowScope, kind: _kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
+    const { scope: _rowScope, kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
     // On a user mesh a `role:<r>` scope token is what the ledger walk lets this agent hand on. The
     // agent itself binds only its row's own role queue, so the token mints no task-queue row here.
     const minted = caps.filter((token) => capabilityRole(token) === undefined);
+    // Answering an agent's permission prompts keys on the row's kind, never a scope token: a parent
+    // can hand its scope tokens to the agents it spawns, and it cannot hand them its row kind.
     const mint = (endpointCapabilities: NonNullable<MintOpts["endpointCapabilities"]> = [], listing?: ListingBinding) => permissionsFor(
       "agent", t.space, { ...principal, lifecycleUid: acl.lifecycleUid },
-      { ...aclOpts, capabilities: minted, endpointCapabilities, ...(listing ? { listing } : {}) },
+      { ...aclOpts, capabilities: minted, endpointCapabilities, ...(listing ? { listing } : {}), ...(kind === "interactive" ? { interactive: true as const } : {}) },
     );
     // The listing generation is decided on the complete set this connection is minted, endpoint
     // caller rights included, so its evidence is that set.

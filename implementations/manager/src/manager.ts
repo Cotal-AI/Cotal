@@ -6820,14 +6820,14 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; permissionRequests?: boolean }>;
     if (this.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, permissionRequests: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
@@ -6836,20 +6836,30 @@ export class Manager {
         name: connector.name,
         requires: connector.requires ?? [],
         eventPlane: connector.eventChannel !== undefined,
+        permissionRequests: connector.permissionRequests === true,
       }));
     }
-    for (const { name, requires, eventPlane } of declared) {
+    for (const { name, requires, eventPlane, permissionRequests = false } of declared) {
       const { binaries, reason } = resolveHarness(name, requires);
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
+        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, permissionRequests, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane });
+        rows.push({ agent: name, state: "available", binaries, eventPlane, permissionRequests });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
+  }
+
+  /** The connector rows a status read serves. A connector relays permission prompts only where an
+   *  owner can answer them, and only a user-auth mesh mints the interactive ledger rows that answer
+   *  (SPEC §8.2), so on an open or static mesh every row reads false. The mode is known only after
+   *  boot inspects the connectors, so it is applied here. */
+  private servedConnectorStatuses(): ManagerConnectorStatus[] {
+    const answerable = this.meshMode === "user";
+    return this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries }, permissionRequests: answerable && row.permissionRequests }));
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed
@@ -7379,6 +7389,15 @@ export class Manager {
           `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
   }
 
+  /** Ordinary static control seats can read their holding instance. A run's recorded ceiling is
+   *  authoritative, so its helpers receive no additional instance reads. */
+  private managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] {
+    if (this.meshMode !== "static" || !this.managerInstanceId || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
+    return ["describe", "inspect"].map(command => ({
+      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
+    }));
+  }
+
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
@@ -7643,6 +7662,11 @@ export class Manager {
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
+    if (run === undefined) {
+      const reads = this.managedStaticInstanceReads(capabilities);
+      if (bound.kind === "exempt" || (bound.kind === "bounded" && !grantOverreach(this.space, bound.caller, bound.ceiling, { endpoints: reads }).length))
+        endpoints.push(...reads);
+    }
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
     // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
     // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
@@ -9715,7 +9739,7 @@ export class Manager {
       terminalSessions: this.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.startedAtMs,
-      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
+      connectors: this.servedConnectorStatuses(),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {
@@ -10095,7 +10119,7 @@ export class Manager {
         // reopened past the slot's stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-        status: { connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })) },
+        status: { connectors: this.servedConnectorStatuses() },
       });
       const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
@@ -12653,6 +12677,17 @@ export class Manager {
     // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
     const issued = a.issued;
+    const endpoints = lowerPersonaEndpoints(a.launch.endpoints);
+    const reads = this.managedStaticInstanceReads(a.launch.capabilities);
+    if (reads.length) {
+      // Resolve this incarnation's original issuance, not its current spawner or a reconstructed
+      // run admission. Old seats and run helpers keep the exact ceiling they were minted with.
+      const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
+      const { evidence } = await withIssuerSession({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, auth: this.auth!, tls: false }, (s) =>
+        s.store.resolve({ space: this.space, ...caller }, s.sourceIsLive));
+      if (!grantOverreach(this.space, caller, evidence.permissions, { endpoints: reads }).length)
+        endpoints.push(...reads);
+    }
     const creds = await this.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
         eventPayloads: this.eventPayloadsWithheld ? false : a.launch.eventPayloads,
@@ -12660,7 +12695,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         role: a.role,
         capabilities: a.launch.capabilities,
-        ...(a.launch.endpoints?.length ? { endpointCapabilities: lowerPersonaEndpoints(a.launch.endpoints) } : {}),
+        ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,

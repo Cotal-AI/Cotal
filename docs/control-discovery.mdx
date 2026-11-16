@@ -183,6 +183,14 @@ before the package is imported, and an old inventory without it is refused rathe
 true. A client that reads a required event policy can use this field to disable an incompatible
 connector before spawn. The Manager still owns the launch refusal text and applies it at admission.
 
+Each row also includes `permissionRequests: boolean`, which is true when the connector relays its
+harness's permission prompts to the agent's owner ([SPEC §8.2](../SPEC.md#82-permission-requests)).
+Only an owner's interactive sessions on a user-auth mesh can answer, so on an open or static mesh
+every row reads false.
+Before a client offers a permission mode that asks, it checks that the connector's row reads true. A
+row from an older Manager has no such field, and a client reads that as false. A current Manager
+reports false for a connector cached before the field existed.
+
 Managed launches carry `COTAL_MANAGER_INSTANCE` so their tools address the manager that launched
 them; a tool's `instance` argument must name that same manager. The `cotal` commands run from their
 shell select it too, unless `--on` names another instance. Existing unbound sessions can use the exchange's unique authorized selection without

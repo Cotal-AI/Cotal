@@ -15,7 +15,7 @@ See [docs/connect-claude.mdx](../../docs/connect-claude.mdx) for the integration
 Claude Code documents every hook event and its matchers in its
 [hooks reference](https://code.claude.com/docs/en/hooks). This README does not copy that list.
 
-The plugin registers the nine hooks below in [`hooks/hooks.json`](hooks/hooks.json). Each runs
+The plugin registers the ten hooks below in [`hooks/hooks.json`](hooks/hooks.json). Each runs
 `dist/hook.cjs`, which relays the event to the session's connector over its authenticated control
 socket. A Cotal session, one that Cotal launched, carries a mesh identity in its environment. A
 plain session, such as a `claude` you started yourself, carries none until it connects. Its command
@@ -30,9 +30,27 @@ hosted connection checks in the `PreToolUse` and `PostToolUse` rows. The presenc
 | `SessionStart` | all | Surfaces the channel briefing and waiting messages, sets `idle` when no turn is open, resets attention to `open`, and records the session's model when none is pinned. On `startup`, `resume` or `fork` it also records the session's directory. |
 | `UserPromptSubmit` | all | Sets `working` and surfaces waiting messages and run turns. |
 | `PreToolUse` | all | Records the pending tool so a permission wait can name it. In a Cotal session, it denies a Cotal tool from any server other than the local one. In a plain session, it denies a hosted `connection_id` that it recorded as opened by a different session. |
+| `PermissionRequest` | all | In a Cotal session on an authenticated mesh, holds the prompt until the agent's owner or the terminal answers it. See [Permission prompts](#permission-prompts). |
 | `PostToolUse` | `^mcp__.+__cotal_(connect\|disconnect)$` | Plain sessions only: records or forgets which session opened a hosted connection. |
-| `PostToolBatch` | all | Sets `working` again when the main agent's batch resolves after a prompt left the seat `waiting`. A subagent's batch changes nothing. |
-| `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog` | Sets `waiting`. `permission_prompt` adds condition `approval`, and `agent_needs_input` adds `input`. |
-| `Stop` | all | Ends the turn: closes the run on the event plane, sets `idle`, and asks for a wake turn when held messages are waiting. |
+| `PostToolBatch` | all | Records a held permission prompt of the same agent whose call ran as answered at the terminal, one run for one prompt. Sets `working` again when the main agent's batch resolves after a prompt left the seat `waiting`. A subagent's batch leaves the status as it is. |
+| `Notification` | `permission_prompt\|agent_needs_input\|elicitation_dialog` | Sets `waiting`. `permission_prompt` adds condition `approval`, with the held prompt's id in `request`, and `agent_needs_input` adds `input`. |
+| `SubagentStop` | all | Records any permission prompt that subagent still holds as answered at the terminal. |
+| `Stop` | all | Ends the turn: records any permission prompt the main agent still holds as answered at the terminal, closes the run on the event plane, sets `idle`, and asks for a wake turn when held messages are waiting. A subagent's prompt stays held. |
 | `StopFailure` | all | Same as `Stop`, but closes the run with `RUN_ERROR` and sets a condition mapped from the error type. |
 | `SessionEnd` | all | Sets `offline`. |
+
+## Permission prompts
+
+A managed Claude seat launches with `--permission-mode bypassPermissions` unless you pass a mode,
+so it asks nothing. To launch a seat that asks, pass a mode:
+
+```bash
+cotal spawn --harness claude --opt permission-mode=default
+```
+
+On a signed-in space, the seat then holds each permission prompt for the agent's owner. The owner
+can approve or deny it from Cotal Cloud, or from any client signed in as one of the owner's own CLI
+or browser actors that calls `CotalEndpoint.answerPermission`. Claude's dialog in the terminal keeps
+working, and the first answer applies. A denial's note reaches Claude as
+`Denied from Cotal: <note>`. On an open mesh or a static space, only the terminal answers.
+[SPEC §8.2](../../SPEC.md#82-permission-requests) defines the records and the answer rail.
