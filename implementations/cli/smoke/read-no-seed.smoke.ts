@@ -73,8 +73,12 @@ const GATE = /refusing to reconcile the operator-global seed store/;
     !existsSync(join(xdg, "cotal", "seed")) && !existsSync(join(xdg, "cotal", "extensions", "extensions.json")),
     { seed: existsSync(join(xdg, "cotal", "seed")), manifest: existsSync(join(xdg, "cotal", "extensions", "extensions.json")) });
   const human = run(["status"], { NO_COLOR: "1" });
-  check("status on a fresh machine says no agent application is set up and points at cotal setup",
-    human.status === 0 && human.stdout.split("\n").some(line => line.trim() === `Agent applications: ○ not set up · \`${displayCmd()} setup\` adds one`) && human.stdout.split("\nNext\n")[1]?.split("\n")[0]?.trim().replace(/ +/g, " ") === `${displayCmd()} setup Set up an agent application and a space`, shown(human));
+  const next = human.stdout.split("\nNext\n")[1]?.split("\n").map(line => line.trim().replace(/ +/g, " "));
+  check("status on a fresh machine leads with Cloud sign-in and still points at application setup",
+    human.status === 0
+      && human.stdout.split("\n").some(line => line.trim() === `Agent applications: ○ not set up · \`${displayCmd()} setup\` adds one`)
+      && next?.[0] === `${displayCmd()} login Sign in to Cotal Cloud`
+      && next.includes(`${displayCmd()} setup Set up an agent application and a space`), shown(human));
 }
 
 // ── A command that is not a read still meets the gate ───────────────────────────────────────────────

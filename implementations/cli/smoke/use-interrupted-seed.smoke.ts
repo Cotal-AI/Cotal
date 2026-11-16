@@ -48,7 +48,7 @@ check("bare use --json reads the selection, exit 0", json.status === 0 && envelo
 check("bare use does not mention the interrupted seed", !/interrupted/.test(json.stdout + json.stderr), shown(json));
 
 const plain = run(["use"]);
-check("bare use reads the selection in text too, exit 0", plain.status === 0 && /no space is selected/.test(plain.stdout), shown(plain));
+check("bare use points an empty catalog at Cloud sign-in, exit 0", plain.status === 0 && plain.stdout.trim() === "no spaces are known here - sign in to Cotal Cloud with `cotal login`", shown(plain));
 check("a read leaves the crash cursor for the repair", existsSync(cursor));
 
 const select = run(["use", "nosuch"]);
