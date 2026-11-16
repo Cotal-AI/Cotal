@@ -8,6 +8,7 @@ import { countedAssert, emitSentinel } from "./sentinel.mjs";
 import { EndpointRefusal } from "../daemon/endpoint.js";
 import { waitForInstalledDaemonGeneration } from "../daemon/update-generation.js";
 import { installedDaemonIdentity, preflightInstalledDaemon, unitReceiptFile } from "../daemon/install.js";
+import { currentParentWaits } from "../daemon/update-entry.js";
 import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal-ai/cli/update";
 
 const counted = countedAssert(strictAssert);
@@ -70,17 +71,29 @@ function scripted(steps: (Reply | Error)[]) {
   assert.equal(run.calls(), 0);
 }
 
-// A manual version change waits once in the parent and reports that, so the composed command
-// does not wait again. A current install reports no wait, and its tail wait stays the one line.
+// A version change prints the wait once across the parent and its reconcile child: the child
+// waits without printing, because a current parent prints. A current install has only the tail wait.
 {
   for (const newer of [true, false]) {
     const globalPrefix = join(root, `count-${newer}`);
     const globalModules = join(globalPrefix, "lib", "node_modules");
     mkdirSync(globalModules, { recursive: true, mode: 0o700 });
     const lines: string[] = [];
-    let waits = 0;
+    const say = (line: string) => { if (line.includes("waiting up to") || line.includes("service is")) lines.push(line); };
+    const child = async (env: NodeJS.ProcessEnv) => {
+      const prior = console.log;
+      console.log = (line?: unknown) => say(String(line));
+      const currentParent = currentParentWaits(env, process.pid, true);
+      try {
+        await waitForInstalledDaemonGeneration("0.13.2", {
+          installed: () => true, timeoutMs: 1_000, quiet: currentParent,
+          query: (async () => status("0.13.2")) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+        });
+      } finally { console.log = prior; }
+      return { status: 0, stdout: "", stderr: "" };
+    };
     const rt: UpdateRuntime = {
-      ...updateRuntime, env: {}, version: () => "0.13.1", checkout: () => false, installPrefix: () => globalPrefix,
+      ...updateRuntime, env: {}, pid: process.pid, version: () => "0.13.1", checkout: () => false, installPrefix: () => globalPrefix,
       reportRunningManager: async () => "none", reconcile: async () => {}, refreshConnectors: async () => [],
       extensions: () => [], claimUpdatePass: () => () => {}, claimGlobalUpdate: () => () => {},
       verifyGlobalEntry: (_r, v) => join(globalModules, `cotal-${v}.js`),
@@ -90,14 +103,13 @@ function scripted(steps: (Reply | Error)[]) {
         const v = spec.slice(spec.lastIndexOf("@") + 1);
         return { status: 0, stdout: JSON.stringify({ name: "cotal-ai", version: v, dist: { tarball: "https://registry.example/p.tgz", integrity: "sha512-x" }, dependencies: {} }), stderr: "" };
       },
-      spawnGlobal: async () => ({ status: 0, stdout: "", stderr: "" }),
-      waitForInstalledGeneration: async () => { waits += 1; lines.push("machine daemon: waiting up to 120s"); },
-      out: line => lines.push(line), err: line => lines.push(line),
+      spawnGlobal: async (_r, op, _f, _a, env) => op === "reconcile" && env.COTAL_UPDATE_PARENT ? child(env) : { status: 0, stdout: "", stderr: "" },
+      waitForInstalledGeneration: async () => { say("machine daemon: waiting up to 120s"); },
+      out: say, err: say,
     };
     await update({ values: { self: true }, positionals: [] } as never, rt);
-    if (rt.generationWaited !== true) { waits += 1; lines.push("machine daemon: waiting up to 120s"); }
-    assert.equal(waits, 1, newer ? "a version change prints the wait once" : "a current install prints the wait once");
-    assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1);
+    if (rt.generationWaited !== true) say("machine daemon: waiting up to 120s");
+    assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1, newer ? "parent and child print the wait once" : "a current install prints the wait once");
   }
 }
 

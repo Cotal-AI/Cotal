@@ -19,7 +19,13 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 
-async function posixGenerationLifecycle(paths: DaemonPaths): Promise<{ poll(): Promise<boolean | void>; close(): void }> {
+/** A reconcile child of a current parent: that parent waits after the child and prints the line. */
+export function currentParentWaits(env: NodeJS.ProcessEnv, parentPid: number, journaled: boolean): boolean {
+  const parent = env.COTAL_UPDATE_PARENT;
+  return parent !== undefined && /^\d+$/.test(parent) && Number(parent) === parentPid && journaled;
+}
+
+async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Promise<{ poll(): Promise<boolean | void>; close(): void }> {
   const initial = readLifetimeRecord(paths.lock);
   let observedLive = Boolean(initial?.start && processBirth(initial.pid) === initial.start);
   let started = false;
@@ -33,14 +39,14 @@ async function posixGenerationLifecycle(paths: DaemonPaths): Promise<{ poll(): P
       }
       const installation = installedDaemonIdentity(paths);
       if (!installation.same) {
-        console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
         started = true;
         return false;
       }
       started = true;
       const outcome = await startEnabledInstalled(paths, undefined);
       if (!outcome.started) {
-        console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; not started`);
+        if (!quiet) console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; not started`);
         return false;
       }
     },
@@ -132,8 +138,12 @@ const composed: Command = { ...command, async run(args) {
       }
     };
   }, waitForInstalledGeneration: async (version: string) => {
+    // A current parent waits after this child and prints the line. An older parent prints nothing,
+    // so this child keeps the line. The wait itself runs either way.
+    const currentParent = currentParentWaits(process.env, process.ppid, readUpdateRecovery() !== undefined);
     await waitForInstalledDaemonGeneration(version, {
-      lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
+      lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline, currentParent) : posixGenerationLifecycle(paths, currentParent),
+      quiet: currentParent,
     });
   }, reportRunningManager: (flags: Record<string, unknown>) => withRemoteExchangeRetry(async () => {
     const recovery = readUpdateRecovery();
@@ -283,7 +293,7 @@ const composed: Command = { ...command, async run(args) {
   if (!daemonObserved && runtime.generationWaited !== true) {
     if (args.values.self === true) {
       await waitForInstalledDaemonGeneration(expectedVersion, {
-        lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
+        lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline) : posixGenerationLifecycle(paths),
       });
     }
     return;
