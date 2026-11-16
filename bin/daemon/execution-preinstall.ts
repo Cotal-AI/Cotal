@@ -79,7 +79,9 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
   try {
     const paths = daemonPaths();
     const owned = existsSync(unitReceiptFile(paths)) && preflightInstalledDaemon(paths, undefined, request.daemonArgv);
-    if (!owned || !installedDaemonIdentity(paths, undefined, request.daemonArgv).same) {
+    if (owned && !daemon) {
+      admission = { disposition: "restart-empty", occupied: 0, hostedSpaces: [] };
+    } else if (!owned || !installedDaemonIdentity(paths, undefined, request.daemonArgv).same) {
       admission = deferred(daemon ? "the running daemon belongs to another installation or has no recorded service; it and its Managers were left running" : "no recorded service belongs to this installation; activation was not requested");
     } else {
       const reply = await queryDaemon({ paths });
