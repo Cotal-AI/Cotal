@@ -80,7 +80,7 @@ export function publishExecutionTransaction(installed: string, path: string, res
   if (meta.name !== "cotal-ai" || typeof meta.version !== "string") throw new Error("invalid execution publication manifest");
   const finalBinding: ExecutionBinding = { name: "cotal-ai", version: meta.version, bootstrapSha256: executionSha256(bootstrap) };
   const descriptor: ExecutionDescriptor | null = restore ? record.previous.descriptor : {
-    v: 1, binding: finalBinding, ...(record.previous.descriptor ? { previous: record.previous.descriptor.generation } : {}), ...(record.launchEntry ? { launch: executionLaunchBinding(installed, record.launchEntry) } : {}), generation: { id: record.target.id, version: record.target.version, inventorySha256: record.target.inventorySha256 },
+    v: 1, binding: finalBinding, ...(record.launchEntry ? { launch: executionLaunchBinding(installed, record.launchEntry) } : {}), generation: { id: record.target.id, version: record.target.version, inventorySha256: record.target.inventorySha256 },
   };
   if (descriptor) {
     const transitional: ExecutionDescriptor = { ...descriptor, binding: current, bindings: [

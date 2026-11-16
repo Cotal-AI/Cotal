@@ -160,13 +160,6 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       if (!row || !id.test(row.id) || typeof row.version !== "string" || !/^[a-f0-9]{64}$/.test(row.inventorySha256)) throw new Error("invalid retained generation record");
       return row;
     };
-    const descriptors = names.filter(name => /^\.active-[a-f0-9]{64}\.json$/.test(name)).map(name => {
-      const record = executionRecord(join(store, name)) as ExecutionDescriptor;
-      if (record.v !== 1) throw new Error("unsupported active generation record");
-      generation(record.generation);
-      if (record.previous) generation(record.previous);
-      return { name, record };
-    });
     const recovery = readUpdateRecovery();
     const protectedJournal = recovery?.execution;
     const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).map(name => {
@@ -206,29 +199,7 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
         predecessor = ancestor.record.previous.descriptor?.generation;
       }
     }
-    const keep = new Set<string>();
-    for (const { record, name } of descriptors) {
-      keep.add(record.generation.id);
-      // Older releases recorded the replaced generation only in their publication journal.
-      const journal = transactions.filter(row => row.record.target.id === record.generation.id && executionDescriptorPath(row.record.installed) === join(store, name) && row.path !== protectedJournal);
-      if (!record.previous && journal.length === 1 && !recovery) {
-        const previous = journal[0].record.previous.descriptor?.generation;
-        if (previous) {
-          record.previous = previous;
-          const temporary = join(store, `${name}.${randomBytes(16).toString("hex")}`);
-          try {
-            writeFileSync(temporary, `${JSON.stringify(record)}\n`, { flag: "wx", mode: lstatSync(join(store, name)).mode & 0o777 });
-            renameSync(temporary, join(store, name));
-          } finally { rmSync(temporary, { force: true }); }
-        }
-      }
-      if (record.previous) keep.add(record.previous.id);
-    }
     if (transactions.some(row => row.record.completed !== true)) warn(new Error("unmarked transaction retained because completion is not proven for every Cotal home"));
-    for (const row of transactions.filter(row => !row.finished || row.path === protectedJournal)) {
-      keep.add(row.record.target.id);
-      if (row.record.previous.descriptor) keep.add(row.record.previous.descriptor.generation.id);
-    }
     const remove = (path: string): void => {
       try {
         const stat = lstatSync(path);
@@ -237,7 +208,7 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
       } catch (error) { warn(error); }
     };
     for (const name of names) {
-      if (/^\.(?:installing|preparing)-[A-Za-z0-9]+$/.test(name) || (id.test(name) && !keep.has(name))) remove(join(store, name));
+      if (/^\.(?:installing|preparing)-[A-Za-z0-9]+$/.test(name)) remove(join(store, name));
     }
     for (const row of transactions.filter(row => row.finished && row.path !== protectedJournal)) remove(row.directory);
     }

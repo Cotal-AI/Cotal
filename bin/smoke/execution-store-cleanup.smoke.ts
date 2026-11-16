@@ -38,10 +38,10 @@ if (["linux", "darwin"].includes(process.platform)) {
     const second = publish("0.3.0");
     assert.deepEqual(readdirSync(store).filter(name => /^[a-f0-9]{32}$/.test(name)).sort(), [first.id, second.id].sort());
     const third = publish("0.4.0");
-    assert.equal(existsSync(dirname(first.root)), false, "third publication retires oldest generation");
+    assert.equal(existsSync(dirname(first.root)), true, "third publication retains oldest generation");
     assert.equal(selectExecutionProgram(installed).root, third.root);
     assert.equal(existsSync(second.root), true, "previous remains for rollback and loaded processes");
-    assert.equal(JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8")).previous.id, second.id);
+    assert.equal(JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8")).previous, undefined);
     assert.equal(warnings.length, 0);
 
     mkdirSync(join(store, ".installing-Ab1234"));
@@ -54,7 +54,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(existsSync(join(store, ".installing-Ab1234")), false);
     assert.equal(existsSync(join(store, ".preparing-Cd5678")), false);
     assert.equal(readFileSync(join(outside, "sentinel"), "utf8"), "keep");
-    assert.equal(warnings.length, 1, "unsafe removal warns once without throwing");
+    assert.equal(warnings.length, 0, "generation entries are not removal candidates");
     rmSync(join(store, "e".repeat(32)));
 
     const pending = retainExecutionGeneration(installed, source);
@@ -72,11 +72,11 @@ if (["linux", "darwin"].includes(process.platform)) {
       clearUpdateRecovery();
     } finally { releaseRecovery(); }
     clean();
-    assert.equal(existsSync(pending.root), false);
+    assert.equal(existsSync(pending.root), true, "completed unpublished generation remains");
     assert.equal(existsSync(pendingJournal), false);
 
     // An earlier release had no previous field or completed marker. Its validated publication
-    // chain supplies the replaced generation, but not proof that another home's recovery ended.
+    // chain is not enriched by cleanup and does not prove another home's recovery ended.
     const legacySource = retainExecutionGeneration(installed, source);
     const legacyJournal = journalExecutionTransaction(installed, legacySource);
     publishExecutionTransaction(installed, legacyJournal);
@@ -85,7 +85,7 @@ if (["linux", "darwin"].includes(process.platform)) {
     writeFileSync(executionDescriptorPath(installed), JSON.stringify(descriptor));
     clean();
     assert.equal(existsSync(legacyJournal), true, "legacy completion is not inferred from this home's absent recovery");
-    assert.equal(JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8")).previous.id, third.id);
+    assert.equal(JSON.parse(readFileSync(executionDescriptorPath(installed), "utf8")).previous, undefined);
     assert.equal(existsSync(third.root), true);
     completeExecutionTransaction(installed, legacyJournal);
     clean();
@@ -162,12 +162,12 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(successorCleanup.status, 0, successorCleanup.stderr);
     assert.equal(successorCleanup.stderr, "");
     for (const prior of legacy) assert.equal(existsSync(prior.journal), false, "completed successor marks and retires its exact legacy ancestry");
-    assert.equal(existsSync(legacy[0].root), false);
-    assert.equal(existsSync(legacy[1].root), false);
+    assert.equal(existsSync(legacy[0].root), true, "oldest legacy generation remains");
+    assert.equal(existsSync(legacy[1].root), true, "earlier legacy generation remains");
     assert.equal(existsSync(legacy[2].root), true, "immediately replaced legacy generation stays");
     assert.equal(existsSync(successor.root), true);
-    assert.equal(readdirSync(executionStore(otherInstall)).filter(name => /^[a-f0-9]{32}$/.test(name)).length, 2);
+    assert.equal(readdirSync(executionStore(otherInstall)).filter(name => /^[a-f0-9]{32}$/.test(name)).length, 4);
     assert.equal(selectExecutionProgram(otherInstall).root, successor.root);
-    console.log("execution store cleanup: active and previous retained, completed and abandoned data retired, pending recovery and foreign lock preserved");
+    console.log("execution store cleanup: all generations retained, completed transactions and abandoned staging retired, pending recovery and foreign lock preserved");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
