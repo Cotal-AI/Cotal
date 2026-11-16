@@ -40,7 +40,7 @@ import {
   newActorToken, startAuthCallout, USER_TOKEN_VER,
 } from "@cotal-ai/auth";
 import { claudeConnector } from "../src/extension.js";
-import { createSuite, freePort, killAndAwaitExit, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { createSuite, freePort, killAndAwaitExit, skipSuite, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const which = (bin: string) => spawnSync("sh", ["-c", `command -v ${bin}`], { encoding: "utf8" }).stdout.trim();
 const CLAUDE = process.env.COTAL_LIVE_CLAUDE_BIN ?? which("claude");
@@ -82,10 +82,11 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `perm-live-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
-writeFileSync(join(root, "server.conf"), serverConfig(auth, [auth], {
+const conf = join(root, `${SMOKE_BROKER_TOKEN}server.conf`);
+writeFileSync(conf, serverConfig(auth, [auth], {
   transport: { kind: "plaintext" }, port: PORT, storeDir: join(root, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }],
 }));
-const srv = spawn("nats-server", ["-c", join(root, "server.conf")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, root);
 const TMUX = ["-L", `cotal-perm-${randomUUID().slice(0, 8)}`];
 const tmux = (...args: string[]) => spawnSync("tmux", [...TMUX, ...args], { encoding: "utf8" });
