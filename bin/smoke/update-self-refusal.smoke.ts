@@ -1,0 +1,51 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { countedAssert, skipSuite } from "@cotal-ai/smoke-kit";
+
+if (process.platform !== "linux" && process.platform !== "darwin") skipSuite("staged npm execution update requires POSIX");
+if (process.getuid?.() === 0) skipSuite("unwritable install requires an unprivileged account");
+process.umask(0o077);
+const counted = countedAssert(assert);
+const check: typeof assert = counted.assert;
+const repo = resolve(import.meta.dirname, "../..");
+const root = mkdtempSync(join(tmpdir(), "update-self-refusal-"));
+const prefix = join(root, "prefix");
+const installed = join(prefix, "lib/node_modules/cotal-ai");
+mkdirSync(installed, { recursive: true });
+cpSync(join(repo, "bin/dist"), join(installed, "dist"), { recursive: true });
+cpSync(join(repo, "bin/package.json"), join(installed, "package.json"));
+symlinkSync(join(repo, "bin/node_modules"), join(installed, "node_modules"));
+const home = join(root, "home"), config = join(root, "config"), cotal = join(root, "cotal"), runtime = join(root, "runtime");
+for (const path of [home, config, cotal, runtime]) mkdirSync(path, { mode: 0o700 });
+const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+const env = { ...clean, HOME: home, XDG_CONFIG_HOME: config, XDG_RUNTIME_DIR: runtime, COTAL_HOME: cotal, COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" };
+const run = () => spawnSync(process.execPath, [join(installed, "dist/cotal.js"), "update", "--self"], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+const packageBefore = readFileSync(join(installed, "package.json"), "utf8");
+chmodSync(installed, 0o555); chmodSync(join(installed, "dist"), 0o555); chmodSync(join(prefix, "lib"), 0o555);
+try {
+  const refused = run();
+  writeFileSync(join(root, "unwritable.stderr.log"), refused.stderr ?? "");
+  check.equal(refused.status, 2, refused.stderr);
+  check.match(refused.stderr, /Request refused/);
+  check.match(refused.stderr, /installation is not writable/);
+  check.match(refused.stderr, /no changes were made/);
+  check.match(refused.stderr, /npm install -g --prefix .*cotal-ai@latest/);
+  check.doesNotMatch(refused.stderr, /Outcome unconfirmed|OPERATION_UNKNOWN/);
+  check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  check.equal(readFileSync(join(installed, "package.json"), "utf8"), packageBefore);
+  chmodSync(installed, 0o755);
+  writeFileSync(join(installed, "desktop-runtime.json"), "{}");
+  const desktop = run();
+  writeFileSync(join(root, "desktop.stderr.log"), desktop.stderr ?? "");
+  check.equal(desktop.status, 2, desktop.stderr);
+  check.match(desktop.stderr, /UNSUPPORTED/);
+  check.match(desktop.stderr, /no npm self-update was attempted/);
+  check.equal(existsSync(join(prefix, "lib/.cotal-generations")), false);
+  console.log(`Retained installed-entry evidence: ${root}`);
+  console.log(`COTAL_SMOKE_SENTINEL cells=${counted.cells()} passed=${counted.cells()} failed=0`);
+} finally {
+  chmodSync(installed, 0o755); chmodSync(join(installed, "dist"), 0o755); chmodSync(join(prefix, "lib"), 0o755);
+}
