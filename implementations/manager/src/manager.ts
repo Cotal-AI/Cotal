@@ -7376,6 +7376,15 @@ export class Manager {
           `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
   }
 
+  /** Ordinary static control seats can read their holding instance. A run's recorded ceiling is
+   *  authoritative, so its helpers receive no additional instance reads. */
+  private managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] {
+    if (this.meshMode !== "static" || !this.managerInstanceId || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
+    return ["describe", "inspect"].map(command => ({
+      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
+    }));
+  }
+
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
@@ -7640,6 +7649,11 @@ export class Manager {
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
+    if (run === undefined) {
+      const reads = this.managedStaticInstanceReads(capabilities);
+      if (bound.kind === "exempt" || (bound.kind === "bounded" && !grantOverreach(this.space, bound.caller, bound.ceiling, { endpoints: reads }).length))
+        endpoints.push(...reads);
+    }
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
     // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
     // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
@@ -12650,6 +12664,17 @@ export class Manager {
     // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
     const issued = a.issued;
+    const endpoints = lowerPersonaEndpoints(a.launch.endpoints);
+    const reads = this.managedStaticInstanceReads(a.launch.capabilities);
+    if (reads.length) {
+      // Resolve this incarnation's original issuance, not its current spawner or a reconstructed
+      // run admission. Old seats and run helpers keep the exact ceiling they were minted with.
+      const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
+      const { evidence } = await withIssuerSession({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, auth: this.auth!, tls: false }, (s) =>
+        s.store.resolve({ space: this.space, ...caller }, s.sourceIsLive));
+      if (!grantOverreach(this.space, caller, evidence.permissions, { endpoints: reads }).length)
+        endpoints.push(...reads);
+    }
     const creds = await this.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
         eventPayloads: this.eventPayloadsWithheld ? false : a.launch.eventPayloads,
@@ -12657,7 +12682,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         role: a.role,
         capabilities: a.launch.capabilities,
-        ...(a.launch.endpoints?.length ? { endpointCapabilities: lowerPersonaEndpoints(a.launch.endpoints) } : {}),
+        ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,
