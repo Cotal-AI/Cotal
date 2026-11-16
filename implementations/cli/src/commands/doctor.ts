@@ -159,7 +159,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   try { auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }
   if (!auth) {
-    const open = values.fix ? undefined : recordedOpenSpace(root, values.space);
+    const open = recordedOpenSpace(root, values.space);
     if (open !== undefined) {
       writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
       return;
