@@ -287,7 +287,8 @@ function validManifest(value: BackupManifest): BackupManifest {
   return value;
 }
 
-function copyPinnedFile(source: string, destination: string | undefined, expected: BackupFileRecord): void {
+/** Copy or verify a regular file against pinned size and bytes; an incomplete copy stays untrusted. */
+export function copyPinnedFile(source: string, destination: string | undefined, expected: Pick<BackupFileRecord, "path" | "size" | "sha256">): void {
   const pathStat = lstatSync(source);
   if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw new ArtifactFileFault(expected.path, "not-regular");
   const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;

@@ -25,6 +25,10 @@
       "types": "./dist/lib/self-exec.d.ts",
       "import": "./dist/lib/self-exec.js"
     },
+    "./migration-node": {
+      "types": "./dist/lib/migration-node.d.ts",
+      "import": "./dist/lib/migration-node.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
