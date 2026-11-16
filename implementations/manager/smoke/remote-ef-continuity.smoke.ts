@@ -312,7 +312,6 @@ try {
 
   // Fixture-only probe of the child's ACTUAL held run credentials (non-secret metadata only).
   const probeWaiters: ((r: any) => void)[] = [];
-  const serveRedials: number[] = [];
   const enrollWaiters: ((r: any) => void)[] = [];
   const witnessWaiters: ((r: any) => void)[] = [];
   let probeBuf = "";
@@ -359,7 +358,6 @@ try {
       stderrOutput += d.toString();
       for (const l of d.toString().split("\n")) {
         if (/renewal|refus|expired|Authorization|re-dialed|could not be restored/i.test(l)) console.log(`    mgr: ${l.slice(0, 220)}`);
-        if (/manager service endpoint re-dialed/.test(l)) serveRedials.push(Date.now());
       }
     });
     managerProc!.on("exit", (code) => {
@@ -553,6 +551,7 @@ try {
   let answeredWhileExpired = false;
   let answerWhileExpiredWhy = "";
   let lastGoodWitness: { sub: string; exp: number; account: string } | undefined;
+  let preRefusalServeClientId: number | undefined;
   await cell("4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt", async () => {
     // A successful request admitted before refusal may still be adopting its pair. Drain those
     // real calls before taking the witness, then deny issuance before resuming the scheduler.
@@ -566,6 +565,8 @@ try {
         ? "run must be held by the manager"
         : "run must be held by the manager, but cell 2 never saw it park at the checkpoint, so this is that failure and not a holding defect");
       assert.equal(pre.debt, null, "no renewal debt before refusal");
+      assert.equal(typeof pre.standing.serveClientId, "number", "held service connection must have a broker client id");
+      preRefusalServeClientId = pre.standing.serveClientId;
       refuseHttpRenewals = true;
       refusedRunRenewals = 0;
     } finally {
@@ -672,14 +673,18 @@ try {
       assert.equal(p.standing[k].account, auth.account.pub, `${k} account changed across re-adoption`);
     }
 
-    // If the service connection closed during the refusal, its bounded re-dial (1s/5s/30s) must
-    // restore it before any control command can be answered. Record when it did.
-    const clearedAt = Date.now();
-    if (REFUSE_SCOPE === "all") {
-      const redialed = await until(() => serveRedials.some((t) => t >= clearedAt - 60_000), 45_000);
-      console.log(`    evidence: serve re-dial after clear=${redialed} at +${serveRedials.length ? Math.round((serveRedials.at(-1)! - clearedAt) / 1000) : "none"}s redials=${serveRedials.length}`);
-      assert.ok(redialed, "service endpoint was not re-dialed after standing re-adoption");
-    }
+    // All-duty renewal adopts a subscribed replacement and retires the old connection. The
+    // closed-connection retry can stand down without logging a re-dial, so inspect the held rail.
+    // This must recover autonomously, before PREPARE_RECOVERY forces a fresh family for the CLI.
+    const restored = await until(async () => {
+      const s = (await probeHeld(activeRunId)).standing;
+      return s.serveConnClosed === false && typeof s.serveClientId === "number"
+        && (REFUSE_SCOPE !== "all" || s.serveClientId !== preRefusalServeClientId);
+    }, 45_000);
+    const recoveredServe = (await probeHeld(activeRunId)).standing;
+    console.log(`    evidence: held service connection restored=${restored} clientId=${preRefusalServeClientId}->${recoveredServe.serveClientId} closed=${recoveredServe.serveConnClosed}`);
+    assert.ok(restored, "held service connection was not restored after standing re-adoption");
+    assert.equal(recoveredServe.serveConnClosed, false, "recovered service connection must remain open");
     const recBefore = await readRunRecord(recordsKv, "manager", activeRunId);
     const r = await runRecoveredCli(["resume", activeRunId]);
     console.log(`    evidence: run resume exit=${r.code} out=${r.stdout.trim().slice(0, 120)} err=${r.stderr.trim().split("\n")[0]?.slice(0, 200)}`);

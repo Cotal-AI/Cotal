@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import {
   credsClaims,
   remoteManagerActors,
@@ -299,44 +299,28 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
     let prepared = false;
     let error: string | undefined;
     if (op === "PREPARE_RECOVERY") {
-      // Autonomous recovery is asserted before this command. Keep the following CLI call from
-      // racing the next short-TTL refresh: renew through the real host, observe the native reconnect,
-      // then flush the restored subscription. No credential or broker response is fabricated.
-      const nc = renewalOwner.serviceServe.nc;
-      const events = nc.status()[Symbol.asyncIterator]();
+      // Autonomous recovery is asserted before this command. Hold the standing schedule across
+      // the CLI call, renew through the real host, then flush the adopted replacement's subscriptions.
+      // Renewal retires the old connection, so its status iterator cannot witness this boundary.
+      const previous: NatsConnection = renewalOwner.serviceServe.nc;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      let phase = "settle previous credential push";
+      let phase = "renew held family";
       try {
-        if (nc.isClosed()) throw new Error("recovered service connection is closed");
-        const deadline = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("service reconnect was not observed")), 7_000);
-        });
-        const reconnected = async (requireForce: boolean) => {
-          let requested = !requireForce;
-          for (;;) {
-            const event = await events.next();
-            if (event.done) throw new Error("service status ended before reconnect");
-            if (event.value.type === "forceReconnect") requested = true;
-            if (requested && event.value.type === "reconnect") return;
-          }
-        };
-        // The admitted renewal promise can settle before nats.js finishes its transport reconnect.
-        // A flush interrupted by that existing push is not evidence that recovery itself failed.
-        try { await Promise.race([nc.flush(), deadline]); }
-        catch (e) {
-          if (nc.isClosed()) throw e;
-          console.error("fixture recovery: awaiting previous renewal reconnect");
-          await Promise.race([reconnected(false), deadline]);
-          await Promise.race([nc.flush(), deadline]);
-        }
-        phase = "renew held family";
-        await Promise.all([renewStanding(true), Promise.race([reconnected(true), deadline])]);
+        if (previous.isClosed()) throw new Error("recovered service connection is closed");
+        await renewStanding(true);
+        const nc: NatsConnection = renewalOwner.serviceServe.nc;
+        assert.ok(nc !== previous, "standing renewal must adopt a replacement service connection");
+        assert.equal(previous.isClosed(), true, "standing renewal must close the retired service connection");
+        assert.equal(nc.isClosed(), false, "adopted service connection must be open");
         phase = "flush renewed subscriptions";
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("adopted service subscriptions did not flush")), 7_000);
+        });
         await Promise.race([nc.flush(), deadline]);
         if (nc !== renewalOwner.serviceServe.nc || nc.isClosed()) throw new Error("service connection changed at recovery boundary");
         prepared = true;
       } catch (e) { error = `${phase}: ${(e as Error).message}`; }
-      finally { clearTimeout(timer); void events.return?.(); }
+      finally { clearTimeout(timer); }
     }
     console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseStandingRenewals, inFlight: held.reduce((n, flights) => n + flights.size, 0), prepared, error })}`);
     return;
@@ -372,7 +356,11 @@ function standingMeta() {
     sessionLedger: m.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);
-  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null, serveConnClosed: m.serviceServe ? m.serviceServe.nc.isClosed() : null };
+  const out: Record<string, unknown> = {
+    debt: m.remoteRenewalDebt?.reason ?? null,
+    serveConnClosed: m.serviceServe ? m.serviceServe.nc.isClosed() : null,
+    serveClientId: m.serviceServe?.nc.info?.client_id ?? null,
+  };
   for (const [k, v] of Object.entries(held)) {
     if (typeof v !== "string") { out[k] = null; continue; }
     const c = credsClaims(v);
