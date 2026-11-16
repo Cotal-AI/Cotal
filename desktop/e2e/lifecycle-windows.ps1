@@ -476,6 +476,18 @@ public static class FilteredAppLauncher {
                 if ($null -ne $priorHklm) { $priorHklmKind = $hklmRead.GetValueKind('Cotal') }
             }
         } finally { if ($null -ne $hklmRead) { $hklmRead.Dispose() } }
+        function Read-PreferenceFact([string]$directory) {
+            $file = Join-Path $directory 'presence.json'
+            $fact = [ordered]@{ path = $file; exists = [IO.File]::Exists($file); size = $null; sha256 = $null; login = $null }
+            if ($fact.exists) {
+                $bytes = [IO.File]::ReadAllBytes($file)
+                $fact.size = $bytes.Length
+                $fact.sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).ToLowerInvariant()
+                $parsed = ([Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json)
+                if ($parsed.PSObject.Properties.Name -contains 'login') { $fact.login = $parsed.login }
+            }
+            return $fact
+        }
         function Set-HklmRunValue([string]$val) {
             $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($runSubKey, $true)
             if ($null -eq $k) { throw 'HKLM Run key could not be opened for proof setup.' }
@@ -589,6 +601,10 @@ public static class FilteredAppLauncher {
             $beforeFiltered = Read-HklmRunEntry
             if (!$beforeFiltered.present -or !$beforeFiltered.matchesExpected) { throw 'Cell (c) setup did not plant owned HKLM Run value.' }
             if ($DebuggerPort -lt 1) { throw 'prove-login-cells requires DebuggerPort reserved by the driver.' }
+            $preferenceFacts = @()
+            foreach ($preferenceDir in @((Join-Path $env:APPDATA 'ai.cotal.desktop'), (Join-Path $env:USERPROFILE 'AppData\Roaming\ai.cotal.desktop')) | Select-Object -Unique) {
+                $preferenceFacts += (Read-PreferenceFact $preferenceDir)
+            }
             $workDir = Split-Path -Parent $expected
             $filteredPid = [FilteredAppLauncher]::StartFiltered($expected, "`"$expected`"", $workDir, $DebuggerPort)
             $filteredProc = Get-Process -Id $filteredPid
@@ -616,7 +632,9 @@ public static class FilteredAppLauncher {
                 checked = $filteredSettings.result.checked
                 loginError = $filteredSettings.result.loginError
                 filteredPid = $filteredPid
+                filteredPath = $filteredProc.Path
                 debuggerPort = $DebuggerPort
+                preferencesBefore = @($preferenceFacts)
             }
             $diagnostics.Add([ordered]@{ cellC = $cellsProgress['cellC'] })
             Save-CellsProgress

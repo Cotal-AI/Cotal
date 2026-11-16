@@ -759,8 +759,13 @@ export async function firstRun(fixture: Fixture): Promise<void> {
         } finally {
           await driver.close();
           spawnSync("taskkill", ["/PID", String(filteredPid), "/T", "/F"], { windowsHide: true });
+          const ps = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
+          const preferenceScript = `$paths=@((Join-Path $env:APPDATA 'ai.cotal.desktop\\presence.json'),(Join-Path $env:USERPROFILE 'AppData\\Roaming\\ai.cotal.desktop\\presence.json'))|Select-Object -Unique; $facts=@(); foreach($path in $paths){$fact=[ordered]@{path=$path;exists=[IO.File]::Exists($path);size=$null;sha256=$null;login=$null}; if($fact.exists){$bytes=[IO.File]::ReadAllBytes($path);$fact.size=$bytes.Length;$fact.sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).ToLowerInvariant();$parsed=[Text.Encoding]::UTF8.GetString($bytes)|ConvertFrom-Json; if($parsed.PSObject.Properties.Name -contains 'login'){$fact.login=$parsed.login}}; $facts+=$fact}; [Console]::Out.Write(($facts|ConvertTo-Json -Compress -Depth 4))`;
+          const afterPreferences = spawnSync(ps, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", preferenceScript], { env, encoding: "utf8", windowsHide: true, timeout: 15_000 });
+          if (afterPreferences.status === 0) loginCells.result.cellC.preferencesAfter = JSON.parse(afterPreferences.stdout);
+          else loginCells.result.cellC.preferencesAfterError = afterPreferences.stderr;
+          writeFileSync(join(output, "windows-login-cells.json"), JSON.stringify(loginCells.result, null, 2));
         }
-        writeFileSync(join(output, "windows-login-cells.json"), JSON.stringify(loginCells.result, null, 2));
         check("elevated Windows app removes owned HKLM Run entry on enable and disable, filtered token reports administrator requirement with true HKCU state, and foreign HKLM entry stays untouched",
           loginCells.result?.cellB?.enableRemovedOwnedHklm === true &&
           loginCells.result?.cellB?.disableRemovedOwnedHklm === true &&
