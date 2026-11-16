@@ -594,7 +594,8 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   };
 
   const methodOf = (table: Readonly<Record<string, Method>>, receiver: unknown, prop: string, kind: string, asCallee: boolean): Callable => {
-    const m = table[prop];
+    // An own entry only, as in the interpreter: an inherited `constructor` is a host function (#7058).
+    const m = Object.hasOwn(table, prop) ? table[prop] : undefined;
     if (m === undefined) {
       throw new RuntimeFault(
         "L4014",

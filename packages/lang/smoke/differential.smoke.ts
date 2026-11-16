@@ -651,8 +651,15 @@ log("rounds", rounds, r.status);`,
   // A RECORD HAS NO PROTOTYPE TO REACH, so these three are undefined rather than refused - measured,
   // because the cell that assumed a refusal here was the one a mutation walked straight past.
   ["a record has no prototype to reach", "const o = { a: 1 }; log(o.constructor, o.toString, o.__proto__);", {}],
-  ["refusals: a prototype member of a string", 'const s = "a"; log(s.constructor);', {}, "L4020"],
-  ["refusals: a prototype member of an array", "const xs = [1]; log(xs.constructor);", {}, "L4020"],
+  // A PROTOTYPE NAME IS NOT IN THE METHOD TABLE. These two read L4020 while the lookup took inherited
+  // names, so a call such as `[].constructor()` handed the program the interpreter's frame (#7058).
+  // Spec §4.2 makes any member outside the table L4014, read or called.
+  ["refusals: a prototype member of a string", 'const s = "a"; log(s.constructor);', {}, "L4014"],
+  ["refusals: a prototype member of an array", "const xs = [1]; log(xs.constructor);", {}, "L4014"],
+  ["refusals: an inherited constructor called on an array", "const f = [].constructor(); log(keys(f));", {}, "L4014"],
+  ["refusals: an inherited constructor called on a string", 'const f = "a".constructor(); log(keys(f));', {}, "L4014"],
+  ["refusals: an inherited constructor called on a number", "const f = (5).constructor(); log(keys(f));", {}, "L4014"],
+  ["refusals: an inherited method called on an array", 'log([].hasOwnProperty("x"));', {}, "L4014"],
   ["refusals: a member of a function", "const f = () => 1; log(f.call);", {}, "L4014"],
   ["an array's length is a member, not a prototype reach", "const xs = [1, 2]; log(xs.length);", {}],
   ["refusals: a method is not a value", "const xs = [1]; const m = xs.map; log(m);", {}, "L4020"],
