@@ -801,11 +801,11 @@ public static class FilteredAppLauncher {
                 $toggle = $null
                 if (!$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) { throw 'Exact autostart checkbox exposes no TogglePattern.' }
                 $errText = $null
-                try {
-                    $errEl = Exact-Control 'notice'
-                    $errText = Read-SingleText $errEl 'notice'
-                } catch {
-                    if ($_.Exception.Message -notlike "Exact AutomationId 'notice' unavailable*") { throw }
+                $errControls = @($rootElement.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'login-error')))
+                if ($errControls.Count -gt 1) { throw "Exact AutomationId 'login-error' unavailable or ambiguous in owned window. WebView2 accessibility support required." }
+                if ($errControls.Count -eq 1) {
+                    if ($errControls[0].Current.IsOffscreen) { throw "Exact AutomationId 'login-error' is offscreen." }
+                    $errText = Read-SingleText $errControls[0] 'login-error'
                 }
                 $result = [ordered]@{
                     checked = ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)

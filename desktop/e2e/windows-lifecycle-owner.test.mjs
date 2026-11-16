@@ -150,6 +150,13 @@ test('raw tray diagnostics walk every verified surface including hidden overflow
   assert.ok(surfaces.indexOf('Record-RawExplorerTree $surface $window') < surfaces.indexOf('if ($window.visible) { $surface }'));
 });
 
+test('filtered login settings reads the Settings sentence instead of treating a missing shared notice as empty', () => {
+  const reader = helper.slice(helper.indexOf("} elseif ($Action -eq 'read-login-settings')"), helper.indexOf("} else {", helper.indexOf("} elseif ($Action -eq 'read-login-settings')")));
+  assert.match(reader, /AutomationIdProperty, 'login-error'/);
+  assert.doesNotMatch(reader, /Exact AutomationId 'notice' unavailable/);
+  assert.match(reader, /loginError = \$errText/);
+});
+
 test('tray diagnostics distinguish absent native surfaces from empty UI Automation descendants', () => {
   const surfaces = helper.slice(helper.indexOf('function Explorer-Surfaces'), helper.indexOf('    Process-Candidates'));
   assert.match(surfaces, /explorerSurfaces = @\(\$trayWindows \| ForEach-Object/);
