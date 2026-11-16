@@ -5,7 +5,7 @@ import { render } from "ink";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { runCommand, type CommandCtx } from "../src/console/commands.js";
 import { CommandPalette } from "../src/console/ui/CommandPalette.js";
-import type { PsReply } from "@cotal-ai/workspace/control";
+import type { ManagedRow, PsReply } from "@cotal-ai/workspace/control";
 
 const snapshot = {
   agents: [
@@ -17,7 +17,7 @@ const snapshot = {
   channels: [{ channel: "general", messages: 3 }, { channel: "review", messages: 1 }],
 } as unknown as MeshSnapshot;
 const readManaged = async (): Promise<PsReply> => ({ ok: true,
-  rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" }],
+  rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed", instanceId: "manager-a" }],
   silent: [], failed: [], answered: [],
 });
 const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
@@ -42,6 +42,7 @@ async function screen(marker: string) {
 }
 let query = "";
 let runs: string[] = [];
+let attaches: ManagedRow[] = [];
 let formsOpened = 0;
 type Grants = { canWrite?: boolean; canControl?: boolean };
 function Harness({ initial, managed = readManaged, canWrite = true, canControl = true, snap = snapshot }: { initial: string; managed?: () => Promise<PsReply>; snap?: MeshSnapshot } & Grants) {
@@ -49,10 +50,11 @@ function Harness({ initial, managed = readManaged, canWrite = true, canControl =
   query = value;
   return <CommandPalette active query={value} snapshot={snap} canWrite={canWrite} canControl={canControl} width={120}
     readManaged={managed} onChange={setValue} onRun={(line) => runs.push(line)}
+    onAttach={(seat) => attaches.push(seat)}
     onNewAgent={() => { formsOpened++; }} onCancel={() => {}} />;
 }
 async function scenario(initial: string, check: () => Promise<void>, managed?: () => Promise<PsReply>, grants: Grants = {}, snap = snapshot) {
-  frame = ""; runs = []; formsOpened = 0;
+  frame = ""; runs = []; attaches = []; formsOpened = 0;
   const app = render(<Harness initial={initial} managed={managed} snap={snap} {...grants} />,
     { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
   try { await screen("Commands"); await check(); }
@@ -78,10 +80,11 @@ await scenario("spawn default named_agent", async () => {
   await key("\r");
   assert.deepEqual(runs, ["spawn default named_agent"], "Complete typed spawn commands remain supported");
 });
-for (const line of ["call @alice", "msg general", "spawn agent"]) {
+for (const line of ["call @alice", "msg general", "spawn agent", "attach managed_only"]) {
   await scenario(line, async () => {
     await key("\r");
     assert.deepEqual(runs, [line], `A complete typed command stays literal: ${line}`);
+    assert.equal(attaches.length, 0, "A typed command does not select a suggested seat implicitly");
     assert.equal(formsOpened, 0, "A typed persona named agent is not a form search");
   });
 }
@@ -100,8 +103,22 @@ await scenario("attach", async () => {
   await key("\r"); await screen("managed_only");
   assert.ok(!frame.includes("@alice"), "Attach choices come from the manager, including seats absent from presence");
   await key("\r");
-  assert.deepEqual(runs, ["attach managed_only"], "Selecting the managed seat attaches to that seat");
+  const reply = await readManaged();
+  assert.ok(reply.ok);
+  assert.deepEqual(attaches, reply.rows,
+    "Selecting a seat retains its manager, principal and lifecycle rather than rerunning a bare name");
+  assert.deepEqual(runs, [], "A picker selection is not downgraded to a typed attach command");
 });
+const duplicateSeats: ManagedRow[] = ["a", "b"].map((key) => ({
+  name: "same_alias", id: `principal-${key}`, agent: "opencode", mode: "pty", status: "running",
+  mesh: "absent", uptimeMs: 0, lifecycleUid: `lifecycle-${key}`, instanceId: `manager-${key}`,
+}));
+await scenario("attach", async () => {
+  await key("\r"); await screen("same_alias");
+  await key("\x1b[B"); await key("\r");
+  assert.deepEqual(attaches, [duplicateSeats[1]], "Same-named seats keep the highlighted manager and incarnation");
+  assert.deepEqual(runs, [], "Duplicate aliases are not re-resolved by name");
+}, async () => ({ ok: true, rows: duplicateSeats, silent: [], failed: [], answered: [] }));
 for (const command of ["status", "call", "msg", "ask", "delchan"]) {
   await scenario(command, async () => {
     await key("\r");
@@ -156,6 +173,12 @@ await scenario("spawn", async () => {
   assert.deepEqual(runs, ["spawn"], "Spawn without a control path reaches the dispatcher instead of being swallowed");
   assert.equal(formsOpened, 0, "Spawn without a control path opens no form");
   assert.match(notices("spawn", true, false)[0] ?? "", /^no control path - /, "the dispatcher refuses spawn with the control notice, not the publish one");
+}, undefined, { canControl: false });
+await scenario("attach", async () => {
+  await screen("▸ attach"); await key("\r");
+  assert.deepEqual(runs, ["attach"], "Attach without control still reaches the refusal dispatcher");
+  assert.match(notices("attach", true, false)[0] ?? "", /^no control path - /);
+  assert.equal(attaches.length, 0, "No seat is selected without control permission");
 }, undefined, { canControl: false });
 await scenario("msg", async () => {
   await key("\r");

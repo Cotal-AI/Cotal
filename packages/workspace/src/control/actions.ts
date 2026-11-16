@@ -71,6 +71,8 @@ export interface ManagedRow {
   model?: string;
   /** The run this row reports. A seat restarted under the same name gets a new one. */
   lifecycleUid: string;
+  /** The holding manager reported by `ps` / `inspect`, when that manager supplies it. */
+  instanceId?: string;
 }
 
 /** One control call. A targeted op names its seat in `args.name`; the alias is resolved to the

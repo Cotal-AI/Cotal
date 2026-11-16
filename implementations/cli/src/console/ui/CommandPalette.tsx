@@ -5,11 +5,11 @@ import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { COMMANDS, meshWord } from "../commands.js";
 import { Modal } from "./Modal.js";
 import { useListCursor } from "./useListCursor.js";
-import type { PsReply } from "@cotal-ai/workspace/control";
+import type { ManagedRow, PsReply } from "@cotal-ai/workspace/control";
 
 const CAP = 6; // suggestion rows; the palette is a fixed CAP+1 rows tall so the layout doesn't jump
 
-type Sugg = { value: string; label: string; summary?: string; write?: boolean; control?: boolean; run?: boolean };
+type Sugg = { value: string; label: string; summary?: string; write?: boolean; control?: boolean; run?: boolean; seat?: ManagedRow };
 type Suggestions = { items: Sugg[]; tokenStart: number; matchLen: number; mode: "command" | "target" | "token"; hint?: string };
 
 /** The command's first argument opens choices immediately. Later @/# tokens retain the old
@@ -55,7 +55,9 @@ function suggest(query: string, snap: MeshSnapshot, managed: PsReply | undefined
     if (command === "attach" || command === "status") {
       items = managed?.ok ? managed.rows
         .filter((row) => row.name.toLowerCase().startsWith(q))
-        .map((row) => ({ value: row.name, label: row.name, summary: `${row.agent} · ${row.status} · mesh ${meshWord(row)}`, run: true })) : [];
+        .map((row) => ({ value: row.name, label: row.name,
+          summary: `${row.agent} · ${row.status} · mesh ${meshWord(row)}${command === "attach" && row.instanceId ? ` · ${row.instanceId}` : ""}`, run: true,
+          ...(command === "attach" ? { seat: row } : {}) })) : [];
       hint = !managed ? "Loading managed agents…" : !managed.ok ? managed.error : managed.rows.length ? "No matching managed agents" : "No managed agents available";
     } else if (command === "dm" || command === "call") {
       items = agents(); hint = peers.length ? "No matching agents or endpoints" : "No agents or endpoints available";
@@ -86,6 +88,7 @@ export function CommandPalette({
   width,
   onChange,
   onRun,
+  onAttach,
   onCancel,
   onNewAgent,
   readManaged,
@@ -98,6 +101,7 @@ export function CommandPalette({
   width: number;
   onChange: (q: string) => void;
   onRun: (line: string) => void;
+  onAttach: (seat: ManagedRow) => void;
   onCancel: () => void;
   onNewAgent: () => void;
   readManaged: () => Promise<PsReply>;
@@ -134,8 +138,9 @@ export function CommandPalette({
           return onRun(selected.value);
         }
         if (mode === "target" && choosingTarget && selected) {
-          const line = query.slice(0, tokenStart) + selected.value;
           setChoosingTarget(false);
+          if (selected.seat) return onAttach(selected.seat);
+          const line = query.slice(0, tokenStart) + selected.value;
           if (selected.run) return onRun(line);
           onChange(line + " "); first(); return;
         }
@@ -194,7 +199,7 @@ export function CommandPalette({
           const selected = idx === selClamped;
           const m = Math.min(matchLen, s.label.length);
           return (
-            <Text key={s.value} wrap="truncate-end">
+            <Text key={s.seat ? `${s.seat.instanceId}:${s.seat.id}:${s.seat.lifecycleUid}` : s.value} wrap="truncate-end">
               {selected ? <Text color="cyan">▸ </Text> : <Text>{"  "}</Text>}
               <Text color="yellow">{s.label.slice(0, m)}</Text>
               <Text color={selected ? "cyan" : undefined} bold={selected}>

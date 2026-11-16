@@ -122,6 +122,9 @@ Empty results and manager read failures remain visible. A `read-only` or `no con
 Press `a` on a roster agent, or run `attach <agent>`.
 The console pauses its display and runs `cotal attach` in the same terminal.
 The observer continues in the background.
+Choosing a managed seat from the palette retains its manager, identity and lifecycle, so it can
+attach even when the seat has not joined presence. A replaced seat is refused rather than attached
+under its old selection. A typed name or roster action still resolves through live presence.
 
 Press `Ctrl-]`, or the configured `COTAL_DETACH_KEY`, to return to the console.
 The status line reports whether you detached, the seat ended, or attach was refused.

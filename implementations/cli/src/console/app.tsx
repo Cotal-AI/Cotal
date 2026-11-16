@@ -1,10 +1,10 @@
 import { writeSync } from "node:fs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useFocusManager, useInput, useStdout } from "ink";
-import { mentionsIn, type CotalEndpoint, type Presence } from "@cotal-ai/core";
+import { assertLifecycleToken, mentionsIn, type CotalEndpoint, type Presence } from "@cotal-ai/core";
 import { useMesh } from "./mesh.js";
 import { attachSeat } from "../commands/agents.js";
-import { detachKey } from "@cotal-ai/workspace/attach";
+import { detachKey, type AttachTarget } from "@cotal-ai/workspace/attach";
 import { cliControl } from "../lib/control.js";
 import { Tabs } from "./ui/Tabs.js";
 import { Tiles } from "./ui/Tiles.js";
@@ -29,7 +29,7 @@ import { spawnPersona } from "../lib/spawn-defaults.js";
 import { launchAgent } from "./launch.js";
 import { NewAgent } from "./ui/NewAgent.js";
 import type { FeedEntry, FocusId } from "./mesh.js";
-import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp } from "@cotal-ai/workspace/control";
+import { control, controlPs, createManagedPoller, deleteChannel, type ControlCtx, type ControlOp, type ManagedRow } from "@cotal-ai/workspace/control";
 
 /** An in-progress compose: post to a channel, DM a peer, or reply to a feed message. */
 type ComposeTarget =
@@ -89,7 +89,7 @@ export function App({
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null);
   const [compose, setCompose] = useState<ComposeTarget | null>(null);
   const [notice, setNotice] = useState<string | undefined>();
-  const [attachTarget, setAttachTarget] = useState<{ name: string } | null>(null);
+  const [attachTarget, setAttachTarget] = useState<(Pick<AttachTarget, "name" | "expectedSeat"> & { on?: string }) | null>(null);
   // Held here, not in the Feed or Roster, which unmount while a detail or another full-screen view is open.
   const feedView = useFeedView();
   const rosterView = useRosterView();
@@ -213,11 +213,11 @@ export function App({
   useEffect(() => {
     if (!attachTarget) return;
     let cancelled = false;
-    const { name } = attachTarget;
+    const { name, on, expectedSeat } = attachTarget;
     void (async () => {
       let verdict: Awaited<ReturnType<typeof attachSeat>>;
       try {
-        verdict = await attachSeat({ ...controlCtx, space: ep.space, name }, { reconnect: true, onRefusal: "throw" });
+        verdict = await attachSeat({ ...controlCtx, space: ep.space, name, expectedSeat }, { reconnect: true, onRefusal: "throw", on });
       } catch (e) {
         verdict = { kind: "failed", message: (e as Error).message };
       }
@@ -302,14 +302,20 @@ export function App({
   const openAgent = useCallback((p: Presence) => setDetail({ kind: "agent", agent: p }), []);
   const openMessage = useCallback((e: FeedEntry) => setDetail({ kind: "message", entry: e }), []);
   const handleKill = useCallback((p: Presence) => setConfirm({ kind: "kill", name: p.card.name, id: p.card.id }), []);
-  // Attach: open the seat's live terminal. Keyed by NAME (a managed seat need not be a roster peer,
-  // same as `cotal attach --name`). A bad COTAL_DETACH_KEY is refused BEFORE suspending, as a
-  // notice: the loop would only throw it after the takeover, with the screen already gone.
+  // A picker carries its managed row into attach. Typed names still resolve through presence.
+  // Refuse a bad detach key or incomplete selection before suspending the console.
   const handleAttach = useCallback(
-    (name: string) => {
+    (name: string, seat?: ManagedRow) => {
       if (!canControl) return setNotice("no control path - a raw --creds file cannot drive the manager; run against a registered mesh");
       try {
         detachKey();
+        if (seat) {
+          if (!seat.id || !seat.instanceId) throw new Error("the selected seat reports no identity or holding manager; refresh the agent list after aligning manager versions");
+          const on = assertLifecycleToken(seat.instanceId, "holding manager instance");
+          const lifecycleUid = assertLifecycleToken(seat.lifecycleUid, "seat lifecycle");
+          setAttachTarget({ name, on, expectedSeat: { name, id: seat.id, lifecycleUid } });
+          return;
+        }
       } catch (e) {
         return setNotice("attach: " + (e as Error).message);
       }
@@ -680,6 +686,7 @@ export function App({
           : <CommandPalette active query={palette.query} snapshot={mesh} canWrite={!!canWrite}
             canControl={!!canControl} width={size.cols} readManaged={readPaletteAgents}
             onChange={(query) => setPalette({ active: true, query })} onRun={runPaletteLine}
+            onAttach={(seat) => { setPalette({ active: false, query: "" }); handleAttach(seat.name, seat); }}
             onNewAgent={() => { setPalette({ active: false, query: "" }); setNewAgent(true); }}
             onCancel={() => setPalette({ active: false, query: "" })} />}
       </Box> : null}

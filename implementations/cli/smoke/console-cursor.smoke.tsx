@@ -136,6 +136,7 @@ const snapshot = (rows: Presence[]) => ({ agents: rows, endpoints: [], channels:
 const palette = (rows: Presence[], query = "dm ") => <CommandPalette active query={query}
   snapshot={snapshot(rows)} canWrite canControl width={120} onChange={(query) => { changed = query; }}
   onRun={(line) => runs.push(line)} onCancel={() => {}} onNewAgent={() => {}}
+  onAttach={() => { throw new Error("no managed seat was offered"); }}
   readManaged={async () => ({ ok: true, rows: [], silent: [], failed: [], answered: [] })} />;
 {
   const term = await terminal(palette([]));
