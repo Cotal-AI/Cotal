@@ -492,7 +492,7 @@
       "post": {
         "operationId": "delete-dashboard-channel",
         "summary": "Delete a legacy dashboard channel",
-        "description": "Legacy direct dashboard operation. The native lifecycle web service always returns 403 before reading the body because it has no channel-purger authority. Check channelDeleteSupported in /api/meta. A legacy instance deletes one concrete canonical channel and its content using its configured purger authority. Wildcards, aliases and missing channels are refused. The body limit is 8192 bytes. JSON is parsed without a Content-Type check. Other methods fall through to 404.",
+        "description": "Legacy direct dashboard operation. The native lifecycle web service always returns 403 before reading the body because it has no channel-purger authority. Check channelDeleteSupported in /api/meta. A legacy instance deletes one concrete canonical channel and its content using its configured purger authority. Wildcards, aliases and missing channels are refused. The body limit is 8192 bytes. The complete body must arrive within ten seconds of entering the delete handler, even while bytes keep arriving. An unfinished upload receives 408, closes its connection and has no deletion effect. This is a body deadline, not a header or broker-operation deadline. JSON is parsed without a Content-Type check. Other methods fall through to 404.",
         "requestBody": {
           "required": true,
           "content": {
@@ -562,6 +562,16 @@
                   "required": [
                     "error"
                   ]
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "The delete body did not finish within ten seconds. The connection closes and the channel is unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             }
