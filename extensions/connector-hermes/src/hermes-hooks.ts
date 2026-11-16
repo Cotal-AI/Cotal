@@ -18,6 +18,7 @@ let pendingTool: string | undefined;
 export const hermesHookHandle: HookHandle = async (agent, ev) => {
   const event = String(ev.hook_event_name ?? "");
   try {
+    if (event === "pre_llm_call" || event === "pre_tool_call" || event === "post_llm_call") agent.noteActivity();
     switch (event) {
       case "gateway_startup": // gateway up / adapter connected — present and free
       case "on_session_start":
