@@ -11,13 +11,13 @@ import { matchSource16410Refusal, source16410Refusals } from './source-16410-ref
 const workflow = parse(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
 const summary = workflow.jobs['release-summary'].steps.find(s => s.name === 'Verify expected coordinate census and assertion contract').run;
 const program = summary.split("<<'NODE'\n")[1].split('\nNODE')[0];
-test('root Node placement records and replaces old npm before copying instead of merging dependencies',()=>{
+test('root Node placement extracts a verified archive into a fresh administrator prefix',()=>{
   const setup=workflow.jobs['release-cells'].steps.find(step=>step.name==='Prepare root-owned Node installation').run;
-  const move=setup.indexOf('sudo rm -rf -- /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack');
-  const copy=setup.indexOf('sudo cp -a');
-  assert(move>=0&&copy>move);
-  assert(setup.indexOf('root-node-before.json')<move);
-  assert(setup.includes('sudo rm -f -- /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack'));
+  assert(setup.includes('test ! -e /opt/cotal-root-node'));
+  assert(setup.includes('sudo install -d -o root -g root -m 755 /opt/cotal-root-node'));
+  assert(setup.includes('--no-same-owner'));
+  assert(setup.includes('55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742'));
+  assert(!setup.includes('/usr/local'));
 });
 test('all required release coordinates fit in the concurrency budget without waiting for macOS', () => {
   const plan = planRelease({ inputs: { phase: 'candidate', source_sha: 'a'.repeat(40), target_version: '0.164.9', profile: 'bounded' } }, { eventName: 'workflow_dispatch', sourceVersion: '0.164.8' });
@@ -207,18 +207,18 @@ function specialCellEvidence(data, directory, change = () => {}) {
     data.report.calls = [
       call('root candidate public updater to next', { root: true }),
       ...[cell.sourceVersion, cell.targetVersion].map(version => call(`normal account version ${version}`, { root: false, stdout: `cotal-ai ${version}\n` })),
-      call('normal account own updater refusal', { root: false, exit: 1, stderr: 'owning command: npm install -g --prefix /usr/local cotal-ai@latest' }),
+      call('normal account own updater refusal', { root: false, exit: 1, stderr: 'owning command: npm install -g --prefix /opt/cotal-root-node cotal-ai@latest' }),
     ];
     data.report.observations = [
-      { ownership: { uid: 0, path: '/usr/local/bin/node' } },
-      { installed: { uid: 0, version: cell.sourceVersion } },
+      { ownership: { uid: 0, path: '/opt/cotal-root-node/bin/node' } },
+      { installed: { uid: 0, version: cell.sourceVersion,ancestors:['/opt/cotal-root-node/lib/node_modules/cotal-ai','/opt/cotal-root-node/lib/node_modules','/opt/cotal-root-node/lib','/opt/cotal-root-node','/opt','/'].map(path=>({path,real:path,uid:0,mode:0o755,directory:true,symlink:false})) } },
       { afterNormalRefusal: { passed: true, logicalBytes: 100 } },
       { store: { passed: true, logicalBytes: 100 }, modes: { passed: true, entries: [
-        { path: '/usr/local/lib/.cotal-generations', uid: 0, mode: 0o755 },
-        { path: '/usr/local/lib/node_modules/cotal-ai/dist/cotal.js', uid: 0, mode: 0o755 },
-        { path: '/usr/local/lib/.cotal-generations/generation/inventory.json', uid: 0, mode: 0o644 },
-        { path: `/usr/local/lib/.cotal-generations/.active-${'a'.repeat(64)}.json`, uid: 0, mode: 0o644 },
-        { path: '/usr/local/lib/.cotal-generations/.transaction-test/journal.json', kind: 'file', uid: 0, mode: 0o600 },
+        { path: '/opt/cotal-root-node/lib/.cotal-generations', uid: 0, mode: 0o755 },
+        { path: '/opt/cotal-root-node/lib/node_modules/cotal-ai/dist/cotal.js', uid: 0, mode: 0o755 },
+        { path: '/opt/cotal-root-node/lib/.cotal-generations/generation/inventory.json', uid: 0, mode: 0o644 },
+        { path: `/opt/cotal-root-node/lib/.cotal-generations/.active-${'a'.repeat(64)}.json`, uid: 0, mode: 0o644 },
+        { path: '/opt/cotal-root-node/lib/.cotal-generations/.transaction-test/journal.json', kind: 'file', uid: 0, mode: 0o600 },
       ] } },
     ];
     if (cell.oldVersion) data.report.calls.push(

@@ -105,14 +105,13 @@ and its recorded retry time. A replacement failure increments the count and wait
 After two counted failures, the next observation must wait without launching another updater.
 The probe ages timer records but never seeds or resets failures. Historical staging leftovers remain
 visible as measured faults. Fixed-source refusal attempts must leave no staging folders or store growth.
-The root-owned installation probe runs only on a disposable Linux runner. It records the runner's
-previous npm version and replaces npm, corepack and their launchers before copying its pinned Node release.
-It checks npm's version and global tree before installation, so npm dependency trees never merge.
-Root updates an actual
-`/usr/local` installation, and the normal account checks the selected version and its own updater's owning-command refusal.
+The root-owned installation probe extracts a verified Node archive as root into a fresh
+`/opt/cotal-root-node` prefix. It never changes the runner's `/usr/local`.
+It records ownership and modes from the installed package through `/` before a Cotal command runs.
+Root updates that installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
 After the normal account's refusal, it checks that the store stayed protected and its file-byte total did not grow.
-The package-manager layout probes use pnpm's own global root, active isolated install group and shim,
+The package-manager layout probes use pnpm's own global root, package path from `pnpm list -g --json` and shim,
 or an immutable nvm release's selected Node prefix.
 They do not replace those layouts with a custom npm prefix. A public updater refusal remains a failed cell.
 
