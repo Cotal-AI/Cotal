@@ -20,10 +20,11 @@ export class ReplacedDaemonGeneration extends Error {
   }
 }
 
-export async function reconcileHostedConnectors(version: string): Promise<void> {
+export async function reconcileHostedConnectors(version: string, acquireConnectorSet: () => void = () => {}): Promise<void> {
   if (updateActivationBlocked()) throw new Error("an update is in progress, retry in a minute");
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
+  acquireConnectorSet();
   try {
     const stamp = JSON.parse(readFileSync(join(extensionSetPaths().seed, "stamp.json"), "utf8"));
     const skewed = loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
@@ -32,6 +33,7 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
     if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   await reconcileInstalledGeneration();
+  acquireConnectorSet();
 }
 
 function packageFile(): string {

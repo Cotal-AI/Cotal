@@ -67,11 +67,11 @@ interface Live {
   healthFailures?: number;
 }
 
-export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string) {
+export function createHostedManagers(home = homeCotalDir(), version = installedGenerationVersion(), daemonHome?: string, acquireConnectorSet: () => void = () => {}) {
   const homeArg = daemonHome === undefined ? undefined : /^[A-Za-z0-9_./-]+$/.test(daemonHome) ? daemonHome : JSON.stringify(daemonHome);
   const command = (text: string) => homeArg === undefined ? text : text.replace(/cotal daemon (setup|status|login|serve)\b(?! --daemon-home)/g, (match) => `${match} --daemon-home ${homeArg}`);
   let reconcileTask: Promise<void> | undefined;
-  const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version).finally(() => { reconcileTask = undefined; });
+  const reconcile = () => reconcileTask ??= reconcileHostedConnectors(version, acquireConnectorSet).finally(() => { reconcileTask = undefined; });
   const connectors = (data: unknown): HostedManager["connectors"] => (data as { connectors?: HostedManager["connectors"] } | undefined)?.connectors;
   const live = new Map<string, Live>();
   let closed = false;

@@ -84,6 +84,8 @@ export interface ServeOptions {
   readonly sessionDir?: string;
   readonly updateCheck?: () => Promise<NonNullable<DaemonStatus["update"]>>;
   readonly updateStatus?: () => NonNullable<DaemonStatus["update"]>;
+  /** Shipped entry's idempotent lifetime hold before reading a reconciled connector set. */
+  readonly acquireConnectorSet?: () => void;
   /** Test hook: the stock sign-in to drive. */
   readonly login?: LoginCoordinator;
   /** Shipped serve entry's receipt-verified native launch provenance. Foreground servers refuse stop. */
@@ -152,7 +154,7 @@ async function serveLocked(opts: ServeOptions, uid: number | undefined, lock: He
   let loginActive = false;
   let logoutActive = false;
   const services = createServiceConnections(machineHome);
-  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir);
+  const managers = createHostedManagers(machineHome, opts.version, opts.sessionDir, opts.acquireConnectorSet);
   const reconciler = createAccountReconciler(machineHome, services, managers);
   const account = createAccountComputer(machineHome, opts.version, reconciler);
   const startedAt = new Date();

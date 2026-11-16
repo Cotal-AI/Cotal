@@ -500,12 +500,14 @@ async function serve(args: ParsedArgs): Promise<void> {
     return stopObservation;
   };
   let releaseConnectorSet: (() => void) | undefined;
+  const acquireConnectorSet = () => {
+    if (updateRuntime.checkout() || releaseConnectorSet) return;
+    assertExtensionSetReadable();
+    if (existsSync(extensionSetPaths().ready)) releaseConnectorSet = holdExtensionSet();
+  };
   try {
-    if (!updateRuntime.checkout()) {
-      assertExtensionSetReadable();
-      if (existsSync(extensionSetPaths().ready)) releaseConnectorSet = holdExtensionSet();
-    }
-    running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,
+    acquireConnectorSet();
+    running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => { acquireConnectorSet(); return updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }; }, acquireConnectorSet, version: binVersion(), peerUid, stopAllowed,
       ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
@@ -513,7 +515,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
-  updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  updates = automaticUpdates({ version: binVersion(), acquireConnectorSet, eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {

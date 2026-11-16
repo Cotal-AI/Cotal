@@ -24,6 +24,7 @@ interface UpdateHost {
   prepare(): Promise<void>;
   abort(): Promise<void>;
   report(line: string): void;
+  acquireConnectorSet?(): void;
 }
 
 /** Schedule only the existing updater. Manager preparation holds its native empty-seat admission fence. */
@@ -124,7 +125,9 @@ export function automaticUpdates(host: UpdateHost): { status(): DaemonUpdateStat
     if (!status().automatic) return;
     if (closed) return;
     if (!cached?.latest || cached.error) { state = { ...state, result: cached?.error ?? "registry check unavailable", next: Date.now() + UPDATE_HOUR_MS }; persist(); return; }
-    const reconciling = !retiring && !newerUpdate(cached.latest, host.version) && reconciliationPending(host.version);
+    const currentRelease = !retiring && !newerUpdate(cached.latest, host.version);
+    if (currentRelease) host.acquireConnectorSet?.();
+    const reconciling = currentRelease && reconciliationPending(host.version);
     if (state.version !== cached.latest) state = { version: cached.latest, failures: 0, result: "new release observed", next: 0 };
     if (!retiring && state.failures >= 2) { state = { ...state, result: `version ${cached.latest} failed twice; waiting for a newer version or manual update`, next: Date.now() + UPDATE_DAY_MS }; persist(); return; }
     if (!retiring && !reconciling && !newerUpdate(cached.latest, host.version)) { state = { ...state, result: "up to date", next: Date.now() + UPDATE_DAY_MS + Math.random() * UPDATE_HOUR_MS }; persist(); return; }
