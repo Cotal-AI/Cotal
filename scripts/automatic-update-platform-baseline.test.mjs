@@ -4,6 +4,50 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
+test('extension root observations retain raw replies and never invent legacy ids or versions', () => {
+  const reply = root => ({exit: 0, signal: null, timeout: false, stdout: root + '\n', stderr: ''});
+  const root = join(tmpdir(), 'config', 'installs', 'abcdef0123456789', 'sets', '0.164.1018', 'extensions');
+  const observed = baseline.extensionRootObservation(reply(root));
+  assert.equal(observed.root, root);
+  assert.equal(observed.id, 'abcdef0123456789');
+  assert.equal(observed.version, '0.164.1018');
+  assert.deepEqual(observed.response, reply(root));
+  const legacy = baseline.extensionRootObservation(reply(join(tmpdir(), 'config', 'extensions')));
+  assert.equal(legacy.id, null);
+  assert.equal(legacy.version, null);
+  assert.equal(legacy.layout, 'legacy');
+  for (const invalid of [{...reply(root), exit: 1}, {...reply(root), timeout: true}, {...reply(root), signal: 'SIGTERM'}, reply('relative'), reply(root + '\nother')]) assert.throws(() => baseline.extensionRootObservation(invalid));
+});
+
+test('standalone new seat attribution requires the pinned answering Manager and successful raw ps', () => {
+  const reply = {exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {kind: 'seats', managers: [{instanceId: 'original', state: 'answered'}], items: [{name: 'new-seat', instanceId: 'original', status: 'running'}]}})};
+  assert.equal(baseline.standaloneSeatAttributed(reply, 'original', 'new-seat'), true);
+  assert.equal(baseline.standaloneSeatAttributed(reply, 'other', 'new-seat'), false);
+  assert.equal(baseline.standaloneSeatAttributed(reply, 'original', 'old-seat'), false);
+  for (const invalid of [{...reply, exit: 4}, {...reply, timeout: true}, {...reply, signal: 'SIGTERM'}, {...reply, stdout: '{'}]) assert.equal(baseline.standaloneSeatAttributed(invalid, 'original', 'new-seat'), false);
+  for (const mutate of [r => r.managers.push({...r.managers[0]}), r => r.managers[0].state = 'silent', r => r.items.push({...r.items[0]}), r => r.items[0].instanceId = 'other', r => r.items[0].status = 'exited', r => r.kind = 'slots']) {
+    const body = JSON.parse(reply.stdout); mutate(body.result);
+    assert.equal(baseline.standaloneSeatAttributed({...reply, stdout: JSON.stringify(body)}, 'original', 'new-seat'), false);
+  }
+});
+
+test('real driver reads installation roots and checks standalone catalogs before launching a new pinned seat', () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  for (const label of ['source CLI extension root', 'after CLI extension root', 'follow-on CLI extension root', 'released desktop extension root']) assert(source.includes(label));
+  assert(source.includes("join(sourceExtensionRoot, 'extensions.json')"));
+  assert(source.includes("join(afterExtensionRoot, 'node_modules', entry.pkg)"));
+  assert(source.includes("join(followOnExtensionRoot, 'node_modules', entry.pkg)"));
+  assert(source.includes('report.desktop.ownedLocalFixture ='));
+  const pin = source.indexOf('report.managerHost.instanceId = beforeSeats.managers[0].instanceId');
+  const before = source.indexOf('models on standalone Manager before CLI update');
+  const update = source.indexOf("update = await cotal('upgrade under test'");
+  const after = source.indexOf('models on standalone Manager after CLI update');
+  const spawn = source.indexOf('spawn new stand-in agent on original standalone Manager');
+  assert(pin > 0 && before > pin && update > before && after > update && spawn > after);
+  assert(source.includes('compareDesktopCatalogs(report.managerHost.modelsBefore, report.managerHost.modelsAfter, instanceId)'));
+  assert(source.includes("['ps', '--on', instanceId, '--space', space, '--json']"));
+});
+
 test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
   const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
   const extensions = [before[0], {...before[1], version: '0.164.1011'}];
