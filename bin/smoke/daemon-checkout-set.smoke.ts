@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,12 +45,13 @@ try {
   cpSync(join(binary, "package.json"), join(installed, "package.json"));
   symlinkSync(join(binary, "node_modules"), join(installed, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   await start(join(installed, "dist/cotal.js"), true);
-  const identity = process.platform === "win32" ? installed.toLowerCase() : installed;
+  const canonicalInstalled = realpathSync.native(installed);
+  const identity = process.platform === "win32" ? canonicalInstalled.toLowerCase() : canonicalInstalled;
   const id = createHash("sha256").update(identity).digest("hex").slice(0, 16);
   const store = join(root, "config", process.platform === "win32" ? "Cotal" : "cotal", "installs", id);
   mkdirSync(store, { recursive: true, mode: 0o700 });
   const version = (JSON.parse(readFileSync(join(installed, "package.json"), "utf8")) as { version: string }).version;
-  writeFileSync(join(store, "install.json"), JSON.stringify({ installRoot: installed, current: version, versions: [version] }), { mode: 0o600 });
+  writeFileSync(join(store, "install.json"), JSON.stringify({ installRoot: canonicalInstalled, current: version, versions: [version] }), { mode: 0o600 });
   await start(join(installed, "dist/cotal.js"), false);
   console.log("daemon set admission: checkout and new installation serve before seeding; a missing committed own set still refuses with repair");
 } finally { rmSync(root, { recursive: true, force: true }); }
