@@ -68,6 +68,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
+  rearmUnboundRestoreCommitIntent,
   localProcessOwnerStatus, parsePositiveIntegerFlag, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
@@ -217,7 +218,9 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     inventory: resume.inventory,
     serverName,
     serverNonce,
-    reentry: !replacementPending,
+    // Only a bound listener is adopted or replaced. With none bound, the attempt starts its listener,
+    // the first one under its launch identity (#7127).
+    reentry: Boolean(journal.listenerProof),
     journalState: journal.state,
     ...(journal.state !== "commit-intent" && journal.managerCommit ? { managerCommit: journal.managerCommit } : {}),
     ...(journal.listenerProof ? { listenerProof: journal.listenerProof } : {}),
@@ -269,6 +272,18 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, he
     prepared.listenerProof = undefined;
     prepared.journalState = "commit-intent";
     prepared.reentry = false;
+  } finally {
+    if (!heldLock) releaseMaintenanceLock(lock);
+  }
+}
+
+/** Return a restore with no bound listener to commit intent before its listener starts (#7127). The
+ *  caller has proved that no listener this attempt spawned still runs. */
+export function rearmUnboundRestore(prepared: PreparedRestore, heldLock?: MaintenanceLock): void {
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
+  try {
+    rearmUnboundRestoreCommitIntent(lock);
+    prepared.journalState = "commit-intent";
   } finally {
     if (!heldLock) releaseMaintenanceLock(lock);
   }

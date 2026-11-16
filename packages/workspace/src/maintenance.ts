@@ -3686,6 +3686,31 @@ export function replaceDeadRestoreListener(
   }) as CommitIntentRecord;
 }
 
+/**
+ * Return a degraded restore that has no bound listener to commit intent, so its next listener can
+ * start and bind (#7127). A bound listener is retired through {@link replaceDeadRestoreListener}, and
+ * a restore past manager commitment never returns here. The caller first proves that no listener
+ * this attempt spawned still runs. A commit intent with no bound listener is returned unchanged.
+ */
+export function rearmUnboundRestoreCommitIntent(lock: MaintenanceLock): CommitIntentRecord {
+  const record = currentJournal(lock);
+  if (record.state === "commit-intent" && !record.listenerProof) return record;
+  if (record.state !== "degraded" || record.listenerProof)
+    maintenanceError("invalid-transition", "restore commit intent is re-armed only from a degraded restore with no bound listener", {
+      root: lock.root,
+    });
+  if (record.managerCommittedAt !== undefined || record.managerCommit !== undefined || record.activeAt !== undefined)
+    maintenanceError("invalid-transition", "manager-committed restore cannot return to commit intent", {
+      root: lock.root, attemptId: record.restore.attemptId,
+    });
+  assertStoreIdentity(record.restore.target);
+  return writeJournal(lock, record, {
+    ...readyFrom(record), state: "commit-intent", restore: record.restore, launch: record.launch,
+    ...(record.listenerReplacements ? { listenerReplacements: record.listenerReplacements } : {}),
+    ...carriedTokenHandoff(record),
+  }) as CommitIntentRecord;
+}
+
 /** Fsync the manager's suppression-retaining commit token before requesting finalization. */
 export function recordRestoreManagerCommit(
   lock: MaintenanceLock,
