@@ -49,6 +49,11 @@ renameSync(paths.ready, `${paths.ready}.held`);
 assert.throws(assertExtensionSetReadable, /missing or incomplete.*cotal ext seed --repair/);
 renameSync(`${paths.ready}.held`, paths.ready);
 assertExtensionSetReadable();
+writeFileSync(paths.ready, "{broken");
+await prepareExtensionSet(async () => {
+  assert.equal(readFileSync(manifest, "utf8"), inventory);
+}, { repair: true });
+assertExtensionSetReady();
 const release = holdExtensionSet();
 const releaseSecond = holdExtensionSet();
 assert(extensionSetCleanupSpec().holders.some(holder => holder.version === paths.version && holder.state === "live"));
