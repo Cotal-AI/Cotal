@@ -1020,8 +1020,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       return;
     }
     if (restoreSink) restoreSinks.set(prepared.attemptId, restoreSink);
+    // The launch opens the store the restore wrote. With no --store-dir that was the default store,
+    // or the store it links to, until a missing source came to be rebuilt at its recorded path (#7049).
+    const defaultStore = join(prepared.root, ".cotal", "nats");
+    const atDefault = prepared.targetPath === defaultStore || (() => { try { return realpathSync(defaultStore) === prepared.targetPath; } catch { return false; } })();
     const next = {
       ...values,
+      ...(values["store-dir"] === undefined && !atDefault ? { "store-dir": prepared.targetPath } : {}),
       restore: undefined,
       "restore-only": undefined,
       "accept-missing-source": undefined,
