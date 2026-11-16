@@ -125,6 +125,14 @@ check("a missing argument a command checks has the same shape", usageShape(missi
 const conflict = run(["up", "--foreground", "--detach"]);
 check("two conflicting flags have the same shape", usageShape(conflict, /--foreground or --detach/), shown(conflict));
 
+const stopAgents = run(["update", "--stop-agents"]);
+check("the update refusal keeps its required command in backticks", usageShape(stopAgents, /--stop-agents requires `cotal update --self`/), shown(stopAgents));
+const stopAgentsJson = run(["update", "--stop-agents", "--json"]);
+check("the JSON update refusal carries the same command span", (() => {
+  const doc = JSON.parse(stopAgentsJson.stdout) as { error?: { code?: string; message?: string } };
+  return stopAgentsJson.status === 1 && stopAgentsJson.stderr === "" && doc.error?.code === "USAGE_INVALID" && doc.error.message === "--stop-agents requires `cotal update --self`";
+})(), shown(stopAgentsJson));
+
 const noTarget = run(["clean"]);
 check("clean with no target has the same shape and names the targets", usageShape(noTarget, /clean needs a target: history, store, all/), shown(noTarget));
 

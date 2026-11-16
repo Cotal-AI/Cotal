@@ -182,7 +182,7 @@ const loadedCliVersion = (() => {
   const root = fileURLToPath(new URL("../../package.json", import.meta.url));
   const meta = JSON.parse(readFileSync(root, "utf8")) as { name?: unknown; version?: unknown };
   if (meta.name !== "@cotal-ai/cli" || typeof meta.version !== "string" || !meta.version)
-    throw new Error(`cannot determine the loaded cotal version: ${root}`);
+    throw new Error(`cannot determine the loaded Cotal version: ${root}`);
   return meta.version;
 })();
 
