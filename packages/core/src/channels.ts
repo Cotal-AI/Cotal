@@ -2,8 +2,8 @@
  * Channel registry — the read/write helpers over the per-space channels KV bucket.
  *
  * The bucket holds one {@link ChannelConfig} per channel (key = the concrete channel token)
- * plus the space-wide defaults under {@link CHANNEL_DEFAULTS_KEY}. Writes are **privileged**
- * (manager / `cotal up` / `cotal channels`); agents read it (the live cache lives on the
+ * plus the space-wide defaults under {@link CHANNEL_DEFAULTS_KEY}. Direct writes are privileged.
+ * Agents with channel-admin request channel-scoped changes through the delivery host. Agents read it (the live cache lives on the
  * endpoint). Because description/instructions reach the model, both text fields are bounded
  * here and oversize is **rejected at the write path** — never silently truncated.
  */
@@ -11,7 +11,7 @@ import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { drainAndClose } from "./connection-cleanup.js";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
-import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
+import { channelBucket, CHANNEL_DEFAULTS_KEY, parsePrincipalKey } from "./subjects.js";
 import { standaloneConnectOpts } from "./streams.js";
 import type { ChannelConfig, ChannelDefaults, DeliveryClass } from "./types.js";
 import { lastKvEntries, liveKvEntries } from "./kv-scan.js";
@@ -60,6 +60,11 @@ export function validateChannelConfig(cfg: ChannelConfig): void {
   validateChannelDefaults(cfg);
   validateText("description", cfg.description, MAX_CHANNEL_DESCRIPTION);
   validateText("instructions", cfg.instructions, MAX_CHANNEL_INSTRUCTIONS);
+  if (cfg.writer !== undefined && cfg.writer !== "operator" && (typeof cfg.writer !== "string" || !parsePrincipalKey(cfg.writer)))
+    throw new Error("invalid channel writer principal");
+  if (cfg.removed !== undefined && cfg.removed !== true) throw new Error("invalid channel removal marker");
+  if (cfg.removed && (!cfg.writer || Object.keys(cfg).some((k) => k !== "removed" && k !== "writer")))
+    throw new Error("removed channel must hold only writer and removed");
 }
 
 function validateText(field: string, text: string | undefined, max: number): void {
@@ -193,9 +198,9 @@ async function mergeRegistryEntry(kv: KV, key: string, patch: ChannelConfig | Ch
     const decoded = entryDecode(entry);
     // A value that does not decode is not an empty entry. Merging over it would replace the bytes.
     if (decoded.error !== undefined) throw new UndecodableRegistryEntry(key, decoded.error);
-    const current = decoded.value;
+    const current = decoded.value && "removed" in decoded.value ? undefined : decoded.value;
     if (current && Object.entries(patch).every(([field, value]) => JSON.stringify((current as Record<string, unknown>)[field]) === JSON.stringify(value))) return false;
-    const merged = JSON.stringify({ ...current, ...patch });
+    const merged = JSON.stringify({ ...current, ...patch, ...(key === CHANNEL_DEFAULTS_KEY ? {} : { writer: "operator" }) });
     try {
       // With no entry yet the write is create-only, so a writer that created it first is merged over.
       if (entry) await kv.update(key, merged, entry.revision);
@@ -209,7 +214,8 @@ async function mergeRegistryEntry(kv: KV, key: string, patch: ChannelConfig | Ch
 }
 
 async function decode(kv: KV, key: string): Promise<ChannelConfig | ChannelDefaults | undefined> {
-  return entryValue(await kv.get(key));
+  const value = entryValue(await kv.get(key));
+  return value && "removed" in value ? undefined : value;
 }
 
 function entryValue(e: KvEntry | null): ChannelConfig | ChannelDefaults | undefined {
@@ -323,9 +329,18 @@ export async function deleteChannels(opts: {
     const kv = await openChannelRegistry(nc, opts.space, { create: false });
     for (const channel of opts.channels) {
       // A key whose last write is a delete or a purge has no entry.
-      if ((await kv.get(channel))?.operation !== "PUT") continue;
-      await kv.delete(channel);
-      removed.push(channel);
+      for (let attempt = 0; ; attempt++) {
+        const entry = await kv.get(channel);
+        if (!entry || entry.operation !== "PUT" || (entryDecode(entry).value as ChannelConfig | undefined)?.removed) break;
+        try {
+          await kv.update(channel, JSON.stringify({ removed: true, writer: "operator" }), entry.revision);
+          removed.push(channel);
+          break;
+        } catch (e) {
+          if (!isCasLoss(e)) throw e;
+          if (attempt >= MERGE_ATTEMPTS - 1) throw new ChannelRegistryConflict("channel revision changed during removal; nothing was removed");
+        }
+      }
     }
     return removed;
   } catch (error) {
@@ -379,7 +394,7 @@ export async function readChannelRegistry(opts: {
         }
         // Channel tokens such as `__proto__` are valid. Define an own data property instead of
         // invoking Object.prototype setters, while preserving the reader's normal-object shape.
-        if (decoded.value)
+        if (decoded.value && !(decoded.value as ChannelConfig).removed)
           Object.defineProperty(channels, e.key, {
             value: decoded.value,
             enumerable: true,

@@ -1,5 +1,17 @@
 # Upgrading a running deployment
 
+## Agent channel configuration
+
+Upgrade the credential issuer and delivery host before minting `channel-admin` credentials.
+Existing credentials do not gain grants by reconnecting. The seeded default persona now declares
+the capability. Setup and local `up` migrate byte-identical shipped defaults and preserve edited
+files. A user-auth actor also needs explicit ledger scope `channel-admin`; `--full` is unchanged.
+
+Channel configuration now records its writer. Removal leaves an attributed revision record that
+current readers treat as unconfigured. Upgrade readers together so older clients do not list these
+records as empty configured channels. Agent writes use `cotal_channel_info` with `set` or `remove`
+and the revision returned by a prior read. Space defaults and history purge remain operator actions.
+
 ## Tool payload publication
 
 Upgrading starts publishing mapped tool inputs and results by default for Claude and Jcode seats

@@ -197,6 +197,10 @@ export interface ChannelConfig {
   description?: string;
   /** Longer "how to use it" — surfaced to joiners as advisory, attributed data. */
   instructions?: string;
+  /** Last writer's principal, or `operator` for an operator configuration write. Advisory data. */
+  writer?: string;
+  /** An attributed removal. Policy and text are absent; the KV revision remains available for CAS. */
+  removed?: true;
 }
 
 /** Space-wide channel defaults, stored under {@link CHANNEL_DEFAULTS_KEY}. */

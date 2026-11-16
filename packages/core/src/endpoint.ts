@@ -1,4 +1,5 @@
 import { eventPayloadSubject, eventPayloadStream } from "./event-payloads.js";
+import { channelAdminSubject, channelAdminReply, changeChannelConfig, readChannelState, serveChannelAdmin, validateChannelChange, type ChannelChange, type ChannelState } from "./channel-admin.js";
 import { requestSafeReconnect } from "./request-safe-reconnect.js";
 import { nativeBindingAfter, nativeConnectionBinding, type NativeConnectionBinding } from "./native-connection.js";
 import { EventEmitter } from "node:events";
@@ -136,6 +137,7 @@ import {
   readChannelConfig,
   readChannelDefaults,
   decodeChannelEntry,
+  ChannelRegistryConflict,
 } from "./channels.js";
 import { isCasLoss } from "./endpoint-records.js";
 import {
@@ -807,6 +809,7 @@ export class CotalEndpoint extends EventEmitter {
   /** The live `ctl.delivery` serve subscription (delivery daemon) — re-created on every (re)connect by
    *  {@link armDeliveryControl}; tracked so the stale one is dropped on reconnect. */
   private deliveryServeSub?: import("@nats-io/transport-node").Subscription;
+  private channelAdminSub?: Subscription;
   private deliveryAdminServeSub?: import("@nats-io/transport-node").Subscription;
   /** The anycast take responder, the request records it writes, and their maintenance timer
    *  (delivery daemon, SPEC §8.1). Bound with the other Plane-3 responders and dropped with them. */
@@ -3863,6 +3866,34 @@ export class CotalEndpoint extends EventEmitter {
     return this.channelConfigs.get(channel);
   }
 
+  /** Read the authoritative configuration revision, including an attributed removal. */
+  async channelState(channel: string): Promise<ChannelState> {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) throw new Error("channel state needs one concrete channel");
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const kv = this.channelKv ?? await openChannelRegistry(this.nc, this.space);
+    return readChannelState(kv, channel);
+  }
+
+  /** Replace channel fields or remove the entry at the revision the caller observed. */
+  async configureChannel(channel: string, change: ChannelChange): Promise<ChannelState> {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) throw new Error("channel change needs one concrete channel");
+    validateChannelChange(change);
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    if (!this.authed) {
+      if (change.patch?.deliveryClass === "durable") throw new Error("an open mesh cannot promise durable delivery");
+      const kv = this.channelKv ?? await openChannelRegistry(this.nc, this.space, { create: true });
+      return changeChannelConfig(kv, channel, change, this.ref().id);
+    }
+    const subject = channelAdminSubject(this.space, this.owner, this.actor, channel);
+    const reply = channelAdminReply(this.space, this.owner, this.actor);
+    const result = (await this.requestBoundReply(this.nc, subject, JSON.stringify(change), reply, 5000)).json<{ ok: boolean; data?: ChannelState; error?: string; code?: string }>();
+    if (result.code === "CONFLICT") throw new ChannelRegistryConflict(result.error);
+    if (!result.ok || !result.data) throw new Error(result.error ?? "channel write returned no confirmed state");
+    return result.data;
+  }
+
   /** Effective replay-on-join policy for a channel: per-channel override ?? space default ??
    *  true. Reads the live cache, so it reflects runtime registry edits. */
   channelReplay(channel: string): boolean {
@@ -6499,6 +6530,8 @@ export class CotalEndpoint extends EventEmitter {
    *  up, because the daemon still has to ask the broker who owns the shard. */
   async quiescePlane3(): Promise<void> {
     this.plane3Quiesced = true;
+    this.channelAdminSub?.unsubscribe();
+    this.channelAdminSub = undefined;
     if (this.deliveryServeSub) {
       try { this.deliveryServeSub.unsubscribe(); } catch { /* already dead */ }
       this.deliveryServeSub = undefined;
@@ -6563,6 +6596,14 @@ export class CotalEndpoint extends EventEmitter {
     if (this.plane3Quiesced) return;
     await this.manager(); // the manager runs consume:false, so this.jsm is lazy — ensure it
     this.armDeliveryControl();
+    if (this.channelAdminSub) {
+      this.channelAdminSub.unsubscribe();
+      const i = this.subs.indexOf(this.channelAdminSub);
+      if (i >= 0) this.subs.splice(i, 1);
+    }
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    this.channelAdminSub = serveChannelAdmin(this.nc, this.space, await openChannelRegistry(this.nc, this.space), () => this.plane3MayAct(), (e) => this.emitRecoverable(e));
+    this.subs.push(this.channelAdminSub);
     await this.armAnycastRequests();
     await this.runFanout();
     await this.runReader();
@@ -8858,7 +8899,10 @@ export class CotalEndpoint extends EventEmitter {
     if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
       if (isDefaults) this.channelDefaults = decodeChannelEntry(e);
-      else this.channelConfigs.set(e.key, decodeChannelEntry(e));
+      else {
+        const config = decodeChannelEntry(e) as ChannelConfig;
+        if (!config.removed) this.channelConfigs.set(e.key, config);
+      }
     } catch (err) {
       this.emitRecoverable(new Error(`dropped channel registry entry for key ${JSON.stringify(e.key)}: ${(err as Error).message}`));
     }

@@ -13,7 +13,8 @@
  *                                     unicast to one principal; the sender is the last two tokens
  *   cotal.<space>.ctl.<service>.<owner>.<actor>
  *                                     control request/reply to a SERVER-SIDE service — the delivery
- *                                     daemon's delivery/delivery-admin carve-outs ONLY.
+ *                                     daemon's delivery/delivery-admin carve-outs. Channel
+ *                                     administration adds `.write.<channel...>` after the caller.
  *                                     The manager's ctl tiers were deleted in 1d, and the auth
  *                                     plane's rail moved to ep.one.auth in #350: both serve their
  *                                     control surface as v0.4 endpoints on the ep.* rails.
@@ -793,8 +794,8 @@ export function parseTakeSubject(subject: string): { role: string; owner: string
   return { role: parts[3], owner: parts[4], actor: parts[5], sender: `${parts[4]}.${parts[5]}` };
 }
 
-/** Control request/reply to a service — since 1d ONLY the delivery daemon (`ctl.delivery` /
- *  `ctl.delivery-admin`); the manager's own control moved to its v0.4 `service` endpoint on the
+/** Control request/reply to the delivery daemon (`ctl.delivery` / `ctl.delivery-admin`). The
+ *  channel-admin rail has its own channel-scoped builder. The manager's control moved to its v0.4 `service` endpoint on the
  *  `ep.*` rails, and the auth plane's rail followed it there (#350).
  *  `ctl.<service>.<owner>.<actor>` — tagged with the
  *  caller principal; anycast via queue group. Identity slots accept `*` (serve side: `ctl.<svc>.*.*`). */

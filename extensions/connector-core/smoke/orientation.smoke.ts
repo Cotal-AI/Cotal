@@ -208,8 +208,8 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.deepEqual(o.access.joinable, [{ channel: "incident" }], "a channel without a registry note is listed bare");
   assert.match(text, /not on yet: #incident · join one with cotal_join/);
   const noted = await orient(agentStub({ notes: { incident: "live incidents, post the pager link" } }), authCfg, [], 1);
-  assert.deepEqual(noted.access.joinable, [{ channel: "incident", note: "live incidents, post the pager link" }]);
-  assert.match(renderOrientation(noted), /not on yet: #incident \(live incidents, post the pager link\)/);
+  assert.deepEqual(noted.access.joinable, [{ channel: "incident", note: "advisory note by unrecorded writer: live incidents, post the pager link" }]);
+  assert.match(renderOrientation(noted), /not on yet: #incident \(advisory note by unrecorded writer: live incidents, post the pager link\)/);
   const onAll = await orient(agentStub(), cfg({ creds: "CREDS" }), [], 1);
   assert.deepEqual(onAll.access.joinable, []);
   assert.doesNotMatch(renderOrientation(onAll), /not on yet/);

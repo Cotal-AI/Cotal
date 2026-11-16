@@ -42,7 +42,7 @@ export interface GrantOverreach {
 }
 
 /** The capability tokens a spawner may hand on, besides `role:<r>`. */
-export const DELEGABLE_CAPABILITIES = Object.freeze(["spawn", "run", "admin"] as const);
+export const DELEGABLE_CAPABILITIES = Object.freeze(["spawn", "run", "admin", "channel-admin"] as const);
 
 export function isDelegableCapability(token: string): boolean {
   return (DELEGABLE_CAPABILITIES as readonly string[]).includes(token) || capabilityRole(token) !== undefined;
@@ -65,7 +65,9 @@ function partsOf(grant: DelegatedGrant): { part: GrantOverreach; project?: MintE
   for (const ch of grant.allowPublish ?? []) out.push({ part: { field: "allowPublish", value: ch }, project: { allowPublish: [ch] } });
   if (grant.role !== undefined) out.push({ part: { field: "role", value: grant.role }, project: { role: grant.role } });
   for (const token of grant.capabilities ?? []) {
-    const project = isDelegableCapability(token) ? { capabilities: [token] } : undefined;
+    const project = isDelegableCapability(token)
+      ? { capabilities: [token], ...(token === "channel-admin" ? { allowPublish: [...(grant.allowPublish ?? [])] } : {}) }
+      : undefined;
     out.push({ part: { field: "capabilities", value: token }, ...(project ? { project } : {}) });
   }
   for (const cap of grant.endpoints ?? [])

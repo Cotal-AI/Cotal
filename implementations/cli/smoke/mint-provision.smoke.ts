@@ -733,6 +733,33 @@ try {
     check("  a --role flag replaces that role and mints", roled.code === 0 && existsSync(standing("spaced")), roled.out);
   }
 
+  {
+    const { DEFAULT_AGENT } = await import("../src/lib/default-persona.js");
+    const agents = join(root, ".cotal", "agents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, "channelwriter.md"), DEFAULT_AGENT.replace("name: default_agent", "name: channel_writer"));
+    const delivery = new CotalEndpoint({ space: SPACE, servers: broker.servers,
+      creds: await mintCreds(auth, newIdentity(), "delivery"), channels: [], consume: false,
+      registerPresence: false, card: { name: "channel-delivery", kind: "endpoint" } });
+    delivery.on("error", () => {});
+    try {
+      await delivery.start();
+      await delivery.startPlane3(() => []);
+      const out = join(root, "channelwriter.creds");
+      const minted = await runMint(["channelwriter", "--provision", "--out", out]);
+      check("a shipped default-persona mint includes channel administration", minted.code === 0, minted.out);
+      const changed = await runCotal(["channel", "set", "fix.x", "--desc", "agent-authored purpose", "--creds", out, "--space", SPACE, "--server", broker.servers, "--json"]);
+      check("the provisioned default persona writes a channel through the shipped CLI", changed.code === 0, changed.out);
+      const shown = await runCotal(["channel", "show", "fix.x", "--json"]);
+      check("CLI read-back confirms agent purpose and writer", shown.code === 0 && shown.out.includes("agent-authored purpose") && shown.out.includes('"writer":"local.'), shown.out);
+      const unprivileged = join(root, "channel-reader.creds");
+      const plain = await runMint(["channelwriter", "--no-persona", "--allow-publish", ">", "--out", unprivileged]);
+      check("no-persona mint remains unprivileged", plain.code === 0, plain.out);
+      const refused = await runCotal(["channel", "set", "fix.x", "--desc", "not allowed", "--creds", unprivileged, "--space", SPACE, "--server", broker.servers, "--json"]);
+      check("no-persona credential cannot write channel configuration", refused.code === 2 && refused.out.includes("PERMISSION_DENIED"), refused.out);
+    } finally { await delivery.stop(); }
+  }
+
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);
 } finally {
   for (const fn of cleanup.reverse()) await fn();

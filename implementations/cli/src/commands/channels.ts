@@ -2,7 +2,7 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import {
-  assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay,
+  assertValidChannel, clearChannel, deleteChannels, effectiveDeliveryClass, effectiveReplay, CotalEndpoint, credsClaims,
   ChannelRegistryConflict, ChannelRegistryRemovalFailed, channelBucket, isConcreteChannel, isPublishPermissionDenied, readChannelRegistry, seedChannelRegistry, UndecodableRegistryEntry, validateChannelConfig,
   type ChannelConfig, type ChannelRegistryFile, type ChannelRegistryRead, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs,
 } from "@cotal-ai/core";
@@ -112,7 +112,10 @@ export async function channels(args: ParsedArgs): Promise<void> {
   const writes = action === "set" || action === "remove" || (action === "defaults" && Object.keys(patch(values)).length > 0);
   const profile = action === "remove" && values.purge ? "channel-purger" : writes ? "channel-writer" : "operator";
   const connection = await connectOrThrow(values, profile);
-  if (values.delivery === "durable" && connection.mode !== "auth" && connection.mode !== "user")
+  const agentWriter = values.creds !== undefined && connection.creds !== undefined && credsClaims(connection.creds).name === "agent";
+  if (agentWriter && (action === "defaults" || values.purge))
+    throw new CommandFailure("refused", "PERMISSION_DENIED", "channel-admin cannot change space defaults or purge history");
+  if (values.delivery === "durable" && !agentWriter && connection.mode !== "auth" && connection.mode !== "user")
     throw new CommandFailure("refused", "UNSUPPORTED", "the selected mesh has no recorded authenticated delivery service; durable membership was not promised by a metadata write", { target: { space: connection.space, mode: connection.mode ?? "unrecorded" }, remedy: "select a registered authenticated space with its delivery service, or use --delivery live for a live-only channel" });
   const user = connection.bearer && writes ? await userViewAuthOrExit(connection, profile === "channel-purger" ? "channel-purger" : "channel-writer") : undefined;
   const auth = user ? { bearer: user.bearer, sentinelCreds: user.sentinelCreds }
@@ -134,7 +137,18 @@ export async function channels(args: ParsedArgs): Promise<void> {
   let removed = false;
   let wrote = false;
   try {
-    if (action === "remove") {
+    if (agentWriter && writes) {
+      const ep = new CotalEndpoint({ ...options, tls: connection.tls, card: { name: "channel", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
+      ep.on("error", () => {});
+      try {
+        await ep.start();
+        const before = await ep.channelState(name!);
+        const expectedRevision = before.revision;
+        const state = await ep.configureChannel(name!, action === "remove" ? { remove: true, expectedRevision } : { patch: patch(values), expectedRevision });
+        removed = action === "remove" && before.config !== undefined;
+        wrote = state.revision !== before.revision;
+      } finally { await ep.stop(); }
+    } else if (action === "remove") {
       if (values.purge) ({ purged, removed } = await clearChannel({ ...options, channel: name! }));
       // clearChannel's best-effort config cleanup is not an acknowledgement of the registry delete.
       removed = (await deleteChannels({ ...options, channels: [name!] })).length > 0 || removed;

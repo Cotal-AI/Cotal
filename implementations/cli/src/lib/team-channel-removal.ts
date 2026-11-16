@@ -176,6 +176,7 @@ export async function openChannelCardRegistry(input: { server: string; space: st
       if (!entry || entry.operation !== "PUT") return { name, state: "absent", revision: entry?.revision ?? null, config: null };
       let config: ChannelConfig | null = null;
       try { config = decodeChannelEntry(entry) as ChannelConfig; } catch { /* An undecodable card still has a revision. */ }
+      if (config?.removed) return { name, state: "absent", revision: entry.revision, config: null };
       return { name, state: entry.revision === createdRevision ? "same-revision" : "changed", revision: entry.revision, config };
     },
     /** The registry stream's name, creation time and last sequence. A failed read throws. */

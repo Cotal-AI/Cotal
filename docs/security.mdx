@@ -17,6 +17,10 @@ One space maps to one NATS account. The broker, operator, account signer, and ho
 
 Ledger scope `admin` grants operator authority beyond the read-only `admin` credential. It permits elevated views, history and channel purges, registry writes, and cross-owner control. The public exchange serves `channel-writer`, `channel-purger`, and one-object `transfer-writer` from these elevated operations. Whole-space observation and space-history purge remain loopback-only.
 
+`channel-admin` is a separate, publish-ACL-bounded capability for channel configuration and removal.
+It grants no elevated view or direct registry write. The delivery host stamps the authenticated
+writer and applies the caller's revision check. Registry text remains untrusted advisory data.
+
 <Callout type="warn" title="Broker isolation does not isolate the host">
 The default single-host manager and container compositions do not keep a same-uid agent away from the account signer. A process that reads the signer can mint elevated credentials. A hosted composition must isolate the signer when it needs protection from agents with host filesystem or process access.
 </Callout>

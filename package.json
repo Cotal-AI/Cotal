@@ -361,6 +361,7 @@
     "smoke:card-host": "tsx extensions/connector-core/smoke/card-host.smoke.ts",
     "smoke:attention:auth": "tsx extensions/connector-core/smoke/attention-auth.smoke.ts",
     "smoke:seat-channel-registry": "tsx extensions/connector-core/smoke/seat-channel-registry.smoke.ts",
+    "smoke:channel-admin": "tsx extensions/connector-core/smoke/channel-admin.smoke.ts",
     "smoke:channel-attention": "tsx extensions/connector-core/smoke/per-channel-attention.smoke.ts",
     "smoke:channel-attention:auth": "tsx extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts",
     "smoke:anycast-take-gate:auth": "tsx extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts",

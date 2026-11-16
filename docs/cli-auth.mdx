@@ -65,6 +65,11 @@ Static minting requires local signing authority. Account sign-in and actor grant
 
 ## auth mint [#auth-mint]
 
+An agent mint from a persona declaring `channel-admin` includes channel-configuration authority
+within its post grants. `--no-persona` does not add it. This does not add spawn, run or admin
+authority to an out-of-band credential. A mint carrying an existing identity's channel grants does
+not infer new capabilities from a persona.
+
 ```bash
 cotal auth mint <name> [--profile agent|observer|admin] [--out <private-file>] [--json|--plain]
 cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <url>]

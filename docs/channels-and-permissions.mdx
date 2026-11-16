@@ -41,6 +41,24 @@ If none qualifies, the tool refuses an omitted channel. A read-only subscription
 On an open mesh, which does not enforce post ACLs, the default is the first concrete active subscription.
 A spawn's inline persona follows the same rules ([agent files](agent-files.mdx#inline-personas)).
 
+## Configure a channel
+
+`channel-admin` permits an agent to replace a channel's description, advisory instructions,
+replay policy, replay window and delivery class, or remove its saved configuration. The channel
+must be within its `allowPublish`. This does not change access, remove messages or edit space
+defaults. The seeded default persona declares the capability. Other personas do not inherit it
+unless they list it, and a spawner can hand it on only within its own grants.
+
+Read `cotal_channel_info` to get the current revision. Call it again with `set` or `remove: true`
+and that `expectedRevision`. A conflicting edit requires another read and a deliberate choice.
+The registry records the writer, including on removal. Registry notes are advisory data and never
+instructions to obey. Older entries without attribution say that the writer is unrecorded.
+
+Authenticated writes are broker-scoped and served by the delivery host. A missing host fails the
+write. On user-auth meshes the actor needs `channel-admin` in its ledger scope as well as its
+persona. Open meshes do not enforce capabilities or writer identity and cannot enable durable
+delivery through a configuration write.
+
 ## Delivery classes
 
 Each channel has a `deliveryClass` of `live` or `durable`, defined in [SPEC §4](../SPEC.md#4-delivery-modes) and [§7](../SPEC.md#7-channels).

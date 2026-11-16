@@ -43,7 +43,6 @@ const blocks = templateSources.flatMap((src) => [...src.matchAll(/---\n([\s\S]*?
   .filter((b) => /^name: /m.test(b));
 ok("setup ships at least the default persona plus the guided team", blocks.length >= 4, blocks.length);
 
-const frontmatter = new Map<string, Record<string, unknown>>();
 for (const raw of blocks) {
   // Drop the `${MANAGED_MARKER}` interpolation line: it is a source-level expression, not YAML, and
   // becomes a `#` comment only once the template is rendered. Reading the source means reading it
@@ -60,12 +59,11 @@ for (const raw of blocks) {
     continue;
   }
   const name = String(fm.name ?? "(unnamed)");
-  frontmatter.set(name, fm);
   ok(`${name} declares the channels it reads`, Array.isArray(fm.subscribe), fm.subscribe);
   ok(`${name} explicitly declares a non-empty post ACL`, Array.isArray(fm.allowPublish) && fm.allowPublish.length > 0, fm.allowPublish);
 }
 
-const defaultAgent = frontmatter.get("default_agent");
+const defaultAgent = parseYaml(DEFAULT_AGENT.match(/^---\n([\s\S]*?)\n---/)![1]) as Record<string, unknown>;
 ok(
   "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
   Array.isArray(defaultAgent?.subscribe) &&
@@ -80,9 +78,9 @@ ok(
 );
 
 ok(
-  "default-workflow-capability: the default declares spawn and run",
+  "default-workflow-capability: the default declares spawn, run and channel-admin",
   Array.isArray(defaultAgent?.capabilities) &&
-    defaultAgent.capabilities.includes("spawn") && defaultAgent.capabilities.includes("run"),
+    defaultAgent.capabilities.includes("spawn") && defaultAgent.capabilities.includes("run") && defaultAgent.capabilities.includes("channel-admin"),
   defaultAgent?.capabilities,
 );
 
@@ -107,7 +105,11 @@ try {
   );
 
   const spawnOnlyPath = join(fixtureRoot, "spawn-only.md");
-  const spawnOnly = DEFAULT_AGENT.replace("capabilities: [spawn, run]", "capabilities: [spawn]");
+  const previousPath = join(fixtureRoot, "previous.md");
+  const previous = DEFAULT_AGENT.replace("capabilities: [spawn, run, channel-admin]", "capabilities: [spawn, run]");
+  writeFileSync(previousPath, previous, { flag: "wx" });
+  ok("previous-default-upgrade: untouched spawn/run template gains channel-admin", reconcileDefaultAgent(previousPath) === "migrated" && readFileSync(previousPath, "utf8") === DEFAULT_AGENT);
+  const spawnOnly = DEFAULT_AGENT.replace("capabilities: [spawn, run, channel-admin]", "capabilities: [spawn]");
   writeFileSync(spawnOnlyPath, spawnOnly, { flag: "wx" });
   ok(
     "spawn-only-default-preservation: setup leaves existing capabilities unchanged",

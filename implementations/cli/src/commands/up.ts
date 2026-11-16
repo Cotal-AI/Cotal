@@ -5229,7 +5229,7 @@ function readChannelsFile(path: string, explicit = true): ChannelRegistryFile {
 }
 
 const CHANNEL_DEFAULT_FIELDS: Record<keyof ChannelDefaults, true> = { replay: true, replayWindow: true, deliveryClass: true };
-const CHANNEL_FIELDS: Record<keyof ChannelConfig, true> = { ...CHANNEL_DEFAULT_FIELDS, description: true, instructions: true };
+const CHANNEL_FIELDS: Record<keyof Omit<ChannelConfig, "writer" | "removed">, true> = { ...CHANNEL_DEFAULT_FIELDS, description: true, instructions: true };
 
 /** Why the registry would not take this seed: the shape, an unknown key, a channel name `channel set`
  *  refuses, or a field value the registry's write checks refuse. Undefined when every entry passes. */

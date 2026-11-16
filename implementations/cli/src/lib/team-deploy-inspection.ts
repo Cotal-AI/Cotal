@@ -72,7 +72,7 @@ async function channelRegistrySnapshot(server: string, space: string, tls: boole
     for (const entry of entries) {
       const value = decodeChannelEntry(entry);
       if (entry.key === CHANNEL_DEFAULTS_KEY) defaults = value;
-      else Object.defineProperty(channels, entry.key, { value, enumerable: true, configurable: true, writable: true });
+      else if (!(value as import("@cotal-ai/core").ChannelConfig).removed) Object.defineProperty(channels, entry.key, { value, enumerable: true, configurable: true, writable: true });
     }
     return { channels, ...(defaults ? { defaults } : {}) };
   } finally { await nc.close(); }

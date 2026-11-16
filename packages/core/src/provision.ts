@@ -15,6 +15,7 @@
  * expiry and renewal owner.
  */
 import { eventPayloadReadSubjects, eventPayloadStream, eventPayloadSubject } from "./event-payloads.js";
+import { channelAdminSubject } from "./channel-admin.js";
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
 import { decodeNatsJwt, nativeNkeySigner } from "./nkey-signer.js";
 import { spaceDeletionStreams } from "./space-deletion-targets.js";
@@ -1492,7 +1493,7 @@ export function permissionsFor(
   const CHAT = chatStream(space), DM = dmStream(space), TASK = taskStream(space);
   const PAYLOAD = eventPayloadStream(space);
   const KV = `KV_${presenceBucket(space)}`;
-  const CHKV = `KV_${channelBucket(space)}`; // channel registry (read-only for everyone)
+  const CHKV = `KV_${channelBucket(space)}`; // agents read directly, channel-admin writes are mediated
   const MEMKV = `KV_${membershipBucket(space)}`; // derived graph membership feed (read-only — dashboard)
   const DLVKV = `KV_${deliveryBucket(space)}`; // delivery lease/readiness (read-only — Component 6 health)
   // Validate both principal tokens; the reply inbox keys on the connection nkey (see MintPrincipal).
@@ -1622,6 +1623,7 @@ export function permissionsFor(
   const DLV = dlvStream(space), dlvD = dlvDurable(pr.owner, pr.actor, uid); // Plane-3 per-member delivery (bind-only when channel-readable)
   const roles = taskRoles(opts.role, opts.capabilities);
   const pubAllow = [
+    ...(opts.capabilities?.includes("channel-admin") ? allowPublish.map((ch) => channelAdminSubject(space, pr.owner, pr.actor, ch)) : []),
     // peer publish — owner+actor identity + channel scope, built from the real builders. Default-deny:
     // ONLY the declared allowPublish channels (none by default) get a chat-publish grant.
     ...allowPublish.map((ch) => chatSubject(space, pr.owner, pr.actor, ch)),
@@ -1715,6 +1717,7 @@ export function permissionsFor(
     // what lets it leave no watch consumer behind. The same reply-subject reasoning as the presence
     // read above: the consumer create below already grants that vector on this world-readable bucket.
     `$JS.API.DIRECT.GET.${CHKV}`,
+    `$JS.API.DIRECT.GET.${CHKV}.>`,
     `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
     `$JS.API.CONSUMER.INFO.${CHKV}.>`,
     // Delivery lease/readiness: READ-ONLY (kv.get) for the non-gating `cotal_channels` delivery-health
@@ -1871,6 +1874,7 @@ export function permissionsFor(
   // Replies to this agent's durable join/leave/list requests ride `ctl.delivery.<o>.<a>.>` (NOT the
   // per-id _INBOX), so the scoped delivery daemon can answer without broad inbox-publish.
   const deliveryReplies = `${controlServiceSubject(space, CONTROL_DELIVERY, pr.owner, pr.actor)}.>`;
+  epSub.push(`${spacePrefix(space)}.ctl.channel-admin.${pr.owner}.${pr.actor}.reply.*`);
   // Liveness answers (#1577) ride the probe's OWN request subtree, exactly like the delivery
   // control replies above and for the same reason: the responder answers without needing broad
   // inbox-publish. One row per plane, pinned to this agent's principal, so it can hear answers to
@@ -3152,6 +3156,8 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     "$JS.FC.>", // ordered-consumer flow control
     // Reads: presence (@mention resolve) + channel registry (delivery class) + members + ACL (re-auth).
     ...kvRead(PKV), ...kvRead(CHKV), ...kvRead(MKV), ...kvRead(AKV),
+    `$KV.${channelBucket(space)}.>`,
+    `$JS.API.DIRECT.GET.${CHKV}.>`,
     // Members-KV WRITE — the daemon is the durable-membership authority (join/leave/activate/catch-up).
     `$KV.${membersBucket(space)}.>`,
     // Delivery lease/readiness KV: read the bucket (renew CAS) + write ONLY lease keys. The
@@ -3194,6 +3200,7 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     // The privileged delivery-admin rail: same replies-only shape. Requests reach the
     // daemon on the sub below; only the supervisor cred can PUBLISH them (nats-server is the boundary).
     `${p}.ctl.delivery-admin.*.*.reply.>`,
+    `${p}.ctl.channel-admin.*.*.reply.*`,
     // LIVENESS REPLIES for the DELIVERY plane (#1577) — same replies-only shape as the two control
     // rails above. The daemon is the only process that can grade its own responder honestly: it
     // knows its own incarnation, so a predecessor's `ready:true` corpse in the lease classifies as
@@ -3221,6 +3228,7 @@ function deliveryPermissions(space: string, pr: MintPrincipal): Record<string, u
     takeServeFilter(space), // serve anycast takes (queue-grouped; role + owner+actor caller slots)
     `${p}.ctl.delivery.*.*`, // serve the delivery control service (queue-grouped; owner+actor caller slots)
     `${p}.ctl.delivery-admin.*.*`, // serve the privileged admin rail (reloadCreds; eviction executor next)
+    `${p}.ctl.channel-admin.*.*.write.>`,
     // Serve the delivery plane's liveness probe (#1577), queue-grouped. Presence-only: the handler
     // reduces the lease row to one enum before replying, so this subscription lets the daemon ANSWER
     // a peer without any peer gaining a read of the lease.

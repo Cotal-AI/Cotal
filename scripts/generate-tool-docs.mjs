@@ -83,10 +83,10 @@ const ANNOTATIONS = {
       "With no arguments it just reports the current values. An activity with no status changes only the activity line; your status and any condition stay as they are. A timed-out presence write reports that its outcome is unknown: the broker may have stored the update. Read the roster before retrying.",
   },
   cotal_channel_info: {
-    effect: "read-only",
-    availability: "always",
+    effect: "reads configuration; with `set` or `remove`, changes the named channel at `expectedRevision`",
+    availability: "reads always; writes need `channel-admin` and the channel's publish grant on authenticated meshes",
     notes:
-      "An unregistered name is reported as not in the channel registry. It is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.",
+      "`set` accepts description, instructions, replay, replayWindow and deliveryClass. Choose set or remove, not both. A read returns the revision needed for either write. An unregistered name is still a real channel if it has traffic. An agent's event channel (`events.<owner>.<actor>`) is described as one, and your own as yours.",
   },
   cotal_channels: { effect: "read-only", availability: "always" },
   cotal_channel_mode: {

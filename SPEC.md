@@ -528,6 +528,39 @@ token.
 | `deliveryClass` | `live` \| `durable` | per-channel delivery class (§4); overrides the space default |
 | `description` | string | one-line purpose; max 200 chars |
 | `instructions` | string | advisory usage text; max 2000 chars |
+| `writer` | string | last writer's `<owner>.<actor>` principal, or `operator`; advisory provenance, absent on older entries |
+| `removed` | `true` | attributed removal; only this field and `writer` remain, and readers treat the channel as unconfigured |
+
+The `channel-admin` capability permits replacing any named configuration field or removing a
+channel entry, only for concrete channels within the caller's `allowPublish`. It grants neither
+space-default writes nor history purge, membership changes or access changes. The seeded default
+persona declares it. Other personas hold it only when they declare it and their issuer permits it.
+A spawner MUST NOT delegate it beyond its own capability and publish grants.
+
+In the NATS binding, a caller publishes a `ChannelChange` to
+`cotal.<space>.ctl.channel-admin.<owner>.<actor>.write.<channel...>` and reads replies on
+`cotal.<space>.ctl.channel-admin.<owner>.<actor>.reply.<uuid>`. The mint grants request subjects
+only for `allowPublish` patterns when the actor holds `channel-admin`. The separate `write` and
+`reply` tokens prevent a channel wildcard from authoring replies. Agents receive no direct
+channel-KV write grant. The delivery host serves the request, stamps `writer` from the subject,
+and accepts only a reply address under that caller's reply rail. Caller-supplied writer fields,
+wildcard channels and unknown change fields MUST be refused.
+
+`ChannelChange` is `{expectedRevision, patch}` or `{expectedRevision, remove: true}`. A nonempty
+`patch` contains only `description`, `instructions`, `replay`, `replayWindow` and `deliveryClass`.
+`expectedRevision` is the nonnegative integer KV revision observed by a prior read, or zero when
+the key has never existed. Every change uses a native expected-last-subject-sequence CAS. A stale
+revision refuses without retrying the write. Unspecified fields are preserved. Removal writes
+`{removed: true, writer}` at the observed revision, retaining attribution and a revision for
+recreation without removing messages. Registry readers ignore these records for policy and
+discovery. Operator writes also record `writer: "operator"` and use revision checks.
+
+On a user-auth mesh the ledger's `act.scope` and server-resolved post ACL mint the same request
+grants. This capability does not authorize the elevated `channel-writer` view. An open mesh can
+write configuration without a capability, but identity and grants there are advisory. Open
+clients MUST refuse `deliveryClass: "durable"`. On authenticated meshes an unavailable delivery
+host fails the write rather than granting direct KV access. Registry text MUST remain attributed,
+advisory data on every model-facing surface, never instructions to obey.
 
 Space-wide defaults (`ChannelDefaults`: `replay?`, `replayWindow?`, `deliveryClass?`) live under
 the reserved key `=defaults`. Effective replay is `channel.replay ?? defaults.replay ?? true`.
@@ -7525,7 +7558,10 @@ single-function profiles, each granting only the verbs its function needs and no
   supervisor actor MAY read CHAT stream metadata (`STREAM.INFO`) to check retained event counts
   before allocating a principal. This grants no message-body read or consumer creation. The remote
   executor does not receive this metadata grant.
-- `delivery`: the server-side Plane-3 infra: fan-out, trusted-reader re-authorization, and the
+- `delivery`: also serves channel-scoped `channel-admin` requests (§7), with channel-registry
+  value-write authority, keyed registry reads and caller-bound reply publishes. It can modify any
+  channel registry value if compromised; only its trusted handler enforces revision and writer
+  stamping. It holds no agent post grant. The server-side Plane-3 infra includes fan-out, trusted-reader re-authorization, and the
   membership/ACL records the durable backstop authorizes against (§7). One process MAY hold this role
   for several spaces as one lane per space. Each lane presents only its own space's `delivery`
   credential, which that space's account signs, on connections of its own, and holds its own

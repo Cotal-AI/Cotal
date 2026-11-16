@@ -48,6 +48,12 @@ both reach the backstop, and redelivery may surface the same post twice.
 
 ## Why a trusted reader
 
+The delivery host also serves `channel-admin` configuration requests. The broker bounds each
+request to the caller's publish grants. The host stamps the writer and applies an observed-revision
+check before saving the channel configuration or an attributed removal record. This adds channel
+registry value-write authority to the delivery credential, but grants agents no direct KV writes.
+See [channel configuration](channels-and-permissions.mdx#configure-a-channel).
+
 A member's store contains copies from several channels. The member may leave a channel or lose
 read access before a stored copy reaches it. Owning the inbox therefore cannot authorize access
 to every entry in that store.

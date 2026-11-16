@@ -629,7 +629,7 @@ const authCommands: Command[] = [
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to; with list, only that subject's rows" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
       { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,run,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,run,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise, channel-admin and role:<r> (with --full: default spawn,run,role:default; '' = none; channel-admin = configure channels within post grants; role:<r> = may delegate role r)" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (with --full: default > = all channels) - the user's envelope: their agents can never read beyond it" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (with --full: default > = all channels) - also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
@@ -817,7 +817,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
 
 /** The ledger capabilities a grant's `--scope` may name, besides `role:<role>`: what the auth
  *  service, the manager and the views check a row's scope for. */
-const GRANT_CAPABILITIES = ["admin", "run", "spawn", "supervise"] as const;
+const GRANT_CAPABILITIES = ["admin", "run", "spawn", "supervise", "channel-admin"] as const;
 
 function isGrantCapability(scope: string): boolean {
   if ((GRANT_CAPABILITIES as readonly string[]).includes(scope)) return true;

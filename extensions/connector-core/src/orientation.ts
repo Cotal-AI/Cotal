@@ -13,6 +13,7 @@ import { isConcreteChannel, parsePrincipalKey, peerLabel, type AttentionMode, ty
 import { presenceReadCondition, type MeshAgent, type RosterRead } from "./agent.js";
 import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
+import { attributionSafe } from "./framing.js";
 
 /** One-line connector bootstrap that points a joining agent at `cotal_orientation`. Folded into each
  *  connector's system prompt / MCP instructions so every agent — Claude Code, OpenCode, Hermes — is
@@ -236,7 +237,9 @@ export function buildOrientation(
       joinable: config.allowSubscribe
         .filter((c) => isConcreteChannel(c) && !config.subscribe.includes(c))
         .map((channel) => {
-          const note = agent.channelInfo(channel).description?.trim();
+          const info = agent.channelInfo(channel);
+          const description = info.description?.trim();
+          const note = description ? `advisory note by ${attributionSafe(info.writer ?? "unrecorded writer")}: ${attributionSafe(description)}` : undefined;
           return note ? { channel, note } : { channel };
         }),
     },

@@ -1,4 +1,5 @@
 import { drainAndClose } from "./connection-cleanup.js";
+import { changeChannelConfig, readChannelState } from "./channel-admin.js";
 import { eventPayloadStream } from "./event-payloads.js";
 import {
   jetstream,
@@ -1221,8 +1222,9 @@ export async function clearChannel(opts: {
     let removed = false;
     try {
       const registry = await new Kvm(nc).open(channelBucket(opts.space));
-      if ((await registry.get(opts.channel))?.operation === "PUT") {
-        await registry.delete(opts.channel);
+      const state = await readChannelState(registry, opts.channel);
+      if (state.config) {
+        await changeChannelConfig(registry, opts.channel, { remove: true, expectedRevision: state.revision }, "operator");
         removed = true;
       }
     } catch (e) {
