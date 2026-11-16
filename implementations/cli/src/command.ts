@@ -1,4 +1,4 @@
-import { writeSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type FlagSpec, type ParsedArgs, type Registry, type Subcommand } from "@cotal-ai/core";
@@ -41,6 +41,8 @@ import {
   targetErrorSpace,
   terminalWidth,
   userCotalDir,
+  extensionSetPaths,
+  seedWriterKind,
   type OperationScope,
   staleStoreHint,
 } from "@cotal-ai/workspace";
@@ -253,7 +255,8 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
   // `cotal supervise --roster`, the agent supervisor + container entrypoint, or `cotal manager start`,
   // which replaces it) still seeds on first run.
-  if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
+  if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1" &&
+      (seedWriterKind() !== "released" || existsSync(extensionSetPaths().ready) || isAuthenticSeedChild())) return true;
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
