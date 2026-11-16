@@ -706,8 +706,22 @@ async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
 
     const refused = run("up", ...(detached ? ["--detach"] : []), "--server", server, "--space", space);
     assert.notEqual(refused.status, 0);
-    assert.match(refused.stderr, /re-entry has no bound listener proof/);
+    assert.match(refused.stderr, /re-entry has no bound listener proof, and process \d+ started for it still runs/);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "degraded");
+
+    // #7127: once no process of the attempt runs, bare up starts its listener and recovers forward,
+    // from the degraded record the refusal left.
+    if (!detached) return;
+    process.kill(listenerPid, "SIGTERM");
+    await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, `${label} unbound listener stop`);
+    await waitUntil(async () => { try { process.kill(listenerPid!, 0); return false; } catch { return true; } }, `${label} unbound listener exit`);
+    listenerPid = undefined;
+    const recovered = run("up", "--detach", "--server", server, "--space", space);
+    assert.equal(recovered.status, 0, `${label} bare up recovers an unbound restore forward\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
+    const active = JSON.parse(readFileSync(journalPath, "utf8")) as { state: string; listenerProof?: { serverName: string } };
+    assert.equal(active.state, "active", "the recovered restore is active");
+    assert.ok(active.listenerProof, "the recovered restore bound its listener");
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
     if (listenerPid) {
       try { process.kill(listenerPid, "SIGTERM"); } catch { /* already gone */ }
