@@ -68,7 +68,7 @@ import { recordedStackRemedy, type RecordedStackRemedy } from "../lib/recorded-s
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
-import { localUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
 export { localUpdateManagers } from "../lib/update-managers.js";
 export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
 import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
@@ -736,7 +736,7 @@ export async function reportRunningManagers(
   // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
   if (typeof flags.creds === "string") return readOne(flags);
   const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
-  const local = process.platform === "linux" ? census({ ...flags, on }) : [];
+  const local = census({ ...flags, on });
   const selected = local.filter(manager =>
     (typeof flags.space !== "string" || manager.space === flags.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(manager.server) === brokerAddressKey(flags.server)) &&
@@ -776,7 +776,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,
   // and it has to reach the MINT below, since a credential cannot gain an instance rail after it is
   // issued. A name or host resolves to an instance id the same way `ps` resolves it.
-  const on = await managerPin(flags, "cotal update");
+  let on = await managerPin(flags, "cotal update");
   // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
   // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
   // no answer from that mesh's exchange can change what this install does. Peek the mode the same
@@ -784,6 +784,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   // unfiltered) and skip the mint entirely for a remote entry, before it ever reaches the exchange.
   // The control resolve below reads the same sweep, so the whole chain sees one liveness verdict.
   let offline: readonly string[] | undefined;
+  let remoteSpace: string | undefined;
   if (typeof flags.creds !== "string") {
     const space = typeof flags.space === "string" ? flags.space : undefined;
     const server = typeof flags.server === "string" ? flags.server : undefined;
@@ -815,7 +816,18 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     // install is untouched by replacing this one, so it is no custody here, the same as a manager
     // that runs on another machine.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
-      if (!supervisorMayServe(peek.space, options.installedEntry)) {
+      remoteSpace = peek.space;
+      const recorded = on === undefined ? recordedUpdateManagers({ space: peek.space, server: peek.server }, options.installedEntry) : [];
+      if (recorded.length > 1) {
+        let verdict: "none" | "legacy" = "none";
+        for (const manager of recorded) {
+          if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
+          if (await readManagerContinuity({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }, options) === "legacy") verdict = "legacy";
+        }
+        return verdict;
+      }
+      if (recorded.length === 1) on = recorded[0]!.instanceId;
+      if (on === undefined && process.platform !== "win32" && !supervisorMayServe(peek.space, options.installedEntry)) {
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }
@@ -824,7 +836,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
     // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
     // exchange would refuse on the stopped auth service first.
-    if (peek && await isStoppedLocalMesh(peek)) {
+    if (peek && remoteSpace === undefined && await isStoppedLocalMesh(peek)) {
       console.log(c.dim(`  ${peek.space}: stopped; no manager running`));
       return "none";
     }
@@ -838,6 +850,11 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       offline,
     }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
   } catch (e) {
+    const failure = e instanceof ConnectRefusal ? e.failure() : isCommandFailure(e) ? e : undefined;
+    if (remoteSpace !== undefined && on === undefined && e instanceof ConnectRefusal && failure?.code === "PERMISSION_DENIED" && /\(view "manager-caller"\) was refused: manager-caller selection found (?:[2-9]|\d{2,}) live remote manager candidates for owner \S+ \([A-Za-z0-9_, -]+\); exactly one is required, so name one with --on <instanceId>/.test(failure.message)) {
+      console.log(`  ${remoteSpace}: several Managers are live and no local instance could be identified; continuing the software update.`);
+      return "none";
+    }
     // No running manager means no custody to preserve and nothing this update could interrupt. Only
     // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
     // with none selected. A selected stopped mesh was already read above; a named space that is not
