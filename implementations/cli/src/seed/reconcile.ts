@@ -17,6 +17,7 @@ import {
   loadExtensionsManifest,
   provenance,
   quarantineExtensionsManifest,
+  prepareExtensionSet,
   type InstalledExtension,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -52,7 +53,7 @@ import {
   writeStamp,
   type Stamp,
 } from "./authority.js";
-import { gcSeedStore, stageSeedPayload } from "./store.js";
+import { stageSeedPayload } from "./store.js";
 import { prefixLockDiffers, seededInstallDiffers, operatorInstallDiffers } from "./verify.js";
 
 /**
@@ -163,7 +164,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
     if (result.signal) { process.kill(process.pid, result.signal); await new Promise(() => {}); }
     process.exit(result.code ?? 1);
   }
-  return reconcileUnderClosure(mode);
+  return prepareExtensionSet(() => reconcileUnderClosure(mode), { repair: mode === "repair" || mode === "reset", beforeReset: assertNoSeedChild });
 }
 
 async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
@@ -332,15 +333,17 @@ function officialExtensionsCurrent(generation: string): boolean {
   }
 }
 
-async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
-  // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
-  // installer) is mutating it — reclaiming the lock does not stop that process. An ambiguous marker
-  // (pending with a dead parent, or corrupt) is fail-loud: we cannot prove no installer is running.
+function assertNoSeedChild(): void {
   const child = seedChildStatus();
   if (child.kind === "live")
     throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
   if (child.kind === "ambiguous")
     throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it and retry`);
+}
+
+async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
+  // Reclaiming a dead parent's lock does not stop its installer.
+  assertNoSeedChild();
 
   // REFUSE TO WRITE A GENERATION OLDER THAN THE STORE'S. An older binary run against a store stamped
   // newer misses the fast path (its generation is not the stamp), refreshes NOTHING (the refresh below
@@ -549,10 +552,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string, refr
   if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);
   clearCursor();
   clearRecovery();
-  gcSeedStore(
-    generation,
-    loadExtensionsManifest().extensions.map((e) => e.spec),
-  );
+  // Retired version sets are collected only by the binary's locked cleanup function.
   return { noop: false, seeded, refreshed, verified, removedKept };
 }
 
