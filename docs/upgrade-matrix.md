@@ -49,7 +49,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 40 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -66,6 +66,13 @@ product coordinates:
 | Linux manual updater to a synthetic next version with a stopped desktop-owned user service beside the npm CLI, staying stopped and naming the desktop service owner | 1 |
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
+| POSIX target-owned updater stopped at its real snapshot, then killed, followed by an unassisted self-update to the synthetic next version | 2 |
+
+The killed-updater cells use the installed target's public updater and native service. They hold the
+snapshot owner alive with `SIGSTOP`, verify that custody remains held, then kill that owner.
+The public `ps` command must recover and the hosted Manager must answer without a repair command.
+A subsequent ordinary `update --self` must reach the synthetic next version on its own. Windows
+killed-updater coverage is not claimed.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
@@ -175,7 +182,7 @@ Both public latest resolutions must match the frozen target. The published next-
 explicit paired synthetic target while retaining the public source bytes. If a newer release supersedes
 the frozen public target, the cell fails rather than certifying the wrong version.
 
-Each cell runs in a fresh disposable hosted runner. The release matrix admits all 40 required
+Each cell runs in a fresh disposable hosted runner. The release matrix admits all 42 required
 product cells concurrently, so a macOS queue does not consume a workflow-wide slot needed by Linux
 or Windows. GitHub runner availability still controls when a job starts. The six native builders
 retain their separate concurrency limit. Artifact timestamps record actual durations; neither the
@@ -205,7 +212,7 @@ extra failures and listed cells that turn green fail the summary. A green listed
 the entry. Raw reports stay failed. The census reports expected refusals separately from genuine
 upgrade passes, with separate summary acceptance and full upgrade acceptance.
 
-All 40 required cells have no active known refusal on current releases. The standalone consent entry
+The original 40 required cells have no active known refusal on current releases. The two killed-updater cells require their own evidence. The standalone consent entry
 for [#6802](https://github.com/Cotal-AI/Cotal/issues/6802) is retired now that the staged updater
 preserves a running standalone Manager's loaded execution generation across the update. The container
 entry names [#6785](https://github.com/Cotal-AI/Cotal/issues/6785) and applies only to source 0.164.6;
