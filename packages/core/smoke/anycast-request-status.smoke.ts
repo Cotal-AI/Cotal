@@ -103,7 +103,8 @@ type Got = { msg: CotalMessage; delivery: Delivery; kind: MessageMeta["kind"] };
 try {
   await awaitBrokerReady(() => isReachable(SERVERS), { servers: SERVERS, attempts: 50, delayMs: 200 });
   const provIdent = newIdentity();
-  const provCreds = await mintCreds(auth, provIdent, "provisioner");
+  // The optional idle observation outlasts the provisioner profile's five-minute default.
+  const provCreds = await mintCreds(auth, provIdent, "provisioner", { expiresInSeconds: 15 * 60 });
   await setupSpaceStreams({ servers: SERVERS, space, creds: provCreds });
   const mgr = new CotalEndpoint({ space, servers: SERVERS, creds: provCreds, card: { name: "mgr", kind: "endpoint" }, consume: false, registerPresence: false, watchPresence: false });
   mgr.on("error", () => {});
