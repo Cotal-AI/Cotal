@@ -7,15 +7,16 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // Recovery measurement only. Run once per route on a fresh disposable native runner, never the laptop.
-// node --import tsx stuck-native-before.mts REPO ROOT BASE_A BASE_B FIXED npm|installer
-const [repo, root, baseA, baseB, fixed, route] = process.argv.slice(2);
+// node --import tsx stuck-native-before.mts REPO ROOT BASE_A BASE_B FIXED npm|installer [registered|absent]
+const [repo, root, baseA, baseB, fixed, route, standin = 'registered'] = process.argv.slice(2);
+assert(['registered', 'absent'].includes(standin), 'controlled connector state required');
 assert(['linux', 'darwin'].includes(process.platform) && process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', 'requires admitted disposable GitHub-hosted POSIX runner');
 assert(repo && root && process.env.RUNNER_TEMP && resolve(root).startsWith(resolve(process.env.RUNNER_TEMP) + '/'), 'private runner temp root required');
 assert(route === 'npm' || route === 'installer', 'one route per fresh runner');
 assert(!existsSync(root), 'fresh before-state required');
 process.umask(0o077);
 mkdirSync(root, { mode: 0o700 });
-const report: any = { kind: 'official18-owned-native-recovery', platform: process.platform, route, startedAt: new Date().toISOString(), calls: [], observations: [], harnessSource: process.env.GITHUB_SHA };
+const report: any = { kind: 'official18-owned-native-recovery', platform: process.platform, route, standin, startedAt: new Date().toISOString(), calls: [], observations: [], harnessSource: process.env.GITHUB_SHA };
 const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
 const hash = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
 const guard = () => { const d = statfsSync(root); assert(d.bavail * d.bsize >= 25769803776, 'STOP: less than 24 GiB before install or install-capable command'); };
@@ -42,13 +43,13 @@ let installed = false, originalNpm: Buffer | undefined, writtenNpm: Buffer | und
 const npmrc = join(home, '.npmrc');
 const children = new Set<any>();
 function launch(label: string, file: string, argv: string[], extra: any = {}) {
-  const row: any = { label, file, argv, stdout: '', stderr: '', exit: null, signal: null, timeout: false };
+  const row: any = { label, file, argv, startedAt: new Date().toISOString(), stdout: '', stderr: '', exit: null, signal: null, timeout: false };
   report.calls.push(row);
   const child = spawn(file, argv, { cwd: project, env: { ...env, ...extra }, stdio: ['ignore', 'pipe', 'pipe'] });
   children.add(child);
   child.stdout.on('data', bytes => { row.stdout += bytes; });
   child.stderr.on('data', bytes => { row.stderr += bytes; });
-  const done = new Promise<any>((resolve, reject) => { child.once('error', reject); child.once('close', (exit, signal) => { Object.assign(row, { exit, signal }); children.delete(child); save(); resolve(row); }); });
+  const done = new Promise<any>((resolve, reject) => { child.once('error', reject); child.once('close', (exit, signal) => { Object.assign(row, { exit, signal, finishedAt: new Date().toISOString() }); children.delete(child); save(); resolve(row); }); });
   return { child, row, done };
 }
 async function call(label: string, file: string, argv: string[], timeout = 240000, extra: any = {}) {
@@ -71,7 +72,7 @@ function hashes(directory: string): any[] {
 async function observe(label: string) {
   const reply = await queryDaemon({ paths }); assert(reply.ok, 'daemon observation must answer');
   const d = reply.result;
-  const row = { label, at: new Date().toISOString(), daemon: { ...identity(d.pid), version: d.version, state: d.state }, managers: (d.managers ?? []).map((m: any) => ({ space: m.space, state: m.state, instanceId: m.instanceId, ...(m.pid ? identity(m.pid) : {}) })), fence: d.update?.restartEvidence };
+  const row = { label, at: new Date().toISOString(), daemon: { ...identity(d.pid), version: d.version, state: d.state }, generation: d.generation, managers: (d.managers ?? []).map((m: any) => ({ space: m.space, state: m.state, instanceId: m.instanceId, connectors: m.connectors, reason: m.reason, ...(m.pid ? identity(m.pid) : {}) })), fence: d.update?.restartEvidence };
   report.observations.push(row); save(); return row;
 }
 async function verifyNative(pid: number, stage: string) {
@@ -122,7 +123,8 @@ try {
   ({ processBirth: birth } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/lifetime.js')));
   guard(); ok(await cotal('seed official18', ['ext', 'seed', '--repair']));
   closeParticipant = await prepareUpdateParticipant({ env, project, cotalHome: env.COTAL_HOME, report });
-  await installSeatFixture();
+  if (standin === 'registered') await installSeatFixture();
+  else report.connectorPreparation = 'controlled absent connector, no registration command';
   ({ queryDaemon, managerViaDaemon } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/client.js')));
   const { daemonPaths } = await load(join(prefix, 'lib/node_modules/cotal-ai/dist/daemon/endpoint.js')); paths = daemonPaths();
   const plan = JSON.parse(ok(await cotal('native install plan', ['daemon', 'install', '--dry-run', '--json'])).stdout).result;
@@ -174,6 +176,8 @@ try {
   }
   report.version = await cotal('public new software version', ['--version']);
   assert(report.version.exit === 0 && report.version.stdout.startsWith(`cotal-ai ${report.target}\n`), 'new software must really be selected');
+  try { report.beforeSelf = await observe('immediately before new self update'); }
+  catch (error: any) { report.beforeSelf = { queryRefusal: error.message, at: new Date().toISOString() }; save(); }
   if (route === 'npm') { guard(); report.self = await cotal('new public self update', ['update', '--self', '--space', report.participant.space]); }
   report.after = await observe('after public replacement and reconcile');
   report.publicPsAfter = await cotal('new public ps after recovery', ['ps', '--space', report.participant.space, '--json']);
@@ -191,6 +195,7 @@ try {
   assert.deepEqual(report.oldChildrenBeforeTeardown, { daemonAlive: false, managerAlive: false }, 'old native daemon AND Manager must be gone before teardown');
   await verifyNative(report.after.daemon.pid, 'recovered');
   const name = 'recovered_worker', space = report.participant.space;
+  if (standin === 'registered') {
   report.spawn = ok(await cotal('spawn on recovered Manager', ['spawn', '--agent', 'recovery-standin', '--on', restored.instanceId, '--name', name, '--detach', '--no-events', '--space', space]));
   for (let i = 0; i < 120 && !existsSync(join(root, 'seat-ready.json')); i++) await pause(250);
   assert(existsSync(join(root, 'seat-ready.json')), 'real recovered authenticated seat must become ready');
@@ -202,13 +207,24 @@ try {
   report.seatStopped = birth(seat.pid) !== report.seat.start; assert.equal(report.seatStopped, true, 'stopped seat kernel lifetime must end');
   report.empty = JSON.parse(ok(await cotal('public inventory after recovered stop', ['ps', '--on', restored.instanceId, '--space', space, '--json'])).stdout).result;
   assert.equal(report.empty.items.length, 0);
+  } else report.lifecycleAcceptance = 'not attempted: controlled no-connector case, no fixture injected after recovery';
   guard(); report.nextSelf = ok(await cotal('second public self update after recovery', ['update', '--self', '--space', space]));
   report.final = await observe('after recovered lifecycle and second self');
   assert.equal(report.final.daemon.version, report.target); assert.equal(report.final.managers.find((m: any) => m.space === space)?.state, 'answering');
-  report.outcome = 'recovered: fixed native daemon and Manager, old lifetimes gone, real spawn/stop and subsequent public self update succeeded';
+  report.outcome = standin === 'registered'
+    ? 'recovered: fixed native daemon and Manager, old lifetimes gone, real spawn/stop and subsequent public self update succeeded'
+    : 'recovered: controlled no-connector native daemon and Manager, old lifetimes gone and subsequent public self update succeeded; spawn/stop not exercised';
 } catch (error: any) { report.error = error.stack; report.outcome ??= 'setup or observation failure, not accepted reproduction'; process.exitCode = 1; }
 finally {
   if (active) { active.child.kill('SIGKILL'); await active.done; }
+  // Keep public service diagnostics before native teardown, including generation watcher reasons.
+  if (paths && existsSync(join(paths.state, 'daemon.log'))) {
+    const bytes = readFileSync(join(paths.state, 'daemon.log'));
+    report.daemonLogBeforeCleanup = { sha256: hash(bytes), tail: bytes.subarray(-24000).toString() };
+  }
+  if (installed && receipt && process.platform === 'linux') {
+    report.nativeJournal = await call('owned service diagnostic journal before cleanup', 'journalctl', ['--user', '--unit', receipt.unit, '--no-pager', '-n', '120', '--output=cat'], 10000);
+  }
   // Native fixture lifetime ends only through the recorded service. Never kill by name.
   if (installed && receipt) {
     try { assert.equal(hash(readFileSync(receipt.unitPath)), receipt.unitSha256); report.cleanup = await cotal('remove owned disposable native fixture', ['daemon', 'uninstall', '--yes', '--json'], 120000); ok(report.cleanup); assert(!existsSync(receipt.unitPath)); }

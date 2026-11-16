@@ -11,13 +11,13 @@ permissions:
 jobs:
   before:
     if: github.ref == 'refs/heads/measure/stuck-native-before'
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
-        route: [npm, installer]
+        route: [npm]
+        standin: [registered, absent]
     env:
       DO_NOT_TRACK: '1'
       COTAL_TELEMETRY: 'off'
@@ -101,8 +101,9 @@ jobs:
       - name: Run one fresh official18 native before state
         env:
           ROUTE: ${{ matrix.route }}
+          STANDIN: ${{ matrix.standin }}
         run: |
-          node --import tsx scripts/stuck-native-before.mts "$GITHUB_WORKSPACE" "$RUNNER_TEMP/stuck-$ROUTE" "$RUNNER_TEMP/legacy-a" "$RUNNER_TEMP/legacy-b" "$RUNNER_TEMP/fixed" "$ROUTE"
+          node --import tsx scripts/stuck-native-before.mts "$GITHUB_WORKSPACE" "$RUNNER_TEMP/stuck-$ROUTE" "$RUNNER_TEMP/legacy-a" "$RUNNER_TEMP/legacy-b" "$RUNNER_TEMP/fixed" "$ROUTE" "$STANDIN"
       - name: Hash public evidence only
         if: always()
         env:
@@ -116,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stuck-native-before-${{ matrix.os }}-${{ matrix.route }}
+          name: stuck-native-pair-${{ matrix.standin }}
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/stuck-${{ matrix.route }}/result.json
