@@ -297,8 +297,14 @@ function args() {
 }
 function cleanEnvironment() {
   const env = { ...process.env };
-  for (const key of Object.keys(env)) if (key.startsWith('COTAL_')) delete env[key];
+  for (const key of Object.keys(env)) if (key.startsWith('COTAL_') || key.toLowerCase() === 'npm_config_before') delete env[key];
   return { ...env, DO_NOT_TRACK: '1', COTAL_TELEMETRY: 'off', NO_COLOR: '1' };
+}
+export function historicalBootstrapEnvironment(env, source) {
+  const result = { ...env };
+  for (const key of Object.keys(result)) if (key.toLowerCase() === 'npm_config_before') delete result[key];
+  if (compareVersions(source, '0.165.0') < 0) result.npm_config_before = '2026-11-16T19:38:00.000Z';
+  return result;
 }
 export function configureCandidateRegistry(home, registry) {
   const path = join(home, '.npmrc');
@@ -415,6 +421,7 @@ export async function matrixCell(options) {
   }
   env.PATH = [dirname(launcher), join(prefix, process.platform === 'win32' ? '' : 'bin'), join(home, '.local/bin'), env.PATH].join(delimiter);
   const [npm, npmPrefix] = npmCommand();
+  let bootstrapEnvironment;
   let uncertain = false, installedService = false, stackStarted = false, plan, receipt, holderPromise, releaseHolder, overlay, restoreRegistry, launchdObserver, offInventory, killControl, finalDaemon, container, compositionCleanup;
   const transcript = [];
   async function captureServiceEvidence(stage) {
@@ -440,7 +447,7 @@ export async function matrixCell(options) {
     }
     const startedAt = new Date().toISOString();
     const result = await new Promise(resolveCall => {
-      const child = spawn(file, argv, { cwd: project, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      const child = spawn(file, argv, { cwd: project, env: bootstrapEnvironment ?? env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '', stderr = '', timeoutHit = false;
       const timer = setTimeout(() => { timeoutHit = true; child.kill(); }, timeout);
       child.stdout.on('data', bytes => { stdout += bytes; });
@@ -449,7 +456,7 @@ export async function matrixCell(options) {
       child.once('close', (exit, signal) => { clearTimeout(timer); resolveCall({ exit, signal, stdout, stderr, timeout: timeoutHit }); });
     });
     const finishedAt = new Date().toISOString();
-    const entry = { label, file, argv, startedAt, finishedAt, elapsedMs: Date.parse(finishedAt) - Date.parse(startedAt), ...result };
+    const entry = { label, file, argv, startedAt, finishedAt, elapsedMs: Date.parse(finishedAt) - Date.parse(startedAt), npmBefore: (bootstrapEnvironment ?? env).npm_config_before ?? null, ...result };
     report.calls.push(entry);
     transcript.push(`$ ${file} ${argv.join(' ')}\n${result.stdout}${result.stderr}\n[exit ${result.exit}]\n`);
     writeFileSync(join(output, `${id}.log`), transcript.join('\n'), { mode: 0o600 });
@@ -552,6 +559,8 @@ export async function matrixCell(options) {
       // Native services read npm's normal per-account config, not the launching shell's registry env.
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
     }
+    bootstrapEnvironment = historicalBootstrapEnvironment(env, report.source);
+    report.sourceBootstrap = { before: bootstrapEnvironment.npm_config_before ?? null };
     const sourceInstall = ok(layout === 'installer' ? await installer(report.source) : await npmCall(nextHopMode === 'candidate' ? 'install exact candidate source' : 'install published source', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.source}`, '--no-audit', '--no-fund']), 'source install');
     assert.equal(json(join(pkg, 'package.json')).version, report.source, 'source installed version');
     report.sourceManifestSha256 = digest(readFileSync(join(pkg, 'package.json')));
@@ -581,6 +590,7 @@ export async function matrixCell(options) {
       report.staleRuntimes = runtimes;
       report.staleVersion = old;
     }
+    bootstrapEnvironment = undefined;
     if (options.prepare !== undefined) {
       assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
       compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, call, cotal, check, report });

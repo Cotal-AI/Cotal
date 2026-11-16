@@ -7,6 +7,11 @@ A passing cell requires the target CLI and every recorded extension, status exit
 recovery record, a preserved ready service when present, and no required repair step. Missing
 artifacts, skipped required cells and unsupported states are not passes.
 
+Source bootstrap installs before 0.165.0 use npm's `before=2026-11-16T19:38:00.000Z`
+cutoff to reconstruct dependencies from before the incompatible nkeys release. It applies only
+while installing and preparing that old source. Target metadata and upgrade commands have no cutoff.
+Each recorded command includes `npmBefore` so the boundary can be checked in its transcript report.
+
 Each cell summary shows the update command's recorded `elapsedMs`, not the whole cell's duration.
 Scheduler cells say they are not direct update calls. A cell that fails before updating says no
 update call was recorded. Only Windows manual update commands, including a chain's second hop, have a temporary 300000 ms
