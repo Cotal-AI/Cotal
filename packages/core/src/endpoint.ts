@@ -2990,7 +2990,9 @@ export class CotalEndpoint extends EventEmitter {
    *  A messaging frame (`chat`, `inst`, `svc`) is checked the way every other read of those planes
    *  is (SPEC §5): one whose payload sender is not the subject's sender is dropped, and one that
    *  passes carries the channel, recipient or role its subject names, not the payload's (#3741).
-   *  Any other frame reaches the handler as decoded. */
+   *  A `chat`, `inst` or `svc` message whose parts cannot be read is dropped, as history drops it.
+   *  Any other frame reaches the handler as decoded. An exception from the handler is emitted as
+   *  `error`, and the feed keeps reading (#7060). */
   tap(
     handler: (subject: string, msg: CotalMessage | undefined) => void,
     opts?: { subject?: string },
@@ -3016,9 +3018,17 @@ export class CotalEndpoint extends EventEmitter {
         const parsed = parseSubject(m.subject);
         if (decoded !== undefined && (parsed?.kind === "chat" || parsed?.kind === "evp" || parsed?.kind === "inst" || parsed?.kind === "svc")) {
           if (!isFromSubjectSender(decoded, parsed)) continue;
+          // A message whose parts cannot be read is dropped, as history drops it (#7060).
+          if (parsed.kind !== "evp" && (!Array.isArray(decoded.parts) || !decoded.parts.every(isReadableMessagePart))) continue;
           decoded = authenticatedMessage(decoded, parsed);
         }
-        tap.handler(m.subject, decoded);
+        // A handler that throws is reported and the feed goes on. Leaving this loop would stop every
+        // later frame while the process keeps running (#7060).
+        try {
+          tap.handler(m.subject, decoded);
+        } catch (e) {
+          this.emit("error", e as Error);
+        }
       }
     })().catch((e) => this.emit("error", e as Error));
   }
