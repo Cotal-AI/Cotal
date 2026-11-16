@@ -1,5 +1,13 @@
 # @cotal-ai/pi
 
+## 0.165.0
+
+### Patch Changes
+
+- a97aade: Report harness work timestamps across the Claude Code, Codex, Hermes, OpenCode and pi connectors.
+  
+  Relay work events into the existing presence `activeAt` field so roster and operator surfaces can date the last reported work separately from heartbeats. No new wire field or progress verdict is added. Boundary-only hosts report less frequently than streaming hosts, and work age cannot distinguish a slow provider from a hung one.
+
 ## 0.164.18
 
 No changes in this release.

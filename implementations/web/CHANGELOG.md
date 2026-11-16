@@ -1,5 +1,12 @@
 # @cotal-ai/web
 
+## 0.165.0
+
+### Patch Changes
+
+- 503c3eb: Stop unfinished legacy dashboard delete uploads after ten seconds without changing the channel.
+  The body deadline returns HTTP 408 and closes the connection even when the caller keeps sending small chunks. The existing 8 KiB limit and read-only service refusal are unchanged.
+
 ## 0.164.18
 
 No changes in this release.
