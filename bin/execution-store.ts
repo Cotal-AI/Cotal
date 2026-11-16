@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
+import { claimGlobalNpmUpdateLock, readUpdateRecovery } from "@cotal-ai/workspace";
+import { inspectLock, processStartToken } from "@cotal-ai/core";
+import { executionBinding, executionDescriptorPath, executionInventory, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, type ExecutionDescriptor } from "./cotal.js";
 
 export interface RetainedExecutionGeneration {
   id: string;
@@ -84,4 +86,106 @@ export function writeExecutionDescriptor(installedRoot: string, descriptor: Exec
     if (executionShared(installedRoot)) chmodSync(temporary, 0o644);
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
+}
+
+/** Retire abandoned update data only under the installation's global update lock. */
+export function cleanupExecutionStore(installed: string, report: (line: string) => void = line => process.stderr.write(`${line}\n`)): void {
+  if ((process.platform !== "linux" && process.platform !== "darwin") || existsSync(join(installed, "desktop-runtime.json"))) return;
+  let release: (() => void) | undefined;
+  let warned = false;
+  const warn = (error: unknown): void => {
+    if (warned) return;
+    warned = true;
+    report(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not remove old update data"}`);
+  };
+  try {
+    const store = executionStore(installed), info = lstatSync(store, { throwIfNoEntry: false });
+    if (!info || typeof process.getuid !== "function" || info.uid !== process.getuid()) return;
+    const uid = process.getuid();
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("store is not a real directory");
+    protectedExecutionEntry(store);
+    const modules = dirname(installed), lock = inspectLock(join(modules, ".cotal-update.lock"));
+    if (lock.state === "active") {
+      if (lock.owner.pid !== process.pid || lock.owner.start !== processStartToken(process.pid)) return;
+    } else {
+      try { release = claimGlobalNpmUpdateLock(modules); }
+      catch (error) {
+        if (inspectLock(join(modules, ".cotal-update.lock")).state === "active") return;
+        throw error;
+      }
+    }
+    const names = readdirSync(store);
+    const id = /^[a-f0-9]{32}$/;
+    type Generation = ExecutionDescriptor["generation"];
+    const generation = (value: unknown): Generation => {
+      const row = value as Generation | undefined;
+      if (!row || !id.test(row.id) || typeof row.version !== "string" || !/^[a-f0-9]{64}$/.test(row.inventorySha256)) throw new Error("invalid retained generation record");
+      return row;
+    };
+    const descriptors = names.filter(name => /^\.active-[a-f0-9]{64}\.json$/.test(name)).map(name => {
+      const record = executionRecord(join(store, name)) as ExecutionDescriptor;
+      if (record.v !== 1) throw new Error("unsupported active generation record");
+      generation(record.generation);
+      if (record.previous) generation(record.previous);
+      return { name, record };
+    });
+    const recovery = readUpdateRecovery();
+    const protectedJournal = recovery?.execution;
+    const transactions = names.filter(name => /^\.transaction-[A-Za-z0-9]+$/.test(name)).map(name => {
+      const directory = join(store, name), stat = lstatSync(directory);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) throw new Error("unsafe transaction directory");
+      const path = join(directory, "execution.json");
+      const record = executionRecord(path) as { v: number; installed: string; completed?: boolean; target: Generation & { root: string }; previous: { descriptor: ExecutionDescriptor | null } };
+      if (record.v !== 1 || typeof record.installed !== "string" || executionStore(record.installed) !== store || !record.previous) throw new Error("invalid execution journal");
+      generation(record.target);
+      if (record.target.root !== join(store, record.target.id, "cotal-ai")) throw new Error("execution journal target escapes store");
+      if (record.previous.descriptor) generation(record.previous.descriptor.generation);
+      return { directory, path, record, finished: record.completed === true && path !== protectedJournal };
+    });
+    const keep = new Set<string>();
+    for (const { record, name } of descriptors) {
+      keep.add(record.generation.id);
+      // Older releases recorded the replaced generation only in their publication journal.
+      const journal = transactions.filter(row => row.record.target.id === record.generation.id && row.path !== protectedJournal);
+      if (!record.previous && journal.length === 1 && !recovery) {
+        const previous = journal[0].record.previous.descriptor?.generation;
+        if (previous) {
+          record.previous = previous;
+          const temporary = join(store, `${name}.${randomBytes(16).toString("hex")}`);
+          try {
+            writeFileSync(temporary, `${JSON.stringify(record)}\n`, { flag: "wx", mode: lstatSync(join(store, name)).mode & 0o777 });
+            renameSync(temporary, join(store, name));
+          } finally { rmSync(temporary, { force: true }); }
+        }
+      }
+      if (record.previous) keep.add(record.previous.id);
+      if (!recovery) {
+        let selected: string | undefined = record.generation.id;
+        const visited = new Set<string>();
+        while (selected && !visited.has(selected)) {
+          visited.add(selected);
+          const rows = transactions.filter(row => row.record.target.id === selected);
+          if (rows.length !== 1) break;
+          rows[0].finished = true;
+          selected = rows[0].record.previous.descriptor?.generation.id;
+        }
+      }
+    }
+    for (const row of transactions.filter(row => !row.finished || row.path === protectedJournal)) {
+      keep.add(row.record.target.id);
+      if (row.record.previous.descriptor) keep.add(row.record.previous.descriptor.generation.id);
+    }
+    const remove = (path: string): void => {
+      try {
+        const stat = lstatSync(path);
+        if (stat.uid !== uid || stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`not an owned update directory: ${path}`);
+        rmSync(path, { recursive: true, force: true });
+      } catch (error) { warn(error); }
+    };
+    for (const name of names) {
+      if (/^\.(?:installing|preparing)-[A-Za-z0-9]+$/.test(name) || (id.test(name) && !keep.has(name))) remove(join(store, name));
+    }
+    for (const row of transactions.filter(row => row.finished && row.path !== protectedJournal)) remove(row.directory);
+  } catch (error) { warn(error); }
+  finally { try { release?.(); } catch (error) { warn(error); } }
 }

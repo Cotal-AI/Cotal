@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { executionBinding, executionLaunchBinding, executionDescriptorPath, executionLocation, executionRecord, executionSha256, executionShared, executionStore, protectedExecutionEntry, selectExecutionProgram, type ExecutionBinding, type ExecutionDescriptor } from "./cotal.js";
 import { retainExecutionGeneration, type RetainedExecutionGeneration, writeExecutionDescriptor } from "./execution-store.js";
@@ -9,6 +9,7 @@ interface ExecutionTransaction {
   installed: string;
   launchEntry?: string;
   previous: { manifest: string; bootstrap: string; descriptor: ExecutionDescriptor | null };
+  completed?: boolean;
   target: RetainedExecutionGeneration;
 }
 
@@ -79,7 +80,7 @@ export function publishExecutionTransaction(installed: string, path: string, res
   if (meta.name !== "cotal-ai" || typeof meta.version !== "string") throw new Error("invalid execution publication manifest");
   const finalBinding: ExecutionBinding = { name: "cotal-ai", version: meta.version, bootstrapSha256: executionSha256(bootstrap) };
   const descriptor: ExecutionDescriptor | null = restore ? record.previous.descriptor : {
-    v: 1, binding: finalBinding, ...(record.launchEntry ? { launch: executionLaunchBinding(installed, record.launchEntry) } : {}), generation: { id: record.target.id, version: record.target.version, inventorySha256: record.target.inventorySha256 },
+    v: 1, binding: finalBinding, ...(record.previous.descriptor ? { previous: record.previous.descriptor.generation } : {}), ...(record.launchEntry ? { launch: executionLaunchBinding(installed, record.launchEntry) } : {}), generation: { id: record.target.id, version: record.target.version, inventorySha256: record.target.inventorySha256 },
   };
   if (descriptor) {
     const transitional: ExecutionDescriptor = { ...descriptor, binding: current, bindings: [
@@ -93,6 +94,11 @@ export function publishExecutionTransaction(installed: string, path: string, res
   selectExecutionProgram(installed);
 }
 
+export function completeExecutionTransaction(installed: string, path: string): void {
+  const record = readExecutionTransaction(installed, path);
+  atomicFile(path, JSON.stringify({ ...record, completed: true }), 0o600);
+}
+
 /** Stage only within the owned retained store; npm receives this private prefix, never the live root.
  *  The caller holds the claim on npm's global root, so a staging folder already here was abandoned by
  *  an attempt that ended, and it is removed first. */
@@ -102,9 +108,6 @@ export function executionStagingPrefix(installed: string): string {
   if (!lstatSync(store, { throwIfNoEntry: false })) { mkdirSync(store, { mode: 0o700 }); if (executionShared(installed)) chmodSync(store, 0o755); }
   if (!lstatSync(store).isDirectory() || lstatSync(store).isSymbolicLink()) throw new Error("unsafe execution generation store");
   protectedExecutionEntry(store);
-  for (const name of readdirSync(store)) {
-    if (/^\.(?:installing|preparing)-[A-Za-z0-9]{6}$/.test(name)) rmSync(join(store, name), { recursive: true, force: true });
-  }
   return mkdtempSync(join(store, ".installing-"));
 }
 

@@ -39,6 +39,10 @@ Rollback restores captured connector configuration before verifying the previous
 It releases its own admission fences even when the daemon still runs the target generation.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
 An unwritable installation refuses before staging and names the owning install command.
+Update attempts, successful publications and daemon startup retire abandoned staging and completed
+transactions under the update lock. The active and previous generations stay for rollback and loaded
+processes. Another account's store is untouched; a cleanup warning does not fail the update.
+Normal command startup does not collect old update data.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
 
 Publication changes only the canonical bootstrap. A protected descriptor in the retained store
