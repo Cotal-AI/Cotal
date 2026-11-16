@@ -236,7 +236,7 @@ try {
     const setupHelp = await cli(["setup", "--help"]);
     check("G0 setup permits account-only setup and describes its scoped space flags", setupHelp.status === 0 && setupHelp.out.includes("[--space <s>]") && setupHelp.out.includes("--no-manager and --wait require --space") && !setupHelp.out.includes("the resolved mesh"), setupHelp.out);
     const missingProvider = await cli(["setup", "--json"], 30_000, { ...childEnv, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` });
-    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
+    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use `cotal login --idp <url>`.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
     for (const flags of [["--no-manager"], ["--wait", "0"]]) {
       const scoped = await cli(["setup", ...flags, "--json"]);
       check(`G0 setup ${flags[0]} still requires an explicit space`, scoped.status === 1 && scoped.doc.error?.code === "USAGE_INVALID" && scoped.doc.error.message === "--no-manager and --wait require --space <s>", scoped.doc);

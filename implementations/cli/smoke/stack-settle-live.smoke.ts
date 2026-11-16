@@ -1798,7 +1798,7 @@ try {
       switched.status === 0 && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ") && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`),
       { request, stdout: away.stdout.slice(-2500) });
     // The folder note sends to status, which is this report, so status leaves it out.
-    const selectionNote = `the selected space applies here; this folder's space "${space}" is reached with --space ${space} or cotal use --clear`;
+    const selectionNote = `the selected space applies here; this folder's space "${space}" is reached with --space ${space} or \`cotal use --clear\``;
     check(`${space}: with another space selected, status there does not send to cotal status, still names the block under this folder's space with --abandon-stop first in Next, and offers no cotal up for it`,
       !away.stdout.includes(`this folder holds the space "${space}"`) && !away.stdout.includes("run `cotal status`") && new RegExp(`^This folder's space .* ${space}$`, "m").test(away.stdout) && away.stdout.includes("Stack blocked · ")
         && awayNext.split("\n")[0]!.includes(`cotal down --abandon-stop ${request} --yes`) && !away.stdout.includes("restart it with") && awayNext.split("\n").filter((line) => /cotal up\b/.test(line)).every((line) => line.includes(otherRoot)),

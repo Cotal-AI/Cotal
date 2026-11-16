@@ -665,7 +665,7 @@ if (process.platform !== "win32") {
     const runningJson = running.run(["status", "--json"]);
     check("an explicit selection wins over a running folder and names its concrete override",
       runningJson.envelope?.target.space === "sel" && runningJson.envelope.result?.meshes.current === "sel" &&
-        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(runningText.stdout), shown(runningText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or `cotal use --clear`$/m.test(runningText.stdout), shown(runningText));
 
     const stopped = await folderRig((project, run) => {
       check("rig: this folder's space is registered at a broker that does not answer",
@@ -675,7 +675,7 @@ if (process.platform !== "win32") {
     const stoppedJson = stopped.run(["status", "--json"]);
     check("an explicit selection remains the target over a stopped folder and names its override",
       stoppedJson.envelope?.target.space === "sel" &&
-        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(stoppedText.stdout), shown(stoppedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or `cotal use --clear`$/m.test(stoppedText.stdout), shown(stoppedText));
 
     const prepared = await folderRig((project, run) => {
       const created = run(["space", "create", "held", "--root", project]);
@@ -685,7 +685,7 @@ if (process.platform !== "win32") {
     const preparedJson = prepared.run(["status", "--json"]);
     check("an explicit selection remains the target over a prepared folder and names its override",
       preparedJson.envelope?.target.space === "sel" && preparedJson.envelope.result?.meshes.folder === null &&
-        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(preparedText.stdout), shown(preparedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or `cotal use --clear`$/m.test(preparedText.stdout), shown(preparedText));
   } finally {
     if (greeter.exitCode === null && greeter.signalCode === null) {
       const exited = once(greeter, "exit");
