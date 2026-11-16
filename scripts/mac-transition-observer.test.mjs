@@ -7,6 +7,12 @@ test('handoff source must match exact private home, label, argv and bytes', () =
   const label = `ai.cotal.update.${'a'.repeat(32)}`, bytes = Buffer.from('native plist');
   const receipt = { failures: 0, label, source: `/home/fixture/.cotal/${label}.plist`, sha256: createHash('sha256').update(bytes).digest('hex'), argv: ['/node', '/runner.js', label] };
   assert.equal(validateHandoff('/home/fixture/.cotal', receipt, bytes), receipt);
+  // 0.164.18 adds the logical installed CLI entry after the runner's label.
+  const installedEntry = { ...receipt, argv: [...receipt.argv, '/prefix/lib/node_modules/cotal-ai/dist/cotal.js'] };
+  assert.equal(validateHandoff('/home/fixture/.cotal', installedEntry, bytes), installedEntry);
+  for (const argv of [receipt.argv.slice(0, 2), [...installedEntry.argv, 'extra'], [...receipt.argv, null]]) {
+    assert.throws(() => validateHandoff('/home/fixture/.cotal', { ...receipt, argv }, bytes));
+  }
   assert.throws(() => validateHandoff('/home/fixture/.cotal', { ...receipt, source: `/other/${label}.plist` }, bytes));
   assert.throws(() => validateHandoff('/home/fixture/.cotal', receipt, Buffer.from('wrong')));
   assert.throws(() => validateHandoff('/home/fixture/.cotal', { ...receipt, argv: ['/node', '/runner.js', 'other'] }, bytes));
