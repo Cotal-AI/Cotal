@@ -11,10 +11,153 @@ import { candidatePairRegistry } from "./candidate-pair-registry.mjs";
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 interface Context { env: NodeJS.ProcessEnv; project: string; pkg: string; root: string; config: string; cotalHome: string; prefix: string; cli: string; output: string; options: Record<string, any>; report: Record<string, any>; call(label: string, file: string, argv: string[], timeout?: number): Promise<any>; cotal(label: string, argv: string[], timeout?: number): Promise<any>; check(name: string, passed: boolean, observed: unknown): void }
 
+/** Public updater ownership proof. The caller owns the subsequent default A to B update. */
+async function prepareUpdaterAdmission(context: Context) {
+  assert(["linux", "darwin"].includes(process.platform));
+  const { env, pkg, root, cli, prefix, options, report, call, cotal, cotalHome, output } = context;
+  const mode = options["target-admission"], official = mode === "official18-escape";
+  const prior = { ...process.env }, registry = env.npm_config_registry;
+  const participant = await prepareUpdateParticipant(context);
+  Object.assign(process.env, env);
+  const e: Record<string, any> = { mode, space: report.participant.space, observations: [] };
+  report.targetAdmission = e;
+  const load = (path: string) => import(pathToFileURL(path).href);
+  // Capture fixed native primitives before the official CLI replaces the main prefix.
+  const { processBirth } = await load(join(pkg, "dist/daemon/lifetime.js"));
+  const { queryDaemon, managerViaDaemon } = await load(join(pkg, "dist/daemon/client.js"));
+  const { daemonPaths } = await load(join(pkg, "dist/daemon/endpoint.js"));
+  await load(join(pkg, "node_modules/@cotal-ai/auth/dist/index.js"));
+  const { control, controlPs } = await load(join(pkg, "node_modules/@cotal-ai/workspace/dist/control/index.js"));
+  const paths = daemonPaths(env, cotalHome);
+  const identity = (pid: number) => { const start = processBirth(pid); assert(start, `native birth unavailable: ${pid}`); return { pid, start }; };
+  const alive = (row: any) => processBirth(row.pid) === row.start;
+  const ok = (row: any) => { assert.equal(row.exit, 0, row.stdout + row.stderr); return row; };
+  const query = async () => { const row = await queryDaemon({ paths }); assert(row.ok, JSON.stringify(row)); return row.result; };
+  const controlClient = { versionSkew: (detail: string) => detail, roster: async () => { throw Error("ambiguous fixture Manager"); } };
+  const status = async (label: string) => { const value = await control(controlClient, { space: e.space }, "managerStatus"); e.observations.push({ label, at: Date.now(), value }); return value; };
+  const checkStatus = (row: any, maintenance: string) => { assert.equal(row.ok, true, JSON.stringify(row)); assert.equal(row.data.instanceId, e.before.manager.instanceId); assert.equal(row.data.agentCount, 0); assert.equal(row.data.stopImpact.maintenance, maintenance); assert.equal(row.data.stopImpact.resumeRequired, false); assert.equal(row.data.stopImpact.stopping, false); };
+  let foreign: ReturnType<typeof spawn> | undefined, updater: ReturnType<typeof spawn> | undefined;
+  let ended: Promise<void> | undefined, legacy: Awaited<ReturnType<typeof candidatePairRegistry>> | undefined;
+  const restoreRegistry = () => { if (registry === undefined) { delete env.npm_config_registry; delete process.env.npm_config_registry; } else { env.npm_config_registry = registry; process.env.npm_config_registry = registry; } };
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try {
+      if (updater && updater.exitCode === null && updater.signalCode === null) { assert(alive(e.fenceProducer), "updater identity changed before cleanup"); updater.kill("SIGKILL"); await ended; }
+      if (foreign && foreign.exitCode === null && foreign.signalCode === null) {
+        assert(alive(e.before.daemon), "foreign daemon identity changed before cleanup");
+        const done = new Promise<void>(resolve => foreign!.once("close", () => resolve()));
+        foreign.kill("SIGTERM"); const timer = setTimeout(() => { if (alive(e.before.daemon)) foreign!.kill("SIGKILL"); }, 10000);
+        try { await done; } finally { clearTimeout(timer); }
+        for (let i = 0; i < 100 && e.before?.manager && alive(e.before.manager); i++) await delay(100);
+        assert(!alive(e.before.daemon), "owned foreign daemon remains alive after teardown");
+        if (e.before.manager) assert(!alive(e.before.manager), "owned foreign Manager remains alive after teardown");
+      } else if (!official) await managerViaDaemon({ paths }, { op: "managers-stop" });
+    } finally {
+      try { if (legacy) await legacy.close(); }
+      finally { try { await participant(); } finally { restoreRegistry(); for (const key of Object.keys(process.env)) if (!(key in prior)) delete process.env[key]; Object.assign(process.env, prior); } }
+    }
+  };
+  return Object.assign(close, {
+    customDaemon: official,
+    async extensionInventory(stage: string) {
+      const script = `import{pathToFileURL}from'node:url';import{join}from'node:path';import{readFileSync}from'node:fs';const p=${JSON.stringify(pkg)};const boot=await import(pathToFileURL(join(p,'dist/cotal.js')).href);const selected=boot.selectExecutionProgram(p);const w=await import(pathToFileURL(join(selected.root,'node_modules/@cotal-ai/workspace/dist/index.js')).href);const set=w.extensionSetPaths();const rows=JSON.parse(readFileSync(join(set.extensions,'extensions.json'),'utf8')).extensions;console.log(JSON.stringify(rows.map(row=>({...row,installedPath:join(set.extensions,'node_modules',row.pkg)}))));`;
+      const rows = JSON.parse(ok(await call(`read ${stage} selected connector inventory`, process.execPath, ["--input-type=module", "-e", script])).stdout);
+      assert(Array.isArray(rows) && rows.length >= 8); return rows;
+    },
+    async beforeUpdate() {
+      try {
+        let producerEntry = cli, producerPrefix = prefix, producerRegistry = registry;
+        if (official) {
+          assert(options["admission-legacy-candidate"] && options["admission-legacy-next"]);
+          legacy = await candidatePairRegistry(options["admission-legacy-candidate"], options["admission-legacy-next"]);
+          assert.equal(legacy.identity.source, options["admission-legacy-source"]);
+          e.legacyRegistry = legacy.identity; legacy.activateTarget(); producerRegistry = legacy.url;
+          const publicRegistry = "https://registry.npmjs.org/";
+          const dist = ok(await call("official18 registry dist receipt", "npm", ["view", "cotal-ai@0.164.18", "dist", "--json", "--registry", publicRegistry]));
+          e.officialDist = JSON.parse(dist.stdout); assert.match(e.officialDist.integrity, /^sha512-/); assert.match(e.officialDist.tarball, /^https:\/\/registry\.npmjs\.org\//);
+          producerPrefix = join(root, "official18-prefix");
+          for (const destination of [producerPrefix, prefix]) {
+            ok(await call(destination === prefix ? "install official18 main" : "install official18 foreign", "npm", ["install", "-g", "--prefix", destination, "cotal-ai@0.164.18", "--registry", publicRegistry, "--no-audit", "--no-fund"]));
+            assert.equal(JSON.parse(readFileSync(join(destination, "lib/node_modules/cotal-ai/package.json"), "utf8")).version, "0.164.18");
+          }
+          producerEntry = join(producerPrefix, "lib/node_modules/cotal-ai/dist/cotal.js");
+          ok(await call("seed official18 foreign service", process.execPath, [producerEntry, "ext", "seed", "--repair"]));
+          foreign = spawn(process.execPath, [producerEntry, "daemon", "serve"], { cwd: context.project, env: { ...env, npm_config_prefix: producerPrefix }, stdio: ["ignore", "pipe", "pipe"] });
+          e.foreignLogs = "";
+          for (const stream of [foreign.stdout!, foreign.stderr!]) stream.on("data", bytes => { e.foreignLogs += bytes; });
+          await new Promise<void>((resolve, reject) => { foreign!.once("spawn", resolve); foreign!.once("error", reject); });
+          e.before = { daemon: identity(foreign.pid!) };
+          let ready = false;
+          for (let i = 0; i < 120; i++) { try { if ((await query()).state === "ready") { ready = true; break; } } catch {} await delay(250); }
+          assert(ready, "official daemon did not become ready");
+          e.officialSource = { version: "0.164.18", entry: producerEntry };
+        }
+        const manager = await managerViaDaemon({ paths }, { op: "manager-start", space: e.space });
+        assert.equal(manager.state, "answering");
+        if (!official) { assert.equal(report.environment?.hostedDisposable, true, "killed updater requires hosted native service custody"); assert.equal(report.daemonBefore?.pid, (await query()).pid, "fixture must use harness native service"); }
+        const daemon = await query();
+        e.before = { daemon: identity(daemon.pid), manager: { ...identity(manager.pid), instanceId: manager.instanceId }, version: daemon.version };
+        if (!official) checkStatus(await status("initial public status"), "active");
+        updater = spawn(process.execPath, [producerEntry, "update", "--self", "--space", e.space], { cwd: context.project, env: { ...env, npm_config_prefix: producerPrefix, npm_config_registry: producerRegistry }, stdio: ["ignore", "pipe", "pipe"] });
+        let paused = false;
+        const producer: Record<string, any> = { entry: producerEntry, stdout: "", stderr: "", registry: producerRegistry }; e.fenceProducer = producer;
+        ended = new Promise<void>((resolve, reject) => { updater!.once("error", reject); updater!.once("close", (code, signal) => { producer.exit = code; producer.signal = signal; resolve(); }); });
+        await new Promise<void>((resolve, reject) => { updater!.once("spawn", resolve); updater!.once("error", reject); });
+        Object.assign(producer, identity(updater.pid!));
+        updater.stdout!.on("data", bytes => { producer.stdout += bytes; if (!paused && producer.stdout.includes("Saving update recovery snapshot")) { assert(alive(producer)); paused = updater!.kill("SIGSTOP"); producer.pausedAt = Date.now(); } });
+        updater.stderr!.on("data", bytes => { producer.stderr += bytes; });
+        for (let i = 0; i < 1800 && !paused && updater.exitCode === null && updater.signalCode === null; i++) await delay(100);
+        assert(paused, `public updater never reached snapshot: ${producer.stdout}${producer.stderr}`);
+        await delay(2400); assert(alive(producer), "paused owner must remain alive beyond reaper interval"); producer.heldMs = Date.now() - producer.pausedAt;
+        const held = await query(); e.preparedFence = held.update.restartEvidence;
+        assert(e.preparedFence.prepared && e.preparedFence.managers.every((row: any) => row.fenced && row.seats === 0));
+        if (!official) {
+          e.pausedPs = JSON.parse(ok(await cotal("paused updater public ps", ["ps", "--space", e.space, "--json"])).stdout);
+          checkStatus(await status("paused public status"), "preserving");
+          e.pausedList = await controlPs(controlClient, { space: e.space }, { readOnly: true }); assert.equal(e.pausedList.ok, true); assert.deepEqual(e.pausedList.rows, []);
+        }
+        e.preparedObservedAt = report.calls.length;
+        assert(alive(producer)); assert((await query()).update.restartEvidence.prepared);
+        e.pausedMainVersion = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version;
+        assert.equal(e.pausedMainVersion, official ? "0.164.18" : report.source, "snapshot must precede main publication");
+        updater.kill("SIGKILL"); await ended; e.killedAt = Date.now();
+        if (official) {
+          const bootstrap = await candidatePairRegistry(options.candidate, options["candidate-next"]);
+          e.bootstrapRegistry = bootstrap.identity;
+          env.npm_config_registry = bootstrap.url; process.env.npm_config_registry = bootstrap.url;
+          try { ok(await call("plain npm fixed A escape", "npm", ["install", "-g", "--prefix", prefix, `cotal-ai@${report.source}`, "--registry", bootstrap.url, "--no-audit", "--no-fund"])); }
+          finally { await bootstrap.close(); restoreRegistry(); }
+          e.bootstrapVersion = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version; assert.equal(e.bootstrapVersion, report.source);
+        } else {
+          let active = false;
+          while (Date.now() - e.killedAt < 15000) { const row = await status("autonomous recovery status"); if (row.ok && row.data?.stopImpact?.maintenance === "active") { checkStatus(row, "active"); active = true; break; } await delay(100); }
+          e.recoveryElapsedMs = Date.now() - e.killedAt; assert(active && e.recoveryElapsedMs <= 15000, "same Manager must recover autonomously within 15s");
+          const recovered = await query(); const row = recovered.managers.find((item: any) => item.space === e.space);
+          e.recoveredManager = { ...identity(row.pid), instanceId: row.instanceId }; assert.deepEqual(e.recoveredManager, e.before.manager);
+        }
+        restoreRegistry();
+      } catch (error) { await close(); throw error; }
+    },
+    async afterUpdate(update: any) {
+      ok(update); e.update = update;
+      const daemon = await query(), row = daemon.managers.find((item: any) => item.space === e.space);
+      e.after = { daemon: identity(daemon.pid), manager: { ...identity(row.pid), instanceId: row.instanceId }, version: daemon.version };
+      if (official) { assert.deepEqual(e.after.daemon, e.before.daemon); assert.deepEqual(e.after.manager, e.before.manager); assert.match(update.stdout, /activation deferred:.*software update finished|Software update finished\. The daemon and its Managers keep running their current generation until restarted:/s); }
+      if (!official) { checkStatus(await status("after default update public status"), "active"); assert.equal(daemon.update.restartEvidence.prepared, false); }
+      e.recovery = existsSync(join(cotalHome, "update-recovery.json")) ? JSON.parse(readFileSync(join(cotalHome, "update-recovery.json"), "utf8")) : null; assert.equal(e.recovery, null);
+      const bytes = Buffer.from(JSON.stringify(e)), name = "target-admission-observations.json"; writeFileSync(join(output, name), bytes, { mode: 0o600 }); e.artifact = { name, bytes: bytes.length, sha256: hash(bytes) };
+      context.check("public updater owner recovery and default self update", true, { mode, before: e.before, after: e.after });
+    },
+  });
+}
+
 /** Real participant and installed Manager composition for the five staged-admission coordinates. */
 export async function prepareTargetAdmission(context: Context) {
   const { env, root, config, cotalHome, pkg, cli, options, report, call, cotal, check, output } = context;
   const mode = options["target-admission"] as string;
+  if (["killed-updater", "official18-escape"].includes(mode)) return prepareUpdaterAdmission(context);
   assert(["foreign-preserving", "offline", "manager-unknown", "consent-stop", "consent-declined"].includes(mode));
   assert(["linux", "darwin"].includes(process.platform));
   const controls = { pauseBroker() { throw new Error("broker control not initialized"); }, resumeBroker() { throw new Error("broker control not initialized"); } };
@@ -184,7 +327,7 @@ export async function prepareTargetAdmission(context: Context) {
       evidence.deferred = mode !== "consent-stop";
       if (evidence.deferred) {
         assert(alive(evidence.before.daemon) && alive(evidence.before.manager), "deferred update must retain exact native holders");
-        assert.match(update.stdout, /activation deferred:.*software update finished/);
+        assert.match(update.stdout, /activation deferred:.*software update finished|Software update finished\. The daemon and its Managers keep running their current generation until restarted:/s);
       } else assert.equal(status.version, report.target, "consented native generation must become B");
       evidence.oldSetsAfter = evidence.oldSets.map((row: { path: string; sha256: string }) => ({ ...row, observedSha256: existsSync(row.path) ? hash(readFileSync(row.path)) : null }));
       if (evidence.deferred) assert(evidence.oldSetsAfter.every((row: any) => row.observedSha256 === row.sha256), "retained connector generation must remain readable byte-for-byte");

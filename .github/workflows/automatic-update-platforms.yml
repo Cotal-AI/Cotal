@@ -152,7 +152,7 @@ jobs:
               assert.equal(plan.phase, 'candidate', 'target admission measurement requires candidate phase');
               assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'measurement source must be bound to its direct product parent');
             }
-            const cells = (admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan)).map(cell => cell.targetAdmission === 'foreign-preserving' ? { ...cell, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE } : cell);
+            const cells = (admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan)).map(cell => ['foreign-preserving', 'official18-escape'].includes(cell.targetAdmission) ? { ...cell, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE } : cell);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
@@ -378,7 +378,7 @@ jobs:
           if-no-files-found: error
   admission-legacy-pack:
     needs: [select, release-native]
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission' && needs.select.outputs.applicable == 'true' && needs.release-native.result == 'success' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')
+    if: (contains(needs.select.outputs.matrix, 'foreign-preserving') || contains(needs.select.outputs.matrix, 'official18-escape')) && needs.select.outputs.applicable == 'true' && needs.release-native.result == 'success' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -483,7 +483,7 @@ jobs:
           if-no-files-found: error
   release-cells:
     needs: [select, release-pack, release-next, admission-legacy-pack]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success' && (!(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission') || needs.admission-legacy-pack.result == 'success')
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success' && (!(contains(needs.select.outputs.matrix, 'foreign-preserving') || contains(needs.select.outputs.matrix, 'official18-escape')) || needs.admission-legacy-pack.result == 'success')
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -521,12 +521,12 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/release-follow-on
       - uses: actions/download-artifact@v4
-        if: matrix.targetAdmission == 'foreign-preserving'
+        if: matrix.targetAdmission == 'foreign-preserving' || matrix.targetAdmission == 'official18-escape'
         with:
           name: admission-legacy-candidate
           path: ${{ runner.temp }}/admission-legacy-candidate
       - uses: actions/download-artifact@v4
-        if: matrix.targetAdmission == 'foreign-preserving'
+        if: matrix.targetAdmission == 'foreign-preserving' || matrix.targetAdmission == 'official18-escape'
         with:
           name: admission-legacy-next
           path: ${{ runner.temp }}/admission-legacy-next
@@ -652,7 +652,7 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-killed-updater': 'daemon', 'candidate-next-target-admission-official18-escape': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           const paired = Boolean(cell.targetAdmission) || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
@@ -688,7 +688,7 @@ jobs:
           }
           if (cell.targetAdmission) {
             options['target-admission'] = cell.targetAdmission;
-            if (cell.targetAdmission === 'foreign-preserving') {
+            if (['foreign-preserving', 'official18-escape'].includes(cell.targetAdmission)) {
               options['admission-legacy-candidate'] = process.env.RUNNER_TEMP + '/admission-legacy-candidate';
               options['admission-legacy-next'] = process.env.RUNNER_TEMP + '/admission-legacy-next';
               options['admission-legacy-source'] = process.env.ADMISSION_LEGACY_SOURCE;
@@ -808,7 +808,7 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-killed-updater': 'daemon', 'candidate-next-target-admission-official18-escape': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
@@ -927,6 +927,7 @@ jobs:
                 ? (await import('./scripts/target-admission-evidence.mjs')).verifyTargetAdmissionEvidence({ report, cell, output: directory })
                 : undefined;
               const assertions = {
+                ...Object.fromEntries(['native-preservation', 'public-read', 'live-owner', 'dead-owner-bounded', 'next-hop-alone', 'official18-registry', 'real-preservation', 'plainnpm-noerror'].map(name => [name, admissionEvidence?.assertions?.[name] === true])),
                 'target-admission-evidence': admissionEvidence?.passed === true,
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
                 'candidate-next-target': report.candidateNext?.targetVersion === (cell.followOnAction ? cell.targetVersion : finalTarget),

@@ -176,7 +176,7 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes("['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']"));
   assert(source.includes("const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir()"));
   assert(source.includes("if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign"));
-  assert(source.includes("if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
+  assert(source.includes("if (daemonHostedManager || options['target-admission']) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
   assert(source.includes('const deadline = Date.now() + 60000;'));
   assert(source.includes('JSON.stringify(observed)'));
   assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
