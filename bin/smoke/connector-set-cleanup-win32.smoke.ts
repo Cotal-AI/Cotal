@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { win32ProcessBinding } from "@cotal-ai/workspace";
+import { dirname, join, resolve } from "node:path";
+import { inspectLock } from "@cotal-ai/core";
+import { win32ProcessBinding, windowsSetOwnedByCurrentUser, windowsSetTreeOwnership } from "@cotal-ai/workspace";
 import { cleanupExecutionStore, type ConnectorSetCleanup } from "../execution-store.js";
 
 if (process.platform === "win32") {
@@ -30,6 +31,21 @@ if (process.platform === "win32") {
     cleanupExecutionStore(installed, line => warnings.push(line));
     assert(existsSync(join(root, "0.0.1")), "absent spec never collects sets");
     clean();
+    if (existsSync(join(root, "0.0.1"))) {
+      const observe = (read: () => unknown): unknown => { try { return read(); } catch (error) { return { error: error instanceof Error ? error.message : String(error) }; } };
+      const diagnostic = {
+        stage: "first obsolete set remained", sid, scratch, installed, root, warnings: [...warnings],
+        resolvedRoot: resolve(root), canonicalRoot: observe(() => realpathSync.native(root)),
+        canonicalInstall: observe(() => realpathSync.native(installed)), canonicalSpecInstall: observe(() => realpathSync.native(spec.installRoot)),
+        installedOwned: observe(() => windowsSetOwnedByCurrentUser(installed)), rootOwned: observe(() => windowsSetOwnedByCurrentUser(root)),
+        rootStat: observe(() => { const stat = lstatSync(root); return { directory: stat.isDirectory(), symlink: stat.isSymbolicLink(), mode: stat.mode, uid: stat.uid }; }),
+        obsoleteTree: observe(() => windowsSetTreeOwnership(join(root, "0.0.1"))),
+        lock: observe(() => inspectLock(join(dirname(installed), ".cotal-update.lock"))),
+      };
+      console.error(`connector collector diagnostic: ${JSON.stringify(diagnostic)}`);
+      const output = process.env.COTAL_OWNER_PROBE_OUTPUT;
+      if (output) { mkdirSync(output, { recursive: true }); writeFileSync(join(output, "collector-diagnostic.json"), JSON.stringify(diagnostic, null, 2)); }
+    }
     assert.deepEqual(readdirSync(root).sort(), ["0.1.0", "0.2.0", "0.3.0", "0.4.0"]);
     assert.equal(warnings.length, 0, warnings.join("\n"));
     create("0.0.2"); clean({ ...spec, holders: [{ state: "unknown" }] });
