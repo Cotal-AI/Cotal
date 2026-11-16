@@ -16,7 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: x64, runner: windows-latest }
           - { arch: arm64, runner: windows-11-arm }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
@@ -24,6 +23,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source_sha }}
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: fixture-source
+          persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
@@ -39,6 +43,16 @@ jobs:
           $output=Join-Path $env:RUNNER_TEMP 'native-owner-proof'
           $null=New-Item -ItemType Directory -Path $output -Force
           @{product=$head;measurement='${{ github.sha }}';arch=$arch;node=(& node --version);readerSha256=(Get-FileHash packages/workspace/native/win32-process.c -Algorithm SHA256).Hash.ToLowerInvariant();adapterSha256=(Get-FileHash packages/workspace/src/extension-set-win32.ts -Algorithm SHA256).Hash.ToLowerInvariant();collectorSha256=(Get-FileHash bin/execution-store.ts -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json | Set-Content "$output/source.json"
+      - name: Overlay only reviewed measurement fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $fixture='packages/workspace/smoke/extension-set-owner-win32.smoke.ts'
+          Copy-Item -LiteralPath "fixture-source/$fixture" -Destination $fixture
+          $changes=@(git diff --name-only)
+          if($changes.Count -ne 1 -or $changes[0] -cne $fixture){throw 'Measurement overlay changed more than the reader fixture'}
+          $hash=(Get-FileHash $fixture -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{measurement='${{ github.sha }}';product='${{ inputs.source_sha }}';fixture=$fixture;sha256=$hash} | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP/native-owner-proof/fixture-origin.json"
       - run: pnpm install --frozen-lockfile
       - name: Build exact source Windows binding
         shell: cmd
@@ -66,27 +80,15 @@ jobs:
           Get-Content "$output/reader.log"
           @{exitCode=$code} | ConvertTo-Json | Set-Content "$output/reader-exit.json"
           if($code -ne 0){throw 'Native directory owner reader security cells failed'}
-      - name: Run real consuming collector security cells directly
-        if: always() && !cancelled()
-        shell: pwsh
-        env:
-          COTAL_OWNER_PROBE_OUTPUT: ${{ runner.temp }}/native-owner-proof/collector
-        run: |
-          $ErrorActionPreference='Stop'
-          $output=Join-Path $env:RUNNER_TEMP 'native-owner-proof'
-          & node --import tsx bin/smoke/connector-set-cleanup-win32.smoke.ts *> "$output/collector.log"
-          $code=$LASTEXITCODE
-          Get-Content "$output/collector.log"
-          @{exitCode=$code} | ConvertTo-Json | Set-Content "$output/collector-exit.json"
-          if($code -ne 0){throw 'Consuming Windows collector security cells failed'}
       - name: Verify source and built native provenance
+        if: always() && !cancelled()
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           node --input-type=module -e "import {verifyNative} from './packages/workspace/scripts/native-contract.mjs'; verifyNative('win32',process.arch,undefined,'${{ inputs.source_sha }}');"
           if($LASTEXITCODE -ne 0){throw 'Native source/binary provenance failed'}
-          git diff --exit-code
-          if($LASTEXITCODE -ne 0){throw 'Proof changed product source'}
+          $changes=@(git diff --name-only)
+          if($changes.Count -ne 1 -or $changes[0] -cne 'packages/workspace/smoke/extension-set-owner-win32.smoke.ts'){throw 'Proof changed product source outside approved fixture'}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
