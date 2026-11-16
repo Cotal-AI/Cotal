@@ -88,6 +88,13 @@ export async function prepareTargetAdmission(context: Context) {
     }
   }, {
     customDaemon: mode === "foreign-preserving",
+    async extensionInventory(stage: string) {
+      const script = `import{pathToFileURL}from'node:url';import{join}from'node:path';import{readFileSync,existsSync}from'node:fs';const p=${JSON.stringify(pkg)};const boot=await import(pathToFileURL(join(p,'dist/cotal.js')).href);const selected=boot.selectExecutionProgram(p);const w=await import(pathToFileURL(join(selected.root,'node_modules/@cotal-ai/workspace/dist/index.js')).href);const set=typeof w.extensionSetPaths==='function'?w.extensionSetPaths():undefined;const path=set?join(set.extensions,'extensions.json'):${JSON.stringify(join(config, "extensions/extensions.json"))};if(!existsSync(path))throw Error('selected extension inventory missing');const rows=JSON.parse(readFileSync(path,'utf8')).extensions;console.log(JSON.stringify(rows.map(row=>({...row,installedPath:join(set?set.extensions:${JSON.stringify(join(config, "extensions"))},'node_modules',row.pkg)}))));`;
+      const observed = ok(await call(`read ${stage} selected connector inventory`, process.execPath, ["--input-type=module", "-e", script]), "selected inventory");
+      const rows = JSON.parse(observed.stdout);
+      assert(Array.isArray(rows) && rows.length >= 8, "all matching built-ins and runtime inventory must be real");
+      return rows;
+    },
     async beforeUpdate() {
       if (mode === "foreign-preserving") {
         assert(options["admission-legacy-candidate"] && options["admission-legacy-next"], "foreign preserving requires immutable legacy public-updater artifacts");
