@@ -51,6 +51,7 @@ A newly installed daemon can answer before its first connector reconciliation. I
 launching a hosted Manager. It holds a set that becomes ready later from its first use until shutdown.
 A committed connector set that is missing still requires repair.
 The caller resolves an existing protected set root to its canonical path before cleanup, including Windows short-form profile paths.
+Windows reads each cleanup root's owner through a native directory handle without following links. Unknown ownership, reparse points and a changed directory identity refuse cleanup.
 On Windows, an obsolete connector set is removed only when its whole tree belongs to the current account and contains no reparse points; otherwise cleanup keeps it and names the directory and repair command.
 An older transaction without a completion marker stays with a warning until a later successful
 publication explicitly supersedes its validated history for the same installation.

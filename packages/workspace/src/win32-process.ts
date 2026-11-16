@@ -19,6 +19,8 @@ export interface Win32ProcessBinding {
   pinProcess(pid: number): Win32ProcessPin;
   processTree(pid: number, token: string): Win32TreePin[];
   userSid(): string;
+  /** Owner SID of one real directory opened without following links. Unknown or changed identity throws. */
+  directoryOwnerSid(path: string): string;
   /** Windows' system ID for this app's publisher, as hex, and its SystemIdentificationSource:
    *  0 none, 1 TPM, 2 UEFI, 3 registry. */
   systemId(): { id: string; source: number };
@@ -47,7 +49,7 @@ export function win32ProcessBinding(): Win32ProcessBinding {
     let loaded: unknown;
     try { loaded = require(fileURLToPath(path)); }
     catch (cause) { throw new Error("could not load the shipped Windows creation identity binding; reinstall this version", { cause }); }
-    if (loaded === null || typeof loaded !== "object" || !["creationToken", "pinProcess", "processTree", "userSid", "systemId", "bootId", "accounting", "drain", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
+    if (loaded === null || typeof loaded !== "object" || !["creationToken", "pinProcess", "processTree", "userSid", "directoryOwnerSid", "systemId", "bootId", "accounting", "drain", "launch", "rootExit", "jobProcesses", "inJob", "terminate"].every((name) => typeof (loaded as Record<string, unknown>)[name] === "function"))
       throw new Error("the shipped Windows creation identity binding is missing a reader");
     binding = loaded as Win32ProcessBinding;
   }

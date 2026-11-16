@@ -3,10 +3,18 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { windowsSetOwnedByCurrentUser, windowsSetTreeOwnership } from "../src/extension-set-win32.js";
 import { win32ProcessBinding } from "../src/win32-process.js";
 
 if (process.platform !== "win32") throw new Error("Windows connector-set owner measurement requires Windows");
+if (process.argv[2] === "--denied-child") {
+  const path = process.argv[3]!;
+  assert.throws(() => win32ProcessBinding().directoryOwnerSid(path), /Windows error 5/);
+  assert.throws(() => windowsSetOwnedByCurrentUser(path), /Windows error 5/);
+  console.log("native and composed owner readers refuse actual READ_CONTROL denial");
+  process.exit(0);
+}
 const root = mkdtempSync(join(tmpdir(), "connector-owner-"));
 const own = join(root, "own set ü"), foreign = join(root, "foreign set"), junction = join(root, "junction");
 mkdirSync(own); mkdirSync(foreign);
@@ -27,6 +35,17 @@ try {
   ps(`$a=Get-Acl -LiteralPath ${literal(foreign)};$a.SetOwner([Security.Principal.SecurityIdentifier]::new(${literal(foreignSid)}));Set-Acl -LiteralPath ${literal(foreign)} -AclObject $a;New-Item -ItemType Junction -Path ${literal(junction)} -Target ${literal(own)}|Out-Null`);
   const ownResult = windowsSetOwnedByCurrentUser(own);
   const foreignResult = windowsSetOwnedByCurrentUser(foreign);
+  assert.equal(win32ProcessBinding().directoryOwnerSid(own), sid);
+  assert.equal(win32ProcessBinding().directoryOwnerSid(foreign), foreignSid);
+  assert.throws(() => win32ProcessBinding().directoryOwnerSid(junction), /real directory|reparse/);
+  const missing = join(root, "missing");
+  assert.throws(() => win32ProcessBinding().directoryOwnerSid(missing), /Windows error [23]\)/);
+  assert.throws(() => windowsSetOwnedByCurrentUser(missing), /ENOENT/);
+  const file = join(root, "ordinary file ü.txt");
+  writeFileSync(file, "not a connector directory");
+  assert.throws(() => win32ProcessBinding().directoryOwnerSid(file), /real directory/);
+  assert.throws(() => windowsSetOwnedByCurrentUser(file), /real directory/);
+  assert.throws(() => win32ProcessBinding().directoryOwnerSid(`${own}\0other`), /NUL/);
   let reparseError = "";
   try { windowsSetOwnedByCurrentUser(junction); } catch (error) { reparseError = String(error); }
   assert.equal(ownResult, true);
@@ -38,11 +57,17 @@ try {
     mkdirSync(path);
     const change = spawnSync("icacls.exe", [path, "/setowner", `*${owner}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true });
     assert.equal(change.status, 0, change.stdout + change.stderr);
+    assert.equal(win32ProcessBinding().directoryOwnerSid(path), owner);
     let error = "";
     try { windowsSetOwnedByCurrentUser(path); } catch (cause) { error = String(cause); }
-    assert(error.includes(path) && error.includes(owner) && error.includes("cotal ext seed --repair"), error);
+    if (owner === sid) assert.equal(windowsSetOwnedByCurrentUser(path), true, "current token equality precedes privileged SID refusal");
+    else assert(error.includes(path) && error.includes(owner) && error.includes("cotal ext seed --repair"), error);
     privilegedOwners.push({ sid: owner, path, error });
   }
+  const denied = join(root, "denied owner read");
+  mkdirSync(denied);
+  const deniedResult = ps(`$p=${literal(denied)};$original=Get-Acl -LiteralPath $p;$acl=Get-Acl -LiteralPath $p;$acl.SetOwner([Security.Principal.SecurityIdentifier]::new(${literal(foreignSid)}));$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new(${literal(sid)}),[Security.AccessControl.FileSystemRights]::ReadPermissions,[Security.AccessControl.AccessControlType]::Deny));try{Set-Acl -LiteralPath $p -AclObject $acl;& ${literal(process.execPath)} --import tsx ${literal(fileURLToPath(import.meta.url))} --denied-child $p;if($LASTEXITCODE -ne 0){throw 'denied owner reader child failed'}}finally{Set-Acl -LiteralPath $p -AclObject $original}`);
+  assert.match(deniedResult, /refuse actual READ_CONTROL denial/);
   const ownTree = join(root, "own tree ü"), foreignFileTree = join(root, "foreign file tree"), junctionTree = join(root, "junction tree");
   for (const tree of [ownTree, foreignFileTree, junctionTree]) {
     mkdirSync(join(tree, "nested"), { recursive: true });
@@ -60,7 +85,7 @@ try {
   assert.equal(treeOwnership.foreignFile.reparsePoints, 0);
   assert.equal(treeOwnership.foreignFile.owned, false);
   assert.deepEqual(treeOwnership.junction, { owners: [sid], reparsePoints: 1, owned: false });
-  const result = { platform: process.platform, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, privilegedOwners, treeOwnership, accountRemoved: false };
+  const result = { platform: process.platform, arch: process.arch, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, privilegedOwners, deniedResult, missingRefused: true, fileRefused: true, nulRefused: true, treeOwnership, accountRemoved: false };
   ps(`Remove-LocalUser -Name ${literal(account)}`); created = false;
   result.accountRemoved = true;
   const output = process.env.COTAL_OWNER_PROBE_OUTPUT;

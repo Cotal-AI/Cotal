@@ -65,7 +65,22 @@ if (process.platform === "win32") {
     try { clean(); assert(existsSync(denied), "actual delete denial keeps generation directory"); assert.equal(warnings.length, deniedBefore + 1); assert(warnings.at(-1)!.includes(denied)); }
     finally { for (const path of [deniedFile, deniedParent]) { const reset = spawnSync("icacls.exe", [path, "/remove:d", `*${sid}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true }); assert.equal(reset.status, 0, reset.stdout + reset.stderr); } }
     clean(); assert(!existsSync(denied));
-    const result = { platform: process.platform, suppliedRoot, canonicalRoot: root, nativeSid: sid, foreignSid, retained: readdirSync(root).sort(), warnings, accountRemoved: false, passed: true };
+    const installedRootRetentions: { owner: string; warning: string | null }[] = [];
+    create("0.0.7");
+    for (const owner of [foreignSid, "S-1-5-32-544", "S-1-5-18"]) {
+      const changed = spawnSync("icacls.exe", [installed, "/setowner", `*${owner}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true });
+      assert.equal(changed.status, 0, changed.stdout + changed.stderr);
+      const warningCount: number = warnings.length;
+      try {
+        clean();
+        assert(existsSync(join(root, "0.0.7")), "foreign installed root cannot collect sets");
+        if (owner === foreignSid) assert.equal(warnings.length, warningCount);
+        else assert(warnings.length === warningCount + 1 && warnings.at(-1)!.includes(installed) && warnings.at(-1)!.includes(owner) && warnings.at(-1)!.includes("cotal ext seed --repair"));
+        installedRootRetentions.push({ owner, warning: warnings.length === warningCount ? null : warnings.at(-1)! });
+      } finally { own(installed); }
+    }
+    clean(); assert(!existsSync(join(root, "0.0.7")));
+    const result = { platform: process.platform, arch: process.arch, suppliedRoot, canonicalRoot: root, nativeSid: sid, foreignSid, retained: readdirSync(root).sort(), warnings, installedRootRetentions, accountRemoved: false, passed: true };
     ps(`Remove-LocalUser -Name ${literal(account)}`); created = false; result.accountRemoved = true;
     const output = process.env.COTAL_OWNER_PROBE_OUTPUT;
     if (output) { mkdirSync(output, { recursive: true }); writeFileSync(join(output, "collector-result.json"), JSON.stringify(result, null, 2)); }
