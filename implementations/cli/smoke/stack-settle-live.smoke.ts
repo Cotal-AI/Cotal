@@ -368,6 +368,18 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // #7057: on the running stack, `manager start` reports its manager running and starts no second
+    // one, as the docs say. `manager restart` refused with `cotal up` as its Next, which reuses the
+    // running manager; it names the stop and the `up` that restart it.
+    const managerPid = pidOf(space, "stack-manager");
+    const startRunning = cli(root, "manager", "start", "--space", space, "--json");
+    check("manager start on the running stack reports its manager running, exit 0, and starts nothing",
+      startRunning.status === 0 && startRunning.env?.outcome === "no-op" && pidOf(space, "stack-manager") === managerPid, shown(startRunning));
+    const restartRunning = cli(root, "manager", "restart", "--space", space, "--yes", "--json");
+    check("manager restart --yes on it refuses LIFECYCLE_BLOCKED, stops nothing, and names manager stop then up",
+      restartRunning.status === 2 && restartRunning.env?.error?.code === "LIFECYCLE_BLOCKED"
+        && restartRunning.env.error.remedy === "stop it with `cotal manager stop --yes`, then run `cotal up` to start it again with its stack"
+        && managerPid !== null && pidOf(space, "stack-manager") === managerPid && alive(managerPid), shown(restartRunning));
     // The rows followed the store's order, by random instance ID, so they moved whenever a member
     // started under a new one.
     const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
