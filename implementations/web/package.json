@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/web",
   "description": "Cotal browser observability dashboard as an owned service preset.",
-  "version": "0.164.18",
+  "version": "0.165.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -27,8 +27,8 @@
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@cotal-ai/core": "*",
-    "@cotal-ai/workspace": "*"
+    "@cotal-ai/core": "0.165.0",
+    "@cotal-ai/workspace": "0.165.0"
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
