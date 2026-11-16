@@ -48,6 +48,8 @@ import {
   IssuedStoreRecreateRefusal,
   reconcileSpaceMemoryBuckets,
   membershipStoreDefinition,
+  LEGACY_MEMBERSHIP_MAX_BYTES,
+  MEMBERSHIP_MAX_VALUE_SIZE,
   ttlBuckets,
   standaloneConnectOpts,
   requireBrokerFloor,
@@ -2057,6 +2059,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
               `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${held.space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
             ),
           );
+        if (await fileMembershipStore(server, held.space, reconcileCreds)) throw membershipConversionRefusal(held.space);
         for (const r of await reconcileSpaceMemoryBuckets({ servers: server, space: held.space, creds: reconcileCreds }))
           console.log(c.dim(r.recreated
             ? `  re-created ${r.stream}: it is Memory-backed and was lost when the broker restarted`
@@ -3516,7 +3519,7 @@ export function controllerStackNative(): StackUpNative {
       const prepared = await prepareBrokerStart({ transport: opts.transport, server: opts.server, space: opts.space, ...(opts.open ? { open: true } : {}), ...(opts.userAuth ? { userAuth: opts.userAuth } : {}), ...(opts.host ? { host: opts.host } : {}), ...(opts.storeDir ? { storeDir: opts.storeDir } : {}), ...(opts.existingStore ? { existingStore: opts.existingStore } : {}), ...(opts.maxFileStore !== undefined ? { maxFileStore: opts.maxFileStore } : {}), ...(opts.logFile !== undefined ? { logFile: opts.logFile } : {}), ...(opts.logfileSizeLimit !== undefined ? { logfileSizeLimit: opts.logfileSizeLimit } : {}), ...(opts.logfileMaxNum !== undefined ? { logfileMaxNum: opts.logfileMaxNum } : {}), ...(opts.authTimeout !== undefined ? { authTimeout: opts.authTimeout } : {}), ...(opts.maxPayload !== undefined ? { maxPayload: opts.maxPayload } : {}), ...(opts.accountResolver !== undefined ? { accountResolver: opts.accountResolver } : {}), ...(opts.noManager ? { noManager: true } : {}), ...(opts.seed !== undefined ? { seed: opts.seed as ChannelRegistryFile } : opts.channels ? { channels: opts.channels } : {}), quietBoot: true });
       return { root: prepared.root, server: prepared.server, space: prepared.space, storeDir: prepared.storeDir, transport: prepared.transport, ...(prepared.setup ? { setup: { creds: prepared.setup.creds, wsPort: prepared.setup.wsPort } } : {}), ...(prepared.setup?.prepared && prepared.setup.stateDir ? { user: { prepared: prepared.setup.prepared, stateDir: prepared.setup.stateDir } } : {}), confPath: prepared.confPath, bin: prepared.bin, source: prepared.source, version: prepared.version, seedFile: prepared.seedFile, ...(prepared.setup?.authTimeout !== undefined ? { authTimeout: prepared.setup.authTimeout } : {}), ...(prepared.setup?.maxPayload !== undefined ? { maxPayload: prepared.setup.maxPayload } : {}), ...(prepared.setup?.accountResolver !== undefined ? { accountResolver: prepared.setup.accountResolver } : {}) };
     },
-    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore),
+    initializeStreams: (server, space, setup, seedFile, recreateIssuedStores, recreateMembershipStore) => postStart(server, space, setup, seedFile as ChannelRegistryFile | undefined, recreateIssuedStores, recreateMembershipStore, true),
     recreateDeletedStreams: ({ seed, ...opts }) => recreateDeletedStreams({ ...opts, ...(seed !== undefined ? { seed: seed as ChannelRegistryFile } : {}) }),
     recordMesh: (entry) => recordOurMesh({ ...entry, ts: new Date().toISOString() }, "started", true),
     commitTransport: (root, chosen, limits) => commitTransportPolicy(root, chosen, true, undefined, limits),
@@ -4099,7 +4102,7 @@ async function serveReadyListener(l: {
   if (l.resumeAttempt) await recreateMemoryBuckets(server, space, setup);
   else {
     try {
-      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore);
+      await postStart(server, space, setup, l.seedFile, l.recreateIssuedStores, l.recreateMembershipStore, true);
     } catch (e) {
       await stopFailedListener(child);
       throw e;
@@ -4980,12 +4983,29 @@ function freePort(host: string, requestedPort = 0): Promise<number> {
   });
 }
 
-/** One-time space infrastructure once the server accepts connections: pre-create the space's
- *  streams + KV buckets, and seed the channel registry. Done for BOTH modes — auth needs it
- *  (agents are denied STREAM.CREATE), and open needs it too so anything that touches a stream
- *  before an endpoint has joined (e.g. `cotal spawn`'s DM-inbox provisioning, `cotal_purge`,
- *  `history clear`) finds the streams instead of failing with StreamNotFound. Open connects
- *  without creds (no authenticator). */
+function membershipConversionRefusal(space: string): CommandFailure {
+  return new CommandFailure("refused", "LIFECYCLE_BLOCKED", `space ${space} has a legacy File-backed membership store; it was not changed while its broker or membership services may be in use`, {
+    target: { space }, remedy: "stop the stack with `cotal down --yes`, then run `cotal up --recreate-membership-store`",
+  });
+}
+
+async function fileMembershipStore(server: string, space: string, creds?: string, stockOnly = false): Promise<boolean> {
+  const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds, tls: false }) });
+  try {
+    requireBrokerFloor(nc);
+    const { config } = await (await jetstreamManager(nc)).streams.info(`KV_${membershipStoreDefinition(space).bucket}`);
+    if (config.storage !== StorageType.File) return false;
+    if (stockOnly && (![-1, LEGACY_MEMBERSHIP_MAX_BYTES].includes(config.max_bytes) || config.max_msgs_per_subject !== 1 || ![-1, MEMBERSHIP_MAX_VALUE_SIZE].includes(config.max_msg_size)))
+      throw membershipConversionRefusal(space);
+    return true;
+  } catch (error) {
+    if (isJetStreamMissing(error, JetStreamApiCodes.StreamNotFound)) return false;
+    throw error;
+  } finally { await drainAndClose(nc); }
+}
+
+/** Create or verify space infrastructure before any services start on this broker.
+ * Only a fresh owned local boot may automatically replace its derived legacy membership feed. */
 async function postStart(
   server: string,
   space: string,
@@ -4993,10 +5013,17 @@ async function postStart(
   seedFile?: ChannelRegistryFile,
   recreateIssuedStores?: string,
   recreateMembershipStore?: boolean,
+  freshOwnedLocalBroker = false,
 ): Promise<void> {
   if (recreateIssuedStores !== undefined) await recreateIssuedStoresBeforeSetup(server, space, setup !== undefined, recreateIssuedStores);
+  const legacyMembership = await fileMembershipStore(server, space, setup?.creds, recreateMembershipStore !== true);
+  if (legacyMembership) {
+    const running = serviceInstances(space).filter((row) => row.record.value.definition !== STACK_DEFINITION.broker).some((row) => !["gone", "previous-boot", "foreign-pid"].includes(observeServiceProcess(row.record.value)));
+    if ((!freshOwnedLocalBroker && !recreateMembershipStore) || running) throw membershipConversionRefusal(space);
+  }
+  const convertMembership = legacyMembership && (freshOwnedLocalBroker || recreateMembershipStore === true);
   let recreateCreds: string | undefined;
-  if (recreateMembershipStore && setup !== undefined) {
+  if (convertMembership && setup !== undefined) {
     const auth = await getSpaceAuth(workspaceSecretStore(cotalRoot()), space);
     if (!auth) throw new Error(`space "${space}" has no trust material under ${authDir(cotalRoot())}; its membership store was not touched`);
     recreateCreds = await mintCreds(auth, newIdentity(), "membership-store-recreate");
@@ -5006,7 +5033,7 @@ async function postStart(
       servers: server,
       space,
       creds: setup?.creds,
-      ...(recreateMembershipStore ? { recreateFileMembership: { creds: recreateCreds } } : {}),
+      ...(convertMembership ? { recreateFileMembership: { creds: recreateCreds } } : {}),
     });
   } catch (error) {
     // Nothing of the stack runs yet, and the caller stops this broker again, so this is a refusal.
@@ -5014,6 +5041,7 @@ async function postStart(
       throw new CommandFailure("refused", "CONFLICT", error.message, { target: { space, store: error.bucket }, remedy: `stop every other issuer and resolver of space ${space}, then add --recreate-issued-stores <backup-dir> to the \`cotal up\` that starts it` });
     throw error;
   }
+  if (convertMembership) console.error(`Converted ${membershipStoreDefinition(space).bucket} from File to Memory; broker-sourced membership rebuilds on startup.`);
   try {
     if (seedFile) {
       await seedChannelRegistry({ servers: server, space, creds: setup?.creds, file: seedFile });
@@ -5070,6 +5098,7 @@ async function recreateIssuedStoresBeforeSetup(server: string, space: string, au
  *  it, stream and all (#1356 made presence memory-backed). Recreate those, and only those, from the
  *  same `ttlBuckets` list `setupSpaceStreams` creates them from, before any daemon opens them. */
 async function recreateMemoryBuckets(server: string, space: string, setup?: { creds: string }): Promise<void> {
+  if (await fileMembershipStore(server, space, setup?.creds)) throw membershipConversionRefusal(space);
   const nc = await dialerFor(server)({ servers: server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
   try {
     requireBrokerFloor(nc);
@@ -5097,11 +5126,13 @@ async function recreateAdoptedMemoryBuckets(root: string, space: string, server:
  *  a broker start does, and return true. A broker that still holds any of them is left as it is. */
 async function recreateDeletedStreams(opts: { root: string; space: string; server: string; mode: "open" | "auth" | "user"; channels?: string; seed?: ChannelRegistryFile }): Promise<boolean> {
   let setup: { creds: string } | undefined;
-  if (opts.mode === "auth") {
+  if (opts.mode !== "open") {
     const auth = await getSpaceAuth(workspaceSecretStore(opts.root), opts.space);
     if (!auth) throw new Error(`space "${opts.space}" has no trust material under ${authDir(opts.root)}; cannot read its streams on the running broker`);
     setup = { creds: await mintCreds(auth, newIdentity(), "provisioner") };
-  } else if (opts.mode !== "open") throw new Error("a user-auth stack's streams are not recreated on a running broker");
+  }
+  if (await fileMembershipStore(opts.server, opts.space, setup?.creds)) throw membershipConversionRefusal(opts.space);
+  if (opts.mode === "user") return false; // User-auth running stacks retain their existing stream lifecycle.
   const nc = await dialerFor(opts.server)({ servers: opts.server, ...standaloneConnectOpts({ creds: setup?.creds, tls: false }) });
   let held = false;
   try {

@@ -85,17 +85,14 @@ daemon's automatic update ends with `staged update requires an installed npm or 
 there too, with the same two commands. From 0.164.18 the daemon starts its updater at the installed
 command and automatic updates continue.
 
-## Memory-backed derived membership after 0.163.0
+## Memory-backed derived membership after 0.163.4
 
 New spaces create `KV_cotal_membership_<space>` in Memory because the feed is rebuilt from the
-broker connection view and durable members registry. Existing File-backed membership stores are not
-deleted during an ordinary upgrade. From that deployment's project root, explicitly name its
-recorded space when stopping the stack and converting the derived feed:
-
-```bash
-cotal down --space <space> --yes
-cotal up --space <space> --recreate-membership-store
-```
+broker connection view and durable members registry. When plain `cotal up` starts its own local
+broker for a stopped stack, it converts a legacy File-backed membership feed before starting the
+space's services and prints one conversion line. Durable members, channel metadata and message
+history are kept. A running stack, remote broker or adopted listener is not converted automatically.
+Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
 
 The command uses one exact short-lived credential to inspect and delete only the membership stream,
 then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and

@@ -20,10 +20,14 @@
  * stack stops with `cotal down --yes`. Needs `nats-server` on PATH. Run: pnpm smoke:channel-members:live
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
+import { assertSmokeSandboxDown, awaitBrokerReady, createSuite, freePort, killAndAwaitExit, recordSmokeSandbox, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { dialerFor, drainAndClose, isReachable, membershipStoreDefinition, mintCreds, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
+import { getSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { Kvm } from "@nats-io/kv";
+import { jetstreamManager, StorageType } from "@nats-io/jetstream";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -151,14 +155,15 @@ try {
   const build = member("team.build"), chat = member("team.chat");
   check("while connected, fern is a live and durable member of #team.build", online && build?.live === true && build.durable === true, build);
   check("while connected, fern is a live member of #team.chat with no stored copies", chat?.live === true && chat.durable === false, chat);
+  const fernId = build?.id;
+  const durableMember = (channel: string) => census(channel)?.members.find((m) => m.id === fernId);
   fern.child.kill("SIGINT");
   await fern.exited;
-  const away = await until(() => member("team.build")?.live === false && member("team.chat") === undefined, 90_000);
-  check("once fern stops, #team.build still lists fern as a durable member", away && member("team.build")?.durable === true, census("team.build"));
+  const away = await until(() => durableMember("team.build")?.live === false && member("team.chat") === undefined, 90_000);
+  check("once fern stops, #team.build still lists fern as a durable member", away && durableMember("team.build")?.durable === true, census("team.build"));
   check("once fern stops, #team.chat no longer lists fern", member("team.chat") === undefined, census("team.chat"));
   // Whether the family row counts turns on the channel's class, and no membership change says the
   // class moved: the follow notices it at a feed heartbeat.
-  const fernId = build?.id;
   const holds = (data: Census | undefined) => data?.members.some((m) => m.id === fernId && m.durable) ?? false;
   const follow = started("channel", "members", "team.build", "--follow", "--json");
   const following = await until(() => records(follow.out).some((r) => r.type === "snapshot"), 60_000);
@@ -169,6 +174,47 @@ try {
   check("the follow drops fern once #team.build turns live, with no membership change", dropped, records(follow.out).map((r) => r.type));
   follow.child.kill("SIGINT");
   await follow.exited;
+
+  console.log("\nD. a stopped legacy membership feed converts without losing durable state");
+  for (const run of running) if (run.child.exitCode === null && run.child.signalCode === null) run.child.kill("SIGINT");
+  await Promise.all(running.map((run) => run.exited));
+  check("team.build is durable again before the upgrade", cotal("channel", "set", "team.build", "--delivery", "durable").status === 0);
+  check("the old message is retained before conversion", cotal("history", "archive", "--json").stdout.includes("kept"));
+  check("stop every stack member before preparing a legacy feed", cotal("down", "--yes").status === 0);
+  const brokerConfig = join(base, `${SMOKE_BROKER_TOKEN}.conf`);
+  copyFileSync(join(s, ".cotal", "auth", "server.conf"), brokerConfig);
+  const brokerChild = spawn("nats-server", ["-c", brokerConfig], { cwd: s, env, stdio: "ignore" });
+  const releaseBroker = teardownOnSignal(brokerChild);
+  await awaitBrokerReady(() => isReachable(SERVER), { servers: SERVER, attempts: 50, delayMs: 100 });
+  check("the fixture broker opens the stopped store without membership services", true);
+  const auth = await getSpaceAuth(workspaceSecretStore(s), SPACE);
+  if (!auth) throw new Error("fixture trust is missing");
+  const creds = await mintCreds(auth, newIdentity(), "provisioner");
+  const nc = await dialerFor(SERVER)({ servers: SERVER, ...standaloneConnectOpts({ creds, tls: false }) });
+  const bucket = membershipStoreDefinition(SPACE).bucket;
+  let legacyCreated: string;
+  try {
+    await new Kvm(nc).create(bucket, { history: 1, storage: StorageType.File, max_bytes: 64 * 1024 * 1024 });
+    legacyCreated = (await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`)).created;
+    const refused = cotal("up");
+    check("an externally running broker is not converted or adopted", refused.status !== 0 && !refused.out.includes("Converted "), refused.out.slice(-800));
+    check("the reused legacy stream was not replaced", (await (await jetstreamManager(nc)).streams.info(`KV_${bucket}`)).created === legacyCreated);
+  } finally { await drainAndClose(nc); await killAndAwaitExit(brokerChild); releaseBroker(); }
+  const converted = cotal("up", "--json");
+  check("plain up converts the stopped legacy feed and reports it once", converted.status === 0 && (converted.out.match(/Converted /g) ?? []).length === 1, converted.out.slice(-900));
+  check("structured conversion keeps stdout as one JSON envelope", envelope(converted.stdout)?.outcome === "ok", converted.stdout.slice(0, 700));
+  if (converted.status !== 0) throw new Error("automatic membership conversion failed");
+  const durableFern = () => census("team.build")?.members.some((row) => row.id === fernId && row.durable);
+  check("durable fern membership rebuilds with a fresh heartbeat", await until(() => durableFern() === true && (census("team.build")?.asOf ?? 0) > 0, 90_000), census("team.build"));
+  check("retained history survives conversion", cotal("history", "archive", "--json").stdout.includes("kept"));
+  check("new messages still store after conversion", cotal("send", "-c", "archive", "after conversion").status === 0);
+  const repeat = cotal("up");
+  check("a running Memory feed is not converted again", repeat.status === 0 && !repeat.out.includes("Converted "), repeat.out.slice(-600));
+  check("stop the Memory-backed stack", cotal("down", "--yes").status === 0);
+  const restarted = cotal("up", "--recreate-membership-store");
+  check("the accepted flag also starts a missing Memory feed without deletion", restarted.status === 0 && !restarted.out.includes("Converted "), restarted.out.slice(-600));
+  const history = cotal("history", "archive", "--json");
+  check("old and new history survive another broker restart", history.status === 0 && history.stdout.includes("kept") && history.stdout.includes("after conversion"), history.out.slice(-600));
 } finally {
   for (const { child } of running) if (child.exitCode === null && child.signalCode === null) child.kill("SIGINT");
   await Promise.all(running.map((run) => run.exited));
