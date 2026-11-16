@@ -860,7 +860,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   );
   if (!report) return "none";
   if (options.retainGraph) {
-    console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation; no restart or seat stop is requested. New launches remain subject to the extension generation check.`);
+    console.log(`Standalone Manager ${on ?? "(instance unavailable)"} in ${JSON.stringify(target.space)} keeps its loaded execution generation and connector set; no restart or seat stop is requested.`);
     return "none";
   }
   const remedy = typeof flags.creds === "string" ? undefined : recordedStackRemedy(target.root, target.space, target.server, (status.data ?? {}) as { instanceId?: unknown; lifecycleUid?: unknown });
