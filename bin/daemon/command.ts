@@ -456,7 +456,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
-  const { holdExtensionSet, assertExtensionSetReady } = await import("@cotal-ai/workspace");
+  const { holdExtensionSet, assertExtensionSetReady, extensionSetCleanupSpec } = await import("@cotal-ai/workspace");
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
   const { cleanupExecutionStore } = await import("../execution-store.js");
@@ -472,7 +472,7 @@ async function serve(args: ParsedArgs): Promise<void> {
   const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
   if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
-  if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
+  if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot(), undefined, extensionSetCleanupSpec());
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
-import { logicalExecutionEntry, executionIdentity, cmdSpawnSpec } from "@cotal-ai/workspace";
+import { logicalExecutionEntry, executionIdentity, cmdSpawnSpec, extensionSetCleanupSpec } from "@cotal-ai/workspace";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { completeExecutionTransaction, assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
@@ -79,7 +79,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     complete() {
       try { if (journal) completeExecutionTransaction(installed, journal); }
       catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish publication journal"}\n`); return; }
-      cleanupExecutionStore(installed);
+      cleanupExecutionStore(installed, undefined, extensionSetCleanupSpec());
     },
     discard() { if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true }); },
   };
@@ -97,7 +97,7 @@ export function recoverExecutionUpdate(path: string): ExecutionReplacement {
     complete() {
       try { completeExecutionTransaction(installed, path); }
       catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish recovery journal"}\n`); return; }
-      cleanupExecutionStore(installed);
+      cleanupExecutionStore(installed, undefined, extensionSetCleanupSpec());
     },
     verify(version) {
       if (version !== previous) throw new Error("execution recovery previous version differs");
