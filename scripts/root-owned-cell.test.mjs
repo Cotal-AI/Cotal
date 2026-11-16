@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { rootOwnedCell, rootOwnedAssertions } from './root-owned-cell.mjs';
+import {npmDebugTail} from './npm-debug-tail.mjs';
+import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+test('npm diagnostic tail bounds output and filters token and registry authentication lines',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'npm-log-')),logs=join(root,'cache/_logs');mkdirSync(logs,{recursive:true,mode:0o700});
+ writeFileSync(join(logs,'2026-11-16T01_00_00_000Z-debug-0.log'),Array.from({length:300},(_,i)=>`line ${i}`).join('\n')+'\nnpm config //registry.npmjs.org/:_authToken=CANARY\nAuthorization: Bearer CANARY\nregistry password CANARY\nlast safe\n');
+ const result=await npmDebugTail(root);assert.equal(result.lines,200);assert(!result.text.includes('CANARY'));assert(result.text.endsWith('last safe\n'));assert(!result.text.includes('line 0\n'));
+ const external=join(root,'outside');writeFileSync(external,'FOREIGN');symlinkSync(external,join(logs,'2026-11-17T01_00_00_000Z-debug-0.log'));
+ await assert.rejects(()=>npmDebugTail(root));
+});
 test('root machine proof refuses nonhosted execution before native side effects',async()=>{
  if(process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_ENVIRONMENT==='github-hosted')return;
  await assert.rejects(()=>rootOwnedCell({}),/Assertion/);

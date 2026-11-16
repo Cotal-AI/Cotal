@@ -1020,6 +1020,23 @@ export async function matrixCell(options) {
               save(join(output, `${id}-staged-${name}-clock.json`), { before, after });
               save(file, after);
             }
+            const discoveryDeadline=Date.now()+120000;
+            let discovered;
+            do {
+              await delay(5000);
+              ok(await daemon('staged scheduler target discovery',['daemon','status','--json']),'staged scheduler target discovery');
+              discovered=json(join(cotalHome,'update-check.json'));
+              if(discovered.latest===report.target)break;
+            }while(Date.now()<discoveryDeadline);
+            assert.equal(discovered?.latest,report.target,'scheduler must discover actual follow-on before aging release hold');
+            report.stagedSchedulerDiscovery={target:report.target,check:discovered,observedAt:Date.now()};
+            const holdBefore=JSON.parse(ok(await daemon('staged scheduler before hold aging',['daemon','status','--json']),'before hold aging').stdout).result;
+            for(const [name,fields]of[['update-check.json',['firstSeenAt']],['update-attempt.json',['next']]]){
+              const file=join(cotalHome,name),before=json(file),after={...before};
+              for(const field of fields)after[field]=Date.now()-7200000;
+              save(join(output,`${id}-staged-${name}-hold-clock.json`),{before,after});
+              save(file,after);
+            }
             const deadline = Date.now() + 300000;
             let selected, status, attempt;
             do {
@@ -1031,7 +1048,10 @@ export async function matrixCell(options) {
             } while (Date.now() < deadline);
             if (/^updating to /.test(attempt?.result ?? '')) { uncertain = true; throw new Error('staged scheduler outcome unknown after deadline'); }
             const passed = selected?.selectedCliVersion === report.target && status?.exit === 0 && nativeGenerationReady(JSON.parse(status.stdout).result, report.target) && /^(?:repaired and )?updated to /.test(attempt?.result ?? '');
-            report.stagedScheduler = { selectedBefore, selected, status, attempt, eligibility: report.schedulerEligibility, passed };
+            const holdAfter=status?.exit===0?JSON.parse(status.stdout).result:undefined;
+            report.stagedScheduler = { selectedBefore, selected, status, attempt, eligibility: report.schedulerEligibility, passed,
+              holdObservation:{beforePid:holdBefore.pid,beforeStartedAt:holdBefore.startedAt,afterPid:holdAfter?.pid,afterStartedAt:holdAfter?.startedAt,restartRequested:false,
+                agedValueObservedWithoutRestart:passed||holdAfter?.pid===holdBefore.pid&&holdAfter?.startedAt===holdBefore.startedAt&&attempt?.result!=='waiting for release hold',result:attempt?.result} };
             check('scheduler starts from staged generation and reaches follow-on', passed, report.stagedScheduler);
             update = { exit: passed ? 0 : 1, signal: null, timeout: false, scheduler: true, stdout: existsSync(join(cotalHome, 'update-attempt.log')) ? readFileSync(join(cotalHome, 'update-attempt.log'), 'utf8') : '', stderr: '' };
           } else if (followOnAction === 'npm') {

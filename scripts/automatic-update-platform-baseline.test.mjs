@@ -559,6 +559,13 @@ test('real product cache refresh requires success checkedAt older than one day, 
     const refreshed = await run();
     assert.equal(refreshed.latest, '0.164.7'); assert(refreshed.attemptedAt >= now); assert(refreshed.checkedAt >= now);
     assert.equal(refreshed.firstSeenAt, initial.firstSeenAt);
+    writeFileSync(join(cotal,'update-check.json'),JSON.stringify({...initial,latest:'0.164.6',checkedAt:now-age('checkedAt')}));
+    const newlyDiscovered=await run();
+    assert.equal(newlyDiscovered.latest,'0.164.7');
+    assert(newlyDiscovered.firstSeenAt>=now,'new target discovery starts its own real release hold');
+    const discovery=block.indexOf('assert.equal(discovered?.latest,report.target');
+    const holdAge=block.indexOf("[['update-check.json',['firstSeenAt']],['update-attempt.json',['next']]]");
+    assert(discovery>=0&&holdAge>discovery,'hold may be aged only after actual new-target discovery');
   } finally { await overlay.close(); }
 });
 
