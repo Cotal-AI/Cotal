@@ -56,6 +56,10 @@ export function extensionSetMigrated(): boolean {
   return existsSync(join(extensionSetPaths().root, "install.json"));
 }
 
+function committedVersion(record: { current?: string; previous?: string; versions?: string[] }, selected: string): boolean {
+  return record.current === selected || record.previous === selected || record.versions?.includes(selected) === true;
+}
+
 /** Existing committed sets cannot silently turn into an empty extension inventory. */
 export function assertExtensionSetReadable(): void {
   if (preparing) return;
@@ -66,8 +70,8 @@ export function assertExtensionSetReadable(): void {
   if (existsSync(paths.ready)) assertExtensionSetReady();
   else if (existsSync(install)) {
     const source = readLocalRecordSource(install, 4096);
-    const record = source ? JSON.parse(Buffer.from(source).toString("utf8")) as { current?: string } : undefined;
-    if (record?.current === paths.version) assertExtensionSetReady();
+    const record = source ? JSON.parse(Buffer.from(source).toString("utf8")) as { current?: string; previous?: string; versions?: string[] } : undefined;
+    if (record && committedVersion(record, paths.version)) assertExtensionSetReady();
   }
 }
 
@@ -114,7 +118,7 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
     }
     if (!existsSync(pending)) {
       const install = join(paths.root, "install.json");
-      if (existsSync(install) && (JSON.parse(readFileSync(install, "utf8")) as { current?: string }).current === paths.version && !options.repair) throw new Error(`connector set ${paths.version} is missing; run this installation's \`cotal ext seed --repair\``);
+      if (existsSync(install) && committedVersion(JSON.parse(readFileSync(install, "utf8")), paths.version) && !options.repair) throw new Error(`connector set ${paths.version} is missing; run this installation's \`cotal ext seed --repair\``);
       writeFileSync(pending, JSON.stringify({ installRoot: paths.installRoot, version: paths.version }), { mode: 0o600, flag: "wx" });
     } else {
       const source = readLocalRecordSource(pending, 4096);
@@ -131,7 +135,7 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
     }
     mkdirSync(paths.set, { recursive: true, mode: 0o700 });
     const installation = join(paths.root, "install.json");
-    const prior = existsSync(installation) ? JSON.parse(readFileSync(installation, "utf8")) as { current?: string; previous?: string } : undefined;
+    const prior = existsSync(installation) ? JSON.parse(readFileSync(installation, "utf8")) as { current?: string; previous?: string; versions?: string[] } : undefined;
     const sourceVersion = prior?.current === paths.version ? prior.previous : prior?.current;
     if (sourceVersion && !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(sourceVersion)) throw new Error("invalid previous connector set version");
     const sourceRoot = sourceVersion ? join(paths.root, "sets", sourceVersion) : globalConfigDir();
@@ -164,7 +168,8 @@ export async function prepareExtensionSet<T>(reconcile: () => Promise<T>, option
     const install = join(paths.root, "install.json");
     const previous = sourceVersion;
     const next = `${install}.${randomBytes(8).toString("hex")}`;
-    writeFileSync(next, JSON.stringify({ installRoot: paths.installRoot, current: paths.version, ...(previous && previous !== paths.version ? { previous } : {}) }), { flag: "wx", mode: 0o600 });
+    const versions = [...new Set([...(prior?.versions ?? []), ...(prior?.current ? [prior.current] : []), ...(prior?.previous ? [prior.previous] : []), paths.version])];
+    writeFileSync(next, JSON.stringify({ installRoot: paths.installRoot, current: paths.version, versions, ...(previous && previous !== paths.version ? { previous } : {}) }), { flag: "wx", mode: 0o600 });
     renameSync(next, install);
     publishReady(paths);
     rmSync(pending);
