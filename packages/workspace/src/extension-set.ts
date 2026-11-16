@@ -10,9 +10,14 @@ import { protectedLocalDirectory, readLocalRecordSource } from "./protected-reco
 
 const version = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+function pnpmContentPath(path: string): boolean {
+  return /[/\\\\]store[/\\\\]v[0-9]+[/\\\\]links[/\\\\]@[/\\\\]cotal-ai[/\\\\]/.test(path);
+}
+
 /** Stable package-manager destination, including pnpm's link outside its versioned virtual store. */
 export function extensionInstallationRoot(packageRoot: string): string {
   const root = resolve(packageRoot);
+  if (pnpmContentPath(root)) throw new Error(`pnpm connector installation requires its validated global launch entry, not ${root}`);
   const parts = root.split(/[\\/]/);
   const retained = parts.lastIndexOf(".cotal-generations");
   if (retained >= 0) return extensionInstallationRoot(join(parts.slice(0, retained).join("/") || "/", "node_modules", "cotal-ai"));
@@ -24,7 +29,13 @@ export function extensionInstallationRoot(packageRoot: string): string {
 
 function packageRoot(): string {
   const identity = executionIdentity();
-  if (identity?.launchEntry && /[/\\\\]global[/\\\\]v[0-9]+[/\\\\]/.test(identity.launchEntry)) return dirname(dirname(identity.launchEntry));
+  if (identity && pnpmContentPath(identity.logicalEntry)) {
+    const launch = identity.launchEntry;
+    const root = launch ? dirname(dirname(launch)) : undefined;
+    if (!root || !/[/\\\\]global[/\\\\]v[0-9]+[/\\\\][^/\\\\]+[/\\\\]node_modules[/\\\\]cotal-ai$/.test(root))
+      throw new Error(`pnpm connector installation has no matching validated global launch entry: ${launch ?? identity.logicalEntry}`);
+    return root;
+  }
   const logical = logicalExecutionEntry();
   if (logical) return dirname(dirname(logical));
   for (const start of [process.argv[1], fileURLToPath(import.meta.url)]) {

@@ -16,6 +16,7 @@ assert.notEqual(extensionInstallationRoot("/one/node_modules/cotal-ai"), extensi
 assert.equal(extensionInstallationRoot("/pnpm/global/v11/313884-1a1e2b51c46-d00bbaf3676ff14d/node_modules/cotal-ai"), "/pnpm/global/v11/node_modules/cotal-ai");
 assert.equal(extensionInstallationRoot("/pnpm/global/v11/314b58-1a1e2b5d7cb-966eaae8a89ade48/node_modules/cotal-ai"), "/pnpm/global/v11/node_modules/cotal-ai");
 assert.notEqual(extensionInstallationRoot("/one/global/v11/group/node_modules/cotal-ai"), extensionInstallationRoot("/two/global/v11/group/node_modules/cotal-ai"));
+assert.throws(() => extensionInstallationRoot("/pnpm/store/v11/links/@/cotal-ai/0.164.18/content/node_modules/cotal-ai"), /validated global launch entry.*\/pnpm\/store/);
 assert.equal(extensionInstallationRoot("/prefix/lib/.cotal-generations/0123456789abcdef0123456789abcdef/cotal-ai"), "/prefix/lib/node_modules/cotal-ai");
 assert.throws(assertExtensionSetReady, /missing or incomplete/);
 const legacy = join(root, "config", "cotal", "extensions");
