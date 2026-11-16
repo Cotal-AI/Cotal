@@ -12,7 +12,7 @@ export function rootAccountProtected(account) {
     account.ancestors[1].mode===0o700;
 }
 export function publishedRootLockout(call) {
-  return call?.root===false&&Number.isInteger(call.exit)&&call.exit!==0&&call.timeout===false&&call.signal===null&&
+  return call?.root===false&&((Number.isInteger(call.exit)&&call.exit!==0)||call.error==='EACCES')&&call.timeout===false&&call.signal===null&&
     /EACCES|Permission denied/.test(call.stdout+call.stderr)&&!/config folder protection/.test(call.stdout+call.stderr);
 }
 

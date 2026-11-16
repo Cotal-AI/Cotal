@@ -79,6 +79,7 @@ test('root config ancestry refuses runner homes, missing parents, foreign owners
 test('published lockout requires its permission text, never exit code or config-protection refusal',()=>{
  const call={root:false,exit:126,timeout:false,signal:null,stdout:'',stderr:'Permission denied'};
  assert.equal(publishedRootLockout(call),true);
+ assert.equal(publishedRootLockout({...call,exit:null,error:'EACCES',stderr:'spawn cotal EACCES'}),true);
  assert.equal(publishedRootLockout({...call,stderr:''}),false);
  assert.equal(publishedRootLockout({...call,stderr:'config folder protection: Permission denied'}),false);
  assert.equal(publishedRootLockout({...call,exit:0}),false);
