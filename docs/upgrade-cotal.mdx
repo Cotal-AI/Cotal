@@ -41,6 +41,11 @@ Rollback restores captured connector configuration before verifying the previous
 It releases its own admission fences even when the daemon still runs the target generation.
 A successful manual update waits for an authorized target daemon generation. Deferred activation
 names what still needs a restart and leaves that daemon and its Managers running.
+Manager status and agent lists remain readable during preservation, with the usual caller permissions.
+The daemon checks updater ownership every second. Once the operating system proves that the requesting
+process has exited or its PID belongs to a different process, it releases that updater's preservation
+attempt. Each Manager acknowledgement has a ten-second deadline and failed releases are retried.
+A live updater, another live requester or an unknown process lifetime keeps the fence in place.
 Releases up to the release that ships this delegation cannot be repaired by downloading a newer target.
 Install the newer version manually with `npm install -g cotal-ai@latest`, then run `cotal update --self`.
 An unwritable installation refuses before staging and names the owning install command.

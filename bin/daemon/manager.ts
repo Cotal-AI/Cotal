@@ -710,10 +710,12 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
     },
     prepareGenerationRestart(owner: string): Promise<void> {
       generationPending = true;
+      generationOwners.add(owner);
       generationAcquisitions++;
       return queueGeneration(async () => {
       generationAcquisitions--;
-      if (generationPrepared) { generationOwners.add(owner); return; }
+      generationOwners.add(owner);
+      if (generationPrepared) return;
       try {
         await Promise.all([...live.values()].map((l) => l.healthTask));
         // A timed-out prepare can still have landed. Roll back every retained attempt before retrying.
@@ -765,6 +767,7 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
           try { await generationCall(child, attemptId, "abort"); generationAttempts.delete(child); }
           catch { /* Retain the exact attempt for rollback on the next automatic retry. */ }
         }
+        if (generationAttempts.size === 0) generationOwners.delete(owner);
         generationPending = generationAttempts.size !== 0 || generationAcquisitions !== 0;
         if (!generationPending) for (const l of live.values()) {
           if (!l.child && !l.starting && !l.timer && l.view.state === "restarting") schedule(l);
