@@ -1,5 +1,44 @@
 # cotal-ai
 
+## 0.165.0
+
+### Patch Changes
+
+- 6703b26: Retain and verify a Linux migration's Node executable beside the existing native package generation, binding both in the maintenance resume document under the root and installation locks. This adds no public migration or activation command; controller preservation remains unsupported until its complete custody integration is available.
+- 8cddd39: Staged updates now remove abandoned staging folders and finished transactions while keeping all execution generations.
+  Cleanup runs under the installation's update lock when an update starts, after it succeeds, and when the daemon starts. It skips another account's store and reports removal failures without failing the update.
+- 7d0e4f8: Daemon login and setup now report invalid provider URLs as usage refusals without echoing or recording the rejected URL. Validation runs before account selection or native setup effects, and help consistently describes auth URLs and discovery hostnames.
+- 85e8596: Keep a manually reinstalled CLI usable when another account's old generation store is unreadable.
+  
+  A plain start leaves inaccessible retired descriptors untouched and runs the installed version.
+- Updated dependencies [1b5a7ed]
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [afd22be]
+- Updated dependencies [18d2cda]
+- Updated dependencies [6703b26]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [8cddd39]
+- Updated dependencies [7ecfa90]
+- Updated dependencies [2896d81]
+- Updated dependencies [5cd2046]
+  - @cotal-ai/manager@0.165.0
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/auth@0.165.0
+  - @cotal-ai/cli@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/connector-core@0.165.0
+  - @cotal-ai/delivery@0.165.0
+  - @cotal-ai/registry@0.165.0
+  - @cotal-ai/runtime@0.165.0
+  - @cotal-ai/seat@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes
