@@ -414,7 +414,10 @@ their ownership; it is not a shipped pooled service.
 
 A standing-family renewal has a ten-second aggregate budget for the host response, all five broker
 preflights and the post-adoption reconnect wait. Failed preparation retains the current family and
-reports renewal debt. A late host response cannot adopt credentials. Timeout does not cancel host
+reports renewal debt. While that debt remains, the manager retries after at most one second instead
+of waiting another quarter of the credential lifetime. Successful renewal restores the normal
+interval. Stop and preservation cancel the timer and prevent an in-flight pass from rearming it.
+A late host response cannot adopt credentials. Timeout does not cancel host
 issuance or prove it failed; the host still owns that operation, and all five held subjects are
 recorded as possibly issued when no response arrived. Late broker dials close without serving.
 Failed serving candidates close before subscription cleanup, so an unanswered drain PONG cannot

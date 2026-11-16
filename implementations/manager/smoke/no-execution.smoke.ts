@@ -139,6 +139,8 @@ try {
   check("served refusals bind no goals/admissions/keys or broker resources", await resources() === beforeResources && connectorBuilds === 0);
   for (const { command, reply } of refusals) check(`${command} refuses natively before any allocation`, !reply.ok && reply.error?.code === "unimplemented" && /execution: none/.test(reply.error.message));
   check("auth-service real attributed readiness sees actual noexec status", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
+  const standingExpiries = [initial.opts.remoteAuthority!.supervisorCreds, initial.opts.remoteAuthority!.serveCreds, initial.opts.remoteAuthority!.goalWriterCreds, initial.opts.remoteAuthority!.sessionLedgerCreds].map((cred) => Number(credsClaims(cred).exp) * 1000);
+  const firstExpiry = Math.min(...standingExpiries), originalExpiry = Math.max(...standingExpiries);
   const originalConnections = await nativeAccountConnections(a.auth, fx.servers);
   const originalStanding = originalConnections.filter((row) => Object.entries(state.identities).some(([duty, identity]) => duty !== "executor" && identity.id === row.user));
   check("native rejection witness begins with four actual persistent duties", originalStanding.length === 4);
@@ -156,7 +158,7 @@ try {
   // The request counter precedes adoption. Wait for the authentic status rail after renewed dials.
   await new Promise((r) => setTimeout(r, 500));
   check("native readiness remains real after all-duty candidate preflight/adoption", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
-  const originalExpiry = Math.max(...[initial.opts.remoteAuthority!.serveCreds, initial.opts.remoteAuthority!.goalWriterCreds, initial.opts.remoteAuthority!.sessionLedgerCreds].map((cred) => Number(credsClaims(cred).exp))) * 1000;
+  check("refused standing family retries and adopts before the first held duty expires", Date.now() < firstExpiry);
   assert.ok(originalExpiry - Date.now() < 30_000, "fixture active duties must have bounded short TTL");
   await new Promise((r) => setTimeout(r, Math.max(0, originalExpiry - Date.now() + 250)));
   check("real noexec status survives original serve/goal/session JWT expiry", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);

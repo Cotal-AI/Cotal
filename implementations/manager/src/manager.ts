@@ -2646,20 +2646,28 @@ export class Manager {
       const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
       this.resumeCredRenewal = () => {
         if (this.credRenewTimer || this.leaseStopping) return;
-        this.credRenewTimer = setInterval(async () => {
+        // A refused family at the 75% renewal point must retry before the next quarter-TTL
+        // tick, which can land at expiry. Keep one timer and preserve the stop/preservation fence.
+        const timer = setTimeout(async () => {
           try {
             if (this.remoteAuthority?.renewStandingBundle) await this.renewRemoteStandingBundle();
             else await this.renewRemoteExecutor();
           } catch (e) {
             console.error(`! remote manager renewal pass failed: ${rejectionText(e)}`);
+          } finally {
+            if (this.credRenewTimer === timer && !this.leaseStopping) {
+              this.credRenewTimer = undefined;
+              this.resumeCredRenewal?.();
+            }
           }
           try {
             await this.runHosting?.renew();
           } catch (e) {
             console.error(`! remote run-hosting renewal pass failed: ${rejectionText(e)}`);
           }
-        }, intervalMs);
-        this.credRenewTimer.unref?.();
+        }, this.remoteRenewalDebt ? Math.min(1_000, intervalMs) : intervalMs);
+        this.credRenewTimer = timer;
+        timer.unref?.();
       };
       this.resumeCredRenewal();
     }
