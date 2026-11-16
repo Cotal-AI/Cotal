@@ -105,8 +105,9 @@ and its recorded retry time. A replacement failure increments the count and wait
 After two counted failures, the next observation must wait without launching another updater.
 The probe ages timer records but never seeds or resets failures. Historical staging leftovers remain
 visible as measured faults. Fixed-source refusal attempts must leave no staging folders or store growth.
-The root-owned installation probe runs only on a disposable Linux runner. It retains the runner's
-previous npm directory before copying its pinned Node release, so npm dependency trees never merge.
+The root-owned installation probe runs only on a disposable Linux runner. It records the runner's
+previous npm version and replaces npm, corepack and their launchers before copying its pinned Node release.
+It checks npm's version and global tree before installation, so npm dependency trees never merge.
 Root updates an actual
 `/usr/local` installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
