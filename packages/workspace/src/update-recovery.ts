@@ -4,6 +4,8 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { globalConfigDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { processStartToken } from "./advisory-lock.js";
 import { homeCotalDir } from "./cotal-home.js";
+import { extensionSetPaths } from "./extension-set.js";
+import { protectedLocalDirectory } from "./protected-records.js";
 import type { UpdateRecovery } from "./updates.js";
 
 export const UPDATE_RECOVERY_WAIT_MS = 60 * 60 * 1000;
@@ -13,8 +15,12 @@ export const updateRecoveryObservationName = "update-recovery-observed.json";
 export function recoverySnapshotProblem(record: UpdateRecovery): string | undefined {
   const path = record.snapshot;
   if (!path) return "the interrupted update has no snapshot path";
-  if (!isAbsolute(path) || dirname(resolve(path)) !== resolve(globalConfigDir()) || !basename(path).startsWith(".update-snapshot-"))
+  const parent = dirname(resolve(path));
+  const scoped = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$/.test(record.previous)
+    ? resolve(join(extensionSetPaths().root, "sets", record.previous)) : undefined;
+  if (!isAbsolute(path) || (parent !== resolve(globalConfigDir()) && parent !== scoped) || !basename(path).startsWith(".update-snapshot-"))
     return "the interrupted update snapshot does not belong to this configuration";
+  if (parent === scoped) protectedLocalDirectory(parent, "the interrupted update connector set");
   const info = lstatSync(path, { throwIfNoEntry: false });
   if (!info) return "the interrupted update snapshot is missing";
   if (!info.isDirectory() || info.isSymbolicLink()) return "the interrupted update snapshot is not a plain directory";
