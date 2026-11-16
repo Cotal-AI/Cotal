@@ -2336,7 +2336,7 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    if (this.execution !== "none") this.releaseExtensionSet ??= holdExtensionSet();
+    if (this.execution !== "none" && this.installedExtensions) this.releaseExtensionSet ??= holdExtensionSet();
     const task = this.runStart();
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
