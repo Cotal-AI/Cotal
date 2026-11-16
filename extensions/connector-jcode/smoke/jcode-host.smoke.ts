@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { CotalEndpoint, eventChannel, isAguiFramePart, isReachable, parsePrincipalKey, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
 import { RUN_ERROR_EGRESS_MESSAGE } from "@cotal-ai/connector-core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { readLaunchRecord } from "../src/private-lifecycle.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | undefined>, timeoutMs = 20_000): Promise<T> {
@@ -34,7 +35,8 @@ const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+// Match source-checkout launches: the tsx CLI can kill its child after a 30 ms signal-ack window.
+const hostArgs = ["--import", import.meta.resolve("tsx"), host];
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
@@ -43,7 +45,7 @@ teardownOnSignal(nats);
 const hosts: ChildProcess[] = [];
 
 function spawnHost(opts: SpawnOptions): ChildProcess {
-  const proc = spawn(tsx, [host], { ...opts, detached: true });
+  const proc = spawn(process.execPath, hostArgs, { ...opts, detached: true });
   hosts.push(proc);
   return proc;
 }
@@ -872,8 +874,19 @@ try {
       !modelOnlyConnectorLog.includes("model deepseek-v4-pro is served by provider"),
     modelOnlyConnectorLog,
   );
+  const modelOnlyLaunch = readLaunchRecord(managedHome("jcodehost", "modelonlypeer"));
+  check(
+    "the model-only stop targets the host directly rather than a signal wrapper",
+    modelOnlyLaunch !== undefined && modelOnlyLaunch.host.pid === modelOnly.pid,
+    { launchedPid: modelOnly.pid, hostPid: modelOnlyLaunch?.host.pid },
+  );
   await stopHostTree(modelOnly, "SIGTERM");
   check("the model-only lag launch exits cleanly", modelOnly.exitCode === 0, { code: modelOnly.exitCode, stderr: modelOnlyErr });
+  check(
+    "the model-only lag launch completes its own SIGTERM shutdown",
+    modelOnlyErr.includes("received SIGTERM; shutting down"),
+    modelOnlyErr,
+  );
 
   // A route the Harness API names with no provider publishes no provider key: absent, never
   // fabricated (#785).
