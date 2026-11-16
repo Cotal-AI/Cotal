@@ -40,7 +40,7 @@ test('the shipped acquisition command uses supported config spellings for all fo
   for (const unsupported of ['--minimum-release-age', '--minimum-release-age-strict',
     '--minimum-release-age-ignore-missing-time', '--block-exotic-subdeps'])
     assert.equal(literals.some(value => value.split('=')[0] === unsupported), false, unsupported);
-  assert.equal(source.includes("const log = run('pnpm', command);"), true);
+  assert.equal(source.includes("const log = run('pnpm', command, resolve);"), true);
 });
 test('only the fixed package pins and lock-only lifecycle flags are shipped', () => {
   for (const literal of ["'z-schema': '12.5.0'", "'@hyperjump/json-schema': '1.18.0'",
@@ -48,7 +48,7 @@ test('only the fixed package pins and lock-only lifecycle flags are shipped', ()
     "'--lockfile-only'", "'--ignore-scripts'", "'--config.minimum-release-age=1440'",
     "'--config.minimum-release-age-strict=true'", "'--config.minimum-release-age-ignore-missing-time=false'"])
     assert.equal(source.includes(literal), true, literal);
-  assert.equal(source.includes("run('pnpm', command)"), true);
+  assert.equal(source.includes("run('pnpm', command, resolve)"), true);
   assert.equal(source.includes('await import('), false);
 });
 test('the manual acquisition excludes all ten ordinary CI jobs including always aggregate', () => {
@@ -329,6 +329,6 @@ test('the real acquisition entry calls preflight before any pnpm or git child', 
   assert.equal(result.stderr.includes('External pnpm configuration is not admitted'), true,
     'Must reach the real preflight before an unavailable git or pnpm can run');
   assert.equal(result.stdout, '', 'No tool observation or output claim before admission');
-  assert.equal(source.match(/^assertAcquisitionPreflight\(root\);$/gm)?.length, 1);
-  assert.ok(source.indexOf('assertAcquisitionPreflight(root);') < source.indexOf("assert.equal(run('pnpm', ['--version'])"));
+  assert.equal(source.match(/^assertAcquisitionPreflight\(resolve\);$/gm)?.length, 1);
+  assert.ok(source.indexOf('assertAcquisitionPreflight(resolve);') < source.indexOf("assert.equal(run('pnpm', ['--version'])"));
 });
