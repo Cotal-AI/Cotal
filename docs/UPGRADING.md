@@ -76,7 +76,8 @@ root runs `cotal update --self` there, the other accounts can no longer start `c
 reports that permission is denied, or the command ends with an access error for a file under
 `lib/.cotal-generations`. Root installs the current version once with
 `npm install -g cotal-ai@latest`. From 0.164.18 the update keeps such an installation readable by
-the accounts that run it.
+the accounts that run it. A manually reinstalled CLI starts from its installed files when an old
+root-owned generation store is unreadable. It leaves that store and its descriptors untouched.
 
 A machine that reached 0.164.16 or 0.164.17 through `cotal update --self` has a second fault. Its
 daemon's automatic update ends with `staged update requires an installed npm or pnpm package`, and
