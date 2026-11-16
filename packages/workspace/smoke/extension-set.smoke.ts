@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, realpathSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { recoverySnapshotProblem } from "../src/update-recovery.js";
@@ -49,6 +49,7 @@ await prepareExtensionSet(async () => {
 assert.equal(attempts, 2);
 assert.equal(readFileSync(join(legacy, "extensions.json"), "utf8"), inventory);
 assertExtensionSetReady();
+assert.equal(extensionSetCleanupSpec().root, realpathSync.native(join(paths.root, "sets")), "producer hands the strict collector the canonical existing root");
 const manifest = join(paths.extensions, "extensions.json");
 renameSync(manifest, `${manifest}.held`);
 assert.throws(assertExtensionSetReadable, /inventory is missing.*cotal ext seed --repair/);

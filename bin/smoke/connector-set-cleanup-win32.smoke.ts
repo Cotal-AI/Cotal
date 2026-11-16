@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { win32ProcessBinding } from "@cotal-ai/workspace";
@@ -9,8 +9,10 @@ import { cleanupExecutionStore, type ConnectorSetCleanup } from "../execution-st
 if (process.platform === "win32") {
   const scratch = mkdtempSync(join(tmpdir(), "connector-cleanup-native-"));
   const installed = join(scratch, "prefix", "lib", "node_modules", "cotal-ai");
-  const root = join(scratch, "sets"), outside = join(scratch, "outside");
-  for (const path of [installed, root, outside]) mkdirSync(path, { recursive: true });
+  const suppliedRoot = join(scratch, "sets"), outside = join(scratch, "outside");
+  for (const path of [installed, suppliedRoot, outside]) mkdirSync(path, { recursive: true });
+  // The data producer hands an existing protected directory to the strict collector canonically.
+  const root = realpathSync.native(suppliedRoot);
   writeFileSync(join(outside, "sentinel"), "keep");
   const sid = win32ProcessBinding().userSid(), account = `cotalgc${process.pid}`;
   const warnings: string[] = [];
@@ -63,7 +65,7 @@ if (process.platform === "win32") {
     try { clean(); assert(existsSync(denied), "actual delete denial keeps generation directory"); assert.equal(warnings.length, deniedBefore + 1); assert(warnings.at(-1)!.includes(denied)); }
     finally { for (const path of [deniedFile, deniedParent]) { const reset = spawnSync("icacls.exe", [path, "/remove:d", `*${sid}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true }); assert.equal(reset.status, 0, reset.stdout + reset.stderr); } }
     clean(); assert(!existsSync(denied));
-    const result = { platform: process.platform, nativeSid: sid, foreignSid, retained: readdirSync(root).sort(), warnings, accountRemoved: false, passed: true };
+    const result = { platform: process.platform, suppliedRoot, canonicalRoot: root, nativeSid: sid, foreignSid, retained: readdirSync(root).sort(), warnings, accountRemoved: false, passed: true };
     ps(`Remove-LocalUser -Name ${literal(account)}`); created = false; result.accountRemoved = true;
     const output = process.env.COTAL_OWNER_PROBE_OUTPUT;
     if (output) { mkdirSync(output, { recursive: true }); writeFileSync(join(output, "collector-result.json"), JSON.stringify(result, null, 2)); }

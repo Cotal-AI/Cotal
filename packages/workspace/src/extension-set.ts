@@ -245,11 +245,12 @@ export function extensionSetCleanupSpec() {
   const logical = logicalExecutionEntry();
   const installRoot = logical ? dirname(dirname(logical)) : paths.installRoot;
   const holders: { version?: string; state: "live" | "unknown" }[] = [];
-  const sets = join(paths.root, "sets");
+  let sets = join(paths.root, "sets");
   try {
     if (existsSync(sets)) {
       if (!realDirNoSymlink(globalConfigDir(), "installs", paths.id, "sets")) throw new Error("connector version store disappeared");
       protectedLocalDirectory(sets, "connector version store census");
+      sets = realpathSync.native(sets);
     }
   } catch {
     return { root: sets, installRoot, current: paths.version, holders: [{ state: "unknown" as const }] };
