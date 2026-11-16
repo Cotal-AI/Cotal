@@ -12,6 +12,31 @@ export interface UpdateSettings {
   readonly notify: boolean;
 }
 
+/** Target-issued local update actions. Unknown work never grants restart or stop authority. */
+export type UpdateAdmission = {
+  readonly hostedSpaces: readonly string[];
+} & (
+  | { readonly disposition: "restart-empty"; readonly occupied: 0 }
+  | { readonly disposition: "deferred"; readonly occupied: number | null; readonly reason: string }
+  | { readonly disposition: "consent-stop"; readonly occupied: number; readonly inventory: readonly {
+    readonly space: string; readonly instanceId: string;
+    readonly agents: readonly { readonly name: string; readonly id: string; readonly lifecycleUid: string }[];
+  }[] }
+);
+
+/** Validate persisted target data before a bound reconcile child consumes it. */
+export function validUpdateAdmission(value: unknown): value is UpdateAdmission {
+  if (!value || typeof value !== "object") return false;
+  const row = value as UpdateAdmission;
+  if (!Array.isArray(row.hostedSpaces) || row.hostedSpaces.some(space => typeof space !== "string" || !space)) return false;
+  if (row.disposition === "restart-empty") return row.occupied === 0;
+  if (row.disposition === "deferred") return (row.occupied === null || Number.isSafeInteger(row.occupied) && row.occupied >= 0) && typeof row.reason === "string" && row.reason.length > 0 && row.reason.length <= 2000;
+  return row.disposition === "consent-stop" && Number.isSafeInteger(row.occupied) && row.occupied > 0 && Array.isArray(row.inventory)
+    && row.inventory.every(manager => manager && typeof manager.space === "string" && !!manager.space && typeof manager.instanceId === "string" && !!manager.instanceId && Array.isArray(manager.agents)
+      && manager.agents.every((agent: { name?: unknown; id?: unknown; lifecycleUid?: unknown }) => agent && [agent.name, agent.id, agent.lifecycleUid].every(field => typeof field === "string" && !!field)))
+    && row.inventory.reduce((sum, manager) => sum + manager.agents.length, 0) === row.occupied;
+}
+
 /** A replacement that could not be reconciled must stop unattended updates. */
 export interface UpdateRecovery {
   readonly v: 1;
@@ -21,6 +46,8 @@ export interface UpdateRecovery {
   readonly phase: "replacing" | "restoring" | "verified-ready" | "paused";
   readonly owner?: { readonly pid: number; readonly start: string; readonly nonce: string };
   readonly preparedRestart?: boolean;
+  /** Admission from the verified staged target, consumed only under the live parent capability. */
+  readonly admission?: UpdateAdmission;
   readonly snapshot?: string;
   /** Protected execution journal for staged publication. Absent on published in-place records. */
   readonly execution?: string;
@@ -65,6 +92,7 @@ export function readUpdateRecovery(): UpdateRecovery | undefined {
   if (!record || record.v !== 1 || !["replacing", "restoring", "verified-ready", "paused"].includes(record.phase) ||
       ![record.previous, record.target, record.installed, record.reason, record.recordedAt].every(field => typeof field === "string")) throw new Error("invalid update recovery record in update-recovery.json");
   if (record.preparedRestart !== undefined && typeof record.preparedRestart !== "boolean") throw new Error("invalid prepared restart evidence");
+  if (record.admission !== undefined && !validUpdateAdmission(record.admission)) throw new Error("invalid target update admission");
   if (record.snapshot !== undefined && typeof record.snapshot !== "string") throw new Error("invalid update snapshot path");
   if (record.execution !== undefined && typeof record.execution !== "string") throw new Error("invalid update execution journal path");
   if (record.renames !== undefined && (!Array.isArray(record.renames) || record.renames.some(entry => !entry || typeof entry.from !== "string" || typeof entry.to !== "string" || typeof entry.done !== "boolean"))) throw new Error("invalid update rename journal");

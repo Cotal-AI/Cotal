@@ -453,8 +453,9 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; installedEntry: string; current: string } {
-  return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string, expectedArgv?: readonly string[]): { same: boolean; installed: string; installedEntry: string; current: string } {
+  const recorded = recordedUnit(paths, daemonHome);
+  return expectedArgv ? recordedSourceIdentity(recorded.receipt, recorded.plan.mechanism, () => [...expectedArgv]) : recordedDaemonIdentity(recorded);
 }
 
 function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; installedEntry: string; current: string } {
