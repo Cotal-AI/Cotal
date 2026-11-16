@@ -1350,6 +1350,10 @@ interface ManagedAgent {
    *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
    *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
   terminalizing?: boolean;
+  /** Why this manager stopped the seat, set with {@link terminalizing} by the first stop. The exit
+   *  watcher frees the slot with it, so an exit the stop caused is not logged or ended as the
+   *  seat's own. */
+  stopCause?: FreeSlotCause;
   /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
    *  cleared when the seat is logged back on. */
   offMesh?: boolean;
@@ -3793,7 +3797,7 @@ export class Manager {
         this.agents.delete(a.name);
         this.dropSeatRecord(a);
       }
-      const refused = this.stopHandle(a, true);
+      const refused = this.stopHandle(a, true, { kind: "stopped-shutdown" });
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }
@@ -5211,7 +5215,7 @@ export class Manager {
     if (process.platform === "win32" && target.handle.kind === "pty") {
       return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
     }
-    this.stopHandle(target, graceful);
+    this.stopHandle(target, graceful, { kind: "stopped-self" });
     this.trackStoppedHandle(target, true, { kind: "stopped-self" });
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
@@ -5233,11 +5237,12 @@ export class Manager {
    *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged and
    *  returned: a caller that must prove exit (shutdown, a failed resume) reports it as the cause at
    *  once instead of waiting out a stop the runtime already refused. */
-  private stopHandle(a: ManagedAgent, graceful: boolean): string | undefined {
+  private stopHandle(a: ManagedAgent, graceful: boolean, cause: FreeSlotCause): string | undefined {
     // The TERMINALIZING latch: flipped SYNCHRONOUSLY, before any await anywhere on
     // this stop path — later renewals refuse, while an already-admitted renewal drains before the
     // durable terminal begins.
     a.terminalizing = true;
+    a.stopCause ??= cause;
     try {
       // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
       // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
@@ -5257,7 +5262,7 @@ export class Manager {
   /** Windows PTY stops release their name only after the captured process cohort and PTY exited. */
   private async stopWindowsSeat(a: ManagedAgent, graceful: boolean, floor: boolean, cause: FreeSlotStopCause): Promise<void> {
     if (a.once) a.once.stopReason ??= onceStopReason(cause);
-    const failure = this.stopHandle(a, graceful);
+    const failure = this.stopHandle(a, graceful, cause);
     this.lifecycleInFlight++;
     try {
       if (failure !== undefined) throw new Error(failure);
@@ -6215,8 +6220,9 @@ export class Manager {
     for (const child of [...this.agents.values()]) {
       if (child.spawner !== parentId) continue;
       this.reapChildrenOf(this.managedPrincipal(child));
-      this.stopHandle(child, false);
-      this.trackStoppedHandle(child, true, { kind: "stopped-reap", parent: parentId }, true);
+      const cause = { kind: "stopped-reap", parent: parentId } as const;
+      this.stopHandle(child, false, cause);
+      this.trackStoppedHandle(child, true, cause, true);
     }
   }
 
@@ -6323,7 +6329,7 @@ export class Manager {
     const refused = await this.refuseCarriedFork(a, timeoutMs);
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
-    this.stopHandle(a, false);
+    this.stopHandle(a, false, "carried-fork-refused");
     this.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
@@ -6557,10 +6563,11 @@ export class Manager {
     })();
   }
 
-  /** A managed agent's process exited on its own (crash, /exit, finished). Continuation-capable Pi
-   *  seats restart in place after readiness; a spawn carrying `supervise` restarts any connector
-   *  the same way, without classifying a session-state file. Every other exit follows the existing
-   *  terminal path. */
+  /** A managed agent's process exited: on its own (crash, /exit, finished), or after a stop this
+   *  manager started, whose recorded cause then frees the slot. Continuation-capable Pi seats
+   *  restart in place after readiness; a spawn carrying `supervise` restarts any connector the same
+   *  way, without classifying a session-state file. Every other exit follows the existing terminal
+   *  path. */
   private onAgentExit(a: ManagedAgent): void {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
@@ -6585,7 +6592,7 @@ export class Manager {
         console.error(`! ${a.name}: cannot classify Pi process exit for recovery: ${rejectionText(error)} - retiring the seat`);
       }
     }
-    this.freeSlot(a, true, "process-exit");
+    this.freeSlot(a, true, a.stopCause ?? "process-exit");
     this.reapChildrenOf(this.managedPrincipal(a));
   }
 
@@ -8355,7 +8362,7 @@ export class Manager {
         const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
-          this.stopHandle(managed, false);
+          this.stopHandle(managed, false, "carried-fork-refused");
           this.trackStoppedHandle(managed, true, "carried-fork-refused");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
           return { ok: false, error: refused };
@@ -8378,7 +8385,7 @@ export class Manager {
             }
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
-            this.stopHandle(managed, false);
+            this.stopHandle(managed, false, "session-bind-failed");
             this.trackStoppedHandle(managed, true, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
@@ -8391,7 +8398,7 @@ export class Manager {
             this.recordSeat(managed);
           } catch (error) {
             const detail = `${managed.name} joined, but supervise cannot cover a manager restart for it: ${rejectionText(error)}`;
-            this.stopHandle(managed, false);
+            this.stopHandle(managed, false, "supervise-record-failed");
             this.trackStoppedHandle(managed, true, "supervise-record-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
@@ -9126,7 +9133,7 @@ export class Manager {
    *  would reap it: it is freed only once its exit is proved, and otherwise stays managed until it
    *  exits or the manager stops it. */
   private async stopFailedResume(managed: ManagedAgent, cause: FreeSlotCause, detail: string): Promise<ControlReply> {
-    const refused = this.stopHandle(managed, false);
+    const refused = this.stopHandle(managed, false, cause);
     const unproven = refused === undefined
       ? await this.awaitHandleExit(managed.handle).then(() => undefined, rejectionText)
       : `stop failed: ${refused}`;
@@ -9510,8 +9517,9 @@ export class Manager {
         return { ok: true, data: { name: a.name, stopped: true, graceful } };
       });
     }
-    this.stopHandle(a, graceful);
-    this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
+    const cause = { kind: "stopped-requested", requester: caller } as const;
+    this.stopHandle(a, graceful, cause);
+    this.trackStoppedHandle(a, trackNonAdmin, cause);
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // Cancel a live spawn goal
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }
@@ -11810,8 +11818,9 @@ export class Manager {
    *  stop frees the slot first, so this stop reaps them itself. */
   private stopOnceSeat(a: ManagedAgent, reason: string): void {
     this.reapChildrenOf(this.managedPrincipal(a));
-    this.stopHandle(a, true);
-    this.trackStoppedHandle(a, false, { kind: "stopped-once", reason });
+    const cause = { kind: "stopped-once", reason } as const;
+    this.stopHandle(a, true, cause);
+    this.trackStoppedHandle(a, false, cause);
     void this.cancelAgentGoal(a.name, "graceful");
   }
 

@@ -6,7 +6,7 @@
  * run) holds a session to each. A seat that exits on its own must end the attach with
  * `process-exit` and still deliver its last output, and so must a supervised seat whose last exit
  * spends its restart budget. A seat stopped with `cotal stop` must end it with `target-despawn`
- * (SPEC 13.6).
+ * (SPEC 13.6), and so must a child the manager stops because its parent exited on its own.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -39,7 +39,7 @@ const connector: Connector = { kind: "connector", name: "end-reason-stub", requi
   },
 }) };
 registry.register(connector);
-for (const name of ["exits", "looped", "stopped"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: ${connector.name}\n---\n`);
+for (const name of ["exits", "looped", "stopped", "parent", "child"]) writeFileSync(join(root, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nagent: ${connector.name}\n---\n`);
 const port = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const space = `attach-end-${randomUUID().slice(0, 8)}`;
@@ -135,6 +135,20 @@ try {
   assert.equal(stopCode, 0, "cotal stop succeeded");
   await until(() => b.exited());
   check("the attach ends with target-despawn", endedWith(b, "target-despawn"), b.text());
+
+  console.log("D. a child reaped because its parent exited on its own");
+  assert.ok((await manager.startAgent({ name: "parent", agent: connector.name, cwd: dir, events: false })).ok, "parent seat ready");
+  const parentKey = (manager as unknown as { managedPrincipal(a: unknown): string }).managedPrincipal(agents.get("parent"));
+  assert.ok((await manager.startAgent({ name: "child", agent: connector.name, cwd: dir, events: false }, parentKey)).ok, "child seat ready");
+  const p = attach("parent", iid);
+  const k = attach("child", iid);
+  for (const [x, name] of [[p, "parent"], [k, "child"]] as const)
+    assert.ok(await until(() => x.text().includes(`SEAT_JOINED ${name}`) || x.exited()) && !x.exited(), `attached ${name}: ${x.text()}`);
+  p.child.stdin!.write("SEAT_EXIT\r");
+  await until(() => p.exited() && k.exited());
+  check("the parent's attach ends with process-exit", endedWith(p, "process-exit"), p.text());
+  check("the reaped child's attach ends with target-despawn", endedWith(k, "target-despawn"), k.text());
+  check("the manager freed both seats", await until(() => !agents.has("parent") && !agents.has("child")), [...agents.keys()]);
 } finally {
   for (const { child, done } of attaches) { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await done; }
   await manager?.stop({ withAgents: true });
