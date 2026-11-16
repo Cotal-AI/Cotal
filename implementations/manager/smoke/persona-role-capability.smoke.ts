@@ -194,7 +194,16 @@ try {
       role: "worker",
       lifecycleUid: definerUid,
       capabilities: ["spawn", "role:manager"],
-      endpointCapabilities: [{ endpoint: "manager", command: "define-persona" }, { endpoint: "manager", command: "spawn" }],
+      // The positive pin-audit cells read this manager with the definer's own credential.
+      endpointCapabilities: [
+        { endpoint: "manager", command: "define-persona" },
+        { endpoint: "manager", command: "spawn" },
+        ...["describe", "inspect"].map(command => ({
+          endpoint: "manager", command,
+          instanceId: (mgr as unknown as { managerInstanceId: string }).managerInstanceId,
+          instanceOnly: true,
+        })),
+      ],
       expiresAt: definerExp,
       issued: definerIssued,
       issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },

@@ -111,6 +111,8 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // entry functions live only there.
 // "./advisory-lock" is the lock the OpenCode launcher bundles to claim an agent's database, which
 // would otherwise bundle the barrel.
+// "./contract-validator" is the interpreter a generated validator module imports at run time; a
+// browser target loads that module without the barrel, so its one function lives only there.
 // "./permissions" is the permission record and its rules, which a browser reader parses without the
 // barrel.)
 {
@@ -129,6 +131,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./permissions", { module: "permissions", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
+    ["./contract-validator", { module: "contract-validator", additions: ["prepareContractValidator"] }],
   ]);
   const unexpected = keys.filter((k) => k !== "." && !ALLOWED_SUBPATHS.has(k));
   c(`core's package "exports" map is the barrel "." plus only allow-listed subpaths (no wildcard/opaque deep import)`,

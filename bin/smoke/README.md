@@ -24,6 +24,17 @@ checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace 
 PATH for other suites. To run the logging suite locally, set that variable to the absolute path
 of a NATS 2.15.1 binary after building the workspace.
 
+## Fixture registry homes
+
+`pnpm smoke:fixture-space-home` checks the desktop space helper with a real loopback broker,
+auth and delivery. The caller selects its machine home before entering the helper. A mismatch
+with `machineHome` refuses before creating fixture state. The check covers a private override
+and the platform default under a private home, without starting a manager or native service.
+
+`prepareUpdateParticipant` selects its supplied private `COTAL_HOME` until its close callback
+restores the previous environment. Its standalone smoke selects a private home before its own
+registry calls and keeps temporary files under `TMPDIR`.
+
 ## Daemon entry checks
 
 After building the workspace and the platform's daemon host primitives, run

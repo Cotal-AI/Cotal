@@ -1539,7 +1539,7 @@
     {
       "path": "implementations/web/src/web.ts",
       "kind": "derived-output",
-      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" })",
+      "anchor": "res.writeHead(status, e instanceof PayloadTooLarge || e instanceof BodyDeadlineExceeded\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" })",
       "class": "non-render/control",
       "rationale": "HTTP response plumbing: writes the status code on the server's error response; no agent presence is rendered."
     },

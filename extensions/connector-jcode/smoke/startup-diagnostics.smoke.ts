@@ -44,6 +44,21 @@ try {
     const failure = classifyReadinessFailure(new HarnessError("internal", message));
     check(`${name} keeps only a fixed startup category`, failure?.code === expected && !failure.message.includes("PRIVATE_CANARY"));
   }
+  const namedStatuses = new Set([401, 402, 403, 429]);
+  for (let status = 400; status <= 499; status++) {
+    if (namedStatuses.has(status)) continue;
+    const message = authEnvelope.replace("401 Unauthorized", `${status} PRIVATE_CANARY`);
+    const failure = classifyReadinessFailure(new HarnessError("internal", message));
+    check(`HTTP ${status} exposes only the client-error category`,
+      failure?.code === "provider_client_error" && !failure.message.includes("PRIVATE_CANARY"));
+  }
+  for (const statusLine of ["400", "422 Unprocessable Entity\r", "499 <unknown status code>"]) {
+    check(`client-error classification accepts status line ${JSON.stringify(statusLine)}`,
+      classifyReadinessFailure(new HarnessError("internal", authEnvelope.replace("401 Unauthorized", statusLine)))?.code === "provider_client_error");
+  }
+  check("structured model refusal takes precedence over the status-only category",
+    (classifyReadinessProviderRefusal(new HarnessError("internal", envelope), "owned-pin") ??
+      classifyReadinessFailure(new HarnessError("internal", envelope)))?.message === classified?.message);
   for (const [name, error] of [
     ["plain error", new Error(authEnvelope)],
     ["other SDK code", new HarnessError("invalid_request", authEnvelope)],
@@ -52,8 +67,12 @@ try {
     ["unrelated 403", new HarnessError("internal", "unrelated\n  status: 403 Forbidden\nPRIVATE_CANARY")],
     ["unrelated 429", new HarnessError("internal", "unrelated\n  status: 429 Too Many Requests\nPRIVATE_CANARY")],
     ["HTTP 500", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "500 Internal Server Error"))],
+    ["HTTP 399", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "399 PRIVATE_CANARY"))],
+    ["HTTP 4000", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "4000 PRIVATE_CANARY"))],
+    ["HTTP 40", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "40 PRIVATE_CANARY"))],
+    ["unrelated 400", new HarnessError("internal", "unrelated\n  status: 400 Bad Request\nPRIVATE_CANARY")],
+    ["other SDK code with 400", new HarnessError("invalid_request", authEnvelope.replace("401 Unauthorized", "400 Bad Request"))],
     ["wrong send prefix", new HarnessError("internal", `unrelated ${sendEnvelope}`)],
-    ["model refusal", new HarnessError("internal", envelope)],
   ] as const) {
     check(`readiness failure leaves ${name} unchanged`, classifyReadinessFailure(error) === undefined);
   }

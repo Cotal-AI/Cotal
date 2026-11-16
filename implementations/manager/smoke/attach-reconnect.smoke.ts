@@ -509,7 +509,10 @@ try {
       return live();
     };
 
-    const before = live();
+    // Cell E stopped the only earlier target. A bridge whose end frame was sent waits for its
+    // bounded end-ACK grace before releasing the session; H must not count that transient tail.
+    const before = await settle(0, 5_000);
+    check("the stopped seat's earlier sessions drain before the silent-seat baseline", before === 0, { before });
     const a = attachUnderPty(root, [], QUIET); started.push(a);
     check("the attach to the silent seat comes up", await a.waitFor(new RegExp(`attached to ${QUIET}`), 90_000), a.seen().slice(-400));
     const withOne = live();

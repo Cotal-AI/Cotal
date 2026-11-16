@@ -767,6 +767,8 @@ const REGISTRY_HOME_REVIEWED: Record<string, string> = {
     "this census itself: recordMesh and COTAL_HOME occur only in fixture strings it feeds to a parser",
   "implementations/auth/smoke/_approval-authority.ts":
     "a fixture module, not a suite: startApprovalAuthority throws unless process.env.COTAL_HOME already equals the home its importer passes",
+  "bin/smoke/_fixture-space.mjs":
+    "a fixture module, not a suite: createFixtureSpace checks homeCotalDir() against the caller-selected machineHome before starting or writing anything; desktop proofs may use the platform default home",
 };
 
 /**

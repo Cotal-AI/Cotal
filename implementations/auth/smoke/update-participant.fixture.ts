@@ -17,13 +17,14 @@ export interface UpdateParticipantContext {
   report: Record<string, unknown>;
 }
 
-/** Uses the same broker/auth/IdP composition as join-user.smoke.ts, with an hour-long test session. */
+/** Uses join-user's broker/auth/IdP composition, selecting the private registry home until close. */
 export async function prepareUpdateParticipant(context: UpdateParticipantContext): Promise<() => Promise<void>> {
   const { env, project, cotalHome, report } = context;
   assert(env.HOME && env.COTAL_HOME === cotalHome && env.XDG_CONFIG_HOME && env.TMPDIR, "fixture requires private paths");
   const pathKeys = ["HOME", "COTAL_HOME", "XDG_CONFIG_HOME", "TMPDIR"] as const;
   const prior = Object.fromEntries(pathKeys.map(key => [key, process.env[key]]));
-  for (const key of pathKeys) process.env[key] = env[key];
+  process.env.COTAL_HOME = cotalHome;
+  for (const key of ["HOME", "XDG_CONFIG_HOME", "TMPDIR"] as const) process.env[key] = env[key];
   let fixture: Awaited<ReturnType<typeof startHostedAuthFixture>> | undefined;
   let idp: Server | undefined;
   let exchange: Server | undefined;

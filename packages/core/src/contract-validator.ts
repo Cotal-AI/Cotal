@@ -58,10 +58,15 @@ export function prepareContractValidator(bundle: { root: unknown; members?: Reco
     validate.errors = result.valid ? null : result.errors.map((error) => {
       const property = error.code === "no-additional-properties-error" && typeof error.data.property === "string"
         ? error.data.property : undefined;
+      // The key is the schema's own word, so naming it reveals nothing about the instance.
+      const missing = error.code === "required-property-error" && typeof error.data.key === "string"
+        ? error.data.key : undefined;
       return {
         code: String(error.code),
         instancePath: typeof error.data.pointer === "string" ? error.data.pointer.slice(1) : "",
-        message: property === undefined ? `schema assertion failed (${error.code})` : "must NOT have additional properties",
+        message: property !== undefined ? "must NOT have additional properties"
+          : missing !== undefined ? `must have required property '${missing}'`
+          : `schema assertion failed (${error.code})`,
         ...(property === undefined ? {} : { additionalProperty: property }),
       };
     });
