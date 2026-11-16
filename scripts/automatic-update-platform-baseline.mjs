@@ -866,14 +866,8 @@ export async function matrixCell(options) {
           report.desktop.modelsAfterSetup = await cotal('models on desktop-hosted Manager immediately after setup', ['models', '--on', setupResult.manager.instanceId, '--space', space, '--json']);
           const statusWithManager = ok(await daemon('native status with desktop Manager before', ['daemon', 'status', '--json']), 'native status with desktop Manager');
           report.daemonBefore = JSON.parse(statusWithManager.stdout).result;
-          const priorSkip = env.COTAL_SKIP_CONNECTOR_SEED;
-          env.COTAL_SKIP_CONNECTOR_SEED = '1';
-          try {
-            ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
-          } finally {
-            if (priorSkip === undefined) delete env.COTAL_SKIP_CONNECTOR_SEED;
-            else env.COTAL_SKIP_CONNECTOR_SEED = priorSkip;
-          }
+          ok(await cotal('seed CLI installation beside released desktop Manager', ['ext', 'seed']), 'separate CLI connector seed');
+          ok(await cotal('install published runtime', ['ext', 'add', `@cotal-ai/tmux@${report.source}`]), 'runtime setup');
         }
       }
       if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
@@ -883,7 +877,13 @@ export async function matrixCell(options) {
     }
     report.extensionRoots = { source: extensionRootObservation(await cotal('source CLI extension root', ['ext', 'root'])) };
     const sourceExtensionRoot = report.extensionRoots.source.root;
-    if (sourceExtensionRoot === report.desktop?.extensionRoot?.root) report.ownedLocalFixture = report.desktop.ownedLocalFixture;
+    if (report.desktop?.ownedLocalFixture) {
+      const original = report.desktop.ownedLocalFixture;
+      const path = join(sourceExtensionRoot, 'node_modules', original.pkg);
+      const files = Object.fromEntries(Object.keys(original.files).map(name => [name, digest(readFileSync(join(path, name)))]));
+      assert.deepEqual(files, original.files, 'migrated desktop fixture bytes must remain unchanged');
+      report.ownedLocalFixture = { ...original, path, realpath: realpathSync(path), files };
+    }
     report.extensionsBefore = existsSync(join(sourceExtensionRoot, 'extensions.json')) ? json(join(sourceExtensionRoot, 'extensions.json')).extensions : [];
     const sourceInventory = () => [join(pkg, 'package.json'), cli, join(sourceExtensionRoot, 'extensions.json'), ...report.extensionsBefore.map(entry => join(sourceExtensionRoot, 'node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
     if (policy) report.policyInventoryBefore = sourceInventory();
