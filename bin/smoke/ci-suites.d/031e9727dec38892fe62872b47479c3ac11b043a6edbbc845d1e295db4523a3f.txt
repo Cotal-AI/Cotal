@@ -1,0 +1,2 @@
+# Real controller launcher, preserved-cut refusals and pre-stop host identity binding.
+smoke:controller-migration-host:live

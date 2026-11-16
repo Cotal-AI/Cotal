@@ -650,6 +650,12 @@ importers:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
+      '@nats-io/jwt':
+        specifier: 0.0.10-5
+        version: 0.0.10-5
+      '@nats-io/nkeys':
+        specifier: ^2.0.3
+        version: 2.0.3
       '@types/react':
         specifier: ^19.0.0
         version: 19.2.17
