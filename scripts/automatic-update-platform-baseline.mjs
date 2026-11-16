@@ -65,6 +65,31 @@ export function candidateNextOptions(options, disposable = hosted) {
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
 }
 
+export function compareDesktopCatalogs(before, after, instanceId) {
+  const reasons = [];
+  const decode = (value, stage) => {
+    if (!value || value.signal !== null || value.timeout !== false || ![0, 4].includes(value.exit)) { reasons.push(`${stage} did not return a complete or partial catalog response`); return; }
+    try {
+      const envelope = JSON.parse(value.stdout);
+      if (envelope.result?.answeringManagerInstanceId !== instanceId || !Array.isArray(envelope.result.items)) throw new Error('wrong Manager or missing catalog items');
+      return envelope;
+    } catch { reasons.push(`${stage} has no valid pinned catalog response`); }
+  };
+  const prior = decode(before, 'before'), current = decode(after, 'after');
+  if (prior && current) {
+    if (before.exit !== after.exit) reasons.push('catalog exit changed');
+    if (prior.outcome !== current.outcome || prior.completeness !== current.completeness) reasons.push('catalog outcome or completeness changed');
+    for (const item of prior.result.items) {
+      const next = current.result.items.filter(row => row.agent === item.agent);
+      if (next.length !== 1) { reasons.push(`${item.agent}: catalog missing or ambiguous after update`); continue; }
+      if (item.error !== next[0].error) reasons.push(`${item.agent}: catalog error changed`);
+      if (item.supported === true && next[0].supported !== true) reasons.push(`${item.agent}: catalog support lost`);
+      if (!Array.isArray(item.models) || !Array.isArray(next[0].models) || item.models.some(model => !next[0].models.some(row => JSON.stringify(row) === JSON.stringify(model)))) reasons.push(`${item.agent}: catalog models lost`);
+    }
+  }
+  return { passed: reasons.length === 0, reasons, beforeExit: before?.exit, afterExit: after?.exit };
+}
+
 export function assertPublishedPairTarget(options, observed, frozen) {
   if (options['candidate-next'] && options['next-hop-phase'] === 'published') assert.equal(observed,frozen,'public target changed before paired published action');
 }
@@ -1374,12 +1399,14 @@ export async function matrixCell(options) {
               firstUpdateLeftNoFence: after?.update?.restartEvidence?.prepared === false,
               secondUpdatePassed: secondUpdate.exit === 0 && secondUpdate.signal === null && secondUpdate.timeout === false,
               secondSelfUpdatePassed: secondSelfUpdate.exit === 0 && secondSelfUpdate.signal === null && secondSelfUpdate.timeout === false,
-              managerStillAnswering: managerAfter?.state === 'answering' && managerAfter?.instanceId === instanceId && afterSecond?.update?.restartEvidence?.prepared === false && modelsAfter.exit === 0,
+              managerStillAnswering: managerAfter?.state === 'answering' && managerAfter?.instanceId === instanceId && managerAfter?.restarts === 0 && afterSecond?.update?.restartEvidence?.prepared === false,
+              catalogs: compareDesktopCatalogs(report.desktop.modelsBeforeUpdate, modelsAfter, instanceId),
             };
             check('CLI update leaves no restart fence on foreign desktop daemon', report.desktop.followUp.firstUpdateLeftNoFence, after?.update?.restartEvidence);
             check('second cotal update beside desktop daemon exits zero', report.desktop.followUp.secondUpdatePassed, secondUpdate);
             check('second cotal update --self beside desktop daemon exits zero', report.desktop.followUp.secondSelfUpdatePassed, secondSelfUpdate);
-            check('desktop-hosted Manager still answers after CLI updates', report.desktop.followUp.managerStillAnswering, { managerAfter, restartEvidence: afterSecond?.update?.restartEvidence, modelsAfter });
+            check('desktop-hosted Manager still answers after CLI updates', report.desktop.followUp.managerStillAnswering, { managerAfter, restartEvidence: afterSecond?.update?.restartEvidence });
+            check('desktop-hosted catalogs do not regress after CLI update', report.desktop.followUp.catalogs.passed, report.desktop.followUp.catalogs);
           }
         }
       }
