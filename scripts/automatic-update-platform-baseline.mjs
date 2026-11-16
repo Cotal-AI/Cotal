@@ -803,6 +803,7 @@ export async function matrixCell(options) {
           assert.equal(setupResult.manager?.state, 'answering');
           assert(setupResult.manager?.instanceId, 'desktop setup must return answering Manager identity');
           report.desktop.hostedManager = { space, instanceId: setupResult.manager.instanceId, setup: desktopSetup };
+          report.desktop.modelsAfterSetup = await cotal('models on desktop-hosted Manager immediately after setup', ['models', '--on', setupResult.manager.instanceId, '--space', space, '--json']);
           const statusWithManager = ok(await daemon('native status with desktop Manager before', ['daemon', 'status', '--json']), 'native status with desktop Manager');
           report.daemonBefore = JSON.parse(statusWithManager.stdout).result;
           const priorSkip = env.COTAL_SKIP_CONNECTOR_SEED;
@@ -898,6 +899,14 @@ export async function matrixCell(options) {
       assert(disabledPassed, 'native daemon must be confirmed disabled and stopped before manual update');
     }
     await captureServiceEvidence('before-update');
+    if (report.desktop?.hostedManager && options['running-desktop-beside-cli'] === 'true') {
+      const { space, instanceId } = report.desktop.hostedManager;
+      report.desktop.modelsBeforeUpdate = await cotal('models on desktop-hosted Manager immediately before CLI update', ['models', '--on', instanceId, '--space', space, '--json']);
+      const bytes = Buffer.from(JSON.stringify({ afterSetup: report.desktop.modelsAfterSetup, beforeUpdate: report.desktop.modelsBeforeUpdate }));
+      const artifact = `${id}-desktop-models-before-update.txt`;
+      writeFileSync(join(output, artifact), bytes, { flag: 'wx', mode: 0o600 });
+      report.desktop.modelsBeforeCommands = { artifact, bytes: bytes.length, sha256: digest(bytes) };
+    }
     if (nextHopMode === 'candidate') {
       report.candidateSourceInvocation = candidateSourceIdentity({ pkg, cli, identity: report.candidateNext, argv: [cli, 'update', '--self'] });
       check('candidate source CLI matches packed artifact', true, report.candidateSourceInvocation);
@@ -1353,7 +1362,7 @@ export async function matrixCell(options) {
             const afterSecond = statusAfterSecond.exit === 0 ? JSON.parse(statusAfterSecond.stdout).result : undefined;
             const managerAfter = afterSecond?.managers?.find(row => row.space === space);
             const modelsAfter = await cotal('models on desktop-hosted Manager after CLI updates', ['models', '--on', instanceId, '--space', space, '--json']);
-            const followUpBytes = Buffer.from(JSON.stringify({ firstAfter: after, secondUpdate, secondSelfUpdate, statusAfterSecond, modelsAfter }));
+            const followUpBytes = Buffer.from(JSON.stringify({ modelsAfterSetup: report.desktop.modelsAfterSetup, modelsBeforeUpdate: report.desktop.modelsBeforeUpdate, firstAfter: after, secondUpdate, secondSelfUpdate, statusAfterSecond, modelsAfter }));
             const followUpCommands = { artifact: `${id}-desktop-beside-cli-followup.txt`, bytes: followUpBytes.length, sha256: digest(followUpBytes) };
             writeFileSync(join(output, followUpCommands.artifact), followUpBytes, { flag: 'wx', mode: 0o600 });
             report.desktop.followUp = {
