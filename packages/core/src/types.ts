@@ -83,6 +83,9 @@ export interface PresenceCondition {
   message?: string;
   /** Epoch ms when this condition began. */
   since?: number;
+  /** With `approval`: the id of the held permission prompt (SPEC §8.2), so a reader can find its
+   *  record. Opaque; it never carries the prompt's input. */
+  request?: string;
 }
 
 /**

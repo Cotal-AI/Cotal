@@ -25,6 +25,7 @@ import {
   consumerConfigFromCheckpoint,
   deliveryBucket,
   downloadStreamSnapshot,
+  ensurePermissionStore,
   finalizeStreamRestore,
   hardenPrivate,
   initiateStreamRestore,
@@ -683,6 +684,7 @@ async function createOmittedInfrastructure(
     await kvm.create(membership.bucket, membership.createOptions);
     const anycast = anycastStoreDefinition(space);
     await kvm.create(anycast.bucket, anycast.createOptions);
+    await ensurePermissionStore(jsm, space);
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
     // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow

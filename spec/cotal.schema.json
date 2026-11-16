@@ -525,6 +525,10 @@
           "description": "Free-text detail reported by the harness.",
           "type": "string"
         },
+        "request": {
+          "description": "With `approval`: the id of the held permission prompt (SPEC §8.2), so a reader can find its record. Opaque; it never carries the prompt's input.",
+          "type": "string"
+        },
         "since": {
           "description": "Epoch ms when this condition began.",
           "type": "number"

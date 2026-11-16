@@ -57,6 +57,9 @@ export interface CachedConnector {
   /** Whether the connector publishes the AG-UI event plane. Cached explicitly so a manager can
    *  report the fact before importing the connector. Never inferred true from its name. */
   readonly eventPlane: boolean;
+  /** Whether the connector relays its harness's permission prompts. Absent in a manifest written
+   *  before this was cached, which reads as false: no prompt is offered to an owner on a guess. */
+  readonly permissionRequests?: boolean;
   /** The connector's declared setup provider, `null` when it declares none. Absent only in a
    *  manifest written before this was cached. */
   readonly setup?: ExtensionRef | null;
@@ -178,6 +181,7 @@ export function cacheConnector(connector: Connector): CachedConnector {
     name: connector.name,
     requires: [...(connector.requires ?? [])],
     eventPlane: connector.eventChannel !== undefined,
+    permissionRequests: connector.permissionRequests === true,
     setup: connector.setup ? { kind: connector.setup.kind, name: connector.setup.name } : null,
   };
 }

@@ -328,6 +328,9 @@ importers:
 
   extensions/connector-claude-code:
     devDependencies:
+      '@cotal-ai/auth':
+        specifier: workspace:*
+        version: link:../../implementations/auth
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../connector-core
@@ -346,6 +349,9 @@ importers:
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       tsx:
         specifier: ^4.22.4
         version: 4.22.4

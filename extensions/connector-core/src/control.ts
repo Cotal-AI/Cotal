@@ -20,8 +20,16 @@ export interface HookEvent {
   [k: string]: unknown;
 }
 
-/** Maps one hook event to the JSON reply the runtime applies. */
-export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<string, unknown>>;
+/** What a handler knows about the hook's connection. */
+export interface HookContext {
+  /** Aborts when the hook's connection closes before its reply is written: the runtime killed the
+   *  hook, so whatever the handler was waiting to tell it can no longer arrive. */
+  readonly signal: AbortSignal;
+}
+
+/** Maps one hook event to the JSON reply the runtime applies. The control server always passes `ctx`;
+ *  a caller with no hook connection has none to pass. */
+export type HookHandle = (agent: MeshAgent, ev: HookEvent, ctx?: HookContext) => Promise<Record<string, unknown>>;
 
 /** The authenticated control-plane wire frame (one newline-delimited JSON object per connection):
  *  a hook event the runtime delivered, or the manager's cooperative shutdown — both carry the
@@ -288,7 +296,11 @@ export function startControlServer(
       }
       const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
       const awaitHandoff = (frame as { handoff?: unknown }).handoff === true;
-      const reply = await handle(agent, ev);
+      const gone = new AbortController();
+      const abort = (): void => gone.abort();
+      sock.once("close", abort);
+      const reply = await handle(agent, ev, { signal: gone.signal });
+      sock.off("close", abort);
       // Write FIRST, then report. `opts.onReply?.(ev, await writeReply(...))` short-circuits the
       // whole call expression when `onReply` is absent — arguments included — so the reply was never
       // written at all for the callers that do not observe delivery (opencode, hermes, pi, codex).
