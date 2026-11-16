@@ -28,6 +28,10 @@ on:
       - 'bin/smoke/fixture-seat.smoke.mjs'
   workflow_dispatch:
     inputs:
+      startup_timing:
+        description: 'Observation-only stopped and app-installed startup comparison'
+        type: boolean
+        default: true
       repeats:
         description: 'Include the 18 timing repeat cells (running 1..9 and app-tray 1..9)'
         type: boolean
@@ -56,8 +60,11 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $versionPr = ('${{ github.event_name }}' -eq 'pull_request') -and ('${{ github.head_ref }}' -eq 'changeset-release/main')
-          $repeats = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
-          $cells = if ($versionPr) {
+          $timing = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.startup_timing }}' -eq 'true')
+          $repeats = !$timing -and ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
+          $cells = if ($timing) {
+            @('stopped','app-installed')
+          } elseif ($versionPr) {
             @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
           } else {
             @('running','occupied','stopped','absent','locker','locker-filtered','locker-short','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe','external-node-exiting','external-node-exiting-filtered','external-node-elevated','external-node-elevated-filtered','external-node-system','external-node-system-filtered')
@@ -70,7 +77,8 @@ jobs:
               }
             }
           }
-          $expected = @('build','stock-ui-control') + @($include | ForEach-Object { "native ($($_.repeat), $($_.cell))" })
+          $expected = @('build') + @($include | ForEach-Object { "native ($($_.repeat), $($_.cell))" })
+          if (!$timing) { $expected += 'stock-ui-control' }
           "version_pr=$($versionPr.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
           "matrix=$(@{ include = $include } | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
           "expected=$($expected | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
@@ -101,7 +109,7 @@ jobs:
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
       - name: Build cannot-start helper invalid-input control
-        if: steps.plan.outputs.version_pr != 'true'
+        if: steps.plan.outputs.version_pr != 'true' && inputs.startup_timing != true
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -111,7 +119,7 @@ jobs:
           pnpm --dir desktop exec tauri build --bundles nsis --config src-tauri/invalid-helper.json
           if($LASTEXITCODE -ne 0){throw 'Invalid-helper control build failed'}
       - uses: actions/upload-artifact@v4
-        if: steps.plan.outputs.version_pr != 'true'
+        if: steps.plan.outputs.version_pr != 'true' && inputs.startup_timing != true
         with:
           name: setup-invalid-helper
           path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -288,6 +296,7 @@ jobs:
             ${{ runner.temp }}/daemon-service-result.json
           if-no-files-found: error
   stock-ui-control:
+    if: inputs.startup_timing != true
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -336,6 +345,7 @@ jobs:
           BUILD_RESULT: ${{ needs.build.result }}
           NATIVE_RESULT: ${{ needs.native.result }}
           CONTROL_RESULT: ${{ needs['stock-ui-control'].result }}
+          STARTUP_TIMING: ${{ inputs.startup_timing }}
           EXPECTED_JOBS: ${{ needs.build.outputs.expected }}
         with:
           script: |
@@ -358,9 +368,10 @@ jobs:
             }
             assert.equal(process.env.BUILD_RESULT, 'success', `build job result was ${process.env.BUILD_RESULT}`);
             assert.equal(process.env.NATIVE_RESULT, 'success', `native matrix result was ${process.env.NATIVE_RESULT}`);
-            assert.equal(process.env.CONTROL_RESULT, 'success', `stock-ui-control job result was ${process.env.CONTROL_RESULT}`);
+            const timing = process.env.STARTUP_TIMING === 'true';
+            assert.equal(process.env.CONTROL_RESULT, timing ? 'skipped' : 'success', `stock-ui-control job result was ${process.env.CONTROL_RESULT}`);
             const expected = JSON.parse(process.env.EXPECTED_JOBS || '[]');
-            assert(Array.isArray(expected) && expected.length >= 8, 'expected job list is missing or incomplete');
+            assert(Array.isArray(expected) && (timing ? expected.length === 3 : expected.length >= 8), 'expected job list is missing or incomplete');
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               ...context.repo,
               run_id: context.runId,

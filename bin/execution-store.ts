@@ -98,6 +98,7 @@ export interface ConnectorSetCleanup {
 
 /** Retire abandoned update data and optional connector sets under one installation update lock. */
 export function cleanupExecutionStore(installed: string, report: (line: string) => void = line => process.stderr.write(`${line}\n`), sets?: ConnectorSetCleanup): void {
+  process.stderr.write(`daemon timing cleaner.begin unix_ms=${Date.now()} uptime_ms=${Math.round(process.uptime() * 1000)} pid=${process.pid}\n`);
   const executionSupported = (process.platform === "linux" || process.platform === "darwin") && !existsSync(join(installed, "desktop-runtime.json"));
   if (!executionSupported && !sets) return;
   let release: (() => void) | undefined;
