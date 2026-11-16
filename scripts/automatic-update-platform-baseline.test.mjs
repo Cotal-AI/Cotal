@@ -101,7 +101,7 @@ test('running desktop neighbor requires explicit complete paired coordinate', { 
   assert.throws(()=>baseline.candidateNextOptions(options,false));
 });
 
-test('running desktop catalogs are recorded before update and retained beside unchanged after assertion', () => {
+test('running desktop catalogs are recorded before update and retained beside independent no-regression assertion', () => {
   const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
   const setup = source.indexOf("models on desktop-hosted Manager immediately after setup");
   const baseline = source.indexOf("models on desktop-hosted Manager immediately before CLI update");
@@ -110,7 +110,20 @@ test('running desktop catalogs are recorded before update and retained beside un
   assert(setup > 0 && baseline > setup && update > baseline && after > update);
   assert(source.includes('modelsAfterSetup: report.desktop.modelsAfterSetup, modelsBeforeUpdate: report.desktop.modelsBeforeUpdate'));
   assert(source.includes("managerStillAnswering: managerAfter?.state === 'answering'"));
-  assert(source.includes('modelsAfter.exit === 0'));
+  assert(source.includes('compareDesktopCatalogs(report.desktop.modelsBeforeUpdate, modelsAfter, instanceId)'));
+});
+
+test('desktop catalog comparison accepts stable complete or partial and rejects regression or unknown evidence', () => {
+  const reply = (exit, items, extra = {}) => ({ exit, signal: null, timeout: false, stdout: JSON.stringify({ outcome: exit === 0 ? 'ok' : 'partial', completeness: exit === 0 ? 'complete' : 'partial', result: { answeringManagerInstanceId: 'manager', items }, ...extra }) });
+  const complete = reply(0, [{agent:'claude', supported:true, models:[{id:'model'}]}]);
+  const partial = reply(4, [{agent:'claude', supported:false, models:[], error:'existing failure'}]);
+  assert.equal(baseline.compareDesktopCatalogs(complete, complete, 'manager').passed, true);
+  assert.equal(baseline.compareDesktopCatalogs(partial, partial, 'manager').passed, true);
+  for (const after of [partial, reply(0, []), reply(0, [{agent:'claude', supported:true, models:[]}]), reply(0, [{agent:'claude', supported:false, models:[{id:'model'}]}]), {...complete, signal:'SIGTERM'}, {...complete, timeout:true}, {...complete, stdout:'{'}, reply(0, [{agent:'claude', supported:true, models:[{id:'model'}]}], {result:{answeringManagerInstanceId:'other',items:[]}})]) {
+    assert.equal(baseline.compareDesktopCatalogs(complete, after, 'manager').passed, false);
+  }
+  assert.equal(baseline.compareDesktopCatalogs(partial, reply(4, [{agent:'claude', supported:false, models:[], error:'new failure'}]), 'manager').passed, false);
+  assert.equal(baseline.compareDesktopCatalogs(undefined, complete, 'manager').passed, false);
 });
 
 function hostedChainOptions() {
