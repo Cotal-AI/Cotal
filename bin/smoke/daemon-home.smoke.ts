@@ -195,7 +195,7 @@ const fileState = (p: string) => { const st = lstatSync(p); return { ino: st.ino
 
 // ---------- a loopback fixture for the space's service authority (connect-check reads one GET) ----------
 const ACCOUNT = `A${"B".repeat(55)}`;
-const hits: Array<{ method: string }> = [];
+const hits: Array<{ method: string; url: string }> = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
   if (req.url === "/api/auth/token") {
@@ -204,7 +204,7 @@ const authority = createHttpServer(async (req: IncomingMessage, res: ServerRespo
     res.end(JSON.stringify({ token }));
     return;
   }
-  hits.push({ method: req.method ?? "" });
+  hits.push({ method: req.method ?? "", url: req.url ?? "" });
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ v: 1, kind: "service-endpoint-authority-info", space: "ready", accountPublicKey: ACCOUNT }));
 });
@@ -561,7 +561,10 @@ try {
     check("H2 exactly one identity under D/daemon and still exactly one under $COTAL_HOME/daemon", identities(managed).length === 1 && identities(home).length === 1, { managed: identities(managed), home: identities(home) });
     check("H2 the legacy identity and session are byte-identical (no migration, no rewrite)", identities(home).length === 1 && readFileSync(join(home, "daemon", identities(home)[0]!), "utf8") === legacyIdentity && readFileSync(join(home, "idp-sessions.json"), "utf8") === legacySession);
     check("H2 D/meshes is never created and $COTAL_HOME/meshes is unchanged", !existsSync(join(managed, "meshes")) && JSON.stringify(readdirSync(join(home, "meshes"), { recursive: true }).map(String).sort()) === JSON.stringify(meshesBefore));
-    check("H2 the authority saw GETs only (0 POST)", hits.length >= 1 && hits.every((h) => h.method === "GET"), hits);
+    // A daemon whose home holds a sign-in also sends its account computer heartbeat (PUT
+    // /api/cli/machines/<id>) here on its own schedule; that request is not connect-check's.
+    const authorityHits = hits.filter((h) => !h.url.startsWith("/api/cli/machines/"));
+    check("H2 the authority saw GETs only (0 POST)", authorityHits.length >= 1 && authorityHits.every((h) => h.method === "GET"), hits);
   });
 
   await cell("H3 home validation refuses before any bind or lock", async () => {
