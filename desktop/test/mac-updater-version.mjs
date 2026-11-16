@@ -21,9 +21,10 @@ if (faultDaemonServe) {
 if (extraPreference) {
   const presencePath = resolve('desktop/src-tauri/src/presence.rs');
   const original = readFileSync(presencePath, 'utf8');
-  const target = '    close_explained: bool,';
+  const target = '    pub close_explained: bool,';
   assert.equal(original.includes(target), true, 'Expected the preferences struct field');
-  writeFileSync(presencePath, original.replace(target, `${target}\n    #[serde(default)]\n    rollback_probe: bool,`));
+  const lineEnd = original.includes('\r\n') ? '\r\n' : '\n';
+  writeFileSync(presencePath, original.replace(target, `${target}${lineEnd}    #[serde(default)]${lineEnd}    rollback_probe: bool,`));
 }
 const rows = JSON.parse(execFileSync(process.execPath, [pnpm, 'list', '-r', '--depth', '-1', '--json'], { encoding: 'utf8' }));
 for (const row of rows) {
