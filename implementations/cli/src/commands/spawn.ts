@@ -1,7 +1,7 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
-import { hostname } from "node:os";
+import { constants as osConstants, hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   assertValidRole,
@@ -1807,8 +1807,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         resolve();
       });
     });
-    child.on("exit", (code) => {
-      process.exitCode = code ?? 0;
+    child.on("exit", (code, signal) => {
+      // A child killed by a signal has no exit code. Exit as a shell does, 128 plus the signal's
+      // number, so `cotal spawn ... && next` stops after a SIGKILL or SIGTERM (#7043).
+      process.exitCode = signal ? 128 + osConstants.signals[signal] : (code ?? 0);
       resolve();
     });
   });
