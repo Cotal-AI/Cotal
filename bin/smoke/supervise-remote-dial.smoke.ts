@@ -772,7 +772,8 @@ try {
   const nothingHome = scratch("nothing-home"), nothingCwd = scratch("nothing-cwd");
   const nothingSelected = await homeCli(nothingHome, nothingCwd, "use");
   must("P: nothing is selected, and no folder above the empty one holds a .cotal",
-    /no space is selected/.test(nothingSelected.out) && findCotalRoot(nothingCwd) === resolve(nothingCwd), { use: nothingSelected.out, root: findCotalRoot(nothingCwd) });
+    nothingSelected.code === 0 && nothingSelected.out.trim() === "no spaces are known here - sign in to Cotal Cloud with `cotal login`"
+      && findCotalRoot(nothingCwd) === resolve(nothingCwd), { use: nothingSelected.out, root: findCotalRoot(nothingCwd) });
   const nothingBefore = listing(nothingCwd);
   const nothing = await homeCli(nothingHome, nothingCwd, "supervise");
   ok("P: a bare supervise there is refused TARGET_NOT_FOUND, exit 2, saying the folder holds no space, with the commands that name or host one",
