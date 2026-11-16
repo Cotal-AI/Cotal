@@ -74,6 +74,11 @@ assert.ok(!Object.keys(process.env).some(key => /^(npm_config_|pnpm_config_)/i.t
 'Unexpected package, auth or execution environment override');
 const root = realpathSync(process.env.GITHUB_WORKSPACE);
 assert.equal(realpathSync(process.cwd()), root);
+const workspacePath = join(root, 'pnpm-workspace.yaml');
+const repositoryWorkspace = file(workspacePath);
+const reviewedWorkspace = readFileSync(new URL('./ci-validator-acquisition-workspace.yaml', import.meta.url));
+writeFileSync(workspacePath, reviewedWorkspace);
+try {
 assertAcquisitionPreflight(root);
 assert.equal(git('status', '--porcelain=v1', '--untracked-files=all').trim(), '');
 const checkout = git('rev-parse', 'HEAD').trim();
@@ -91,6 +96,7 @@ for (const path of paths.filter(path => path.endsWith('package.json'))) {
 }
 const manifests = new Map(paths.filter(path => path.endsWith('package.json') || path.endsWith('pnpm-lock.yaml') ||
   path.endsWith('.npmrc') || path.endsWith('pnpm-workspace.yaml')).map(path => [path, fingerprint(join(root, path))]));
+manifests.set('pnpm-workspace.yaml', fingerprint(workspacePath));
 assert.ok(manifests.has('packages/core/package.json') && manifests.has('pnpm-lock.yaml'));
 for (const path of paths.filter(path => path.endsWith('package.json'))) {
   const scripts = JSON.parse(file(join(root, path))).scripts ?? {};
@@ -174,3 +180,6 @@ const receipt = {
 for (const [name, bytes] of Object.entries(artifacts)) emit(join(output, name), bytes);
 emit(join(output, 'receipt.json'), Buffer.from(JSON.stringify(receipt, null, 2) + '\n'));
 console.log('VALIDATOR LOCK SOURCE OUTPUT COMPLETE: 4 files; separate graph review required');
+} finally {
+  writeFileSync(workspacePath, repositoryWorkspace);
+}

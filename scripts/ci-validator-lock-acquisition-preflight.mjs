@@ -3,19 +3,9 @@ import fs from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 
-const reviewedWorkspace = Buffer.from(`packages:
-  - "packages/*"
-  - "extensions/*"
-  - "implementations/*"
-  - "examples/*"
-  - "examples/*/*"
-  - "bin"
-allowBuilds:
-  "@google/genai": false
-  esbuild: true
-  msgpackr-extract: false
-  protobufjs: false
-`);
+import { fileURLToPath } from 'node:url';
+
+const reviewedWorkspace = fs.readFileSync(fileURLToPath(new URL('./ci-validator-acquisition-workspace.yaml', import.meta.url)));
 
 function requireAbsent(path, message) {
   const parts = resolve(path).split(sep).filter(Boolean);

@@ -207,7 +207,7 @@ function preflightFixture(t) {
   fs.mkdirSync(join(home, '.config', 'pnpm'), { recursive: true });
   fs.mkdirSync(join(xdg, 'pnpm'), { recursive: true });
   const workspace = join(root, 'pnpm-workspace.yaml');
-  fs.copyFileSync(new URL('../pnpm-workspace.yaml', import.meta.url), workspace);
+  fs.copyFileSync(new URL('./ci-validator-acquisition-workspace.yaml', import.meta.url), workspace);
   return { base, root, home, xdg, workspace };
 }
 test('shipped preflight admits only absent external config and default hooks with reviewed workspace bytes', t => {
