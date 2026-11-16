@@ -936,6 +936,8 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       try { fd = openPrivateAppend(resolve(brokerLogFile)); } finally { if (fd !== undefined) closeSync(fd); }
     }
     if (prepared) {
+      if (journal.members.find((row) => row.role === "broker")?.state !== "started")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the broker became reused during preparation; no space infrastructure was changed", { target: { root, space }, remedy: "stop the stack first, then run `cotal up --recreate-membership-store`" });
       startedBroker = { definition: broker, id: brokerInstance.name };
       // The broker's own stream and registry setup, on the native space path, after it serves.
       failedRole = "broker";
@@ -948,7 +950,9 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       native.recordMesh({ space, server, root, mode, tlsRequired: prepared.transport.kind === "tls-required", storeDir: prepared.storeDir, ...(prepared.user ? { userAuth: provisionalUserAuth(prepared.user) } : {}), ...(maxSessions !== undefined ? { maxSessions } : {}), ...(brokerHost ? { attachHost: brokerHost } : {}), ...(brokerCap !== undefined ? { maxFileStore: brokerCap } : {}) });
       failedStage = undefined;
       failedRole = undefined;
-    } else if (mode !== "user") {
+    } else {
+      // User-auth stacks only inspect the derived membership store; their running streams
+      // are never recreated through this callback.
       // `cotal space delete` removes the streams from a broker that keeps running; it has no user-auth
       // route. When every one is gone they are created again here, as a broker start would, and a
       // partial loss is left alone.
