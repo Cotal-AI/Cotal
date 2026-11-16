@@ -60,7 +60,8 @@ commands on the `ctl.delivery` rail. A cancel succeeds only while no holder has 
 the daemon writes a cancelled row and deletes the request from the task stream, and a holder that
 then asks to take its buffered copy is refused and forgets it. The daemon removes a row a day after
 the request left the queue. It checks every row when it starts and every ten minutes, and resends
-any notice a crash left unsent.
+any notice a crash left unsent. When the records bucket is empty, it reads the bucket status and
+skips key enumeration, so the pass creates no scan consumer.
 
 Before you delete or recreate the task stream, stop every delivery daemon that serves the space and
 wait until each has exited and its broker connection has closed, then start the daemon against the

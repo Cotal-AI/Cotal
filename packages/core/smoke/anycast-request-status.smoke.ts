@@ -2,6 +2,7 @@
  * Anycast request status, live (SPEC §8.1): a real delivery daemon on a JWT-auth broker records each
  * role request's take, answers its sender's status and cancel, and sends the sender a notice naming
  * the holder that took it. Covers:
+ *  - startup on an empty records bucket creates no anycast scan consumer;
  *  - a take, its notice from the delivery lease holder, the status it leaves, a refused cancel;
  *  - a cancel before any take, the delete it makes, and the take it then refuses;
  *  - take and cancel raced on one request: exactly one wins, every time;
@@ -143,7 +144,27 @@ try {
     endpoints.push(d);
     return d;
   };
+  // Consumer listing is not a production delivery grant. Give the test inspector only this census.
+  const inspectorIdent = newIdentity();
+  const recordsStream = `KV_${anycastBucket(space)}`;
+  const inspectorJwt = await encodeUser("anycast-inspector", fromPublic(inspectorIdent.id), fromPublic(auth.account.pub), {
+    pub: { allow: [`$JS.API.CONSUMER.LIST.${recordsStream}`] },
+    sub: { allow: ["_INBOX.>"] },
+  }, { signer: nativeNkeySigner(new TextEncoder().encode(auth.account.signingSeed)) });
+  const inspectorCreds = fmtCreds(inspectorJwt, fromSeed(new TextEncoder().encode(inspectorIdent.seed)));
+  const inspectorNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(inspectorCreds), maxReconnectAttempts: 0 });
+  conns.push(inspectorNc);
+  const inspectorJsm = await jetstreamManager(inspectorNc, { checkAPI: false });
+  const recordConsumers = async () => {
+    const names: string[] = [];
+    for await (const info of inspectorJsm.consumers.list(recordsStream)) names.push(info.name);
+    return names;
+  };
+  check("0a the empty records bucket starts with no consumers", (await recordConsumers()).length === 0);
   let daemon = await startDaemon();
+  await sleep(200);
+  const idleConsumers = await recordConsumers();
+  check("0b the startup sweep creates no consumer on an empty records bucket", idleConsumers.length === 0, idleConsumers);
 
   const mkAgent = async (name: string, role?: string) => {
     const ident = newIdentity();
