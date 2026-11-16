@@ -65,6 +65,24 @@ export function candidateNextOptions(options, disposable = hosted) {
   return mode === 'candidate' ? 'candidate' : 'source-0.164.10';
 }
 
+export function standaloneSeatAttributed(reply, instanceId, name) {
+  if (reply.exit !== 0 || reply.signal !== null || reply.timeout !== false) return false;
+  try {
+    const result = JSON.parse(reply.stdout).result;
+    return result.kind === 'seats' && result.managers?.length === 1
+      && result.managers[0].instanceId === instanceId && result.managers[0].state === 'answered'
+      && result.items?.filter(row => row.name === name && row.instanceId === instanceId && row.status === 'running').length === 1;
+  } catch { return false; }
+}
+
+export function extensionRootObservation(reply) {
+  assert(reply.exit === 0 && reply.signal === null && reply.timeout === false, 'ext root must succeed');
+  const root = reply.stdout.trim();
+  assert(root && resolve(root) === root && !/[\r\n]/.test(root), 'ext root must return one absolute path');
+  const match = /[/\\]installs[/\\]([a-f0-9]{1,16})[/\\]sets[/\\]([^/\\]+)[/\\]extensions$/.exec(root);
+  return { root, id: match?.[1] ?? null, version: match?.[2] ?? null, layout: match ? 'version-set' : 'legacy', response: reply };
+}
+
 export function compareDesktopCatalogs(before, after, instanceId) {
   const reasons = [];
   const decode = (value, stage) => {
@@ -700,7 +718,8 @@ export async function matrixCell(options) {
         assert(typeof space === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(space), 'prepared participant must name its space');
         report.managerHost = { mode: 'daemon-hosted', space };
         ok(await cotal('register daemon-hosted stand-in connector', ['ext', 'add', fixture]), 'hosted stand-in registration');
-        const fixturePath = join(config, 'extensions/node_modules/cotal-upgrade-native-fixture');
+        report.fixtureExtensionRoot = extensionRootObservation(await cotal('daemon-hosted fixture extension root', ['ext', 'root']));
+        const fixturePath = join(report.fixtureExtensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
         const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
         const fixtureMetadata = json(join(fixturePath, 'package.json'));
         assert.equal(fixtureMetadata.name, 'cotal-upgrade-native-fixture');
@@ -740,6 +759,16 @@ export async function matrixCell(options) {
         ok(await cotal('start local space', ['up', '--detach', '--space', 'upgrade-proof']), 'local stack');
         ok(await cotal('spawn real stand-in agent', ['spawn', '--agent', 'upgrade-standin', '--name', 'upgrade-proof-worker', '--detach', '--no-events', '--space', 'upgrade-proof']), 'stand-in spawn');
         report.agentBefore = ok(await cotal('confirm native stand-in seat', ['ps', '--space', 'upgrade-proof', '--json']), 'stand-in ps').stdout;
+        const beforeSeats = JSON.parse(report.agentBefore).result;
+        assert(beforeSeats.kind === 'seats' && beforeSeats.managers?.length === 1 && beforeSeats.managers[0].state === 'answered', 'standalone seat must have one answering Manager');
+        report.managerHost.instanceId = beforeSeats.managers[0].instanceId;
+        assert(report.managerHost.instanceId, 'standalone Manager must have an instance id');
+        report.managerHost.modelsBefore = await cotal('models on standalone Manager before CLI update', ['models', '--on', report.managerHost.instanceId, '--space', 'upgrade-proof', '--json']);
+        report.fixtureExtensionRoot = extensionRootObservation(await cotal('standalone fixture extension root', ['ext', 'root']));
+        const fixturePath = join(report.fixtureExtensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
+        const fixtureMetadata = json(join(fixturePath, 'package.json'));
+        const files = Object.fromEntries(['package.json', 'index.js', 'seat.mjs'].map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
+        report.ownedLocalFixture = {pkg: fixtureMetadata.name, spec: fixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files};
       } else {
         env.MATRIX_HOLD = '1';
         holderPromise = cotal('concurrent real extension writer', ['ext', 'add', fixture]);
@@ -818,11 +847,12 @@ export async function matrixCell(options) {
           writeFileSync(join(desktopFixture, 'index.js'), "import {registry} from '@cotal-ai/core';registry.register({kind:'connector',name:'desktop-standin',requires:['node'],buildLaunch:()=>({command:process.execPath,args:['-e','setInterval(()=>{},1000)']})});\n");
           ok(await daemon('seed desktop runtime connectors before Manager setup', ['ext', 'seed']), 'desktop connector seed');
           ok(await daemon('register desktop stand-in connector', ['ext', 'add', desktopFixture]), 'desktop stand-in registration');
-          const fixturePath = join(config, 'extensions/node_modules/cotal-upgrade-native-fixture');
+          report.desktop.extensionRoot = extensionRootObservation(await daemon('released desktop extension root', ['ext', 'root']));
+          const fixturePath = join(report.desktop.extensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
           const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
           const fixtureMetadata = json(join(fixturePath, 'package.json'));
           const files = Object.fromEntries(fixtureFiles.map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
-          report.ownedLocalFixture = { pkg: fixtureMetadata.name, spec: desktopFixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files };
+          report.desktop.ownedLocalFixture = { pkg: fixtureMetadata.name, spec: desktopFixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files };
           const desktopSetup = ok(await daemon('start desktop-hosted Manager before CLI update', hostedManagerCommand(space)), 'desktop Manager setup');
           const setupResult = JSON.parse(desktopSetup.stdout).result;
           assert.equal(setupResult.manager?.state, 'answering');
@@ -839,7 +869,6 @@ export async function matrixCell(options) {
             if (priorSkip === undefined) delete env.COTAL_SKIP_CONNECTOR_SEED;
             else env.COTAL_SKIP_CONNECTOR_SEED = priorSkip;
           }
-          report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
         }
       }
       if (needsSchedulerEligibility({ method, platform: process.platform, launchdProof, windowsPolicy, policy })) {
@@ -847,8 +876,11 @@ export async function matrixCell(options) {
         await waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining));
       }
     }
-    report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
-    const sourceInventory = () => [join(pkg, 'package.json'), cli, join(config, 'extensions/extensions.json'), ...report.extensionsBefore.map(entry => join(config, 'extensions/node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
+    report.extensionRoots = { source: extensionRootObservation(await cotal('source CLI extension root', ['ext', 'root'])) };
+    const sourceExtensionRoot = report.extensionRoots.source.root;
+    if (sourceExtensionRoot === report.desktop?.extensionRoot?.root) report.ownedLocalFixture = report.desktop.ownedLocalFixture;
+    report.extensionsBefore = existsSync(join(sourceExtensionRoot, 'extensions.json')) ? json(join(sourceExtensionRoot, 'extensions.json')).extensions : [];
+    const sourceInventory = () => [join(pkg, 'package.json'), cli, join(sourceExtensionRoot, 'extensions.json'), ...report.extensionsBefore.map(entry => join(sourceExtensionRoot, 'node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
     if (policy) report.policyInventoryBefore = sourceInventory();
     report.sourceInventoryBeforeAction = sourceInventory();
     report.targetBeforeAction = report.target;
@@ -869,7 +901,7 @@ export async function matrixCell(options) {
       launchdObserver = observeMacHandoff({ home: cotalHome, daemonHome: report.daemonHome, output, id, native, control: killControl, intervalMs: killControl ? 20 : 100 });
       await launchdObserver.sample();
       report.launchdProof = { kind: launchdProof, publicTarget: report.target };
-      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(sourceExtensionRoot, 'extensions.json')) ? digest(readFileSync(join(sourceExtensionRoot, 'extensions.json'))) : undefined };
     }
     if (options['stopped-daemon-before-update'] === 'true') {
       const stopCommand = process.platform === 'linux'
@@ -993,10 +1025,12 @@ export async function matrixCell(options) {
             npmInstall = ok(await npmCall('manual npm install follow-on target', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.target}`, '--no-audit', '--no-fund']), 'manual npm follow-on install');
             const bareVersion = await cotal('bare manual npm CLI version observation', ['--version']);
             const bareRoute = inspectInstalledUpdateRoute(pkg, process.platform);
-            const bareManifest = join(config, 'extensions/extensions.json');
+            report.extensionRoots.followOn = extensionRootObservation(await cotal('follow-on CLI extension root', ['ext', 'root']));
+            const followOnExtensionRoot = report.extensionRoots.followOn.root;
+            const bareManifest = join(followOnExtensionRoot, 'extensions.json');
             const bareExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const bareInstalledExtensions = bareExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1028,7 +1062,7 @@ export async function matrixCell(options) {
             }
             const refusalExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const refusalInstalledExtensions = refusalExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1038,7 +1072,7 @@ export async function matrixCell(options) {
             const launchGateTmuxRow = launchGateRuntimes.exit === 0 ? JSON.parse(launchGateRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
             const launchGateExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const launchGateInstalledExtensions = launchGateExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1082,7 +1116,7 @@ export async function matrixCell(options) {
             const scheduledDaemonStatus = await daemon('manual npm daemon status after scheduled reconciliation', ['daemon', 'status', '--json']);
             const scheduledExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
             const scheduledInstalledExtensions = scheduledExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(followOnExtensionRoot, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1171,7 +1205,7 @@ export async function matrixCell(options) {
       } else if (launchdProof === 'off-before-tick') {
         await delay(70000);
         await launchdObserver.sample();
-        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(sourceExtensionRoot, 'extensions.json')) ? digest(readFileSync(join(sourceExtensionRoot, 'extensions.json'))) : undefined };
         check('off control keeps installation inventory unchanged', JSON.stringify(inventory) === JSON.stringify(offInventory), { before: offInventory, after: inventory });
         check('off control never hands off an updater job', !launchdObserver.observations.some(x => x.records?.['update-launchd.json'] || x.records?.['update-launchd-result.json']), launchdObserver.observations.length);
         report.launchdProof.observationMs = 70000;
@@ -1242,10 +1276,12 @@ export async function matrixCell(options) {
         check('public installer replaces original prefix with target', json(join(pkg, 'package.json')).version === report.target, prefix);
         const selected = await call('public installer selected launcher', launcher, ['--version']);
         check('public installer launcher selects target', selected.exit === 0 && cliReportsVersion(selected.stdout, report.target), selected);
-        const escapedExtensions = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+        report.extensionRoots.installerEscape = extensionRootObservation(await cotal('public installer escape CLI extension root', ['ext', 'root']));
+        const escapedExtensionRoot = report.extensionRoots.installerEscape.root;
+        const escapedExtensions = existsSync(join(escapedExtensionRoot, 'extensions.json')) ? json(join(escapedExtensionRoot, 'extensions.json')).extensions : [];
         report.installerEscape.extensions = escapedExtensions;
         const seeded = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'].map(name => `@cotal-ai/${name}`);
-        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(config, 'extensions/node_modules', entry.pkg, 'package.json')) && json(join(config, 'extensions/node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
+        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(escapedExtensionRoot, 'node_modules', entry.pkg, 'package.json')) && json(join(escapedExtensionRoot, 'node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
         check('public installer status exits zero', (await call('public installer status', launcher, ['status'])).exit === 0, null);
         check('public installer leaves no recovery', !existsSync(join(cotalHome, 'update-recovery.json')), null);
         report.installerEscape.accepted = report.assertions.every(row => row.passed);
@@ -1275,12 +1311,14 @@ export async function matrixCell(options) {
       ? installedRoute.packageManagerRecordVersion === expectedVersion
       : !['npm', 'installer'].includes(options['follow-on-action']) && method !== 'installer' && options['first-install'] !== 'true' && installedRoute.packageManagerRecordVersion === expectedPackageManagerVersion);
     check('CLI version is target', routeMatches, installedRoute.selectedCliVersion);
-    const manifest = join(config, 'extensions/extensions.json');
+    report.extensionRoots.after = extensionRootObservation(await cotal('after CLI extension root', ['ext', 'root']));
+    const afterExtensionRoot = report.extensionRoots.after.root;
+    const manifest = join(afterExtensionRoot, 'extensions.json');
     const extensions = existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     const installedExtensions = extensions.map(entry => {
-      const path = join(config, 'extensions/node_modules', entry.pkg);
+      const path = join(afterExtensionRoot, 'node_modules', entry.pkg);
       const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
       const files = entry.pkg === report.ownedLocalFixture?.pkg ? Object.fromEntries(Object.keys(report.ownedLocalFixture.files).map(name => [name, existsSync(join(path, name)) ? digest(readFileSync(join(path, name))) : null])) : {};
       return {pkg: entry.pkg, path, realpath: existsSync(path) ? realpathSync(path) : null, version: metadata?.version, files};
@@ -1299,6 +1337,16 @@ export async function matrixCell(options) {
     if (container) {
       const current = JSON.parse(ok(await call('foreign container after host upgrade', 'docker', ['inspect', container.id]), 'foreign container preservation').stdout)[0];
       check('foreign container Manager remains running and untouched', current.Id === container.id && current.Config.Labels['cotal.upgrade.cell'] === container.label && current.State.Running === true && current.State.Pid === container.pid && current.State.StartedAt === container.startedAt, { before: container, after: current.State });
+    }
+    if (state === 'agent' && !daemonHostedManager && update.exit === 0) {
+      const { space, instanceId } = report.managerHost;
+      report.managerHost.modelsAfter = await cotal('models on standalone Manager after CLI update', ['models', '--on', instanceId, '--space', space, '--json']);
+      report.managerHost.catalogs = compareDesktopCatalogs(report.managerHost.modelsBefore, report.managerHost.modelsAfter, instanceId);
+      check('standalone catalogs do not regress after CLI update', report.managerHost.catalogs.passed, report.managerHost.catalogs);
+      report.managerHost.spawnAfter = await cotal('spawn new stand-in agent on original standalone Manager', ['spawn', '--agent', 'upgrade-standin', '--on', instanceId, '--name', 'upgrade-proof-after', '--detach', '--no-events', '--space', space]);
+      check('original standalone Manager launches a new agent after update', report.managerHost.spawnAfter.exit === 0 && report.managerHost.spawnAfter.signal === null && report.managerHost.spawnAfter.timeout === false, report.managerHost.spawnAfter);
+      report.managerHost.psAfter = await cotal('attribute new stand-in seat to original standalone Manager', ['ps', '--on', instanceId, '--space', space, '--json']);
+      check('new standalone seat belongs to original Manager', standaloneSeatAttributed(report.managerHost.psAfter, instanceId, 'upgrade-proof-after'), report.managerHost.psAfter);
     }
     if (daemonHostedManager) {
       let observed, current;
