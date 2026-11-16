@@ -7376,15 +7376,6 @@ export class Manager {
           `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
   }
 
-  /** Static control-capable seats can read their holding instance. Use the same effective set at
-   *  delegation admission, issuance and renewal; presence selection never grants this authority. */
-  private managedStaticEndpoints(capabilities: readonly string[] | undefined, endpoints: EpCapability[]): EpCapability[] {
-    if (this.meshMode !== "static" || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return endpoints;
-    return [...endpoints, ...["describe", "inspect"].map(command => ({
-      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
-    }))];
-  }
-
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
@@ -7649,7 +7640,6 @@ export class Manager {
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
-    endpoints = this.managedStaticEndpoints(capabilities, endpoints);
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
     // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
     // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
@@ -12667,7 +12657,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         role: a.role,
         capabilities: a.launch.capabilities,
-        endpointCapabilities: this.managedStaticEndpoints(a.launch.capabilities, lowerPersonaEndpoints(a.launch.endpoints)),
+        ...(a.launch.endpoints?.length ? { endpointCapabilities: lowerPersonaEndpoints(a.launch.endpoints) } : {}),
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,
