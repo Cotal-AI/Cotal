@@ -3,9 +3,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
-  console.log("extension promotion killed-writer fixture: not run on Windows, requires SIGKILL");
+  skipSuite("extension promotion killed-writer fixture: not run on Windows, requires SIGKILL");
 } else {
 const root = mkdtempSync(join(tmpdir(), "promotion-crash-"));
 const bin = resolve("bin/dist/cotal.js");
@@ -36,5 +37,6 @@ try {
     assert(!existsSync(join(config, "cotal/.extensions-promotion.json")));
     console.log(`${phase}: actual killed writer recovered complete new prefix through fresh CLI`);
   }
+  emitSentinel({ passed: 2, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }
