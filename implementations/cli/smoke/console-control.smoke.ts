@@ -64,7 +64,7 @@ const CHILD = [
   "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,",
   "creds:process.env.COTAL_CREDS_PATH?fs.readFileSync(process.env.COTAL_CREDS_PATH,'utf8'):undefined,",
   "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,",
-  "watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',role:'worker'}});",
+  "watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',role:'worker',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();await ep.multicast('hello from '+process.env.COTAL_NAME,{channel:'general'});",
   // One seat reports WORKING so the :status row has a real mesh status to qualify. `working` is
   // the only status the console rewords, and a hand-built row cannot prove a real seat reaches it.
