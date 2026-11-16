@@ -36,6 +36,7 @@ env:
   PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
   select:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/upgrade-matrix-consent-fixed'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -142,7 +143,9 @@ jobs:
             }
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
-            const cells = boundedCells(plan);
+            const cells = boundedCells(plan).filter(cell => ['linux-npm-agent-stop-consent', 'linux-npm-standalone-stop-consent'].includes(cell.id));
+            assert.equal(cells.length, 2, 'stop-consent measurement must select both coordinates');
+            assert(cells.every(cell => cell.required));
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
