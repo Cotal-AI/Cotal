@@ -201,10 +201,8 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   // receives the final canonical screen before the distinct terminal reason.
   let pendingExit = false;
   const offExit = session.onExit(() => {
-    if (live && !repainting) {
-      flushOutput();
-      end("process-exit");
-    } else pendingExit = true;
+    if (live && !repainting) end("process-exit");
+    else pendingExit = true;
   });
 
   // Initial `ready` and repeat repaint use the same ordered cut: discard only UNSENT coalesced bytes
@@ -280,6 +278,11 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
   };
 
   function end(reason: AttachEndReason): void {
+    if (ended) return;
+    // The manager's exit watcher can end the session before this bridge's own exit handler runs,
+    // so the seat's last output may still sit in the coalescing buffer. A flush that finds the rail
+    // broken ends the session `closed` itself.
+    if (live && !repainting) flushOutput();
     if (ended) return;
     ended = true;
     if (outputTimer) clearTimeout(outputTimer);
