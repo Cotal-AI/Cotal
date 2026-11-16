@@ -38,6 +38,7 @@ import {
   type AnycastStatus,
   type AnycastTakeOutcome,
   ANYCAST_NOTICE_KEY,
+  MENTION_NOTICE_KEY,
   partsToText,
   assertValidRole,
   type MessageMeta,
@@ -184,9 +185,10 @@ export interface InboxItem {
    *  unacked past its ack wait and may have run, here or on another reader. */
   deliveryCount?: number;
   /** Set on a DM from the space's delivery daemon about one of this session's own role requests
-   *  (SPEC §8.1): its sender was checked against the delivery lease holder. A notice asks for no
-   *  reply and answers no question. */
-  notice?: "anycast";
+   *  (`anycast`, SPEC §8.1) or about a channel post whose mention the daemon could not deliver
+   *  (`mention`, SPEC §8): its sender was checked against the delivery lease holder. A notice asks
+   *  for no reply and answers no question. */
+  notice?: DeliveryNotice;
 }
 
 /** A bounded, non-consuming view of the currently buffered inbox for presentation-only surfaces. */
@@ -402,10 +404,18 @@ export interface ExactDrainResult {
 
 import { createHash, randomUUID } from "node:crypto";
 
-/** Whether a DM carries a delivery daemon's anycast notice part (SPEC §8.1). Its sender is still to
- *  be checked against the delivery lease. */
-function carriesAnycastNotice(m: CotalMessage): boolean {
-  return m.parts.some((p) => p.kind === "data" && typeof p.data === "object" && p.data !== null && !Array.isArray(p.data) && ANYCAST_NOTICE_KEY in p.data);
+/** What a delivery daemon's notice is about. */
+export type DeliveryNotice = "anycast" | "mention";
+
+/** Which delivery daemon notice part a DM carries, anycast (SPEC §8.1) or mention (SPEC §8), if any.
+ *  Its sender is still to be checked against the delivery lease. */
+function deliveryNoticeOf(m: CotalMessage): DeliveryNotice | undefined {
+  for (const p of m.parts) {
+    if (p.kind !== "data" || typeof p.data !== "object" || p.data === null || Array.isArray(p.data)) continue;
+    if (ANYCAST_NOTICE_KEY in p.data) return "anycast";
+    if (MENTION_NOTICE_KEY in p.data) return "mention";
+  }
+  return undefined;
 }
 
 /** #662: what an id-less channel delivery shares with its stream copy. Both are the same published
@@ -772,7 +782,8 @@ export class MeshAgent extends EventEmitter {
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
-      if (meta?.kind === "dm" && carriesAnycastNotice(m)) void this.ingestNotice(m, d, meta);
+      const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
+      if (notice !== undefined) void this.ingestNotice(m, d, meta!, notice);
       else this.ingest(m, d, meta);
     });
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
@@ -1269,12 +1280,12 @@ export class MeshAgent extends EventEmitter {
 
   /** A DM shaped as a delivery daemon's notice is one only when its authenticated sender holds the
    *  space's delivery lease. Any other sender's copy is an ordinary DM. */
-  private async ingestNotice(m: CotalMessage, delivery: Delivery, meta: MessageMeta): Promise<void> {
+  private async ingestNotice(m: CotalMessage, delivery: Delivery, meta: MessageMeta, notice: DeliveryNotice): Promise<void> {
     const holder = await this.ep.deliveryLeaseHolder(0);
-    this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);
+    this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id ? notice : undefined);
   }
 
-  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice = false): void {
+  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice?: DeliveryNotice): void {
     // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
     // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
     // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
@@ -1323,7 +1334,7 @@ export class MeshAgent extends EventEmitter {
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
     const item = this.toInboxItem(m, meta.kind, meta.historical);
-    if (notice) item.notice = "anycast";
+    if (notice) item.notice = notice;
     // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
     // as asked of us only once it is taken, since a refused take drops it unseen.
     else if (!delivery.take) this.noteDirected(item);
