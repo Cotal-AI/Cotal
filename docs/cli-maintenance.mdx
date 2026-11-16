@@ -347,7 +347,11 @@ any process is stopped. Missing signing authority refuses the check rather than 
 The manager these verbs act on is the space's one manager service: `manager` when `cotal manager
 start` saved it, or `stack-manager` when `cotal up` did. Stderr names the saved service when it is
 not `manager`. So after `cotal up`, `cotal manager status` and `cotal manager stop` act on the
-stack's manager, and `cotal manager start` reports it running and starts no second one. Two saved
+stack's manager, and `cotal manager start` reports it running and starts no second one.
+`cotal manager restart` does not restart a stack's manager by itself: it refuses `LIFECYCLE_BLOCKED`
+and names `cotal manager stop --yes`, then `cotal up`, which starts the manager again and reuses the
+running broker. When the stack's manager is stopped, `cotal manager start` refuses the same way and
+names `cotal up`. Two saved
 manager services in one space refuse `TARGET_AMBIGUOUS`, naming each with its `cotal service`
 command. A manager that `cotal up` or `cotal supervise` started without a saved service is reported
 by `start` and `status` with its PID, and starts nothing beside it. `logs` reads the log `cotal up`
