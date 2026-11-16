@@ -23,8 +23,14 @@ export function preflightExecutionUpdate(): void {
   if (basename(dirname(root)) !== "node_modules") throw new Error("staged update requires an installed npm or pnpm package; use the owning installer");
 }
 
-function verifySelected(root: string, version: string): void {
+function executionLaunchEntry(root: string): string {
+  const identity = executionIdentity();
   const entry = join(root, "dist/cotal.js");
+  return identity?.launchEntry && identity.logicalEntry === realpathSync.native(entry) ? identity.launchEntry : entry;
+}
+
+function verifySelected(root: string, version: string): void {
+  const entry = executionLaunchEntry(root);
   const result = spawnSync(process.execPath, [entry, "--version"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1", [executionCopyModesEnv]: "explicit" }, encoding: "utf8", timeout: 30_000 });
   if (result.status !== 0 || result.stdout.split(/\r?\n/, 1)[0] !== `cotal-ai ${version}`)
     throw new Error(`selected execution did not confirm cotal-ai@${version}: ${result.stderr}`);
@@ -52,7 +58,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     return journal ??= journalExecutionTransaction(installed, generation, executionIdentity()?.launchEntry ?? logicalExecutionEntry());
   };
   return {
-    entry: join(installed, "dist/cotal.js"),
+    entry: executionLaunchEntry(installed),
     get journal() { return getJournal(); },
     async preflight(flags) {
       const installedEntry = logicalExecutionEntry()!;
@@ -84,7 +90,7 @@ export function recoverExecutionUpdate(path: string): ExecutionReplacement {
   const record = readExecutionTransaction(installed, path);
   const previous = record.previous.descriptor?.generation.version ?? (JSON.parse(record.previous.manifest) as { version: string }).version;
   return {
-    entry: join(installed, "dist/cotal.js"), journal: path,
+    entry: executionLaunchEntry(installed), journal: path,
     async preflight() { throw new Error("a recovering execution transaction cannot be prepared again"); },
     publish() { throw new Error("a recovering execution transaction cannot publish a new target"); },
     restore() { publishExecutionTransaction(installed, path, true); },
