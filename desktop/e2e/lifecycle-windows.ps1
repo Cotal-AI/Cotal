@@ -800,8 +800,13 @@ public static class FilteredAppLauncher {
                 $checkbox = Exact-Control 'autostart'
                 $toggle = $null
                 if (!$checkbox.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) { throw 'Exact autostart checkbox exposes no TogglePattern.' }
-                $errEl = Exact-Control 'login-error'
-                $errText = Read-SingleText $errEl 'login-error'
+                $errText = $null
+                try {
+                    $errEl = Exact-Control 'login-error'
+                    $errText = Read-SingleText $errEl 'login-error'
+                } catch {
+                    if ($_.Exception.Message -notlike "Exact AutomationId 'login-error' unavailable*") { throw }
+                }
                 $result = [ordered]@{
                     checked = ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)
                     loginError = $errText
