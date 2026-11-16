@@ -37,6 +37,9 @@ The initial admission verifies the daemon lifetime from those checks. Rollback a
 restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
+If `cotal update --self` on 0.164.16 to 0.164.18 refuses with `manager is in preserving mode`, update an npm installation on Linux or macOS with `npm install -g cotal-ai@latest`.
+For an installer installation on Linux, rerun `curl -fsSL https://get.cotal.ai | sh`.
+The background service notices the new version and restarts itself within two minutes, after which `cotal ps` and `cotal update --self` work.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
