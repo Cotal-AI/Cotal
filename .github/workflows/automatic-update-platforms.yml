@@ -1831,7 +1831,9 @@ jobs:
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Observe current-main unattended broken-target outcome
-        run: node scripts/reproduce-6385-current.mjs --candidate "$RUNNER_TEMP/repro-6385-candidate" --candidate-next "$RUNNER_TEMP/repro-6385-next" --fault '${{ matrix.fault }}' --output "$RUNNER_TEMP/6385-current-evidence"
+        run: |
+          umask 077
+          node scripts/reproduce-6385-current.mjs --candidate "$RUNNER_TEMP/repro-6385-candidate" --candidate-next "$RUNNER_TEMP/repro-6385-next" --fault '${{ matrix.fault }}' --output "$RUNNER_TEMP/6385-current-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1858,7 +1860,9 @@ jobs:
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Observe historical lockout and existing recovery routes
-        run: node scripts/reproduce-6385-legacy.mjs --output "$RUNNER_TEMP/6385-legacy-evidence"
+        run: |
+          umask 077
+          node scripts/reproduce-6385-legacy.mjs --output "$RUNNER_TEMP/6385-legacy-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
