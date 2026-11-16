@@ -99,6 +99,30 @@ test('owned fixture invariant uses real immutable file bytes and the driver reco
   assert(driver.includes("check('recorded extension package versions match target', versions.installed"));
 });
 
+test('copied local fixture requires the same observed installation and exact target set with unchanged bytes', () => {
+  const source = {root: join(tmpdir(), 'installs', '0123456789abcdef', 'sets', '1.0.0', 'extensions'), id: '0123456789abcdef', version: '1.0.0', layout: 'version-set'};
+  const after = {...source, root: join(tmpdir(), 'installs', source.id, 'sets', '2.0.0', 'extensions'), version: '2.0.0'};
+  const entry = {pkg: 'cotal-upgrade-native-fixture', spec: '/owned/source', version: '1.0.0'};
+  const fixture = {...entry, path: join(source.root, 'node_modules', entry.pkg), files: {'package.json':'p','index.js':'i','seat.mjs':'s','record-seat.mjs':'r'}};
+  fixture.realpath = fixture.path;
+  const installed = [{pkg: entry.pkg, path: join(after.root, 'node_modules', entry.pkg), version: entry.version, files: {...fixture.files}}];
+  installed[0].realpath = installed[0].path;
+  const args = {extensions:[entry], before:[entry], target:'2.0.0', fixture, installed, roots:{source, after}};
+  assert.deepEqual(baseline.extensionVersionChecks(args), {recorded:true, installed:true});
+  for (const change of [
+    v => {v.roots.after.id = 'foreign';},
+    v => {v.roots.after.version = '3.0.0';},
+    v => {v.installed[0].path = '/foreign/package';},
+    v => {v.installed[0].realpath = '/foreign/package';},
+    v => {v.fixture.path = '/foreign/source';},
+    v => {v.installed[0].files['seat.mjs'] = 'changed';},
+    v => {delete v.installed[0].files['record-seat.mjs'];},
+  ]) {
+    const value = structuredClone(args); change(value);
+    assert.equal(baseline.extensionVersionChecks(value).installed, false);
+  }
+});
+
 test('hosted Manager observation retries only the explicit rate refusal within its original bound', async () => {
   let now = 0, reads = 0;
   const reply = state => ({exit: 0, signal: null, timeout: false, stdout: JSON.stringify({result: {managers: [{space: 'space', instanceId: 'manager', state, reason: '✗ actor cli of owner u_qdvahusrmtf2a7iyw3oyzwk45q is over its limit of 60 connects a minute - retry in 1s - only actor "cli" is limited, not the account\'s other actors'}]}})});
