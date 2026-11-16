@@ -1696,8 +1696,8 @@ export function cotalToolSpecs(
       title: "Cotal: silence or mute a channel",
       description:
         "Set how a single channel interrupts you: your per-channel attention, more specific than cotal_status. " +
-        "quiet = ambient stays buffered and pull-only (read it with cotal_inbox); it never enters another turn, while an @mention still wakes and injects. " +
-        "muted = you stop receiving this channel entirely, including @mentions (DMs still reach you). " +
+        "quiet = ambient stays buffered and pull-only (read it with cotal_inbox); it never enters another turn, including ambient already waiting, while an @mention still wakes and injects. " +
+        "muted = you stop receiving this channel entirely, including @mentions (DMs still reach you); what is already waiting from it stays readable with cotal_inbox and enters no turn. " +
         "normal = clear the override; the channel follows your global attention. " +
         "Runtime + per-instance: resets when your session restarts. An operator can set a lasting default in your agent file. See your current settings with cotal_channels.",
       schema: {
@@ -1776,7 +1776,7 @@ export function cotalToolSpecs(
       name: "cotal_leave",
       title: "Cotal: leave a channel",
       description:
-        "Leave a channel when you are done with its task. You stay reachable by DM and anycast.",
+        "Leave a channel when you are done with its task. You stay reachable by DM and anycast. Posts already waiting from it stop entering your turns and stay readable with cotal_inbox; a mention of you still does.",
       schema: {
         channel: z.string().describe("The channel or family to leave."),
       },

@@ -218,7 +218,8 @@ interface Pending {
    *  holds that copy. Both absent on a live copy. */
   redelivery?: Delivery["redelivery"];
   ownedUntil?: number;
-  /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
+  /** Delivery class, set at receive time. Quiet ambient stays pull-only even if the mode later
+   *  changes, and an automatic entry becomes pull-only when its channel is quieted, muted or left. */
   pullOnly: boolean;
   /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
   receivedAt: number;
@@ -2264,9 +2265,10 @@ export class MeshAgent extends EventEmitter {
    *  the whole map to presence (best-effort; advisory). Per-instance + runtime: it NEVER writes the
    *  agent file (a shared template) and resets on restart.
    *
-   *  **Prospective only:** it does NOT purge messages already buffered from that channel — those were
-   *  already received and still drain/wake per their original handling. Muting changes what arrives
-   *  next, not what's already in the inbox. */
+   *  It does not purge messages already buffered from that channel. Quiet makes its buffered ambient
+   *  pull-only, and muted makes everything buffered from it pull-only, mentions included, so neither
+   *  enters another turn and both stay readable with cotal_inbox. `normal` makes nothing automatic
+   *  again. */
   async setChannelMode(channel: string, mode: ChannelMode | "normal"): Promise<void> {
     if (!isConcreteChannel(channel))
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
@@ -2274,9 +2276,25 @@ export class MeshAgent extends EventEmitter {
       throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
     await this.inOrder(() => {
       if (mode === "normal") this.channelModes.delete(channel);
-      else this.channelModes.set(channel, mode);
+      else {
+        this.channelModes.set(channel, mode);
+        this.lowerBuffered(channel, mode === "muted");
+      }
       return this.ep.setChannelModes(this.channelModeEntries());
     });
+  }
+
+  /** Make the automatic entries buffered from `channel` (a concrete channel or a pattern) pull-only,
+   *  mentions of this agent too when `mentions` is set, except on a channel `keep` still covers. An
+   *  entry a host is handing over keeps its lane, since the turn carrying it acks it. */
+  private lowerBuffered(channel: string, mentions: boolean, keep: string[] = []): void {
+    for (const p of this.inbox) {
+      if (p.pullOnly || p.item.kind !== "channel" || !p.item.channel || !channelInAllow([channel], p.item.channel)) continue;
+      if (channelInAllow(keep, p.item.channel)) continue;
+      if ((p.item.mentionsMe && !mentions) || this.inFlightIds.has(p.item.recvKey)) continue;
+      p.pullOnly = true;
+      this.excludeFromFocus(p.item);
+    }
   }
 
   /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
@@ -3968,10 +3986,13 @@ export class MeshAgent extends EventEmitter {
     return this.ep.joinChannel(channel);
   }
 
-  /** Leave a channel mid-session (refuses to leave the last one). */
+  /** Leave a channel mid-session (refuses to leave the last one). Ambient already buffered from it
+   *  becomes pull-only, so it enters no later turn. A mention of this agent keeps its lane. */
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     await this.requireConnected();
-    return this.ep.leaveChannel(channel);
+    const result = await this.ep.leaveChannel(channel);
+    if (result.left) this.lowerBuffered(channel, false, this.joinedChannels());
+    return result;
   }
 
   // ---- internals -----------------------------------------------------------

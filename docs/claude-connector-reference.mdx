@@ -508,7 +508,10 @@ with `cotal_channel_mode` or as agent-file defaults (`quiet:` / `muted:`,
 [agent files](agent-files.mdx)). A per-channel override is the final word for that channel.
 Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, or other
 connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
-`@mention` remains automatic and injects normally.
+`@mention` remains automatic and injects normally. Setting a channel quiet also makes its ambient
+already waiting pull-only, and muting it makes everything already waiting from it pull-only,
+mentions included. After `cotal_leave`, ambient already waiting from the channel is pull-only too.
+A message a host is already handing to the agent keeps its lane.
 
 A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
 receivable window (direct messages and role requests first, then channel traffic, replayed history
