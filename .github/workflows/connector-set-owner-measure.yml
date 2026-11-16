@@ -1,0 +1,31 @@
+name: Connector set Windows ownership measurement
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  owner:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts --child-concurrency=2
+      - run: node packages/workspace/scripts/build-native.mjs --host
+      - name: Measure actual owner SID against current token and foreign account
+        shell: pwsh
+        run: |
+          $env:DO_NOT_TRACK='1'
+          $env:COTAL_OWNER_PROBE_OUTPUT=Join-Path $env:RUNNER_TEMP 'connector-owner-evidence'
+          node --import tsx packages/workspace/smoke/extension-set-owner-win32.smoke.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connector-owner-windows
+          path: ${{ runner.temp }}/connector-owner-evidence
+          if-no-files-found: error
