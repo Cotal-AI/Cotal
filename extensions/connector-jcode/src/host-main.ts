@@ -32,6 +32,7 @@ const STARTUP_FAILURE_CODES = new Set([
   "provider_payment_required",
   "provider_forbidden",
   "provider_rate_limited",
+  "provider_client_error",
   "provider_request_failed",
 ]);
 

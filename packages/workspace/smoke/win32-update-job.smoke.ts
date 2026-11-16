@@ -3,11 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { emitSentinel, skipSuite } from "@cotal-ai/smoke-kit";
 import { win32ProcessBinding, windowsCommandLine, windowsEnvironmentBlock } from "../src/win32-process.js";
 if (process.platform !== "win32") {
-  console.log("Windows shipped native accounting/boot acceptance requires Windows, not executed on this host");
-  emitSentinel({ passed: 0, failed: 0 });
+  skipSuite("Windows shipped native accounting/boot acceptance requires Windows");
 } else {
   const root = mkdtempSync(join(tmpdir(), "win-update-native-"));
   const native = win32ProcessBinding();

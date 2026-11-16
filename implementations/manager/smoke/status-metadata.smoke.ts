@@ -89,7 +89,7 @@ try {
   const source = managerBrowserContractSource();
   const generated = generateBrowserContracts([source]);
   const generatedFile = join(fx.dir, "contracts.mjs");
-  symlinkSync(new URL("../../../packages/core/node_modules", import.meta.url), join(fx.dir, "node_modules"), "dir");
+  symlinkSync(new URL("../node_modules", import.meta.url), join(fx.dir, "node_modules"), "dir");
   writeFileSync(generatedFile, generated.text);
   const { contracts } = await import(pathToFileURL(generatedFile).href);
   const { openBrowserManagerCaller } = await import("@cotal-ai/core/browser-control");

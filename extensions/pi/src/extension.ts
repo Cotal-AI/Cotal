@@ -239,15 +239,28 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime.driver.onSessionStart(asContext(context));
   });
   pi.on("agent_start", async (_event, context) => {
+    runtime.mesh.noteActivity();
     await runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile(),
       freshManagedSession || !startupSessionId && !expectedSessionId);
     runtime.driver.onAgentStart(asContext(context));
   });
   pi.on("message_start", (event) => runtime.driver.onMessageStart(event.message));
+  pi.on("message_update", (event) => {
+    const update = event.assistantMessageEvent;
+    if ((update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") && update.delta.length > 0)
+      runtime.mesh.noteActivity();
+  });
   pi.on("context", (event) => runtime.driver.onContext(event.messages));
   pi.on("after_provider_response", (event) => runtime.driver.onProviderResponse(event.status));
-  pi.on("tool_execution_start", (event) => runtime.driver.onToolStart(event.toolName));
-  pi.on("tool_execution_end", () => runtime.driver.onToolEnd());
+  pi.on("tool_execution_start", (event) => {
+    runtime.mesh.noteActivity();
+    runtime.driver.onToolStart(event.toolName);
+  });
+  pi.on("tool_execution_update", () => runtime.mesh.noteActivity());
+  pi.on("tool_execution_end", () => {
+    runtime.mesh.noteActivity();
+    runtime.driver.onToolEnd();
+  });
   pi.on("session_before_compact", (event) => runtime.driver.onBeforeCompact(event.reason, event.willRetry));
   pi.on("agent_end", (event, context) => runtime.driver.onAgentEnd(event.messages, asContext(context)));
   pi.on("turn_end", (_event, context) => {

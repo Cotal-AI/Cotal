@@ -181,8 +181,9 @@ compiles no code: the host passes validators it generated at build time with
 takes each cluster document with its recorded digest and schema roots, recomputes every digest and
 refuses a mismatch or a missing root before writing anything. It supports single-document closures
 only, so a command whose closure spans several documents refuses. The generated module imports
-Ajv's runtime helpers (`ajv/dist/runtime/*.js`), so the host's bundler must resolve `ajv` from
-where the host writes that module.
+`@cotal-ai/core/contract-validator` and prepares its fixed schemas with the same interpreter as Node.
+The host's bundler must resolve this entry from where it writes the module. Neither the module nor
+the interpreter generates code at runtime.
 
 ### Selected Manager caller
 

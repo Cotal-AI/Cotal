@@ -4192,7 +4192,8 @@ ordinary conformance sets defined by the reference implementation; core knows on
 "endpoint".
 
 **Schemas.** Contract schemas are JSON Schema **2020-12**, validated by a real 2020-12
-validator (the reference implementation pins `ajv`), under this normative resource profile: a
+validator (the reference implementation pins `json-schema-library` for instances and uses `ajv`
+for schema meta-validation), under this normative resource profile: a
 schema is a **closed resource bundle**, either fully self-contained (local `$defs`/`#/…`
 refs) or referencing other contract-store artifacts **by digest** only. `$id`/`$anchor`/
 `$dynamicRef` resolve deterministically within the bundle; ambient HTTP/file/URI resolution

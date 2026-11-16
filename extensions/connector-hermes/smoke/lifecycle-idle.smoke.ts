@@ -20,6 +20,7 @@ const check = (name: string, ok: boolean, detail?: unknown): void => {
 /** The two doors a hook may write presence through, recorded by name. */
 const calls: string[] = [];
 const agent = {
+  noteActivity() {},
   async setStatus(status: string, activity?: string) { calls.push(`set:${status}${activity !== undefined ? `:${activity}` : ""}`); },
   async resetStatus(status: string, activity?: string) { calls.push(`reset:${status}${activity !== undefined ? `:${activity}` : ""}`); },
   async setActivity() { /* not a status write */ },

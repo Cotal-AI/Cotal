@@ -80,10 +80,16 @@ plus `CANCEL_INPUT_SCHEMA` and `TURN_YIELD_OUTPUT_SCHEMA` beside the turn pair. 
 runtime test stand-ins compile these same deeply frozen objects. Moving these definitions does not
 change the manager's registered contract digests.
 
-`compileContract` keeps each closure's schemas, IDs and references in its own compiler. The default
-meta-schema and Ajv's built-in meta-schema keys share a lazily compiled validator. Other `$schema`
-values resolve on the closure's compiler. Meta-validation and registration refusals still apply to
-every compile; this reuse does not cache caller schemas.
+`compileContract` validates instances with `json-schema-library` 11.6.16. Each closure has its own
+schema and reference registry. Authored IDs and digest retrieval aliases name the same resource.
+Ajv remains responsible only for schema meta-validation, including closure-local `$schema` values.
+Its built-in meta-schemas share a lazily compiled validator, without caching caller schemas.
+
+`CompiledContract.validate` and `compileContractSchema` return `ContractValidator`, a synchronous
+boolean callable with `schema` and `errors`. A successful call sets `errors` to `null`. Each failure
+has `code`, an escaped JSON Pointer `instancePath`, and `message`. An undeclared property also has
+`additionalProperty`, preserving its original name. Ajv metadata such as `schemaEnv`, `params` and
+`schemaPath` is no longer exposed. Error text and ordering can change between validator versions.
 
 ## Package entry points [#the-export-surface]
 
@@ -91,7 +97,8 @@ Everything below is a real export of a published package, reachable from the pac
 package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
 `@cotal-ai/connector-claude-code` also publishes `./mcp`, which hosts managed Claude Code sessions
 in one process ([Connect Claude](connect-claude.mdx#host-sessions-in-one-process)).
-`@cotal-ai/core` also publishes `./browser-control` and `./browser-validators-build`
+`@cotal-ai/core` also publishes `./browser-control`, `./browser-validators-build` and the node-free
+`./contract-validator` interpreter
 ([Browser control](embedding.mdx#browser-control)). Type-only names are marked; import them with `import type`.
 
 ## Endpoint presence metadata
