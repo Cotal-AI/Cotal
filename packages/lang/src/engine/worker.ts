@@ -15,11 +15,12 @@
  * `now()` is async, and the journal's durable half (`JournalStore.append`) is a Promise the
  * journal awaits before any effect fires, so both survive a port hop with the awaits lining up
  * exactly as they line up over a PubAck. What is genuinely synchronous is `now()` and the stop
- * flag, and both go over shared memory.
+ * flag, and both go over shared memory. A kind-aware host policy uses a separate reply port and
+ * an atomic wake: the thread waits for its synchronous answer, while the host loop stays free.
  *
- * CANCELLATION IS THE ONE EXCEPTION, and it is why there is a SharedArrayBuffer here. `shouldStop`
- * is read synchronously, between effects, so it cannot be a message either. The host writes a reason
- * into shared memory and the run reads it where it always read it. There is NO wall-clock timeout
+ * The global stop is shared memory: the host writes a reason and the run reads it between effects.
+ * It remains independent of the kind-policy reply, so a pause can be published while an effect is
+ * parked. There is NO wall-clock timeout
  * and no `terminate()` on a deadline: a thread killed mid-effect leaves the journal saying a step is
  * pending forever, and the step budget plus this flag are the only two things that end a run.
  *
@@ -32,6 +33,8 @@ import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import type { EffectHandler } from "../effects.js";
 import type { JournalEntry, JournalStore } from "./../journal.js";
 import type { RunPins } from "../pins.js";
+import type { JournalKind } from "../keys.js";
+import { messageOf } from "../errors.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
 import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
@@ -201,6 +204,8 @@ export interface WorkerRunOptions {
    * Required exactly when the request says `"bridged"`; see {@link WorkerRunRequest.handler}.
    */
   readonly bridge?: { readonly handler: EffectHandler; readonly store: JournalStore };
+  /** Synchronous host policy at the live admission seam, after replay and before any append. */
+  readonly shouldStop?: (kind: JournalKind) => string | undefined;
 }
 
 /**
@@ -233,6 +238,29 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   // Assigned when the run's answer is set up below; the bridge hears only the thread, which does
   // not exist yet, so no disagreement can arrive before the assignment.
   let disagree: (e: Error) => void = () => {};
+  // A dedicated reply port keeps synchronous admission separate from asynchronous effect answers.
+  // The worker alone waits. Reasons travel as strings, without the stop flag's byte bound, and a
+  // thrown policy rejects this run on the host's own stack rather than becoming a workflow error.
+  let policy: { port: MessagePort; ready: SharedArrayBuffer } | undefined;
+  let policyHost: MessagePort | undefined;
+  const shouldStop = options.shouldStop;
+  if (shouldStop !== undefined) {
+    const channel = new MessageChannel();
+    const ready = new SharedArrayBuffer(4);
+    const flag = new Int32Array(ready);
+    policyHost = channel.port1;
+    policy = { port: channel.port2, ready };
+    channel.port1.on("message", (kind: JournalKind) => {
+      try {
+        const reason = shouldStop(kind);
+        channel.port1.postMessage(reason);
+        Atomics.store(flag, 0, 1);
+        Atomics.notify(flag, 0);
+      } catch (e) {
+        disagree(e instanceof Error ? e : new Error(messageOf(e)));
+      }
+    });
+  }
   if (options.bridge !== undefined) {
     const channel = new MessageChannel();
     host = serviceBridge(channel.port1, options.bridge, (e) => disagree(e));
@@ -243,12 +271,16 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   let worker: Worker;
   try {
     worker = bridge !== undefined
-      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port] })
+      ? new Worker(options.entry, { workerData: { request, stop, bridge, policy, hostPackageVersion }, transferList: [bridge.port, ...(policy !== undefined ? [policy.port] : [])] })
+      : policy !== undefined
+        ? new Worker(options.entry, { workerData: { request, stop, policy, hostPackageVersion }, transferList: [policy.port] })
       : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion } });
   } catch (e) {
     // A thread that never started never reaches `done`, where the seam closes, so close it here:
     // the handler's quiescence hook would otherwise wait forever on a thread that does not exist.
     host?.close();
+    policyHost?.close();
+    policy?.port.close();
     throw e;
   }
 
@@ -294,7 +326,10 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   }).finally(() => {
     // The seam closes AFTER the thread is gone, so no in-flight effect answers into a closed port;
     // terminate() returns a promise and the close rides its settlement.
-    void worker.terminate().finally(() => host?.close());
+    void worker.terminate().finally(() => {
+      host?.close();
+      policyHost?.close();
+    });
   });
 
   return {

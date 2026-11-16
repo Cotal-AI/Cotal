@@ -63,6 +63,7 @@ import {
   journalEntryKeyString,
   type EffectHandler,
   type JournalEntry,
+  type JournalKind,
   type RunPins,
   type RunResult,
 } from "@cotal-ai/lang";
@@ -86,7 +87,7 @@ interface HostedEngineRequest {
   readonly options: {
     readonly runId: string;
     readonly handler: EffectHandler;
-    readonly shouldStop: () => string | undefined;
+    readonly shouldStop: (kind?: JournalKind) => string | undefined;
     readonly cancellation?: RootCancellationSource;
     readonly pins: RunPins;
     readonly seed?: string;
@@ -306,6 +307,13 @@ export interface DriveRequest {
   readonly workExpiry?: number;
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
+  /**
+   * Dynamic host policy, asked with each live dispatch's journal kind after replay lookup and
+   * before counting, appending or calling the handler. Return a reason to release without failure.
+   * Replayed steps do not ask. A same-pin resume may supply a different policy. Work expiry and
+   * `pause` take precedence. A dispatching scope reports `conclave`, not a handler method name.
+   */
+  readonly beforeEffect?: (kind: JournalKind) => string | undefined;
   /** Where the program's `log(...)` lines go. They are not journalled. */
   readonly onLog?: (line: { readonly scope: string; readonly values: readonly unknown[] }) => void;
   /** Root cancellation established by the hosting manager after observing its durable marker. */
@@ -635,12 +643,12 @@ async function drive(
   // Asked before every effect that is not already recorded. Both reasons are the HOST's and neither
   // is the program's, so neither may be recorded as its outcome — the run stops where its journal
   // already says it is, and the next driver resumes from there.
-  const shouldStop = (): string | undefined => {
+  const shouldStop = (kind?: JournalKind): string | undefined => {
     if (req.workExpiry !== undefined) {
       const now = req.handler.now();
       if (now >= req.workExpiry) return `the work horizon ${req.workExpiry} passed at ${now}`;
     }
-    return req.pause?.reason;
+    return req.pause?.reason ?? (kind === undefined ? undefined : req.beforeEffect?.(kind));
   };
 
   const options = {

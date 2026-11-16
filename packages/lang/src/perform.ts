@@ -286,7 +286,7 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
  * and {@link performScope} for a scope that dispatches, so a rule about admitting a dispatch cannot
  * reach one path and miss another.
  */
-function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerdict): void {
+function admitDispatch(host: EffectHost, kind: JournalKind, frame: EffectFrame, verdict: LookupVerdict): void {
   // A cancelled branch performs no NEW effects. That is the whole of the cancellation law on
   // this side: work already in flight is another matter, and the handler owns it.
   if (frame.signal.cancelled) {
@@ -300,7 +300,7 @@ function admitDispatch(host: EffectHost, frame: EffectFrame, verdict: LookupVerd
   // performed; inside the handler would mean settling a failure for work that really happened.
   // Replays are deliberately unaffected: replaying a recorded prefix performs nothing, and a run
   // that stopped mid-journal has to be able to walk back to where it stopped.
-  const stop = host.options.shouldStop?.();
+  const stop = host.options.shouldStop?.(kind);
   if (stop !== undefined) {
     throw new RunReleased(stop);
   }
@@ -361,7 +361,7 @@ async function enterStep(
       break;
   }
 
-  admitDispatch(host, frame, verdict);
+  admitDispatch(host, kind, frame, verdict);
 
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
@@ -1552,7 +1552,7 @@ export async function performScope(
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
   // A conclave's open is real work against the world, so it is admitted as an effect is.
-  if (dispatches) admitDispatch(host, frame, verdict);
+  if (dispatches) admitDispatch(host, scopeKey.kind, frame, verdict);
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a

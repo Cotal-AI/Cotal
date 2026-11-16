@@ -7,6 +7,16 @@ audience: Runtime implementers and workflow authors
 
 ## Language behavior [#language-and-simulation]
 
+The runtime driver's `DriveRequest.beforeEffect(kind)` is a synchronous host release policy.
+Return a reason to release the run before a live dispatch is counted, appended, or sent to its
+handler. Return `undefined` to permit it. The callback receives the journal kind, including
+`conclave` when that scope opens a channel. Replayed steps do not call it. Work expiry and
+`PauseToken` take precedence. A later same-pin resume can use a policy that permits the next step.
+Both the version-1 walker and the version-2 hosted engine preserve this boundary, and workflow
+`catch` and `finally` cannot intercept its release. This policy is not a durable authorization pin.
+Language hosts use `RunOptions.shouldStop(kind)` at the same boundary. Worker hosts can supply
+`WorkerRunOptions.shouldStop(kind)` without moving their policy into the confined worker.
+
 - **Pure code is JavaScript.** Loops, records, arrays, closures, template literals, destructuring,
   `try`/`catch`, arithmetic, `switch`, compound assignment, optional chaining, spread and rest: what
   you would write anyway, with the parts that hide effects or make meaning depend on the host removed

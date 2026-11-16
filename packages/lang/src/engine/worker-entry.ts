@@ -23,7 +23,7 @@
  * step budget (L4013) and the shared stop flag are the only two things that end a run.
  */
 
-import { parentPort, workerData, type MessagePort } from "node:worker_threads";
+import { parentPort, receiveMessageOnPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
 import { EffectResultTooLarge, Journal, JournalAppendRejected } from "../journal.js";
 import { EngineUnavailable, messageOf, nameOf } from "../errors.js";
@@ -33,6 +33,7 @@ import { bridgedSeam } from "./bridge.js";
 import { runOnEngine } from "./host.js";
 import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
+import type { JournalKind } from "../keys.js";
 import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
 import { PACKAGE_VERSION } from "./package-version.js";
 
@@ -69,10 +70,11 @@ port.on("message", (message: unknown) => {
   }
 });
 
-const { request, stop, bridge } = workerData as {
+const { request, stop, bridge, policy } = workerData as {
   request: WorkerRunRequest;
   stop: SharedArrayBuffer;
   bridge?: { port: MessagePort; clock: SharedArrayBuffer };
+  policy?: { port: MessagePort; ready: SharedArrayBuffer };
 };
 
 /**
@@ -83,10 +85,24 @@ const { request, stop, bridge } = workerData as {
  */
 const stopLength = new Int32Array(stop, 0, 1);
 const stopBytes = new Uint8Array(stop, 4);
-const shouldStop = (): string | undefined => {
+const readStop = (): string | undefined => {
   const n = Atomics.load(stopLength, 0);
   // `.slice` copies out of shared memory: a decoder is not handed a buffer that can change under it.
   return n > 0 ? new TextDecoder().decode(stopBytes.slice(0, n)) : undefined;
+};
+const shouldStop = (kind: JournalKind): string | undefined => {
+  const stopped = readStop();
+  if (stopped !== undefined) return stopped;
+  if (policy === undefined) return undefined;
+  const flag = new Int32Array(policy.ready);
+  Atomics.store(flag, 0, 0);
+  policy.port.postMessage(kind);
+  Atomics.wait(flag, 0, 0);
+  const answer = receiveMessageOnPort(policy.port);
+  if (answer === undefined || (answer.message !== undefined && typeof answer.message !== "string")) {
+    throw new EngineUnavailable("the host's before-effect policy returned no valid admission answer");
+  }
+  return answer.message as string | undefined;
 };
 
 /**

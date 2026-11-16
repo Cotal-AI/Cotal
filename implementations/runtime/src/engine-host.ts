@@ -48,6 +48,7 @@ import {
   transform,
   type EffectHandler,
   type JournalEntry,
+  type JournalKind,
   type JournalStore,
   type RunPins,
   type RunResult,
@@ -82,7 +83,8 @@ export interface EngineHostRequest {
   readonly entries: readonly JournalEntry[];
   /** The journal's result bound (L5006). The journal it bounds is built in the thread, so it crosses as data. */
   readonly resultBytes?: number;
-  readonly shouldStop: () => string | undefined;
+  /** A kind is supplied only at live admission; background samples check global stop conditions. */
+  readonly shouldStop: (kind?: JournalKind) => string | undefined;
   readonly cancellation?: RootCancellationSource;
   readonly file?: string;
   readonly seed?: string;
@@ -198,7 +200,12 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
       ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
     },
-    { entry, bridge: { handler: req.handler, store }, ...(req.onLog !== undefined ? { onLog: req.onLog } : {}) },
+    {
+      entry,
+      bridge: { handler: req.handler, store },
+      shouldStop: req.shouldStop,
+      ...(req.onLog !== undefined ? { onLog: req.onLog } : {}),
+    },
   );
   publish = (reason) => worker.stop(reason);
   const unsubscribe = req.cancellation?.subscribe((reason) => worker.cancel(reason));

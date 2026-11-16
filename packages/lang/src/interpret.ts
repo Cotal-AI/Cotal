@@ -27,7 +27,7 @@ import {
   isStackExhaustion,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
-import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
+import { KeyScope, digest, programHashOf, type JournalKind, type PathKind, type ScopeKind } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
 import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
@@ -301,7 +301,8 @@ export interface RunOptions {
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
   /**
-   * The HOST's stop, asked before every effect that has not already been recorded.
+   * The HOST's stop, asked with the kind of each live dispatch after replay lookup. A dispatching
+   * scope reports its journal kind (`conclave`); scopes that only assemble branches do not ask.
    *
    * Return a reason to stop the run where it stands; return `undefined` to carry on. The interpreter
    * raises {@link RunReleased} itself rather than accepting an error from the caller — a driver that
@@ -313,7 +314,7 @@ export interface RunOptions {
    * Asked here, nothing is half-done — no entry begun, no handler dispatched — so the run is exactly
    * where its journal says it is and the next driver resumes from there.
    */
-  readonly shouldStop?: () => string | undefined;
+  readonly shouldStop?: (kind: JournalKind) => string | undefined;
   /** Cooperative root cancellation, distinct from a next-boundary host release. */
   readonly cancellation?: RootCancellationSource;
   /**

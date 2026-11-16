@@ -124,7 +124,7 @@ export interface EngineRun {
   readonly pins: RunPins;
   readonly migration?: boolean;
   readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
-  readonly shouldStop?: () => string | undefined;
+  readonly shouldStop?: RunOptions["shouldStop"];
 }
 
 // ---- the coercion law, shared by every site that can reach host ToPrimitive --------------------

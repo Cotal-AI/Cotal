@@ -2959,6 +2959,26 @@ let n = 1;
     ok("while an ordinary reason crosses exactly as written", String(failed(await plain.done).message).includes("the deploy was rolled back"), String(failed(await plain.done).message).slice(-40));
   }
 
+  // Live admission crosses on a dedicated synchronous reply port, including on module handlers.
+  {
+    const source = `await sleep("1s", { name: "rest" }); await spawn("ops", { name: "worker" });`;
+    const { module } = transform(source);
+    const seen: string[] = [];
+    const reason = "预算".repeat(300);
+    const released = await runInWorker(
+      { source, module, runId: "policy-cross", handler: { module: SIM_HANDLER, config: {} } },
+      { entry: WORKER_ENTRY, shouldStop: (kind) => { seen.push(kind); return kind === "spawn" ? reason : undefined; } },
+    ).done;
+    ok("the worker asks host policy with each live kind, not an append or a replay", seen.join() === "sleep,spawn", seen);
+    ok("the worker carries a kind-policy release reason without truncation", !released.ok && released.class === "released" && released.reason === reason, released);
+    const fault = new Error("policy exploded");
+    const thrown = await caught(() => runInWorker(
+      { source, module, runId: "policy-throw", handler: { module: SIM_HANDLER, config: {} } },
+      { entry: WORKER_ENTRY, shouldStop: () => { throw fault; } },
+    ).done);
+    ok("a throwing host policy rejects only its run with the original error", thrown === fault, String(thrown));
+  }
+
   // ---- AND THE SET EQUALITY, read off the two files rather than remembered. A crossing added to
   // the thread side with no cell here reds this, which is the whole reason the table is a table.
   {
@@ -2970,7 +2990,7 @@ let n = 1;
     // behaviour is celled by root-cancellation.smoke.ts's worker boot and parked cells.
     const KINDS = ["log", "ready", "result"];
     const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
-    const WORKER_DATA = ["bridge", "hostPackageVersion", "request", "stop"];
+    const WORKER_DATA = ["bridge", "hostPackageVersion", "policy", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
     const requestFields = [...new Set([...entrySrc.matchAll(/request\.(\w+)/g)].map((m) => m[1] as string))].sort();

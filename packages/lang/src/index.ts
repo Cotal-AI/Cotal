@@ -176,6 +176,7 @@ export {
   scopeTraits,
   stepKeyEquals,
   stepKeyString,
+  type JournalKind,
   type ScopeFrame,
   type ScopeKind,
   type StepKey,

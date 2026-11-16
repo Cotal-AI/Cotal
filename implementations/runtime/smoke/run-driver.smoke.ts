@@ -21,7 +21,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, writeRunStatus, RunJournalTailTruncated } from "@cotal-ai/core";
-import { ENGINE_LANGUAGE_VERSION, Journal, JournalAppendRejected, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
+import { ENGINE_LANGUAGE_VERSION, Journal, JournalAppendRejected, PIN_DEFAULTS, RunReleased, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type EffectHandler, type JournalEntry, type JournalKind } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { runOnHostedEngine } from "../src/engine-host.js";
 import { pickFreePort } from "./_free-port.js";
@@ -486,6 +486,122 @@ try {
   c("the run exists and holds only its activation: a pause writes no step",
     back.records.length === 1 && back.records[0]!.record.kind === "activation",
     back.records.map((r) => r.record.kind));
+}
+
+// Kind policy is evaluated at live admission, not while replaying, polling, or appending a result.
+// A legacy run is seeded with its real activation and version-1 spec, then driven through the
+// same public takeover entry point as an existing operator run.
+for (const version of [ENGINE_LANGUAGE_VERSION, WALKER_LANGUAGE_VERSION]) {
+  class Kinds extends SimHandler {
+    readonly calls: string[] = [];
+    override async sleep(r: Parameters<SimHandler["sleep"]>[0], x: Parameters<SimHandler["sleep"]>[1]) {
+      this.calls.push("sleep");
+      return super.sleep(r, x);
+    }
+    override async spawn(r: Parameters<SimHandler["spawn"]>[0], x: Parameters<SimHandler["spawn"]>[1]) {
+      this.calls.push("spawn");
+      return super.spawn(r, x);
+    }
+    override async openConclave(r: Parameters<SimHandler["openConclave"]>[0], x: Parameters<SimHandler["openConclave"]>[1]) {
+      this.calls.push("conclave");
+      return super.openConclave(r, x);
+    }
+  }
+  const source = `
+try {
+  await sleep("1s", { name: "rest" });
+  await spawn("ops", { name: "worker" });
+} catch (e) { log("caught"); }
+finally { log("finally"); }
+`;
+  const seedLegacy = async (runId: string) => {
+    if (version !== WALKER_LANGUAGE_VERSION) return;
+    await activateRun(js, jsm, {
+      space: SPACE, runId, holder: "old", epoch: 1, fencingToken: 1,
+      takeoverId: `legacy-${runId}`, at: 0, expect: "new",
+    });
+    await createRunSpec(kv, EP, runId, {
+      pins: resolvePins({ runId, effectCeiling: 2 }, 0, version), createdAt: 0,
+    });
+  };
+  const runId = `d-kind-${version}`;
+  await seedLegacy(runId);
+  const handler = new Kinds({});
+  const seen: JournalKind[] = [];
+  const logs: string[] = [];
+  const first = await attempt((version === ENGINE_LANGUAGE_VERSION ? startRun : driveRun)(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId, source, lease: lease("policy", 2, 2), handler,
+    effectCeiling: 2,
+    beforeEffect: (kind) => { seen.push(kind); return kind === "spawn" ? "budget before spawn" : undefined; },
+    onLog: (line) => { logs.push(...line.values.map(String)); },
+  }));
+  c(`kind policy v${version} receives only the actual live kinds`, seen.join() === "sleep,spawn", seen);
+  c(`kind policy v${version} returns released with its unchanged reason`,
+    first.status === "released" && first.reason instanceof RunReleased && first.reason.reason === "budget before spawn", why(first));
+  c(`kind policy v${version} never dispatches the refused effect`, handler.calls.join() === "sleep", handler.calls);
+  c(`kind policy v${version} bypasses workflow catch and finally`, logs.length === 0, logs);
+  const prefix = await replayRunJournal(js, jsm, SPACE, runId, `r${takeovers += 1}`);
+  const steps = prefix.records.filter((r) => r.record.kind === "step");
+  c(`kind policy v${version} leaves only the completed prefix durable`,
+    steps.length === 2 && steps.every((r) => r.record.kind === "step" && (r.record.entry as JournalEntry).kind === "sleep"), steps);
+  const pins = (await readRunRecord(kv, EP, runId))!.spec.value.pins;
+  const resumed = new Kinds({});
+  const resumedKinds: JournalKind[] = [];
+  const later = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId, source, lease: lease("permitted", 3, 3), handler: resumed,
+    beforeEffect: (kind) => { resumedKinds.push(kind); return undefined; },
+  }));
+  c(`kind policy v${version} resumes within the same two-effect ceiling`, later.status === "completed", why(later));
+  c(`kind policy v${version} neither asks nor dispatches the replayed prefix`,
+    resumedKinds.join() === "spawn" && resumed.calls.join() === "spawn", { resumedKinds, calls: resumed.calls });
+  c(`kind policy v${version} preserves all pins on resume`,
+    JSON.stringify((await readRunRecord(kv, EP, runId))!.spec.value.pins) === JSON.stringify(pins));
+
+  const controlId = `${runId}-control`;
+  await seedLegacy(controlId);
+  const control = new Kinds({});
+  const controlKinds: JournalKind[] = [];
+  const permitted = await attempt((version === ENGINE_LANGUAGE_VERSION ? startRun : driveRun)(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: controlId, source, lease: lease("control", 2, 2), handler: control,
+    effectCeiling: 2,
+    beforeEffect: (kind) => { controlKinds.push(kind); return undefined; },
+  }));
+  c(`kind policy v${version} permit-all control completes both effects`,
+    permitted.status === "completed" && control.calls.join() === "sleep,spawn" && controlKinds.join() === "sleep,spawn",
+    { outcome: why(permitted), calls: control.calls, controlKinds });
+  c(`kind policy v${version} permit-all control settles both journal entries`,
+    permitted.status === "completed" && permitted.result.journal.entries().length === 2
+    && permitted.result.journal.entries().every((e) => e.state === "settled"));
+
+  const scopeId = `${runId}-scope`;
+  await seedLegacy(scopeId);
+  const scopeHandler = new Kinds({});
+  const scopeKinds: JournalKind[] = [];
+  const scope = await attempt((version === ENGINE_LANGUAGE_VERSION ? startRun : driveRun)(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: scopeId,
+    source: `await conclave([], async (room) => { await sleep("1s"); }, { name: "meeting" });`,
+    lease: lease("scope", 2, 2), handler: scopeHandler,
+    beforeEffect: (kind) => { scopeKinds.push(kind); return "before channel open"; },
+  }));
+  c(`kind policy v${version} sees a dispatching scope as conclave`, scopeKinds.join() === "conclave", scopeKinds);
+  c(`kind policy v${version} stops the scope before any handler call`,
+    scope.status === "released" && scopeHandler.calls.length === 0, { outcome: why(scope), calls: scopeHandler.calls });
+  const scopeBack = await replayRunJournal(js, jsm, SPACE, scopeId, `r${takeovers += 1}`);
+  c(`kind policy v${version} appends no pending scope for a refused open`,
+    scopeBack.records.every((r) => r.record.kind !== "step"));
+
+  const pauseId = `${runId}-pause`;
+  await seedLegacy(pauseId);
+  const pause = new PauseToken();
+  pause.pause("operator first");
+  let policyCalls = 0;
+  const paused = await attempt((version === ENGINE_LANGUAGE_VERSION ? startRun : driveRun)(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: pauseId, source, lease: lease("paused", 2, 2), handler: new Kinds({}), pause,
+    beforeEffect: () => { policyCalls++; return "policy second"; },
+  }));
+  c(`kind policy v${version} retains the existing operator pause reason`,
+    paused.status === "released" && paused.reason instanceof RunReleased && paused.reason.reason === "operator first", why(paused));
+  c(`kind policy v${version} is not called when an operator pause already stops the run`, policyCalls === 0, policyCalls);
 }
 
 // ── 8) the run record: what the run IS, beside the journal that says what it DID ─────────────
@@ -1021,7 +1137,7 @@ console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.leng
     lost.status === "released" && lost.reason.name === "JournalAppendRejected", why(lost));
 }
 
-const EXPECTED_CELLS = 87;
+const EXPECTED_CELLS = 117;
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
 if (ok + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${ok + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
