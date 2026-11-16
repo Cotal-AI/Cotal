@@ -47,6 +47,16 @@ jobs:
       profile: ${{ steps.plan.outputs.profile }}
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
+      - name: Verify administrator prefix ancestors before builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in / /usr /usr/lib; do
+            test "$(realpath -e "$path")" = "$path"
+            test -d "$path" && test ! -L "$path"
+            stat -c '%n uid=%u gid=%g mode=%a' "$path"
+            test "$(stat -c '%u:%g:%a' "$path")" = 0:0:755
+          done
       # On workflow_run this is the trusted default-branch workflow revision, never PR code.
       - uses: actions/checkout@v6
         with:
@@ -510,13 +520,18 @@ jobs:
         run: |
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = github-hosted
-          test ! -e /opt/cotal-root-node
+          for path in / /usr /usr/lib; do
+            test "$(realpath -e "$path")" = "$path"
+            test -d "$path" && test ! -L "$path"
+            test "$(stat -c '%u:%g:%a' "$path")" = 0:0:755
+          done
+          test ! -e /usr/lib/cotal-root-node
           archive="$RUNNER_TEMP/node-v24.18.0-linux-x64.tar.xz"
           curl -fsSL https://nodejs.org/dist/v24.18.0/node-v24.18.0-linux-x64.tar.xz -o "$archive"
           printf '%s  %s\n' 55aa7153f9d88f28d765fcdad5ae6945b5c0f98a36881703817e4c450fa76742 "$archive" | sha256sum -c -
-          sudo install -d -o root -g root -m 755 /opt/cotal-root-node
-          sudo tar -xJf "$archive" -C /opt/cotal-root-node --strip-components=1 --no-same-owner
-          test "$(/opt/cotal-root-node/bin/node --version)" = v24.18.0
+          sudo install -d -o root -g root -m 755 /usr/lib/cotal-root-node
+          sudo tar -xJf "$archive" -C /usr/lib/cotal-root-node --strip-components=1 --no-same-owner
+          test "$(/usr/lib/cotal-root-node/bin/node --version)" = v24.18.0
       - name: Prepare disposable Linux user manager
         if: matrix.platform == 'linux' && matrix.rootOwned != true && matrix.layoutProbe == null && (matrix.publishedStagedRefusal == true || matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.layoutProbe != null || matrix.rootOwned == true || matrix.withoutRuntimeDir == true || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
         shell: bash

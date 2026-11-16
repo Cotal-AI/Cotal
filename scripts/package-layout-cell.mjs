@@ -111,7 +111,8 @@ export async function packageLayoutCell({ layout, registry, output, nodePrefix }
     const extensionVersions=report.extensions.map(entry=>({pkg:entry.pkg,recorded:entry.version,installed:JSON.parse(readFileSync(join(home,'config/cotal/extensions/node_modules',entry.pkg,'package.json'),'utf8')).version}));
     check('recorded extensions reach target',extensionVersions.length>=7&&extensionVersions.every(entry=>entry.recorded===report.targetVersion&&entry.installed===report.targetVersion),extensionVersions);
     report.status=await call('installed target public status',cli,['status']);check('public status healthy',report.status.exit===0,report.status);
-    report.route=inspectInstalledUpdateRoute(pkg,process.platform);
+    report.route=inspectInstalledUpdateRoute(pkg,process.platform,{privateFixtureRoot:root});
+    report.packageReads=report.route.packageReads;
     check('selected route reaches target',report.route.selectedCliVersion===report.targetVersion,report.route);
     report.store=inspectGenerationStore(join(dirname(dirname(realpathSync(pkg))),'.cotal-generations'),{required:report.route.updateRoute==='staged'});
     check('generation store protected',report.store.passed,report.store);

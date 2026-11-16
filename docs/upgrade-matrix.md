@@ -96,7 +96,9 @@ retained generations keep their write-protection checks. The staged-scheduler pr
 that release itself, the probe ages its release-hold timer. It does not change versions or failure counts.
 The report records whether the running daemon used that aged value without a requested restart.
 Installed package manifest and bootstrap reads may retain mode `0664` inside the owned private fixture.
-Each such read records its file and owner. Credential, evidence, lock and retained-generation files stay protected.
+Each such read records its file and owner. The pnpm observer may read hardlinked installed manifests and bootstraps
+inside the same private fixture. It records their path, owner, mode, link count and hash.
+Credential, evidence, lock and retained-generation files stay protected and require exclusive regular files.
 A Linux no-runtime-directory probe removes `XDG_RUNTIME_DIR` only from the updater child.
 With a live daemon it expects the named refusal before staging and verifies the original daemon lifetime.
 Without a daemon it requires the normal update result. Diagnostic and cleanup commands keep their runtime directory.
@@ -105,9 +107,12 @@ and its recorded retry time. A replacement failure increments the count and wait
 After two counted failures, the next observation must wait without launching another updater.
 The probe ages timer records but never seeds or resets failures. Historical staging leftovers remain
 visible as measured faults. Fixed-source refusal attempts must leave no staging folders or store growth.
-The root-owned installation probe extracts a verified Node archive as root into a fresh
-`/opt/cotal-root-node` prefix. It never changes the runner's `/usr/local`.
+The first workflow job checks that `/`, `/usr` and `/usr/lib` are real root-owned `0755` directories before builds start.
+The root-owned installation probe repeats that check and extracts a verified Node archive as root into a fresh
+`/usr/lib/cotal-root-node` prefix. It never changes the runner's `/usr/local` or repairs ancestor permissions.
+The root npm process records and asserts its `0022` mask, and installation also sets npm's extraction mask to `022`.
 It records ownership and modes from the installed package through `/` before a Cotal command runs.
+The package directory must be `0755`, its manifest `0644` and its executable bootstrap `0755`.
 Root updates that installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
 After the normal account's refusal, it checks that the store stayed protected and its file-byte total did not grow.

@@ -81,26 +81,30 @@ function safePath(root, file, privateFixtureRoot) {
 }
 function bytes(root, file, limit = LIMIT, privateFixtureRoot, packageReads) {
   const before = safePath(root, file,privateFixtureRoot);
-  assert(before.isFile() && before.nlink === 1, 'not an exclusive regular file');
-  if (process.getuid && (before.mode&0o022)!==0) {
-    assert(privateFixtureRoot&&packageReads,'writable file refused');
-    assert.equal(before.mode&0o7777,0o664,'installed package file must be 0664');
+  const installedPackageRead = packageReads && privateFixtureRoot &&
+    [join(root,'package.json'),join(root,'dist/cotal.js')].includes(file);
+  assert(before.isFile() && (before.nlink === 1 || installedPackageRead), 'not an exclusive regular file');
+  if (installedPackageRead) {
     const boundary=directory(privateFixtureRoot);
     assert.equal(boundary.mode&0o7777,0o700,'fixture boundary must be private 0700');
     assert(file.startsWith(privateFixtureRoot+'/'),'package file escaped private fixture');
     for(let parent=dirname(file);parent!==privateFixtureRoot;parent=dirname(parent))directory(parent,privateFixtureRoot);
-    packageReads.push({path:file,uid:before.uid,mode:before.mode&0o7777,privateFixtureRoot});
+  }
+  if (process.getuid && (before.mode&0o022)!==0) {
+    assert(installedPackageRead,'writable file refused');
+    assert.equal(before.mode&0o7777,0o664,'installed package file must be 0664');
   }
   const fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync(fd);
-    assert(stat.isFile() && stat.ino === before.ino && stat.dev === before.dev, 'source changed');
+    assert(stat.isFile() && stat.ino === before.ino && stat.dev === before.dev && stat.uid === before.uid && stat.mode === before.mode && stat.nlink === before.nlink, 'source changed');
     assert(stat.size <= limit, 'source exceeds byte limit');
     const buffer = Buffer.alloc(limit + 1);
     const count = readSync(fd, buffer, 0, buffer.length, 0);
     assert(count <= limit, 'source exceeds byte limit');
     const after = safePath(root, file,privateFixtureRoot);
-    assert(after.ino === stat.ino && after.dev === stat.dev, 'source changed');
+    assert(after.ino === stat.ino && after.dev === stat.dev && after.uid === stat.uid && after.mode === stat.mode && after.nlink === stat.nlink, 'source changed');
+    if (installedPackageRead) packageReads.push({path:file,uid:stat.uid,mode:stat.mode&0o7777,nlink:stat.nlink,sha256:createHash('sha256').update(buffer.subarray(0,count)).digest('hex'),privateFixtureRoot});
     return buffer.subarray(0, count).toString('utf8');
   } finally { closeSync(fd); }
 }
@@ -108,7 +112,9 @@ const failure = error => ({ state: error?.code === 'ENOENT' ? 'missing' : error?
 
 export function inspectInstalledUpdateRoute(pkg, platform = process.platform, {privateFixtureRoot} = {}) {
   const packageReads=[];
-  const pkgRoot = realpathSync.native(resolve(pkg));
+  assert(isAbsolute(pkg) && resolve(pkg) === pkg, 'package root must be absolute and normalized');
+  const pkgRoot = realpathSync.native(pkg);
+  assert.equal(pkgRoot,pkg,'symlink package root refused');
   directory(pkgRoot,privateFixtureRoot);
   const pkgManifestBytes = bytes(pkgRoot, join(pkgRoot, 'package.json'),LIMIT,privateFixtureRoot,packageReads);
   const pkgManifest = JSON.parse(pkgManifestBytes);

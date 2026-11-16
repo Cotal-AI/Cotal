@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync, chmodSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, lstatSync, symlinkSync, chmodSync, readdirSync, linkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -43,6 +43,44 @@ function fixture() {
 }
 const row = (report, kind) => report.observations.find(item => item.kind === kind);
 
+test('installed hardlinked manifest requires a private boundary and records its read', () => {
+  const f=fixture(), path=join(f.pkg,'package.json');
+  linkSync(path,join(f.home,'store-manifest'));
+  assert.throws(()=>inspectInstalledUpdateRoute(f.pkg,'linux'),/exclusive regular file/);
+  const result=inspectInstalledUpdateRoute(f.pkg,'linux',{privateFixtureRoot:f.home});
+  assert.equal(result.updateRoute,'in-place');
+  assert.deepEqual(result.packageReads,[{path,uid:process.getuid(),mode:0o600,nlink:2,sha256:createHash('sha256').update(readFileSync(path)).digest('hex'),privateFixtureRoot:f.home}]);
+});
+
+test('hardlinked package reads refuse shared, foreign, aliased and unnormalized boundaries', t => {
+  for(const kind of ['shared','foreign','alias','outside','parent','normalized']) {
+    const f=fixture(), path=join(f.pkg,'package.json');
+    linkSync(path,join(f.home,'store-manifest'));
+    let boundary=f.home, pkg=f.pkg;
+    if(kind==='shared')chmodSync(boundary,0o770);
+    if(kind==='foreign')t.mock.method(process,'getuid',()=>lstatSync(boundary).uid+1);
+    if(kind==='alias'){pkg=join(f.home,'alias');symlinkSync(f.pkg,pkg);}
+    if(kind==='outside')boundary=f.output;
+    if(kind==='parent') {chmodSync(f.home,0o777);boundary='/var/tmp/upgrade-matrix';}
+    if(kind==='normalized')boundary=f.home+'/../'+f.home.split('/').at(-1);
+    try { assert.throws(()=>inspectInstalledUpdateRoute(pkg,'linux',{privateFixtureRoot:boundary}),undefined,kind); }
+    finally {t.mock.restoreAll();}
+  }
+});
+
+test('private package hardlink permission never extends to diagnostic files', async () => {
+  const f=fixture();
+  for(const [root,name] of [[f.daemonHome,'daemon.log'],[f.daemonHome,'daemon.lock'],[f.cotalHome,'update-check.json'],[f.config,'.extensions.lock'],[f.globalRoot,'.cotal-update.lock']]) {
+    const path=join(root,name);
+    writeFileSync(path,'{}',{mode:0o600});linkSync(path,join(f.home,name+'-linked'));
+  }
+  const report=await captureDaemonDiagnostics({...f.options,privateFixtureRoot:f.home});
+  for(const name of ['daemon.log','daemon.lock','update-check.json','.extensions.lock','.cotal-update.lock']) {
+    assert.equal(row(report,name).state,'error');
+    assert.match(row(report,name).error,/exclusive regular file/);
+  }
+});
+
 test('owned npm0002 layout is observable only inside an explicit private fixture boundary', async () => {
   const f=fixture();
   chmodSync(f.pkg,0o775);chmodSync(f.globalRoot,0o775);
@@ -62,7 +100,7 @@ test('private umask package manifest stays observable without changing its measu
   chmodSync(join(f.pkg,'package.json'),0o664);
   const result=await captureDaemonDiagnostics({...f.options,privateFixtureRoot:f.home});
   assert.equal(row(result,'installed-version').state,'archived');
-  assert.deepEqual(row(result,'installed-version').packageReads,[{path:join(f.pkg,'package.json'),uid:process.getuid(),mode:0o664,privateFixtureRoot:f.home}]);
+  assert.deepEqual(row(result,'installed-version').packageReads,[{path:join(f.pkg,'package.json'),uid:process.getuid(),mode:0o664,nlink:1,sha256:createHash('sha256').update(readFileSync(join(f.pkg,'package.json'))).digest('hex'),privateFixtureRoot:f.home}]);
   assert.equal(lstatSync(join(f.pkg,'package.json')).mode&0o777,0o664);
 });
 test('private package observation never waives credential/output/file protection or boundary ownership', async () => {
@@ -336,6 +374,26 @@ test('inspectInstalledUpdateRoute distinguishes in-place and staged routes and f
   assert.equal(staged.packageManagerRecordVersion, '0.164.13');
   assert.equal(staged.generationId, genId);
   assert.equal(staged.inventorySha256, inventorySha256);
+
+  for(const path of [join(pkgRoot,'package.json'),join(distDir,'cotal.js')]) {
+    linkSync(path,join(root,path.endsWith('cotal.js')?'store-bootstrap':'store-manifest'));
+    chmodSync(path,0o664);
+  }
+  const linked=inspectInstalledUpdateRoute(pkgRoot,'linux',{privateFixtureRoot:root});
+  assert.equal(linked.updateRoute,'staged');
+  assert.equal(linked.packageReads.length,2);
+  for(const receipt of linked.packageReads) {
+    assert.equal(receipt.nlink,2);assert.equal(receipt.mode,0o664);
+    assert.equal(receipt.privateFixtureRoot,root);
+    assert.equal(receipt.sha256,createHash('sha256').update(readFileSync(receipt.path)).digest('hex'));
+  }
+  for(const path of [join(storeRoot,activeName),join(genRoot,'inventory.json'),join(stagedPkg,'package.json'),join(stagedDist,'cotal-program.js')]) {
+    const alias=join(root,'strict-link');linkSync(path,alias);
+    assert.throws(()=>inspectInstalledUpdateRoute(pkgRoot,'linux',{privateFixtureRoot:root}),/exclusive regular file/);
+    unlinkSync(alias);
+  }
+  for(const name of ['store-bootstrap','store-manifest'])unlinkSync(join(root,name));
+  for(const path of [join(pkgRoot,'package.json'),join(distDir,'cotal.js')])chmodSync(path,0o600);
 
   for (const mutate of [
     a => { a.binding.version = '0.164.1013'; },
