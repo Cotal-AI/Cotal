@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -162,7 +162,25 @@ async function finish(rollback = false) {
   if (state.schema !== 1 || state.installPath !== root || state.targetVersion !== targetVersion || !['preparing', 'copying', 'ready'].includes(state.phase)) throw new Error('The setup handover is missing, invalid or belongs to another installation. Run the installer again.');
   const native = task('inspect');
   if (Boolean(native.installed) !== state.installed || state.installed && native.receiptDigest !== state.receiptDigest) throw new Error('The owned installation changed during setup. No task was started.');
-  const version = JSON.parse(readFileSync(join(root, 'runtime', 'package.json'), 'utf8')).version;
+  const versionFile = join(root, 'runtime', 'package.json');
+  const readDeadline = Date.now() + 130_000;
+  const readStarted = Date.now();
+  let version;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      version = JSON.parse(readFileSync(versionFile, 'utf8')).version;
+      break;
+    } catch (error) {
+      const elapsedMs = Date.now() - readStarted;
+      appendFileSync(join(directory, 'runtime-read.jsonl'), `${JSON.stringify({ attempt, code: error.code ?? 'UNKNOWN', elapsedMs })}\n`);
+      if (Date.now() >= readDeadline) {
+        const refused = new Error(`The installed runtime could not be read after 130 seconds (${error.code ?? 'UNKNOWN'}). Run the installer again.`);
+        refused.code = error.code;
+        throw refused;
+      }
+      await delay(500);
+    }
+  }
   if (version !== (rollback ? state.oldVersion : targetVersion)) throw new Error('The installed version does not match the setup handover. Run the installer again.');
   state.previousKept = !rollback && existsSync(join(previousDir, 'cotal-desktop.exe')) && existsSync(join(previousDir, 'runtime'));
   if (!rollback) {
