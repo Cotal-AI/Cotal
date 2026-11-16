@@ -83,7 +83,7 @@ jobs:
             if (machineShapes) {
               assert.equal(event.inputs.phase, 'candidate');
               assert.equal(event.inputs.target_version, '0.164.18');
-              assert.equal(event.inputs.source_sha, 'a4a433ecfd0f8b8d58313ad8d24332ba9fe907ae');
+              assert.equal(event.inputs.source_sha, 'ee286970fdff474e107b22eafa42d14869eb3d4c');
               assert.equal(event.inputs.profile, 'bounded');
             }
             let source, phase;
