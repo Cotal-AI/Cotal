@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { windowsSetOwnedByCurrentUser } from "../src/extension-set-win32.js";
+import { windowsSetOwnedByCurrentUser, windowsSetTreeOwnership } from "../src/extension-set-win32.js";
 import { win32ProcessBinding } from "../src/win32-process.js";
 
 if (process.platform !== "win32") throw new Error("Windows connector-set owner measurement requires Windows");
@@ -43,7 +43,24 @@ try {
     assert(error.includes(path) && error.includes(owner) && error.includes("cotal ext seed --repair"), error);
     privilegedOwners.push({ sid: owner, path, error });
   }
-  const result = { platform: process.platform, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, privilegedOwners, accountRemoved: false };
+  const ownTree = join(root, "own tree ü"), foreignFileTree = join(root, "foreign file tree"), junctionTree = join(root, "junction tree");
+  for (const tree of [ownTree, foreignFileTree, junctionTree]) {
+    mkdirSync(join(tree, "nested"), { recursive: true });
+    writeFileSync(join(tree, "nested", ".hidden.txt"), "ordinary file included in owner census");
+    const change = spawnSync("icacls.exe", [tree, "/setowner", `*${sid}`, "/T", "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true });
+    assert.equal(change.status, 0, change.stdout + change.stderr);
+  }
+  const foreignFile = join(foreignFileTree, "nested", ".hidden.txt");
+  const foreignChange = spawnSync("icacls.exe", [foreignFile, "/setowner", `*${foreignSid}`, "/Q"], { encoding: "utf8", timeout: 30000, windowsHide: true });
+  assert.equal(foreignChange.status, 0, foreignChange.stdout + foreignChange.stderr);
+  ps(`New-Item -ItemType Junction -Path ${literal(join(junctionTree, "internal junction"))} -Target ${literal(foreign)}|Out-Null`);
+  const treeOwnership = { own: windowsSetTreeOwnership(ownTree), foreignFile: windowsSetTreeOwnership(foreignFileTree), junction: windowsSetTreeOwnership(junctionTree) };
+  assert.deepEqual(treeOwnership.own, { owners: [sid], reparsePoints: 0, owned: true });
+  assert.deepEqual([...treeOwnership.foreignFile.owners].sort(), [sid, foreignSid].sort());
+  assert.equal(treeOwnership.foreignFile.reparsePoints, 0);
+  assert.equal(treeOwnership.foreignFile.owned, false);
+  assert.deepEqual(treeOwnership.junction, { owners: [sid], reparsePoints: 1, owned: false });
+  const result = { platform: process.platform, nativeSid: sid, foreignSid, ownResult, foreignResult, reparseError, privilegedOwners, treeOwnership, accountRemoved: false };
   ps(`Remove-LocalUser -Name ${literal(account)}`); created = false;
   result.accountRemoved = true;
   const output = process.env.COTAL_OWNER_PROBE_OUTPUT;
