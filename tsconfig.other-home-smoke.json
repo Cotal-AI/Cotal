@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "rootDir": ".", "allowJs": true, "checkJs": false },
+  "include": ["scripts/other-home-manager-fixture.ts", "scripts/other-home-manager-runner.ts"]
+}

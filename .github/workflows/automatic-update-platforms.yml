@@ -68,6 +68,7 @@ jobs:
             const { execFileSync } = require('node:child_process');
             const { createHash } = require('node:crypto');
             const { planPhase, boundedCells, targetAdmissionCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
+            const { otherHomeManagerCells } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/other-home-manager-evidence.mjs`));
             const event = context.payload;
             const repository = `${context.repo.owner}/${context.repo.repo}`;
             const metadata = { eventName: context.eventName, repository };
@@ -141,18 +142,33 @@ jobs:
               metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
               metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
               if (phase === 'candidate') {
-                const measurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-target-owned-admission';
+                const measurement = context.eventName === 'workflow_dispatch' && ['refs/heads/measure/update-target-owned-admission', 'refs/heads/measure/other-home-manager-cells'].includes(context.ref);
                 assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) >= (measurement ? 0 : 1), 'candidate target must be newer than public latest, or equal for target-admission measurement');
               }
               else assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
             }
             const plan = planPhase(event, metadata);
             const admissionMeasurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-target-owned-admission';
+            const otherHomeMeasurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/other-home-manager-cells';
             if (admissionMeasurement) {
               assert.equal(plan.phase, 'candidate', 'target admission measurement requires candidate phase');
               assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'measurement source must be bound to its direct product parent');
             }
-            const cells = (admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan)).map(cell => cell.targetAdmission === 'foreign-preserving' ? { ...cell, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE } : cell);
+            if (otherHomeMeasurement) {
+              assert.equal(plan.phase, 'candidate');
+              assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'other-home measurement must be a direct child of its final product');
+              for (const pull_number of [6906, 6968]) {
+                const { data: prerequisite } = await github.rest.pulls.get({ ...context.repo, pull_number });
+                assert(prerequisite.merged && prerequisite.merge_commit_sha, `prerequisite ${pull_number} is not on main`);
+                const { data: ancestry } = await github.rest.repos.compareCommitsWithBasehead({ ...context.repo, basehead: `${prerequisite.merge_commit_sha}...${source}` });
+                assert(['ahead', 'identical'].includes(ancestry.status), `product does not include prerequisite ${pull_number}`);
+              }
+              const { data: observer } = await github.rest.repos.getContent({ ...context.repo, path: 'bin/daemon/execution-preinstall.ts', ref: source });
+              const { data: sets } = await github.rest.repos.getContent({ ...context.repo, path: 'packages/workspace/src/extension-set.ts', ref: source });
+              assert(Buffer.from(observer.content, 'base64').toString().includes('admission'), 'target-owned admission prerequisite missing');
+              assert(Buffer.from(sets.content, 'base64').toString().includes('holdExtensionSet'), 'per-installation set-holder prerequisite missing');
+            }
+            const cells = (otherHomeMeasurement ? otherHomeManagerCells(plan) : admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan)).map(cell => cell.targetAdmission === 'foreign-preserving' ? { ...cell, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE } : cell);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
@@ -483,7 +499,7 @@ jobs:
           if-no-files-found: error
   release-cells:
     needs: [select, release-pack, release-next, admission-legacy-pack]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success' && (!(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission') || needs.admission-legacy-pack.result == 'success')
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success' && github.ref != 'refs/heads/measure/other-home-manager-cells' && (!(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission') || needs.admission-legacy-pack.result == 'success')
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -714,9 +730,89 @@ jobs:
           name: upgrade-cell-${{ matrix.id }}
           path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
+  other-home-cells:
+    needs: [select, release-pack, release-next]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/other-home-manager-cells' && needs.select.outputs.applicable == 'true'
+    name: other-home-${{ matrix.id }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release-pack.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release-next.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-next
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.release-next.outputs.follow-on-artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-follow-on
+      - name: Prepare verified other-home broker fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/other-home-broker"
+          mkdir -p "$work" "$RUNNER_TEMP/other-home-evidence"
+          platform=$(node -p process.platform)
+          arch=$(node -p '({x64:"amd64",arm64:"arm64"})[process.arch]')
+          test -n "$arch"
+          archive="nats-server-v2.14.0-$platform-$arch.tar.gz"
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.14.0/$archive" -o "$work/$archive"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
+          (cd "$work" && awk -v archive="$archive" '$2 == archive {print $1 "  " archive}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && shasum -a 256 -c selected.sha256)
+          cp "$work/selected.sha256" "$RUNNER_TEMP/other-home-evidence/nats-download.sha256"
+          cp "$work/SHA256SUMS" "$RUNNER_TEMP/other-home-evidence/nats-release-SHA256SUMS"
+          tar -xzf "$work/$archive" -C "$work"
+          echo "$work/nats-server-v2.14.0-$platform-$arch" >> "$GITHUB_PATH"
+      - name: Build existing authenticated participant dependencies
+        run: pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
+      - name: Typecheck other-home smoke tree
+        run: pnpm exec tsc --noEmit -p tsconfig.other-home-smoke.json
+      - name: Run and independently grade one other-home native cell
+        shell: bash
+        env:
+          CELL: ${{ toJSON(matrix) }}
+          SOURCE_SHA: ${{ needs.select.outputs.source }}
+        run: |
+          node --import tsx --input-type=module <<'NODE'
+          import { mkdirSync, writeFileSync } from 'node:fs';
+          import { runOtherHomeManagerCell } from './scripts/other-home-manager-runner.ts';
+          import { verifyOtherHomeManagerEvidence } from './scripts/other-home-manager-evidence.mjs';
+          const cell = JSON.parse(process.env.CELL);
+          const output = process.env.RUNNER_TEMP + '/other-home-evidence';
+          mkdirSync(output, { recursive: true, mode: 0o700 });
+          writeFileSync(output + '/coordinate.json', JSON.stringify(cell));
+          const report = await runOtherHomeManagerCell({ candidate: process.env.RUNNER_TEMP + '/release-candidate', next: process.env.RUNNER_TEMP + '/release-next', followOn: process.env.RUNNER_TEMP + '/release-follow-on', mode: cell.mode, sourceSHA: process.env.SOURCE_SHA, officialVersion: cell.officialVersion, output });
+          const verdict = verifyOtherHomeManagerEvidence({ report, cell, output });
+          writeFileSync(output + '/verdict.json', JSON.stringify(verdict));
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: other-home-${{ matrix.id }}
+          path: ${{ runner.temp }}/other-home-evidence
+          if-no-files-found: error
   release-summary:
     needs: [select, release-native, release-pack, release-next, release-cells]
-    if: always() && needs.select.outputs.applicable == 'true'
+    if: always() && needs.select.outputs.applicable == 'true' && github.ref != 'refs/heads/measure/other-home-manager-cells'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
