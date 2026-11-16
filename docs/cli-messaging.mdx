@@ -102,6 +102,8 @@ that destination before it publishes. A channel post is stored on the chat strea
 on the DM stream, and a role send on the task stream. When that stream is confirmed absent, `send`
 refuses `TARGET_UNAVAILABLE` (exit 2) and publishes nothing. A direct message is still stored when
 only the chat stream is absent. A read that fails does not count as absence.
+On an open space that runs elsewhere, the first participant creates the space's streams, and `send`
+creates them before it publishes, as a chat session does when it starts.
 A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
