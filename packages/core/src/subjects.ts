@@ -46,6 +46,10 @@ export function spacePrefix(space: string): string {
   return `${ROOT}.${token(space)}`;
 }
 
+/** The key of the data part that marks a delivery daemon's notice that a channel post mentioned an
+ *  agent who may not read the channel (SPEC §8). */
+export const MENTION_NOTICE_KEY = "cotalMentionNotice";
+
 /** Canonicalize a `mentions` list for the wire: trim, lowercase, drop empties, dedupe.
  *  Returns `undefined` for an empty result so the field is omitted rather than sent as `[]`.
  *  Presence-agnostic (no roster lookup) — validation lives in the connector. */

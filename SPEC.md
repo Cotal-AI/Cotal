@@ -256,6 +256,15 @@ from membership; a client SHOULD distinguish "joined" (actively subscribed) from
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
 here."
 
+**Mention notice.** In auth mode, when a post on either delivery class mentions a resolved target
+whose `allowSubscribe` does not cover the channel, the delivery daemon sends the post's sender a DM
+from its own principal that names those targets. The message has a text part and a data part
+`{ "cotalMentionNotice": { channel, message, names } }`, where `message` is the post's `id`. Its
+`id`, which is also its JetStream message id, is `mention.<seq>.<id>` for the post's CHAT stream
+sequence and `id`, so a fan-out redelivered after a crash sends a duplicate the DM stream drops. A
+receiver MUST treat it as a notice only under the delivery lease check an anycast notice uses
+(§8.1). A notice is not a question and needs no answer.
+
 A message delivered both live and durable is **one logical delivery**: receivers MUST deduplicate
 by `id` across classes (§8); the durable copy owns ack/commit; and a previously seen `id` MUST NOT
 be treated as authorization for a later durable copy (for example one that arrives after a leave).

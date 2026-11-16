@@ -189,6 +189,7 @@ import {
   isChannelFamily,
   familiesCovering,
   normalizeMentions,
+  MENTION_NOTICE_KEY,
   parseSubject,
   isPrincipalOwnerToken,
   assertInboxConnId,
@@ -6719,6 +6720,28 @@ export class CotalEndpoint extends EventEmitter {
     await this.js.publish(unicastSubject(this.space, recipient.owner, recipient.actor, this.owner, this.actor), JSON.stringify(msg), { msgID: msg.id });
   }
 
+  /** DM a post's sender that its mentions of `names` reached no one, because each of those agents
+   *  may not read `channel`. The id carries the post's stream seq, so a fan-out redelivered after a
+   *  crash sends the notice again under the same id and the DM stream drops the duplicate. */
+  private async sendMentionNotice(msg: CotalMessage, channel: string, seq: number, names: readonly string[]): Promise<void> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    const recipient = parsePrincipalKey(msg.from.id);
+    if (!recipient) throw new Error(`mention notice: "${msg.from.id}" is not a principal`);
+    const named = names.map((n) => `@${n}`).join(", ");
+    const notice: CotalMessage = {
+      id: `mention.${seq}.${msg.id}`,
+      ts: Date.now(),
+      space: this.space,
+      from: this.ref(),
+      to: msg.from.id,
+      parts: [
+        { kind: "text", text: `Your post on #${channel} mentioned ${named}, who may not read #${channel} and ${names.length === 1 ? "was" : "were"} not given it. Reach ${names.length === 1 ? "them" : "each"} another way, such as cotal_dm.` },
+        { kind: "data", data: { [MENTION_NOTICE_KEY]: { channel, message: msg.id, names: [...names] } } },
+      ],
+    };
+    await this.js.publish(unicastSubject(this.space, recipient.owner, recipient.actor, this.owner, this.actor), JSON.stringify(notice), { msgID: notice.id });
+  }
+
   /** Answer a sender's status or cancel for one of its own requests. The caller is the
    *  authenticated subject sender, checked against the request's stored subject. */
   private async deliveryAnycast(op: string, caller: string, args: Record<string, unknown>): Promise<ControlReply> {
@@ -7396,7 +7419,9 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Route ONE chat message to eligible owners' mixed inboxes. `durable` channel → its `durable-active`
    *  members within interval; `live` channel → `@mention` targets authorized to read it (ACL only).
-   *  Members KV is scanned FRESH per message (no cache — red-team BLOCKER-1 catch-up correctness). */
+   *  On either class, a mention of an agent whose read ACL excludes the channel is reported to the
+   *  sender with a mention notice. Members KV is scanned FRESH per message (no cache — red-team
+   *  BLOCKER-1 catch-up correctness). */
   private async fanOutMessage(m: JsMsg): Promise<void> {
     // FENCE, and NOT followed by an ack: this unit was dispatched before the quiesce and is resuming
     // after it, so writing the fan-out now would put entries in member inboxes on behalf of a shard
@@ -7417,7 +7442,23 @@ export class CotalEndpoint extends EventEmitter {
     // them can resume after a successor owns the shard. Re-ask immediately before the first WRITE,
     // and again return without acking so the entry redelivers rather than being consumed here.
     if (!this.plane3MayAct()) return;
-    if ((await this.deliveryClassFresh(channel)) === "durable") {
+    const durable = (await this.deliveryClassFresh(channel)) === "durable";
+    // Each mention is resolved once. A live channel delivers to the agents among them that may read
+    // it, and on either class a mention of an agent that may not read the channel is reported to the
+    // sender below, so a post never claims a reader it cannot have.
+    const mentioned: Array<{ name: string; owner: string; row: { allowSubscribe: string[]; lifecycleUid: string } }> = [];
+    for (const name of msg.mentions ?? []) {
+      const owner = this.resolveOwnerByName(name);
+      if (!owner || owner === msg.from.id) continue;
+      // A mention arrives as an ALIAS (the roster names no lifecycle): resolve its single live ACL
+      // row for BOTH the read-authorization and the lifecycle to address. Ambiguity (two live rows)
+      // refuses THIS copy loudly rather than guessing a lifecycle.
+      let row: { allowSubscribe: string[]; lifecycleUid: string } | undefined;
+      try { row = await this.aclForAlias(owner); }
+      catch (e) { this.emit("error", e as Error); continue; }
+      if (row) mentioned.push({ name, owner, row });
+    }
+    if (durable) {
       // The channel's own rows and every family row above it (`review.>`). A lifecycle holding two of
       // them gets two publishes and keeps one copy: the dedupe id is per message and lifecycle (#5404).
       for (const rec of await listMembers(await this.membersRegistry(), { covering: channel })) {
@@ -7438,19 +7479,16 @@ export class CotalEndpoint extends EventEmitter {
         });
       }
     } else {
-      for (const name of msg.mentions ?? []) {
-        const owner = this.resolveOwnerByName(name);
-        if (!owner || owner === msg.from.id) continue;
-        // A live-mention target arrives as an ALIAS (the roster names no lifecycle): resolve its single
-        // live ACL row for BOTH the read-authorization and the lifecycle to address. Ambiguity (two
-        // live rows) refuses THIS copy loudly rather than guessing a lifecycle.
-        let row: { allowSubscribe: string[]; lifecycleUid: string } | undefined;
-        try { row = await this.aclForAlias(owner); }
-        catch (e) { this.emit("error", e as Error); continue; }
-        if (!row || !channelInAllow(row.allowSubscribe, channel)) continue; // @mention can't bypass the read ACL
+      for (const { owner, row } of mentioned) {
+        if (!channelInAllow(row.allowSubscribe, channel)) continue; // @mention can't bypass the read ACL
         if (!this.plane3MayAct()) return;   // same rule on the live-mention path
         await this.publishDinbox(owner, row.lifecycleUid, { msg: normalizedMsg, channel, seq, reason: "live-mention", generation: 0 });
       }
+    }
+    const unreadable = mentioned.filter(({ row }) => !channelInAllow(row.allowSubscribe, channel)).map(({ name }) => name);
+    if (unreadable.length) {
+      if (!this.plane3MayAct()) return;
+      await this.sendMentionNotice(msg, channel, seq, unreadable);
     }
     // FINAL FENCE, BEFORE THE ACK ITSELF, which is the real commit: acking tells the stream this
     // shard's work is done. A daemon that stopped serving mid-fan-out must not make that claim, or

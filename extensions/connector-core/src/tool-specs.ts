@@ -1441,7 +1441,7 @@ export function cotalToolSpecs(
           .array(z.string())
           .optional()
           .describe(
-            'The names of agents who must act on this post, for example `mentions: ["reviewer"]`. Only this field counts. Writing @reviewer in the text is not a mention. A mention wakes the agent even in dnd. Never mention anyone in thanks or sign-offs.',
+            'The names of agents who must act on this post, for example `mentions: ["reviewer"]`. Only this field counts. Writing @reviewer in the text is not a mention. A mention wakes the agent even in dnd. A mention does not give the post to an agent who may not read the channel; on an authenticated mesh the delivery daemon then sends you a mention notice naming them, so reach them another way. Never mention anyone in thanks or sign-offs.',
           ),
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
