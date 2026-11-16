@@ -1,0 +1,116 @@
+name: Stuck native before proof
+
+on:
+  push:
+    branches: [measure/stuck-native-before]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  before:
+    if: github.ref == 'refs/heads/measure/stuck-native-before'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        route: [npm, installer]
+    env:
+      DO_NOT_TRACK: '1'
+      COTAL_TELEMETRY: 'off'
+      FIXED_SOURCE: 8837018a4c911937b242eb6bb5ed78c6c0ae4c77
+      LEGACY_SOURCE: 8cddd397a05afc15842c0a2402beb2a983b226c7
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Guard before dependency install
+        run: node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<25769803776)throw Error('Less than 24 GiB before install')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - name: Guard before fixture build
+        run: node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<25769803776)throw Error('Less than 24 GiB before build')"
+      - name: Build only fixture dependency closure
+        run: pnpm --filter 'cotal-ai...' --workspace-concurrency 3 build
+      - name: Download fixed candidate from the authorized producer
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43900187125
+          artifact-ids: '14240249883'
+          merge-multiple: true
+          path: ${{ runner.temp }}/fixed
+      - name: Download legacy source closure from the same producer
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43900187125
+          name: admission-legacy-candidate
+          path: ${{ runner.temp }}/legacy-a
+      - name: Download legacy next closure from the same producer
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43900187125
+          name: admission-legacy-next
+          path: ${{ runner.temp }}/legacy-b
+      - name: Verify archive origins and immutable fixed manifest
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {readFileSync, writeFileSync} from 'node:fs';
+          import {createHash} from 'node:crypto';
+          const origins=[];
+          for(const [name,source] of [['fixed',process.env.FIXED_SOURCE],['legacy-a',process.env.LEGACY_SOURCE],['legacy-b',process.env.LEGACY_SOURCE]]) {
+            const root=process.env.RUNNER_TEMP+'/'+name;
+            const bytes=readFileSync(root+'/manifest.json'), manifest=JSON.parse(bytes);
+            assert.equal(manifest.source,source);
+            assert.equal(manifest.packages.length,24);
+            for(const p of manifest.packages) assert.equal(createHash('sha256').update(readFileSync(root+'/'+p.archive)).digest('hex'),p.sha256);
+            origins.push({name,source,manifestSha256:createHash('sha256').update(bytes).digest('hex'),versions:[...new Set(manifest.packages.map(p=>p.version))]});
+          }
+          writeFileSync(process.env.RUNNER_TEMP+'/before-origins.json',JSON.stringify({run:43900187125,fixedArtifact:14240249883,fixedArtifactDigest:'sha256:138f1fd48d4e707dc1d9f50f27686fc63175abe8832cd9c58d88e61ca17d3d4b',origins},null,2));
+          NODE
+      - name: Fetch verified NATS test broker
+        run: |
+          work="$RUNNER_TEMP/nats"
+          mkdir -p "$work"
+          archive=nats-server-v2.14.0-linux-amd64.tar.gz
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.14.0/$archive" -o "$work/$archive"
+          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
+          awk -v archive="$archive" '$2 == archive { print }' "$work/SHA256SUMS" > "$work/selected.sha256"
+          test -s "$work/selected.sha256"
+          (cd "$work" && sha256sum -c selected.sha256 && tar -xzf "$archive")
+          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+      - name: Run one fresh official18 native before state
+        env:
+          ROUTE: ${{ matrix.route }}
+        run: |
+          node --import tsx scripts/stuck-native-before.mts "$GITHUB_WORKSPACE" "$RUNNER_TEMP/stuck-$ROUTE" "$RUNNER_TEMP/legacy-a" "$RUNNER_TEMP/legacy-b" "$RUNNER_TEMP/fixed" "$ROUTE"
+      - name: Hash public evidence only
+        if: always()
+        env:
+          ROUTE: ${{ matrix.route }}
+        run: |
+          if [ -f "$RUNNER_TEMP/stuck-$ROUTE/result.json" ]; then
+            sha256sum "$RUNNER_TEMP/stuck-$ROUTE/result.json" > "$RUNNER_TEMP/before-result.sha256"
+          fi
+          sha256sum scripts/stuck-native-before.mts > "$RUNNER_TEMP/before-script.sha256"
+      - name: Retain result and source receipts, never private profiles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stuck-native-before-${{ matrix.route }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/stuck-${{ matrix.route }}/result.json
+            ${{ runner.temp }}/before-result.sha256
+            ${{ runner.temp }}/before-script.sha256
+            ${{ runner.temp }}/before-origins.json
+            ${{ runner.temp }}/nats/selected.sha256
