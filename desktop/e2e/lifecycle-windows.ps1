@@ -584,7 +584,7 @@ public static class FilteredAppLauncher {
             if ($env:USERPROFILE) { $prefDirs += (Join-Path $env:USERPROFILE 'AppData\Roaming\ai.cotal.desktop') }
             foreach ($prefDir in ($prefDirs | Select-Object -Unique)) {
                 [IO.Directory]::CreateDirectory($prefDir) | Out-Null
-                [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"connected":true,"relocation_declined":false,"pin_offered":false,"close_explained":false}', [Text.UTF8Encoding]::new($false))
+                [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"login":false,"connected":true,"relocation_declined":false,"pin_offered":false,"close_explained":false}', [Text.UTF8Encoding]::new($false))
             }
             Set-HklmRunValue $ownedValue
             $beforeFiltered = Read-HklmRunEntry
