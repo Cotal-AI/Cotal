@@ -36,7 +36,7 @@ env:
   PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
   select:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/staged-update-store-cleanup'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-wait-line-once'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -143,9 +143,9 @@ jobs:
             }
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
-            const scenarios = ['candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-disabled-daemon-self', 'candidate-next-stopped-desktop-self', 'candidate-next-second-self'];
+            const scenarios = ['candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-disabled-daemon-self'];
             const cells = boundedCells(plan).filter(cell => cell.required && scenarios.includes(cell.scenario));
-            assert.equal(cells.length, 11, 'cleanup measurement requires nine next-hop cells and two second-self cells');
+            assert.equal(cells.length, 8, 'wait-line measurement requires eight running, stopped and disabled daemon cells');
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
