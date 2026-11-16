@@ -438,7 +438,6 @@ try {
     check("M5 the reconcile cleared the index entry (goal terminal)", (await listGoalIndex(idxKv, MANAGER_ENDPOINT)).every((g) => g.ref.goalId !== goalId), goalId);
   }
 
-  console.log(`\nspawn-action open-mesh functional smoke: ${pass} passed, ${fail} failed`);
 } finally {
   for (const c of conns) await c.drain().catch(() => c.close());
   await mgr?.stop({ withAgents: true }).catch(() => {});
@@ -464,4 +463,5 @@ try {
   rmSync(seatRoot, { recursive: true, force: true });
 }
 
+console.log(`\nspawn-action open-mesh functional smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

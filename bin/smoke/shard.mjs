@@ -33,7 +33,7 @@ import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.m
 import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 import { reapRunCustodians, reportCustodians } from "./reap-seat-custodians.mjs";
 import { neverRanBlock } from "./shard-never-ran.mjs";
-import { parseSentinel } from "./sentinel.mjs";
+import { hasPostTallyAssertions, parseSentinel } from "./sentinel.mjs";
 import { poolSelection, runPool } from "./shard-pool.mjs";
 
 const REPO = process.cwd();
@@ -228,6 +228,10 @@ async function main() {
     const sentinel = parseSentinel(r.out);
     if (!sentinel) {
       failAt(cmd, i, "no sentinel", 1);
+      break;
+    }
+    if (hasPostTallyAssertions(r.out)) {
+      failAt(cmd, i, "assertion results after final tally", 1);
       break;
     }
     if (sentinel.kind === "skipped") {
