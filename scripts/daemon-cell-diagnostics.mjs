@@ -48,12 +48,14 @@ function directory(path, privateFixtureRoot) {
   if (process.getuid && (stat.mode & 0o022) !== 0) {
     assert(privateFixtureRoot, 'writable root refused');
     const boundary=directory(privateFixtureRoot);
-    assert.equal(boundary.mode&0o077,0,'fixture boundary must be private');
+    assert.equal(boundary.mode&0o7777,0o700,'fixture boundary must be private 0700');
+    assert.equal(stat.mode&0o7777,0o775,'only package-manager 0775 directories may retain shared write');
     assert(path.startsWith(privateFixtureRoot+'/'),'package path escaped private fixture');
     for(let parent=dirname(path);parent!==privateFixtureRoot;parent=dirname(parent)){
       assert.equal(realpathSync(parent),parent,'symlink parent refused');
       const info=lstatSync(parent);owned(info);
       assert(info.isDirectory()&&!info.isSymbolicLink(),'package parent is not a directory');
+      assert.equal(info.mode&0o002,0,'other-writable package parent refused');
     }
   }
   return stat;

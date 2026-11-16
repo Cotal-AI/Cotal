@@ -57,10 +57,12 @@ test('owned npm0002 layout is observable only inside an explicit private fixture
   assert.equal(lstatSync(f.globalRoot).mode&0o777,0o775);
 });
 test('private package observation never waives credential/output/file protection or boundary ownership', async () => {
-  for(const kind of ['boundary','alias','outside','config','output','file']){
+  for(const kind of ['boundary','sticky','world-write','alias','outside','config','output','file']){
     const f=fixture();chmodSync(f.pkg,0o775);chmodSync(f.globalRoot,0o775);
     let boundary=f.home;
     if(kind==='boundary')chmodSync(f.home,0o755);
+    if(kind==='sticky')chmodSync(f.home,0o1700);
+    if(kind==='world-write')chmodSync(f.pkg,0o777);
     if(kind==='alias'){boundary=join(f.home,'alias');symlinkSync(f.home,boundary);}
     if(kind==='outside')boundary=f.output;
     if(kind==='config')chmodSync(f.config,0o775);
