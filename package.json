@@ -156,6 +156,7 @@
     "smoke:codex-args": "tsx extensions/connector-codex/smoke/codex-args.smoke.ts",
     "smoke:codex-setup-refresh": "tsx extensions/connector-codex/smoke/setup-refresh.smoke.ts",
     "smoke:codex-plugin-list-buffer": "tsx extensions/connector-codex/smoke/plugin-list-buffer.smoke.ts",
+    "smoke:codex-failed-turn-redrive": "tsx extensions/connector-codex/smoke/failed-turn-redrive.smoke.ts fail && tsx extensions/connector-codex/smoke/failed-turn-redrive.smoke.ts ok",
     "smoke:codex-host": "tsx extensions/connector-codex/smoke/codex-host.smoke.ts",
     "smoke:codex-dist": "tsx extensions/connector-codex/smoke/codex-dist.smoke.ts",
     "smoke:tree-hygiene": "tsx bin/smoke/tree-hygiene.smoke.ts",
