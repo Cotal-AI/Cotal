@@ -161,15 +161,15 @@ try {
   await wait(3_300);
   check(":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)", hits === 6, { hits });
 
-  console.log("2b. a manager that answers with an error is not reported as silent");
-  await m2.preparePreservation("console-ps-error-repro");
+  console.log("2b. a preserving manager remains readable");
+  await m2.preparePreservation("console-ps-preserving-repro");
   m = s.mark();
   await s.command("ps");
-  const surfacedManagerError = await s.waitFor(/manager is in preserving mode; new lifecycle\/control work is fenced/, 30_000, m);
-  const managerErrorNotice = clean(s.out.slice(m));
-  check(":ps surfaces a reachable manager's real error instead of saying it gave no answer",
-    surfacedManagerError && !managerErrorNotice.includes("gave no answer"), managerErrorNotice.slice(-500));
-  await m2.abortPreservation("console-ps-error-repro");
+  const preservingRows = await s.waitFor(/agents: (w1, w2|w2, w1)/, 30_000, m);
+  const preservingNotice = clean(s.out.slice(m));
+  check(":ps lists both managers during preservation instead of reporting silence or a fence",
+    preservingRows && !preservingNotice.includes("gave no answer") && !preservingNotice.includes("new lifecycle/control work is fenced"), preservingNotice.slice(-500));
+  await m2.abortPreservation("console-ps-preserving-repro");
 
   // The presence qualifier on a REAL managed seat. console-status-row proves formatManagedRow
   // rewords `working`; nothing proved a real seat's row reaches that function, so the console
