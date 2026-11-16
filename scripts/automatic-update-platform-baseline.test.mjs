@@ -101,6 +101,18 @@ test('running desktop neighbor requires explicit complete paired coordinate', { 
   assert.throws(()=>baseline.candidateNextOptions(options,false));
 });
 
+test('running desktop catalogs are recorded before update and retained beside unchanged after assertion', () => {
+  const source = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  const setup = source.indexOf("models on desktop-hosted Manager immediately after setup");
+  const baseline = source.indexOf("models on desktop-hosted Manager immediately before CLI update");
+  const update = source.indexOf("update = await cotal('upgrade under test'");
+  const after = source.indexOf("models on desktop-hosted Manager after CLI updates");
+  assert(setup > 0 && baseline > setup && update > baseline && after > update);
+  assert(source.includes('modelsAfterSetup: report.desktop.modelsAfterSetup, modelsBeforeUpdate: report.desktop.modelsBeforeUpdate'));
+  assert(source.includes("managerStillAnswering: managerAfter?.state === 'answering'"));
+  assert(source.includes('modelsAfter.exit === 0'));
+});
+
 function hostedChainOptions() {
   return { candidate: '/A', 'candidate-next': '/B', 'next-hop-source': '0.164.10', 'next-hop-phase': 'candidate', source: '0.164.10', layout: 'npm', state: 'agent', method: 'self', 'daemon-hosted-manager': 'true', 'stop-agents': 'true', prepare() {} };
 }
