@@ -277,7 +277,17 @@ export function extensionSetCleanupSpec() {
       }
     } catch { holders.push({ state: "unknown" }); }
   }
+  let current = paths.version;
   let previous: string | undefined;
-  if (existsSync(join(paths.root, "install.json"))) previous = (JSON.parse(readFileSync(join(paths.root, "install.json"), "utf8")) as { previous?: string }).previous;
-  return { root: sets, installRoot: paths.installRoot, current: paths.version, ...(previous ? { previous } : {}), holders };
+  try {
+    const source = readLocalRecordSource(join(paths.root, "install.json"), 16384);
+    if (!source) throw new Error("missing connector installation record");
+    const record = JSON.parse(Buffer.from(source).toString("utf8")) as { installRoot?: string; current?: string; previous?: string };
+    const validVersion = (value: unknown): value is string => typeof value === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(value);
+    if (record.installRoot !== paths.installRoot || !validVersion(record.current) || record.previous !== undefined && !validVersion(record.previous)) throw new Error("invalid connector installation record");
+    current = record.current;
+    previous = record.previous;
+  } catch { holders.push({ state: "unknown" }); }
+  if (current !== paths.version) holders.push({ version: paths.version, state: "live" });
+  return { root: sets, installRoot: paths.installRoot, current, ...(previous ? { previous } : {}), holders };
 }
