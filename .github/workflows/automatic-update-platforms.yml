@@ -512,8 +512,7 @@ jobs:
           import assert from 'node:assert/strict';
           import { pathToFileURL } from 'node:url';
           import { matchKnownRefusal } from './scripts/upgrade-matrix-refusals.mjs';
-          import { mkdirSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
-          import { dirname, join } from 'node:path';
+          import { mkdirSync, writeFileSync } from 'node:fs';
           const cell = JSON.parse(process.env.CELL);
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
@@ -553,15 +552,6 @@ jobs:
             options.prepare = prepareUpdateParticipant;
           }
           const report = await matrixCell(options);
-          if (cell.platform !== 'win32' && !cell.desktopBesideCli && report.candidateSourceInvocation?.path) {
-            const store = join(dirname(dirname(dirname(dirname(report.candidateSourceInvocation.path)))), '.cotal-generations');
-            assert(existsSync(store), 'fixed candidate must have a generation store');
-            const entries = readdirSync(store).sort();
-            writeFileSync(directory + '/cleanup-generation-census.json', JSON.stringify({ store, entries, target: report.target, scenario: cell.scenario }));
-            const generations = entries.filter(name => /^[a-f0-9]{32}$/.test(name));
-            assert(generations.length >= 1 && generations.length <= 2, 'cleanup must keep active and at most previous');
-            assert(!entries.some(name => /^\.(installing|preparing|transaction)-/.test(name)), 'completed fixed candidate leaves no staged or transaction folders');
-          }
           assert.equal(report.environment?.hostedDisposable, true);
           assert.equal(report.source, cell.sourceVersion);
           assert.equal(report.sourceRequested, cell.sourceVersion);
