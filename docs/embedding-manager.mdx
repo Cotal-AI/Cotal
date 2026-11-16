@@ -416,7 +416,9 @@ A standing-family renewal has a ten-second aggregate budget for the host respons
 preflights and the post-adoption reconnect wait. Failed preparation retains the current family and
 reports renewal debt. While that debt remains, the manager retries after at most one second instead
 of waiting another quarter of the credential lifetime. Successful renewal restores the normal
-interval. Stop and preservation cancel the timer and prevent an in-flight pass from rearming it.
+interval. Overlapping run-credential renewal calls share one pass through issuance, pair adoption
+and reconnects. A slow run renewal does not delay the standing-family retry timer.
+Stop and preservation cancel the timer and prevent an in-flight pass from rearming it.
 A late host response cannot adopt credentials. Timeout does not cancel host
 issuance or prove it failed; the host still owns that operation, and all five held subjects are
 recorded as possibly issued when no response arrived. Late broker dials close without serving.

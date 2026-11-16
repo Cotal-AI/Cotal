@@ -27,6 +27,7 @@ import { authorizeRemoteManagerRenewal, issueRemoteManagerAuthority } from "../.
 import { remoteManagerCurrentRegistrationProof } from "../../auth/src/retained-manager-validation.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { Manager } from "../src/manager.js";
+import type { RunHosting } from "../src/run-hosting.js";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { remoteManagerRenewalCredentials } from "../src/remote-authority.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
@@ -80,6 +81,7 @@ type Internals = {
   serviceServe?: { nc: NatsConnection; creds?: string; grant: { epoch: number } };
   goalWriter?: { nc: NatsConnection };
   sessionLedgerConn?: { nc: NatsConnection };
+  runHosting?: RunHosting;
 };
 type Observation = {
   id: string; command: string; start: number; end?: number; ok?: boolean;
@@ -92,6 +94,11 @@ const children: ReturnType<typeof spawn>[] = [];
 const watchers: Promise<void>[] = [];
 let manager: Manager | undefined;
 let renewals = 0;
+let refuseStandingOnce = true;
+let standingRefusedAt = 0;
+let runRenewals = 0;
+let releaseRunRenewal!: () => void;
+const heldRunRenewal = new Promise<void>((resolve) => { releaseRunRenewal = resolve; });
 let lastIssuedServe: string | undefined;
 let setupComplete = false;
 let running = true;
@@ -152,6 +159,11 @@ try {
     return g ? { state: g.state, principal: g.principal, processEpoch: g.processEpoch, registrationRevision: g.registrationRevision } as never : null;
   };
   const renewStandingBundle = async (processEpoch: number) => {
+    if (refuseStandingOnce) {
+      refuseStandingOnce = false;
+      standingRefusedAt = Date.now();
+      throw new Error("one refused standing candidate during a held run renewal");
+    }
     const current = (await observeManagerGate()) as unknown as { processEpoch: number; registrationRevision: number };
     const base = {
       v: 1 as const, kind: "manager-service-authority" as const, operation: "renewStandingBundle" as const,
@@ -192,10 +204,48 @@ try {
       agentBearerExchangeUrl: "https://auth.example.test", mintSessionServing: unused,
       mintRetirementRequester: unused, validateRetainedAgent: unused, prepareAgentRetirement: unused,
       scanGoalIndex: async () => [], authorizeAdmin: async () => false,
+      runHosting: {
+        admitRun: unused, issueAttempt: unused, issueOperator: unused,
+        renewRun: async ({ runId, takeoverId, epoch, driver, mediator }) => {
+          runRenewals++;
+          await heldRunRenewal;
+          const binding = { endpoint: MANAGER_ENDPOINT, runId, takeoverId, instanceId, epoch, owner };
+          return {
+            driver: await mintCreds(auth, driver, "run-driver", { principal: { owner, actor: "wf_timer" }, runDriver: binding }),
+            mediator: await mintCreds(auth, mediator, "run-mediator", { principal: { owner, actor: "wf_timer" }, runMediator: binding }),
+          };
+        },
+      },
     },
   });
   await manager.start();
   const m = manager as unknown as Internals;
+  // A planted expired pair exercises the real Manager timer and RunHosting renewal together.
+  // It is not a launched workflow and makes no workflow-continuity claim.
+  assert.ok(m.runHosting, "Manager.start must compose the real remote run host");
+  const runId = `run-${"e".repeat(32)}`, takeoverId = "d".repeat(16);
+  const driver = newIdentity(), mediator = newIdentity();
+  const binding = { endpoint: MANAGER_ENDPOINT, runId, takeoverId, instanceId, epoch: 1, owner };
+  const run = {
+    runId, takeoverId, epoch: 1, fencingToken: 1, identity: driver, mediatorIdentity: mediator, placements: [],
+    creds: await mintCreds(auth, driver, "run-driver", { principal: { owner, actor: "wf_timer" }, runDriver: binding, expiresAt: Math.floor(Date.now() / 1000) - 1 }),
+    mediatorCreds: await mintCreds(auth, mediator, "run-mediator", { principal: { owner, actor: "wf_timer" }, runMediator: binding, expiresAt: Math.floor(Date.now() / 1000) - 1 }),
+  };
+  const hostedRuns = (m.runHosting as unknown as { runs: Map<string, typeof run> }).runs;
+  hostedRuns.set(runId, run);
+  try {
+    const deadline = Date.now() + 12_000;
+    while (renewals === 0 && Date.now() < deadline) await wait(25);
+    assert.ok(standingRefusedAt > 0 && renewals > 0, "standing family retries while run issuance stays held");
+    await wait(200);
+    assert.equal(runRenewals, 1, "standing retries must join the held run renewal");
+    assert.ok(Date.now() - standingRefusedAt < 2_000, "slow run renewal must not delay the one-second standing retry");
+    console.log(`timer isolation: one held run issuance across standing refusal and retry (${Date.now() - standingRefusedAt}ms)`);
+  } finally {
+    releaseRunRenewal();
+    await m.runHosting.renew();
+    hostedRuns.delete(runId);
+  }
   const dispatchObserved = new WeakSet<NatsConnection>();
   const instrument = () => {
     for (const [duty, nc] of [["supervisor", m.ep.nc], ["serve", m.serviceServe?.nc],
@@ -330,6 +380,7 @@ try {
   assert.equal(refusals.length, 0, "public requests received structured refusals, see timestamped evidence");
   assert.equal(errors.length, 0, "broker emitted errors during renewal, see retained broker stderr");
 } finally {
+  releaseRunRenewal();
   running = false;
   record("cleanup", { setupComplete, renewals });
   for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");

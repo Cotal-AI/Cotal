@@ -102,6 +102,7 @@ try {
   let signed = 0;
   // When set, the issuer signs a pair that has already expired by the time it returns.
   let issueExpired = false;
+  let holdIssue: { entered: () => void; release: Promise<void> } | undefined;
 
   const renewRun: ConstructorParameters<typeof RunHosting>[0]["renewRun"] = async (a) => {
       const request = {
@@ -126,6 +127,8 @@ try {
             credentials[name] = { jwt: jwtFromCreds(creds)!, exp: credsClaims(creds).exp! };
           }
           if (issueExpired) await new Promise((r) => setTimeout(r, 2100));
+          const hold = holdIssue;
+          if (hold) { hold.entered(); await hold.release; }
           return { credentials };
         },
       });
@@ -199,7 +202,26 @@ try {
     assert.match(String((slot.renewalDebt as { reason?: string } | undefined)?.reason), /unusable run-driver/);
   });
 
-  await hosting.renew();
+  await cell("overlapping renewal calls share one host issuance and adoption", async () => {
+    let entered!: () => void, release!: () => void;
+    const accepted = new Promise<void>((resolve) => { entered = resolve; });
+    holdIssue = { entered, release: new Promise<void>((resolve) => { release = resolve; }) };
+    const first = hosting.renew();
+    await accepted;
+    const second = hosting.renew();
+    let issuedWhileHeld: number;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      issuedWhileHeld = signed;
+    } finally {
+      holdIssue = undefined;
+      release();
+      await Promise.all([first, second]);
+    }
+    console.log(`    host issuances while first renewal held: ${issuedWhileHeld} (one prior expired candidate)`);
+    assert.equal(issuedWhileHeld, 2, "an overlapping renewal must join the accepted issuance");
+    assert.equal(signed, 2, "an overlapping renewal must not issue after the first finishes");
+  });
   await cell("the activated attempt adopts a host-issued pair for the same nkeys and clears debt", async () => {
     assert.equal(signed, 2);
     assert.notEqual(slot.creds, expiring.driver);
@@ -210,8 +232,87 @@ try {
     assert.equal(await brokerAccepts(slot.mediatorCreds as string), true);
   });
 
+  await cell("overlapping refused renewals share one host call and release the flight", async () => {
+    let entered!: () => void, release!: () => void;
+    const accepted = new Promise<void>((resolve) => { entered = resolve; });
+    let calls = 0;
+    const failing = new RunHosting({
+      space, servers: SERVERS, endpoint: "manager", instanceId,
+      holder: { id: holderId, lifecycleUid: mintLifecycleUid() }, auth: undefined, log: () => undefined,
+      renewRun: async () => { calls++; entered(); await released; throw new Error("issuer unavailable"); },
+      admitRun: unusedHostCall, issueAttempt: unusedHostCall, issueOperator: unusedHostCall,
+    });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const refusedSlot: Record<string, unknown> = { ...slot, creds: expiring.driver, mediatorCreds: expiring.mediator };
+    (failing as unknown as { runs: Map<string, unknown> }).runs.set(runId, refusedSlot);
+    const first = failing.renew();
+    await accepted;
+    const second = failing.renew();
+    release();
+    await Promise.all([first, second]);
+    assert.equal(calls, 1);
+    assert.equal(refusedSlot.creds, expiring.driver);
+    assert.equal(refusedSlot.mediatorCreds, expiring.mediator);
+    assert.match(String((refusedSlot.renewalDebt as { reason?: string } | undefined)?.reason), /issuer unavailable/);
+    await failing.renew();
+    assert.equal(calls, 2, "a settled refusal must permit the next renewal");
+    await failing.stop();
+    await failing.renew();
+    assert.equal(calls, 2, "a stopped host must not issue another renewal");
+  });
+
   await hosting.renew();
   await cell("a healthy pair does not re-issue", () => assert.equal(signed, 2));
+
+  await cell("renewal stays single-flight through both native reconnects", async () => {
+    const nc = await connect({ servers: SERVERS, reconnectTimeWait: 10, ...standaloneConnectOpts({ creds: slot.creds as string, tls: false }) });
+    const mediatorNc = await connect({ servers: SERVERS, reconnectTimeWait: 10, ...standaloneConnectOpts({ creds: slot.mediatorCreds as string, tls: false }) });
+    let entered!: () => void, release!: () => void;
+    const accepted = new Promise<void>((resolve) => { entered = resolve; });
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    let reconnects = 0;
+    for (const connection of [nc, mediatorNc]) {
+      const reconnect = connection.reconnect.bind(connection);
+      connection.reconnect = async () => { reconnects++; entered(); await released; await reconnect(); };
+    }
+    slot.nc = nc; slot.mediatorNc = mediatorNc;
+    slot.creds = expiring.driver; slot.mediatorCreds = expiring.mediator;
+    const before = signed;
+    const first = hosting.renew();
+    await accepted;
+    const second = hosting.renew();
+    let joined = false;
+    void second.then(() => { joined = true; });
+    let settledBeforeRelease: boolean;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      settledBeforeRelease = joined;
+    } finally {
+      release();
+      await Promise.all([first, second]);
+      await nc.close(); await mediatorNc.close();
+      delete slot.nc; delete slot.mediatorNc;
+    }
+    assert.equal(settledBeforeRelease, false, "joined callers must wait for native reconnects");
+    assert.equal(signed, before + 1);
+    assert.equal(reconnects, 2, "each held transport reconnects once");
+  });
+
+  await cell("stop fences an accepted renewal before adoption and prevents later issuance", async () => {
+    slot.creds = expiring.driver; slot.mediatorCreds = expiring.mediator;
+    let entered!: () => void, release!: () => void;
+    const accepted = new Promise<void>((resolve) => { entered = resolve; });
+    holdIssue = { entered, release: new Promise<void>((resolve) => { release = resolve; }) };
+    const before = signed;
+    const renewing = hosting.renew();
+    await accepted;
+    try { await hosting.stop(); } finally { holdIssue = undefined; release(); await renewing; }
+    assert.equal(slot.creds, expiring.driver);
+    assert.equal(slot.mediatorCreds, expiring.mediator);
+    assert.match(String((slot.renewalDebt as { reason?: string } | undefined)?.reason), /left this host/);
+    await hosting.renew();
+    assert.equal(signed, before + 1);
+  });
   await pnc.close();
   await rnc.close();
 } finally {

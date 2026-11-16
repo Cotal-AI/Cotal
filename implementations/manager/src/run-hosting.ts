@@ -207,6 +207,7 @@ export class RunHosting {
   private readonly launching = new Map<symbol, string | undefined>();
   private reconciled = false;
   private stopping = false;
+  private renewal?: Promise<void>;
 
   private readonly remote: boolean;
 
@@ -932,8 +933,19 @@ export class RunHosting {
 
   /** Renewal: re-mint every live drive's `run-driver` credential for the SAME nkey and attempt
    *  coordinates when it is past its renewal point; the connection presents the fresh one on its
-   *  next (re)connect. Open mesh: nothing to renew. */
-  async renew(): Promise<void> {
+   *  next (re)connect. Overlapping callers join the complete pass, including pair adoption and
+   *  reconnects, so a fast standing-credential retry cannot start another run renewal. Open mesh:
+   *  nothing to renew. */
+  renew(): Promise<void> {
+    if (this.renewal) return this.renewal;
+    if (this.stopping) return Promise.resolve();
+    const renewal = Promise.resolve().then(() => this.renewOnce()).finally(() => { this.renewal = undefined; });
+    this.renewal = renewal;
+    return renewal;
+  }
+
+  private async renewOnce(): Promise<void> {
+    if (this.stopping) return;
     if (this.ctx.renewRun) return this.renewRemote(this.ctx.renewRun);
     const auth = this.ctx.auth;
     if (!auth) return;
