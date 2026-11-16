@@ -412,7 +412,7 @@ public static class FilteredAppLauncher {
             IntPtr copy = Marshal.AllocHGlobal(bytes);
             int write = 0;
             foreach (string entry in kept) {
-                byte[] encoded = Encoding.Unicode.GetBytes(entry + "\0");
+                byte[] encoded = System.Text.Encoding.Unicode.GetBytes(entry + "\0");
                 Marshal.Copy(encoded, 0, new IntPtr(copy.ToInt64() + write), encoded.Length);
                 write += encoded.Length;
             }
