@@ -456,6 +456,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 }
 
 async function serve(args: ParsedArgs): Promise<void> {
+  const { holdExtensionSet, assertExtensionSetReady } = await import("@cotal-ai/workspace");
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
   const { recoverExecutionUpdate } = await import("./execution-update.js");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
@@ -496,11 +497,15 @@ async function serve(args: ParsedArgs): Promise<void> {
     }
     return stopObservation;
   };
+  let releaseConnectorSet: (() => void) | undefined;
   try {
+    assertExtensionSetReady();
+    releaseConnectorSet = holdExtensionSet();
     running = await serveDaemon({ paths, updateCheck: async () => { if (!updates) throw new Error("Update controller is starting."); return updates.check(); }, updateStatus: () => updates?.status() ?? { current: binVersion(), automatic: false, failures: 0, lastResult: "starting" }, version: binVersion(), peerUid, stopAllowed,
       ...(process.platform === "win32" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" ? { admit: () => admitWindowsNativeDaemon(paths, home) } : {}),
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
+    releaseConnectorSet?.();
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
     throw asFailure(e);
   }
@@ -564,6 +569,7 @@ async function serve(args: ParsedArgs): Promise<void> {
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
   });
+  releaseConnectorSet?.();
 }
 
 async function run(args: ParsedArgs): Promise<void> {

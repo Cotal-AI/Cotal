@@ -14,6 +14,8 @@ export * from "./default-agent.js";
 export * from "./official-connectors.js";
 export * from "./official-runtimes.js";
 export * from "./extensions.js";
+export * from "./extension-set.js";
+export * from "./extension-set-win32.js";
 export * from "./materialize.js";
 export * from "./local-process.js";
 export * from "./local-stop.js";
