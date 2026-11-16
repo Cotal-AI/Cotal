@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][ValidateSet('inspect','disable','enable','start','census','recover')][string]$Action)
+param([Parameter(Mandatory=$true)][ValidateSet('inspect','disable','enable','start','census','holders','recover')][string]$Action)
 function Write-SetupStep([string]$Step) {
   try {
     $elapsed=[long]([DateTime]::UtcNow-[Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime()).TotalMilliseconds
@@ -115,6 +115,27 @@ public static class CensusProcess {
   public static extern uint GetFinalPathNameByHandleW(IntPtr file, StringBuilder path, uint size, uint flags);
   [DllImport("kernel32.dll", SetLastError = true)]
   public static extern bool CloseHandle(IntPtr handle);
+}
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct HolderProcess {
+  public uint pid;
+  public long startTime;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string appName;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string serviceShortName;
+  public uint appType;
+  public uint appStatus;
+  public uint tsSession;
+  [MarshalAs(UnmanagedType.Bool)] public bool restartable;
+}
+public static class HoldersQuery {
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  public static extern int RmStartSession(out uint session, uint flags, string key);
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  public static extern int RmRegisterResources(uint session, uint files, string[] paths, uint applications, IntPtr application, uint services, string[] serviceNames);
+  [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+  public static extern int RmGetList(uint session, out uint needed, ref uint count, IntPtr info, out uint rebootReasons);
+  [DllImport("rstrtmgr.dll")]
+  public static extern int RmEndSession(uint session);
 }
 '@
     } finally {
@@ -235,6 +256,45 @@ public static class CensusProcess {
       }
     }
     return @{ processes=$owned; skipped=$skipped; executableNames=@($exeSet | Sort-Object) }
+  }
+  if ($Action -eq 'holders') {
+    $runtime = Join-Path $root 'runtime'
+    $files = @()
+    if (Test-Path -LiteralPath $runtime -PathType Container) {
+      $files = @(Get-ChildItem -LiteralPath $runtime -Recurse -File | Select-Object -ExpandProperty FullName)
+    }
+    $session = [uint32]0
+    $key = 'cotal-setup-holders-000000000000'
+    $started = [HoldersQuery]::RmStartSession([ref]$session, [uint32]0, $key)
+    if ($started -ne 0) { throw "Restart Manager did not start a session (error $started)." }
+    try {
+      $registered = 0
+      if ($files.Count -gt 0) {
+        $paths = [string[]]$files
+        $registered = [HoldersQuery]::RmRegisterResources($session, [uint32]$paths.Length, $paths, [uint32]0, [IntPtr]::Zero, [uint32]0, [string[]]@())
+        if ($registered -ne 0) { throw "Restart Manager did not register the runtime files (error $registered)." }
+      }
+      $needed = [uint32]0
+      $count = [uint32]0
+      $reboot = [uint32]0
+      $listed = [HoldersQuery]::RmGetList($session, [ref]$needed, [ref]$count, [IntPtr]::Zero, [ref]$reboot)
+      $rows = @()
+      if ($listed -eq 234 -and $needed -gt 0) {
+        $bytes = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([int](688 * $needed))
+        try {
+          $count = $needed
+          $listed = [HoldersQuery]::RmGetList($session, [ref]$needed, [ref]$count, $bytes, [ref]$reboot)
+          if ($listed -ne 0) { throw "Restart Manager did not list the holders (error $listed)." }
+          for ($i = 0; $i -lt $count; $i++) {
+            $row = [System.Runtime.InteropServices.Marshal]::PtrToStructure([IntPtr]($bytes.ToInt64() + (688 * $i)), [type][HolderProcess])
+            $rows += @{ pid=[int]$row.pid; app=[string]$row.appName; service=[string]$row.serviceShortName; appStatus=[int]$row.appStatus; session=[int]$row.tsSession }
+          }
+        } finally { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bytes) }
+      } elseif ($listed -ne 0) { throw "Restart Manager did not list the holders (error $listed)." }
+    } finally { [void][HoldersQuery]::RmEndSession($session) }
+    $scan = Read-OwnedProcesses
+    ConvertTo-Json -InputObject @{ files=$files.Count; holders=$rows; processes=$scan.processes; skipped=$scan.skipped; executableNames=$scan.executableNames } -Depth 5 -Compress
+    Write-SetupStep 'return'; exit 0
   }
   if ($Action -eq 'census') {
     ConvertTo-Json -InputObject (Read-OwnedProcesses) -Depth 5 -Compress

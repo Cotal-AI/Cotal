@@ -159,12 +159,34 @@ FunctionEnd
     RMDir /r "$INSTDIR\..\CotalSetup-previous\runtime"
     Delete "$INSTDIR\..\CotalSetup-previous\cotal-desktop.exe"
     Delete "$INSTDIR\..\CotalSetup-previous\node.exe"
-    Rename "$INSTDIR\cotal-desktop.exe" "$INSTDIR\..\CotalSetup-previous\cotal-desktop.exe"
     ${If} ${FileExists} "$INSTDIR\node.exe"
       Rename "$INSTDIR\node.exe" "$INSTDIR\..\CotalSetup-previous\node.exe"
     ${EndIf}
+    Rename "$INSTDIR\cotal-desktop.exe" "$INSTDIR\..\CotalSetup-previous\cotal-desktop.exe"
     ${If} ${FileExists} "$INSTDIR\runtime"
+      StrCpy $0 0
+      cotal_move_runtime:
       Rename "$INSTDIR\runtime" "$INSTDIR\..\CotalSetup-previous\runtime"
+      ${If} ${Errors}
+      ${AndIf} ${FileExists} "$INSTDIR\runtime"
+        IntOp $0 $0 + 1
+        ${If} $0 > 260
+          nsExec::ExecToStack /TIMEOUT=120000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\service-task.ps1" -Action holders'
+          Pop $1
+          Pop $2
+          CreateDirectory "$LOCALAPPDATA\CotalSetup"
+          FileOpen $3 "$LOCALAPPDATA\CotalSetup\result.json" w
+          FileWrite $3 '{$\"schema$\":1,$\"outcome$\":$\"refused$\",$\"code$\":21,$\"message$\":$\"The previous runtime stayed in use for 130 seconds. No files were replaced.$\",$\"activeAgents$\":0,$\"fromVersion$\":null,$\"toVersion$\":$\"$CotalVersion$\",$\"phase$\":$\"move-runtime$\"}'
+          FileClose $3
+          FileOpen $3 "$LOCALAPPDATA\CotalSetup\holders.json" w
+          FileWrite $3 "$2"
+          FileClose $3
+          StrCpy $CotalCode "21"
+          Call CotalSetupRefused
+        ${EndIf}
+        Sleep 500
+        Goto cotal_move_runtime
+      ${EndIf}
     ${EndIf}
   ${EndIf}
   SetOutPath $INSTDIR

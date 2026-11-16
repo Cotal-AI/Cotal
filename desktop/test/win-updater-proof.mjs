@@ -454,7 +454,7 @@ try {
   writeFileSync(join(out, 'failure.json'), JSON.stringify(failure, null, 2));
   throw error;
 } finally {
-  for (const file of ['helper.log', 'service-update.json', 'result.json', 'message.txt']) {
+  for (const file of ['helper.log', 'service-update.json', 'result.json', 'holders.json', 'message.txt']) {
     const path = join(setupHome, file);
     if (existsSync(path)) writeFileSync(join(out, `setup-${file}`), readFileSync(path));
   }

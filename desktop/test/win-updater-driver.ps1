@@ -122,7 +122,8 @@ function Wait-MainScreen($root) {
     $loadingText = Read-ElementText $loadingTitle[0]
     throw "App remained on loading screen '$loadingText' (loading-title) after ${boundMs}ms (open-settings count=$($openSettings.Count))."
   }
-  throw "Main screen did not expose open-settings within ${boundMs}ms (open-settings count=$($openSettings.Count), loading-title count=$($loadingTitle.Count))."
+  $seen = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { [string]$_.Current.AutomationId } | Where-Object { $_ } | Select-Object -Unique)
+  throw "Main screen did not expose open-settings within ${boundMs}ms (open-settings count=$($openSettings.Count), loading-title count=$($loadingTitle.Count), ids=$($seen -join ','))."
 }
 
 function Find-ById($root, [string]$id) {
