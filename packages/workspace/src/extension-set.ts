@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureDirNoSymlink, globalConfigDir, processStartToken } from "@cotal-ai/core";
+import { ensureDirNoSymlink, realDirNoSymlink, globalConfigDir, processStartToken } from "@cotal-ai/core";
 import { executionIdentity, logicalExecutionEntry } from "./execution-identity.js";
 import { acquireLock, inspectLock } from "./advisory-lock.js";
 import { nativeWin32CreationToken } from "./win32-process.js";
@@ -243,6 +243,14 @@ export function extensionSetCleanupSpec() {
   const paths = extensionSetPaths();
   const holders: { version?: string; state: "live" | "unknown" }[] = [];
   const sets = join(paths.root, "sets");
+  try {
+    if (existsSync(sets)) {
+      if (!realDirNoSymlink(globalConfigDir(), "installs", paths.id, "sets")) throw new Error("connector version store disappeared");
+      protectedLocalDirectory(sets, "connector version store census");
+    }
+  } catch {
+    return { root: sets, installRoot: paths.installRoot, current: paths.version, holders: [{ state: "unknown" as const }] };
+  }
   if (existsSync(sets)) for (const generation of readdirSync(sets)) {
     if (basename(generation) !== generation || isAbsolute(generation)) throw new Error("invalid connector generation directory");
     const set = join(sets, generation);
