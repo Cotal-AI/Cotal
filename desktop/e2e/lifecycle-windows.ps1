@@ -580,12 +580,11 @@ public static class FilteredAppLauncher {
             $null = Invoke-Self 'quit' $AppPid
 
             # Cell (c): High-integrity Explorer on the runner refuses Shell_NotifyIconW from a Medium-integrity process (0x80004005), so open the window directly.
-            $prefDirs = @((Join-Path $env:APPDATA 'ai.cotal.desktop'))
-            if ($env:USERPROFILE) { $prefDirs += (Join-Path $env:USERPROFILE 'AppData\Roaming\ai.cotal.desktop') }
-            foreach ($prefDir in ($prefDirs | Select-Object -Unique)) {
-                [IO.Directory]::CreateDirectory($prefDir) | Out-Null
-                [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"login":false,"connected":true,"relocation_declined":false,"pin_offered":false,"close_explained":false}', [Text.UTF8Encoding]::new($false))
-            }
+            # The fixture launches the app with the runner's real profile, not this helper's private APPDATA.
+            if (!$env:USERPROFILE) { throw 'Cell (c) needs the runner profile to seed the saved login choice.' }
+            $prefDir = Join-Path $env:USERPROFILE 'AppData\Roaming\ai.cotal.desktop'
+            [IO.Directory]::CreateDirectory($prefDir) | Out-Null
+            [IO.File]::WriteAllText((Join-Path $prefDir 'presence.json'), '{"login":false,"connected":true,"relocation_declined":false,"pin_offered":false,"close_explained":false}', [Text.UTF8Encoding]::new($false))
             Set-HklmRunValue $ownedValue
             $beforeFiltered = Read-HklmRunEntry
             if (!$beforeFiltered.present -or !$beforeFiltered.matchesExpected) { throw 'Cell (c) setup did not plant owned HKLM Run value.' }
