@@ -151,7 +151,8 @@ try {
   const caller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
   const callerCreds = await mintCreds(auth, callerId, "agent", {
     lifecycleUid: callerUid,
-    endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }, { endpoint: MANAGER_ENDPOINT, command: "ps" }, { endpoint: MANAGER_ENDPOINT, command: "spawn" }],
+    capabilities: ["spawn"],
+    endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }, { endpoint: MANAGER_ENDPOINT, command: "ps" }, { endpoint: MANAGER_ENDPOINT, command: "spawn", routes: [], instanceId: iid }],
   });
   const callerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
   // checklist 6: the `one`-rail currency reader is the GATE's processEpoch (the service epoch
@@ -161,11 +162,12 @@ try {
     { endpoint: MANAGER_ENDPOINT, command: "status", contract: MANAGER_STATUS_CONTRACT, caller },
     { deadlineMs: 8000, currentEpoch: serviceEpochReader });
   // `status` and `ps` are read-only observations. Probe the mutation fence with a schema-valid
-  // spawn request, not another read such as inspect that currently also stays behind the fence.
+  // spawn on this instance: without a harness, the Manager deliberately serves no unpinned spawn.
+  // Inspect is not used because it is another read despite its currently gated implementation.
   const callPs = () => epCall(callerNc, space, { mode: "one" },
     { endpoint: MANAGER_ENDPOINT, command: "ps", contract: MANAGER_CONTRACTS.ps, caller },
     { deadlineMs: 8000, currentEpoch: serviceEpochReader });
-  const callSpawn = () => epCall(callerNc, space, { mode: "one" },
+  const callSpawn = () => epCall(callerNc, space, { mode: "inst", instanceId: iid, epoch: 0 },
     { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller,
       args: { name: "maintenance-fence-probe" } },
     { deadlineMs: 8000, currentEpoch: serviceEpochReader });
