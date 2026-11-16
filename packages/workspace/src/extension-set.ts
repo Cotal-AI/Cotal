@@ -242,6 +242,8 @@ export function holdExtensionSet(): () => void {
 /** Data only: the binary's one cleanup function owns every retired-set deletion. */
 export function extensionSetCleanupSpec() {
   const paths = extensionSetPaths();
+  const logical = logicalExecutionEntry();
+  const installRoot = logical ? dirname(dirname(logical)) : paths.installRoot;
   const holders: { version?: string; state: "live" | "unknown" }[] = [];
   const sets = join(paths.root, "sets");
   try {
@@ -250,7 +252,7 @@ export function extensionSetCleanupSpec() {
       protectedLocalDirectory(sets, "connector version store census");
     }
   } catch {
-    return { root: sets, installRoot: paths.installRoot, current: paths.version, holders: [{ state: "unknown" as const }] };
+    return { root: sets, installRoot, current: paths.version, holders: [{ state: "unknown" as const }] };
   }
   if (existsSync(sets)) for (const generation of readdirSync(sets)) {
     if (basename(generation) !== generation || isAbsolute(generation)) throw new Error("invalid connector generation directory");
@@ -289,5 +291,5 @@ export function extensionSetCleanupSpec() {
     previous = record.previous;
   } catch { holders.push({ state: "unknown" }); }
   if (current !== paths.version) holders.push({ version: paths.version, state: "live" });
-  return { root: sets, installRoot: paths.installRoot, current, ...(previous ? { previous } : {}), holders };
+  return { root: sets, installRoot, current, ...(previous ? { previous } : {}), holders };
 }
