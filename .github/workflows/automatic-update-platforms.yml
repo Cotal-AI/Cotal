@@ -152,7 +152,7 @@ jobs:
               assert.equal(plan.phase, 'candidate', 'target admission measurement requires candidate phase');
               assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'measurement source must be bound to its direct product parent');
             }
-            const cells = admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan);
+            const cells = (admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan)).map(cell => cell.targetAdmission === 'foreign-preserving' ? { ...cell, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE } : cell);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));

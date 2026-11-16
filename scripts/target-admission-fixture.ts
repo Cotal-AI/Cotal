@@ -29,8 +29,8 @@ export async function prepareTargetAdmission(context: Context) {
   let managerPid: number | undefined, brokerPaused = false, managerPaused = false;
   const owned = new Map<number, string>();
   try {
-  const workspace = await import(pathToFileURL(join(pkg, "node_modules/@cotal-ai/workspace/dist/index.js")).href);
-  const startToken = (pid: number) => workspace.processStartToken(pid) as string | undefined;
+  const lifetime = await import(pathToFileURL(join(pkg, "dist/daemon/lifetime.js")).href);
+  const startToken = (pid: number) => lifetime.processBirth(pid) as string | undefined;
   const pin = (pid: number) => { const start = startToken(pid); assert(start, `native process identity unavailable for ${pid}`); owned.set(pid, start); return { pid, start }; };
   const alive = (identity: { pid: number; start: string }) => startToken(identity.pid) === identity.start;
   const ok = (value: any, label: string) => { assert.equal(value.exit, 0, `${label}: ${value.stdout}${value.stderr}`); return value; };
@@ -99,6 +99,7 @@ export async function prepareTargetAdmission(context: Context) {
       if (mode === "foreign-preserving") {
         assert(options["admission-legacy-candidate"] && options["admission-legacy-next"], "foreign preserving requires immutable legacy public-updater artifacts");
         oldRegistry = await candidatePairRegistry(options["admission-legacy-candidate"], options["admission-legacy-next"]);
+        assert.equal(oldRegistry.identity.source, options["admission-legacy-source"], "legacy producer differs from frozen plan source");
         const foreignPrefix = join(root, "foreign-prefix"); mkdirSync(foreignPrefix, { mode: 0o700 });
         evidence.foreignPrefix = foreignPrefix;
         const npm = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -122,8 +123,9 @@ export async function prepareTargetAdmission(context: Context) {
       if (mode !== "foreign-preserving") {
         const fixture = join(root, "admission-seat"); mkdirSync(fixture, { mode: 0o700 });
         writeFileSync(join(fixture, "package.json"), JSON.stringify({ name: "cotal-admission-seat", version: report.target, type: "module", main: "index.js", peerDependencies: { "@cotal-ai/core": "*" } }));
-        writeFileSync(join(fixture, "seat.mjs"), `import {CotalEndpoint} from '@cotal-ai/core';import{readFileSync}from'node:fs';import{execFile}from'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,out)=>error?reject(error):resolve(out.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent',meta:{'ai.cotal.manager.instance':e.COTAL_MANAGER_INSTANCE}},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));setInterval(()=>{},1000);`);
-        writeFileSync(join(fixture, "index.js"), `import{registry}from'@cotal-ai/core';import{fileURLToPath}from'node:url';registry.register({kind:'connector',name:'admission-standin',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[fileURLToPath(new URL('./seat.mjs',import.meta.url))],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+        writeFileSync(join(fixture, "seat.mjs"), `import {CotalEndpoint} from '@cotal-ai/core';import{readFileSync,writeFileSync}from'node:fs';import{execFile}from'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,out)=>error?reject(error):resolve(out.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent',meta:{'ai.cotal.manager.instance':e.COTAL_MANAGER_INSTANCE}},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();writeFileSync(e.COTAL_ADMISSION_READY,JSON.stringify({name:e.COTAL_NAME,lifecycleUid:e.COTAL_LIFECYCLE_UID,managerInstance:e.COTAL_MANAGER_INSTANCE,pid:process.pid}),{mode:0o600});for(const s of ['SIGTERM','SIGINT'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));setInterval(()=>{},1000);`);
+        writeFileSync(join(fixture, "index.js"), `import{registry}from'@cotal-ai/core';import{fileURLToPath}from'node:url';registry.register({kind:'connector',name:'admission-standin',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[fileURLToPath(new URL('./seat.mjs',import.meta.url))],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_NAME:o.name,COTAL_ADMISSION_READY:${JSON.stringify(join(root, "admission-ready"))}+'/'+o.name+'.json',COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
+        mkdirSync(join(root, "admission-ready"), { mode: 0o700 });
         ok(await cotal("register real admission stand-in", ["ext", "add", fixture]), "stand-in registration");
         await client.managerViaDaemon({ paths }, { op: "managers-stop" });
         const freshManager = await client.managerViaDaemon({ paths }, { op: "manager-start", space });
@@ -193,8 +195,14 @@ export async function prepareTargetAdmission(context: Context) {
         if (mode === "consent-stop") assert(!evidence.workAfter.items.some((row: any) => row.name === "admission_original"));
         else assert(evidence.workAfter.items.some((row: any) => row.name === "admission_original"));
         ok(await cotal("spawn late admission work from retained Manager", spawnArgs("admission_late", current.instanceId)), "late real seat");
+        const ready = join(root, "admission-ready", "admission_late.json");
+        for (let i = 0; i < 120 && !existsSync(ready); i++) await delay(250);
+        assert(existsSync(ready), "late seat must authenticate and register, not merely be queued");
+        evidence.lateReady = JSON.parse(readFileSync(ready, "utf8"));
+        evidence.lateReady.start = pin(evidence.lateReady.pid).start;
         evidence.lateWork = await ps("late admission work inventory", current.instanceId);
-        assert(evidence.lateWork.items.some((row: any) => row.name === "admission_late"));
+        assert(evidence.lateWork.items.some((row: any) => row.name === "admission_late" && row.lifecycleUid === evidence.lateReady.lifecycleUid && typeof row.id === "string" && row.id), "late authenticated seat identity must match actual Manager inventory");
+        assert.equal(evidence.lateReady.managerInstance, current.instanceId);
       } else {
         if (evidence.oldSetsAfter.length) {
           const managerHome = await import(pathToFileURL(join(pkg, "dist/daemon/manager.js")).href);

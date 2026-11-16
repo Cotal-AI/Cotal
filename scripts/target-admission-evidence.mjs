@@ -37,12 +37,13 @@ export function verifyTargetAdmissionEvidence({report,cell,output}) {
   assertions.nativeAction=true;assertions.retainedSet=true;
  }else{assert.equal(e.after.version,cell.targetVersion);assert.equal(e.before.version,report.source);assert(!e.workAfter?.items?.some(row=>row.name==='admission_original'));assert(call.argv?.includes('--stop-agents'),'explicit stop consent missing');assertions.nativeAction=true;assertions.retainedSet=true;}
  if(e.mode==='foreign-preserving'){
-  assert.equal(e.fenceProducer.signal,'SIGKILL');assert.equal(e.fenceProducer.exit,null);assert.match(e.fenceProducer.stdout,/Saving update recovery snapshot/);assert(e.preparedFence?.prepared&&e.preparedFence.managers.every(row=>row.fenced&&row.seats===0));assert(e.foreignSource?.source&&e.foreignSource.entry!==invocation.argv[0]);assert.equal(e.lateConsole?.status,200);assert.match(e.lateConsole.sha256,/^[a-f0-9]{64}$/);assertions.retainedWork=true;assertions.lateRead=true;
+  assert.equal(e.fenceProducer.signal,'SIGKILL');assert.equal(e.fenceProducer.exit,null);assert.match(e.fenceProducer.stdout,/Saving update recovery snapshot/);assert(e.preparedFence?.prepared&&e.preparedFence.managers.every(row=>row.fenced&&row.seats===0));assert.equal(e.foreignSource?.source,cell.legacySourceSHA);assert(e.foreignSource.entry!==invocation.argv[0]);assert.equal(e.lateConsole?.status,200);assert.match(e.lateConsole.sha256,/^[a-f0-9]{64}$/);assertions.retainedWork=true;assertions.lateRead=true;
  }else{
   assert.equal(e.workBefore?.items?.length,1);assert.equal(e.workBefore.items[0].name,'admission_original');
   const original=e.workBefore.items[0];const after=e.workAfter?.items?.find(row=>row.name===original.name);
   if(deferred){assert(after,'original work disappeared without consent');assert.equal(after.id,original.id);assert.equal(after.lifecycleUid,original.lifecycleUid);}
-  assert(e.lateWork?.items?.some(row=>row.name==='admission_late'),'late real seat did not start');assertions.retainedWork=true;assertions.lateRead=true;
+  assert(identity(e.lateReady)&&e.lateReady.name==='admission_late'&&e.lateReady.managerInstance===e.after.manager.instanceId,'late seat native authenticated readiness missing');
+  assert(e.lateWork?.items?.some(row=>row.name==='admission_late'&&row.lifecycleUid===e.lateReady.lifecycleUid&&typeof row.id==='string'&&row.id),'late real seat did not start');assertions.retainedWork=true;assertions.lateRead=true;
   if(e.mode==='offline')assert.equal(e.dependency?.brokerTraffic,'paused');
   if(e.mode==='manager-unknown'){assert.equal(e.dependency?.manager,'SIGSTOP');assert(same(e.dependency.identity,e.before.manager));}
  }
