@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { emitSentinel } from './sentinel.mjs';
+
+const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+/** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
+export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
+  assert(['arrives', 'unavailable', 'integrity'].includes(scenario));
+  const root = mkdtempSync(join(parent, 'registry-arrival-'));
+  const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
+  const target = '99.0.0', archives = new Map(), requests = [];
+  const prefix = join(root, 'prefix'), home = join(root, 'home');
+  for (const name of ['home', 'cotal', 'config', 'tmp', 'runtime', 'prefix', 'payload/package/dist']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
+  for (const version of [previous, target]) {
+    writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
+    writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\nconsole.log("fixture reconciled");\n', { mode: 0o755 });
+    const packed = spawnSync('tar', ['-czf', join(root, `${version}.tgz`), '-C', join(root, 'payload'), 'package']);
+    assert.equal(packed.status, 0);
+    archives.set(version, readFileSync(join(root, `${version}.tgz`)));
+  }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') && !['npm_config_before', 'NPM_CONFIG_BEFORE'].includes(name)));
+  Object.assign(env, { HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), TMPDIR: join(root, 'tmp'), XDG_RUNTIME_DIR: join(root, 'runtime'), npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off', DO_NOT_TRACK: '1' });
+  let origin, armed = false, missing = 0;
+  const server = createServer((request, response) => {
+    requests.push({ at: Date.now(), path: request.url });
+    if (request.url?.endsWith('.tgz')) {
+      const version = request.url.slice(1, -4);
+      if (armed && version === target) {
+        missing++;
+        if (scenario === 'unavailable' || scenario === 'arrives' && missing === 1) return response.writeHead(404).end('archive is propagating');
+        if (scenario === 'integrity') return response.end(Buffer.from('corrupt archive'));
+      }
+      return response.end(archives.get(version));
+    }
+    const versions = Object.fromEntries([...archives].map(([version, bytes]) => [version, { name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' }, dist: { tarball: `${origin}/${version}.tgz`, integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}` } }]));
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify({ name: 'cotal-ai', 'dist-tags': { latest: target }, versions }));
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  origin = `http://127.0.0.1:${server.address().port}`;
+  env.npm_config_registry = origin;
+  const run = async (file, args, timeoutMs) => {
+    const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', bytes => output += bytes);
+    child.stderr.on('data', bytes => output += bytes);
+    const timer = setTimeout(() => child.kill('SIGTERM'), timeoutMs);
+    try {
+      const code = await new Promise((done, reject) => { child.once('error', reject); child.once('close', done); });
+      return { code, output };
+    } finally { clearTimeout(timer); }
+  };
+  try {
+    const install = await run('npm', ['install', '-g', `cotal-ai@${previous}`], 60000);
+    assert.equal(install.code, 0, install.output);
+    const packageRoot = join(prefix, 'lib/node_modules/cotal-ai');
+    const before = readFileSync(join(packageRoot, 'dist/cotal.js'));
+    writeFileSync(join(packageRoot, 'preserve'), 'unchanged');
+    armed = true;
+    const started = Date.now();
+    const update = await run(process.execPath, [entry, 'update', '--self'], 660000);
+    const elapsedMs = Date.now() - started;
+    const selected = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+    if (scenario === 'integrity') {
+      assert.equal(update.code, 1, update.output);
+      assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
+    } else {
+      assert.equal(update.code, 0, update.output);
+      assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (scenario === 'arrives') {
+        assert.equal(selected, target);
+        assert.match(update.output, /installed globally and reconciled/);
+        assert(elapsedMs >= 15000 && missing >= 2);
+      } else {
+        assert.match(update.output, /Keeping cotal-ai@/);
+        assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
+      }
+    }
+    if (scenario !== 'arrives') {
+      assert.equal(selected, previous);
+      assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
+      assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
+    }
+    const recovery = join(root, 'cotal/update-recovery.json');
+    assert.equal(existsSync(recovery) ? JSON.parse(readFileSync(recovery, 'utf8')) : null, null);
+    return { scenario, code: update.code, elapsedMs, selected, missing, requests, output: update.output };
+  } finally {
+    await new Promise(done => server.close(done));
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity'];
+  for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
+  emitSentinel({ passed: selected.length, failed: 0 });
+}

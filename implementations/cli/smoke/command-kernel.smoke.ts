@@ -1219,7 +1219,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
     "@cotal-ai/optional": {},
   };
-  for (const scenario of ["ready", "root-404", "transitive-404", "metadata-404", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency"] as const) {
+  for (const scenario of ["ready", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
     const downloaded: string[] = [], caches = new Set<string>();
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
@@ -1237,10 +1237,13 @@ async function completionOut(positionals: string[]): Promise<string> {
           downloaded.push(...specs.filter(spec => spec !== cache));
           assert.ok(args.includes("--ignore-scripts"));
           if (specs.some(spec => (scenario === "root-404" && spec.startsWith("cotal-ai@")) || (scenario === "transitive-404" && spec.startsWith("@cotal-ai/core@"))))
-            return { status: 1, stderr: "npm error code E404" };
+            return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
+          if (scenario === "integrity" || scenario === "unauthorized") return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "integrity" ? "EINTEGRITY" : "E401" } }) };
+          if (scenario === "target-missing") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET" } }) };
+          if (scenario === "unstructured") return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
-        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stderr: "npm error code E404" };
+        if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
         if (name === "@cotal-ai/core" && scenario === "invalid-json") return { status: 0, stdout: "not json" };
         return { status: 0, stdout: JSON.stringify({
           name, version: scenario === "wrong-version" ? "0.13.3" : requestedVersion,
@@ -1250,8 +1253,13 @@ async function completionOut(positionals: string[]): Promise<string> {
         }) };
       },
     });
-    assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" ? 0 : 1, scenario);
-    assert.ok(caches.size === (scenario === "ready" ? 2 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
+    let now = 0, waits = 0;
+    fixture.rt.now = () => now;
+    fixture.rt.sleep = async milliseconds => { now += milliseconds; waits++; };
+    const arriving = ["root-404", "transitive-404", "metadata-404", "target-missing"].includes(scenario);
+    assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" || arriving ? 0 : 1, scenario);
+    assert.ok(caches.size === (scenario === "ready" ? 2 : arriving ? 41 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
+    assert.equal(waits, arriving ? 40 : 0, "only structured missing release data waits, for ten minutes total");
     if (scenario === "ready") {
       assert.deepEqual(downloaded, [version, "0.13.1"].flatMap(release => Object.keys(manifests).map(name => `${name}@${release}`)), "target and rollback transitive and optional archives are fetched once, despite peer cycles");
       assert.equal(fixture.events.filter(event => event.startsWith("npm:cache add")).length, 2, "one bounded archive batch per four-package release replaces repeated npm startup");
@@ -1259,11 +1267,32 @@ async function completionOut(positionals: string[]): Promise<string> {
       assert.ok(lastFetch < fixture.events.findIndex(event => event.startsWith("claim-global:")), "readiness precedes global mutation custody");
     } else {
       assert.ok(!fixture.events.some(event => /^(global:|claim-global:|reconcile|refresh-connectors)/.test(event)), "refusal starts no installation or reconciliation");
-      const error = fixture.events.filter(event => event.startsWith("err:")).join("\n");
-      assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
+      const error = fixture.events.filter(event => event.startsWith(arriving ? "out:" : "err:")).join("\n");
+      if (arriving) assert.ok(error.includes("Waiting for cotal-ai@0.13.2") && error.includes("Keeping cotal-ai@0.13.1"), error);
+      else assert.ok(error.includes("release is still reaching the registry") && error.includes("again in a few minutes"), error);
       assert.ok(!error.includes("npm error code E404"), "raw npm errors are not the user-facing diagnostic");
     }
   }
+}
+
+// A listed release that becomes downloadable during the wait installs through the normal path.
+{
+  let clock = 0, attempts = 0;
+  const fixture = updateRuntime({
+    npm: args => ({ status: 0, stdout: args[0] === "view" ? '"0.13.2"' : "/global/node_modules" }),
+    releaseNpm: args => {
+      if (args[0] === "cache") return ++attempts < 3 ? { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) } : { status: 0 };
+      const spec = args[1], at = spec.lastIndexOf("@");
+      return { status: 0, stdout: JSON.stringify({ name: spec.slice(0, at), version: spec.slice(at + 1), dist: { tarball: "https://registry.example/package.tgz", integrity: "sha512-fixture" } }) };
+    },
+  });
+  fixture.rt.now = () => clock;
+  fixture.rt.sleep = async milliseconds => { clock += milliseconds; };
+  assert.equal(await executeUpdate(true, fixture.rt), 0);
+  assert.equal(clock, 30_000);
+  assert.ok(fixture.events.some(event => event.startsWith("global:install:")), "arrival continues into the unchanged installer");
+  assert.ok(fixture.events.some(event => event.includes("Waiting for cotal-ai@0.13.2")));
+  assert.ok(!fixture.events.some(event => event.includes("Keeping cotal-ai@0.13.1")));
 }
 
 // A staged rollback already retains the complete previous graph and needs no registry copy.

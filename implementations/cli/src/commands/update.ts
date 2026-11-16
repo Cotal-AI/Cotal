@@ -113,6 +113,7 @@ export interface UpdateRuntime {
   readonly parentPid: number;
   readonly nodePath: string;
   now?(): number;
+  sleep?(milliseconds: number): Promise<void>;
   recoveryOwnerStart?(pid: number): string | undefined;
   /** Refuse unsupported or unwritable execution destinations before any persistent writes. */
   preflightExecution?(): void;
@@ -972,7 +973,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
         const result = manifests[index]!;
         if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
         const manifest = result.value;
-        if (manifest.status !== 0) throw new Error(`metadata for ${spec} is unavailable`);
+        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`);
         let meta: Record<string, unknown>;
         try {
           const parsed: unknown = JSON.parse(manifest.stdout);
@@ -1001,11 +1002,42 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
     // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.
     for (let offset = 0; offset < names.length; offset += 6) {
       const specs = names.slice(offset, offset + 6).map(name => `${name}@${version}`);
-      const archive = await rt.npmAsync(["cache", "add", ...specs, "--ignore-scripts", ...options]);
-      if (archive.status !== 0) throw new Error(`archives for ${specs.join(", ")} could not be downloaded and verified`);
+      const archive = await rt.npmAsync(["cache", "add", ...specs, "--json", "--ignore-scripts", ...options]);
+      if (archive.status !== 0) throw releaseReadError(archive, `archives for ${specs.join(", ")} could not be downloaded and verified`);
     }
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+class ReleaseNotAvailable extends Error {}
+
+function releaseReadError(result: CommandResult, detail: string): Error {
+  if (result.status !== null && !result.error) {
+    try {
+      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown } }).error;
+      if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
+    } catch { /* An unstructured failure is not evidence of registry propagation. */ }
+  }
+  return new Error(detail);
+}
+
+async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<boolean> {
+  const now = rt.now ?? Date.now;
+  const deadline = now() + 10 * 60_000;
+  for (;;) {
+    try { await checkReleaseArchives(version, rt); return true; }
+    catch (error) {
+      if (!(error instanceof ReleaseNotAvailable)) throw error;
+      const remaining = deadline - now();
+      if (remaining <= 0) {
+        recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
+        rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
+        return false;
+      }
+      rt.out(`Waiting for cotal-ai@${version} release archives to reach the registry (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
+      await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
+    }
   }
 }
 
@@ -1050,7 +1082,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   const releaseChecksStarted = Date.now();
   try {
     rt.out(`Checking cotal-ai@${targetVersion} release archives`);
-    await checkReleaseArchives(targetVersion, rt);
+    if (!await waitForReleaseArchives(targetVersion, current, rt)) return 0;
     rt.out(`Checking installed extension dependencies for ${targetVersion}`);
     checkInstalledClosure(targetVersion, rt);
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.
