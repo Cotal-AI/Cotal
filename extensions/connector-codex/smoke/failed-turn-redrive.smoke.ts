@@ -16,20 +16,20 @@ if (process.platform === "win32") skipSuite("managed Codex agents are POSIX-only
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
 const mode = process.argv[2];
+if (mode !== undefined && mode !== "fail" && mode !== "ok") {
+  throw new Error("failed-turn-redrive.smoke.ts accepts only fail or ok, or no argument to run both");
+}
+async function runMode(mode: "fail" | "ok"): Promise<void> {
 const marker = mode === "fail" ? "FAILFOREVER" : "COMPLETEONCE";
 const maxTurns = 3;
-if (mode !== "fail" && mode !== "ok") {
-  console.error("usage: drive.mjs fail|ok");
-  process.exit(2);
-}
 
-const repo = process.env.REPRO_REPO ?? fileURLToPath(new URL("../../../", import.meta.url));
+const repo = fileURLToPath(new URL("../../../", import.meta.url));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
-const space = `repro6869${mode}`;
+const space = `codex-failed-turn-${mode}`;
 const peer = "codexpeer";
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const outDir = process.env.REPRO_OUT ?? join(dir, "evidence");
+const outDir = join(dir, "evidence");
 mkdirSync(outDir, { recursive: true });
 const fake = join(repo, "extensions/connector-codex/smoke/failed-turn-app-server.mjs");
 const bin = join(dir, "fake-codex");
@@ -155,7 +155,6 @@ try {
     assert.equal(turns[0].status, "completed");
     assert.equal(result.consumer.num_ack_pending, 0, "completed control advances its native consumer acknowledgement");
   }
-  console.log(`COTAL_SMOKE_SENTINEL cells=${cells()} passed=${cells()} failed=0`);
 } finally {
   if (host && host.exitCode === null && host.signalCode === null) {
     const child = host;
@@ -165,3 +164,7 @@ try {
   await operator.stop().catch(() => {});
   await releaseBroker();
 }
+}
+if (mode === undefined) { await runMode("fail"); await runMode("ok"); }
+else await runMode(mode);
+console.log(`COTAL_SMOKE_SENTINEL cells=${cells()} passed=${cells()} failed=0`);
