@@ -119,7 +119,7 @@ public static class CensusProcess {
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
 public struct HolderProcess {
   public uint pid;
-  public long startTime;
+  public System.Runtime.InteropServices.ComTypes.FILETIME startTime;
   [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string appName;
   [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string serviceShortName;
   public uint appType;
@@ -260,7 +260,9 @@ public static class HoldersQuery {
   if ($Action -eq 'holders') {
     $runtime = Join-Path $root 'runtime'
     $files = @()
-    if (Test-Path -LiteralPath $runtime -PathType Container) { $files = @($runtime) }
+    if (Test-Path -LiteralPath $runtime -PathType Container) {
+      $files = @(Get-ChildItem -LiteralPath $runtime -Recurse -File | Where-Object { $_.Extension -in '.exe','.dll','.node' } | Select-Object -ExpandProperty FullName)
+    }
     $session = [uint32]0
     $key = 'cotal-setup-holders-000000000000'
     $started = [HoldersQuery]::RmStartSession([ref]$session, [uint32]0, $key)
@@ -277,21 +279,24 @@ public static class HoldersQuery {
       $reboot = [uint32]0
       $listed = [HoldersQuery]::RmGetList($session, [ref]$needed, [ref]$count, [IntPtr]::Zero, [ref]$reboot)
       $rows = @()
+      $rowSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][HolderProcess])
+      if ($rowSize -ne 668) { throw "The holder record is $rowSize bytes, not the documented 668." }
       if ($listed -eq 234 -and $needed -gt 0) {
-        $bytes = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([int](688 * $needed))
+        $bytes = [System.Runtime.InteropServices.Marshal]::AllocHGlobal([int]($rowSize * $needed))
         try {
           $count = $needed
           $listed = [HoldersQuery]::RmGetList($session, [ref]$needed, [ref]$count, $bytes, [ref]$reboot)
           if ($listed -ne 0) { throw "Restart Manager did not list the holders (error $listed)." }
           for ($i = 0; $i -lt $count; $i++) {
-            $row = [System.Runtime.InteropServices.Marshal]::PtrToStructure([IntPtr]($bytes.ToInt64() + (688 * $i)), [type][HolderProcess])
+            $row = [System.Runtime.InteropServices.Marshal]::PtrToStructure([IntPtr]($bytes.ToInt64() + ($rowSize * $i)), [type][HolderProcess])
             $rows += @{ pid=[int]$row.pid; app=[string]$row.appName; service=[string]$row.serviceShortName; appStatus=[int]$row.appStatus; session=[int]$row.tsSession }
           }
         } finally { [System.Runtime.InteropServices.Marshal]::FreeHGlobal($bytes) }
       } elseif ($listed -ne 0) { throw "Restart Manager did not list the holders (error $listed)." }
     } finally { [void][HoldersQuery]::RmEndSession($session) }
     $scan = Read-OwnedProcesses
-    ConvertTo-Json -InputObject @{ files=$files.Count; holders=$rows; processes=$scan.processes; skipped=$scan.skipped; executableNames=$scan.executableNames } -Depth 5 -Compress
+    $unseen = 'Restart Manager and the install image scan do not see a process whose current directory is inside the runtime folder or that holds only a directory handle.'
+    ConvertTo-Json -InputObject @{ files=$files.Count; holders=$rows; processes=$scan.processes; skipped=$scan.skipped; executableNames=$scan.executableNames; unseen=$unseen } -Depth 5 -Compress
     Write-SetupStep 'return'; exit 0
   }
   if ($Action -eq 'census') {
