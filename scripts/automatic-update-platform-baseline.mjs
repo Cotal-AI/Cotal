@@ -23,6 +23,8 @@ import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
 import { machineShapeOptions, machineShapeCommand, runtimeDirectoryRefusal } from './update-machine-shape.mjs';
 import { publishedStagedRefusal, publishedSchedulerBudget } from './published-update-refusal.mjs';
+import { rootOwnedAssertions } from './root-owned-cell.mjs';
+import { packageLayoutAssertions } from './package-layout-cell.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['candidate-next'] === undefined) {
@@ -1769,13 +1771,24 @@ export function summarize(directory) {
   const admissions = [];
   const reports = readdirSync(directory, { recursive: true }).filter(name => String(name).endsWith('.json')).flatMap(name => {
     const file = join(directory, name);
-    const row = json(file);
+    let row = json(file);
     if (String(name).endsWith('runner-admission.json')) {
       assert(['admitted', 'unrun'].includes(row.result) && typeof row.runner === 'string', 'invalid runner admission receipt');
       admissions.push(row);
     }
-    if (!(row.id && row.tier && row.result)) return [];
     const coordFile = join(dirname(file), 'coordinate.json');
+    const special = ['root-owned.json', 'package-layout.json'].find(leaf => file === join(dirname(file), leaf));
+    if (special) {
+      const cell = json(coordFile);
+      assert(cell && typeof cell.id === 'string' && Array.isArray(cell.requiredAssertions), 'special report coordinate missing');
+      assert(special === 'root-owned.json' ? cell.rootOwned === true : Boolean(cell.layoutProbe), 'special report coordinate kind differs');
+      assert.equal(row.source, cell.sourceSHA, 'special report source differs');
+      const receipt = readFileSync(file.replace(/\.json$/, '.sha256'), 'utf8');
+      assert.equal(receipt.trim(), `${digest(readFileSync(file))}  ${special}`, 'special report digest differs');
+      const grade = cell.rootOwned ? rootOwnedAssertions(row, cell) : packageLayoutAssertions(row, cell);
+      row = { ...row, id: cell.id, tier: `native ${cell.rootOwned ? 'root-owned' : cell.layoutProbe}`, source: cell.sourceVersion, target: cell.targetVersion, result: grade.passed ? 'passed' : 'failed', refusal: row.error ?? row.assertions?.filter(check => check.passed !== true).map(check => check.name).join(', ') };
+    }
+    if (!(row.id && row.tier && row.result)) return [];
     let knownRefusal = null;
     if (existsSync(coordFile)) {
       const cell = json(coordFile);
