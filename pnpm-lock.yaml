@@ -167,10 +167,10 @@ importers:
         specifier: workspace:*
         version: link:../implementations/web
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       typescript:
         specifier: ^5.9.3
@@ -344,7 +344,7 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       esbuild:
         specifier: ^0.28.0
@@ -371,7 +371,7 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@types/ws':
         specifier: ^8.18.1
@@ -411,10 +411,10 @@ importers:
         specifier: workspace:*
         version: link:../../packages/smoke-kit
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       jose:
         specifier: ^6.2.3
@@ -463,10 +463,10 @@ importers:
         specifier: workspace:*
         version: link:../../packages/smoke-kit
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       esbuild:
         specifier: ^0.28.0
@@ -490,7 +490,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/smoke-kit
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@opencode-ai/plugin':
         specifier: ^1.16.2
@@ -544,10 +544,10 @@ importers:
         specifier: 0.79.10
         version: 0.79.10
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       esbuild:
         specifier: ^0.28.0
@@ -583,19 +583,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/jwt':
         specifier: 0.0.10-5
         version: 0.0.10-5
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/nkeys':
         specifier: 2.0.3
         version: 2.0.3
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       jose:
         specifier: ^6.2.3
@@ -623,16 +623,16 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/obj':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       ink:
         specifier: ^6.0.0
@@ -697,17 +697,17 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
         version: link:../../packages/smoke-kit
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
 
   implementations/linear:
@@ -716,10 +716,10 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
     devDependencies:
       '@cotal-ai/auth':
@@ -753,16 +753,16 @@ importers:
         specifier: 1.2.0-beta.12
         version: 1.2.0-beta.12
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/nats-core':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@xterm/addon-attach':
         specifier: ^0.11.0
@@ -832,13 +832,13 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
@@ -857,13 +857,13 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
     devDependencies:
       '@cotal-ai/smoke-kit':
@@ -1018,25 +1018,25 @@ importers:
   packages/core:
     dependencies:
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/jwt':
         specifier: 0.0.10-5
         version: 0.0.10-5
       '@nats-io/kv':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/nats-core':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/nkeys':
         specifier: 2.0.3
         version: 2.0.3
       '@nats-io/obj':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       ajv:
         specifier: ^8.20.0
@@ -1098,10 +1098,10 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@nats-io/jetstream':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       '@nats-io/transport-node':
-        specifier: ^3.4.0
+        specifier: 3.4.0
         version: 3.4.0
       ajv:
         specifier: ^8.20.0
