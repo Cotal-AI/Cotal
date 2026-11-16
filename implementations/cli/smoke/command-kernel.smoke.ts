@@ -1219,7 +1219,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     "@cotal-ai/core": { peerDependencies: { "@cotal-ai/cli": ">=0.1.0" } },
     "@cotal-ai/optional": {},
   };
-  for (const scenario of ["ready", "root-404", "transitive-404", "metadata-404", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized"] as const) {
+  for (const scenario of ["ready", "root-404", "transitive-404", "metadata-404", "target-missing", "invalid-json", "wrong-version", "missing-integrity", "skewed-dependency", "integrity", "unauthorized", "unstructured"] as const) {
     const downloaded: string[] = [], caches = new Set<string>();
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
@@ -1239,6 +1239,8 @@ async function completionOut(positionals: string[]): Promise<string> {
           if (specs.some(spec => (scenario === "root-404" && spec.startsWith("cotal-ai@")) || (scenario === "transitive-404" && spec.startsWith("@cotal-ai/core@"))))
             return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
           if (scenario === "integrity" || scenario === "unauthorized") return { status: 1, stdout: JSON.stringify({ error: { code: scenario === "integrity" ? "EINTEGRITY" : "E401" } }) };
+          if (scenario === "target-missing") return { status: 1, stdout: JSON.stringify({ error: { code: "ETARGET" } }) };
+          if (scenario === "unstructured") return { status: 1, stderr: "npm error code E404" };
           return { status: 0 };
         }
         if (name === "@cotal-ai/core" && scenario === "metadata-404") return { status: 1, stdout: JSON.stringify({ error: { code: "E404" } }) };
@@ -1254,7 +1256,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     let now = 0, waits = 0;
     fixture.rt.now = () => now;
     fixture.rt.sleep = async milliseconds => { now += milliseconds; waits++; };
-    const arriving = ["root-404", "transitive-404", "metadata-404"].includes(scenario);
+    const arriving = ["root-404", "transitive-404", "metadata-404", "target-missing"].includes(scenario);
     assert.equal(await executeUpdate(true, fixture.rt), scenario === "ready" || arriving ? 0 : 1, scenario);
     assert.ok(caches.size === (scenario === "ready" ? 2 : arriving ? 41 : 1) && [...caches].every(cache => !existsSync(cache)), "every private preflight cache is removed");
     assert.equal(waits, arriving ? 40 : 0, "only structured missing release data waits, for ten minutes total");
