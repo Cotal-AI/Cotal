@@ -79,15 +79,17 @@ const reviewedWorkspace = readFileSync(new URL('./ci-validator-acquisition-works
 const resolve = join(realpathSync(process.env.RUNNER_TEMP), `validator-resolve-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`);
 mkdirSync(resolve, { mode: 0o700 }); // EEXIST refuses resolve reuse.
 try {
-mkdirSync(join(resolve, 'packages', 'core'), { recursive: true });
-for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
-  const source = join(root, path);
-  if (existsSync(source)) cpSync(source, join(resolve, path));
-}
-cpSync(join(root, 'packages/core/package.json'), join(resolve, 'packages/core/package.json'));
 const workspacePath = join(resolve, 'pnpm-workspace.yaml');
 writeFileSync(workspacePath, reviewedWorkspace);
 assertAcquisitionPreflight(resolve);
+const copied = git('ls-files', '-z').split('\0').filter(path =>
+  path.endsWith('package.json') || path.endsWith('pnpm-lock.yaml') || path.endsWith('.npmrc') || path.endsWith('pnpm-workspace.yaml'));
+for (const path of copied) {
+  if (path === 'pnpm-workspace.yaml') continue;
+  const destination = join(resolve, path);
+  mkdirSync(join(destination, '..'), { recursive: true });
+  cpSync(join(root, path), destination);
+}
 const workspacePin = fingerprint(workspacePath);
 assert.equal(git('status', '--porcelain=v1', '--untracked-files=all').trim(), '');
 const checkout = git('rev-parse', 'HEAD').trim();
