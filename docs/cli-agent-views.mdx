@@ -116,7 +116,9 @@ deployed with `cotal team deploy <file>`, not `spawn`.
 
 `--foreground` runs the native application directly. It does not support a structured receipt,
 manager pin or manager control credential. Native exit or terminal loss may end that process;
-no detachable-view or reboot-survival claim applies. Protected internal handoff/enrollment
+no detachable-view or reboot-survival claim applies. The command exits with the application's
+exit code. When a signal ends the application, it exits with 128 plus the signal number, as a
+shell does, so SIGTERM gives 143 and SIGKILL gives 137. Protected internal handoff/enrollment
 children keep their existing direct execution and native authorization checks.
 
 If the agent joins but attachment fails, the result is partial with its original identity and

@@ -96,6 +96,18 @@ const liveProbe: Connector = {
   buildLaunch: (o: LaunchOpts): LaunchSpec => { captured.push(o); return { command: "/bin/true", args: [], env: {} }; },
 };
 registry.register(liveProbe);
+// A probe whose child ends the way `--opt` says: `exit <code>`, or killed by `<signal>` (#7043).
+const exitProbe: Connector = {
+  kind: "connector",
+  name: "fg-probe-exit",
+  requires: [],
+  buildLaunch: (o: LaunchOpts): LaunchSpec => {
+    const signal = o.launchOptions?.signal;
+    const finish = signal ? `kill -${Number(signal)} $$` : `exit ${Number(o.launchOptions?.code ?? 0)}`;
+    return { command: "/bin/sh", args: ["-c", finish], env: {} };
+  },
+};
+registry.register(exitProbe);
 
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 const persona = join(root, ".cotal", "agents", "probe.md");
@@ -244,6 +256,24 @@ try {
     check("foreground named sharing reaches the connector as an exclusive selection", named.opts?.mcpServersExclusive === true && Object.keys(named.opts.mcpServers ?? {}).join() === "alpha", named.stderr.slice(0, 300));
   }
 
+  // ── #7043: the foreground exit status is the application's ──────────────────────────────────────
+  {
+    const exitOf = async (opt: string): Promise<number | string | undefined> => {
+      process.exitCode = undefined;
+      await openRun(["--agent", "fg-probe-exit", "--no-events", "--opt", opt]);
+      const code = process.exitCode;
+      process.exitCode = undefined;
+      return code;
+    };
+    // CONTROL: an ordinary exit already came through, so a cell below that goes red is about the signal.
+    const ordinary = await exitOf("code=7");
+    check("CONTROL: an application's own exit code is the spawn's exit code", ordinary === 7, ordinary);
+    const term = await exitOf("signal=15");
+    check("an application killed by SIGTERM exits 143, not 0", term === 143, term);
+    const kill = await exitOf("signal=9");
+    check("an application killed by SIGKILL exits 137, not 0", kill === 137, kill);
+  }
+
   // ── #1837: the user-auth departure sentence names its own arm's cleanup ────────────────────────
   // The REMOTE arm is driven END TO END through the real dispatch: a synthetic remote user-mode
   // entry (recorded above), an auth-provider double that answers `postAgentProvisioning` with the
@@ -320,7 +350,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 17;
+const EXPECTED = 20;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
