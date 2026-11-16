@@ -43,6 +43,10 @@ Update attempts, successful publications and daemon startup retire abandoned sta
 transactions under the update lock. The active and previous generations stay for rollback and loaded
 processes. Another account's store is untouched; a cleanup warning does not fail the update.
 Normal command startup does not collect old update data.
+When the installation supplies connector-version sets, the same locked cleanup keeps its current
+and previous sets and every recorded live or unknown version. An unknown holder without a version
+keeps all sets. The caller classifies the existing process-lifetime records; cleanup does not infer
+that a running Manager has changed versions.
 An older transaction without a completion marker stays with a warning until a later successful
 publication explicitly supersedes its validated history for the same installation.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
