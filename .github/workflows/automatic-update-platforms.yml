@@ -501,6 +501,10 @@ jobs:
           test "$(node --version)" = v24.18.0
           node_root=$(node -p 'require("node:path").dirname(require("node:path").dirname(process.execPath))')
           test -d "$node_root/lib/node_modules/npm"
+          test ! -e "$RUNNER_TEMP/root-cell-previous-npm"
+          if test -e /usr/local/lib/node_modules/npm; then
+            sudo mv /usr/local/lib/node_modules/npm "$RUNNER_TEMP/root-cell-previous-npm"
+          fi
           sudo cp -a "$node_root/." /usr/local/
           sudo chown -R root:root /usr/local/bin/node /usr/local/lib/node_modules/npm
           test "$(/usr/local/bin/node --version)" = v24.18.0
