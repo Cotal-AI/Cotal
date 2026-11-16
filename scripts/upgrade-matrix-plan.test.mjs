@@ -119,7 +119,7 @@ test("bounded enumeration is deterministic: 22 ordinary + 3 fresh next + 3 stopp
     assert.equal(cell.sourceVersion, cell.chain ? "0.164.10" : (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.deadUpdater) ? "0.164.7" : "0.164.6");
     assert.equal(cell.targetVersion, (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.deadUpdater) ? "0.164.1007" : "0.164.7");
     if (cell.followOnAction) assert.equal(cell.finalTargetVersion, "0.164.2007");
-    assert.equal(cell.runner, { linux: "ubuntu-24.04", darwin: "macos-15", win32: "windows-2022" }[cell.platform]);
+    assert.equal(cell.runner, { linux: "ubuntu-24.04", darwin: "macos-14", win32: "windows-2022" }[cell.platform]);
     if (cell.required) for (const assertion of ["status-healthy", "no-recovery", "no-manual-intervention"]) assert.ok(cell.requiredAssertions.includes(assertion));
     if (!cell.required) assert.ok(cell.reason);
     if (cell.channel === "installer" && cell.scenario !== "daemon-self" && !cell.followOnAction) { assert.equal(cell.targetSource, "https://get.cotal.ai"); assert.equal(cell.installerOverride, false); }

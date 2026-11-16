@@ -164,7 +164,7 @@ jobs:
           - { platform: linux, arch: x64, runner: ubuntu-24.04 }
           - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
           - { platform: darwin, arch: x64, runner: macos-15-intel }
-          - { platform: darwin, arch: arm64, runner: macos-15 }
+          - { platform: darwin, arch: arm64, runner: macos-14 }
           - { platform: win32, arch: x64, runner: windows-latest }
           - { platform: win32, arch: arm64, runner: windows-11-arm }
     runs-on: ${{ matrix.runner }}

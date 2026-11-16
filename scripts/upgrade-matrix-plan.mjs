@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 
 const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const platforms = ["linux", "darwin", "win32"];
-const runners = { linux: "ubuntu-24.04", darwin: "macos-15", win32: "windows-2022" };
+const runners = { linux: "ubuntu-24.04", darwin: "macos-14", win32: "windows-2022" };
 function requireValue(ok, message) { if (!ok) throw new Error(message); }
 function sha(value) {
   requireValue(typeof value === "string" && /^[a-f0-9]{40}$/.test(value), "sourceSHA must be an immutable lowercase 40-character SHA");
