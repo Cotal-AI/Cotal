@@ -3988,7 +3988,7 @@
     {
       "path": "implementations/cli/src/console/ui/CommandPalette.tsx",
       "kind": "derived-output",
-      "anchor": "`${row.agent} · ${row.status} · mesh ${meshWord(row)}`",
+      "anchor": "`${row.agent} · ${row.status} · mesh ${meshWord(row)}${command === \"attach\" && row.instanceId ? ` · ${row.instanceId}` : \"\"}`",
       "class": "honest-text",
       "rationale": "Palette managed-seat suggestion for status and attach: the mesh word goes through meshWord, the helper :status uses, so a working seat reads working · progress unknown.",
       "proof": {

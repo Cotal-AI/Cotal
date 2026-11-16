@@ -53,7 +53,7 @@ const smokeProofs: Binding[] = [
   },
   {
     proof: { path: "implementations/cli/smoke/console-palette.smoke.tsx", anchor: 'assert.ok(row.includes("mesh working · progress unknown")' },
-    sites: [{ path: "implementations/cli/src/console/ui/CommandPalette.tsx", anchors: ['`${row.agent} · ${row.status} · mesh ${meshWord(row)}`'] }],
+    sites: [{ path: "implementations/cli/src/console/ui/CommandPalette.tsx", anchors: ['`${row.agent} · ${row.status} · mesh ${meshWord(row)}${command === "attach" && row.instanceId ? ` · ${row.instanceId}` : ""}`'] }],
   },
   {
     proof: { path: "implementations/cli/smoke/watch-output.tsx", anchor: 'assert.match(output, /\\balice\\b[^\\n]*working - progress unknown/, "the real watch stream prints working with unknown progress")' },
