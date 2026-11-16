@@ -37,7 +37,7 @@ permissions:
   contents: read
   actions: read
 env:
-  PRODUCT_SOURCE: 4d2bcc4d3cba800f8223a5c9e22f03b12bc18807
+  PRODUCT_SOURCE: ec675d03aeff2237ce6e140d71ca420a4f904156
 jobs:
   select:
     runs-on: ubuntu-24.04
@@ -1317,13 +1317,18 @@ jobs:
             ${{ runner.temp }}/owner-mac-evidence
           if-no-files-found: error
   desktop-beside-cli:
-    needs: [release-pack, release-next]
+    needs: [select, release-pack, release-next]
     if: "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-foreign-daemon-fence' && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
         with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.select.outputs.source }}
+          path: desktop-product
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
@@ -1373,6 +1378,14 @@ jobs:
           artifact-ids: ${{ needs.release-next.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-next
+      - name: Build candidate desktop runtimes through product preparation
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<22*1024**3)throw Error('Less than 22 GiB before desktop runtime build')"
+          pnpm --dir desktop-product install --frozen-lockfile --child-concurrency=2
+          pnpm exec node scripts/connector-sets-runtime-build.mjs --source "$GITHUB_WORKSPACE/desktop-product" --output "$RUNNER_TEMP/connector-desktop-A" --version 0.164.18
+          pnpm exec node scripts/connector-sets-runtime-build.mjs --source "$GITHUB_WORKSPACE/desktop-product" --output "$RUNNER_TEMP/connector-desktop-B" --version 0.164.1018
       - name: Real released desktop daemon beside separate CLI
         shell: bash
         run: |
@@ -1386,11 +1399,19 @@ jobs:
           const report = await matrixCell(options);
           process.exitCode = cellExitCode(report);
           NODE
+      - name: Desktop updates first while the CLI Manager keeps launching
+        shell: bash
+        run: |
+          test ! -e "$RUNNER_TEMP/desktop-first-prior-runtime"
+          mv "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" "$RUNNER_TEMP/desktop-first-prior-runtime"
+          node scripts/connector-sets-desktop-first.mjs --cli-candidate "$RUNNER_TEMP/release-candidate" --desktop-candidate-A "$RUNNER_TEMP/connector-desktop-A/runtime" --desktop-next "$RUNNER_TEMP/connector-desktop-B/runtime" --desktop-node "$RUNNER_TEMP/connector-desktop-A/cotal-node" --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --output "$RUNNER_TEMP/desktop-first-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-beside-cli-linux
-          path: ${{ runner.temp }}/upgrade-evidence
+          path: |
+            ${{ runner.temp }}/upgrade-evidence
+            ${{ runner.temp }}/desktop-first-evidence
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
