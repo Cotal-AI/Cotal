@@ -48,7 +48,7 @@ import {
   CotalEndpoint, lowerPersonaEndpoints,
   type CredentialLedgerRow, type EpCaller, type IssuedCaller,
 } from "@cotal-ai/core";
-import { cotalToolSpecs, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
@@ -402,9 +402,16 @@ try {
   helperEp.on("error", (e: unknown) => { helperErrors.push(String((e as Error).message).slice(0, 200)); });
   await helperEp.start();
   const toolConfig: AgentConfig = { space, name: "helper_pinned_tools", servers, tls: false, creds: pinnedCreds, kind: "agent", id: pinnedSeat.actor, lifecycleUid: pinnedSeat.uid, subscribe: [], allowSubscribe: [], allowPublish: [] };
+  // Keep the tool-facing fixture checked against the agent surface it uses, including the real
+  // invocation method. An endpoint alone cannot dispatch cotal_invoke.
+  const toolAgent = {
+    ep: helperEp,
+    config: toolConfig,
+    invokeEndpoint: MeshAgent.prototype.invokeEndpoint,
+  } satisfies Pick<MeshAgent, "ep" | "config" | "invokeEndpoint">;
   const tools = cotalToolSpecs(toolConfig, "smoke");
   const tool = async (name: "cotal_describe" | "cotal_invoke", args: Record<string, unknown>) => {
-    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp } as unknown as MeshAgent, toolConfig, args);
+    const r = await tools.find((t) => t.name === name)!.run(toolAgent as MeshAgent, toolConfig, args);
     return { text: r.text, isError: r.isError === true };
   };
   const helperGot = (instance: string) => received.filter((r) => r.instance === instance && r.actor === pinnedSeat.actor).length;
