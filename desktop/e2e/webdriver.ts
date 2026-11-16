@@ -25,8 +25,16 @@ export class WindowDriver {
     if (this.launchLog) writeFileSync(this.launchLog, `${JSON.stringify({ at: new Date().toISOString(), ...value })}\n`, { flag: "a", mode: 0o600 });
   }
   async call(method: string, path: string, body?: unknown, timeoutMs = 120_000): Promise<any> {
-    const response = await fetch(`${this.url}${path}`, { method, signal: AbortSignal.timeout(timeoutMs),
-      ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+    const url = `${this.url}${path}`;
+    let response: Response;
+    try {
+      response = await fetch(url, { method, signal: AbortSignal.timeout(timeoutMs),
+        ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const listener = method === "POST" && path === "/session" ? await windowsWebViewListener(body).catch(cause => `unavailable: ${cause instanceof Error ? cause.message : String(cause)}`) : undefined;
+      throw new Error(`${method} ${url} failed: ${detail}${listener === undefined ? "" : `; WebView2 listener: ${listener}`}`);
+    }
     const reply = await response.json() as { value: any };
     if (!response.ok || reply.value?.error) throw new Error(`${method} ${path}: ${JSON.stringify(reply.value)}`);
     return reply.value;
@@ -194,6 +202,20 @@ function argumentShape(value: string): object {
 function windowsAttachCapabilities(port: number): object {
   return { alwaysMatch: { browserName: "webview2", "ms:edgeChromium": true,
     "ms:edgeOptions": { debuggerAddress: `127.0.0.1:${port}` } } };
+}
+
+async function windowsWebViewListener(body: unknown): Promise<string> {
+  if (process.platform !== "win32" || !process.env.SystemRoot) return "not-windows";
+  const address = (body as { capabilities?: { alwaysMatch?: { "ms:edgeOptions"?: { debuggerAddress?: unknown } } } } | undefined)?.capabilities?.alwaysMatch?.["ms:edgeOptions"]?.debuggerAddress;
+  const port = typeof address === "string" && address.startsWith("127.0.0.1:") ? Number(address.slice("127.0.0.1:".length)) : undefined;
+  if (!Number.isInteger(port) || port! < 1 || port! > 65535) return "no-webview2-address";
+  const ps = join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
+  const script = `$ErrorActionPreference='Stop'; Import-Module NetTCPIP; Import-Module CimCmdlets; $rows=@(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction Stop | Where-Object { $_.LocalAddress -eq '127.0.0.1' }); if($rows.Count -ne 1){throw ('listeners='+$rows.Count)}; $listener=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$rows[0].OwningProcess); if(!$listener){throw 'listener-missing'}; $app=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$listener.ParentProcessId); [Console]::Write((@{listenerPid=[int]$listener.ProcessId; listenerName=$listener.Name; appPid=$(if($app){[int]$app.ProcessId}else{$null}); appName=$(if($app){$app.Name}else{$null}); appAlive=[bool]$app} | ConvertTo-Json -Compress))`;
+  const stdout = await new Promise<string>((resolve, reject) => execFile(ps, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+    { windowsHide: true, timeout: 15_000, maxBuffer: 4096 }, (error, out) => error ? reject(error) : resolve(out.trim())));
+  const parsed = JSON.parse(stdout) as { listenerPid?: unknown; listenerName?: unknown; appPid?: unknown; appName?: unknown; appAlive?: unknown };
+  if (!Number.isInteger(parsed.listenerPid) || typeof parsed.listenerName !== "string" || typeof parsed.appAlive !== "boolean") throw new Error("listener diagnostic is incomplete");
+  return `pid ${parsed.listenerPid} ${parsed.listenerName}; app ${parsed.appAlive ? `pid ${parsed.appPid} ${parsed.appName} alive` : "not alive"}`;
 }
 
 async function verifyWindowsDebuggerOwner(port: number, pid: number, started: number, binary: string, env: NodeJS.ProcessEnv): Promise<{ listenerPid: number; appBirthUnixMs: number }> {
