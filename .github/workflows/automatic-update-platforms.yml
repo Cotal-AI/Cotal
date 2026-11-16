@@ -12,6 +12,10 @@ permissions:
 jobs:
   observation:
     if: github.ref == 'refs/heads/measure/windows-cleanup-owner-advice' && inputs.source_sha == '2cc295ebe45f9215f7604d441c3236a2e8188265'
+    strategy:
+      fail-fast: false
+      matrix:
+        seed_integrity: [elevated, medium]
     runs-on: windows-2022
     timeout-minutes: 55
     steps:
@@ -69,6 +73,7 @@ jobs:
           $ErrorActionPreference='Stop'
           $out=Join-Path $env:RUNNER_TEMP 'owner-advice'
           $null=New-Item -ItemType Directory -Path $out -Force
+          $env:COTAL_ADVICE_SEED_INTEGRITY='${{ matrix.seed_integrity }}'
           $env:COTAL_ADVICE_INSTALLERS=Get-Content -Raw "$env:RUNNER_TEMP/owner-advice-inputs/installers.json"
           & node scripts/windows-cleanup-owner-advice.mjs *> "$out/driver.log"
           $code=$LASTEXITCODE
@@ -77,7 +82,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: windows-cleanup-owner-advice
+          name: windows-cleanup-owner-rights-${{ matrix.seed_integrity }}
           path: |
             ${{ runner.temp }}/owner-advice/
             ${{ runner.temp }}/owner-advice-inputs/origin.json

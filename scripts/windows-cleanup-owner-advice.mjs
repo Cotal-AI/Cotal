@@ -13,7 +13,9 @@ assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
 assert.ok(process.env.RUNNER_TEMP && process.env.LOCALAPPDATA && process.env.APPDATA);
 const output = join(process.env.RUNNER_TEMP, 'owner-advice');
 mkdirSync(output, { recursive: true });
-const report = { startedAt: new Date().toISOString(), calls: [], observations: [], limitations: [
+const seedIntegrity = process.env.COTAL_ADVICE_SEED_INTEGRITY ?? 'elevated';
+assert(['elevated', 'medium'].includes(seedIntegrity));
+const report = { seedIntegrity, startedAt: new Date().toISOString(), calls: [], observations: [], limitations: [
   'Source and kind are artifact-producer provenance claims. Hashes and installed versions are independently checked.',
   'No credentials are read. Only scoped install metadata, holder records and daemon logs are archived.',
   'A missing Administrators runtime owner means the requested owner coordinate was not reached.',
@@ -60,21 +62,22 @@ const daemon = (verb, ...args) => publicCLI(`daemon-${verb}`, ['daemon', verb, '
 function requireOK(result) { assert.equal(result.code, 0, `${result.label}: ${result.error || result.stderr || result.stdout}`); return result; }
 function observation(label, data) { report.observations.push({ label, at: new Date().toISOString(), ...data }); save(); }
 
-async function mediumRepair(label) {
+async function mediumRun(label, args, executable = node) {
   // Preserve both maintained launcher inputs and outputs, including failed launches.
   const spec = join(output, `${label}-spec.json`);
   const outFile = join(output, `${label}-out.json`);
-  const args = [cli, 'ext', 'seed', '--repair'];
   const argumentsText = args.map(arg => `"${arg.replaceAll('"', '\\"')}"`).join(' ');
-  writeFileSync(spec, JSON.stringify({ file: node, arguments: argumentsText, env, timeoutMs: 180_000, outFile }, null, 2));
+  writeFileSync(spec, JSON.stringify({ file: executable, arguments: argumentsText, env, timeoutMs: 180_000, outFile }, null, 2));
   const outer = await run(label, ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', filtered, '-Spec', spec], 210_000);
   let inner = null;
   try { if (existsSync(outFile)) inner = JSON.parse(readFileSync(outFile, 'utf8')); }
   catch (error) { observation(`${label}-parse-error`, { error: error.message }); }
   observation(label, { outerCode: outer.code, inner });
   assert.equal(outer.code, 0, 'Maintained Medium launcher did not complete');
-  assert(inner?.whoamiGroups?.some(group => group.sid === 'S-1-16-8192'), 'Repair did not execute with measured Medium integrity');
+  assert(inner?.whoamiGroups?.some(group => group.sid === 'S-1-16-8192'), 'Command did not execute with measured Medium integrity');
+  return inner;
 }
+const mediumRepair = label => mediumRun(label, [cli, 'ext', 'seed', '--repair']);
 
 async function ready(label, oldPid) {
   const deadline = Date.now() + 120_000;
@@ -284,13 +287,19 @@ try {
       await ready(`initial-${version}`);
     }
     await capture(`before-seed-${version}`);
-    // Public seed errors are measurements, never a reason to discard later observations.
-    await publicCLI(`seed-${version}`, ['ext', 'seed']);
+    // Keep the original elevated seed coordinate and separately measure a daemon-account Medium seed.
+    if (index > 0) {
+      const ext = requireOK(await publicCLI(`new-version-root-${version}`, ['ext', 'root'])).stdout.trim();
+      const set = dirname(ext), existedBefore = existsSync(set);
+      const seeded = seedIntegrity === 'medium' ? await mediumRun(`seed-${version}`, [cli, 'ext', 'seed']) : await publicCLI(`seed-${version}`, ['ext', 'seed']);
+      observation(`set-creation-${version}`, { set, existedBefore, existsAfter: existsSync(set), createdByThisSeed: !existedBefore && existsSync(set) && seeded.code === 0, creatorIntegrity: seedIntegrity, integrityEvidence: seeded.whoamiGroups ?? report.calls.find(row => row.label === 'elevated-token')?.stdout });
+      assert.equal(seeded.code, 0, 'First seed must complete for owner/delete-right coordinate');
+    } else await publicCLI(`seed-${version}`, ['ext', 'seed']);
     if (index >= 2) await restart(`update-${version}`);
     await capture(`installed-${version}`);
     if (index > 0) {
-      const seeded = report.calls.findLast(call => call.label === `seed-${version}`);
-      requireOK(seeded);
+      const seeded = seedIntegrity === 'medium' ? report.observations.findLast(row => row.label === `seed-${version}` && row.inner)?.inner : report.calls.findLast(row => row.label === `seed-${version}`);
+      assert.equal(seeded?.code, 0, 'Public seed did not complete');
       const measured = report.observations.findLast(row => row.label === `installed-${version}` && row.census);
       assert(measured?.census?.versions?.some(set => set.version === version), 'Actual current connector set was not measured after public seed');
     }
@@ -301,6 +310,16 @@ try {
       await restart(`repair-medium-${version}`);
     }
   }
+  const ext = requireOK(await publicCLI('final-rights-ext-root', ['ext', 'root'])).stdout.trim();
+  const sets = dirname(dirname(ext));
+  const probe = fileURLToPath(new URL('./windows-set-delete-probe.ps1', import.meta.url));
+  const current = parse(requireOK(await daemon('status'))).result;
+  const rights = await mediumRun('final-medium-set-delete-rights', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', probe, '-Sets', sets, '-DaemonPid', String(current.pid)], ps);
+  assert.equal(rights.code, 0, 'Medium delete-right measurement failed');
+  const parsedRights = JSON.parse(rights.stdout);
+  observation('final-medium-set-rights', parsedRights);
+  assert.equal(parsedRights.rows.length, 3, 'All three real version sets need owner/delete-right observations');
+  assert.equal(parsedRights.userSid, parsedRights.daemonUserSid, 'Medium probe must be the actual daemon account');
 } catch (error) {
   report.failure = { at: new Date().toISOString(), message: error.message, stack: error.stack };
   process.exitCode = 1;
