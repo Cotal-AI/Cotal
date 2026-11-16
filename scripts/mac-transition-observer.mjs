@@ -11,7 +11,8 @@ export function validateHandoff(home, receipt, bytes) {
   assert.equal(resolve(receipt.source), join(resolve(home), `${receipt.label}.plist`));
   assert.match(receipt.sha256, /^[a-f0-9]{64}$/);
   assert.equal(sha(bytes), receipt.sha256, 'handoff source hash differs from receipt');
-  assert(Array.isArray(receipt.argv) && receipt.argv.length === 3 && receipt.argv.every(x => typeof x === 'string'));
+  // 0.164.18 appends the logical installed CLI entry to the original runner arguments.
+  assert(Array.isArray(receipt.argv) && [3, 4].includes(receipt.argv.length) && receipt.argv.every(x => typeof x === 'string'));
   assert.equal(receipt.argv[2], receipt.label);
   assert(Number.isSafeInteger(receipt.failures) && receipt.failures >= 0, 'handoff prior failure budget invalid');
   return receipt;
@@ -59,6 +60,9 @@ export function observeMacHandoff({ home, daemonHome = join(home, 'daemon'), out
       if (receipt) {
         const bytes = privateBytes(receipt.source);
         validateHandoff(home, receipt, bytes);
+        if (!labels.has(receipt.label)) {
+          writeFileSync(join(output, `${id}-${receipt.label}-argv.json`), JSON.stringify({ label: receipt.label, argv: receipt.argv }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+        }
         labels.set(receipt.label, receipt);
         row.sourceSha256 = sha(bytes);
         row.source = bytes.toString();
