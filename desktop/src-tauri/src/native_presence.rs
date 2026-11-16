@@ -83,9 +83,6 @@ fn transient(app: &AppHandle) -> Result<bool, String> {
 }
 
 #[cfg(windows)]
-const MACHINE_LOGIN_REMAINS_MESSAGE: &str = "An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there.";
-
-#[cfg(windows)]
 fn windows_reg_string(
     root: windows::Win32::System::Registry::HKEY,
     subkey: windows::core::PCWSTR,
@@ -254,13 +251,10 @@ fn reconcile_owned_hklm_login() -> Result<(), String> {
         return Ok(());
     }
     let status = unsafe { RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, run_key, value_name) };
-    if status.0 == 0 || status.0 == 2 {
-        Ok(())
-    } else if status.0 == 5 {
-        Err(MACHINE_LOGIN_REMAINS_MESSAGE.into())
-    } else {
-        Err(format!("Machine-wide Open at login entry could not be removed ({}).", status.0))
+    if status.0 == 5 {
+        return crate::windows_machine_login_notice(5).map_err(str::to_string);
     }
+    crate::windows_machine_login_notice(status.0).map_err(|message| format!("{message} ({})", status.0))
 }
 
 fn is_login_enabled(app: &AppHandle) -> Result<bool, String> {

@@ -217,9 +217,26 @@ pub fn daemon_env_key(key: &str) -> bool {
     )
 }
 
+/// A Windows `Run` deletion status chooses the login notice.
+/// Status 5 means access denied. The owned machine-wide entry remains, so the administrator sentence stays.
+pub fn windows_machine_login_notice(status: u32) -> Result<(), &'static str> {
+    match status {
+        0 | 2 => Ok(()),
+        5 => Err("An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there."),
+        _ => Err("Machine-wide Open at login entry could not be removed."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn machine_login_access_denied_keeps_the_administrator_sentence() {
+        assert!(windows_machine_login_notice(0).is_ok());
+        assert!(windows_machine_login_notice(2).is_ok());
+        assert_eq!(windows_machine_login_notice(5), Err("An earlier version also set Cotal to open at login for every user of this computer. To remove that, open Cotal once as an administrator and change Open at login there."));
+        assert!(windows_machine_login_notice(1).is_err());
+    }
     #[test]
     fn runtime_sidecar_matches_bundle_configuration() {
         let config: serde_json::Value = serde_json::from_str(if cfg!(windows) {
