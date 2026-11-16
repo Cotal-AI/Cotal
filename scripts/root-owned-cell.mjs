@@ -5,6 +5,17 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+export function rootAccountProtected(account) {
+  return /^\/root\/cotal-root-cell-[0-9]+-[a-z0-9-]+$/.test(account?.home??'') &&
+    JSON.stringify(account.ancestors?.map(row=>row.path))===JSON.stringify([account.home+'/config',account.home,'/root','/']) &&
+    account.ancestors.every(row=>row.uid===0&&row.directory&&!row.symlink&&row.real===row.path&&(row.mode&0o022)===0) &&
+    account.ancestors[1].mode===0o700;
+}
+export function publishedRootLockout(call) {
+  return call?.root===false&&Number.isInteger(call.exit)&&call.exit!==0&&call.timeout===false&&call.signal===null&&
+    /EACCES|Permission denied/.test(call.stdout+call.stderr)&&!/config folder protection/.test(call.stdout+call.stderr);
+}
+
 /** Regrade recorded normal/root outcomes after the caller verifies report and manifest digests. */
 export function rootOwnedAssertions(report, cell) {
   const calls=report.calls??[], observations=report.observations??[];
@@ -21,39 +32,41 @@ export function rootOwnedAssertions(report, cell) {
     'root-update-success':update?.root===true&&clean(update)&&update.exit===0,
     'normal-account-versions':version(cell.sourceVersion)&&version(cell.targetVersion),
     'owning-command-refusal':refusal?.root===false&&clean(refusal)&&refusal.exit!==0&&/owning command: npm install -g --prefix \/usr\/lib\/cotal-root-node cotal-ai@latest/.test(refusal.stdout+refusal.stderr),
-    'root-owned-install':observations.some(row=>row.npmProcess?.uid===0&&row.npmProcess.umask===0o22&&row.version===cell.sourceVersion)&&observations.some(row=>row.ownership?.uid===0&&row.ownership.path.startsWith('/usr/lib/cotal-root-node/'))&&observations.some(row=>row.installed?.uid===0&&row.installed.version===cell.sourceVersion&&row.installed.manifest?.mode===0o644&&row.installed.bootstrap?.mode===0o755&&
+    'root-owned-install':observations.some(row=>rootAccountProtected(row.rootAccount))&&observations.some(row=>row.npmProcess?.uid===0&&row.npmProcess.umask===0o22&&row.version===cell.sourceVersion)&&observations.some(row=>row.ownership?.uid===0&&row.ownership.path.startsWith('/usr/lib/cotal-root-node/'))&&observations.some(row=>row.installed?.uid===0&&row.installed.version===cell.sourceVersion&&row.installed.manifest?.mode===0o644&&row.installed.bootstrap?.mode===0o755&&
       JSON.stringify(row.installed.ancestors?.map(item=>item.path))===JSON.stringify(['/usr/lib/cotal-root-node/lib/node_modules/cotal-ai','/usr/lib/cotal-root-node/lib/node_modules','/usr/lib/cotal-root-node/lib','/usr/lib/cotal-root-node','/usr/lib','/usr','/'])&&
       row.installed.ancestors.every(item=>item.uid===0&&item.gid===0&&item.directory&&!item.symlink&&item.real===item.path&&item.mode===0o755)),
     'readable-generation-metadata':modes?.passed===true&&mode('/.cotal-generations',0o755)&&mode('/dist/cotal.js',0o755)&&records.length>=2&&records.every(row=>row.uid===0&&row.mode===0o644),
     'private-journals':modes?.passed===true&&modes.entries.filter(row=>row.path.includes('/.transaction-')).every(row=>row.mode===(row.kind==='directory'?0o700:0o600)),
     'generation-store-protected':store?.passed===true,
     'refusal-store-unchanged':store?.passed===true&&refusedStore?.passed===true&&Number.isSafeInteger(store.logicalBytes)&&refusedStore.logicalBytes===store.logicalBytes,
-    'owned-runner-teardown':report.cleanup?.owner==='disposable hosted runner teardown'&&report.cleanup.commandOutcomesKnown===true,
+    'owned-runner-teardown':report.cleanup?.owner==='owned root fixture teardown'&&report.cleanup.commandOutcomesKnown===true&&report.cleanup.removed===true&&clean(calls.find(row=>row.label==='remove owned root fixture'))&&calls.find(row=>row.label==='remove owned root fixture').exit===0,
   };
   if(cell.oldVersion){
     const locked=calls.find(row=>row.label===`normal account after ${cell.oldVersion} attempt`);
     const installed=calls.find(row=>row.label===`root npm install ${cell.sourceVersion}`&&Date.parse(row.startedAt)>=Date.parse(locked?.finishedAt));
-    assertions['published-root-lockout']=locked?.root===false&&locked.timeout===false&&locked.signal===null&&(locked.exit===126||/EACCES|Permission denied/.test(locked.stdout+locked.stderr));
+    assertions['published-root-lockout']=publishedRootLockout(locked);
     assertions['manual-root-install-heals']=installed?.root===true&&clean(installed)&&installed.exit===0&&version(cell.sourceVersion);
   }
-  return {assertions,passed:report.passed===true&&!report.error&&cell.requiredAssertions.every(name=>assertions[name]===true)};
+  return {assertions,passed:report.passed===true&&!report.error&&!calls.some(row=>row.root&&/config folder protection/.test(row.stdout+row.stderr))&&cell.requiredAssertions.every(name=>assertions[name]===true)};
 }
 
 /** Hosted-only proof. Call with an already running paired registry and its immutable identity. */
-export async function rootOwnedCell({ registry, identity, output, oldVersion }) {
+export async function rootOwnedCell({ registry, identity, output, oldVersion, cellId }) {
   assert.equal(process.env.GITHUB_ACTIONS, 'true');
   assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
   assert.equal(process.platform, 'linux');
   assert(process.getuid() !== 0, 'proof driver must remain the normal runner account');
   const node = '/usr/lib/cotal-root-node/bin/node', npm = '/usr/lib/cotal-root-node/bin/npm', prefix = '/usr/lib/cotal-root-node';
   const pkg = join(prefix, 'lib/node_modules/cotal-ai'), cli = join(prefix, 'bin/cotal');
-  const rootHome = join(process.env.RUNNER_TEMP, 'root-install-home');
+  assert(/^[0-9]+$/.test(process.env.GITHUB_RUN_ID??''),'hosted run id required');
+  assert(/^linux-npm-root-owned-[a-z0-9.-]+$/.test(cellId??''),'root coordinate id required');
+  const rootHome = `/root/cotal-root-cell-${process.env.GITHUB_RUN_ID}-${cellId.replaceAll('.','-')}`;
   const userHome = join(process.env.RUNNER_TEMP, 'normal-install-home');
   mkdirSync(output, { recursive: true, mode: 0o700 });
   assert(/^[a-f0-9]{40}$/.test(identity.source), 'immutable root proof source required');
   if (oldVersion !== undefined) assert(['0.164.16', '0.164.17'].includes(oldVersion), 'unsupported old root source');
   assert(/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(registry.url), 'owned paired loopback registry required');
-  const report = { cleanup: { owner: 'disposable hosted runner teardown', retained: ['/usr/lib/cotal-root-node/lib/node_modules/cotal-ai', '/usr/lib/cotal-root-node/lib/.cotal-generations', rootHome, userHome], noServiceRequested: true, commandOutcomesKnown: false }, source: identity.source, sourceManifestSha256: identity.sourceManifestSha256, targetManifestSha256: identity.targetManifestSha256, followOnManifestSha256: identity.followOnManifestSha256, calls: [], observations: [], assertions: [] };
+  const report = { cleanup: { owner: 'owned root fixture teardown', targets:[rootHome,prefix], retained:[userHome], noServiceRequested: true, commandOutcomesKnown: false, removed:false }, source: identity.source, sourceManifestSha256: identity.sourceManifestSha256, targetManifestSha256: identity.targetManifestSha256, followOnManifestSha256: identity.followOnManifestSha256, calls: [], observations: [], assertions: [] };
   const check = (name, passed, observed) => report.assertions.push({ name, passed, observed });
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith('COTAL_')) delete env[key];
@@ -131,8 +144,16 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
     const source = `import {inspectGenerationStore} from ${JSON.stringify(moduleURL)};console.log(JSON.stringify(inspectGenerationStore('/usr/lib/cotal-root-node/lib/.cotal-generations')));`;
     return JSON.parse(ok(await call('root reads full generation census', true, [node, '--input-type=module', '-e', source]), 'store census').stdout);
   }
+  let rootAccountCreated=false;
   try {
-    for (const home of [rootHome, userHome]) ok(await call('prepare isolated account home', home === rootHome, ['/bin/mkdir', '-m', '700', '-p', home, join(home, '.cotal'), join(home, 'config'), join(home, 'tmp')]), 'account home');
+    ok(await call('create fresh root account boundary',true,['/bin/mkdir','-m','700',rootHome]),'fresh root account');
+    rootAccountCreated=true;
+    for (const home of [rootHome, userHome]) ok(await call('prepare isolated account home', home === rootHome, ['/bin/mkdir', '-m', '700', '-p', home, join(home, '.cotal'), join(home, 'config'), join(home, 'tmp'),join(home,'cache')]), 'account home');
+    const accountSource="import {lstatSync,realpathSync} from 'node:fs';import {dirname} from 'node:path';const home=process.env.HOME,ancestors=[];for(let p=home+'/config';;p=dirname(p)){const s=lstatSync(p);ancestors.push({path:p,real:realpathSync(p),uid:s.uid,gid:s.gid,mode:s.mode&4095,directory:s.isDirectory(),symlink:s.isSymbolicLink()});if(p==='/')break;}console.log(JSON.stringify({home,ancestors}));";
+    const rootAccount=JSON.parse(ok(await call('record root config ancestor protection',true,[node,'--input-type=module','-e',accountSource]),'root config ancestry').stdout);
+    report.observations.push({rootAccount});
+    writeFileSync(join(output,'root-owned.json'),JSON.stringify(report,null,2),{mode:0o600});
+    assert(rootAccountProtected(rootAccount),'root config ancestors must be root owned and protected');
     const ownership = ok(await call('verify actual root-owned Node in /usr/lib/cotal-root-node', true, [node, '--input-type=module', '-e', "import {statSync,realpathSync} from 'node:fs';const p=realpathSync(process.execPath);const s=statSync(p);if(!p.startsWith('/usr/lib/cotal-root-node/')||s.uid!==0)throw Error('root-owned /usr/lib/cotal-root-node Node required');console.log(JSON.stringify({path:p,uid:s.uid,version:process.versions.node}));"]), 'Node ownership');
     assert.equal(JSON.parse(ownership.stdout).version,'24.18.0','root proof must use pinned system Node');
     report.observations.push({ ownership: JSON.parse(ownership.stdout) });
@@ -148,7 +169,7 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
       const attempt = await call(`published ${old} root attempt`, true, ['/bin/sh', '-c', 'umask 0002; exec "$@"', 'root-cell', cli, 'update', '--self']);
       report.observations.push({ old, attempt });
       const locked = await call(`normal account after ${old} attempt`, false, [cli, '--version']);
-      check(`published ${old} lockout reproduced`, locked.exit === 126 || /EACCES|Permission denied/.test(locked.stdout + locked.stderr), locked);
+      check(`published ${old} lockout reproduced`, publishedRootLockout({...locked,root:false}), locked);
       await install(identity.sourceVersion);
       await version(identity.sourceVersion);
       // The owner opens an old private store at its next start.
@@ -175,10 +196,17 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
     const afterNormalRefusal=await census();
     report.observations.push({afterNormalRefusal});
     check('fixed refusal leaves no staging or generation-store growth',afterNormalRefusal.passed&&afterNormalRefusal.logicalBytes===store.logicalBytes,{before:store,after:afterNormalRefusal});
-    report.passed = report.assertions.every(row => row.passed);
+    report.passed = report.assertions.every(row => row.passed)&&!report.calls.some(row=>row.root&&/config folder protection/.test(row.stdout+row.stderr));
   } catch (error) { report.passed = false; report.error = error.message; }
-    report.cleanup.commandOutcomesKnown = report.calls.every(row => row.timeout === false && row.signal === null && (Number.isInteger(row.exit) || row.error === 'EACCES'));
-  report.passed = report.passed === true && report.cleanup.commandOutcomesKnown;
+  report.cleanup.commandOutcomesKnown = report.calls.every(row => row.timeout === false && row.signal === null && (Number.isInteger(row.exit) || row.error === 'EACCES'));
+  if(rootAccountCreated&&report.cleanup.commandOutcomesKnown){
+    try{
+      const cleanup=await call('remove owned root fixture',true,['/bin/sh','-c','set -eu; test "$1" = "$HOME"; test "$(stat -c %u "$1")" = 0; test "$(stat -c %u "$2")" = 0; rm -rf -- "$1" "$2"; test ! -e "$1"; test ! -e "$2"','root-teardown',rootHome,prefix]);
+      report.cleanup.removed=cleanup.exit===0;
+    }catch(error){report.cleanup.error=error.message;}
+  }
+  report.cleanup.commandOutcomesKnown=report.calls.every(row=>row.timeout===false&&row.signal===null&&(Number.isInteger(row.exit)||row.error==='EACCES'));
+  report.passed = report.passed === true && report.cleanup.commandOutcomesKnown&&report.cleanup.removed;
   const bytes = JSON.stringify(report, null, 2);
   writeFileSync(join(output, 'root-owned.json'), bytes, { mode: 0o600 });
   writeFileSync(join(output, 'root-owned.sha256'), `${createHash('sha256').update(bytes).digest('hex')}  root-owned.json\n`, { mode: 0o600 });

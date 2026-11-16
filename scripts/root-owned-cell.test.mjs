@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { rootOwnedCell, rootOwnedAssertions } from './root-owned-cell.mjs';
+import { rootOwnedCell, rootOwnedAssertions,rootAccountProtected,publishedRootLockout } from './root-owned-cell.mjs';
 import {npmDebugTail} from './npm-debug-tail.mjs';
 import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -52,7 +52,9 @@ test('administrator acceptance requires npm process mask, complete protected anc
  const prefix='/usr/lib/cotal-root-node';
  const cell={sourceVersion:'0.164.18',requiredAssertions:['root-owned-install']};
  const installed={uid:0,version:cell.sourceVersion,manifest:{mode:0o644},bootstrap:{mode:0o755},ancestors:[prefix+'/lib/node_modules/cotal-ai',prefix+'/lib/node_modules',prefix+'/lib',prefix,'/usr/lib','/usr','/'].map(path=>({path,real:path,uid:0,gid:0,mode:0o755,directory:true,symlink:false}))};
- const original={passed:true,observations:[{npmProcess:{uid:0,umask:0o22},version:cell.sourceVersion},{ownership:{uid:0,path:prefix+'/bin/node'}},{installed}]};
+ const home='/root/cotal-root-cell-42-linux-npm-root-owned-candidate-next';
+ const rootAccount={home,ancestors:[home+'/config',home,'/root','/'].map(path=>({path,real:path,uid:0,mode:path==='/'?0o755:0o700,directory:true,symlink:false}))};
+ const original={passed:true,observations:[{npmProcess:{uid:0,umask:0o22},version:cell.sourceVersion},{ownership:{uid:0,path:prefix+'/bin/node'}},{installed},{rootAccount}]};
  assert.equal(rootOwnedAssertions(original,cell).passed,true);
  for(const change of [
   report=>{report.observations[0].npmProcess.umask=0;},
@@ -65,4 +67,22 @@ test('administrator acceptance requires npm process mask, complete protected anc
   const report=structuredClone(original);change(report);
   assert.equal(rootOwnedAssertions(report,cell).passed,false);
  }
+});
+test('root config ancestry refuses runner homes, missing parents, foreign owners and writable entries',()=>{
+ const home='/root/cotal-root-cell-42-linux-npm-root-owned-candidate-next';
+ const original={home,ancestors:[home+'/config',home,'/root','/'].map(path=>({path,real:path,uid:0,mode:path==='/'?0o755:0o700,directory:true,symlink:false}))};
+ assert.equal(rootAccountProtected(original),true);
+ for(const change of [r=>{r.home='/home/runner/work/_temp/root-home';},r=>{r.ancestors.pop();},r=>{r.ancestors[2].uid=1001;},r=>{r.ancestors[0].mode=0o775;},r=>{r.ancestors[1].mode=0o755;},r=>{r.ancestors[0].symlink=true;}]){
+  const row=structuredClone(original);change(row);assert.equal(rootAccountProtected(row),false);
+ }
+});
+test('published lockout requires its permission text, never exit code or config-protection refusal',()=>{
+ const call={root:false,exit:126,timeout:false,signal:null,stdout:'',stderr:'Permission denied'};
+ assert.equal(publishedRootLockout(call),true);
+ assert.equal(publishedRootLockout({...call,stderr:''}),false);
+ assert.equal(publishedRootLockout({...call,stderr:'config folder protection: Permission denied'}),false);
+ assert.equal(publishedRootLockout({...call,exit:0}),false);
+ assert.equal(publishedRootLockout({...call,timeout:true}),false);
+ const report={passed:true,calls:[{...call,root:true,stderr:'config folder protection: refused'}]};
+ assert.equal(rootOwnedAssertions(report,{requiredAssertions:[]}).passed,false);
 });

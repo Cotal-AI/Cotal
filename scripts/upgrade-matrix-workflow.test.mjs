@@ -214,13 +214,16 @@ function specialCellEvidence(data, directory, change = () => {}) {
   archivePairManifests(data, directory, cell.sourceVersion, cell.targetVersion, cell.rootOwned ? cell.visibleFollowOnVersion : undefined);
   if (cell.rootOwned) {
     for (const side of ['source', 'target', 'followOn']) data.report[side + 'ManifestSha256'] = data.nextOrigin[side + 'ManifestSha256'];
-    data.report.cleanup = { owner: 'disposable hosted runner teardown', commandOutcomesKnown: true };
+    data.report.cleanup = { owner: 'owned root fixture teardown', commandOutcomesKnown: true,removed:true };
+    const rootHome='/root/cotal-root-cell-42-'+cell.id.replaceAll('.','-');
     data.report.calls = [
+      call('remove owned root fixture',{root:true}),
       call('root candidate public updater to next', { root: true }),
       ...[cell.sourceVersion, cell.targetVersion].map(version => call(`normal account version ${version}`, { root: false, stdout: `cotal-ai ${version}\n` })),
       call('normal account own updater refusal', { root: false, exit: 1, stderr: 'owning command: npm install -g --prefix /usr/lib/cotal-root-node cotal-ai@latest' }),
     ];
     data.report.observations = [
+      {rootAccount:{home:rootHome,ancestors:[rootHome+'/config',rootHome,'/root','/'].map(path=>({path,real:path,uid:0,mode:path==='/'?0o755:0o700,directory:true,symlink:false}))}},
       { npmProcess:{uid:0,gid:0,umask:0o22},version:cell.sourceVersion },
       { ownership: { uid: 0, path: '/usr/lib/cotal-root-node/bin/node' } },
       { installed: { uid: 0, version: cell.sourceVersion,manifest:{mode:0o644},bootstrap:{mode:0o755},ancestors:['/usr/lib/cotal-root-node/lib/node_modules/cotal-ai','/usr/lib/cotal-root-node/lib/node_modules','/usr/lib/cotal-root-node/lib','/usr/lib/cotal-root-node','/usr/lib','/usr','/'].map(path=>({path,real:path,uid:0,gid:0,mode:0o755,directory:true,symlink:false})) } },
