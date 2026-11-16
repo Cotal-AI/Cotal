@@ -61,7 +61,7 @@ export function selfArgv(): string[] {
     );
   // The daemon heap flags belong to the daemon a launcher started, not to the CLI's invocation, so
   // a daemon's own re-exec of an ordinary command does not pass them on.
-  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), entry];
+  return [process.execPath, ...process.execArgv.filter((flag) => !DAEMON_NODE_FLAGS.includes(flag)), executionIdentity()?.launchEntry ?? entry];
 }
 
 /** The node flags every daemon launcher puts on the daemon it starts: the manager, delivery and
