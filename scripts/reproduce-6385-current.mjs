@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { candidatePairRegistry } from './candidate-pair-registry.mjs';
 import { configureCandidateRegistry, runDiagnosticCommand } from './automatic-update-platform-baseline.mjs';
@@ -34,11 +34,23 @@ export function readRecords(home, config) {
   records.snapshots = existsSync(config) ? readdirSync(config).filter(name => name.startsWith('.update-snapshot-')).map(name => ({ name, exists: true, directory: lstatSync(join(config, name)).isDirectory() })) : [];
   const recovery = records['update-recovery.json'];
   if (recovery.exists) {
-    const path = JSON.parse(recovery.text).snapshot;
-    records.recoverySnapshot = { path, exists: typeof path === 'string' && existsSync(path) };
+    const value = JSON.parse(recovery.text);
+    if (value === null) records.recoverySnapshot = { cleared: true, exists: false };
+    else {
+      assert(value && typeof value === 'object' && typeof value.snapshot === 'string', 'invalid recovery snapshot record');
+      records.recoverySnapshot = { path: value.snapshot, exists: existsSync(value.snapshot) };
+    }
   }
   return records;
 }
+export function executionJournalEvidence(pkg) {
+  const store = join(dirname(dirname(pkg)), '.cotal-generations');
+  return { store, exists: existsSync(store), journals: existsSync(store) ? readdirSync(store).filter(name => name.startsWith('.transaction-')).map(name => {
+    const file = join(store, name, 'execution.json');
+    return { path: file, exists: existsSync(file), ...(existsSync(file) ? { sha256: hash6385(readFileSync(file)), text: readFileSync(file, 'utf8') } : {}) };
+  }) : [] };
+}
+
 export async function verifyClosure(directory, version) {
   const manifest = json(join(directory, 'manifest.json'));
   assert.equal(manifest.source, source6385, 'only approved source accepted');
@@ -113,11 +125,8 @@ export async function reproduce6385(options) {
     async function snapshot(stage, commands = false) {
       // Persist filesystem evidence before invoking any CLI that might reconcile recovery.
       const observation = { stage, at: Date.now(), records: readRecords(cotalHome, config) };
-      const store = join(prefix, 'lib/node_modules/.cotal-generations');
-      observation.executionJournals = existsSync(store) ? readdirSync(store).filter(name => name.startsWith('.transaction-')).map(name => {
-        const file = join(store, name, 'execution.json');
-        return { path: file, exists: existsSync(file), ...(existsSync(file) ? { sha256: hash6385(readFileSync(file)), text: readFileSync(file, 'utf8') } : {}) };
-      }) : [];
+      observation.executionStore = executionJournalEvidence(pkg);
+      observation.executionJournals = observation.executionStore.journals;
       try { observation.installed = inspectInstalledUpdateRoute(pkg, 'linux'); }
       catch (error) { observation.installedError = error.message; }
       report.observations.push(observation); persist();

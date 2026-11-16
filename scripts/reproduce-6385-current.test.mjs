@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { create } from 'tar';
-import { ageSchedulerClocks, hostedGuard, readRecords } from './reproduce-6385-current.mjs';
+import { ageSchedulerClocks, executionJournalEvidence, hostedGuard, readRecords } from './reproduce-6385-current.mjs';
 import { archiveInventory, buildFaultCandidate, hash6385, injectDaemonFault, source6385 } from './6385-fault-candidate.mjs';
 
 test('hosted guard refuses laptop, root, foreign runtime and inherited product settings', () => {
@@ -75,7 +75,26 @@ test('filesystem evidence records absent journal and snapshot before command exe
   const records = readRecords(root, config);
   assert.deepEqual(records['update-recovery.json'], { exists: false });
   assert.equal(records.snapshots[0].name, '.update-snapshot-real');
-  writeFileSync(join(root, 'update-recovery.json'), '{"phase":"paused"}');
+  writeFileSync(join(root, 'update-recovery.json'), JSON.stringify({ phase: 'paused', snapshot: join(config, '.update-snapshot-real') }));
   assert.equal(records['update-recovery.json'].exists, false);
   assert.equal(readRecords(root, config)['update-recovery.json'].exists, true);
+  assert.equal(readRecords(root, config).recoverySnapshot.exists, true);
+  writeFileSync(join(root, 'update-recovery.json'), 'null\n');
+  assert.deepEqual(readRecords(root, config).recoverySnapshot, { cleared: true, exists: false });
+  writeFileSync(join(root, 'update-recovery.json'), '{}');
+  assert.throws(() => readRecords(root, config), /invalid recovery snapshot/);
+});
+
+test('execution journal census uses real POSIX store beside node_modules, not inside it', () => {
+  const root = mkdtempSync(join(tmpdir(), '6385-journal-'));
+  const pkg = join(root, 'prefix/lib/node_modules/cotal-ai');
+  const store = join(root, 'prefix/lib/.cotal-generations');
+  mkdirSync(pkg, { recursive: true });
+  mkdirSync(join(store, '.transaction-real'), { recursive: true });
+  writeFileSync(join(store, '.transaction-real/execution.json'), '{"v":1}');
+  const evidence = executionJournalEvidence(pkg);
+  assert.equal(evidence.store, store);
+  assert.equal(evidence.journals.length, 1);
+  assert.equal(evidence.journals[0].exists, true);
+  assert.equal(evidence.journals[0].sha256, hash6385('{"v":1}'));
 });

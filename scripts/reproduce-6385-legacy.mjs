@@ -198,6 +198,12 @@ export async function runLegacy(options) {
           writeFileSync(checkPath, JSON.stringify(check) + '\n', { mode: 0o600 });
           if (existsSync(attemptPath)) { const attempt = JSON.parse(readFileSync(attemptPath)); attempt.next = Date.now() - 25 * 3600000; writeFileSync(attemptPath, JSON.stringify(attempt) + '\n', { mode: 0o600 }); }
           aged = true; persist();
+          // 0.160.2 reloads attempt state from disk only when status is read while idle.
+          // A read-only observation admits the aged deadline, without restarting the service.
+          const reload = await cotal('observe historical scheduler after clock aging', ['daemon', 'status', '--json'], true);
+          report.clockReload = { ...reload, status: statusEvidence(reload.stdout) };
+          assert.equal(JSON.parse(reload.stdout).result.pid, JSON.parse(initial.daemon.stdout).result.pid, 'clock stimulus must not restart daemon');
+          persist();
         }
       }
       if (existsSync(marker) && ambiguous(readFileSync(marker))) break;

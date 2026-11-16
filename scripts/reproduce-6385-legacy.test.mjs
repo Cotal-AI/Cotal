@@ -53,6 +53,8 @@ test('effectful exports guard before effects, marker never manufactured, clocks 
   assert(source.includes('report.originalMarkerSha256, report.broken.marker.sha256'));
   assert(source.includes("for (const route of ['npm', 'installer'])"));
   assert(source.includes('row.nextUpdate = await cotal'));
+  assert(source.indexOf('observe historical scheduler after clock aging') > source.indexOf('attempt.next = Date.now()'));
+  assert(source.includes("'clock stimulus must not restart daemon'"));
   assert(!source.includes('/cmdline'));
   assert(source.includes("report.result = 'reproduction-not-observed'"));
 });
