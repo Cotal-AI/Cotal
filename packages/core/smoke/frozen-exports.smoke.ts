@@ -110,7 +110,9 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // entry and its build-time validator generator; their callers never load the barrel, so their
 // entry functions live only there.
 // "./advisory-lock" is the lock the OpenCode launcher bundles to claim an agent's database, which
-// would otherwise bundle the barrel.)
+// would otherwise bundle the barrel.
+// "./contract-validator" is the interpreter a generated validator module imports at run time; a
+// browser target loads that module without the barrel, so its one function lives only there.)
 {
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
   const keys = Object.keys(pkg.exports ?? {});
@@ -126,6 +128,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./presence-ages", { module: "presence-ages", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
+    ["./contract-validator", { module: "contract-validator", additions: ["prepareContractValidator"] }],
   ]);
   const unexpected = keys.filter((k) => k !== "." && !ALLOWED_SUBPATHS.has(k));
   c(`core's package "exports" map is the barrel "." plus only allow-listed subpaths (no wildcard/opaque deep import)`,
