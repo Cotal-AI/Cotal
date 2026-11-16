@@ -7,6 +7,11 @@ on:
     types: [completed]
   workflow_dispatch:
     inputs:
+      repro_6385:
+        description: Hosted Linux observation only, no product changes
+        type: choice
+        options: [none, legacy, current, all]
+        default: none
       phase:
         type: choice
         options: [candidate, published]
@@ -36,6 +41,7 @@ env:
   PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
   select:
+    if: github.event_name != 'workflow_dispatch' || inputs.repro_6385 == '' || inputs.repro_6385 == 'none'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -1679,4 +1685,183 @@ jobs:
         with:
           name: published-native-${{ matrix.os }}-${{ matrix.source }}-${{ matrix.layout }}-${{ matrix.method }}
           path: ${{ runner.temp }}/upgrade-evidence
+          if-no-files-found: error
+  repro-6385-native:
+    if: github.event_name == 'workflow_dispatch' && (inputs.repro_6385 == 'current' || inputs.repro_6385 == 'all')
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - { platform: linux, arch: x64, runner: ubuntu-24.04 }
+          - { platform: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { platform: darwin, arch: x64, runner: macos-15-intel }
+          - { platform: darwin, arch: arm64, runner: macos-15 }
+          - { platform: win32, arch: x64, runner: windows-latest }
+          - { platform: win32, arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 85e85968d09fa81972611d94954569f147bbbf97
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Build source-matched Unix bindings
+        if: matrix.platform != 'win32'
+        shell: bash
+        run: |
+          node packages/seat/scripts/build-native.mjs --host
+          if [ '${{ matrix.platform }}' = darwin ]; then node packages/workspace/scripts/build-native.mjs; fi
+      - name: Build source-matched Windows bindings
+        if: matrix.platform == 'win32'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }} -host_arch=${{ fromJSON('{"x64":"amd64","arm64":"arm64"}')[matrix.arch] }}
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repro-6385-seat-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/seat/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform != 'linux'
+        with:
+          name: repro-6385-workspace-${{ matrix.platform }}-${{ matrix.arch }}
+          path: packages/workspace/build/Release/${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+  repro-6385-pack:
+    needs: repro-6385-native
+    if: needs.repro-6385-native.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 85e85968d09fa81972611d94954569f147bbbf97
+          path: product
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Require disk budget
+        run: node -e "const s=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<20*1024**3)throw Error('Less than 20 GiB free')"
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: product
+      - run: pnpm --workspace-concurrency 3 build
+        working-directory: product
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: repro-6385-*
+          path: ${{ runner.temp }}/repro-6385-natives
+      - name: Assemble and guard full unchanged-main native closure
+        working-directory: product
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env:
+          NATIVE_SOURCE: 85e85968d09fa81972611d94954569f147bbbf97
+          SEAT_NATIVE_X64: ${{ runner.temp }}/repro-6385-natives/repro-6385-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/repro-6385-natives/repro-6385-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/repro-6385-natives/repro-6385-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/repro-6385-natives/repro-6385-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/repro-6385-natives/repro-6385-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/repro-6385-natives/repro-6385-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/repro-6385-natives/repro-6385-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/repro-6385-natives/repro-6385-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/repro-6385-natives/repro-6385-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/repro-6385-natives/repro-6385-workspace-darwin-arm64
+      - name: Pack unchanged installed main and ordinary following release
+        run: |
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/repro-6385-candidate" --version 0.164.18 --source-root "$GITHUB_WORKSPACE/product"
+          node scripts/pack-candidate-next.mjs --source-root "$GITHUB_WORKSPACE/product" --candidate "$RUNNER_TEMP/repro-6385-candidate" --output "$RUNNER_TEMP/repro-6385-next"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-6385-packages
+          path: |
+            ${{ runner.temp }}/repro-6385-candidate
+            ${{ runner.temp }}/repro-6385-next
+          if-no-files-found: error
+  repro-6385-current:
+    needs: repro-6385-pack
+    if: needs.repro-6385-pack.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        fault: [exit, hang]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - uses: actions/download-artifact@v4
+        with:
+          name: repro-6385-packages
+          path: ${{ runner.temp }}
+      - name: Prepare disposable hosted Linux user manager
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Observe current-main unattended broken-target outcome
+        run: node scripts/reproduce-6385-current.mjs --candidate "$RUNNER_TEMP/repro-6385-candidate" --candidate-next "$RUNNER_TEMP/repro-6385-next" --fault '${{ matrix.fault }}' --output "$RUNNER_TEMP/6385-current-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-6385-current-${{ matrix.fault }}
+          path: ${{ runner.temp }}/6385-current-evidence
+          if-no-files-found: error
+  repro-6385-legacy:
+    if: github.event_name == 'workflow_dispatch' && (inputs.repro_6385 == 'legacy' || inputs.repro_6385 == 'all')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Prepare disposable hosted Linux user manager
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
+      - name: Observe historical lockout and existing recovery routes
+        run: node scripts/reproduce-6385-legacy.mjs --output "$RUNNER_TEMP/6385-legacy-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repro-6385-legacy
+          path: ${{ runner.temp }}/6385-legacy-evidence
           if-no-files-found: error
