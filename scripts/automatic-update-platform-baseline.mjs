@@ -201,7 +201,7 @@ export async function observeHostedManager({space, timeoutMs, observations, read
 }
 
 /** Only the explicitly recorded local test fixture may retain its original generation. */
-export function extensionVersionChecks({extensions, before, target, fixture, installed}) {
+export function extensionVersionChecks({extensions, before, target, fixture, installed, roots}) {
   const prior = fixture && before.filter(entry => entry.pkg === fixture.pkg);
   const owned = fixture?.pkg === 'cotal-upgrade-native-fixture' && prior?.length === 1
     && prior[0].spec === fixture.spec && prior[0].version === fixture.version
@@ -218,8 +218,12 @@ export function extensionVersionChecks({extensions, before, target, fixture, ins
     if (matches.length !== 1) return false;
     const current = matches[0];
     if (!isFixture(entry)) return current.version === target;
+    const copied = roots?.source?.layout === 'version-set' && roots?.after?.layout === 'version-set'
+      && roots.source.id === roots.after.id && roots.after.version === target
+      && fixture.path === join(roots.source.root, 'node_modules', fixture.pkg) && fixture.realpath === fixture.path
+      && current.path === join(roots.after.root, 'node_modules', fixture.pkg) && current.realpath === current.path;
     return entry.spec === fixture.spec && entry.version === fixture.version
-      && current.path === fixture.path && current.realpath === fixture.realpath && current.version === fixture.version
+      && ((current.path === fixture.path && current.realpath === fixture.realpath) || copied) && current.version === fixture.version
       && Object.keys(current.files ?? {}).length === Object.keys(fixture.files).length
       && Object.entries(fixture.files).every(([name, hash]) => current.files?.[name] === hash);
   });
@@ -706,6 +710,7 @@ export async function matrixCell(options) {
       writeFileSync(seat, daemonHostedManager
         ? `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';import {execFile} from 'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`
         : `import {CotalEndpoint} from ${JSON.stringify(core)};import {readFileSync} from 'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,...(e.COTAL_CREDS?{creds:readFileSync(e.COTAL_CREDS,'utf8')}:{}),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();setInterval(()=>{},1000);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
+      if (!daemonHostedManager) writeFileSync(join(fixture, 'record-seat.mjs'), 'export {};\n');
       const recorder = daemonHostedManager ? writeHostedSeatRecorder(fixture, seat) : undefined;
       const launchedSeat = recorder?.launcher ?? seat;
       const launchRecord = recorder ? `writeFileSync(${JSON.stringify(recorder.paths.launch)},JSON.stringify({recordedAt:new Date().toISOString(),name:o.name,id:o.id,lifecycleUid:o.lifecycleUid,space:o.space,command:process.execPath,args:[${JSON.stringify(launchedSeat)}],seat:${JSON.stringify(seat)},cwd:process.cwd(),managerPid:process.pid},null,2),{mode:0o600});` : '';
@@ -767,7 +772,7 @@ export async function matrixCell(options) {
         report.fixtureExtensionRoot = extensionRootObservation(await cotal('standalone fixture extension root', ['ext', 'root']));
         const fixturePath = join(report.fixtureExtensionRoot.root, 'node_modules/cotal-upgrade-native-fixture');
         const fixtureMetadata = json(join(fixturePath, 'package.json'));
-        const files = Object.fromEntries(['package.json', 'index.js', 'seat.mjs'].map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
+        const files = Object.fromEntries(['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'].map(name => [name, digest(readFileSync(join(fixturePath, name)))]));
         report.ownedLocalFixture = {pkg: fixtureMetadata.name, spec: fixture, version: fixtureMetadata.version, path: fixturePath, realpath: realpathSync(fixturePath), files};
       } else {
         env.MATRIX_HOLD = '1';
@@ -1323,7 +1328,7 @@ export async function matrixCell(options) {
       const files = entry.pkg === report.ownedLocalFixture?.pkg ? Object.fromEntries(Object.keys(report.ownedLocalFixture.files).map(name => [name, existsSync(join(path, name)) ? digest(readFileSync(join(path, name))) : null])) : {};
       return {pkg: entry.pkg, path, realpath: existsSync(path) ? realpathSync(path) : null, version: metadata?.version, files};
     });
-    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions});
+    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions, roots: report.extensionRoots});
     report.installedExtensionVersions = installedExtensions;
     check('every recorded extension is at target', versions.recorded, extensions.map(({ pkg, version }) => ({ pkg, version })));
     const version = await cotal('selected CLI version assertion', ['--version']);
