@@ -47,6 +47,7 @@ When the installation supplies connector-version sets, the same locked cleanup k
 and previous sets and every recorded live or unknown version. An unknown holder without a version
 keeps all sets. The caller classifies the existing process-lifetime records; cleanup does not infer
 that a running Manager has changed versions.
+On Windows, an obsolete connector set is removed only when its whole tree belongs to the current account and contains no reparse points; otherwise cleanup keeps it and names the directory and repair command.
 An older transaction without a completion marker stays with a warning until a later successful
 publication explicitly supersedes its validated history for the same installation.
 A source checkout keeps the separate global-install route and does not stage its checkout tree.
