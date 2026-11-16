@@ -275,6 +275,11 @@ jobs:
         run: echo "$HOME/nats-bin" >> "$GITHUB_PATH"
       - name: Install tmux
         run: tmux -V || (sudo apt-get update && sudo apt-get install -y tmux)
+      - name: Install Bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # smoke:runtime includes smoke:herdr, which exits 0 with a SKIPPED notice when herdr is
       # absent. Without this step the whole herdr suite is a silent no-op on every run — which is
       # exactly how a driver incompatible with current stable herdr passed CI green.
@@ -289,6 +294,8 @@ jobs:
         run: pnpm build
       - name: Web console auth
         run: pnpm smoke:web-console-auth
+      - name: Isolated shell seat
+        run: pnpm smoke:isolated-seat:live
       # Broker-free boundary/preflight guards + the live target-resolution / spawn-from-anywhere /
       # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
       - name: Core boundary, mesh preflight & resolution

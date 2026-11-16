@@ -1,5 +1,10 @@
 # Containerized agent teams
 
+For an untrusted shell-capable seat, use the [isolated-seat composition](sandbox/README.md) or a
+separate OS user or VM with only that seat's credentials. The team composition below mounts an
+account signer into the agents' container. It is for trusted teams and does not isolate that signer
+from those agents.
+
 Run a team of agents in an isolated container that dials **out** to an existing Cotal
 broker. The agents get no host file access; only NATS traffic crosses the wall. One image,
 configured entirely by env and mounts.

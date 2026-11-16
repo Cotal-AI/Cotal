@@ -437,6 +437,7 @@ the trust records does not stop a hostile same-uid agent from reading their abso
 [deploy](deploy.mdx) tree does not solve this: it mounts the signer into the agent's own container, so
 its phase-1 boundary isolates agents from each other, not the signer from the agent. A hosted
 composition must run the manager/minter that holds the signer in a different uid, container, or mount
-namespace from the agent children, which mount no signer at all; that split is future
-hosted-composition work, so until it (or a remote/injected minter) exists, do not run untrusted
-agents under this manager.
+namespace from the agent children, which mount no signer at all. The
+[isolated-seat composition](../deploy/sandbox/README.md) provides a Linux foreground launch over a
+separately prepared filesystem with per-seat inputs only. It does not add sandboxing to this
+manager's local runtimes. Do not run untrusted agents under the default same-user runtime.
