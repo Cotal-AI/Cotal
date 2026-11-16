@@ -751,6 +751,8 @@ try {
   }
 } catch (error) { report.failure = error.stack; report.failureObservation = error.observation; process.exitCode = 1; }
 finally {
+  const retainedDaemonLog = join(root, 'daemon', 'daemon.log');
+  if (existsSync(retainedDaemonLog)) writeFileSync(join(output, 'daemon-finally.log'), readFileSync(retainedDaemonLog));
   if (stopExternalSpawner) stopExternalSpawner();
   if (elevatedExternalPid) {
     await run(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Stop-Process -Id ${elevatedExternalPid} -Force -ErrorAction SilentlyContinue`], 15_000);
