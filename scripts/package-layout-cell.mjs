@@ -1,10 +1,28 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync, readdirSync, lstatSync } from 'node:fs';
 import { dirname, join, delimiter } from 'node:path';
 import { inspectInstalledUpdateRoute } from './daemon-cell-diagnostics.mjs';
 import { inspectGenerationStore } from './generation-store-census.mjs';
+
+/** pnpm 11 gives each global install a group, selected by an active hash symlink. */
+export function pnpmGlobalPackage(globalRoot) {
+  const names=readdirSync(globalRoot);
+  assert(names.length<=1000,'pnpm global group census exceeds bound');
+  const matches=[];
+  for(const name of names){
+    const group=join(globalRoot,name);
+    if(!lstatSync(group).isSymbolicLink())continue;
+    const path=join(group,'node_modules/cotal-ai');
+    if(!lstatSync(path,{throwIfNoEntry:false}))continue;
+    const metadata=JSON.parse(readFileSync(join(path,'package.json')));
+    assert.equal(metadata.name,'cotal-ai');
+    matches.push({group,path:realpathSync(path)});
+  }
+  assert.equal(matches.length,1,'one active pnpm cotal-ai installation group required');
+  return matches[0];
+}
 
 export function packageLayoutAssertions(report,cell){
   const calls=report.calls??[];
@@ -75,8 +93,8 @@ export async function packageLayoutCell({ layout, registry, output, nodePrefix }
     ok(await install(report.sourceVersion),'source install');
     if(layout==='pnpm'){
       const globalRoot=ok(await call('pnpm actual global root','pnpm',['root','-g']),'pnpm root').stdout.trim();
-      pkg=realpathSync(join(globalRoot,'cotal-ai'));prefix=globalRoot;
       report.packageManagerBefore=ok(await call('pnpm global list before','pnpm',['list','-g','--json']),'pnpm list').stdout;
+      report.pnpmGroup=pnpmGlobalPackage(globalRoot);pkg=report.pnpmGroup.path;prefix=globalRoot;
     }
     report.installation={prefix,bin,pkg:realpathSync(pkg),cli,shimSha256:createHash('sha256').update(readFileSync(cli)).digest('hex')};
     const sourceManifest=JSON.parse(readFileSync(join(pkg,'package.json')));assert.equal(sourceManifest.version,report.sourceVersion);

@@ -112,7 +112,8 @@ Root updates an actual
 `/usr/local` installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
 After the normal account's refusal, it checks that the store stayed protected and its file-byte total did not grow.
-The package-manager layout probes use pnpm's own global root and shim, or an immutable nvm release's selected Node prefix.
+The package-manager layout probes use pnpm's own global root, active isolated install group and shim,
+or an immutable nvm release's selected Node prefix.
 They do not replace those layouts with a custom npm prefix. A public updater refusal remains a failed cell.
 
 The next-hop cells install the same candidate artifact as the ordinary packed cells, then invoke that
