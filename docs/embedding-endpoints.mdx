@@ -9,6 +9,22 @@ This page describes `CotalEndpoint` behavior in the TypeScript reference impleme
 [Message flow](presence-and-delivery.mdx) explains how presence and delivery fit together.
 The wire requirements are in [SPEC §6](../SPEC.md#6-presence-and-discovery) and [§8](../SPEC.md#8-nats--jetstream-binding).
 
+## Channel history [#channel-history]
+
+`multiChannelHistory(channels, { limit, signal })` returns the newest matching chat messages,
+oldest first by stream sequence. Each row contains `{ channel, seq, msg }`. The channel comes
+from the broker subject, not the message payload. The default limit is 100.
+
+Pass concrete channel names, or one channel family such as `["events.>"]`. A family uses one
+broker filter without listing its concrete channels. It covers descendants such as
+`events.alpha` and `events.alpha.worker`, but not the bare `events` channel.
+An unused family returns an empty array. An empty channel list also returns an empty array.
+
+A family must be the only entry. Multiple families, a family mixed with concrete names,
+the root `>` and patterns containing `*` are refused. Invalid channel names are never rewritten.
+The broker enforces the caller's existing grants, including the filter-bearing consumer-create
+grant for a family. Permission failures throw. This method grants no additional read access.
+
 ## Presence metadata [#presence-metadata]
 
 Each presence record contains an `AgentCard`, status, and heartbeat timestamp, under the key `card.id`.

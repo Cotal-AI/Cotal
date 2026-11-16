@@ -4485,7 +4485,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /**
-   * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
+   * The newest `limit` chat messages across concrete channels or one channel family, oldest-first within the page,
    * each tagged with the channel the BROKER delivered it on.
    *
    * The CHAT stream interleaves every channel into one sequence space. Consumers take sets of
@@ -4500,24 +4500,25 @@ export class CotalEndpoint extends EventEmitter {
    * field, and this method ignores it: the tag is derived from the subject the broker routed the
    * message on, the same derivation {@link listChannels} uses to name a channel in the first place.
    *
-   * **Concrete channels only.** Filter subjects on one consumer may not overlap, and a wildcard
-   * channel subsumes its own subtree, so a wildcard here is refused rather than silently dropped or
-   * silently double-counted.
+   * A single channel family such as `events.>` uses one broker filter without enumerating its
+   * concrete channels. Otherwise every channel must be concrete: mixing a family with other
+   * filters, or using other wildcard patterns, is refused rather than risking overlapping filters.
    *
-   * **Observer/admin credentials only, and the broker is what says so.** A multi-filter create
+   * **The broker enforces read authority.** A multi-filter create
    * cannot encode its filter in the API subject, so it rides the bare
    * `$JS.API.CONSUMER.CREATE.<CHAT>` row that only the read-only dashboard profiles hold. An agent
    * credential pins the filter into the subject per channel and is denied here by the broker, which
    * is the correct answer: this method reads across channels, and an agent's read ACL is per
-   * channel.
+   * channel. A single filter uses the filter-bearing create subject, including a channel family,
+   * so the broker checks the credential's grant for that filter. No additional authority is minted.
    */
   async multiChannelHistory(
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
   ): Promise<{ channel: string; seq: number; msg: HistoryMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
-      if (!isConcreteChannel(channel))
-        throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
+      if (!isConcreteChannel(channel) && !(channels.length === 1 && isChannelFamily(channel)))
+        throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - name one channel family alone or concrete channels without wildcards`);
       // `chatSubject` builds the filter through `token()`, which REWRITES rather than refuses: it
       // maps a character a subject may not carry to `_`, trims each segment, and drops empty ones.
       // So "foo/bar" would filter on `foo_bar`, ".lead" on `lead`, and "team..b" on `team.b` - the
