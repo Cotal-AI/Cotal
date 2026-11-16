@@ -1071,6 +1071,7 @@
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",
     "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
     "smoke:seat-env-scope": "tsx bin/smoke/seat-env-scope.smoke.ts",
+    "smoke:fixture-space-home": "tsx bin/smoke/fixture-space-home.smoke.mjs",
     "smoke:suite-ambient-env": "tsx bin/smoke/suite-ambient-env.smoke.ts",
     "smoke:suite-ambient-env-self": "tsx bin/smoke/suite-ambient-env-self.smoke.ts",
     "smoke:suite-own-process-material": "tsx bin/smoke/suite-own-process-material.smoke.ts",
