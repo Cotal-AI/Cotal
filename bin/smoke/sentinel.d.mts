@@ -11,7 +11,7 @@ export type ParsedSentinel = {
   kind: "canonical" | "legacy";
 };
 
-export function parseSentinel(text: string): ParsedSentinel | null;
+export function parseSentinel(text: string, options?: { rows?: boolean }): ParsedSentinel | null;
 export function hasPostTallyAssertions(text: string): boolean;
 export function countedAssert<T extends object>(ns: T): { assert: T; cells: () => number };
 export function createSuite(): {

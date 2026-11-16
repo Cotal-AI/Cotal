@@ -114,8 +114,10 @@ regardless of their position. The last structured record wins; without one, the 
 tally wins. Per-row counting is used only when neither is present.
 
 Serial and pooled runners refuse a tally followed by more assertion-result rows unless a later
-final tally covers them. Diagnostic output after the tally is allowed. This checks premature
-tally acceptance, not omitted assertions or assertions that print no result row.
+final tally covers them. These rows are indented check/cross marks, TAP `ok`/`not ok` lines and
+`FAIL` rows. An unindented check mark in a product notice is not an assertion record. Diagnostic
+output after the tally is allowed. This checks premature tally acceptance, not omitted assertions,
+assertions that print no result row, or unmarked output.
 
 ## Shared hosts
 

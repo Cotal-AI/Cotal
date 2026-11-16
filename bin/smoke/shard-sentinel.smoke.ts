@@ -14,7 +14,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuite, runFiles, formatSentinel as kitFormat, parseSentinel as kitParse } from "@cotal-ai/smoke-kit";
 import { liveShapedCommandReason } from "../../scripts/mutation-command-safety.mjs";
-import { formatSentinel, parseSentinel } from "./sentinel.mjs";
+import { formatSentinel, hasPostTallyAssertions, parseSentinel } from "./sentinel.mjs";
 import { runPool } from "./shard-pool.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -293,7 +293,13 @@ for (const path of ["./sentinel.mjs", "../../packages/smoke-kit/src/sentinel.ts"
 const finalityDir = mkdtempSync(join(tmpdir(), "cotal-tally-finality-"));
 const previousCwd = process.cwd();
 const finality: unknown[] = [];
-let finalityHeld = true;
+const finalityCases = [
+  [`${five}\n✓ background operation finished`, false],
+  ["  ✓ a report contains (2 passed, 0 failed)\n  ✓ another assertion", false],
+  [`${five}\n  ✓ teardown assertion`, true],
+  [`${five}\n  ✓ teardown assertion\n${formatSentinel({ passed: 6, failed: 0 })}`, false],
+] as const;
+let finalityHeld = finalityCases.every(([output, expected]) => hasPostTallyAssertions(output) === expected);
 try {
   for (const name of ["deferred", "awaited"]) {
     const fixture = fileURLToPath(new URL(`./fixtures/tally-finality/${name}.mjs`, import.meta.url));
