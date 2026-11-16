@@ -1,5 +1,28 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+
+export type SeedWriterKind = "released" | "checkout" | "unknown";
+
+/** Classify the real CLI entry for both seed-writer admission and connector-set lifetime holds. */
+export function seedWriterKind(): SeedWriterKind {
+  let entry: string;
+  try { entry = realpathSync(process.argv[1]!); }
+  catch { return "unknown"; }
+  if (/[/\\]_npx[/\\]/.test(entry)) return "released";
+  let root = dirname(entry);
+  while (!existsSync(join(root, "package.json"))) {
+    const parent = dirname(root);
+    if (parent === root) return "unknown";
+    root = parent;
+  }
+  let pkgName: unknown;
+  try { pkgName = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown }).name; }
+  catch { return "unknown"; }
+  if (pkgName !== "cotal-ai") return "unknown";
+  const parent = dirname(root);
+  if (basename(root) === "bin" && (existsSync(join(parent, "implementations")) || existsSync(join(parent, "pnpm-workspace.yaml")))) return "checkout";
+  return basename(root) === "bin" ? "unknown" : "released";
+}
 
 export interface ExecutionIdentity {
   readonly logicalEntry: string;

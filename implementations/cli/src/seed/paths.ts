@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { SEEDED_EXTENSIONS, extensionSetPaths } from "@cotal-ai/workspace";
+import { SEEDED_EXTENSIONS, extensionSetPaths, seedWriterKind } from "@cotal-ai/workspace";
+export { seedWriterKind, type SeedWriterKind } from "@cotal-ai/workspace";
 
 /**
  * Filesystem layout + version identity for the connector seeding engine. Everything the reconcile
@@ -88,46 +89,6 @@ export function seedStorePath(generation: string, name: string): string {
     throw new Error(`refusing seed-store destination ${destination}: it is not strictly inside ${root}`);
   }
   return destination;
-}
-
-export type SeedWriterKind = "released" | "checkout" | "unknown";
-
-/**
- * Who is about to mutate the operator-global seed store. Fail closed: a released
- * install or an npx unpack is allowed; a source checkout is refused; anything
- * that cannot be proven is `unknown` and is also refused. A missing answer is
- * never treated as a released install.
- */
-export function seedWriterKind(): SeedWriterKind {
-  let entry: string;
-  try {
-    entry = entryScript();
-  } catch {
-    return "unknown";
-  }
-  if (/[/\\]_npx[/\\]/.test(entry)) return "released";
-  let root: string;
-  try {
-    root = cliPackageRoot();
-  } catch {
-    return "unknown";
-  }
-  let pkgName: unknown;
-  try {
-    pkgName = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown }).name;
-  } catch {
-    return "unknown";
-  }
-  if (pkgName !== "cotal-ai") return "unknown";
-  const parent = dirname(root);
-  if (
-    basename(root) === "bin" &&
-    (existsSync(join(parent, "implementations")) || existsSync(join(parent, "pnpm-workspace.yaml")))
-  ) {
-    return "checkout";
-  }
-  if (basename(root) === "bin") return "unknown";
-  return "released";
 }
 
 /**

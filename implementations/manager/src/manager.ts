@@ -98,7 +98,7 @@ import {
   shownSpawner,
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, holdExtensionSet, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, holdExtensionSet, seedWriterKind, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -2336,7 +2336,7 @@ export class Manager {
 
   start(): Promise<void> {
     if (this.startTask) return this.startTask;
-    if (this.execution !== "none" && this.installedExtensions) this.releaseExtensionSet ??= holdExtensionSet();
+    if (this.execution !== "none" && this.installedExtensions && seedWriterKind() !== "checkout") this.releaseExtensionSet ??= holdExtensionSet();
     const task = this.runStart();
     let wrapped!: Promise<void>;
     wrapped = task.finally(() => {
