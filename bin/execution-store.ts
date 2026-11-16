@@ -88,6 +88,8 @@ export function writeExecutionDescriptor(installedRoot: string, descriptor: Exec
   } finally { rmSync(temporary, { force: true }); }
 }
 
+const reportedConnectorOwnership = new Set<string>();
+
 export interface ConnectorSetCleanup {
   readonly root: string;
   readonly installRoot: string;
@@ -110,7 +112,17 @@ export function cleanupExecutionStore(installed: string, report: (line: string) 
   try {
     const store = executionStore(installed), info = executionSupported ? lstatSync(store, { throwIfNoEntry: false }) : undefined;
     if (typeof process.getuid !== "function") {
-      if (sets) warn(new Error("connector sets retained because this platform cannot verify their owner"));
+      if (sets && isAbsolute(sets.root) && resolve(sets.root) === sets.root && realpathSync.native(sets.root) === sets.root
+        && realpathSync.native(sets.installRoot) === realpathSync.native(installed)) {
+        const keep = new Set([sets.current, sets.previous, ...sets.holders.map(holder => holder.version)]);
+        if (!sets.holders.some(holder => holder.version === undefined)) {
+          const retained = readdirSync(sets.root).filter(name => /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(name) && !keep.has(name));
+          if (retained.length && !reportedConnectorOwnership.has(sets.root)) {
+            reportedConnectorOwnership.add(sets.root);
+            warn(new Error(`kept connector sets ${retained.join(", ")} because their owner could not be verified on Windows`));
+          }
+        }
+      }
       return;
     }
     if (info && info.uid !== process.getuid()) return;

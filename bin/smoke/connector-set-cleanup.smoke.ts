@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -72,6 +72,17 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(existsSync(join(root, "0.0.6")), false);
     assert.equal(existsSync(join(root, "0.3.0")), true);
     assert.equal(existsSync(join(root, "0.4.0")), true);
+    const module = new URL("../dist/execution-store.js", import.meta.url).href;
+    const unavailable = (value: ConnectorSetCleanup) => spawnSync(process.execPath, ["--input-type=module", "-e", `const{cleanupExecutionStore}=await import(${JSON.stringify(module)});Reflect.set(process,'getuid',undefined);cleanupExecutionStore(${JSON.stringify(installed)},line=>process.stdout.write(line+'\\n'),${JSON.stringify(value)});cleanupExecutionStore(${JSON.stringify(installed)},line=>process.stdout.write(line+'\\n'),${JSON.stringify(value)});`], { encoding: "utf8" });
+    assert.equal(unavailable({ ...spec, holders: [] }).stdout, "", "no ownership warning when current and previous are all that remain");
+    create("0.0.7"); create("0.0.8");
+    const kept = unavailable({ ...spec, holders: [] });
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.equal(kept.stdout.trim().split("\n").length, 1);
+    assert(kept.stdout.includes("kept connector sets 0.0.7, 0.0.8 because their owner could not be verified on Windows"));
+    assert.equal(existsSync(join(root, "0.0.7")), true);
+    assert.equal(existsSync(join(root, "0.0.8")), true);
+    assert.equal(unavailable({ ...spec, holders: [{ state: "unknown" }] }).stdout, "", "unknown holder already keeps all sets, so ownership did not prevent removal");
     console.log("connector set cleanup: optional spec, current/previous/live/unknown retention, global lock, path and symlink boundaries, nonfatal removal");
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
