@@ -46,10 +46,11 @@ let committed = false;
 let paused = false;
 let skippedProcesses = [];
 let executableNames = [];
+let refusal = null;
 function outcome(code, message, name = code === 0 ? 'updated' : 'refused', activeAgents = 0) {
   lastStep = `outcome:${code}`;
   message = message.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 1800);
-  write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, skippedProcesses: state?.skippedProcesses ?? skippedProcesses, executableNames: state?.executableNames ?? executableNames, completedAt: new Date().toISOString() });
+  write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, skippedProcesses: state?.skippedProcesses ?? skippedProcesses, executableNames: state?.executableNames ?? executableNames, ...(refusal ?? {}), completedAt: new Date().toISOString() });
   writeFileSync(messageFile, `${message}\r\n`);
   process.stdout.write(`${message}\n`);
   process.exitCode = code;
@@ -163,6 +164,8 @@ async function finish(rollback = false) {
   const native = task('inspect');
   if (Boolean(native.installed) !== state.installed || state.installed && native.receiptDigest !== state.receiptDigest) throw new Error('The owned installation changed during setup. No task was started.');
   const versionFile = join(root, 'runtime', 'package.json');
+  const readLog = join(directory, 'runtime-read.jsonl');
+  writeFileSync(readLog, '');
   const readDeadline = Date.now() + 130_000;
   const readStarted = Date.now();
   let version;
@@ -172,7 +175,7 @@ async function finish(rollback = false) {
       break;
     } catch (error) {
       const elapsedMs = Date.now() - readStarted;
-      appendFileSync(join(directory, 'runtime-read.jsonl'), `${JSON.stringify({ attempt, code: error.code ?? 'UNKNOWN', elapsedMs })}\n`);
+      appendFileSync(readLog, `${JSON.stringify({ attempt, code: error.code ?? 'UNKNOWN', elapsedMs })}\n`);
       if (Date.now() >= readDeadline) {
         const refused = new Error(`The installed runtime could not be read after 130 seconds (${error.code ?? 'UNKNOWN'}). Run the installer again.`);
         refused.code = error.code;
@@ -275,6 +278,13 @@ try {
     process.stdout.write('Background service prepared. Setup can replace the files.\n');
   }
 } catch (error) {
+  const paths = [error.path, error.dest].filter(value => typeof value === 'string');
+  let runtimeProcesses = [];
+  try {
+    const listed = execFileSync(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '${root}\\runtime\\*' } | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.Name }` ], { env, windowsHide: true, encoding: 'utf8', timeout: 15_000 });
+    runtimeProcesses = listed.trim().split(/\r?\n/).filter(Boolean).map(line => { const [pid, name] = line.split(/ (.+)/); return { pid: Number(pid), name }; });
+  } catch { runtimeProcesses = [{ pid: 0, name: 'process list unavailable' }]; }
+  refusal = { call: error.syscall ?? lastStep, paths, runtimeProcesses };
   const active = error.code === 'SEATS_ACTIVE' ? Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? 1) : 0;
   let recovery = '';
   try {

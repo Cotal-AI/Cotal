@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+trap 'status=$?; echo "check-presence-macos.sh failed at line $LINENO: $BASH_COMMAND (exit $status)" >&2' ERR
 : "${RUNNER_TEMP:?}"
 test "${RUNNER_ENVIRONMENT:-}" = github-hosted
 out="$RUNNER_TEMP/desktop-presence"
