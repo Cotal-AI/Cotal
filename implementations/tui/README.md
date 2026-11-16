@@ -78,7 +78,7 @@ unread card's messages read without opening them. A waiting agent cannot be dism
 dismissed reply and mention cards are remembered until the app quits. The highlight stays on its item as new ones
 arrive, and when a card goes, the item that takes its place is highlighted. The letter keys work only
 in the tree and the inspector: `w` opens the next item the inspector lists, waiting agents first, and
-`1`-`9` a specific one, quoting a card's message as `enter` does while the keys stay where they are. `S` spawns an agent, `D` stops one, `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
+`1`-`9` a specific one, quoting a card's message as `enter` does while the keys stay where they are. `S` spawns an agent, `D` stops one, `a` attaches to one (see [Attaching](#attaching)), `?` lists the keys and `q` quits. While a space opens, the box keeps the keys
 before it is on screen, so a letter typed for it runs no tree key; `tab` moves them to the tree.
 `ctrl+p` opens the commands and `ctrl+c` quits from anywhere.
 
@@ -145,7 +145,30 @@ starts, and several spawns can run at once, one line each.
 
 The status bar shows `reconnecting` while the broker is away (the last model stays on screen) and
 `not connected` when the space did not open, with the reason in the middle. While the space is
-connected it shows only `? help` and `ctrl+p commands`.
+connected it shows only `? help` and `ctrl+p commands`, or how to leave an attached terminal.
+
+## Attaching
+
+`a` on a selected agent that a manager reports running opens its live terminal in the middle column,
+in place of the conversation and the input box. The attach acts on the run the overview showed when
+you pressed `a`, as a stop does, so an agent that took its name since is never attached. The header
+reads `<name> · <cols>x<rows> · keys go to <name>`, and the status bar reads
+`<name> attached · esc esc back`.
+
+Every key goes to the agent, `ctrl+c` and `ctrl+p` included. `esc` reaches it about 300 milliseconds
+late, because a second `esc` within that time closes the terminal instead, and then neither `esc`
+reaches the agent. Any other key or a paste in that time sends the `esc` at once, ahead of it. The
+terminal closes on the conversation that was open, the keys go back where
+they were, and the agent keeps running. While the attach opens, `esc` stops it. When the agent
+tracks the mouse, clicks and the wheel go to it; otherwise the wheel scrolls the terminal's
+scrollback.
+
+The terminal's size is the agent's terminal size, so opening it resizes the agent for everyone
+watching it, and the size follows the app's window. When the session ends, because the agent exited
+or was stopped, the manager restarted or the connection dropped, the header says why, such as
+`<name> · session ended: the agent exited · esc closes`, and one `esc` closes it. A refused attach
+shows `attach: <error>`. Switching spaces or quitting closes the terminal and leaves the agent
+running.
 
 ## Talking
 
@@ -304,7 +327,15 @@ needs babel-preset-solid's universal output. `tsc` only typechecks.
   open space, the agent writes to the human unprompted: the message is listed under unread direct
   messages above the replies and still after a restart, `w` opens it and the card goes, `read.json`
   records its id in a 0600 file, and it stays gone at the next start.
-  They need Node 26.4, tmux and nats-server, and the control, spawn, composer and continuity smokes
-  need the manager built, so they are not in `smoke:ci`.
+  `smoke/attach.smoke.ts` runs a real manager whose seats echo what reaches their terminal, and
+  attaches with `a` at 209x52 and 80x24. It checks that the seat's screen shows in the middle column
+  with its size and the status bar hint, that typed text, a burst of 90 keys in one read, `enter` and
+  `ctrl+c` reach the seat, that a lone `esc` reaches it only after the hold, that `esc esc` closes the
+  terminal, also when both arrive in one read, with the seat still running and neither `esc`
+  delivered, that the seat's terminal takes the pane's size and follows a window resize, that the
+  wheel scrolls the scrollback, that a seat's exit is said in the header and one `esc` then closes
+  it, that `a` on an agent no manager runs opens nothing and says why, and that `?` lists both keys.
+  They need Node 26.4, tmux and nats-server, and the control, spawn, composer, continuity and attach
+  smokes need the manager built, so they are not in `smoke:ci`.
 - `pnpm --filter @cotal-ai/tui measure:startup` times launch to the first frame and to the space
   list under tmux.

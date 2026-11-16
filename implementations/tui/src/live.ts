@@ -1,5 +1,6 @@
 import { chatWildcard, DEV_OWNER, parsePrincipalKey, principalKey, readPersonaCatalog, spawnNameError, type ConnectorModelCatalog } from "@cotal-ai/core"
 import { connectTargetOrThrow, isCommandFailure, isConnectRefusal, oneLine, refreshRegistrationPolicy, resolvePreference, resolveTargetOrThrow, userViewAuth, type MeshTarget } from "@cotal-ai/workspace"
+import { openTerminalSession } from "@cotal-ai/workspace/attach"
 import { control, controlPs, type ControlClient, type ControlCtx, type ManagedRow, type PsReply } from "@cotal-ai/workspace/control"
 import { readManagedLaunch, requestManagedLaunch } from "@cotal-ai/workspace/launch"
 import { MeshView, openObserver, type MeshSnapshot } from "@cotal-ai/workspace/view"
@@ -32,12 +33,26 @@ export type Managed =
 
 export type StopResult = { ok: true } | { ok: false; error: string }
 
+/** A live attach session to one seat's terminal. Output that arrives before `onOutput` is held for
+ *  it. `ended` is the session's end reason, once it has ended. */
+export type Attached = {
+  send: (bytes: Uint8Array) => void
+  resize: (cols: number, rows: number) => void
+  onOutput: (write: (bytes: Uint8Array) => void) => void
+  ended: Accessor<string | undefined>
+  close: () => Promise<void>
+}
+export type AttachResult = { ok: true; attached: Attached } | { ok: false; error: string }
+
 export type Session = {
   conn: Accessor<Conn>
   managed: Accessor<Managed>
   /** Asks the seat's manager to stop the run `row` reports. When the name now belongs to another
    *  run, nothing is stopped. Graceful lets it shut down; otherwise the manager kills the process. */
   stop: (row: ManagedRow, graceful: boolean) => Promise<StopResult>
+  /** Opens an attach session to the run `row` reports. When the name now belongs to another run,
+   *  nothing is opened. `warn` gets what the attach says about the operator's setup. */
+  attach: (row: ManagedRow, warn: (line: string) => void) => Promise<AttachResult>
   /** What the spawn dialog offers: the persona catalog `cotal spawn <persona>` completes from, and
    *  the applications the space's manager reports. A persona folder that cannot be read, or a
    *  manager that does not answer, throws. */
@@ -219,6 +234,41 @@ export function openSpace(space: string | undefined, afterPaint: () => Promise<v
       const r = await control(client, ctx, "stop", { name: row.name, graceful }, { expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid } })
       void readManaged(true)
       return r.ok ? { ok: true } : { ok: false, error: safe(r.error ?? "failed") }
+    },
+    attach: async (row, warn) => {
+      if (!ctx) return { ok: false, error: "the space is not open yet" }
+      const r = await openTerminalSession({ ...ctx, name: row.name, expectedTarget: { id: row.id, lifecycleUid: row.lifecycleUid } }, { control: client, notice: (n) => warn(safe(oneLine(n.text))) })
+      if (!r.ok) return { ok: false, error: safe(oneLine(r.message)) }
+      const { transport, close } = r.session
+      const [ended, setEnded] = createSignal<string>()
+      const held: Uint8Array[] = []
+      let write: ((bytes: Uint8Array) => void) | undefined
+      transport.onData((bytes) => (write ? write(bytes) : void held.push(bytes)))
+      transport.onEnd((err, reason) => setEnded(reason ?? err?.message ?? "ended"))
+      // A read of the terminal can hold many keys, each its own event. One session frame per key
+      // would overrun the session's window on a burst such as an unbracketed paste, and the rail
+      // drops what does not fit, so a tick's keys go as one frame.
+      let pending: Buffer[] = []
+      const flush = () => {
+        transport.send(Buffer.concat(pending))
+        pending = []
+      }
+      return {
+        ok: true,
+        attached: {
+          send: (bytes) => {
+            if (!pending.length) setImmediate(flush)
+            pending.push(Buffer.from(bytes))
+          },
+          resize: (cols, rows) => transport.resize(cols, rows),
+          onOutput: (w) => {
+            for (const bytes of held.splice(0)) w(bytes)
+            write = w
+          },
+          ended,
+          close,
+        },
+      }
     },
     spawnSetup: async () => {
       if (!target || !ctx) throw new Error("the space is not open yet")

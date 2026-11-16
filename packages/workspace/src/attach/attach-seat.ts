@@ -10,7 +10,7 @@ import { isWorkspaceTargetError } from "../mesh-target.js";
 import { CommandFailure, recordOperationSpace } from "../output.js";
 import { renderReport } from "../present.js";
 import { renderWorkspaceError } from "../render.js";
-import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, writeNotice, type AttachNotice, type TerminalHold } from "./attach-client.js";
+import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, writeNotice, type AttachNotice, type TerminalHold, type TerminalTransport } from "./attach-client.js";
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
  *  exists is worth waiting for — the operator asked to be attached to it, and the alternative is
@@ -762,6 +762,49 @@ export interface AttachCaller {
   readonly verb: string;
   readonly noTerminalRemedy?: (seat: { space: string; name: string }) => string;
   readonly notice?: (notice: AttachNotice) => void;
+}
+
+/** A live session to a seat's terminal, for a caller that draws the terminal itself. `close` hands
+ *  the session back to the manager and closes its connection. */
+export type TerminalSession = { transport: TerminalTransport; close: () => Promise<void> };
+
+/**
+ * One attach session for a caller that draws the seat's terminal itself, such as a pane inside a
+ * TUI. The seat is located and pinned as {@link attachSeat} pins it, and `expectedTarget` fences the
+ * run the caller chose, so a namesake can never answer. Nothing touches this process's terminal and
+ * nothing reconnects: the transport's end is the session's end, and the reconnecting path's short
+ * ping finds a dead link within seconds. Every refusal comes back as a message.
+ */
+export async function openTerminalSession(
+  v: AttachTarget,
+  caller: Pick<AttachCaller, "control"> & { notice: (notice: AttachNotice) => void },
+): Promise<{ ok: true; session: TerminalSession } | { ok: false; message: string }> {
+  let est: Established;
+  try {
+    const loc = await locateSeat(caller.control, v, v.name, { onRefusal: "throw" });
+    if (loc.kind === "absent") return { ok: false, message: seatNotFoundMessage(loc, v.name) };
+    if (loc.kind === "several") return { ok: false, message: seatMissRefusal(v.name, "attach", loc) };
+    const pin = loc.kind === "pin" ? loc : undefined;
+    est = await establishAttachSession({ ...v, ...(pin ? { expectedSeat: pin.expectedSeat } : {}), ...caller, onRefusal: "throw", verb: "attach" }, pin?.instanceId, true, true);
+  } catch (e) {
+    return { ok: false, message: thrownEstablishment(e).message };
+  }
+  if (!est.ok) return { ok: false, message: est.message };
+  const { nc } = est;
+  const transport = meshSessionTransport(nc, est.grant);
+  return {
+    ok: true,
+    session: {
+      transport,
+      close: async () => {
+        if (!nc.isClosed()) {
+          transport.close();
+          await flushed(nc);
+        }
+        await closeLink(nc);
+      },
+    },
+  };
 }
 
 /**
