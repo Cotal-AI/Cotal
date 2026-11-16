@@ -71,6 +71,7 @@ const composed: Command = { ...command, async run(args) {
   let targetAdmissionChecked = false;
   let recoveryFence = false;
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
+  const reportsRetainedExecution = () => retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   try {
@@ -180,7 +181,7 @@ const composed: Command = { ...command, async run(args) {
     } catch (error) {
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
         if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
-        return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+        return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
       }
       throw error;
     }
@@ -190,7 +191,7 @@ const composed: Command = { ...command, async run(args) {
     }
     const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
-    if (!active.length) return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+    if (!active.length) return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
@@ -247,7 +248,7 @@ const composed: Command = { ...command, async run(args) {
         if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
         if (on !== undefined && on !== manager.instanceId) continue;
         if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-        if (await (retainsExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+        if (await (reportsRetainedExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
       }
     }
     if (process.platform !== "linux" && typeof flags.space !== "string") {
