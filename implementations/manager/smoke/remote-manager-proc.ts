@@ -299,44 +299,26 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
     let prepared = false;
     let error: string | undefined;
     if (op === "PREPARE_RECOVERY") {
-      // Autonomous recovery is asserted before this command. Keep the following CLI call from
-      // racing the next short-TTL refresh: renew through the real host, observe the native reconnect,
-      // then flush the restored subscription. No credential or broker response is fabricated.
-      const nc = renewalOwner.serviceServe.nc;
-      const events = nc.status()[Symbol.asyncIterator]();
+      // Autonomous recovery is asserted before this command. Hold scheduling, renew through the
+      // real host, and flush the adopted serve connection before the CLI call. Standing renewal
+      // replaces that connection and retires the old one, which cannot emit a reconnect witness.
+      const previous = renewalOwner.serviceServe.nc;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      let phase = "settle previous credential push";
+      let phase = "renew held family";
       try {
-        if (nc.isClosed()) throw new Error("recovered service connection is closed");
+        if (previous.isClosed()) throw new Error("recovered service connection is closed");
         const deadline = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("service reconnect was not observed")), 7_000);
+          timer = setTimeout(() => reject(new Error("service replacement was not ready")), 7_000);
         });
-        const reconnected = async (requireForce: boolean) => {
-          let requested = !requireForce;
-          for (;;) {
-            const event = await events.next();
-            if (event.done) throw new Error("service status ended before reconnect");
-            if (event.value.type === "forceReconnect") requested = true;
-            if (requested && event.value.type === "reconnect") return;
-          }
-        };
-        // The admitted renewal promise can settle before nats.js finishes its transport reconnect.
-        // A flush interrupted by that existing push is not evidence that recovery itself failed.
-        try { await Promise.race([nc.flush(), deadline]); }
-        catch (e) {
-          if (nc.isClosed()) throw e;
-          console.error("fixture recovery: awaiting previous renewal reconnect");
-          await Promise.race([reconnected(false), deadline]);
-          await Promise.race([nc.flush(), deadline]);
-        }
-        phase = "renew held family";
-        await Promise.all([renewStanding(true), Promise.race([reconnected(true), deadline])]);
+        await Promise.race([renewStanding(true), deadline]);
+        const nc = renewalOwner.serviceServe.nc;
+        assert.notEqual(nc, previous, "standing renewal must adopt a replacement serve connection");
         phase = "flush renewed subscriptions";
         await Promise.race([nc.flush(), deadline]);
         if (nc !== renewalOwner.serviceServe.nc || nc.isClosed()) throw new Error("service connection changed at recovery boundary");
         prepared = true;
       } catch (e) { error = `${phase}: ${(e as Error).message}`; }
-      finally { clearTimeout(timer); void events.return?.(); }
+      finally { clearTimeout(timer); }
     }
     console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, paused: pauseStandingRenewals, inFlight: held.reduce((n, flights) => n + flights.size, 0), prepared, error })}`);
     return;
@@ -344,8 +326,9 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
   const meta = (creds: string) => { const c = credsClaims(creds); return { sub: c.sub, exp: c.exp, account: c.nats?.issuer_account }; };
   if (op === "RETAIN") {
     const creds = (manager as any).runHosting?.runs?.get(runId)?.creds;
+    const retainedAt = Math.floor(Date.now() / 1000);
     if (typeof creds === "string") witnesses.set(runId, creds);
-    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, retained: typeof creds === "string", driver: typeof creds === "string" ? meta(creds) : null })}`);
+    console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, retained: typeof creds === "string", retainedAt, driver: typeof creds === "string" ? meta(creds) : null })}`);
     return;
   }
   const creds = witnesses.get(runId);
@@ -361,6 +344,10 @@ async function witness(op: "RETAIN" | "DIAL_WITNESS" | "PAUSE_RENEWALS" | "RESUM
   }
   console.log(`WITNESS_RESULT:${JSON.stringify({ op, runId, retained: !!creds, driver: creds ? meta(creds) : null, dialRefused })}`);
 }
+// Fixture-local opaque ids compare ACTUAL held transports without exposing credentials or
+// relying on a log emitted only by the separate closed-connection recovery path.
+const serveConnectionIds = new WeakMap<object, number>();
+let nextServeConnectionId = 0;
 /** Standing duty metadata from the manager's ACTUAL held fields (fixture-only; public data only). */
 function standingMeta() {
   const m = manager as any;
@@ -372,7 +359,13 @@ function standingMeta() {
     sessionLedger: m.sessionLedgerCreds,
   };
   const now = Math.floor(Date.now() / 1000);
-  const out: Record<string, unknown> = { debt: m.remoteRenewalDebt?.reason ?? null, serveConnClosed: m.serviceServe ? m.serviceServe.nc.isClosed() : null };
+  const nc = m.serviceServe?.nc;
+  if (nc && !serveConnectionIds.has(nc)) serveConnectionIds.set(nc, ++nextServeConnectionId);
+  const out: Record<string, unknown> = {
+    debt: m.remoteRenewalDebt?.reason ?? null,
+    serveConnClosed: nc ? nc.isClosed() : null,
+    serveConnectionId: nc ? serveConnectionIds.get(nc) : null,
+  };
   for (const [k, v] of Object.entries(held)) {
     if (typeof v !== "string") { out[k] = null; continue; }
     const c = credsClaims(v);

@@ -312,7 +312,6 @@ try {
 
   // Fixture-only probe of the child's ACTUAL held run credentials (non-secret metadata only).
   const probeWaiters: ((r: any) => void)[] = [];
-  const serveRedials: number[] = [];
   const enrollWaiters: ((r: any) => void)[] = [];
   const witnessWaiters: ((r: any) => void)[] = [];
   let probeBuf = "";
@@ -359,7 +358,6 @@ try {
       stderrOutput += d.toString();
       for (const l of d.toString().split("\n")) {
         if (/renewal|refus|expired|Authorization|re-dialed|could not be restored/i.test(l)) console.log(`    mgr: ${l.slice(0, 220)}`);
-        if (/manager service endpoint re-dialed/.test(l)) serveRedials.push(Date.now());
       }
     });
     managerProc!.on("exit", (code) => {
@@ -553,10 +551,12 @@ try {
   let answeredWhileExpired = false;
   let answerWhileExpiredWhy = "";
   let lastGoodWitness: { sub: string; exp: number; account: string } | undefined;
+  let lastGoodServeConnectionId: number | undefined;
   await cell("4a. Refused renewRunDriver keeps the held last-good driver/mediator (same nkey and exp) and records debt", async () => {
     // A successful request admitted before refusal may still be adopting its pair. Drain those
     // real calls before taking the witness, then deny issuance before resuming the scheduler.
     let pre: Awaited<ReturnType<typeof probeHeld>>;
+    let retainedDriver: { sub: string; exp: number; account: string };
     try {
       const boundary = await witnessOp("PAUSE_RENEWALS", activeRunId);
       assert.equal(boundary.paused, true, "renewal sampling boundary must pause new calls");
@@ -566,6 +566,16 @@ try {
         ? "run must be held by the manager"
         : "run must be held by the manager, but cell 2 never saw it park at the checkpoint, so this is that failure and not a holding defect");
       assert.equal(pre.debt, null, "no renewal debt before refusal");
+      assert.equal(pre.standing.serveConnClosed, false, "service connection must be open before refusal");
+      assert.ok(Number.isSafeInteger(pre.standing.serveConnectionId), "held service connection must have an identity");
+      lastGoodServeConnectionId = pre.standing.serveConnectionId;
+      // Capture while renewals are drained, before waiting for the refused renewal tick. The
+      // child's timestamp observes the retention itself, not the parent's later scheduling.
+      const w = await witnessOp("RETAIN", activeRunId);
+      assert.equal(w.retained, true, "the held last-good driver must be retainable before refusal");
+      assert.deepEqual(w.driver, pre.driver, "expiry witness must be the sampled held last-good driver");
+      assert.ok(w.retainedAt < w.driver.exp, "witness must be captured before the driver's real expiry");
+      retainedDriver = w.driver;
       refuseHttpRenewals = true;
       refusedRunRenewals = 0;
     } finally {
@@ -582,12 +592,9 @@ try {
     assert.equal(post.driver.account, auth.account.pub);
     assert.ok(typeof post.debt === "string" && post.debt.includes("issuer unavailable"), "refusal must be recorded as renewal debt on the held run");
     assert.equal(post.dialRefused, false, "last-good driver must still be accepted before its real expiry");
-    // Bind the expiry witness to THIS verified pre-expiry observation of the held last-good driver.
-    const w = await witnessOp("RETAIN", activeRunId);
-    assert.equal(w.retained, true, "the held last-good driver must be retainable as the expiry witness before expiry");
-    assert.deepEqual(w.driver, post.driver, "expiry witness must be the same held last-good driver verified above");
-    assert.ok(Math.floor(Date.now() / 1000) < post.driver.exp, "witness must be captured before the driver's real expiry");
-    lastGoodWitness = post.driver;
+    // Publish the pre-expiry witness only after the unchanged last-good pair and debt are verified.
+    assert.deepEqual(retainedDriver, post.driver, "expiry witness must remain the verified last-good driver");
+    lastGoodWitness = retainedDriver;
   });
 
   await cell("4b. Sustained refusal past the held credential's real expiry: broker refuses it and the parked run makes no progress", async () => {
@@ -638,15 +645,14 @@ try {
   const runRecoveredCli = async (args: string[]) => {
     try {
       // Each call holds the 10s standing family, so a call that outlasts it under load lets it
-      // expire and the manager re-dials on its own. The next call waits for that recovery rather
-      // than starting on a closed service connection.
+      // expire. Wait for the manager's adopted live transport before the next recovery call.
       const recovered = await until(async () => {
         const s = (await probeHeld(activeRunId)).standing;
         return ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].every((k) => s[k]?.live) && s.debt === null && s.serveConnClosed === false;
       }, 45_000);
       assert.ok(recovered, "standing duties and the service connection must be live before a recovery call");
       const boundary = await witnessOp("PREPARE_RECOVERY", activeRunId);
-      assert.equal(boundary.prepared, true, boundary.error ?? "service reconnect and subscription flush must finish before the recovery call");
+      assert.equal(boundary.prepared, true, boundary.error ?? "service replacement and subscription flush must finish before the recovery call");
       assert.equal(boundary.inFlight, 0, "no renewal may race the recovery call");
       return await runCli(args);
     } finally {
@@ -672,13 +678,13 @@ try {
       assert.equal(p.standing[k].account, auth.account.pub, `${k} account changed across re-adoption`);
     }
 
-    // If the service connection closed during the refusal, its bounded re-dial (1s/5s/30s) must
-    // restore it before any control command can be answered. Record when it did.
-    const clearedAt = Date.now();
+    // All-duty renewal adopts a newly subscribed serve transport and retires the old one.
+    // Its closed-connection recovery log is not emitted when that adoption wins the race.
     if (REFUSE_SCOPE === "all") {
-      const redialed = await until(() => serveRedials.some((t) => t >= clearedAt - 60_000), 45_000);
-      console.log(`    evidence: serve re-dial after clear=${redialed} at +${serveRedials.length ? Math.round((serveRedials.at(-1)! - clearedAt) / 1000) : "none"}s redials=${serveRedials.length}`);
-      assert.ok(redialed, "service endpoint was not re-dialed after standing re-adoption");
+      assert.ok(lastGoodServeConnectionId !== undefined, "recovery requires the pre-refusal service connection witness");
+      assert.notEqual(p.standing.serveConnectionId, lastGoodServeConnectionId, "standing re-adoption must replace the pre-refusal service connection");
+      assert.equal(p.standing.serveConnClosed, false, "the adopted service connection must be open");
+      console.log(`    evidence: adopted service connection ${lastGoodServeConnectionId}->${p.standing.serveConnectionId} closed=${p.standing.serveConnClosed}`);
     }
     const recBefore = await readRunRecord(recordsKv, "manager", activeRunId);
     const r = await runRecoveredCli(["resume", activeRunId]);
