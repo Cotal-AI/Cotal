@@ -54,7 +54,7 @@ const failures: string[] = [];
 let checks = 0, seq = 0;
 const check = (label: string, ok: unknown, detail?: unknown) => {
   checks++;
-  console.log(`${ok ? "PASS" : "FAIL"} ${label}`);
+  console.log(`  ${ok ? "✓" : "✗"} ${label}`);
   if (!ok) { failures.push(label); console.log(JSON.stringify(detail)); }
 };
 const tool = async (seat: string, name: string, args: Record<string, unknown>): Promise<ToolResult> => {
