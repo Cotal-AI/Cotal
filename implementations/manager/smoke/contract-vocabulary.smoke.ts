@@ -80,7 +80,6 @@ artifacts.forEach((a, i) => {
 // equal to it, because this asserts "the set is not empty or gutted", not "the set never grows".
 const FLOOR = 20;
 const enough = checked >= FLOOR;
-console.log(`\n${checked} documents checked, ${refused} refused by the admitted vocabulary`);
 if (!enough) console.log(`  FAIL  only ${checked} documents reached the check (floor ${FLOOR}) - the input set collapsed`);
 
 // THE IMPORT-COST CELL (#1323): importing the contract module must not compile the schemas. The
@@ -168,5 +167,6 @@ if (sharedChecked !== 8) {
 }
 
 const pass = refused === 0 && enough && lazyOk;
+console.log(`\n${checked} documents checked, ${refused} refused by the admitted vocabulary`);
 console.log(`\nCONTRACT VOCABULARY ${pass ? "OK ✅" : "FAILED ❌"}`);
 process.exit(pass ? 0 : 1);
