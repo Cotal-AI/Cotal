@@ -6,7 +6,7 @@
  * proves the gate (npx + no global `cotal`) and that a failed install is handled gracefully (the
  * feature is best-effort and must never throw / abort setup).
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { daemonArgv, displayCmd, isNpx, cotalOnPath, selfArgv, verifiedCotalExecutables } from "../src/lib/self-exec.js";
@@ -239,6 +239,30 @@ if (process.platform !== "win32") {
   const launchd = renderLaunchdServiceUnit({ ...unit, privateHome: "/home/u/.cotal/service-launchd/x", searchPath: "/usr/bin:/bin" });
   check("the LaunchAgent preview runs its entry under node --max-semi-space-size=1",
     launchd.bytes.includes("<array><string>/usr/bin/node</string><string>--max-semi-space-size=1</string><string>/opt/cotal/dist/cotal.js</string><string>__service-unit</string>"));
+}
+
+if (process.platform !== "win32") {
+  const fixture = mkdtempSync(join(tmpdir(), "pnpm-daemon-route-"));
+  const key = Symbol.for("cotal.execution.identity");
+  const prior = Object.getOwnPropertyDescriptor(globalThis, key);
+  try {
+    const physical = join(fixture, "store", "cotal-ai");
+    const route = join(fixture, "global", "v11", "group", "node_modules", "cotal-ai");
+    mkdirSync(join(physical, "dist"), { recursive: true });
+    writeFileSync(join(physical, "package.json"), JSON.stringify({name: "cotal-ai", version: "0.164.18", bin: {cotal: "./dist/cotal.js"}}));
+    writeFileSync(join(physical, "dist", "cotal.js"), "");
+    mkdirSync(dirname(route), { recursive: true });
+    symlinkSync(physical, route);
+    const logicalEntry = realpathSync(join(physical, "dist", "cotal.js"));
+    const launchEntry = join(route, "dist", "cotal.js");
+    setArgv(logicalEntry);
+    Object.defineProperty(globalThis, key, {value: Object.freeze({logicalEntry, loadedEntry: logicalEntry, launchEntry}), configurable: true});
+    check("a Manager child retains the validated pnpm global launch route", daemonArgv().at(-1) === launchEntry);
+  } finally {
+    if (prior) Object.defineProperty(globalThis, key, prior);
+    else Reflect.deleteProperty(globalThis, key);
+    rmSync(fixture, { recursive: true, force: true });
+  }
 }
 
 process.argv[1] = realArgv1;
