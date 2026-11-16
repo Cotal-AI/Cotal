@@ -283,6 +283,13 @@ try {
   check("service add m1 --preset manager saves m1", manager.status === 0, out(manager));
   const shown = cotal(["service", "show", "manager", "--space", SPACE]);
   check("service show manager reads m1 and says so on stderr", shown.status === 0 && shown.stderr.includes("manager in space servicecommands is the saved service m1") && /Name: +m1\n/.test(shown.stdout), out(shown));
+  // #7072: a dry run with another option used to save m1 again, so the next real start used the
+  // previewed --runtime. The note about m1 shows the preview reached m1.
+  const savedM1 = () => JSON.stringify(serviceDefinitionStore(SPACE).read("m1"));
+  const beforePreview = savedM1();
+  const preview = cotal(["manager", "start", "--space", SPACE, "--runtime", "absent", "--dry-run"]);
+  check("manager start --runtime absent --dry-run previews m1 and saves nothing",
+    preview.status === 0 && preview.stderr.includes("manager in space servicecommands is the saved service m1") && !out(preview).includes("again with the new") && savedM1() === beforePreview, { preview: out(preview), before: beforePreview, after: savedM1() });
   const removed = cotal(["service", "remove", "manager", "--space", SPACE, "--yes", "--json"]);
   let removedName: unknown;
   try { removedName = (JSON.parse(removed.stdout) as { result: { kind: string; name: string } }).result; } catch { removedName = out(removed); }
