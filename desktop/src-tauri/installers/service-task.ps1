@@ -260,9 +260,7 @@ public static class HoldersQuery {
   if ($Action -eq 'holders') {
     $runtime = Join-Path $root 'runtime'
     $files = @()
-    if (Test-Path -LiteralPath $runtime -PathType Container) {
-      $files = @(Get-ChildItem -LiteralPath $runtime -Recurse -File | Select-Object -ExpandProperty FullName)
-    }
+    if (Test-Path -LiteralPath $runtime -PathType Container) { $files = @($runtime) }
     $session = [uint32]0
     $key = 'cotal-setup-holders-000000000000'
     $started = [HoldersQuery]::RmStartSession([ref]$session, [uint32]0, $key)
