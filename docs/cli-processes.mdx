@@ -609,8 +609,10 @@ Turn on the spaces that can use it in the provider's dashboard.
 Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
 refresh the service's PATH when the daemon is signed in to one provider. The provider comes
 from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
-the CLI selects Cloud when no provider is known. Known providers retain their selection flow;
-use `--cloud` or `--idp <url>` to select one explicitly. With an installed daemon and no sign-in or
+the CLI selects Cloud when no provider is known. Outside an interactive terminal, a sole
+known provider from saved accounts or registered spaces is selected even without a saved sign-in.
+Several known providers require an explicit choice. Use `--cloud` or `--idp <url>` to select
+one explicitly. With an installed daemon and no sign-in or
 several signed-in providers, pass an explicit provider; the several-provider refusal lists
 the choices. An explicit provider keeps the installation and sign-in flow. The result lists
 spaces already turned on for this computer, or asks you to turn them on in the dashboard.
