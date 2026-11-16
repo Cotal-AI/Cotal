@@ -81,7 +81,7 @@ export async function rootOwnedCell({ registry, identity, output, oldVersion }) 
   }
   const ok = (row, label) => { assert.equal(row.exit, 0, `${label}: ${row.stdout}${row.stderr}`); return row; };
   const install = async version => {
-    const result = ok(await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund']), 'root installation');
+    const result = ok(await call(`root npm install ${version}`, true, [npm, 'install', '-g', '--prefix', prefix, `cotal-ai@${version}`, '--no-audit', '--no-fund', '--loglevel=verbose']), 'root installation');
     const source = "import {lstatSync,readFileSync} from 'node:fs';import {createHash} from 'node:crypto';const p='/usr/local/lib/node_modules/cotal-ai';const info=lstatSync(p);const read=n=>{const b=readFileSync(p+'/'+n);return {sha256:createHash('sha256').update(b).digest('hex'),mode:lstatSync(p+'/'+n).mode&4095}};console.log(JSON.stringify({uid:info.uid,mode:info.mode&4095,version:JSON.parse(readFileSync(p+'/package.json')).version,manifest:read('package.json'),bootstrap:read('dist/cotal.js')}));";
     const observation = JSON.parse(ok(await call('record root-installed source bytes and ownership', true, [node, '--input-type=module', '-e', source]), 'installed source identity').stdout);
     assert.equal(observation.uid, 0, 'global package must be root owned');
