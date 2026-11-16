@@ -79,6 +79,8 @@
   "devDependencies": {
     "@cotal-ai/auth": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
+    "@nats-io/jwt": "0.0.10-5",
+    "@nats-io/nkeys": "^2.0.3",
     "@types/react": "^19.0.0",
     "@types/ws": "^8.18.1"
   },

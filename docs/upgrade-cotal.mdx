@@ -201,6 +201,8 @@ curl -fsSL https://get.cotal.ai | sh -s -- --no-setup --no-modify-path
 
 Then run `cotal version` and `cotal status` using the installer's launcher at `~/.local/bin/cotal`.
 
+On Linux 0.160.x, an unattended update interrupted by the service restart can restore the previous release and its connectors. After two failed attempts at the same release, `cotal daemon status` reports that it is waiting for a newer version or a manual update. Run `npm install -g cotal-ai@latest`, then `cotal update --self` using that installation's launcher. The current updater reconciles the connectors and waits for the daemon. Check `cotal daemon status` for the current version and automatic updates on. Do not uninstall the daemon or remove its configuration and credentials.
+
 From the prepared project folder, run the target version's command:
 
 ```bash

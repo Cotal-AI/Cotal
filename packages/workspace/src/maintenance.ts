@@ -1086,6 +1086,13 @@ function assertLock(lock: MaintenanceLock): void {
     maintenanceError("lock-lost", "maintenance lock ownership changed", { root: paths.root });
 }
 
+/** Verify a retained lock token at the expected root, without releasing it. */
+export function assertMaintenanceLock(lock: MaintenanceLock, root = lock.root): void {
+  if (maintenancePaths(root).root !== lock.root)
+    maintenanceError("lock-lost", "maintenance lock belongs to a different root", { root: maintenancePaths(root).root });
+  assertLock(lock);
+}
+
 export function releaseMaintenanceLock(lock: MaintenanceLock): void {
   assertLock(lock);
   unlinkSync(lock.path);

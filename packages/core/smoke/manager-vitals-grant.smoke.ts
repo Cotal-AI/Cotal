@@ -24,7 +24,7 @@ const cell = (name: string, ok: boolean, seen?: unknown) => {
 const vitals = commands([MANAGER_VITALS_SCOPE]);
 cell("machine-vitals grants one exact pinned vitals row", vitals.filter((row) => row.command === "vitals" && row.instanceId === IID).length === 1, vitals);
 cell("machine-vitals adds no Manager command besides describe, baseline self calls and vitals",
-  vitals.every((row) => ["describe", "stop", "turn-pending", "turn-yield", "run-answer", "vitals"].includes(row.command)), vitals);
+  vitals.every((row) => ["describe", "stop", "turn-participate", "turn-pending", "turn-yield", "turn-unconfirmed", "run-answer", "vitals"].includes(row.command)), vitals);
 for (const scope of [[], ["spawn"], ["run"], ["admin"], ["spawn", "run", "admin"]])
   cell(`${scope.join("+") || "no scope"} does not imply vitals`, commands(scope).every((row) => row.command !== "vitals"), commands(scope));
 cell("vitals scope does not add spawn, run, ps, slots or admin commands",

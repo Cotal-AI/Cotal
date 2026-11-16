@@ -3,6 +3,7 @@
 // node bin/smoke/build-daemon-upgrade-fixture.mjs <new-output-directory>
 // Both private fixture versions contain the SAME current source, not historical releases.
 // Requires installed workspace dependencies, pnpm, npm and the local TypeScript compiler.
+// Stages current built-in connector payloads with the binary's prepack step before copying.
 // Deployment is offline. --workspace-source copies the installed workspace dependency closure.
 // Native dependencies remain specific to the build host.
 // No cleanup is performed on failure: retain the output for inspection, then use a new path.
@@ -47,6 +48,7 @@ for (const name of ['@cotal-ai/cli', '@cotal-ai/auth']) {
 // Exclusive mkdir rejects existing directories AND symlinks, including dangling ones.
 // All descendants below are created by this invocation. Never merge into an old tree.
 mkdirSync(out);
+run(process.execPath, [join(repo, 'bin/scripts/copy-seeded-connectors.mjs')]);
 const fromWorkspace = args[1] === '--workspace-source';
 const deployed = fromWorkspace ? join(repo, 'bin') : join(out, 'deployment');
 if (!fromWorkspace) run('pnpm', ['--filter', 'cotal-ai', 'deploy', '--legacy', '--prod', '--offline', deployed]);

@@ -2249,15 +2249,15 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
             writeFileSync(join(pathBin, "loginctl"), `#!${process.execPath}\nconsole.log('Linger=yes');\n`, { mode: 0o700 });
             writeFileSync(join(pathBin, "systemctl"), `#!${process.execPath}\nconst args=process.argv.slice(2);if(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}const op=args.includes('daemon-reload')?'daemon-reload':args.includes('enable')?'daemon-reload':args.at(-2);if(!['stop','start','disable','daemon-reload'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(pathControl!.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
             check("J0 clean setup starts with no installed service", !existsSync(pathUnit) && !existsSync(pathReceipt));
-            const absent = await cli("setup");
-            check("J0a no installed daemon names provider flag", absent.code !== 0 && absent.doc.error?.message.includes("--idp <url>"), absent);
             const before = deviceCodeRequests;
-            const fresh = await cli("setup", "--idp", idpUrl);
-            check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string", fresh);
+            // Other registered fixture spaces still identify this provider, even without a sign-in.
+            const fresh = await cli("setup");
+            check("J0a no installed daemon selects the sole known provider", fresh.code === 0 && fresh.doc.target?.idp === idpUrl && existsSync(pathUnit) && existsSync(pathReceipt), fresh);
+            check("J1 account setup registers with one device approval", fresh.code === 0 && deviceCodeRequests === before + 1 && typeof fresh.doc.result?.machineId === "string" && fresh.doc.result.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "signed-in"), fresh);
             const initial = (await cli("status")).doc.result;
             check("J2 account setup turns on no space", initial?.account?.hostSupport === "supported" && initial.account.spaces.length === 0 && !accountDesired, initial);
             const again = await cli("setup", "--idp", idpUrl);
-            check("J3 account setup reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId, again);
+            check("J3 explicit provider reuses approval and computer identity", again.code === 0 && deviceCodeRequests === before + 1 && again.doc.result?.machineId === fresh.doc.result?.machineId && again.doc.result?.steps?.some((step: { step: string; outcome: string }) => step.step === "sign-in" && step.outcome === "already-signed-in"), again);
             const human = await plainCommand("setup", "--idp", idpUrl);
             check("J4 human output names account computer and dashboard", human.code === 0 && human.out.includes("Connected to your account") && human.out.includes("operator@example.test") && !human.out.includes("machine-owner") && human.out.includes("in the dashboard"), human);
             for (const flags of [["--no-manager"], ["--wait", "0"]]) {

@@ -397,6 +397,10 @@ step ([`bin/scripts/copy-seeded-connectors.mjs`](../bin/scripts/copy-seeded-conn
 each one with `npm pack` into `bin/seeded-connectors/<name>/`, which honors each connector's own
 `files`. The `files` field of `cotal-ai` includes that folder.
 
+The copied-install daemon upgrade fixture builder runs this same staging step before copying
+either source mode. After `pnpm build`, `tsx bin/smoke/daemon-generation-live.smoke.ts` needs no
+separate staging command and refreshes any existing generated payload from the current build.
+
 `SEEDED_EXTENSIONS` (`@cotal-ai/workspace`) is the shared list: the connectors plus `web`. The
 prepack asserts that every bundled payload's `name` and `version` match the umbrella package. The
 `fixed` changeset group keeps them in lockstep, so a version-skewed payload can never be published.

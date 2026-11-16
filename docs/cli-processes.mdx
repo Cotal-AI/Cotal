@@ -580,14 +580,14 @@ The desktop's confirmed disconnect action uses `service-disconnect` for each nam
 It reports incomplete outcomes per space and does not claim credential erasure or remote revocation.
 
 ```bash
-cotal daemon setup [--cloud | --idp <url>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
-cotal daemon setup --space <s> [--idp <auth base URL>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon setup [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon setup --space <s> [--idp <auth URL or name>] [--client-id <id>] [--no-manager] [--wait <seconds>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]
 cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]
 cotal daemon start [--daemon-home <dir>] [--json|--plain]
 cotal daemon serve [--daemon-home <dir>] [--json|--plain]
 cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]
-cotal daemon login [--cloud | --idp <auth base URL>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
+cotal daemon login [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon name [<name>] [--daemon-home <dir>] [--json|--plain]
 cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]
 cotal daemon desktop [--daemon-home <dir>]
@@ -609,8 +609,10 @@ Turn on the spaces that can use it in the provider's dashboard.
 Run `cotal daemon setup` from a terminal that finds newly installed agent applications to
 refresh the service's PATH when the daemon is signed in to one provider. The provider comes
 from the daemon's reply; the CLI does not open the sign-in. With no installed daemon,
-the CLI selects Cloud when no provider is known. Known providers retain their selection flow;
-use `--cloud` or `--idp <url>` to select one explicitly. With an installed daemon and no sign-in or
+the CLI selects Cloud when no provider is known. Outside an interactive terminal, a sole
+known provider from saved accounts or registered spaces is selected even without a saved sign-in.
+Several known providers require an explicit choice. Use `--cloud` or `--idp <url>` to select
+one explicitly. With an installed daemon and no sign-in or
 several signed-in providers, pass an explicit provider; the several-provider refusal lists
 the choices. An explicit provider keeps the installation and sign-in flow. The result lists
 spaces already turned on for this computer, or asks you to turn them on in the dashboard.
@@ -1197,8 +1199,11 @@ command prints only the approval link, code and expiry to stderr, then the signe
 When it replaces another account at the same provider, human and plain output add
 `Replaced account: <subject>` naming the previous subject. JSON retains `previousSub`.
 First sign-ins and same-account repeats do not report a replacement. No
-session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, or an
-HTTP loopback IP URL; `--client-id` defaults to `cotal-cli`.
+session token crosses the endpoint or reaches the terminal. `--idp` takes an HTTPS auth URL, an
+HTTP loopback IP URL, or an issuer-authorized discovery hostname; `--client-id` defaults to `cotal-cli`.
+Both `login` and `setup` reject malformed URLs, non-loopback HTTP URLs, embedded credentials,
+queries and fragments with `USAGE_INVALID` (exit 1), before contacting the daemon or changing its
+service. The rejected URL is neither echoed nor recorded as the provider target.
 
 Signing in as a different account at the same provider removes the previous account's catalog
 cache from the selected daemon home. The default daemon also removes that account's discovered

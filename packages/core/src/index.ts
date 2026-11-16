@@ -61,6 +61,7 @@ export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";
 export * from "./resolve.js";
 export * from "./presence-ages.js";
+export * from "./permissions.js";
 export * from "./process-runtime.js";
 export * from "./presence-text.js";
 export * from "./one-line.js";

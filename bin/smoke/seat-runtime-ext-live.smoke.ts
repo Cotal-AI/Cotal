@@ -117,7 +117,7 @@ const CHILD = [
   "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,",
   "creds:process.env.COTAL_CREDS?fs.readFileSync(process.env.COTAL_CREDS,'utf8'):undefined,",
   "lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,",
-  "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
 ].join("");
 registry.register({

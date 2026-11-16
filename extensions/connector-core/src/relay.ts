@@ -107,9 +107,20 @@ function done(out: string, confirm?: (then: () => void) => void): void {
  *  the only kind the relay forwards. */
 export type LocalHookAnswer = (event: unknown, session: { managed: boolean }) => Record<string, unknown> | undefined;
 
+export interface HookRelayOptions {
+  /** Events the connector holds until someone answers them, such as a permission prompt. The relay
+   *  waits on one with no deadline of its own, so only the runtime's hook timeout bounds it. A
+   *  connect failure still fails open. */
+  readonly holds?: (event: unknown) => boolean;
+}
+
 /** Relay one hook event from stdin to the connector's control socket and print the reply. `answer`
  *  runs first, so a decision that needs no connector state holds even when the socket is down. */
-export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: unknown, session: { managed: boolean }) => Promise<void>): Promise<void> {
+export async function runHookRelay(
+  answer?: LocalHookAnswer,
+  observe?: (event: unknown, session: { managed: boolean }) => Promise<void>,
+  opts: HookRelayOptions = {},
+): Promise<void> {
   const managed = hasIdentity();
   if (!managed && !answer && !observe) return done(""); // plain session with nothing to answer — no-op
   const raw = (await readStdin()).trim() || "{}";
@@ -188,7 +199,7 @@ export async function runHookRelay(answer?: LocalHookAnswer, observe?: (event: u
       }
     });
   };
-  const timer = setTimeout(() => finish(""), TIMEOUT_MS);
+  const timer = opts.holds?.(event) ? undefined : setTimeout(() => finish(""), TIMEOUT_MS);
 
   const retryLater = (): void => {
     const wait = retryDelayMs;

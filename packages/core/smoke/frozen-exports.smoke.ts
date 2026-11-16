@@ -112,7 +112,9 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
 // "./advisory-lock" is the lock the OpenCode launcher bundles to claim an agent's database, which
 // would otherwise bundle the barrel.
 // "./contract-validator" is the interpreter a generated validator module imports at run time; a
-// browser target loads that module without the barrel, so its one function lives only there.)
+// browser target loads that module without the barrel, so its one function lives only there.
+// "./permissions" is the permission record and its rules, which a browser reader parses without the
+// barrel.)
 {
   const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { exports?: Record<string, unknown> };
   const keys = Object.keys(pkg.exports ?? {});
@@ -126,6 +128,7 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
     ["./subjects", { module: "subjects", additions: [] }],
     ["./advisory-lock", { module: "advisory-lock", additions: [] }],
     ["./presence-ages", { module: "presence-ages", additions: [] }],
+    ["./permissions", { module: "permissions", additions: [] }],
     ["./browser-control", { module: "browser-control", additions: ["browserServiceSurface", "openBrowserEndpointCaller", "openBrowserManagerCaller", "verifyGoalResultFact"] }],
     ["./browser-validators-build", { module: "browser-validators-build", additions: ["generateBrowserContracts"] }],
     ["./contract-validator", { module: "contract-validator", additions: ["prepareContractValidator"] }],

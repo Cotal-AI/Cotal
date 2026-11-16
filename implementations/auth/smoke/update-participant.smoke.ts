@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findMesh, recordMesh, refreshRegistrationPolicy } from '@cotal-ai/workspace';
 import { prepareUpdateParticipant } from './update-participant.fixture.js';
 
-const parent = '/var/tmp/upgrade-matrix';
-mkdirSync(parent, { recursive: true, mode: 0o700 });
-const root = mkdtempSync(join(parent, 'participant-pins-'));
+const root = mkdtempSync(join(tmpdir(), 'participant-pins-'));
 const home = join(root, 'home'), config = join(home, 'config'), project = join(root, 'project');
 for (const path of [home, config, project, join(root, 'tmp')]) mkdirSync(path, { recursive: true, mode: 0o700 });
-const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config, TMPDIR: join(root, 'tmp') };
+process.env.COTAL_HOME = join(home, '.cotal');
+const env = {
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))),
+  HOME: home, COTAL_HOME: process.env.COTAL_HOME, XDG_CONFIG_HOME: config, TMPDIR: join(root, 'tmp'),
+};
 const report: Record<string, any> = {};
 const close = await prepareUpdateParticipant({ env, project, cotalHome: env.COTAL_HOME, report });
 try {
