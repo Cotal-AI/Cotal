@@ -35,7 +35,7 @@ function verify(lock: MaintenanceLock, installedRoot: string, reference: Migrati
 }
 
 /** The coordinator supplies its verified complete package and records the result in its existing
- * resume document under inventory.migrationExecution while both native writer locks still hold.
+ * resume document under launch.migrationExecution while both native writer locks still hold.
  * This changes no execution descriptor, installed version, daemon or activation state. */
 export function captureMigrationExecution(opts: { lock: MaintenanceLock; installedRoot: string; verifiedSource: string;
   record(reference: MigrationExecutionReference): Resume }): { reference: MigrationExecutionReference; resume: Resume } {
@@ -44,8 +44,8 @@ export function captureMigrationExecution(opts: { lock: MaintenanceLock; install
     const reference = { generation, node: captureMigrationNode(opts.lock, dirname(generation.root)) };
     verify(opts.lock, opts.installedRoot, reference);
     const resume = opts.record(reference);
-    const inventory = readMaintenanceResumeDocument(opts.lock.root, resume).inventory;
-    if (canonicalJson(localRecordObject(inventory, Object.keys(inventory ?? {})).migrationExecution) !== canonicalJson(reference))
+    const launch = readMaintenanceResumeDocument(opts.lock.root, resume).launch;
+    if (canonicalJson(localRecordObject(launch, Object.keys(launch ?? {})).migrationExecution) !== canonicalJson(reference))
       throw new Error("the existing maintenance resume document did not bind the execution receipt");
     verify(opts.lock, opts.installedRoot, reference);
     return { reference, resume };

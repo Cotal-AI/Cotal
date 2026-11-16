@@ -50,15 +50,17 @@ if (!childMode) {
   let count = 0, released = false;
   const cell = (name: string, fn: () => void) => { fn(); console.log(`ok ${++count} ${name}`); };
   try {
+    const inventory = { fixture: "manager-inventory-unchanged" };
     const result = captureMigrationExecution({ lock, installedRoot, verifiedSource: installedRoot,
-      record: reference => writeMaintenanceResumeDocument(lock, { version: 1, inventory: { migrationExecution: JSON.parse(JSON.stringify(reference)) }, launch: { kind: "native-node-fixture" } }),
+      record: reference => writeMaintenanceResumeDocument(lock, { version: 1, inventory, launch: { kind: "native-node-fixture", migrationExecution: JSON.parse(JSON.stringify(reference)) } }),
     });
     const { reference, resume } = result, directory = dirname(reference.generation.root), node = reference.node.retainedPath;
     writeFileSync(join(fixture, "capture.json"), JSON.stringify(result, null, 2), { mode: 0o600, flag: "wx" });
     cell("retains the real published generation", () => assert.equal(reference.generation.version, originalVersion));
     cell("records the actual running Node", () => assert.equal(reference.node.sourcePath, process.execPath));
     cell("retained executable is private", () => assert.equal(lstatSync(node).mode & 0o777, 0o700));
-    cell("resume document binds the complete receipt", () => assert.deepEqual(JSON.parse(JSON.stringify(readMaintenanceResumeDocument(lock.root, resume).inventory)), { migrationExecution: reference }));
+    cell("resume launch metadata binds the complete receipt", () => assert.deepEqual(JSON.parse(JSON.stringify(readMaintenanceResumeDocument(lock.root, resume).launch)), { kind: "native-node-fixture", migrationExecution: reference }));
+    cell("does not change the caller's inventory", () => assert.equal(JSON.stringify(readMaintenanceResumeDocument(lock.root, resume).inventory), JSON.stringify(inventory)));
     cell("does not activate the retained generation", () => assert.equal(existsSync(executionDescriptorPath(installedRoot)), false));
     cell("verifies package and Node under native locks", () => verifyMigrationExecution(lock, installedRoot, reference));
     cell("refuses overwriting an existing Node", () => assert.throws(() => captureMigrationNode(lock, directory), /EEXIST/));
