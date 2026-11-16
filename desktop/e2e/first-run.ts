@@ -747,6 +747,12 @@ export async function firstRun(fixture: Fixture): Promise<void> {
         assert.ok(Number.isInteger(filteredPid) && filteredPid > 0, "filtered app stayed running for the driver");
         try {
           assert.ok(driver instanceof WindowDriver, "filtered attach requires the Windows driver");
+          assert.ok(!server || server.exitCode !== null || server.signalCode !== null, "filtered attach starts its own driver");
+          server = spawn(process.env.TAURI_DRIVER ?? "tauri-driver", [], { env: guiEnv, cwd: home, stdio: ["ignore", "pipe", "pipe"] });
+          server.stdout?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
+          server.stderr?.on("data", b => writeFileSync(join(output, "driver.log"), b, { flag: "a" }));
+          server.on("error", error => { failure = String(error); });
+          await until("filtered driver listening", () => driver.call("GET", "/status"), Boolean, 30_000);
           await driver.attachWindows(debuggerPort);
           const savedPid = windowsAppPid;
           windowsAppPid = filteredPid;
@@ -758,6 +764,7 @@ export async function firstRun(fixture: Fixture): Promise<void> {
           } finally { windowsAppPid = savedPid; }
         } finally {
           await driver.close();
+          if (server && server.exitCode === null && server.signalCode === null) server.kill();
           spawnSync("taskkill", ["/PID", String(filteredPid), "/T", "/F"], { windowsHide: true });
           const ps = join(process.env.SystemRoot!, "System32/WindowsPowerShell/v1.0/powershell.exe");
           const preferenceScript = `$paths=@((Join-Path $env:APPDATA 'ai.cotal.desktop\\presence.json'),(Join-Path $env:USERPROFILE 'AppData\\Roaming\\ai.cotal.desktop\\presence.json'))|Select-Object -Unique; $facts=@(); foreach($path in $paths){$fact=[ordered]@{path=$path;exists=[IO.File]::Exists($path);size=$null;sha256=$null;login=$null}; if($fact.exists){$bytes=[IO.File]::ReadAllBytes($path);$fact.size=$bytes.Length;$fact.sha256=[BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-','').ToLowerInvariant();$parsed=[Text.Encoding]::UTF8.GetString($bytes)|ConvertFrom-Json; if($parsed.PSObject.Properties.Name -contains 'login'){$fact.login=$parsed.login}}; $facts+=$fact}; [Console]::Out.Write(($facts|ConvertTo-Json -Compress -Depth 4))`;
