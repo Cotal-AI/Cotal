@@ -113,6 +113,10 @@ The root-owned installation probe repeats that check and extracts a verified Nod
 The root npm process records and asserts its `0022` mask, and installation also sets npm's extraction mask to `022`.
 It records ownership and modes from the installed package through `/` before a Cotal command runs.
 The package directory must be `0755`, its manifest `0644` and its executable bootstrap `0755`.
+Root account data lives in a fresh `0700` folder at `/root/cotal-root-cell-<run-id>-<cell-id>`.
+Before the first Cotal command, the report requires every config-folder ancestor to be root-owned and not group- or other-writable.
+Normal-account data stays under the runner's temporary folder. A config-protection refusal always fails the cell.
+Historical lockout checks require the permission-denial text. Teardown removes only the owned root account folder and Node prefix.
 Root updates that installation, and the normal account checks the selected version and its own updater's owning-command refusal.
 It records public generation-store, descriptor, inventory and bootstrap modes while transaction journals stay private.
 After the normal account's refusal, it checks that the store stayed protected and its file-byte total did not grow.
