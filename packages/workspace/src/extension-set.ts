@@ -3,7 +3,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, re
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDirNoSymlink, globalConfigDir, processStartToken } from "@cotal-ai/core";
-import { logicalExecutionEntry } from "./execution-identity.js";
+import { executionIdentity, logicalExecutionEntry } from "./execution-identity.js";
 import { acquireLock, inspectLock } from "./advisory-lock.js";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { protectedLocalDirectory, readLocalRecordSource } from "./protected-records.js";
@@ -16,11 +16,15 @@ export function extensionInstallationRoot(packageRoot: string): string {
   const parts = root.split(/[\\/]/);
   const retained = parts.lastIndexOf(".cotal-generations");
   if (retained >= 0) return extensionInstallationRoot(join(parts.slice(0, retained).join("/") || "/", "node_modules", "cotal-ai"));
+  const global = parts.findIndex((part, index) => part === "global" && /^v[0-9]+$/.test(parts[index + 1] ?? "") && parts[index + 3] === "node_modules" && parts[index + 4] === "cotal-ai");
+  if (global >= 0 && global + 5 === parts.length) return join(parts.slice(0, global + 2).join("/") || "/", "node_modules", "cotal-ai");
   const at = parts.lastIndexOf(".pnpm");
   return at >= 0 ? join(parts.slice(0, at).join("/") || "/", "cotal-ai") : root;
 }
 
 function packageRoot(): string {
+  const identity = executionIdentity();
+  if (identity?.launchEntry && /[/\\\\]global[/\\\\]v[0-9]+[/\\\\]/.test(identity.launchEntry)) return dirname(dirname(identity.launchEntry));
   const logical = logicalExecutionEntry();
   if (logical) return dirname(dirname(logical));
   for (const start of [process.argv[1], fileURLToPath(import.meta.url)]) {
