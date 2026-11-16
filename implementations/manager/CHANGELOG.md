@@ -1,5 +1,16 @@
 # @cotal-ai/manager
 
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- 467f84b: A Manager renewal pass now re-signs a managed seat's credential when the credential will be past its renewal point by the next pass, so the seat adopts the new credential at its own renewal point. Before, a seat whose renewal point fell just after a pass warned every minute for up to six hours, and when the next pass came in the credential's last minute the seat's connection could expire before it read the new file.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/seat@0.165.1
+
 ## 0.165.0
 
 ### Minor Changes

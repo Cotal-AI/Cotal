@@ -1,5 +1,23 @@
 # cotal-ai
 
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+- Updated dependencies [467f84b]
+  - @cotal-ai/auth@0.165.1
+  - @cotal-ai/cli@0.165.1
+  - @cotal-ai/connector-core@0.165.1
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/delivery@0.165.1
+  - @cotal-ai/manager@0.165.1
+  - @cotal-ai/registry@0.165.1
+  - @cotal-ai/runtime@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/seat@0.165.1
+
 ## 0.165.0
 
 ### Patch Changes
