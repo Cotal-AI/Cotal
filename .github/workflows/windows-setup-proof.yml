@@ -32,6 +32,9 @@ on:
         description: 'Include the 18 timing repeat cells (running 1..9 and app-tray 1..9)'
         type: boolean
         default: false
+  push:
+    branches:
+      - measure/app-installed-1649-loop
 permissions:
   contents: read
   actions: read
@@ -56,13 +59,19 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $versionPr = ('${{ github.event_name }}' -eq 'pull_request') -and ('${{ github.head_ref }}' -eq 'changeset-release/main')
+          $loop1649 = ('${{ github.ref }}' -eq 'refs/heads/measure/app-installed-1649-loop')
           $repeats = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
-          $cells = if ($versionPr) {
+          $cells = if ($loop1649) {
+            @('app-installed-0.164.9')
+          } elseif ($versionPr) {
             @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
           } else {
             @('running','occupied','stopped','absent','locker','locker-filtered','locker-short','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe','external-node-exiting','external-node-exiting-filtered','external-node-elevated','external-node-elevated-filtered','external-node-system','external-node-system-filtered')
           }
           $include = @($cells | ForEach-Object { @{ repeat = 0; cell = $_ } })
+          if ($loop1649) {
+            foreach ($repeat in 1..4) { $include += @{ repeat = $repeat; cell = 'app-installed-0.164.9' } }
+          }
           if ($repeats) {
             foreach ($cell in @('running','app-tray')) {
               foreach ($repeat in 1..9) {
