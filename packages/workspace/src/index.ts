@@ -79,6 +79,7 @@ export * from "./deprecated-daemon-entries.js";
 export * from "./service-startup.js";
 export * from "./service-custody.js";
 export * from "./service-identity.js";
+export * from "./service-execution.js";
 export * from "./service-stop.js";
 export * from "./service-observation.js";
 export * from "./service-target.js";

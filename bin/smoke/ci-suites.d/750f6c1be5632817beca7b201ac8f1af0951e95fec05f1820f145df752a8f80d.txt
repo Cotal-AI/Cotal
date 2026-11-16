@@ -1,0 +1,2 @@
+# Real child execution observations and closed-reader controls through the public launcher.
+smoke:service-execution:live
