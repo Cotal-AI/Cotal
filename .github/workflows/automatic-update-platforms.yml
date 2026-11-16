@@ -83,7 +83,7 @@ jobs:
             if (machineShapes) {
               assert.equal(event.inputs.phase, 'candidate');
               assert.equal(event.inputs.target_version, '0.164.18');
-              assert.equal(event.inputs.source_sha, '185319c8559321b6e5efc78c2fc492d0f09a6e8d');
+              assert.equal(event.inputs.source_sha, 'a4a433ecfd0f8b8d58313ad8d24332ba9fe907ae');
               assert.equal(event.inputs.profile, 'bounded');
             }
             let source, phase;
@@ -162,7 +162,7 @@ jobs:
             const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
             const allCells = boundedCells(plan);
-            const shapeIDs = ['linux-npm-root-owned-candidate-next', 'linux-npm-root-owned-source-0.164.16-recovery', 'linux-npm-root-owned-source-0.164.17-recovery', 'linux-pnpm-candidate-next-pnpm-layout'];
+            const shapeIDs = ['linux-npm-root-owned-candidate-next', 'linux-npm-root-owned-source-0.164.16-recovery', 'linux-npm-root-owned-source-0.164.17-recovery'];
             const cells = machineShapes ? allCells.filter(cell => shapeIDs.includes(cell.id)) : allCells;
             if (machineShapes) assert.deepEqual(cells.map(cell => cell.id), shapeIDs);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
