@@ -16,7 +16,6 @@ export interface ExecutionDescriptor {
   bindings?: ExecutionBinding[];
   launch?: { entry: string; path: string; dev: string; ino: string; birth: string; ctime: string };
   generation: { id: string; version: string; inventorySha256: string };
-  previous?: { id: string; version: string; inventorySha256: string };
 }
 export interface ExecutionInventoryEntry { path: string; sha256?: string; link?: string }
 export const executionDescriptorName = ".cotal-execution.json";
