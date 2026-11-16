@@ -14,6 +14,7 @@ export interface UpdateParticipantContext {
   env: NodeJS.ProcessEnv;
   project: string;
   cotalHome: string;
+  admissionControls?: { pauseBroker(): void; resumeBroker(): void };
   report: Record<string, unknown>;
 }
 
@@ -57,6 +58,10 @@ export async function prepareUpdateParticipant(context: UpdateParticipantContext
   };
   try {
     fixture = await startHostedAuthFixture("update-participant", 1);
+    if (context.admissionControls) {
+      context.admissionControls.pauseBroker = () => fixture!.stopBrokerTraffic!();
+      context.admissionControls.resumeBroker = () => fixture!.resumeBrokerTraffic!();
+    }
     const account = fixture.accounts[0]!;
     const key = await generateKeyPair("EdDSA");
     const jwk = { ...await exportJWK(key.publicKey), kid: "update-participant-idp" };

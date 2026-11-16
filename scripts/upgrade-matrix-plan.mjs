@@ -223,6 +223,21 @@ export function boundedCells(plan) {
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
   return cells;
 }
+/** Measurement-only selector. The ordinary bounded release gate remains unchanged. */
+export function targetAdmissionCells(plan) {
+  requireValue(plan.status === "planned" && plan.phase === "candidate", "target admission measurement is candidate-only");
+  const cells = boundedCells(plan);
+  const existing = new Set(["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-second-self"]);
+  const selected = cells.filter(cell => existing.has(cell.scenario));
+  for (const platform of ["linux", "darwin"]) for (const suffix of ["foreign-preserving", "offline", "manager-unknown", "consent-stop", "consent-declined"]) {
+    const template = selected.find(cell => cell.platform === platform && cell.scenario === "candidate-next-daemon-self");
+    const scenario = `candidate-next-target-admission-${suffix}`;
+    selected.push({ ...template, id: `${platform}-npm-${scenario}`, scenario, targetAdmission: suffix,
+      requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "no-recovery", "candidate-source-identity", "candidate-next-target", "target-admission-evidence"],
+    });
+  }
+  return selected;
+}
 /** Convenience wrapper for workflow callers. */
 export function planRelease(event, context = {}) {
   const plan = planPhase(event, context);

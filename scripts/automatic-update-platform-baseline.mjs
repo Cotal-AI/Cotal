@@ -22,6 +22,11 @@ import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
+  if (options['target-admission'] !== undefined) {
+    assert(['foreign-preserving', 'offline', 'manager-unknown', 'consent-stop', 'consent-declined'].includes(options['target-admission']), 'unknown target-admission coordinate');
+    assert(['linux', 'darwin'].includes(process.platform) && options.state === 'daemon' && options.method === 'self' && options.layout === 'npm' && options['candidate-next'], 'target admission requires a POSIX candidate-owned daemon hop');
+    assert.equal(typeof options.prepare, 'function', 'target admission needs its real participant composition');
+  }
   if (options['candidate-next'] === undefined) {
     if (options['stopped-daemon-before-update'] !== undefined) {
       assert.equal(options['stopped-daemon-before-update'], 'true', 'stopped-daemon-before-update accepts only true');
@@ -393,7 +398,7 @@ export async function matrixCell(options) {
   env.TMPDIR = join(root, 'tmp');
   mkdirSync(env.TMPDIR, { mode: 0o700 });
   if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
-  if (daemonHostedManager) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
+  if (daemonHostedManager || options['target-admission']) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
   report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });
@@ -583,7 +588,7 @@ export async function matrixCell(options) {
     }
     if (options.prepare !== undefined) {
       assert.equal(typeof options.prepare, 'function', 'composition prepare must be an in-process callback, never a CLI string');
-      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, call, cotal, check, report });
+      compositionCleanup = await options.prepare({ env, project, pkg, root, config, cotalHome, call, cotal, check, report, options, prefix, cli, output });
       assert(compositionCleanup === undefined || typeof compositionCleanup === 'function', 'composition prepare returns an optional owned cleanup callback');
     }
     if (containerManager) {
@@ -728,7 +733,7 @@ export async function matrixCell(options) {
       restoreRegistry = configureCandidateRegistry(home, overlay.url);
       report.policyBaseline.inventoryBefore = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)) };
     }
-    if (state === 'daemon') {
+    if (state === 'daemon' && !compositionCleanup?.customDaemon) {
       const planned = ok(await daemon('native install plan', ['daemon', 'install', '--dry-run', '--json']), 'native plan');
       plan = JSON.parse(planned.stdout).result;
       assert.equal(plan.state, 'would-install', 'native service must be absent before this cell');
@@ -774,7 +779,9 @@ export async function matrixCell(options) {
         await waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining));
       }
     }
-    report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+    report.extensionsBefore = compositionCleanup?.extensionInventory
+      ? await compositionCleanup.extensionInventory('before')
+      : existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
     const sourceInventory = () => [join(pkg, 'package.json'), cli, join(config, 'extensions/extensions.json'), ...report.extensionsBefore.map(entry => join(config, 'extensions/node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
     if (policy) report.policyInventoryBefore = sourceInventory();
     report.sourceInventoryBeforeAction = sourceInventory();
@@ -856,6 +863,7 @@ export async function matrixCell(options) {
       check('candidate source CLI matches packed artifact', true, report.candidateSourceInvocation);
       overlay.activateTarget();
     }
+    await compositionCleanup?.beforeUpdate?.();
     let update;
     if (options['first-install'] === 'true') update = sourceInstall;
     else if (method === 'self') {
@@ -1174,6 +1182,7 @@ export async function matrixCell(options) {
       report.refusal = report.assertions.filter(row => !row.passed).map(row => row.name).join('\n') || report.targetUpgradeAcceptance;
       return report;
     }
+    await compositionCleanup?.afterUpdate?.(update);
     const expectedVersion = launchdProof === 'off-before-tick' ? report.source : report.target;
     report.expectedVersion = expectedVersion;
     report.update = update;
@@ -1195,11 +1204,13 @@ export async function matrixCell(options) {
       : !['npm', 'installer'].includes(options['follow-on-action']) && method !== 'installer' && options['first-install'] !== 'true' && installedRoute.packageManagerRecordVersion === expectedPackageManagerVersion);
     check('CLI version is target', routeMatches, installedRoute.selectedCliVersion);
     const manifest = join(config, 'extensions/extensions.json');
-    const extensions = existsSync(manifest) ? json(manifest).extensions : [];
+    const extensions = compositionCleanup?.extensionInventory
+      ? await compositionCleanup.extensionInventory('after')
+      : existsSync(manifest) ? json(manifest).extensions : [];
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     const installedExtensions = extensions.map(entry => {
-      const path = join(config, 'extensions/node_modules', entry.pkg);
+      const path = options['target-admission'] && entry.installedPath ? entry.installedPath : join(config, 'extensions/node_modules', entry.pkg);
       const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
       const files = entry.pkg === report.ownedLocalFixture?.pkg ? Object.fromEntries(Object.keys(report.ownedLocalFixture.files).map(name => [name, existsSync(join(path, name)) ? digest(readFileSync(join(path, name))) : null])) : {};
       return {pkg: entry.pkg, path, realpath: existsSync(path) ? realpathSync(path) : null, version: metadata?.version, files};
@@ -1241,7 +1252,7 @@ export async function matrixCell(options) {
       }
       check('daemon-hosted consent ends owned seat', seats.exit === 0 && !seats.stdout.includes('upgrade_proof_worker'), seats);
     }
-    if (installedService) {
+    if (installedService && !options['target-admission']) {
       if (desktopRuntime && options['stopped-daemon-before-update'] === 'true') {
         const afterStatus = await daemon('native status after', ['daemon', 'status', '--json']);
         const unitShowAfter = ok(await call('desktop unit show after CLI update', 'systemctl', ['--user', '--no-ask-password', '--no-pager', 'show', receipt.unit, '--property=LoadState,ActiveState,SubState,UnitFileState,MainPID']), 'desktop unit show after CLI update');
@@ -1324,7 +1335,7 @@ export async function matrixCell(options) {
     }
     const completion = completionAdvisory(update.stdout + update.stderr);
     report.advisory = completion.advisory;
-    check('no manual step or refusal', update.exit === 0 && !requiresManualStep(completion.required), completion.required);
+    check('no manual step or refusal', update.exit === 0 && (options['target-admission'] ? !/staged .*refused|Update stopped|Outcome unconfirmed/i.test(update.stdout + update.stderr) : !requiresManualStep(completion.required)), completion.required);
     report.result = report.assertions.every(row => row.passed) ? 'passed' : 'failed';
     if (report.result === 'failed') report.refusal = report.assertions.filter(row => !row.passed).map(row => `${row.name}: ${typeof row.observed === 'string' ? row.observed : JSON.stringify(row.observed)}`).join('\n');
   } catch (error) {
@@ -1340,7 +1351,7 @@ export async function matrixCell(options) {
     }
     // Observe the update's end before any fixture, Manager or native service cleanup, even on timeout.
     await captureServiceEvidence('after-update');
-    if (installedService && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
+    if (installedService && !options['target-admission'] && (state === 'daemon' || nextHopMode && daemonHostedManager) && method === 'self' && !desktopRuntime && options['disabled-daemon-before-update'] !== 'true') {
       const expectedPackageManagerVersion = ['npm', 'installer'].includes(options['follow-on-action'])
         ? report.target
         : nextHopMode === 'source-0.164.10'

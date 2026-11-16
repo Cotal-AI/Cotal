@@ -33,6 +33,8 @@ permissions:
   contents: read
   actions: read
 env:
+  # Historical foreign-fence producer. Product H includes the newer connector-set fixes.
+  ADMISSION_LEGACY_SOURCE: 8cddd397a05afc15842c0a2402beb2a983b226c7
   PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
   select:
@@ -50,6 +52,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
@@ -64,7 +67,7 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const { execFileSync } = require('node:child_process');
             const { createHash } = require('node:crypto');
-            const { planPhase, boundedCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
+            const { planPhase, boundedCells, targetAdmissionCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
             const event = context.payload;
             const repository = `${context.repo.owner}/${context.repo.repo}`;
             const metadata = { eventName: context.eventName, repository };
@@ -137,14 +140,21 @@ jobs:
               const registry = await response.json();
               metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
               metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
-              if (phase === 'candidate') assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
+              if (phase === 'candidate') {
+                const measurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-target-owned-admission';
+                assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) >= (measurement ? 0 : 1), 'candidate target must be newer than public latest, or equal for target-admission measurement');
+              }
               else assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
             }
             const plan = planPhase(event, metadata);
-            assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
-            const cells = boundedCells(plan);
+            const admissionMeasurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-target-owned-admission';
+            if (admissionMeasurement) {
+              assert.equal(plan.phase, 'candidate', 'target admission measurement requires candidate phase');
+              assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'measurement source must be bound to its direct product parent');
+            }
+            const cells = (admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan)).map(cell => cell.targetAdmission === 'foreign-preserving' ? { ...cell, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE } : cell);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
-            writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
+            writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
             for (const [key, value] of Object.entries({ phase: plan.phase, source: plan.sourceSHA, target: plan.targetVersion, profile: plan.profile, matrix: JSON.stringify(jobsMatrix(cells)) })) core.setOutput(key, value ?? '');
             await core.summary.addHeading('Upgrade matrix selection').addRaw(plan.status === 'skipped' ? `Not applicable: ${plan.reason}` : `${plan.phase}: ${plan.sourceVersion} to ${plan.targetVersion} from ${plan.sourceSHA}, ${cells.filter(c => c.required).length} isolated cells`).write();
@@ -222,6 +232,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
@@ -305,6 +316,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
@@ -364,20 +376,126 @@ jobs:
           name: release-follow-on
           path: ${{ runner.temp }}/release-follow-on
           if-no-files-found: error
+  admission-legacy-pack:
+    needs: [select, release-native]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission' && needs.select.outputs.applicable == 'true' && needs.release-native.result == 'success' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.ADMISSION_LEGACY_SOURCE }}
+          path: legacy
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Verify immutable legacy ancestor and pre-admission checker
+        env:
+          PRODUCT_SHA: ${{ needs.select.outputs.source }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const git = args => execFileSync('git', ['-C', 'legacy', ...args], { encoding: 'utf8' }).trim();
+          const legacySourceSHA = git(['rev-parse', 'HEAD']);
+          const productSourceSHA = process.env.PRODUCT_SHA;
+          assert.match(process.env.ADMISSION_LEGACY_SOURCE, /^[a-f0-9]{40}$/);
+          assert.equal(legacySourceSHA, process.env.ADMISSION_LEGACY_SOURCE);
+          assert.notEqual(legacySourceSHA, productSourceSHA);
+          git(['merge-base', '--is-ancestor', legacySourceSHA, productSourceSHA]);
+          const checker = readFileSync('legacy/bin/daemon/execution-preinstall.ts', 'utf8');
+          assert(!/\bdisposition\b|\bUpdateAdmission\b/.test(checker), 'legacy checker must predate target admission');
+          writeFileSync(process.env.RUNNER_TEMP + '/admission-legacy-origin.json', JSON.stringify({ legacySourceSHA, productSourceSHA, ancestorOfProduct: true }, null, 2));
+          NODE
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: legacy
+      - name: Require identical native build inputs before reusing product artifacts
+        env:
+          PRODUCT_SHA: ${{ needs.select.outputs.source }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { assertNativeInputsMatch } from './scripts/native-artifact-source.mjs';
+          assertNativeInputsMatch(process.env.PRODUCT_SHA, process.env.ADMISSION_LEGACY_SOURCE, process.env.GITHUB_WORKSPACE + '/legacy');
+          NODE
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*-*-*
+          path: ${{ runner.temp }}/release-natives
+      - name: Assemble and guard the complete source-matched native closure
+        working-directory: legacy
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ needs.select.outputs.source }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/release-natives/release-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/release-natives/release-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/release-natives/release-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
+      - name: Build legacy CLI dependency closure
+        run: pnpm --filter 'cotal-ai...' --workspace-concurrency 3 build
+        working-directory: legacy
+      - name: Pack legacy A at its manifest version and synthetic next B
+        run: |
+          LEGACY_VERSION=$(node -p "require('./legacy/bin/package.json').version")
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/admission-legacy-candidate" --version "$LEGACY_VERSION" --source-root "$GITHUB_WORKSPACE/legacy"
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { packCandidateNext } from './scripts/pack-candidate-next.mjs';
+          await packCandidateNext({
+            sourceRoot: process.env.GITHUB_WORKSPACE + '/legacy',
+            candidate: process.env.RUNNER_TEMP + '/admission-legacy-candidate',
+            output: process.env.RUNNER_TEMP + '/admission-legacy-next',
+            exec(file, args, options) {
+              const build = file === 'pnpm' && JSON.stringify(args) === JSON.stringify(['--workspace-concurrency', '3', 'build']);
+              return execFileSync(file, build ? ['--filter', 'cotal-ai...', ...args] : args, options);
+            },
+          });
+          NODE
+          cp "$RUNNER_TEMP/admission-legacy-origin.json" "$RUNNER_TEMP/admission-legacy-candidate/legacy-origin.json"
+          cp "$RUNNER_TEMP/admission-legacy-origin.json" "$RUNNER_TEMP/admission-legacy-next/legacy-origin.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admission-legacy-candidate
+          path: ${{ runner.temp }}/admission-legacy-candidate
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admission-legacy-next
+          path: ${{ runner.temp }}/admission-legacy-next
+          if-no-files-found: error
   release-cells:
-    needs: [select, release-pack, release-next]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'
+    needs: [select, release-pack, release-next, admission-legacy-pack]
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success' && (!(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission') || needs.admission-legacy-pack.result == 'success')
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 40
+      max-parallel: 20
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
@@ -385,13 +503,13 @@ jobs:
           node-version: 24
       - run: pnpm install --frozen-lockfile --child-concurrency=2
       - uses: actions/download-artifact@v4
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.targetAdmission != null || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         with:
           artifact-ids: ${{ needs.release-pack.outputs.artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-candidate
       - uses: actions/download-artifact@v4
-        if: matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
+        if: matrix.targetAdmission != null || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         with:
           artifact-ids: ${{ needs.release-next.outputs.artifact }}
           merge-multiple: true
@@ -402,8 +520,18 @@ jobs:
           artifact-ids: ${{ needs.release-next.outputs.follow-on-artifact }}
           merge-multiple: true
           path: ${{ runner.temp }}/release-follow-on
+      - uses: actions/download-artifact@v4
+        if: matrix.targetAdmission == 'foreign-preserving'
+        with:
+          name: admission-legacy-candidate
+          path: ${{ runner.temp }}/admission-legacy-candidate
+      - uses: actions/download-artifact@v4
+        if: matrix.targetAdmission == 'foreign-preserving'
+        with:
+          name: admission-legacy-next
+          path: ${{ runner.temp }}/admission-legacy-next
       - name: Verify candidate immutable source and full package census
-        if: needs.select.outputs.phase == 'candidate' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
+        if: needs.select.outputs.phase == 'candidate' || matrix.targetAdmission != null || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.chain == true
         shell: bash
         env:
           SOURCE_SHA: ${{ needs.select.outputs.source }}
@@ -431,7 +559,7 @@ jobs:
           mkdirSync(process.env.RUNNER_TEMP + '/upgrade-evidence', { recursive: true });
           writeFileSync(process.env.RUNNER_TEMP + '/upgrade-evidence/candidate-origin.json', JSON.stringify({ source: manifest.source, artifact: process.env.CANDIDATE_ARTIFACT, digest: process.env.CANDIDATE_DIGEST }));
           const cell = JSON.parse(process.env.CELL);
-          if (cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true) {
+          if (Boolean(cell.targetAdmission) || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || cell.followOnAction || cell.chain === true) {
             const nextRoot = process.env.RUNNER_TEMP + '/release-next/';
             const next = JSON.parse(readFileSync(nextRoot + 'manifest.json'));
             const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -472,7 +600,7 @@ jobs:
           printf '%s  %s\n' 87921721f6dcdf01a454a8d62f8d15f12dee8fd2934a470f435e034f60ca5e9d "$package" | sha256sum -c -
           dpkg-deb -x "$package" "$RUNNER_TEMP/released-desktop"
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
+        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.targetAdmission != null || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -482,23 +610,33 @@ jobs:
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Prepare owned broker fixture dependencies
-        if: matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent')
+        if: matrix.targetAdmission != null || (matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent'))
         shell: bash
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/matrix-broker"
           mkdir -p "$work"
-          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/nats-server-v2.14.0-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
+          platform=$(node -p process.platform)
+          arch=$(node -p '({x64:"amd64",arm64:"arm64"})[process.arch]')
+          test -n "$arch"
+          archive="nats-server-v2.14.0-$platform-$arch.tar.gz"
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.14.0/$archive" -o "$work/$archive"
           curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
-          (cd "$work" && awk '$2 == "nats-server-v2.14.0-linux-amd64.tar.gz" {print $1 "  nats-server.tar.gz"}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && sha256sum -c selected.sha256)
-          tar -xzf "$work/nats-server.tar.gz" -C "$work"
-          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+          (cd "$work" && awk -v archive="$archive" '$2 == archive {print $1 "  " archive}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && shasum -a 256 -c selected.sha256)
+          mkdir -p "$RUNNER_TEMP/upgrade-evidence"
+          cp "$work/selected.sha256" "$RUNNER_TEMP/upgrade-evidence/nats-download.sha256"
+          cp "$work/SHA256SUMS" "$RUNNER_TEMP/upgrade-evidence/nats-release-SHA256SUMS"
+          tar -xzf "$work/$archive" -C "$work"
+          echo "$work/nats-server-v2.14.0-$platform-$arch" >> "$GITHUB_PATH"
       - name: Build only the signed-in participant fixture dependencies
-        if: matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent'
+        if: matrix.targetAdmission != null || matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent'
         shell: bash
         run: |
           node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
           pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
+      - name: Typecheck target admission fixture against built dependencies
+        if: matrix.targetAdmission != null
+        run: pnpm exec tsc --noEmit -p tsconfig.admission-smoke.json
       - name: Run one real product upgrade coordinate
         shell: bash
         env:
@@ -514,10 +652,10 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
-          const paired = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
+          const paired = Boolean(cell.targetAdmission) || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
           const candidate = process.env.RUNNER_TEMP + '/release-candidate';
           if (paired) {
             args.push('--candidate', candidate, '--candidate-next', process.env.RUNNER_TEMP + '/release-next', '--next-hop-source', cell.chain ? '0.164.10' : 'candidate', '--next-hop-phase', process.env.PHASE);
@@ -548,6 +686,16 @@ jobs:
             const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
             options.prepare = prepareUpdateParticipant;
           }
+          if (cell.targetAdmission) {
+            options['target-admission'] = cell.targetAdmission;
+            if (cell.targetAdmission === 'foreign-preserving') {
+              options['admission-legacy-candidate'] = process.env.RUNNER_TEMP + '/admission-legacy-candidate';
+              options['admission-legacy-next'] = process.env.RUNNER_TEMP + '/admission-legacy-next';
+              options['admission-legacy-source'] = process.env.ADMISSION_LEGACY_SOURCE;
+            }
+            const { prepareTargetAdmission } = await import('./scripts/target-admission-fixture.ts');
+            options.prepare = prepareTargetAdmission;
+          }
           const report = await matrixCell(options);
           assert.equal(report.environment?.hostedDisposable, true);
           assert.equal(report.source, cell.sourceVersion);
@@ -575,6 +723,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
@@ -631,7 +780,7 @@ jobs:
             assert(expected, 'evidence coordinate must be required by the frozen plan');
             assert.deepEqual(cell, expected, 'complete evidence coordinate must match the frozen plan');
             assert.equal(entry.name, `upgrade-cell-${cell.id}`, 'artifact name must match its coordinate');
-            if (plan.phase === 'candidate' || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true) {
+            if (plan.phase === 'candidate' || Boolean(cell.targetAdmission) || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true) {
               const origin = JSON.parse(readFileSync(join(directory, 'candidate-origin.json')));
               assert.equal(origin.source, plan.sourceSHA);
               assert.equal(origin.artifact, process.env.EXPECTED_CANDIDATE_ARTIFACT);
@@ -639,7 +788,7 @@ jobs:
               assert(origin.artifact && origin.digest, 'candidate artifact identity must be present');
             }
             const entries = readdirSync(directory);
-            const sidecars = entries.filter(name => name.endsWith('.sha256'));
+            const sidecars = entries.filter(name => name.endsWith('.sha256') && name !== 'nats-download.sha256');
             assert.equal(sidecars.length, 1, 'each coordinate needs one report/log digest sidecar');
             const digest = bytes => createHash('sha256').update(bytes).digest('hex');
             const bindings = readFileSync(join(directory, sidecars[0]), 'utf8').trim().split('\n').map(line => {
@@ -659,12 +808,12 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
               assert.equal(report.method, method);
-              const next = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction);
+              const next = Boolean(cell.targetAdmission) || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction);
               const paired = next || cell.chain === true;
               const finalTarget = cell.finalTargetVersion ?? cell.targetVersion;
               assert.equal(report.source, cell.sourceVersion);
@@ -744,9 +893,41 @@ jobs:
                   assert.deepEqual(report.candidateNext?.[side + 'Archives'], manifest.packages.map(({ name, sha256 }) => ({ name, sha256 })), 'reported archive census must match archived manifest');
                 }
                 const { verifyCandidateNextEvidence } = await import('./scripts/candidate-next-evidence.mjs');
-                pairedEvidence = verifyCandidateNextEvidence({ report, cell, output: directory, sourceManifestSha256: origin.sourceManifestSha256, targetManifestSha256: origin.targetManifestSha256, followOnManifestSha256: origin.followOnManifestSha256 });
+                if (!cell.targetAdmission) pairedEvidence = verifyCandidateNextEvidence({ report, cell, output: directory, sourceManifestSha256: origin.sourceManifestSha256, targetManifestSha256: origin.targetManifestSha256, followOnManifestSha256: origin.followOnManifestSha256 });
+                else {
+                  const pair = report.candidateNext;
+                  assert.equal(pair.source, cell.sourceSHA);
+                  assert.equal(pair.sourceVersion, cell.sourceVersion);
+                  const source = pair.sourcePackages.find(row => row.name === 'cotal-ai');
+                  const invocation = report.candidateSourceInvocation;
+                  assert.equal(invocation?.name, 'cotal-ai');
+                  assert.equal(invocation.version, pair.sourceVersion);
+                  assert.equal(invocation.sha256, source.files['dist/cotal.js']);
+                  assert.equal(invocation.packageSha256, source.files['package.json']);
+                  const loaded = pair.sourcePackages.find(row => row.name === '@cotal-ai/cli');
+                  assert.equal(invocation.loadedCli?.name, '@cotal-ai/cli');
+                  assert.equal(invocation.loadedCli.version, pair.sourceVersion);
+                  assert.equal(invocation.loadedCli.packageSha256, loaded.files['package.json']);
+                  assert.equal(invocation.loadedCli.sha256, loaded.files[invocation.loadedCli.member]);
+                  assert.deepEqual(invocation.argv.slice(1), ['update', '--self']);
+                  assert.equal(invocation.argv.length, 3);
+                  const commands = report.calls.filter(row => row.label === 'upgrade under test');
+                  assert.equal(commands.length, 1);
+                  const command = commands[0];
+                  const argv = command.argv ?? command.args;
+                  assert(argv.includes(invocation.argv[0]) || command.file === invocation.argv[0]);
+                  assert(argv.includes('--self') && argv.includes('update'));
+                  assert.equal(command.exit, 0);
+                  assert.equal(command.signal, null);
+                  assert.equal(command.timeout, false);
+                  pairedEvidence = { sourceIdentity: true };
+                }
               }
+              const admissionEvidence = cell.targetAdmission
+                ? (await import('./scripts/target-admission-evidence.mjs')).verifyTargetAdmissionEvidence({ report, cell, output: directory })
+                : undefined;
               const assertions = {
+                'target-admission-evidence': admissionEvidence?.passed === true,
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
                 'candidate-next-target': report.candidateNext?.targetVersion === (cell.followOnAction ? cell.targetVersion : finalTarget),
                 'next-hop-success': pairedEvidence?.nextHopSuccess === true,
