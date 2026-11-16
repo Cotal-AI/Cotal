@@ -70,13 +70,8 @@ test('ordinary landing push cannot admit the legacy priority cascade', () => {
   assert.equal(evaluate('test: qualify version heads and published upgrades continuously'), false);
   assert.equal(evaluate('test: explicit diagnostic [matrix-diagnostics]'), true);
   assert.equal(evaluate('test: corrected native [windows-job-only]'), false);
-  assert.deepEqual(workflow.jobs['desktop-beside-cli'].needs, ['select', 'release-pack', 'release-next']);
-  assert(workflow.jobs['desktop-beside-cli'].if.includes("github.event_name == 'workflow_dispatch'"));
-  assert(workflow.jobs['desktop-beside-cli'].if.includes("refs/heads/measure/update-foreign-daemon-fence"));
-  const runtime = workflow.jobs['desktop-beside-cli'].steps.find(step => step.name === 'Build candidate desktop runtimes through product preparation');
-  assert(runtime.run.includes('connector-sets-runtime-build.mjs'));
-  assert(runtime.run.includes('--version 0.164.18') && runtime.run.includes('--version 0.164.1018'));
-  assert(workflow.jobs['desktop-beside-cli'].steps.some(step => step.run?.includes('connector-sets-desktop-first.mjs')));
+  assert.equal(workflow.jobs['desktop-beside-cli'].needs, 'priority');
+  assert(workflow.jobs['desktop-beside-cli'].if.includes("needs.priority.result == 'success' || needs.priority.result == 'failure'"));
 });
 test('durable events preserve immutable heads without privileged PR execution or cancellation', () => {
   assert.deepEqual(workflow.on.pull_request.types, ['opened', 'synchronize', 'reopened']);

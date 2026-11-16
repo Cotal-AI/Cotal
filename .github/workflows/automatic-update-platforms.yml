@@ -17,17 +17,13 @@ on:
       source_sha:
         type: string
         required: true
-      desktop_only:
-        type: boolean
-        default: false
-        required: false
       profile:
         type: choice
         options: [bounded, extended]
         default: bounded
         required: true
   push:
-    branches: [test/upgrade-matrix, measure/broken-target-recovery]
+    branches: [test/upgrade-matrix]
     paths:
       - .github/workflows/automatic-update-platforms.yml
       - scripts/automatic-update-platform-baseline.mjs
@@ -37,7 +33,7 @@ permissions:
   contents: read
   actions: read
 env:
-  PRODUCT_SOURCE: ec675d03aeff2237ce6e140d71ca420a4f904156
+  PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
   select:
     runs-on: ubuntu-24.04
@@ -49,7 +45,6 @@ jobs:
       target: ${{ steps.plan.outputs.target }}
       profile: ${{ steps.plan.outputs.profile }}
       matrix: ${{ steps.plan.outputs.matrix }}
-      desktop-only: ${{ steps.plan.outputs.desktop-only }}
     steps:
       # On workflow_run this is the trusted default-branch workflow revision, never PR code.
       - uses: actions/checkout@v6
@@ -75,15 +70,6 @@ jobs:
             const metadata = { eventName: context.eventName, repository };
             let source, phase;
             let publication;
-            const ownershipMeasure = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-foreign-daemon-fence';
-            if (ownershipMeasure) {
-              assert.equal(event.inputs.source_sha, process.env.PRODUCT_SOURCE);
-              assert.equal(event.inputs.phase, 'candidate');
-              assert.equal(event.inputs.target_version, '0.164.18');
-              assert.equal(event.inputs.profile, 'bounded');
-              source = process.env.PRODUCT_SOURCE;
-              phase = 'candidate';
-            }
             if (context.eventName === 'pull_request') {
               const pr = event.pull_request;
               if (pr.base.ref === 'main' && pr.head.ref === 'changeset-release/main' && pr.head.repo.full_name === repository && pr.base.repo.full_name === repository) {
@@ -151,17 +137,14 @@ jobs:
               const registry = await response.json();
               metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
               metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
-              if (phase === 'candidate' && !ownershipMeasure) assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
-              else if (phase === 'published') assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
+              if (phase === 'candidate') assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) > 0, 'candidate target must be newer than public latest');
+              else assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
             }
-            const planningEvent = ownershipMeasure ? { inputs: { phase, source_sha: source, target_version: metadata.targetVersion, profile: 'bounded' } } : event;
-            const plan = planPhase(planningEvent, { ...metadata, ...(ownershipMeasure ? { eventName: 'workflow_dispatch' } : {}) });
+            const plan = planPhase(event, metadata);
             assert(plan.status !== 'planned' || plan.profile === 'bounded', 'extended profile is not implemented by durable orchestration');
-            const cells = boundedCells(plan).filter(cell => !ownershipMeasure || ['candidate-next-daemon-self', 'candidate-next-stopped-daemon-self', 'candidate-next-disabled-daemon-self', 'candidate-next-stopped-desktop-self'].includes(cell.scenario));
-            if (ownershipMeasure) assert.equal(cells.length, 9);
+            const cells = boundedCells(plan);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
-            core.setOutput('desktop-only', String(ownershipMeasure && event.inputs.desktop_only === 'true'));
             core.setOutput('applicable', String(plan.status === 'planned'));
             for (const [key, value] of Object.entries({ phase: plan.phase, source: plan.sourceSHA, target: plan.targetVersion, profile: plan.profile, matrix: JSON.stringify(jobsMatrix(cells)) })) core.setOutput(key, value ?? '');
             await core.summary.addHeading('Upgrade matrix selection').addRaw(plan.status === 'skipped' ? `Not applicable: ${plan.reason}` : `${plan.phase}: ${plan.sourceVersion} to ${plan.targetVersion} from ${plan.sourceSHA}, ${cells.filter(c => c.required).length} isolated cells`).write();
@@ -383,7 +366,7 @@ jobs:
           if-no-files-found: error
   release-cells:
     needs: [select, release-pack, release-next]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.select.outputs.desktop-only != 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -585,7 +568,7 @@ jobs:
           if-no-files-found: error
   release-summary:
     needs: [select, release-native, release-pack, release-next, release-cells]
-    if: always() && needs.select.outputs.applicable == 'true' && needs.select.outputs.desktop-only != 'true'
+    if: always() && needs.select.outputs.applicable == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -1317,24 +1300,17 @@ jobs:
             ${{ runner.temp }}/owner-mac-evidence
           if-no-files-found: error
   desktop-beside-cli:
-    needs: [select, release-pack, release-next]
-    if: "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-foreign-daemon-fence' && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && needs.release-pack.result == 'success' && needs.release-next.result == 'success'"
+    needs: priority
+    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.priority.result == 'success' || needs.priority.result == 'failure')"
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.select.outputs.source }}
-          path: desktop-product
-          persist-credentials: false
-      - uses: pnpm/action-setup@v6.0.8
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - run: pnpm install --frozen-lockfile --child-concurrency=2
       - uses: actions/download-artifact@v4
         with:
           name: desktop-release-Linux-X64
@@ -1352,70 +1328,18 @@ jobs:
           sudo loginctl enable-linger "$USER"
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
-      - name: Prepare owned broker fixture dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          work="$RUNNER_TEMP/matrix-broker"
-          mkdir -p "$work"
-          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/nats-server-v2.14.0-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
-          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
-          (cd "$work" && awk '$2 == "nats-server-v2.14.0-linux-amd64.tar.gz" {print $1 "  nats-server.tar.gz"}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && sha256sum -c selected.sha256)
-          tar -xzf "$work/nats-server.tar.gz" -C "$work"
-          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
-      - name: Build only the signed-in participant fixture dependencies
-        shell: bash
-        run: |
-          node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
-          pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
-      - uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ needs.release-pack.outputs.artifact }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/release-candidate
-      - uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ needs.release-next.outputs.artifact }}
-          merge-multiple: true
-          path: ${{ runner.temp }}/release-next
-      - name: Build candidate desktop runtimes through product preparation
-        shell: bash
-        run: |
-          test "$RUNNER_ENVIRONMENT" = github-hosted
-          node -e "const d=require('node:fs').statfsSync(process.env.RUNNER_TEMP);if(d.bavail*d.bsize<22*1024**3)throw Error('Less than 22 GiB before desktop runtime build')"
-          pnpm --dir desktop-product install --frozen-lockfile --child-concurrency=2
-          pnpm exec node scripts/connector-sets-runtime-build.mjs --source "$GITHUB_WORKSPACE/desktop-product" --output "$RUNNER_TEMP/connector-desktop-A" --version 0.164.18
-          pnpm exec node scripts/connector-sets-runtime-build.mjs --source "$GITHUB_WORKSPACE/desktop-product" --output "$RUNNER_TEMP/connector-desktop-B" --version 0.164.1018
       - name: Real released desktop daemon beside separate CLI
         shell: bash
-        run: |
-          node --import tsx --input-type=module - --source 0.164.18 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --running-desktop-beside-cli true --expected-target 0.164.1018 --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence" <<'NODE'
-          import { pathToFileURL } from 'node:url';
-          const { matrixCell, cellExitCode } = await import(pathToFileURL(process.cwd() + '/scripts/automatic-update-platform-baseline.mjs'));
-          const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
-          const args = process.argv.slice(2);
-          const options = Object.fromEntries(args.reduce((rows, value, index, all) => index % 2 === 0 ? [...rows, [value.slice(2), all[index + 1]]] : rows, []));
-          options.prepare = prepareUpdateParticipant;
-          const report = await matrixCell(options);
-          process.exitCode = cellExitCode(report);
-          NODE
-      - name: Desktop updates first while the CLI Manager keeps launching
-        shell: bash
-        run: |
-          test ! -e "$RUNNER_TEMP/desktop-first-prior-runtime"
-          mv "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" "$RUNNER_TEMP/desktop-first-prior-runtime"
-          node scripts/connector-sets-desktop-first.mjs --cli-candidate "$RUNNER_TEMP/release-candidate" --desktop-candidate-A "$RUNNER_TEMP/connector-desktop-A/runtime" --desktop-next "$RUNNER_TEMP/connector-desktop-B/runtime" --desktop-node "$RUNNER_TEMP/connector-desktop-A/cotal-node" --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --output "$RUNNER_TEMP/desktop-first-evidence"
+        run: node scripts/automatic-update-platform-baseline.mjs --source 0.164.0 --layout npm --state daemon --method self --desktop-runtime "$RUNNER_TEMP/released-desktop/usr/lib/Cotal/runtime" --desktop-node "$RUNNER_TEMP/released-desktop/usr/bin/cotal-node" --output "$RUNNER_TEMP/upgrade-evidence"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-beside-cli-linux
-          path: |
-            ${{ runner.temp }}/upgrade-evidence
-            ${{ runner.temp }}/desktop-first-evidence
+          path: ${{ runner.temp }}/upgrade-evidence
           if-no-files-found: error
   workspace-native:
     needs: desktop-beside-cli
-    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[desktop-beside-cli-only]') && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
+    if: "github.event_name == 'push' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]') && always() && !cancelled() && (needs.desktop-beside-cli.result == 'success' || needs.desktop-beside-cli.result == 'failure')"
     uses: ./.github/workflows/workspace-native.yml
     with:
       darwin: true
