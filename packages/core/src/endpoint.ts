@@ -5346,6 +5346,15 @@ export class CotalEndpoint extends EventEmitter {
     await createSpaceStreams(this.jsm, this.space);
   }
 
+  /** Create this open space's message streams if they are not there yet, as a consuming endpoint
+   *  does when it starts. For a sender that consumes nothing and may be the space's first
+   *  participant (#7045). An authenticated broker's streams come from its setup, and its agents may
+   *  not create them, so this throws there. */
+  async ensureOpenSpaceStreams(): Promise<void> {
+    if (this.authed) throw new Error(`the streams of ${this.space} come from its broker's setup on an authenticated space; a sender does not create them`);
+    await createSpaceStreams(await this.manager(), this.space);
+  }
+
   // (v3) The old `provisionMembership` — manager/provisioner-written boot membership at spawn — is GONE.
   // Boot durable membership is now the AGENT self-joining its durable boot channels via the daemon's
   // `ctl.delivery` op at connect ({@link armBootDurableMemberships}), reconciled on outage. The

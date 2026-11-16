@@ -9,9 +9,13 @@
  * not running, with `cotal up` as the Next, and in a folder with no space as a `main` mesh recorded
  * there. `send` and `history` now name the address that did not answer and, from the space's root or
  * with `--space`, the broker recorded for it, and the space's history is unchanged.
+ * A first send to an open space that runs elsewhere used to exit 3 `OPERATION_UNKNOWN` with nothing
+ * stored, because the one-shot sender consumes nothing and so never created the space's streams
+ * (#7045). It now creates them, as a chat session does. A space this machine started whose streams
+ * are gone still refuses `TARGET_UNAVAILABLE`.
  *
- * Starts one static-auth broker owned by this suite, registers its space under a sandboxed
- * COTAL_HOME, and drives the built binary from the space's root.
+ * Starts one static-auth broker and one open broker owned by this suite, registers the auth space
+ * under a sandboxed COTAL_HOME, and drives the built binary from the space's root.
  *
  * Run: pnpm smoke:send-refusal-mesh
  */
@@ -54,6 +58,10 @@ const servers = `nats://127.0.0.1:${port}`;
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(broker, dir);
+const openPort = await freePort();
+const openServers = `nats://127.0.0.1:${openPort}`;
+const openBroker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(openPort), "-js", "-sd", join(dir, "open-js")], { stdio: "ignore" });
+const releaseOpenBroker = teardownOnSignal(openBroker, dir);
 
 const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR"));
 const env = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: join(home, ".cotal"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
@@ -112,11 +120,31 @@ try {
     bare.status === 2 && bare.envelope?.error?.code === "TARGET_UNAVAILABLE" && bare.envelope.error.message === unanswered
       && bare.envelope.error.remedy === "check that address and that a broker runs there" && !bare.stdout.includes("recorded at"), shown(bare));
   check("the space's history is unchanged", kept.status === 0 && before === "kept" && history() === before, { kept: shown(kept), before, after: history() });
+
+  // #7045: an open space that runs elsewhere gets its streams from its first participant, and a
+  // one-shot send may be that participant. The space is not registered and its broker is open.
+  await awaitBrokerReady(() => isReachable(openServers), { servers: openServers, attempts: 25, delayMs: 200 });
+  const openSpace = `sendopen-${randomUUID().slice(0, 8)}`;
+  const first = run(["send", "-c", "general", "first-open", "--space", openSpace, "--server", openServers, "--json"]);
+  check("open: the first send to a never-used open space is stored, exit 0", first.status === 0 && first.envelope?.outcome === "ok", shown(first));
+  const openHistory = run(["history", "general", "--space", openSpace, "--server", openServers, "--json"]);
+  const openTexts = (JSON.parse(openHistory.stdout || "{}") as { result?: { items?: { text?: string }[] } }).result?.items?.map((m) => m.text).join("|");
+  check("open: its history holds that message", openHistory.status === 0 && openTexts === "first-open", shown(openHistory));
+  // The distinction the remedy above depends on stays: on a space this machine started, absent
+  // streams mean the space was deleted, so a send refuses rather than create them again.
+  const hereSpace = `sendhere-${randomUUID().slice(0, 8)}`;
+  const hereRoot = join(dir, "here");
+  mkdirSync(join(hereRoot, ".cotal"), { recursive: true, mode: 0o700 });
+  recordMesh({ space: hereSpace, server: openServers, root: hereRoot, mode: "open", ts: new Date().toISOString() });
+  const gone = run(["send", "-c", "general", "never-stored", "--space", hereSpace, "--json"], hereRoot);
+  check("open: a space this machine started whose streams are gone still refuses TARGET_UNAVAILABLE, exit 2", gone.status === 2 && gone.envelope?.error?.code === "TARGET_UNAVAILABLE" && gone.envelope.error.message?.includes(`the streams of ${hereSpace} are not on its broker`) === true, shown(gone));
 } catch (error) {
   check("scenario completed", false, (error as Error).stack ?? String(error));
 } finally {
   await killAndAwaitExit(broker);
+  await killAndAwaitExit(openBroker);
   releaseBroker();
+  releaseOpenBroker();
   rmSync(dir, { recursive: true, force: true });
 }
 
