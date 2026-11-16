@@ -54,13 +54,33 @@ jobs:
           pnpm --filter cotal-ai... --workspace-concurrency 3 build
           node_modules/.bin/tsc -p implementations/cli/tsconfig.json
           node_modules/.bin/tsc -p bin/tsconfig.json
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: diagnostic-source
+          persist-credentials: false
+      - name: Overlay only the authorized diagnostic smoke
+        shell: pwsh
+        run: |
+          $file='bin/smoke/connector-set-cleanup-win32.smoke.ts'
+          $out=Join-Path $env:RUNNER_TEMP 'windows-consuming-evidence'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $before=@{}
+          foreach ($p in @('bin/execution-store.ts','packages/workspace/src/extension-set-win32.ts','packages/workspace/src/extension-set.ts')) { $before[$p]=(Get-FileHash -Algorithm SHA256 $p).Hash }
+          Copy-Item -LiteralPath (Join-Path 'diagnostic-source' $file) -Destination $file
+          if ((Get-FileHash $file).Hash -ne (Get-FileHash (Join-Path 'diagnostic-source' $file)).Hash) { throw 'Diagnostic smoke copy differs' }
+          foreach ($p in $before.Keys) { if ((Get-FileHash -Algorithm SHA256 $p).Hash -ne $before[$p]) { throw "Product implementation changed: $p" } }
+          git diff --exit-code -- bin/execution-store.ts packages/workspace/src/extension-set-win32.ts packages/workspace/src/extension-set.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Product implementation differs from approved source' }
+          @{product=$env:PRODUCT_SOURCE;measurement='${{ github.sha }}';diagnosticFile=$file;diagnosticSha256=(Get-FileHash -Algorithm SHA256 $file).Hash;implementationSha256=$before} | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $out 'diagnostic-origin.json')
       - name: Windows consuming collector first and foreign-file tree reader
         shell: pwsh
         run: |
           $env:DO_NOT_TRACK='1'
           $out=Join-Path $env:RUNNER_TEMP 'windows-consuming-evidence'
-          New-Item -ItemType Directory -Path $out | Out-Null
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
           git rev-parse HEAD | Set-Content (Join-Path $out 'source.txt')
+          $env:COTAL_OWNER_PROBE_OUTPUT=Join-Path $out 'collector'
           node --import tsx bin/smoke/connector-set-cleanup.smoke.ts 2>&1 | Tee-Object (Join-Path $out 'collector.log')
           if ($LASTEXITCODE -ne 0) { throw 'Native consuming collector failed' }
           $env:COTAL_OWNER_PROBE_OUTPUT=Join-Path $out 'reader'
