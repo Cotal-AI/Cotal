@@ -50,6 +50,13 @@ renameSync(`${manifest}.held`, manifest);
 renameSync(paths.ready, `${paths.ready}.held`);
 assert.throws(assertExtensionSetReadable, /missing or incomplete.*cotal ext seed --repair/);
 renameSync(`${paths.ready}.held`, paths.ready);
+const installation = join(paths.root, "install.json");
+const committed = readFileSync(installation, "utf8");
+writeFileSync(installation, JSON.stringify({ installRoot: paths.installRoot, current: "99.0.0", previous: "98.0.0", versions: [paths.version, "98.0.0", "99.0.0"] }));
+renameSync(paths.ready, `${paths.ready}.held`);
+assert.throws(assertExtensionSetReadable, /missing or incomplete.*cotal ext seed --repair/);
+renameSync(`${paths.ready}.held`, paths.ready);
+writeFileSync(installation, committed);
 assertExtensionSetReadable();
 writeFileSync(paths.ready, "{broken");
 await prepareExtensionSet(async () => {
