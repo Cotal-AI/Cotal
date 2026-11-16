@@ -73,6 +73,22 @@ test('hosted Manager observation retries only the explicit rate refusal within i
   assert.equal(reads, 1); assert.equal(now, 0);
 });
 
+test('released updater coordinates retain official source and fixed target routing', () => {
+  const base = { source: '0.164.18', layout: 'npm', method: 'self', prepare() {}, candidate: '/fixed-target', direction: 'B' };
+  assert.equal(baseline.releasedUpdaterOptions({}, false), undefined);
+  for (const platform of ['linux', 'darwin']) for (const mode of ['no-service', 'empty-owned-service', 'owned-agent-consent', 'foreground-foreign-prefix']) {
+    const options = {...base, 'released-updater': mode, state: mode === 'no-service' ? 'fresh' : 'daemon', ...(mode === 'owned-agent-consent' ? {'stop-agents': 'true'} : {})};
+    assert.equal(baseline.releasedUpdaterOptions(options, true, platform), mode);
+    assert.equal(baseline.releasedUpdaterOptions({...options, candidate: undefined}, true, platform), mode);
+    for (const change of [{source: 'latest'}, {source: '0.164.19'}, {layout: 'installer'}, {method: 'npm'}, {state: 'configured'}, {prepare: undefined}, {'candidate-next': '/synthetic-B'}, {direction: 'A'}, {'released-updater': 'unknown'}]) {
+      assert.throws(() => baseline.releasedUpdaterOptions({...options, ...change}, true, platform));
+    }
+    assert.throws(() => baseline.releasedUpdaterOptions(options, false, platform));
+    assert.throws(() => baseline.releasedUpdaterOptions(options, true, 'win32'));
+    if (mode === 'owned-agent-consent') assert.throws(() => baseline.releasedUpdaterOptions({...options, 'stop-agents': undefined}, true, platform));
+  }
+});
+
 test('candidate-owned next hop admission requires explicit paired hosted manual native source', () => {
   const options = {candidate:'/A', 'candidate-next':'/B', 'next-hop-source':'candidate', 'next-hop-phase':'candidate', source:'0.164.11', layout:'npm',state:'daemon',method:'self'};
   assert.equal(baseline.candidateNextOptions(options,true),'candidate');
@@ -176,7 +192,7 @@ test('documented hosted Manager command and container cleanup are extracted with
   assert(source.includes("['ps', '--on', current.instanceId, '--space', report.managerHost.space, '--json']"));
   assert(source.includes("const home = hosted && (state === 'daemon' || daemonHostedManager) ? homedir()"));
   assert(source.includes("if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign"));
-  assert(source.includes("if (daemonHostedManager || options['target-admission']) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
+  assert(source.includes("if (daemonHostedManager || options['target-admission'] || options['released-updater'] && options['released-updater'] !== 'no-service') Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') })"));
   assert(source.includes('const deadline = Date.now() + 60000;'));
   assert(source.includes('JSON.stringify(observed)'));
   assert(source.includes("['daemon', 'service-disconnect', '--space', report.managerHost.space, '--json']"));
@@ -384,6 +400,29 @@ test('bootstrap versions bracket stable published releases', () => {
   assert.equal(bootstrapVersion('1.0.0', 'A'), '0.0.0');
   assert.throws(() => bootstrapVersion('0.0.0', 'A'));
   assert.throws(() => bootstrapVersion('0.164.2-beta.1', 'B'));
+});
+
+test('release workflow routes all released modes without candidate-next and verifies their independent evidence', () => {
+  const workflow = parseYaml(readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml', import.meta.url), 'utf8'));
+  const steps = workflow.jobs['release-cells'].steps;
+  const run = steps.find(step => step.name === 'Run one real product upgrade coordinate').run;
+  for (const [mode, state] of [['no-service', 'fresh'], ['empty-owned-service', 'daemon'], ['owned-agent-consent', 'daemon'], ['foreground-foreign-prefix', 'daemon']]) {
+    assert(run.includes(`'released-0.164.18-${mode}': '${state}'`));
+  }
+  assert(run.includes("options['released-updater'] = cell.releasedUpdater"));
+  assert(run.includes('options.prepare = prepareReleasedUpdater'));
+  assert(run.includes("if (cell.releasedUpdater === 'owned-agent-consent') options['stop-agents'] = 'true'"));
+  const paired = run.split('\n').find(line => line.includes('const paired ='));
+  assert(!paired.includes('releasedUpdater'));
+  assert(run.includes("args.push('--candidate', candidate, '--direction', 'B')"));
+  for (const name of ['Prepare owned broker fixture dependencies', 'Build only the signed-in participant fixture dependencies']) {
+    assert(steps.find(step => step.name === name).if.includes("matrix.releasedUpdater != null && matrix.releasedUpdater != 'no-service'"));
+  }
+  const summary = workflow.jobs['release-summary'].steps.map(step => step.run ?? '').join('\n');
+  assert(summary.includes('verifyReleasedUpdaterEvidence({ report, cell, output: directory })'));
+  assert(summary.includes('...(releasedEvidence?.assertions ?? {})'));
+  assert(summary.includes("cell.releasedUpdater ? '0.164.18' : plan.sourceVersion"));
+  assert(summary.includes("cell.releasedUpdater !== 'no-service'"));
 });
 
 test('workflow bounds diagnostics and preserves every immutable release head without cancellation', () => {

@@ -21,6 +21,20 @@ export { hostedManagerRetryAfter } from './candidate-next-evidence.mjs';
 import { matchSource16410Refusal } from './source-16410-refusal.mjs';
 import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
+export function releasedUpdaterOptions(options, disposable = hosted, platform = process.platform) {
+  const mode = options['released-updater'];
+  if (mode === undefined) return undefined;
+  assert(['no-service', 'empty-owned-service', 'owned-agent-consent', 'foreground-foreign-prefix'].includes(mode), 'unknown released-updater coordinate');
+  assert(disposable && ['linux', 'darwin'].includes(platform), 'released updater requires disposable POSIX runner');
+  assert(options.source === '0.164.18' && options.layout === 'npm' && options.method === 'self', 'released updater requires official 0.164.18 npm public self-update');
+  assert.equal(options.state, mode === 'no-service' ? 'fresh' : 'daemon', 'released updater state mismatch');
+  assert.equal(options['candidate-next'], undefined, 'released updater targets the fixed release, not a synthetic next hop');
+  assert.equal(typeof options.prepare, 'function', 'released updater needs its evidence composition');
+  if (options.candidate) assert.equal(options.direction, 'B', 'released updater must retain the official source');
+  if (mode === 'owned-agent-consent') assert.equal(options['stop-agents'], 'true', 'released agent update requires public stop consent');
+  return mode;
+}
+
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['target-admission'] !== undefined) {
     assert(['foreign-preserving', 'offline', 'manager-unknown', 'consent-stop', 'consent-declined', 'killed-updater', 'official18-escape'].includes(options['target-admission']), 'unknown target-admission coordinate');
@@ -359,6 +373,7 @@ export async function matrixCell(options) {
   const policy = options['expect-policy-refusal'];
   if (policy) assert(policyCoordinate(policy, { source, state, method, layout, platform: process.platform, candidate: options.candidate, stopAgents: options['stop-agents'] === 'true' }), 'policy expectation requires a reproduced published coordinate');
   assert((sources.includes(source) || /^\d+\.\d+\.\d+$/.test(source)) && states.includes(state) && methods.includes(method) && ['npm', 'installer'].includes(layout), 'unknown matrix coordinate');
+  releasedUpdaterOptions({ ...options, source, state, method, layout });
   const publishedInstaller = options['published-installer'] ? verifyPublishedInstaller({ ...options, layout, method }) : undefined;
   if (options['expect-recovery-refusal'] === 'true') assert(publishedInstaller && state === 'recovery', 'expected refusal requires a published installer override and recovery state');
   if (options['first-install'] === 'true') assert(publishedInstaller && options['installer-setup'] === 'true' && state === 'fresh' && source === 'latest', 'first install requires latest fresh fixed-script setup');
@@ -398,7 +413,7 @@ export async function matrixCell(options) {
   env.TMPDIR = join(root, 'tmp');
   mkdirSync(env.TMPDIR, { mode: 0o700 });
   if (!(hosted && (state === 'daemon' || daemonHostedManager))) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, 'config'), XDG_DATA_HOME: join(home, '.local/share'), XDG_CACHE_HOME: join(home, '.cache'), XDG_STATE_HOME: join(home, '.state'), XDG_RUNTIME_DIR: join(home, 'runtime'), LOCALAPPDATA: join(home, 'AppData/Local'), APPDATA: join(home, 'AppData/Roaming') });
-  if (daemonHostedManager || options['target-admission']) Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
+  if (daemonHostedManager || options['target-admission'] || options['released-updater'] && options['released-updater'] !== 'no-service') Object.assign(env, { COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: join(home, '.config') });
   if (!hosted) env.COTAL_SKIP_CONNECTOR_SEED = '1';
   report.environment = { hostedDisposable: hosted, privateHome: home.startsWith(root), seedSkipped: env.COTAL_SKIP_CONNECTOR_SEED === '1', registryOverridden: Boolean(options.candidate), nativeServiceRequested: state === 'daemon' || daemonHostedManager, managerHostMode: daemonHostedManager ? 'daemon-hosted' : state === 'agent' ? 'standalone' : 'none' };
   for (const key of ['XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']) if (env[key] && env[key].startsWith(root)) mkdirSync(env[key], { recursive: true, mode: 0o700 });

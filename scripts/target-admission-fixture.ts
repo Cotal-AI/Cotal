@@ -304,13 +304,13 @@ export async function prepareTargetAdmission(context: Context) {
       ok(await call("install exact target checker without publication", "npm", ["install", "-g", "--prefix", probePrefix, `cotal-ai@${report.target}`, "--ignore-scripts", "--no-audit", "--no-fund"]), "target checker install");
       const probeRoot = join(probePrefix, "lib/node_modules/cotal-ai");
       const declaration = JSON.parse(readFileSync(join(probeRoot, "package.json"), "utf8")).cotalPreinstall;
-      const request = { v: 1, nonce: randomBytes(16).toString("hex"), installedEntry: cli, daemonArgv: [process.execPath, cli, "daemon", "serve"], flags: { space } };
+      const request = { v: 1, admission: 1, nonce: randomBytes(16).toString("hex"), installedEntry: cli, daemonArgv: [process.execPath, cli, "daemon", "serve"], flags: { space } };
       const observed = ok(await call("actual target read-only admission before update", process.execPath, [join(probeRoot, declaration.entry), JSON.stringify(request)], 130000), "actual target admission");
       const receipts = observed.stdout.split("\n").filter((line: string) => line.startsWith("COTAL_PREINSTALL_RESULT "));
       assert.equal(receipts.length, 1);
       evidence.targetReceipt = JSON.parse(receipts[0].slice("COTAL_PREINSTALL_RESULT ".length));
       assert.equal(evidence.targetReceipt.nonce, request.nonce); assert.equal(evidence.targetReceipt.installedEntry, cli);
-      if (["foreign-preserving", "offline", "manager-unknown"].includes(mode)) assert.equal(evidence.targetReceipt.occupied, null, "unknown or foreign work is not invented zero");
+      if (["foreign-preserving", "offline", "manager-unknown"].includes(mode)) assert.equal(evidence.targetReceipt.admission.occupied, null, "unknown or foreign work is not invented zero");
     },
     async afterUpdate(update: any) {
       assert.equal(update.exit, 0, update.stderr);

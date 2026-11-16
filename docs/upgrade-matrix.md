@@ -44,7 +44,8 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 44 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. The separate official
+0.164.18 updater family stays pinned independently of that predecessor. Each phase runs 52 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -63,6 +64,7 @@ product coordinates:
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 | POSIX candidate-owned native-service recovery after a killed updater, including live-owner refusal and bounded dead-owner recovery | 2 |
 | POSIX official 0.164.18 preservation escape through plain npm installation of the target, then its synthetic next hop | 2 |
+| POSIX official 0.164.18 public self-update to the fixed target with no service, an empty owned native service, owned-agent stop consent, or a foreground service from another prefix | 8 |
 
 The four permanent target-admission cells use the same owned participant fixture as the measurement
 cells. Killed-updater cells retain the native owned service, prove preservation and public reads,
@@ -73,6 +75,16 @@ The source receipt remains the target release's candidate identity. The official
 its own evidence receipt. Both phases retain these cells independently of the unchanged twenty-cell
 measurement selector. The official escape and foreign-preserving fixtures require the guarded
 historical producer packs from `8cddd397a05afc15842c0a2402beb2a983b226c7`.
+
+The eight released-updater cells install official 0.164.18 from public npm and invoke that installed
+CLI's `cotal update --self` to the planned target version. They do not use the candidate's updater
+or a synthetic next target. The no-service cell starts fresh. The other cells use the same signed-in
+participant fixture and native harness, with explicit `--stop-agents` consent for the owned-agent
+case and a normal public npm installation in another prefix for the foreground service.
+Their evidence binds the public source, actual self-update call, released-reader probe and custody
+preservation. Target versions, extension inventory, healthy status and absence of recovery or manual
+repair remain required. These cells need no historical producer artifacts and remain separate from
+the four permanent admission cells and the unchanged twenty-cell measurement selector.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon

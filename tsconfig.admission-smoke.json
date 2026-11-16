@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": { "noEmit": true, "rootDir": ".", "allowJs": true, "checkJs": false },
-  "include": ["scripts/target-admission-fixture.ts"]
+  "include": ["scripts/target-admission-fixture.ts", "scripts/released-updater-fixture.ts"]
 }

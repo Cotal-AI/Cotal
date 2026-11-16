@@ -25,8 +25,8 @@ export function verifyTargetAdmissionEvidence({report,cell,output}) {
  assert.equal(e.recovery,null);
  if(['killed-updater','official18-escape'].includes(e.mode))return verifyUpdaterFamily({report,cell,e,call,invocation});
  const probe=report.calls.filter(row=>row.label==='actual target read-only admission before update');assert.equal(probe.length,1);assert.equal(probe[0].exit,0);const receiptLines=probe[0].stdout.split('\n').filter(line=>line.startsWith('COTAL_PREINSTALL_RESULT '));assert.equal(receiptLines.length,1);assert.deepEqual(JSON.parse(receiptLines[0].slice('COTAL_PREINSTALL_RESULT '.length)),e.targetReceipt);const request=JSON.parse(probe[0].argv.at(-1));assert.equal(e.targetReceipt.nonce,request.nonce);assert.equal(e.targetReceipt.installedEntry,invocation.argv[0]);
- if(['foreign-preserving','offline','manager-unknown'].includes(e.mode)){assert.equal(e.targetReceipt.occupied,null);assert.equal(e.targetReceipt.admission.disposition,'deferred');}
- if(e.mode.startsWith('consent-')){assert.equal(e.targetReceipt.admission.disposition,'consent-stop');assert.equal(e.targetReceipt.occupied,1);assert.equal(e.targetReceipt.admission.inventory.length,1);}
+ if(['foreign-preserving','offline','manager-unknown'].includes(e.mode)){assert.equal(e.targetReceipt.admission.occupied,null);assert.equal(e.targetReceipt.admission.disposition,'deferred');}
+ if(e.mode.startsWith('consent-')){assert.equal(e.targetReceipt.admission.disposition,'consent-stop');assert.equal(e.targetReceipt.admission.occupied,1);assert.equal(e.targetReceipt.admission.inventory.length,1);}
  const deferred=e.mode!=='consent-stop';assert.equal(e.deferred,deferred);
  const assertions={publicUpdate:true,sourceIdentity:true,targetVersion:report.selectedCliVersion===cell.targetVersion,noRecovery:true,nativeAction:false,retainedSet:false,retainedWork:false,lateRead:false};
  if(deferred){

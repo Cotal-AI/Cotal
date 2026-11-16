@@ -600,7 +600,7 @@ jobs:
           printf '%s  %s\n' 87921721f6dcdf01a454a8d62f8d15f12dee8fd2934a470f435e034f60ca5e9d "$package" | sha256sum -c -
           dpkg-deb -x "$package" "$RUNNER_TEMP/released-desktop"
       - name: Prepare disposable Linux user manager
-        if: matrix.platform == 'linux' && (matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.targetAdmission != null || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
+        if: matrix.platform == 'linux' && (matrix.releasedUpdater != null || matrix.scenario == 'daemon-scheduler' || matrix.scenario == 'daemon-self' || matrix.targetAdmission != null || matrix.scenario == 'candidate-next-daemon-self' || matrix.scenario == 'candidate-next-stopped-daemon-self' || matrix.scenario == 'candidate-next-disabled-daemon-self' || matrix.scenario == 'candidate-next-stopped-desktop-self' || matrix.followOnAction != null || matrix.scenario == 'source-0.164.10-daemon-self-chain' || matrix.scenario == 'agent-stop-consent')
         shell: bash
         run: |
           set -euo pipefail
@@ -610,7 +610,7 @@ jobs:
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Prepare owned broker fixture dependencies
-        if: matrix.targetAdmission != null || (matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent'))
+        if: matrix.targetAdmission != null || (matrix.releasedUpdater != null && matrix.releasedUpdater != 'no-service') || (matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent'))
         shell: bash
         run: |
           set -euo pipefail
@@ -629,7 +629,7 @@ jobs:
           tar -xzf "$work/$archive" -C "$work"
           echo "$work/nats-server-v2.14.0-$platform-$arch" >> "$GITHUB_PATH"
       - name: Build only the signed-in participant fixture dependencies
-        if: matrix.targetAdmission != null || matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent'
+        if: matrix.targetAdmission != null || (matrix.releasedUpdater != null && matrix.releasedUpdater != 'no-service') || matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent'
         shell: bash
         run: |
           node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
@@ -652,7 +652,7 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-killed-updater': 'daemon', 'candidate-next-target-admission-official18-escape': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { 'released-0.164.18-no-service': 'fresh', 'released-0.164.18-empty-owned-service': 'daemon', 'released-0.164.18-owned-agent-consent': 'daemon', 'released-0.164.18-foreground-foreign-prefix': 'daemon', fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-killed-updater': 'daemon', 'candidate-next-target-admission-official18-escape': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           const paired = Boolean(cell.targetAdmission) || cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
@@ -695,6 +695,12 @@ jobs:
             }
             const { prepareTargetAdmission } = await import('./scripts/target-admission-fixture.ts');
             options.prepare = prepareTargetAdmission;
+          }
+          if (cell.releasedUpdater) {
+            const { prepareReleasedUpdater } = await import('./scripts/released-updater-fixture.ts');
+            options['released-updater'] = cell.releasedUpdater;
+            options.prepare = prepareReleasedUpdater;
+            if (cell.releasedUpdater === 'owned-agent-consent') options['stop-agents'] = 'true';
           }
           const report = await matrixCell(options);
           assert.equal(report.environment?.hostedDisposable, true);
@@ -808,7 +814,7 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-killed-updater': 'daemon', 'candidate-next-target-admission-official18-escape': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { 'released-0.164.18-no-service': 'fresh', 'released-0.164.18-empty-owned-service': 'daemon', 'released-0.164.18-owned-agent-consent': 'daemon', 'released-0.164.18-foreground-foreign-prefix': 'daemon', fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-target-admission-killed-updater': 'daemon', 'candidate-next-target-admission-official18-escape': 'daemon', 'candidate-next-target-admission-foreign-preserving': 'daemon', 'candidate-next-target-admission-offline': 'daemon', 'candidate-next-target-admission-manager-unknown': 'daemon', 'candidate-next-target-admission-consent-stop': 'daemon', 'candidate-next-target-admission-consent-declined': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
@@ -820,7 +826,7 @@ jobs:
               assert.equal(report.sourceRequested, cell.sourceVersion);
               assert.equal(report.target, cell.finalTargetVersion ?? cell.targetVersion);
               if (!paired) {
-                assert.equal(cell.sourceVersion, plan.sourceVersion);
+                assert.equal(cell.sourceVersion, cell.releasedUpdater ? '0.164.18' : plan.sourceVersion);
                 assert.equal(cell.targetVersion, plan.targetVersion);
               }
               if (paired) {
@@ -840,7 +846,7 @@ jobs:
                 assert.equal(report.environment?.registryOverridden, false);
                 assert.equal(report.candidate, undefined);
               }
-              if (!['fresh', 'foreign-config-recovery'].includes(cell.scenario)) assert(report.extensionsBefore?.length >= 8, 'configured scenarios require populated extension inventory');
+              if (!['fresh', 'foreign-config-recovery'].includes(cell.scenario) && cell.releasedUpdater !== 'no-service') assert(report.extensionsBefore?.length >= 8, 'configured scenarios require populated extension inventory');
               assert(Array.isArray(report.assertions) && report.assertions.length > 0);
               assert.equal(new Set(report.assertions.map(a => a.name)).size, report.assertions.length, 'duplicate raw assertion');
               assert(report.assertions.every(a => typeof a.name === 'string' && typeof a.passed === 'boolean'), 'malformed raw assertion');
@@ -926,7 +932,11 @@ jobs:
               const admissionEvidence = cell.targetAdmission
                 ? (await import('./scripts/target-admission-evidence.mjs')).verifyTargetAdmissionEvidence({ report, cell, output: directory })
                 : undefined;
+              const releasedEvidence = cell.releasedUpdater
+                ? (await import('./scripts/released-updater-evidence.mjs')).verifyReleasedUpdaterEvidence({ report, cell, output: directory })
+                : undefined;
               const assertions = {
+                ...(releasedEvidence?.assertions ?? {}),
                 ...Object.fromEntries(['native-preservation', 'public-read', 'live-owner', 'dead-owner-bounded', 'next-hop-alone', 'official18-registry', 'real-preservation', 'plainnpm-noerror'].map(name => [name, admissionEvidence?.assertions?.[name] === true])),
                 'target-admission-evidence': admissionEvidence?.passed === true,
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
@@ -962,7 +972,7 @@ jobs:
               if (['agent-stop-consent', 'standalone-stop-consent', 'container-manager'].includes(cell.scenario)) assert(assertions['owned-stack-cleanup'], 'owned cleanup must succeed before grading');
               const refusal = cell.chain ? undefined : matchKnownRefusal(cell, report);
               if (refusal) knownRefusals.push({ id: cell.id, issue: refusal.issue });
-              const genuine = report.assertions.every(a => a.passed === true) && (plan.phase !== 'candidate' || report.candidate?.source === plan.sourceSHA);
+              const genuine = (!cell.releasedUpdater || releasedEvidence?.passed === true) && report.assertions.every(a => a.passed === true) && (plan.phase !== 'candidate' || report.candidate?.source === plan.sourceSHA);
               actual.push({ id: cell.id, status: genuine ? report.result : 'failed', assertions });
             }
           }

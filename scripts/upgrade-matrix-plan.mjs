@@ -222,6 +222,14 @@ export function boundedCells(plan) {
   add("win32", "npm", "daemon-scheduler", "Windows scheduler upgrade excluded until product readiness is established");
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
   cells.push(...permanentTargetAdmissionCells(plan));
+  for (const platform of ["linux", "darwin"]) for (const mode of ["no-service", "empty-owned-service", "owned-agent-consent", "foreground-foreign-prefix"]) {
+    add(platform, "npm", `released-0.164.18-${mode}`, null, {
+      sourceVersion: "0.164.18", sourceKind: "npm-exact-source", releasedUpdater: mode,
+      targetVersion: plan.targetVersion, targetSource: plan.targetSource, targetSourceSHA: plan.sourceSHA,
+      requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention",
+        "released-updater-source", "released-updater-self", "released-reader-probe", "custody-preserved"],
+    });
+  }
   return cells;
 }
 /** Permanent candidate-owned preservation and official-release escape checks. */

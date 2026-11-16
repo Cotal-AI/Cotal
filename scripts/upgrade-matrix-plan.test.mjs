@@ -20,7 +20,7 @@ test("registry predecessor excludes target, newer versions, prereleases and malf
   assert.throws(() => publishedPredecessor({ versions: {} }, "0.164.8"), /no published stable source/);
   assert.throws(() => publishedPredecessor({ versions: { "0.164.7": { version: "0.164.6" } } }, "0.164.8"), /version mismatch/);
   const plan = planPhase(pr(), { ...context, sourceVersion: "0.164.7", packageManifest: { version: "0.164.8" } });
-  assert(boundedCells(plan).filter(cell => !["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) && !cell.followOnAction && !cell.targetAdmission && !cell.chain).every(cell => cell.sourceVersion === "0.164.7"));
+  assert(boundedCells(plan).filter(cell => !["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) && !cell.followOnAction && !cell.targetAdmission && !cell.releasedUpdater && !cell.chain).every(cell => cell.sourceVersion === "0.164.7"));
   assert.throws(() => planPhase(pr(), { ...context, sourceVersion: undefined }), /frozen published/);
 });
 
@@ -107,16 +107,16 @@ const requiredIDs = [
   "linux-npm-daemon-self", "darwin-npm-daemon-self", "win32-npm-daemon-self",
   "linux-installer-daemon-self", "darwin-installer-daemon-self",
 ];
-test("bounded enumeration is deterministic: 22 ordinary + 3 fresh next + 3 stopped-daemon next + 2 disabled-daemon next + 1 stopped-desktop next + 6 follow-on + 3 pinned chains + 4 permanent admission cells", () => {
+test("bounded enumeration is deterministic: 22 ordinary + 3 fresh next + 3 stopped-daemon next + 2 disabled-daemon next + 1 stopped-desktop next + 6 follow-on + 3 pinned chains + 4 permanent admission + 8 released updater cells", () => {
   const plan = dispatch();
   const cells = boundedCells(plan);
   assert.deepEqual(cells.filter(c => c.required).map(c => c.id), candidateIDs);
   assert.deepEqual(boundedCells(plan), cells);
-  assert.equal(cells.length, 47);
+  assert.equal(cells.length, 55);
   assert.equal(new Set(cells.map(c => c.id)).size, cells.length);
   for (const cell of cells) {
     assert.equal(cell.sourceSHA, sourceSHA);
-    assert.equal(cell.sourceVersion, cell.chain ? "0.164.10" : (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.targetAdmission) ? "0.164.7" : "0.164.6");
+    assert.equal(cell.sourceVersion, cell.releasedUpdater ? "0.164.18" : cell.chain ? "0.164.10" : (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.targetAdmission) ? "0.164.7" : "0.164.6");
     assert.equal(cell.targetVersion, (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction || cell.targetAdmission) ? "0.164.1007" : "0.164.7");
     if (cell.followOnAction) assert.equal(cell.finalTargetVersion, "0.164.2007");
     assert.equal(cell.runner, { linux: "ubuntu-24.04", darwin: "macos-15", win32: "windows-2022" }[cell.platform]);
@@ -139,9 +139,10 @@ const followOnIDs = ["linux", "darwin"].flatMap(platform => [
 ]);
 const chainIDs = ["linux", "darwin", "win32"].map(platform => `${platform}-npm-source-0.164.10-daemon-self-chain`);
 const permanentAdmissionIDs = ["linux", "darwin"].flatMap(platform => ["killed-updater", "official18-escape"].map(mode => `${platform}-npm-candidate-next-target-admission-${mode}`));
-const candidateIDs = [...requiredIDs, ...nextIDs, ...stoppedNextIDs, ...disabledNextIDs, ...stoppedDesktopNextIDs, ...followOnIDs, ...chainIDs, ...permanentAdmissionIDs];
+const releasedUpdaterIDs = ["linux", "darwin"].flatMap(platform => ["no-service", "empty-owned-service", "owned-agent-consent", "foreground-foreign-prefix"].map(mode => `${platform}-npm-released-0.164.18-${mode}`));
+const candidateIDs = [...requiredIDs, ...nextIDs, ...stoppedNextIDs, ...disabledNextIDs, ...stoppedDesktopNextIDs, ...followOnIDs, ...chainIDs, ...permanentAdmissionIDs, ...releasedUpdaterIDs];
 
-test("both phases retain 44 required cells with permanently pinned chains, stopped/disabled/desktop manual-repair cells, follow-on cells, and conditional ordinary chains", () => {
+test("both phases retain 52 required cells with permanently pinned chains, stopped/disabled/desktop manual-repair cells, follow-on cells, and conditional ordinary chains", () => {
   for (const phase of ["candidate", "published"]) for (const sourceVersion of ["0.164.9", "0.164.10", "0.164.11"]) {
     const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase, sourceSHA, targetVersion: "0.164.12" } }, { sourceVersion });
     assert.deepEqual(plan.expectedIDs, candidateIDs);
@@ -199,6 +200,34 @@ test("both phases retain 44 required cells with permanently pinned chains, stopp
       }
     }
     assert.equal(verifyResults(plan.cells, goodResults(plan.cells)).upgradeAcceptance, true);
+  }
+});
+
+test("official 0.164.18 public updater remains pinned independently of rolling predecessor", () => {
+  for (const phase of ["candidate", "published"]) for (const sourceVersion of ["0.164.18", "0.164.19", "0.165.1"]) {
+    const plan = planRelease({ eventName: "workflow_dispatch", inputs: { phase, sourceSHA, targetVersion: "0.166.0" } }, { sourceVersion });
+    const cells = plan.cells.filter(cell => cell.releasedUpdater);
+    assert.deepEqual(cells.map(cell => cell.id), releasedUpdaterIDs);
+    assert.equal(plan.expectedIDs.length, 52);
+    for (const cell of cells) {
+      assert.equal(cell.sourceVersion, "0.164.18");
+      assert.equal(cell.sourceKind, "npm-exact-source");
+      assert.equal(cell.sourceSHA, sourceSHA);
+      assert.equal(cell.targetSourceSHA, sourceSHA);
+      assert.equal(cell.targetVersion, plan.targetVersion);
+      assert.equal(compareVersions(cell.targetVersion, cell.sourceVersion), 1);
+      assert.equal(cell.targetSource, phase === "candidate" ? "packed-target" : "npm-exact");
+      assert.equal(cell.finalTargetVersion, undefined);
+      assert.equal(cell.syntheticVersionRule, undefined);
+      assert.equal(cell.targetAdmission, undefined);
+      for (const assertion of cell.requiredAssertions) {
+        const results = goodResults(plan.cells);
+        delete results.find(row => row.id === cell.id).assertions[assertion];
+        assert.equal(verifyResults(plan.cells, results).acceptance, false, assertion);
+      }
+      const results = goodResults(plan.cells);
+      assert.equal(verifyResults(plan.cells, results.filter(row => row.id !== cell.id)).acceptance, false);
+    }
   }
 });
 
@@ -285,14 +314,14 @@ test("candidate next-hop owns C to synthetic B at frozen H, separate from option
   assert.equal(plan.cells.find(c => c.scenario === "candidate-a").required, false);
   const published = planRelease(run(), publishContext);
   assert.deepEqual(published.expectedIDs, candidateIDs);
-  assert.equal(published.matrix.include.length, 44);
+  assert.equal(published.matrix.include.length, 52);
   assert.ok(published.cells.filter(c => nextIDs.includes(c.id) || stoppedNextIDs.includes(c.id) || disabledNextIDs.includes(c.id) || stoppedDesktopNextIDs.includes(c.id)).every(c => c.sourceKind === "npm-exact-A"));
   assert.deepEqual(plan.cells.map(c => c.id), published.cells.map(c => c.id));
 });
 
 test("candidate uses packed target and receipt-pinned installer artifact, candidate A optional", () => {
   const cells = boundedCells(dispatch({ phase: "candidate" }));
-  assert.equal(cells.filter(c => c.required).length, 44);
+  assert.equal(cells.filter(c => c.required).length, 52);
   assert.ok(cells.filter(c => c.required && c.channel === "npm" && !c.targetAdmission && !["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(c.scenario) && !c.followOnAction).every(c => c.targetSource === "packed-target"));
   const installers = cells.filter(c => c.channel === "installer" && c.scenario === "configured-rerun");
   const schedulers = cells.filter(c => c.required && c.scenario === "daemon-scheduler");
@@ -379,7 +408,7 @@ test("workflow wrapper accepts snake-case dispatch fields and exposes exact expe
 test("newer minor releases are valid and Linux isolation cells require their own evidence in both phases", () => {
   for (const phase of ["candidate", "published"]) {
     const cells = boundedCells(dispatch({ phase, targetVersion: "0.165.0" }));
-    assert.equal(cells.filter(c => c.required).length, 44);
+    assert.equal(cells.filter(c => c.required).length, 52);
     for (const [id, assertion] of [["linux-npm-foreign-config-recovery", "foreign-snapshot-retained"], ["linux-npm-container-manager", "container-manager-preserved"]]) {
       const cell = cells.find(c => c.id === id);
       assert.equal(cell.sourceVersion, "0.164.6");
