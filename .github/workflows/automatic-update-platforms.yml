@@ -33,7 +33,7 @@ permissions:
   contents: read
   actions: read
 env:
-  # Repin to the merged connector-set baseline before final dispatch.
+  # Historical foreign-fence producer. Product H includes the newer connector-set fixes.
   ADMISSION_LEGACY_SOURCE: 8cddd397a05afc15842c0a2402beb2a983b226c7
   PRODUCT_SOURCE: 252d3a03f3550a784c7784efc57155e70a7e5d83
 jobs:
@@ -67,7 +67,7 @@ jobs:
             const { pathToFileURL } = require('node:url');
             const { execFileSync } = require('node:child_process');
             const { createHash } = require('node:crypto');
-            const { planPhase, targetAdmissionCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
+            const { planPhase, boundedCells, targetAdmissionCells, jobsMatrix, compareVersions, publishedPredecessor } = await import(pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/upgrade-matrix-plan.mjs`));
             const event = context.payload;
             const repository = `${context.repo.owner}/${context.repo.repo}`;
             const metadata = { eventName: context.eventName, repository };
@@ -141,16 +141,18 @@ jobs:
               metadata.sourceVersion = publishedPredecessor(registry, metadata.targetVersion);
               metadata.sourceRegistry = { url: 'https://registry.npmjs.org/cotal-ai', observedAt: new Date().toISOString(), latest: registry['dist-tags'].latest };
               if (phase === 'candidate') {
-                const measurement = context.eventName === 'workflow_dispatch' && event.inputs.profile === 'bounded';
+                const measurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-target-owned-admission';
                 assert(compareVersions(metadata.targetVersion, registry['dist-tags'].latest) >= (measurement ? 0 : 1), 'candidate target must be newer than public latest, or equal for target-admission measurement');
               }
               else assert.equal(registry.versions[metadata.targetVersion]?.version, metadata.targetVersion, 'exact published target not present on npm');
             }
             const plan = planPhase(event, metadata);
-            assert.equal(context.eventName, 'workflow_dispatch', 'target admission measurement requires explicit dispatch');
-            assert.equal(plan.phase, 'candidate', 'target admission measurement requires candidate phase');
-            assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'measurement source must be bound to its direct product parent');
-            const cells = targetAdmissionCells(plan);
+            const admissionMeasurement = context.eventName === 'workflow_dispatch' && context.ref === 'refs/heads/measure/update-target-owned-admission';
+            if (admissionMeasurement) {
+              assert.equal(plan.phase, 'candidate', 'target admission measurement requires candidate phase');
+              assert.equal(source, execFileSync('git', ['rev-parse', 'HEAD^'], { encoding: 'utf8' }).trim(), 'measurement source must be bound to its direct product parent');
+            }
+            const cells = admissionMeasurement ? targetAdmissionCells(plan) : boundedCells(plan);
             mkdirSync(`${process.env.RUNNER_TEMP}/upgrade-plan`, { recursive: true });
             writeFileSync(`${process.env.RUNNER_TEMP}/upgrade-plan/plan.json`, JSON.stringify({ ...plan, legacySourceSHA: process.env.ADMISSION_LEGACY_SOURCE, sourceRegistry: metadata.sourceRegistry, cells }, null, 2));
             core.setOutput('applicable', String(plan.status === 'planned'));
@@ -374,9 +376,114 @@ jobs:
           name: release-follow-on
           path: ${{ runner.temp }}/release-follow-on
           if-no-files-found: error
+  admission-legacy-pack:
+    needs: [select, release-native]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission' && needs.select.outputs.applicable == 'true' && needs.release-native.result == 'success' && !contains(github.event.head_commit.message, '[windows-job-only]') && !contains(github.event.head_commit.message, '[windows-baseline-only]') && !contains(github.event.head_commit.message, '[mac-controls-only]') && !contains(github.event.head_commit.message, '[mac-transition-only]') && !contains(github.event.head_commit.message, '[scheduler-only]') && !contains(github.event.head_commit.message, '[installer-only]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.ADMISSION_LEGACY_SOURCE }}
+          path: legacy
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Verify immutable legacy ancestor and pre-admission checker
+        env:
+          PRODUCT_SHA: ${{ needs.select.outputs.source }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const git = args => execFileSync('git', ['-C', 'legacy', ...args], { encoding: 'utf8' }).trim();
+          const legacySourceSHA = git(['rev-parse', 'HEAD']);
+          const productSourceSHA = process.env.PRODUCT_SHA;
+          assert.match(process.env.ADMISSION_LEGACY_SOURCE, /^[a-f0-9]{40}$/);
+          assert.equal(legacySourceSHA, process.env.ADMISSION_LEGACY_SOURCE);
+          assert.notEqual(legacySourceSHA, productSourceSHA);
+          git(['merge-base', '--is-ancestor', legacySourceSHA, productSourceSHA]);
+          const checker = readFileSync('legacy/bin/daemon/execution-preinstall.ts', 'utf8');
+          assert(!/\bdisposition\b|\bUpdateAdmission\b/.test(checker), 'legacy checker must predate target admission');
+          writeFileSync(process.env.RUNNER_TEMP + '/admission-legacy-origin.json', JSON.stringify({ legacySourceSHA, productSourceSHA, ancestorOfProduct: true }, null, 2));
+          NODE
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+      - run: pnpm install --frozen-lockfile --child-concurrency=2
+        working-directory: legacy
+      - name: Require identical native build inputs before reusing product artifacts
+        env:
+          PRODUCT_SHA: ${{ needs.select.outputs.source }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { assertNativeInputsMatch } from './scripts/native-artifact-source.mjs';
+          assertNativeInputsMatch(process.env.PRODUCT_SHA, process.env.ADMISSION_LEGACY_SOURCE, process.env.GITHUB_WORKSPACE + '/legacy');
+          NODE
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*-*-*
+          path: ${{ runner.temp }}/release-natives
+      - name: Assemble and guard the complete source-matched native closure
+        working-directory: legacy
+        run: |
+          node scripts/seat-assemble-natives.mjs
+          node scripts/workspace-assemble-natives.mjs
+          node packages/seat/scripts/assert-shipped-natives.mjs
+          node packages/workspace/scripts/assert-shipped-natives.mjs
+        env:
+          NATIVE_SOURCE: ${{ needs.select.outputs.source }}
+          SEAT_NATIVE_X64: ${{ runner.temp }}/release-natives/release-seat-linux-x64/peercred.node
+          SEAT_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-seat-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-seat-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-seat-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/release-natives/release-seat-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/release-natives/release-seat-win32-arm64/peercred.node
+          WORKSPACE_NATIVE_X64: ${{ runner.temp }}/release-natives/release-workspace-win32-x64
+          WORKSPACE_NATIVE_ARM64: ${{ runner.temp }}/release-natives/release-workspace-win32-arm64
+          WORKSPACE_NATIVE_DARWIN_X64: ${{ runner.temp }}/release-natives/release-workspace-darwin-x64
+          WORKSPACE_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/release-natives/release-workspace-darwin-arm64
+      - name: Build legacy CLI dependency closure
+        run: pnpm --filter 'cotal-ai...' --workspace-concurrency 3 build
+        working-directory: legacy
+      - name: Pack legacy A at its manifest version and synthetic next B
+        run: |
+          LEGACY_VERSION=$(node -p "require('./legacy/bin/package.json').version")
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/admission-legacy-candidate" --version "$LEGACY_VERSION" --source-root "$GITHUB_WORKSPACE/legacy"
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { packCandidateNext } from './scripts/pack-candidate-next.mjs';
+          await packCandidateNext({
+            sourceRoot: process.env.GITHUB_WORKSPACE + '/legacy',
+            candidate: process.env.RUNNER_TEMP + '/admission-legacy-candidate',
+            output: process.env.RUNNER_TEMP + '/admission-legacy-next',
+            exec(file, args, options) {
+              const build = file === 'pnpm' && JSON.stringify(args) === JSON.stringify(['--workspace-concurrency', '3', 'build']);
+              return execFileSync(file, build ? ['--filter', 'cotal-ai...', ...args] : args, options);
+            },
+          });
+          NODE
+          cp "$RUNNER_TEMP/admission-legacy-origin.json" "$RUNNER_TEMP/admission-legacy-candidate/legacy-origin.json"
+          cp "$RUNNER_TEMP/admission-legacy-origin.json" "$RUNNER_TEMP/admission-legacy-next/legacy-origin.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admission-legacy-candidate
+          path: ${{ runner.temp }}/admission-legacy-candidate
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admission-legacy-next
+          path: ${{ runner.temp }}/admission-legacy-next
+          if-no-files-found: error
   release-cells:
     needs: [select, release-pack, release-next, admission-legacy-pack]
-    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success'
+    if: always() && needs.select.result == 'success' && needs.select.outputs.applicable == 'true' && needs.release-pack.result == 'success' && needs.release-next.result == 'success' && (!(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/measure/update-target-owned-admission') || needs.admission-legacy-pack.result == 'success')
     name: upgrade-${{ matrix.id }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -527,6 +634,9 @@ jobs:
         run: |
           node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
           pnpm --filter @cotal-ai/auth... --workspace-concurrency 3 build
+      - name: Typecheck target admission fixture against built dependencies
+        if: matrix.targetAdmission != null
+        run: pnpm exec tsc --noEmit -p tsconfig.admission-smoke.json
       - name: Run one real product upgrade coordinate
         shell: bash
         env:
