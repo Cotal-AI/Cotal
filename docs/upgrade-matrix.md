@@ -44,7 +44,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 40 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 44 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -61,6 +61,18 @@ product coordinates:
 | Linux manual updater to a synthetic next version with a stopped desktop-owned user service beside the npm CLI, staying stopped and naming the desktop service owner | 1 |
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
+| POSIX candidate-owned native-service recovery after a killed updater, including live-owner refusal and bounded dead-owner recovery | 2 |
+| POSIX official 0.164.18 preservation escape through plain npm installation of the target, then its synthetic next hop | 2 |
+
+The four permanent target-admission cells use the same owned participant fixture as the measurement
+cells. Killed-updater cells retain the native owned service, prove preservation and public reads,
+refuse a live owner, and bound dead-owner recovery before completing the next hop alone.
+Official-release escape cells fetch 0.164.18 from the public registry, retain real preservation
+evidence, install the target with plain npm without an error, then complete the next hop alone.
+The source receipt remains the target release's candidate identity. The official installation has
+its own evidence receipt. Both phases retain these cells independently of the unchanged twenty-cell
+measurement selector. The official escape and foreign-preserving fixtures require the guarded
+historical producer packs from `8cddd397a05afc15842c0a2402beb2a983b226c7`.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon

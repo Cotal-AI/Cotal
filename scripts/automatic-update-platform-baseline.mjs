@@ -23,7 +23,7 @@ import { matchKnownRefusal } from './upgrade-matrix-refusals.mjs';
 
 export function candidateNextOptions(options, disposable = hosted) {
   if (options['target-admission'] !== undefined) {
-    assert(['foreign-preserving', 'offline', 'manager-unknown', 'consent-stop', 'consent-declined'].includes(options['target-admission']), 'unknown target-admission coordinate');
+    assert(['foreign-preserving', 'offline', 'manager-unknown', 'consent-stop', 'consent-declined', 'killed-updater', 'official18-escape'].includes(options['target-admission']), 'unknown target-admission coordinate');
     assert(['linux', 'darwin'].includes(process.platform) && options.state === 'daemon' && options.method === 'self' && options.layout === 'npm' && options['candidate-next'], 'target admission requires a POSIX candidate-owned daemon hop');
     assert.equal(typeof options.prepare, 'function', 'target admission needs its real participant composition');
   }

@@ -221,9 +221,30 @@ export function boundedCells(plan) {
   add("win32", "installer", "daemon-self", "Windows installer self-update excluded: no public shell installer route");
   add("win32", "npm", "daemon-scheduler", "Windows scheduler upgrade excluded until product readiness is established");
   add("linux", "npm", "candidate-a", "optional candidate A is outside the required bounded matrix");
+  cells.push(...permanentTargetAdmissionCells(plan));
   return cells;
 }
-/** Measurement-only selector. The ordinary bounded release gate remains unchanged. */
+/** Permanent candidate-owned preservation and official-release escape checks. */
+export function permanentTargetAdmissionCells(plan) {
+  if (plan.status === "skipped") return [];
+  requireValue(plan.status === "planned" && ["candidate", "published"].includes(plan.phase), "invalid phase plan");
+  const targetVersion = syntheticNextVersion(plan.targetVersion);
+  return ["linux", "darwin"].flatMap(platform => ["killed-updater", "official18-escape"].map(mode => {
+    const scenario = `candidate-next-target-admission-${mode}`;
+    return { id: `${platform}-npm-${scenario}`, platform, runner: runners[platform], channel: "npm", scenario,
+      phase: plan.phase, sourceSHA: plan.sourceSHA, sourceVersion: plan.targetVersion,
+      sourceKind: plan.phase === "published" ? "npm-exact-A" : "packed-candidate-A",
+      targetVersion, targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA,
+      syntheticVersionRule: "candidate.patch+1000", targetAdmission: mode,
+      required: true, disposition: "required", reason: null, installerOverride: false,
+      requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "no-recovery",
+        "candidate-source-identity", "candidate-next-target", "target-admission-evidence",
+        ...(mode === "killed-updater" ? ["native-preservation", "public-read", "live-owner", "dead-owner-bounded", "next-hop-alone"]
+          : ["official18-registry", "real-preservation", "plainnpm-noerror", "next-hop-alone"])],
+    };
+  }));
+}
+/** Measurement-only selector. Its original twenty coordinates stay unchanged. */
 export function targetAdmissionCells(plan) {
   requireValue(plan.status === "planned" && plan.phase === "candidate", "target admission measurement is candidate-only");
   const cells = boundedCells(plan);
