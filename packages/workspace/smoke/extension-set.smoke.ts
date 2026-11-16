@@ -63,6 +63,11 @@ await prepareExtensionSet(async () => {
   assert.equal(readFileSync(manifest, "utf8"), inventory);
 }, { repair: true });
 assertExtensionSetReady();
+renameSync(paths.ready, `${paths.ready}.lost`);
+await prepareExtensionSet(async () => {
+  assert.equal(readFileSync(manifest, "utf8"), inventory);
+}, { repair: true });
+assertExtensionSetReady();
 const snapshot = mkdtempSync(join(paths.set, ".update-snapshot-"));
 const recovery = { previous: paths.version, snapshot } as UpdateRecovery;
 assert.equal(recoverySnapshotProblem(recovery), undefined);
