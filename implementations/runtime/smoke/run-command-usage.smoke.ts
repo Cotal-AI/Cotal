@@ -340,6 +340,29 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
   c("a simulation's log line is printed, and --json carries it in result.log",
     logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([{ scope: "", values: ["hello", 42] }]), written.join("").slice(0, 400));
+  writeFileSync(program, `
+const items = [1, 2];
+const selected = items.filter((item, index, array) => { array[index] = item + 10; return true; });
+const first = items.find((item, index, array) => { array[index] = 99; return true; });
+const last = items.findLast((item, index, array) => { array[index] = 77; return true; });
+log({ items, selected, first, last });
+const xs = [1, 2];
+const filtered = await filter(xs, async (item, index) => { await 0; xs[index] = item + 10; return true; });
+const found = await find(xs, async (item, index) => { await 0; xs[index] = 99; return index === 1; });
+log({ xs, filtered, found });
+log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => true) === undefined, await find([], () => true));
+`);
+  written.length = 0;
+  process.stdout.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try { logged = await simulate({}, { json: true }); }
+  finally { process.stdout.write = origWrite; }
+  try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
+  c("simulate retains predicate input values for filter, find and findLast, including awaited free builtins",
+    logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([
+      { scope: "", values: [{ items: [99, 77], selected: [1, 2], first: 11, last: 12 }] },
+      { scope: "", values: [{ xs: [99, 99], filtered: [1, 2], found: 12 }] },
+      { scope: "", values: [[], true, true, null] },
+    ]), { logged, output: written.join("") });
   writeFileSync(program, 'throw "boom";\n');
   const thrown = await simulate({});
   c("a program that throws fails naming what it threw, not an unscripted effect",
