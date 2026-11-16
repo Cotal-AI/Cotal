@@ -167,6 +167,6 @@ if (sharedChecked !== 8) {
 }
 
 const pass = refused === 0 && enough && lazyOk;
-console.log(`\n${checked} documents checked, ${refused} refused by the admitted vocabulary`);
+console.log(`\ncontract vocabulary (${checked} checks)  ${refused} refused by the admitted vocabulary`);
 console.log(`\nCONTRACT VOCABULARY ${pass ? "OK ✅" : "FAILED ❌"}`);
 process.exit(pass ? 0 : 1);
