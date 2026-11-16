@@ -11,8 +11,8 @@
  *     JWT's digest — and the manager's STANDING supervisor credential is broker-DENIED the epgate
  *     write, so the traversal could only have ridden the scoped one-shot executor.
  *  3. F5(a)/maintenance CHOKEPOINT (checklist 3/8): a retired managed principal is refused on
- *     `ep.one` (permission-denied), and a resume-pending manager refuses ep ops (`unavailable`)
- *     while still answering `status`, the read a resume's readiness waits on; both restore.
+ *     `ep.one` (permission-denied), and a resume-pending manager refuses mutations (`unavailable`)
+ *     while still answering read-only `status` and `ps`; both restore.
  *     (Since 1d the ep door is the only control door.)
  *  4. processEpoch ≠ instanceId (checklist 4): the served epoch is the GATE's processEpoch (0),
  *     while instanceId is the manager's lifecycle uid.
@@ -151,7 +151,7 @@ try {
   const caller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
   const callerCreds = await mintCreds(auth, callerId, "agent", {
     lifecycleUid: callerUid,
-    endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }, { endpoint: MANAGER_ENDPOINT, command: "ps" }],
+    endpointCapabilities: [{ endpoint: MANAGER_ENDPOINT, command: "status" }, { endpoint: MANAGER_ENDPOINT, command: "ps" }, { endpoint: MANAGER_ENDPOINT, command: "spawn" }],
   });
   const callerNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
   // checklist 6: the `one`-rail currency reader is the GATE's processEpoch (the service epoch
@@ -160,10 +160,14 @@ try {
   const callStatus = () => epCall(callerNc, space, { mode: "one" },
     { endpoint: MANAGER_ENDPOINT, command: "status", contract: MANAGER_STATUS_CONTRACT, caller },
     { deadlineMs: 8000, currentEpoch: serviceEpochReader });
-  // `status` answers a resume-pending manager by design (serveObservation), so the fence is probed
-  // with `ps`, an ordinary command that stays behind it.
+  // `status` and `ps` are read-only observations. Probe the mutation fence with a schema-valid
+  // spawn request, not another read such as inspect that currently also stays behind the fence.
   const callPs = () => epCall(callerNc, space, { mode: "one" },
     { endpoint: MANAGER_ENDPOINT, command: "ps", contract: MANAGER_CONTRACTS.ps, caller },
+    { deadlineMs: 8000, currentEpoch: serviceEpochReader });
+  const callSpawn = () => epCall(callerNc, space, { mode: "one" },
+    { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller,
+      args: { name: "maintenance-fence-probe" } },
     { deadlineMs: 8000, currentEpoch: serviceEpochReader });
   const r1 = await callStatus();
   const s1 = r1.reply.data as ManagerStatus;
@@ -203,15 +207,22 @@ try {
   check("a RETIRED managed principal is refused on ep.one (permission-denied, F5(a))",
     rRet.reply.ok === false && rRet.reply.error?.code === "permission-denied"
     && String(rRet.reply.error?.message ?? "").includes("retired"), rRet.reply);
+  const rRetPs = await callPs();
+  check("a RETIRED managed principal cannot bypass membership through read-only ps",
+    rRetPs.reply.ok === false && rRetPs.reply.error?.code === "permission-denied"
+    && String(rRetPs.reply.error?.message ?? "").includes("retired"), rRetPs.reply);
   M.retiredPrincipals.delete(callerPrincipal);
   M.resumeRequired = true;
-  const rRes = await callPs();
-  check("a resume-pending manager refuses ep ops (unavailable, the maintenance fence)",
+  const rRes = await callSpawn();
+  check("a resume-pending manager refuses spawn (unavailable, the mutation maintenance fence)",
     rRes.reply.ok === false && rRes.reply.error?.code === "unavailable"
     && String(rRes.reply.error?.message ?? "").includes("resume"), rRes.reply);
   const rObs = await callStatus();
   check("a resume-pending manager still answers status, the read its resume readiness waits on",
     rObs.reply.ok === true && (rObs.reply.data as ManagerStatus).instanceId === iid, rObs.reply);
+  const rPsObs = await callPs();
+  check("a resume-pending manager still answers ps with its empty agent list",
+    rPsObs.reply.ok === true && Array.isArray(rPsObs.reply.data) && rPsObs.reply.data.length === 0, rPsObs.reply);
   M.resumeRequired = false;
   check("the fences RESTORE (the caller invokes again after both clear)",
     (await callStatus()).reply.ok === true && (await callPs()).reply.ok === true);
