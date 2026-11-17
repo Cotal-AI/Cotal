@@ -7,6 +7,7 @@ import type { runCli as dispatch } from "./command.js";
  *  imports it when called, after the root has imported the commands it chose. */
 export { commandWord } from "./lib/leading-flags.js";
 export { completeFileWrites, stdoutError } from "./lib/stdout-owner.js";
+export { ownStdoutErrors } from "./lib/stdout-owner.js";
 
 export async function runCli(...args: Parameters<typeof dispatch>): ReturnType<typeof dispatch> {
   return (await import("./command.js")).runCli(...args);

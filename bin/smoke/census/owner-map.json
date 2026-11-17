@@ -1,6 +1,11 @@
 {
  "$comment": "Capability census owner map, read by bin/smoke/capability-census.smoke.ts. One row per item that bin/smoke/census/sources.ts lists. An owner is \"current:<command> [words] [--flag ...]\" for a registered command that performs the item today, \"pending:<command> [words] [--flag ...]\" for the command the CLI redesign adds for it, or \"internal:<reason>\" for machinery that is not a user capability. An item that more than one entry point issues lists each owner. The checklist covers prose sources the extractor cannot read.",
  "owners": {
+  "cli:mcp": "current:mcp",
+  "cli:mcp wait": "current:mcp wait",
+  "cli:mcp--space": "current:mcp --space",
+  "cli:mcp--wake-socket": "current:mcp --wake-socket",
+  "cli:mcp--connection": "current:mcp wait --connection",
   "agent-file:agent": "current:personas",
   "agent-file:allowPublish": "current:personas",
   "agent-file:allowSubscribe": "current:personas",

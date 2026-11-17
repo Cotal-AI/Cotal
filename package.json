@@ -302,6 +302,7 @@
     "smoke:focus-drop-exhaustion": "tsx extensions/connector-core/smoke/focus-drop-exhaustion.smoke.ts",
     "smoke:focus-exclusion-mention": "tsx extensions/connector-core/smoke/focus-exclusion-mention.smoke.ts",
     "smoke:gateway": "tsx extensions/connector-core/smoke/gateway.smoke.ts",
+    "smoke:mcp-command": "tsx bin/smoke/mcp-command.smoke.ts && tsx bin/smoke/mcp-command.smoke.ts --edges && tsx bin/smoke/mcp-command.smoke.ts --wake-edges && tsx bin/smoke/mcp-command.smoke.ts --open && tsx bin/smoke/mcp-command.smoke.ts --name-race",
     "smoke:discovery-addressing": "tsx extensions/connector-core/smoke/discovery-addressing.smoke.ts",
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:spawn-blank-name": "tsx extensions/connector-core/smoke/spawn-blank-name.smoke.ts",

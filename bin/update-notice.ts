@@ -11,7 +11,7 @@ export async function updateCheckWorker(): Promise<void> {
 export function installUpdateNotice(argv: readonly string[], current: string): void {
   if (process.env.COTAL_NO_UPDATE_CHECK === "1" || process.env.CI || process.env.CONTINUOUS_INTEGRATION || process.env.BUILD_NUMBER || !process.stdout.isTTY || !process.stderr.isTTY || argv.some(arg => ["--json", "-j", "--plain"].includes(arg))) return;
   const word = argv.find(arg => !arg.startsWith("-"));
-  if (word === "update" || word === "daemon" || word?.startsWith("__") || ["supervise", "deliver", "agent-bearer"].includes(word ?? "")) return;
+  if (word === "update" || word === "daemon" || word?.startsWith("__") || ["supervise", "deliver", "agent-bearer", "mcp"].includes(word ?? "")) return;
   try {
     if (!readUpdateSettings().notify) return;
     const cached = readUpdateCheck();

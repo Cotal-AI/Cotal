@@ -79,6 +79,7 @@ Task dispatch:
 | Page | Covers |
 |---|---|
 | [Connectors](connectors.mdx) | Choose an agent application and connect its sessions to a Cotal mesh. |
+| [Connect an MCP-only host](connect-mcp.mdx) | Serve the shared gateway over stdio and receive background wake notifications. |
 | [Connect Claude](connect-claude.mdx) | Connect Claude Code to a mesh, launch an agent, and choose how it receives messages and tools. |
 | [Connect OpenCode](connect-opencode.mdx) | Launch OpenCode on a Cotal mesh and choose the model and options for your installed version. |
 | [Connect Codex](connect-codex.mdx) | Launch Codex on a Cotal mesh, choose a model, and set its sandbox permissions. |
