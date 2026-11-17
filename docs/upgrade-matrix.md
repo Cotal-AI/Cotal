@@ -49,7 +49,7 @@ cancellation, so one new head or publication cannot evict an older qualification
 
 At plan time both phases read public npm metadata and freeze the newest stable published version
 strictly below the target. The plan records that source and its registry observation. Missing registry
-metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 40 isolated
+metadata or a missing predecessor fails without a fixed-version fallback. Each phase runs 42 isolated
 product coordinates:
 
 | Coordinates | Count |
@@ -59,6 +59,7 @@ product coordinates:
 | Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts | 5 |
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
 | Linux paused record pointing to a real snapshot under another config home | 1 |
+| POSIX npm self-update with a stopped local space and an unrelated unreachable manual broker registration | 2 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
@@ -66,6 +67,14 @@ product coordinates:
 | Linux manual updater to a synthetic next version with a stopped desktop-owned user service beside the npm CLI, staying stopped and naming the desktop service owner | 1 |
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
+
+The unreachable-registration cells run from a folder with no project marker and clear the selected
+space before updating. They create, start and stop a separate local stack through the public CLI,
+then register a dead loopback broker with `space add --force`. Both ports must refuse connections.
+The registration and stopped stack journal must remain unchanged. Public 0.165.3 to 0.165.4 refuses
+at staged admission as tracked in [#7224](https://github.com/Cotal-AI/Cotal/issues/7224).
+The report labels that measured refusal as known red, but it remains failed in both acceptance fields.
+A stopped space selected in the update folder does not exercise this install-wide read.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
 or agent, verify it is ready at the source version, then run `cotal update --self`. Their final daemon
