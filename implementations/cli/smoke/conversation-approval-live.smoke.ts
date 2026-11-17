@@ -65,10 +65,13 @@ const decide = (requestId: string, decision: { approve: Selection } | "deny" | "
   else if (decision === "expire") a.state = "expired";
   else Object.assign(a, { state: "approved", approved: decision.approve, decidedAt: new Date().toISOString() });
 };
+let originalRegistration: ReturnType<typeof bundle> | undefined;
 let movedRegistration: ReturnType<typeof bundle> | undefined;
+let enforceNames = false;
+const retiredActors = new Set<string>();
 const server = createServer({ key, cert: ca }, async (req, res) => {
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-  if (req.url === `/s/${SPACE}/.well-known/cotal-mesh`) return send(200, bundle());
+  if (req.url === `/s/${SPACE}/.well-known/cotal-mesh`) return send(200, originalRegistration ?? bundle());
   if (req.url === `/moved/s/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
   authenticated++;
   assert.equal(req.headers.authorization, "Bearer isolated-fixture-human-session");
@@ -82,6 +85,9 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     let a = approvals.get(body.requestId);
     if (a && a.digest !== digest) return send(409, { error: "requestId reused with a different request" });
     if (!a) {
+      if (enforceNames && [...approvals.values()].some((previous) => previous.material &&
+          JSON.parse(previous.digest).label === body.label && !retiredActors.has(previous.material.actor)))
+        return send(409, { error: "name-taken" });
       const id = base32(26);
       a = { id, url: `${base}/approve/${id}`, expiresAt: new Date(Date.now() + 600_000).toISOString(), state: "pending", digest, proposed: body.selection ?? null };
       approvals.set(body.requestId, a);
@@ -130,6 +136,7 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     deletes++;
     const exact = [...approvals.values()].find((a) => a.material?.retire.url === `${base}${req.url}`);
     assert(exact, "retirement must name one issued lifecycle");
+    retiredActors.add(exact.material!.actor);
     return send(200, { v: 1, actor: exact.material!.actor, lifecycleUid: exact.material!.lifecycleUid, phase: "terminal", complete: true });
   }
   send(404, {});
@@ -496,7 +503,7 @@ try {
     }
     failure = undefined;
   });
-  await check("a retiring identity finishes at its recorded registration before reconnecting at moved addresses", async () => {
+  await check("a legacy retiring identity recovers matching original pins and reconnects under the same name", async () => {
     const session = "session-moved";
     const p = await pendingOf(provisionUserApp(target, "moved", session, true));
     decide(p.requestId, { approve: EMPTY });
@@ -504,6 +511,8 @@ try {
     const file = join(c.retire.dir, "identity.json");
     const record = JSON.parse(readFileSync(file, "utf8"));
     assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
     record.state = "retiring";
     writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
     const moved = bundle();
@@ -524,6 +533,7 @@ try {
     assert.equal(reconnected.env.COTAL_SERVERS, moved.server);
     assert.notEqual(reconnected.env.COTAL_ACTOR, c.env.COTAL_ACTOR);
     movedRegistration = undefined;
+    enforceNames = false;
     assert.notEqual(JSON.parse(readFileSync(file, "utf8")).token, record.token);
     recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: target.userAuth, policy: target.policy });
@@ -547,6 +557,10 @@ try {
       movedRegistration = moved;
       recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
         userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+      originalRegistration = bundle();
+      if (changedPin === "addresses") originalRegistration.server = "nats://127.0.0.1:3";
+      if (changedPin === "issuer") originalRegistration.userAuth.idp.issuer = `${base}/different-issuer`;
+      if (changedPin === "audience") originalRegistration.userAuth.idp.audience = "different-audience";
       const before = authenticated, beforeDeletes = deletes;
       const next = await pendingOf(provisionUserApp(await resolveTargetOrThrow({ space: SPACE }), "legacy", session, true));
       assert.equal(authenticated, before + 1, "only the fresh request is authenticated");
@@ -554,18 +568,21 @@ try {
       assert.notEqual(next.requestId, p.requestId);
       const preserved = join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json");
       assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
+      originalRegistration = undefined;
       movedRegistration = undefined;
       recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
         userAuth: target.userAuth, policy: target.policy });
     });
   }
-  await check("a moved registration reconnects when only its new sign-in remains", async () => {
+  await check("a name conflict after set-aside explains the earlier identity and both remedies", async () => {
     const session = "session-missing-login";
     const p = await pendingOf(provisionUserApp(target, "moved", session, true));
     decide(p.requestId, { approve: EMPTY });
     const c = await connected(provisionUserApp(target, "moved", session, true));
     const file = join(c.retire.dir, "identity.json"), record = JSON.parse(readFileSync(file, "utf8"));
     assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
     record.state = "retiring";
     writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
     const moved = bundle();
@@ -577,13 +594,14 @@ try {
       userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
     deleteIdpSession(home, `${base}/idp`);
     const before = deletes;
-    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
-    const next = await pendingOf(provisionUserApp(nextTarget, "moved", session, true));
+    const refused = await cli({ name: "moved", space: SPACE, session, events: true });
+    assert.equal(refused.code, 1);
+    assert.equal(refused.reply.retryable, false);
+    assert.match(refused.reply.error, /this conversation's earlier identity still holds the name/);
+    assert.match(refused.reply.error, /revoke the offline agent at the authority, or connect under another name/);
     assert.equal(deletes, before, "no retirement credential goes to the replacement");
-    assert.notEqual(next.requestId, p.requestId);
     assert(existsSync(join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json")));
-    decide(next.requestId, { approve: EMPTY });
-    await connected(provisionUserApp(nextTarget, "moved", session, true));
+    enforceNames = false;
   });
   assert.equal(assertions, 43);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
