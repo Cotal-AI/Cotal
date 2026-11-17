@@ -508,9 +508,9 @@ try {
 
   await cell("L7 uninstall refuses with no effect", async () => {
     const r = await cli("uninstall", "--yes", "--json");
-    check("L7 with no recorded unit it refuses TARGET_NOT_FOUND, exit 2", r.status === 2 && r.doc.error?.code === "TARGET_NOT_FOUND", { status: r.status, out: r.out.slice(0, 300) });
+    check("L7 without a receipt or reachable native manager uninstall refuses without guessing ownership", r.status === 2 && r.doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: r.status, out: r.out.slice(0, 300) });
     const plain = await cli("uninstall", "--yes", "--plain");
-    check("L7 that refusal names `cotal daemon install` in backticks, in plain and --json alike", String(r.doc.error?.message).includes("no installed unit recorded by `cotal daemon install`") && plain.status === 2 && `${plain.out}${plain.err}`.includes(r.doc.error.message), { message: r.doc.error?.message, plain: plain.out + plain.err });
+    check("L7 the native discovery refusal is identical in plain and JSON", plain.status === 2 && sameText(r, plain), { message: r.doc.error?.message, plain: plain.out + plain.err });
     check("L7 no unit receipt was created", !existsSync(join(home, "daemon", "service-unit.json")));
     const noYes = await cli("uninstall", "--json");
     check("L7 outside a terminal without --yes it refuses USAGE_INVALID, exit 1", noYes.status === 1 && noYes.doc.error?.code === "USAGE_INVALID", { status: noYes.status, out: noYes.out.slice(0, 300) });
