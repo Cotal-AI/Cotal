@@ -658,6 +658,13 @@ jobs:
             if (cell.scenario === 'candidate-next-two-homes') {
               const { verifyTwoHomeUpgrade } = await import('./scripts/automatic-update-two-homes-evidence.mjs');
               const report = JSON.parse(readFileSync(join(directory, 'two-homes/result.json')));
+              const twoHomeRoot = join(directory, 'two-homes');
+              const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+              const rawBindings = readFileSync(join(twoHomeRoot, 'evidence.sha256'), 'utf8').trim().split('\n');
+              assert.equal(rawBindings.length, 2);
+              for (const name of ['result.json', 'transcript.log']) {
+                assert(rawBindings.includes(digest(readFileSync(join(twoHomeRoot, name))) + '  ' + name), 'two-home raw evidence binding mismatch');
+              }
               const verdict = verifyTwoHomeUpgrade(report, { platform: cell.platform, hosted: true });
               assert.equal(report.harnessSource, process.env.EXPECTED_HARNESS_SOURCE);
               for (const name of ['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs']) {
@@ -670,6 +677,11 @@ jobs:
               assert.equal(report.target.version, cell.targetVersion);
               const origin = JSON.parse(readFileSync(join(directory, 'candidate-origin.json')));
               const nextOrigin = JSON.parse(readFileSync(join(directory, 'candidate-next-origin.json')));
+              for (const [receipt, artifact, artifactDigest] of [[origin, process.env.EXPECTED_CANDIDATE_ARTIFACT, process.env.EXPECTED_CANDIDATE_DIGEST], [nextOrigin, process.env.EXPECTED_NEXT_ARTIFACT, process.env.EXPECTED_NEXT_DIGEST]]) {
+                assert.match(String(artifact), /^[1-9][0-9]*$/);
+                assert.match(String(artifactDigest), /^(?:sha256:)?[a-f0-9]{64}$/);
+                assert(receipt.artifact && receipt.digest, 'two-home artifact identity missing');
+              }
               assert.equal(origin.artifact, process.env.EXPECTED_CANDIDATE_ARTIFACT);
               assert.equal(origin.source, plan.sourceSHA);
               assert.equal(origin.digest, process.env.EXPECTED_CANDIDATE_DIGEST);
@@ -678,6 +690,15 @@ jobs:
               assert.equal(nextOrigin.digest, process.env.EXPECTED_NEXT_DIGEST);
               assert.equal(report.old.manifestSha256, nextOrigin.sourceManifestSha256);
               assert.equal(report.target.manifestSha256, nextOrigin.targetManifestSha256);
+              for (const [name, expectedHash, version, archives] of [['candidate-source-manifest.json', nextOrigin.sourceManifestSha256, cell.sourceVersion, report.old.archives], ['candidate-next-manifest.json', nextOrigin.targetManifestSha256, cell.targetVersion, report.target.archives]]) {
+                const bytes = readFileSync(join(directory, name));
+                assert.equal(digest(bytes), expectedHash, 'two-home archived manifest hash mismatch');
+                const manifest = JSON.parse(bytes);
+                assert.equal(manifest.source, plan.sourceSHA);
+                assert.deepEqual(manifest.packages.map(pkg => pkg.name).sort(), JSON.parse(readFileSync('.changeset/config.json')).fixed.flat().sort());
+                assert(manifest.packages.every(pkg => pkg.version === version));
+                assert.deepEqual(archives, manifest.packages.map(({ name, sha256 }) => ({ name, sha256 })), 'two-home archive census mismatch');
+              }
               actual.push({ id: cell.id, status: 'passed', assertions: Object.fromEntries(cell.requiredAssertions.map(name => [name, verdict.acceptance])) });
               continue;
             }
