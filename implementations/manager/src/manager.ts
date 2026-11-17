@@ -2667,7 +2667,8 @@ export class Manager {
           }
         } catch {}
       }
-      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
+      // A refused family needs another pass inside the final quarter of its lifetime.
+      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), Math.max(1, Math.floor(standingTtl * 1000 / 8)));
       this.resumeCredRenewal = () => {
         if (this.credRenewTimer || this.leaseStopping) return;
         this.credRenewTimer = setInterval(async () => {

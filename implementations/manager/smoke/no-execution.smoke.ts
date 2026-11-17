@@ -157,6 +157,7 @@ try {
   await new Promise((r) => setTimeout(r, 500));
   check("native readiness remains real after all-duty candidate preflight/adoption", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
   const originalExpiry = Math.max(...[initial.opts.remoteAuthority!.serveCreds, initial.opts.remoteAuthority!.goalWriterCreds, initial.opts.remoteAuthority!.sessionLedgerCreds].map((cred) => Number(credsClaims(cred).exp))) * 1000;
+  check("rejected family retries before original standing credentials expire", originalExpiry > Date.now());
   assert.ok(originalExpiry - Date.now() < 30_000, "fixture active duties must have bounded short TTL");
   await new Promise((r) => setTimeout(r, Math.max(0, originalExpiry - Date.now() + 250)));
   check("real noexec status survives original serve/goal/session JWT expiry", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
