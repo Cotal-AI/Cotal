@@ -24,9 +24,11 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+          pnpm --filter @cotal-ai/seat build:native
           brew install nats-server
           pnpm --filter cotal-ai seeded-connectors
           pnpm --filter cotal-ai --config.node-linker=hoisted deploy --prod --ignore-scripts "$RUNNER_TEMP/repair-cli"
+          test -f "$RUNNER_TEMP/repair-cli/node_modules/@cotal-ai/seat/build/Release/darwin-arm64/peercred.node"
       - name: Record released app deletion and CLI recovery
         shell: bash
         run: |

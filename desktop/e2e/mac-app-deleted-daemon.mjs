@@ -235,7 +235,12 @@ try {
   if (serviceOwnership) {
     try {
       await nativeAction('cleanup exact service bootout', ['bootout']);
-      report.cleanupService = await call('cleanup service absence', '/bin/launchctl', ['print', target]);
+      for (let attempt = 0; attempt < 50; attempt++) {
+        report.cleanupService = await call('cleanup service absence', '/bin/launchctl', ['print', target]);
+        if (report.cleanupService.exit === 113) break;
+        if (report.cleanupService.exit !== 0) { process.exitCode = 1; break; }
+        await delay(200);
+      }
       if (report.cleanupService.exit !== 113) process.exitCode = 1;
     } catch (error) { report.cleanupOwnershipError = publicText(error); process.exitCode = 1; }
   } else {
