@@ -18,6 +18,71 @@ test('historical source bootstrap cutoff is isolated from the upgrade environmen
   assert(driver.includes('npmBefore: (bootstrapEnvironment ?? env).npm_config_before ?? null'));
 });
 
+test('extension observations ask the driven CLI each time and read that root on disk', async () => {
+  const config = mkdtempSync(join(tmpdir(), 'extension-root-'));
+  const roots = ['old', 'selected', 'manual'].map(name => join(config, name));
+  const entries = roots.map((root, index) => {
+    mkdirSync(root);
+    const entry = { pkg: '@cotal-ai/tmux', version: `0.166.${index}` };
+    writeFileSync(join(root, 'extensions.json'), JSON.stringify({ extensions: [entry] }));
+    return entry;
+  });
+  let calls = 0;
+  const run = async argv => {
+    assert.deepEqual(argv, ['ext', '--json']);
+    return { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { kind: 'extensions', root: roots[calls++], items: [{ version: 'untrusted-display' }] } }) };
+  };
+  for (let i = 0; i < roots.length; i++) {
+    const observed = await baseline.observedExtensions({ config, run });
+    assert.equal(observed.root, roots[i]);
+    assert.deepEqual(observed.extensions, [entries[i]]);
+  }
+  assert.equal(calls, 3);
+});
+
+test('extension root observation refuses missing or malformed public results without a canonical fallback', async () => {
+  const config = mkdtempSync(join(tmpdir(), 'extension-invalid-'));
+  const valid = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { kind: 'extensions', root: config } }) };
+  for (const change of [{ exit: 1 }, { signal: 'SIGTERM' }, { timeout: true }, { stdout: 'not json' }, { stdout: '{}' }, { stdout: JSON.stringify({ result: { kind: 'extensions', root: 'relative' } }) }]) {
+    await assert.rejects(baseline.observedExtensions({ config, run: async () => ({ ...valid, ...change }) }));
+  }
+  for (const route of [{ platform: 'win32' }, { layout: 'checkout' }]) {
+    const observed = await baseline.observedExtensions({ config, ...route, run: async () => assert.fail('unsupported routes must remain canonical') });
+    assert.equal(observed.root, join(config, 'extensions'));
+    assert.deepEqual(observed.extensions, []);
+  }
+});
+
+test('earlier extension inventory checks the original manifest and recorded package bytes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'extension-inventory-'));
+  const extensions = [{ pkg: '@cotal-ai/tmux', version: '0.166.0' }];
+  const pkg = join(root, 'node_modules/@cotal-ai/tmux');
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(root, 'extensions.json'), JSON.stringify({ extensions }));
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify(extensions[0]));
+  const before = baseline.extensionSourceInventory(root, extensions);
+  assert.equal(before.length, 2);
+  assert(before.every(row => typeof row.sha256 === 'string'));
+  assert.deepEqual(baseline.extensionSourceInventory(root, extensions), before);
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ ...extensions[0], version: 'changed' }));
+  assert.notDeepEqual(baseline.extensionSourceInventory(root, extensions), before);
+  writeFileSync(join(root, 'extensions.json'), '{}');
+  assert.notEqual(baseline.extensionSourceInventory(root, extensions)[0].sha256, before[0].sha256);
+});
+
+test('driver reobserves roots at update and manual npm boundaries and requires earlier-prefix safety for refusals', () => {
+  const driver = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  for (const label of ['extension root before update', 'extension root after update', 'bare manual npm extension root', 'refused manual npm extension root', 'reconciled manual npm extension root', 'scheduled manual npm extension root observation', 'scheduled manual npm final extension root']) {
+    assert(driver.includes(`await observeExtensions('${label}')`), label);
+  }
+  assert(driver.includes("check('earlier extension prefix unchanged'"));
+  assert(driver.includes('extensionSourceInventory(extensionsBefore.root, report.extensionsBefore)'));
+  assert(!driver.includes("join(config, 'extensions/extensions.json')"));
+  assert(!driver.includes("join(config, 'extensions/node_modules'"));
+  const refusal = readFileSync(new URL('./upgrade-matrix-refusals.mjs', import.meta.url), 'utf8');
+  assert(refusal.includes("'source generation unchanged', 'earlier extension prefix unchanged'"));
+});
+
 test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
   const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
   const extensions = [before[0], {...before[1], version: '0.164.1011'}];
@@ -46,6 +111,19 @@ test('owned local fixture keeps its recorded identity and bytes while every othe
     assert.equal(result.recorded && result.installed, false);
   }
   assert.deepEqual(baseline.extensionVersionChecks({...args, fixture: undefined}), {recorded: false, installed: false});
+  const selected = structuredClone(args);
+  selected.root = '/selected/extensions';
+  selected.installed[0].path = '/selected/extensions/node_modules/' + fixture.pkg;
+  assert.deepEqual(baseline.extensionVersionChecks(selected), {recorded: true, installed: true});
+  selected.installed[0].files['index.js'] = 'changed';
+  assert.deepEqual(baseline.extensionVersionChecks(selected), {recorded: true, installed: false});
+  const copied = structuredClone(args);
+  copied.fixture.realpath = copied.fixture.path;
+  copied.root = '/selected/extensions';
+  copied.installed[0].path = copied.installed[0].realpath = '/selected/extensions/node_modules/' + fixture.pkg;
+  assert.deepEqual(baseline.extensionVersionChecks(copied), {recorded: true, installed: true});
+  copied.installed[0].realpath = '/foreign/copied-fixture';
+  assert.deepEqual(baseline.extensionVersionChecks(copied), {recorded: true, installed: false});
 });
 
 test('owned fixture invariant uses real immutable file bytes and the driver records both inventories', () => {
@@ -64,7 +142,7 @@ test('owned fixture invariant uses real immutable file bytes and the driver reco
   assert.deepEqual(baseline.extensionVersionChecks({...args, installed: installed()}), {recorded: true, installed: false});
   const driver = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
   assert(driver.indexOf('report.ownedLocalFixture =') > driver.indexOf("ok(await cotal('register daemon-hosted stand-in connector'"));
-  assert(driver.includes('fixture: report.ownedLocalFixture, installed: installedExtensions'));
+  assert(driver.includes('fixture: report.ownedLocalFixture, installed: installedExtensions, root: extensionsAfter.root'));
   assert(driver.includes("check('every recorded extension is at target', versions.recorded"));
   assert(driver.includes("check('recorded extension package versions match target', versions.installed"));
 });

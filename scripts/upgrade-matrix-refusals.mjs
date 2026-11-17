@@ -2,7 +2,7 @@
 const commonFailures = ['upgrade exits successfully', 'CLI version is target',
   'every recorded extension is at target', 'selected CLI reports target',
   'recorded extension package versions match target', 'no manual step or refusal'];
-const commonSafety = ['every prior extension remains recorded', 'cotal status exits zero', 'source generation unchanged'];
+const commonSafety = ['every prior extension remains recorded', 'cotal status exits zero', 'source generation unchanged', 'earlier extension prefix unchanged'];
 // Set fixedIn only after a release actually carries the fix, never from a proposed release number.
 export const knownRefusals = Object.freeze([
   {id: 'linux-npm-container-manager', phases: Object.freeze(['candidate', 'published']), sourceVersion: '0.164.6',
