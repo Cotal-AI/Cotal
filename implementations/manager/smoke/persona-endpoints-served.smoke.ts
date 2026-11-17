@@ -404,7 +404,7 @@ try {
   const toolConfig: AgentConfig = { space, name: "helper_pinned_tools", servers, tls: false, creds: pinnedCreds, kind: "agent", id: pinnedSeat.actor, lifecycleUid: pinnedSeat.uid, subscribe: [], allowSubscribe: [], allowPublish: [] };
   const tools = cotalToolSpecs(toolConfig, "smoke");
   const tool = async (name: "cotal_describe" | "cotal_invoke", args: Record<string, unknown>) => {
-    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp } as unknown as MeshAgent, toolConfig, args);
+    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp, invokeEndpoint: helperEp.invokeService.bind(helperEp) } as unknown as MeshAgent, toolConfig, args);
     return { text: r.text, isError: r.isError === true };
   };
   const helperGot = (instance: string) => received.filter((r) => r.instance === instance && r.actor === pinnedSeat.actor).length;
