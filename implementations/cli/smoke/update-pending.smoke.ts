@@ -31,7 +31,7 @@ function read(): UpdatePending {
   const before = hashes();
   const result = readUpdatePending("0.164.0");
   assert.deepEqual(hashes(), before, "diagnostic creates no files and changes no file hashes");
-  if (result.kind !== "none" && result.kind !== "version-mismatch") assert.match(result.instruction, /cotal update --self/);
+  if (result.kind === "receipt" || result.kind === "unreadable" && result.source !== "seed-store") assert.match(result.instruction, /cotal update --self/);
   return result;
 }
 
@@ -45,10 +45,27 @@ if (skew.kind === "version-mismatch") {
   assert.deepEqual(skew.extensions, [{ package: "@cotal-ai/tmux", version: "0.161.1" }]);
   assert.equal(skew.instruction, "Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI.");
 }
+const seed = join(process.env.XDG_CONFIG_HOME!, "cotal", "seed");
+mkdirSync(seed, { mode: 0o700 });
+const stamp = join(seed, "stamp.json");
+writeFileSync(stamp, JSON.stringify({ generation: "0.165.0" }));
+const ahead = read();
+assert.equal(ahead.kind, "version-mismatch");
+if (ahead.kind === "version-mismatch") {
+  assert.match(ahead.instruction, /Use a CLI at 0\.165\.0 or newer/);
+  assert.doesNotMatch(ahead.instruction, /cotal update/);
+}
+writeFileSync(stamp, "{broken");
+const badStamp = read();
+assert.equal(badStamp.kind, "unreadable");
+if (badStamp.kind === "unreadable") assert.equal(badStamp.source, "seed-store");
+writeFileSync(stamp, JSON.stringify({ generation: "not-a-version" }));
+assert.equal(read().kind, "unreadable", "invalid generation is not treated as an absent stamp");
+writeFileSync(stamp, JSON.stringify({ generation: "0.165.0" }));
 const recovery = { v: 1, previous: "0.161.1", target: "0.164.0", installed: "0.164.0", phase: "replacing", reason: "replacement pending", recordedAt: "2026-11-13T12:00:00.000Z" };
 writeFileSync(receipt, JSON.stringify(recovery));
 const pending = read();
-assert.equal(pending.kind, "receipt", "receipt takes precedence over inventory skew");
+assert.equal(pending.kind, "receipt", "receipt takes precedence over inventory skew and a newer seed store");
 if (pending.kind === "receipt") assert.deepEqual(pending.recovery, recovery);
 writeFileSync(receipt, "{broken");
 const unreadable = read();

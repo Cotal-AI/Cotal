@@ -117,6 +117,7 @@ import {
 } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
+import { readUpdatePending } from "../lib/update-pending.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
 import { signedInSpace } from "../lib/conversation-identity.js";
@@ -461,12 +462,14 @@ export async function status(args: ParsedArgs): Promise<void> {
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
-  const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
+  const pending = skewedExtensions.length ? readUpdatePending(machine.version) : undefined;
+  const instruction = pending && pending.kind !== "none" ? pending.instruction : undefined;
+  const extensionWarnings: OutputWarning[] = instruction ? [{
     code: "EXTENSION_VERSION_SKEW",
     target: { version: machine.version, packages: skewedExtensions.map((item) => item.package) },
-    message: `extension version skew: ${skewedExtensions.map((item) => `${item.package} is ${item.version}`).join(", ")}; this cotal is ${machine.version}. Run \`${displayCmd()} update --self\` to reconcile this installation.`,
+    message: `extension version skew: ${skewedExtensions.map((item) => `${item.package} is ${item.version}`).join(", ")}; this cotal is ${machine.version}. ${instruction}`,
   }] : [];
-  if (extensionWarnings.length) hints.push(`reconcile extension versions with \`${displayCmd()} update --self\``);
+  if (instruction) hints.push(instruction);
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.

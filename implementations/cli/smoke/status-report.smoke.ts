@@ -622,8 +622,8 @@ if (process.platform !== "win32") {
     { pkg: "@cotal-ai/tmux", version: "0.155.0", spec: "@cotal-ai/tmux@0.155.0", provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
   ] }));
   const stale = run(["status", "--space", "nosuch", "--plain"], onPath);
-  check("status names first-party skew and the whole-installation remedy",
-    stale.status === 0 && /extension version skew: @cotal-ai\/tmux is 0\.155\.0/.test(stale.stderr) && stale.stdout.includes(`\`${displayCmd()} update --self\``), shown(stale));
+  check("status names first-party skew and the configuration-home remedy",
+    stale.status === 0 && /extension version skew: @cotal-ai\/tmux is 0\.155\.0/.test(stale.stderr) && stale.stdout.includes("`cotal update`") && !`${stale.stdout}${stale.stderr}`.includes("update --self"), shown(stale));
   const staleJson = run(["status", "--space", "nosuch", "--json"], onPath);
   check("skew is a structured warning, not an unreadable report",
     staleJson.status === 0 && staleJson.stdout.includes('"EXTENSION_VERSION_SKEW"') && staleJson.stdout.includes('"completeness":"complete"'), shown(staleJson));

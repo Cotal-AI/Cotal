@@ -120,6 +120,14 @@ const GATE = /refusing to reconcile the operator-global seed store/;
   check("version leaves the stale manifest unchanged and never imports or seeds its connector",
     readFileSync(manifest).equals(before) && !existsSync(marker) && !existsSync(join(xdg, "cotal", "seed")));
   const r = run(["status", "--json"]);
+  const statusReport = JSON.parse(r.stdout);
+  check("status JSON gives the same home-local skew remedy as version",
+    r.status === 0 && statusReport.warnings.some((warning: { code: string; message: string }) => warning.code === "EXTENSION_VERSION_SKEW" && warning.message.includes(remedy))
+      && statusReport.result.hints.includes(remedy) && !r.stdout.includes("update --self"), shown(r));
+  const humanStatus = run(["status"], { NO_COLOR: "1" });
+  check("human status names home-local reconciliation in its warning and Next hint",
+    humanStatus.status === 0 && humanStatus.stderr.includes(remedy) && humanStatus.stdout.includes(remedy)
+      && !`${humanStatus.stdout}${humanStatus.stderr}`.includes("update --self"), shown(humanStatus));
   let rows: { name: string; state: string; text: string }[] = [];
   try {
     rows = (JSON.parse(r.stdout) as { result: { machine: { integrations: typeof rows } } }).result.machine.integrations;
@@ -130,6 +138,35 @@ const GATE = /refusing to reconcile the operator-global seed store/;
   check("status names the older built-in and the command that brings it to this version",
     row?.state === "error" && row.text === `${pkg} is 0.0.1 and this cotal is ${VERSION} - run \`cotal ext seed\` to bring it to this version`, { status: r.status, rows });
   check("and never imported it", !existsSync(marker));
+  check("status leaves the stale manifest unchanged and seeds nothing",
+    readFileSync(manifest).equals(before) && !existsSync(join(xdg, "cotal", "seed")));
+
+  // A newer individual operator extension can be reconciled, but a newer committed seed store
+  // cannot be downgraded by this CLI. Version and status must distinguish these cases.
+  const ahead = { extensions: [{ pkg: "@cotal-ai/tmux", version: "99.0.0", spec: "@cotal-ai/tmux@99.0.0", commands: [] }] };
+  writeFileSync(manifest, JSON.stringify(ahead));
+  const operatorVersion = run(["version", "--json"]);
+  check("a newer operator extension alone still gets the reconciliation command",
+    JSON.parse(operatorVersion.stdout).result.reconciliation.instruction === remedy, shown(operatorVersion));
+  const seed = join(xdg, "cotal", "seed");
+  mkdirSync(seed);
+  const stamp = join(seed, "stamp.json");
+  writeFileSync(stamp, JSON.stringify({ generation: "99.0.0" }));
+  const aheadManifest = readFileSync(manifest);
+  const aheadStamp = readFileSync(stamp);
+  const aheadVersion = run(["version", "--json"]);
+  const aheadPending = JSON.parse(aheadVersion.stdout).result.reconciliation;
+  check("a newer seed store gets a newer-CLI or backup remedy, never an impossible downgrade",
+    aheadVersion.status === 0 && aheadPending.kind === "version-mismatch"
+      && aheadPending.instruction.includes("Use a CLI at 99.0.0 or newer") && aheadPending.instruction.includes("backup")
+      && !aheadPending.instruction.includes("cotal update"), shown(aheadVersion));
+  const aheadStatus = run(["status", "--json"]);
+  const aheadReport = JSON.parse(aheadStatus.stdout);
+  check("status uses the same newer-store remedy as version",
+    aheadStatus.status === 0 && aheadReport.result.hints.includes(aheadPending.instruction)
+      && aheadReport.warnings.some((warning: { code: string; message: string }) => warning.code === "EXTENSION_VERSION_SKEW" && warning.message.includes(aheadPending.instruction)), shown(aheadStatus));
+  check("ahead-store diagnostics leave its manifest and stamp byte-identical",
+    readFileSync(manifest).equals(aheadManifest) && readFileSync(stamp).equals(aheadStamp));
 }
 
 // A real ext add must preserve the declaration the lazy command's seed decision reads.
