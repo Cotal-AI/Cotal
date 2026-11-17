@@ -47,7 +47,8 @@ import { CommandFailure, spaceSegment } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import type { DaemonPaths } from "../daemon/endpoint.js";
 import { assertScheduledEntry, renderDaemonUnit, planUninstall, refreshedDaemonPath, type NativeResult, type NativeRun, type UnitReceipt } from "../daemon/install.js";
-import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { launchAgentLabel, launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "../daemon/install-darwin.js";
+import { assertServiceRepairPair, sourceDigest, type ServiceRepairIntent } from "../daemon/service-repair.js";
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
@@ -99,6 +100,27 @@ const root = realpathSync.native(mkdtempSync(join(tmpdir(), "dni-")));
 const savedHome = process.env.HOME;
 try {
   const uid = process.getuid?.();
+  {
+    const executable = join(root, "program & test");
+    const source = `<key>ProgramArguments</key><array><string>${xmlText(executable)}</string></array>`;
+    const unitPath = join(root, "repair.plist");
+    writeFileSync(unitPath, source);
+    const receipt: UnitReceipt = { v: 1, mechanism: "launchd-agent", unit: "ai.cotal.daemon", unitPath, unitSha256: sourceDigest(source), installedAt: "2026-11-17T00:00:00Z" };
+    check("repair distinguishes a genuinely missing program", missingLaunchAgentProgram(receipt));
+    writeFileSync(executable, "fixture");
+    check("repair leaves an existing program alone", !missingLaunchAgentProgram(receipt));
+    rmSync(executable); mkdirSync(executable);
+    check("repair refuses a non-file program", code(() => missingLaunchAgentProgram(receipt)) === "CONFLICT");
+    rmSync(executable, { recursive: true });
+    const nextSource = source.replace("program &amp; test", "new-program");
+    const intent: ServiceRepairIntent = { v: 1, receipt, previousSource: source, nextSource, enabled: false };
+    const nextReceipt = { ...receipt, unitSha256: sourceDigest(nextSource) };
+    for (const selectedReceipt of [receipt, nextReceipt]) for (const selectedSource of [source, nextSource]) {
+      check("repair resumes either recorded source/receipt crash state", code(() => assertServiceRepairPair(intent, selectedReceipt, selectedSource)) === "none");
+    }
+    check("repair refuses a changed source", code(() => assertServiceRepairPair(intent, receipt, source + "changed")) !== "none");
+    check("repair refuses a changed receipt", code(() => assertServiceRepairPair(intent, { ...receipt, installedAt: "changed" }, source)) !== "none");
+  }
   const node = "/opt/cotal/1.2.3/bin/node";
   const bootstrap = fileURLToPath(new URL("../daemon-cwd.js", import.meta.url));
   const argv = [node, "--max-semi-space-size=1", "/opt/cotal/1.2.3/lib/cotal.js", "daemon", "serve", "--daemon-home", "/Users/a b/&<home>"];
