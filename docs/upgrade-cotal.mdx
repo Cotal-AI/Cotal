@@ -359,6 +359,10 @@ process ID and nonce match, and the retained process predates both the recovery 
 file. New Windows updater records carry the native process creation token. Unreadable evidence
 keeps the existing guarded recovery path.
 
+A daemon carrying the dead-updater recovery releases only the preserving holds whose authenticated updater process has ended. A live updater, an unreadable process lifetime or another owner's hold keeps the Manager fenced. The daemon reports each released hold, and the same `cotal update --self` can then continue without an abort or repair command.
+
+This protection does not change an already installed older daemon. The 0.165.1 updater checks its own Manager admission before invoking the target's pre-install hook, so installing a target with this fix cannot clear that earlier refusal. A service whose recorded program is missing needs its old daemon stopped before retrying the update. A stopped service belonging to another installation stays stopped. Preserve its sign-in and hosting records.
+
 On macOS, the daemon bootstraps a separate one-shot launchd job in the signed-in user's GUI
 domain before installation. The job runs the same guarded updater and is not kept alive after
 exit. Restarting or booting out the daemon job does not stop the updater job. After the updater

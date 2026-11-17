@@ -116,7 +116,10 @@ export function createHostedManagers(home = homeCotalDir(), version = installedG
         const pid = record[2] as number;
         try {
           const start = processBirth(pid);
-          if (start !== undefined ? start !== record[3] : probeLiveness(pid) === "dead") await abortGenerationRestart(owner);
+          if (start !== undefined ? start !== record[3] : probeLiveness(pid) === "dead") {
+            await abortGenerationRestart(owner);
+            console.log(`machine daemon: released the preserving hold of updater ${pid} because that process ended`);
+          }
         } catch { /* Unknown custody keeps the fence and retries on the next bounded observation. */ }
       }
     })().finally(() => { reapingGeneration = false; });
