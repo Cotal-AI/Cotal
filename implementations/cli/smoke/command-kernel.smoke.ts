@@ -1290,7 +1290,7 @@ async function completionOut(positionals: string[]): Promise<string> {
     const fixture = updateRuntime({
       npm: (args) => ({ status: 0, stdout: args[0] === "view" ? JSON.stringify(version) : "/global/node_modules" }),
       releaseNpm: (args) => {
-        assert.ok(args.includes("--fetch-retries=0") && args.includes("--fetch-timeout=15000"), "registry reads are bounded");
+        assert.ok(args.includes("--fetch-retries=2") && args.includes("--fetch-retry-mintimeout=1000") && args.includes("--fetch-retry-maxtimeout=2000") && args.includes("--fetch-timeout=15000"), "registry reads retry with bounded short backoff");
         const cache = args[args.indexOf("--cache") + 1];
         assert.ok(existsSync(cache)); caches.add(cache);
         const spec = args[0] === "view" ? args[1] : args[2];

@@ -12,7 +12,7 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /** Runs real npm and the built public entry against a registry with a listed, initially missing archive. */
 export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/dist/cotal.js'), parent = tmpdir() }) {
-  assert(['arrives', 'unavailable', 'integrity'].includes(scenario));
+  assert(['arrives', 'unavailable', 'integrity', 'reset'].includes(scenario));
   const root = mkdtempSync(join(parent, 'registry-arrival-'));
   const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
   const target = '99.0.0', archives = new Map(), requests = [];
@@ -34,6 +34,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       const version = request.url.slice(1, -4);
       if (armed && version === target) {
         missing++;
+        if (scenario === 'reset' && missing === 1) return request.socket.destroy();
         if (scenario === 'unavailable' || scenario === 'arrives' && missing === 1) return response.writeHead(404).end('archive is propagating');
         if (scenario === 'integrity') return response.end(Buffer.from('corrupt archive'));
       }
@@ -73,8 +74,12 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
       assert.doesNotMatch(update.output, /Waiting for cotal-ai|Keeping cotal-ai/);
     } else {
       assert.equal(update.code, 0, update.output);
-      assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
-      if (scenario === 'arrives') {
+      if (scenario !== 'reset') assert.match(update.output, /Waiting for cotal-ai@99\.0\.0 release archives/);
+      if (scenario === 'reset') {
+        assert.equal(selected, target);
+        assert.match(update.output, /installed globally and reconciled/);
+        assert(missing >= 2 && elapsedMs < 60000, `bounded transient retry: ${elapsedMs}`);
+      } else if (scenario === 'arrives') {
         assert.equal(selected, target);
         assert.match(update.output, /installed globally and reconciled/);
         assert(elapsedMs >= 15000 && missing >= 2);
@@ -83,7 +88,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
         assert(elapsedMs >= 600000 && elapsedMs < 660000, `real wait bound: ${elapsedMs}`);
       }
     }
-    if (scenario !== 'arrives') {
+    if (scenario !== 'arrives' && scenario !== 'reset') {
       assert.equal(selected, previous);
       assert.deepEqual(readFileSync(join(packageRoot, 'dist/cotal.js')), before);
       assert.equal(readFileSync(join(packageRoot, 'preserve'), 'utf8'), 'unchanged');
@@ -98,7 +103,7 @@ export async function registryArrivalCell({ scenario, entry = join(repo, 'bin/di
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity'];
+  const selected = process.argv[2] ? [process.argv[2]] : ['arrives', 'integrity', 'reset'];
   for (const scenario of selected) console.log(JSON.stringify(await registryArrivalCell({ scenario })));
   emitSentinel({ passed: selected.length, failed: 0 });
 }
