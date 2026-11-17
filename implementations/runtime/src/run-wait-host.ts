@@ -3,7 +3,7 @@ import { assertAdmittedSubscribe, chatStream, chatSubject, isConsumerNotFound, s
 import { RunScopeAuthority, RunScopeDenied, WaitReceipts, type WaitReceipt } from "./run-scope-authority.js";
 import { Cancelled } from "@cotal-ai/lang";
 
-export interface RunWaitMessage {
+interface RunWaitMessage {
   readonly sequence: number;
   readonly data: Uint8Array;
   readonly receipt: WaitReceipt;

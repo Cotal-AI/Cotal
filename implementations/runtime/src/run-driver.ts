@@ -372,7 +372,7 @@ const seatAdoptionOf = (handler: unknown): SeatAdoptingHandler | undefined => {
  * driver's concern. A handler with no external state (the simulator) declares nothing and the
  * discharge is the flip alone.
  */
-export interface DischargingHandler {
+interface DischargingHandler {
   discharge(entries: readonly JournalEntry[]): Promise<unknown>;
 }
 
@@ -386,7 +386,7 @@ const dischargeOf = (handler: unknown): DischargingHandler | undefined =>
  * {@link DischargingHandler} for the same reason: the journal records the spawns, and ending them
  * when the run completes is the driver's concern.
  */
-export interface ReleasingHandler {
+interface ReleasingHandler {
   release(entries: readonly JournalEntry[]): Promise<unknown>;
 }
 
