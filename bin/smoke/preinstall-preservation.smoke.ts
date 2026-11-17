@@ -10,7 +10,8 @@ import { processBirth } from "../daemon/lifetime.js";
 import type { DaemonStatus } from "../daemon/protocol.js";
 import { countedAssert, emitSentinel } from "./sentinel.mjs";
 
-const counted = countedAssert(assert), check = counted.assert;
+const counted = countedAssert(assert);
+const check: typeof assert = counted.assert as typeof assert;
 const root = mkdtempSync(join(tmpdir(), "preinstall-observation-"));
 process.env.COTAL_HOME = join(root, "state"); mkdirSync(homeCotalDir(), { mode: 0o700 });
 const path = join(homeCotalDir(), ".update-closure.lock");
@@ -22,11 +23,11 @@ const bytes = readFileSync(path);
 check.equal(preinstallPreservationObservation(status).owner, "transaction");
 check.deepEqual(readFileSync(path), bytes, "observing custody writes nothing");
 check.equal(preinstallPreservationObservation(status).seats, 0);
-const occupied = structuredClone(status); occupied.update!.restartEvidence!.managers[0]!.seats = 1;
+const occupied = { ...status, update: { ...status.update!, restartEvidence: { ...status.update!.restartEvidence!, managers: [{ space: "test", fenced: true, seats: 1 }] } } };
 check.equal(preinstallPreservationObservation(occupied).seats, 1);
-const incomplete = structuredClone(status); incomplete.update!.restartEvidence!.managers = [];
+const incomplete = { ...status, update: { ...status.update!, restartEvidence: { ...status.update!.restartEvidence!, managers: [] } } };
 check.equal(preinstallPreservationObservation(incomplete).seats, "unknown");
-const foreign = structuredClone(status); foreign.update!.restartEvidence!.managers[0]!.space = "other";
+const foreign = { ...status, update: { ...status.update!, restartEvidence: { ...status.update!.restartEvidence!, managers: [{ space: "other", fenced: true, seats: 0 }] } } };
 check.equal(preinstallPreservationObservation(foreign).seats, "unknown");
 const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
 try {
