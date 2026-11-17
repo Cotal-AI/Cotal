@@ -13,6 +13,7 @@ import {
   type InstalledExtensionPackage,
 } from "./extensions.js";
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
+import { inheritConnectorConfig } from "./connector-retention.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 import { SEEDED_EXTENSIONS } from "./official-connectors.js";
 
@@ -130,6 +131,7 @@ function enqueueLoad(load: () => Promise<void>): Promise<void> {
 const EXTENSION_LOCK_WAIT_MS = 5_000;
 
 async function withExtensionLock(load: () => Promise<void>): Promise<void> {
+  inheritConnectorConfig();
   const release = await claimExtensionMutationLockAsync({
     label: "extension materialization",
     waitMs: EXTENSION_LOCK_WAIT_MS,
