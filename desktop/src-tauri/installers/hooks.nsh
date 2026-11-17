@@ -110,6 +110,8 @@ FunctionEnd
   ${EndIf}
   SetOutPath $PLUGINSDIR
   File /oname=service-update.mjs "${COTAL_HOOK_DIR}\service-update.mjs"
+  File /oname=service-ready.mjs "${COTAL_HOOK_DIR}\service-ready.mjs"
+  File /oname=service-modules.ps1 "${COTAL_HOOK_DIR}\service-modules.ps1"
   File /oname=service-task.ps1 "${COTAL_HOOK_DIR}\service-task.ps1"
   !if "${ARCH}" == "x64"
     File /oname=node.exe "${COTAL_HOOK_DIR}\..\binaries\node-x86_64-pc-windows-msvc.exe"

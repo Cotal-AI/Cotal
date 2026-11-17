@@ -354,6 +354,13 @@ try {
 
   launchApp();
   const restoredApp = await until('Hop 1 restored 0.164.8 opens its window', () => ui('describe'), value => value.visible === true);
+  const probeModules = JSON.parse(readFileSync(join(setupHome, 'readiness-modules-0.164.9.json'), 'utf8'));
+  assert.equal(probeModules.setupAttempt, rolledBack.setupAttempt, 'Native mapping evidence belongs to this setup attempt');
+  assert.equal(probeModules.ready, false);
+  assert.ok(probeModules.modules.some(file => file.toLowerCase().endsWith('peercred.node')), 'The exited N1 probe must have exercised the real native helper');
+  assert.equal(typeof probeModules.birth, 'string');
+  assert.notEqual(await processBirth(probeModules.pid), probeModules.birth, 'The N1 readiness process lifetime must be gone before restored N is observed');
+  record('Hop 1 isolated readiness helper exited with native modules released', probeModules);
   const reasonText = await until('Hop 1 main view shows the rollback reason', () => ui('text', 'applied-update'), text => text.includes('Setup code 23:') && text.includes('Cotal 0.164.8 is running again.'));
   assert.match(reasonText, /running again/, 'The restored window shows the rollback reason');
   record('Hop 1 window shows the reason', { pid: restoredApp.pid, reasonText });
@@ -471,7 +478,7 @@ try {
   writeFileSync(join(out, 'failure.json'), JSON.stringify(failure, null, 2));
   throw error;
 } finally {
-  for (const file of ['helper.log', 'service-update.json', 'result.json', 'holders.json', 'runtime-read.jsonl', 'message.txt']) {
+  for (const file of ['helper.log', 'service-update.json', 'result.json', 'holders.json', 'runtime-read.jsonl', 'runtime-failure.json', 'readiness-modules-0.164.8.json', 'readiness-modules-0.164.9.json', 'readiness-modules-0.164.10.json', 'message.txt']) {
     const path = join(setupHome, file);
     if (existsSync(path)) writeFileSync(join(out, `setup-${file}`), readFileSync(path));
   }

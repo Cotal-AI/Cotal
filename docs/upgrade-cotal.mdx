@@ -131,7 +131,12 @@ start between that check and the stop. Independently launched processes are only
 not fenced against later launches.
 
 Setup disables the owned scheduled task during replacement. A service that was running is
-started from the new files and checked for readiness. An installed, stopped service stays
+started from the new files and checked for readiness. Desktop self-updates keep the previous
+app generation until readiness is confirmed. A failed start restores that generation. Its
+readiness probe exits before rollback changes files, releasing native modules it loaded.
+A filesystem refusal records mapped runtime files and their process identities in
+`runtime-failure.json` beside the setup result, with any inspection errors.
+An installed, stopped service stays
 stopped. Setup does not install a service when none existed. Silent setup returns nonzero
 when preparation is refused or startup is not confirmed. A readiness timeout means the files
 were updated and startup was requested, not that the update failed.

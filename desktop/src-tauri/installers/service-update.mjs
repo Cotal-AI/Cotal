@@ -15,6 +15,7 @@ process.env.COTAL_TELEMETRY = 'off';
 const directory = join(process.env.LOCALAPPDATA, 'CotalSetup');
 mkdirSync(directory, { recursive: true });
 const previousNames = ['cotal-desktop.exe', 'node.exe', 'runtime'];
+const setupAttempt = randomUUID();
 let lastStep = 'entry';
 process.on('exit', code => {
   try {
@@ -31,6 +32,31 @@ rmSync(resultFile, { force: true });
 rmSync(messageFile, { force: true });
 const script = fileURLToPath(new URL('service-task.ps1', import.meta.url));
 const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const readinessScript = fileURLToPath(new URL('service-ready.mjs', import.meta.url));
+const moduleScript = fileURLToPath(new URL('service-modules.ps1', import.meta.url));
+function captureRuntimeFailure(error, operation) {
+  const runtime = join(root, 'runtime');
+  const evidence = {
+    operation, setupAttempt, pid: process.pid, executable: process.execPath,
+    call: error.syscall ?? null, paths: [error.path, error.dest].filter(value => typeof value === 'string'),
+    code: error.code ?? null,
+  };
+  try { evidence.ownModules = process.report.getReport().sharedObjects.filter(file => file.toLowerCase().startsWith(runtime.toLowerCase() + '\\')); }
+  catch (diagnostic) { evidence.ownModulesError = diagnostic.message; }
+  try {
+    evidence.mapping = JSON.parse(execFileSync(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', moduleScript, '-Runtime', runtime], { env, windowsHide: true, encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024 }));
+  } catch (diagnostic) { evidence.mappingError = String(diagnostic.stderr ?? diagnostic.message).slice(0, 2000); }
+  try { writeFileSync(join(directory, 'runtime-failure.json'), `${JSON.stringify(evidence)}\n`); }
+  catch { /* Never replace the original filesystem refusal. */ }
+}
+function readiness(version) {
+  lastStep = 'readiness-child';
+  const evidence = join(directory, `readiness-modules-${version}.json`);
+  const raw = execFileSync(process.execPath, [readinessScript, root, version, evidence, setupAttempt], { env, windowsHide: true, encoding: 'utf8', timeout: 75_000, maxBuffer: 256 * 1024 });
+  const result = JSON.parse(raw);
+  if (typeof result.ready !== 'boolean') throw new Error('The isolated readiness probe returned an invalid result.');
+  return result.ready;
+}
 const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: targetVersion };
 const write = (file, value) => { const temp = `${file}.${process.pid}.tmp`; writeFileSync(temp, `${JSON.stringify(value)}\n`); renameSync(temp, file); };
 const task = action => {
@@ -50,7 +76,7 @@ let refusal = null;
 function outcome(code, message, name = code === 0 ? 'updated' : 'refused', activeAgents = 0) {
   lastStep = `outcome:${code}`;
   message = message.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 1800);
-  write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, skippedProcesses: state?.skippedProcesses ?? skippedProcesses, executableNames: state?.executableNames ?? executableNames, ...(refusal ?? {}), completedAt: new Date().toISOString() });
+  write(resultFile, { schema: 1, setupAttempt, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, skippedProcesses: state?.skippedProcesses ?? skippedProcesses, executableNames: state?.executableNames ?? executableNames, ...(refusal ?? {}), completedAt: new Date().toISOString() });
   writeFileSync(messageFile, `${message}\r\n`);
   process.stdout.write(`${message}\n`);
   process.exitCode = code;
@@ -111,13 +137,16 @@ function movePreviousBack() {
     const from = join(previousDir, name);
     if (!existsSync(from)) continue;
     const to = join(root, name);
-    rmSync(to, { recursive: true, force: true });
-    renameSync(from, to);
+    try {
+      rmSync(to, { recursive: true, force: true });
+      renameSync(from, to);
+    } catch (error) { captureRuntimeFailure(error, `restore:${name}`); throw error; }
   }
   rmSync(previousDir, { recursive: true, force: true });
 }
 function removePrevious() {
-  rmSync(previousDir, { recursive: true, force: true });
+  try { rmSync(previousDir, { recursive: true, force: true }); }
+  catch (error) { captureRuntimeFailure(error, 'remove-previous'); throw error; }
 }
 async function restorePrevious() {
   lastStep = 'rollback';
@@ -202,22 +231,14 @@ async function finish(rollback = false) {
   if (state.installed && state.taskEnabled) task('enable');
   if (state.running) {
     task('start');
-    await load();
-    const deadline = Date.now() + 60_000;
-    do {
-      try {
-        const reply = await modules.client.queryDaemon({ paths: modules.paths, timeoutMs: 1000 });
-        if (reply.ok && reply.result.version === version && reply.result.state === 'ready') {
-          if (!rollback) removePrevious();
-          rmSync(stateFile);
-          outcome(0, rollback ? 'Setup cancelled. The previous background service is running.' : `Cotal ${version} is installed and its background service is running.`, rollback ? 'cancelled' : 'updated');
-          return;
-        }
-      } catch (error) {
-        if (!(error instanceof modules.endpoint.EndpointRefusal && error.code === 'NOT_RUNNING')) throw error;
-      }
-      await delay(500);
-    } while (Date.now() < deadline);
+    // No installed module is imported into this process. The probe child has exited
+    // before either generation can be removed, releasing its native image mappings.
+    if (readiness(version)) {
+      if (!rollback) removePrevious();
+      rmSync(stateFile);
+      outcome(0, rollback ? 'Setup cancelled. The previous background service is running.' : `Cotal ${version} is installed and its background service is running.`, rollback ? 'cancelled' : 'updated');
+      return;
+    }
     if (!rollback && state.previousKept) {
       await restorePrevious();
       return;

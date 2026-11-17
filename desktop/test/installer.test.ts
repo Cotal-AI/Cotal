@@ -34,6 +34,66 @@ test('Windows refusal probe registers files and retains diagnostic failures', ()
   assert.doesNotMatch(probe, /CommandLine/);
 });
 
+test('finish releases installed native modules before rollback touches the runtime', () => {
+  const helper = readText('service-update.mjs');
+  const start = helper.indexOf('async function finish(');
+  const finish = helper.slice(start, helper.indexOf('\ntry {', start));
+  assert.doesNotMatch(finish, /await load\(|modules\.client/);
+  assert.match(finish, /if \(readiness\(version\)\)/);
+  const readiness = helper.slice(helper.indexOf('function readiness(version)'), helper.indexOf('\nconst env ='));
+  let exited = false;
+  let result = '{"ready":false}';
+  let childError: Error | undefined;
+  const probe = runInNewContext(`(${readiness})`, {
+    lastStep: '', process: { execPath: 'installer-node' }, readinessScript: 'service-ready.mjs', root: 'owned-install', directory: 'private-evidence', setupAttempt: 'test-attempt', env: {}, join: (...parts: string[]) => parts.join('/'),
+    execFileSync: (exe: string, args: string[], options: { timeout: number }) => { assert.equal(exe, 'installer-node'); assert.deepEqual(Array.from(args), ['service-ready.mjs', 'owned-install', '0.164.9', 'private-evidence/readiness-modules-0.164.9.json', 'test-attempt']); assert.equal(options.timeout, 75_000); exited = true; if (childError) throw childError; return result; },
+  });
+  assert.equal(probe('0.164.9'), false);
+  assert.equal(exited, true, 'readiness returns only after its child exits');
+  result = '{"ready":true}';
+  assert.equal(probe('0.164.9'), true);
+  result = '{"ready":"yes"}';
+  assert.throws(() => probe('0.164.9'), /invalid result/);
+  childError = new Error('readiness child failed');
+  assert.throws(() => probe('0.164.9'), /readiness child failed/);
+  const child = readText('service-ready.mjs');
+  assert.match(child, /client.queryDaemon/);
+  assert.match(child, /process.report.getReport\(\).sharedObjects/);
+  const diagnostics = child.slice(child.indexOf('  try {\n    writeFileSync(evidence'), child.lastIndexOf('\n}'));
+  for (const failAt of ['birth', 'report', 'write']) {
+    assert.doesNotThrow(() => runInNewContext(diagnostics, {
+      writeFileSync: () => { if (failAt === 'write') throw new Error('disk full'); },
+      evidence: 'private', setupAttempt: 'attempt', ready: false, root: 'owned', join: (...parts: string[]) => parts.join('/'),
+      lifetime: { processBirth: () => { if (failAt === 'birth') throw new Error('unavailable'); return 'birth'; } },
+      process: { pid: 123, report: { getReport: () => { if (failAt === 'report') throw new Error('report unavailable'); return { sharedObjects: [] }; } } },
+    }));
+  }
+  const hooks = readText('hooks.nsh');
+  for (const file of ['service-ready.mjs', 'service-modules.ps1']) assert.ok(hooks.includes(`File /oname=${file}`));
+});
+
+test('rollback capture retains inner mapped files and never replaces the original refusal', () => {
+  const helper = readText('service-update.mjs');
+  const capture = helper.slice(helper.indexOf('function captureRuntimeFailure('), helper.indexOf('\nfunction readiness('));
+  let evidence: Record<string, unknown> | undefined;
+  const run = (fail: boolean) => runInNewContext(`(${capture})`, {
+    root: 'owned', directory: 'evidence', setupAttempt: 'test-attempt', process: { pid: 123, execPath: 'installer-node', report: { getReport: () => ({ sharedObjects: ['owned/runtime/native.node'] }) } },
+    join: (...parts: string[]) => parts.join('/'), ps: 'powershell', moduleScript: 'service-modules.ps1', env: {},
+    execFileSync: () => { if (fail) throw new Error('mapping unavailable'); return '{"holders":[{"pid":123,"file":"owned/runtime/native.node"}],"errors":[]}'; },
+    writeFileSync: (_file: string, value: string) => { evidence = JSON.parse(value); },
+  })({ syscall: 'rm', path: 'owned/runtime', code: 'EPERM' }, 'restore:runtime');
+  assert.doesNotThrow(() => run(false));
+  assert.equal(evidence?.pid, 123);
+  assert.equal(evidence?.call, 'rm');
+  assert.match(JSON.stringify(evidence?.mapping), /native.node/);
+  assert.doesNotThrow(() => run(true));
+  assert.match(String(evidence?.mappingError), /mapping unavailable/);
+  const mappings = readText('service-modules.ps1');
+  assert.match(mappings, /\$process.Modules/);
+  assert.match(mappings, /file = \$module.FileName/);
+  assert.doesNotMatch(mappings, /CommandLine/);
+});
+
 const base = new URL('../src-tauri/installers/', import.meta.url);
 const readText = (path: string) => readFileSync(new URL(path, base), 'utf8').replace(/\r\n/g, '\n');
 test('pinned installer guard precedes the old uninstaller without changing update mode', () => {
