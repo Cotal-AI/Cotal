@@ -1078,6 +1078,10 @@ retain `--space`, and a service-only setup retry keeps `--no-manager`.
 On macOS and Windows, a plist, task definition, loaded label or
 registered task that no install recorded refuses the install `CONFLICT` with nothing written, and a
 registered task that no longer runs the recorded command refuses `uninstall` `CONFLICT`.
+After removing its recorded native job, `uninstall` waits up to 130 seconds for the daemon's
+process and endpoint to disappear. On macOS, a peer that disconnects before its identity can be
+read is another shutdown observation, not proof of absence. Removal still requires endpoint
+absence and lifetime exclusion. Other identity refusals retain the source and receipt.
 
 On Linux, `install`, `--dry-run` included, needs the intended user's running user manager.
 When `XDG_RUNTIME_DIR` is absent, daemon commands use `/run/user/<effective uid>` only if it already

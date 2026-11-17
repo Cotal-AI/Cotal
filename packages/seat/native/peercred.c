@@ -44,7 +44,8 @@ static napi_value Peercred(napi_env env, napi_callback_info info) {
   struct xucred cred;
   socklen_t len = sizeof(cred);
   if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERCRED, &cred, &len) != 0) {
-    napi_throw_error(env, NULL, strerror(errno));
+    const int err = errno;
+    napi_throw_error(env, err == ENOTCONN ? "ENOTCONN" : NULL, strerror(err));
     return NULL;
   }
   if (len != sizeof(cred) || cred.cr_version != XUCRED_VERSION || cred.cr_ngroups < 1) {
@@ -54,7 +55,8 @@ static napi_value Peercred(napi_env env, napi_callback_info info) {
   pid_t pid = 0;
   len = sizeof(pid);
   if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) != 0) {
-    napi_throw_error(env, NULL, strerror(errno));
+    const int err = errno;
+    napi_throw_error(env, err == ENOTCONN ? "ENOTCONN" : NULL, strerror(err));
     return NULL;
   }
   napi_create_object(env, &out);
