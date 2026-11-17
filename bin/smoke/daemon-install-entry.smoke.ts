@@ -24,7 +24,7 @@ const compiler = spawnSync(process.execPath, [createRequire(import.meta.url).res
 const files = compiler.status === 0 ? (JSON.parse(compiler.stdout) as { files: string[] }).files : [];
 suite.check("the stock compiler includes the native entry", compiler.status === 0 && files.some((file) => resolve(repo, "bin", file) === join(repo, "bin/daemon-native.ts")), { code: compiler.status });
 
-// Status guidance uses the selected home's receipt, without starting or querying a native job.
+// Client guidance uses the selected home's receipt, without starting or querying a native job.
 if (process.platform !== "win32") {
   const fixture = join(root, "status");
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -45,17 +45,26 @@ if (process.platform !== "win32") {
     ["explicit", explicitHome, ["--daemon-home", explicitHome], `cotal daemon start --daemon-home ${shellPath(explicitHome)}`],
   ] as const) {
     const receiptPath = join(state, "service-unit.json");
-    for (const recorded of [false, true]) {
-      if (recorded) writeFileSync(receiptPath, JSON.stringify({ v: 1, mechanism: process.platform === "darwin" ? "launchd-agent" : "systemd-user", unit: "cotal-daemon", unitPath: join(state, "unit"), unitSha256: "0".repeat(64), installedAt: "2026-11-17T00:00:00Z" }), { mode: 0o600 });
-      const json = spawnSync(process.execPath, [cli, "daemon", "status", ...args, "--json"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
-      const plain = spawnSync(process.execPath, [cli, "daemon", "status", ...args, "--plain"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
-      const body = JSON.parse(json.stdout) as { outcome: string; error: { code: string; cause: { code: string }; remedy: string } };
-      const remedy = recorded ? `start the recorded service with \`${start}\`` : "start it with `cotal daemon serve`";
-      suite.check(`${label}, receipt ${recorded}: status retains the absent-endpoint refusal`, json.status === 2 && body.outcome === "refused" && body.error.code === "TARGET_UNAVAILABLE" && body.error.cause.code === "NOT_RUNNING", body);
-      suite.check(`${label}, receipt ${recorded}: plain and JSON name the matching launch mode`, body.error.remedy === remedy && plain.status === 2 && plain.stderr.includes(remedy), { json: json.stdout, plain: plain.stderr });
-      writeFileSync(join(fixture, `${label}-${recorded}.json`), json.stdout);
-      writeFileSync(join(fixture, `${label}-${recorded}.txt`), plain.stderr);
-      if (recorded) rmSync(receiptPath);
+    for (const receipt of ["absent", "native", "legacy", "foreign"] as const) {
+      if (receipt !== "absent") writeFileSync(receiptPath, JSON.stringify({ v: 1, ...(receipt === "legacy" ? {} : { mechanism: receipt === "foreign" ? "scheduled-task" : process.platform === "darwin" ? "launchd-agent" : "systemd-user" }), unit: "cotal-daemon", unitPath: join(state, "unit"), unitSha256: "0".repeat(64), installedAt: "2026-11-17T00:00:00Z" }), { mode: 0o600 });
+      const incompatible = receipt === "foreign" || (receipt === "legacy" && process.platform === "darwin");
+      const remedy = incompatible ? `inspect \`${receiptPath}\` and use the operating system that installed this service`
+        : receipt !== "absent" ? `start the recorded service with \`${start}\`` : "start it with `cotal daemon serve`";
+      for (const command of [
+        ["status"], ["spaces"], ["name"], ["login", "--idp", "https://auth.example.invalid"],
+        ["connect-check", "--space", "demo"], ["register", "--space", "demo"],
+        ["service-connect", "--space", "demo"], ["service-disconnect", "--space", "demo"], ["service-status", "--space", "demo"],
+      ]) {
+        const json = spawnSync(process.execPath, [cli, "daemon", ...command, ...args, "--json"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
+        const plain = spawnSync(process.execPath, [cli, "daemon", ...command, ...args, "--plain"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
+        const body = JSON.parse(json.stdout) as { outcome: string; error: { code: string; cause: { code: string }; remedy: string } };
+        const cell = `${label}, ${receipt}, ${command[0]}`;
+        suite.check(`${cell}: absent endpoint or incompatible service is refused`, json.status === 2 && body.outcome === "refused" && body.error.code === (incompatible ? "CONFLICT" : "TARGET_UNAVAILABLE") && body.error.cause.code === "NOT_RUNNING", body);
+        suite.check(`${cell}: plain and JSON give the matching recovery`, body.error.remedy === remedy && plain.status === 2 && plain.stderr.includes(remedy), { json: json.stdout, plain: plain.stderr });
+        writeFileSync(join(fixture, `${label}-${receipt}-${command[0]}.json`), json.stdout);
+        writeFileSync(join(fixture, `${label}-${receipt}-${command[0]}.txt`), plain.stderr);
+      }
+      if (receipt !== "absent") rmSync(receiptPath);
     }
   }
 }

@@ -42,7 +42,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
-import { readReceipt } from "./install-receipt.js";
+import { readReceipt, unitReceiptFile } from "./install-receipt.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -130,11 +130,27 @@ const REFUSAL: Record<EndpointProblemCode, { code: "UNSUPPORTED" | "TARGET_UNAVA
   LOCK_HELD: { code: "CONFLICT", remedy: "a daemon already holds this lifetime lock; run `cotal daemon status`, with the same --daemon-home when you passed one" },
 };
 
-function asFailure(e: unknown): unknown {
+function asFailure(e: unknown, selected?: Target): unknown {
   if (e instanceof IdpConfigurationError) return new CommandFailure("refused", "USAGE_INVALID", e.message, { remedy: "correct COTAL_IDP_TIMEOUT_MS in the daemon environment before starting it again" });
   if (!(e instanceof EndpointRefusal)) return e;
   const r = REFUSAL[e.code];
-  const remedy = e.remedy ?? r.remedy;
+  let remedy = e.remedy ?? r.remedy;
+  if (e.code === "NOT_RUNNING" && selected) {
+    const { paths, home } = selected;
+    const receipt = readReceipt(paths);
+    const mechanism = process.platform === "win32" ? "scheduled-task" : process.platform === "darwin" ? "launchd-agent" : "systemd-user";
+    if (receipt && (receipt.mechanism ?? "systemd-user") !== mechanism) {
+      return new CommandFailure("refused", "CONFLICT", `the recorded service uses ${receipt.mechanism ?? "systemd-user"}, which this OS does not run`, {
+        remedy: `inspect ${codeSpan(unitReceiptFile(paths))} and use the operating system that installed this service`,
+        native: { code: e.code },
+      });
+    }
+    if (process.platform === "win32") {
+      remedy = `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`;
+    } else if (receipt) {
+      remedy = `start the recorded service with ${codeSpan(daemonCommandCopy("start", home))}`;
+    }
+  }
   return new CommandFailure("refused", r.code, e.message, { ...(remedy ? { remedy } : {}), native: { code: e.code } });
 }
 
@@ -167,15 +183,7 @@ async function status(args: ParsedArgs): Promise<void> {
   try {
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
-    if (e instanceof EndpointRefusal && e.code === "NOT_RUNNING" && (process.platform === "win32" || readReceipt(paths))) {
-      throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: process.platform === "win32"
-          ? `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`
-          : `start the recorded service with ${codeSpan(daemonCommandCopy("start", home))}`,
-        native: { code: e.code },
-      });
-    }
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   if (!reply.ok) throw new CommandFailure("failed", "OPERATION_FAILED", `the daemon refused the status request: ${reply.error.code} ${reply.error.message}`);
   const space = (args.values as { space?: string }).space;
@@ -207,7 +215,7 @@ async function login(args: ParsedArgs): Promise<void> {
   const idp = normalizeIdpUrl(chosen.url);
   recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await loginFromCli({
@@ -222,7 +230,7 @@ async function login(args: ParsedArgs): Promise<void> {
       },
     });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   if (!reply.ok) {
     if (reply.code === "LOGIN_IN_PROGRESS") throw new CommandFailure("refused", "CONFLICT", reply.message, { native: { code: reply.code } });
@@ -252,12 +260,12 @@ async function connectCheckCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon connect-check needs --space <s>");
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await connectCheckViaDaemon({ paths, peerUid, peerPid, space });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the connect check: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ConnectCheckResult = reply.result;
@@ -283,12 +291,12 @@ async function registerCommand(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", "cotal daemon register needs --space <s>");
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await registerViaDaemon({ paths, peerUid, peerPid, space });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the registration request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: RegisterResult = reply.result;
@@ -317,12 +325,12 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
   const presentation = presentationOf(args.values);
   const space = (args.values as { space?: string }).space;
   if (typeof space !== "string" || !space) throw new CommandFailure("refused", "USAGE_INVALID", `cotal daemon ${op} needs --space <s>`);
-  const { paths } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args);
   let reply;
   try {
     reply = await serviceViaDaemon({ paths, peerUid, peerPid, space, op });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", `the daemon refused the service request: ${reply.code} ${reply.message}`, { native: { code: reply.code } });
   const r: ServiceConnectionResult = reply.result;
@@ -461,7 +469,7 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
       },
     });
   } catch (e) {
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   writeResult(presentation, { command: "daemon setup", target: { space }, result: r }, () => ({ sections: [
     { title: r.manager?.state === "answering" ? "Ready to launch" : "Connected", blocks: [
@@ -524,7 +532,7 @@ async function serve(args: ParsedArgs): Promise<void> {
       log: (l) => process.stderr.write(`${l}\n`), ...(home !== undefined ? { sessionDir: home } : {}) });
   } catch (e) {
     if (process.env.COTAL_DAEMON_NATIVE_SERVICE === "1") process.stderr.write(`daemon startup refused: ${e instanceof Error ? e.message : String(e)}\n`);
-    throw asFailure(e);
+    throw asFailure(e, { paths, home });
   }
   updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
   if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
@@ -614,10 +622,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return runDesktopBridge({ resolveTarget: () => target(args), version: binVersion(), peerUid, peerPid });
   }
   if (mode === "name") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "name", ...(rest[0] !== undefined ? { name: rest[0] } : {}) }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, { paths, home }); }
     if (!reply.ok) throw new CommandFailure("refused", "USAGE_INVALID", reply.error.message);
     if ("event" in reply || !("computer" in reply.result) || typeof reply.result.computer !== "string") throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon returned no computer name");
     const result = { computer: reply.result.computer };
@@ -625,10 +633,10 @@ async function run(args: ParsedArgs): Promise<void> {
     return;
   }
   if (mode === "spaces") {
-    const { paths } = resolveTarget(args);
+    const { paths, home } = resolveTarget(args);
     let reply;
     try { reply = await exchangeDesktopRequest({ paths, peerUid, peerPid }, { op: "spaces", refresh: args.values.refresh === true }); }
-    catch (error) { throw asFailure(error); }
+    catch (error) { throw asFailure(error, { paths, home }); }
     if (!reply.ok) {
       if (reply.error.code === "DEPENDENCY_UNAVAILABLE") throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { remedy: reply.error.remedy, native: { code: reply.error.code } });
       throw new CommandFailure("failed", "OPERATION_FAILED", "the daemon could not read its spaces", { native: { code: reply.error.code } });

@@ -1152,10 +1152,12 @@ also applies to an unfinished tail after valid requests. Multiple valid lines ar
 Already accepted finite replies have up to five seconds to flush before close. Device sign-in streams
 are cancelled on close.
 
-`status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
+`status` and other daemon clients with no endpoint refuse `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
 On Linux and macOS, a native service recorded for that daemon home makes Next name
 `cotal daemon start`, retaining `--daemon-home` when selected. Without a recorded service,
 Next names `cotal daemon serve`. Windows keeps its task-start and launch-log guidance.
+A receipt for another operating system's service mechanism refuses `CONFLICT` and names the
+receipt to inspect, without recommending a foreground launch or an unsupported service start.
 An absent endpoint does not establish whether the native service is stopped or still starting.
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
 including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
