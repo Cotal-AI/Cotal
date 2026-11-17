@@ -44,9 +44,13 @@ for (const [endpoint, cluster, contracts] of sources) {
     }
   }
 }
-// A documented safe example must also satisfy the actual input contract.
+// A documented safe example must also be a call the CLI accepts and the input contract admits. With
+// no --args the CLI sends null, and --args must be one JSON object, so `--args 'null'` was refused (#7089).
 const example = lexer(document.markdown).find(token => token.type === 'code' && token.lang === 'sh');
-const args = example?.text.match(/cotal invoke manager status --args '([^']+)'/)?.[1];
-assert(args, 'status example declares its JSON input');
-assert(MANAGER_CONTRACTS.status.input.validate(JSON.parse(args)), 'status example input');
+const call = example?.text.split('\n').find(line => line.startsWith('cotal invoke manager status '));
+assert(call, 'status example is present');
+const args = call.match(/--args '([^']+)'/)?.[1];
+const input = args === undefined ? null : JSON.parse(args);
+if (args !== undefined) assert(input !== null && typeof input === 'object' && !Array.isArray(input), 'status example --args is one JSON object, as the CLI requires');
+assert(MANAGER_CONTRACTS.status.input.validate(input), 'status example input');
 console.log(`check:meshdocs: ${sources.length} endpoints, ${expected.length} declarations, ${schemas} compiled schemas, 1 example`);
