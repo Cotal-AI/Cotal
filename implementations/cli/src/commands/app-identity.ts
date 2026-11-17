@@ -127,8 +127,8 @@ async function provision(values: FlagValues<typeof appIdentityFlags>): Promise<A
     return "pending" in connection ? { ok: false, pending: true, ...connection.pending } : { ok: true, ...connection };
   }
   // What a host that died without retiring left behind is retired first.
-  await retireOrphans();
-  return provisionLocal(t, name, values.session, values.events === true, selection);
+  const retired = await retireOrphans();
+  return provisionLocal(t, name, values.session, values.events === true, selection, retired);
 }
 
 /** What to run when the persona a bare spawn loads is missing. `up` in the root of a space this
@@ -168,24 +168,24 @@ function localGrant(def: AgentDef, selection?: ConversationSelection): { subscri
  *  the durable footprint of a foreground spawn; the credential stays in this account's private
  *  files. An open mesh takes no credential. Either way a record names the conversation, so the
  *  conversation holds one identity at a time and what its host leaves behind is retired. */
-async function provisionLocal(t: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection): Promise<AppIdentityReply> {
+async function provisionLocal(t: MeshTarget, name: string, session: string | undefined, events: boolean, selection?: ConversationSelection, retired: ReadonlySet<string> = new Set()): Promise<AppIdentityReply> {
   if (!session || !SESSION.test(session))
     return { ok: false, error: `a conversation needs its native session identity before connecting, and this app supplies none; nothing was opened on "${t.space}"` };
   const root = join(homeCotalDir(), "app-identities");
   mkSecretDir(root);
   const lock = acquireLock(join(root, `session-${createHash("sha256").update(session).digest("hex")}.lock`), { waitMs: 0 });
-  try { return await provisionLocalLocked(t, name, session, events, selection); }
+  try { return await provisionLocalLocked(t, name, session, events, selection, retired); }
   finally { lock.release(); }
 }
 
-async function provisionLocalLocked(t: MeshTarget, name: string, session: string, events: boolean, selection?: ConversationSelection): Promise<AppIdentityReply> {
+async function provisionLocalLocked(t: MeshTarget, name: string, session: string, events: boolean, selection?: ConversationSelection, retired: ReadonlySet<string> = new Set()): Promise<AppIdentityReply> {
   if (t.mode === "auth" && !t.auth)
     return { ok: false, error: `the mesh "${t.space}" takes static credentials, and this account holds no signing authority for it in ${t.root}, so no identity was opened` };
   if (t.policy?.events === "required" && !events)
     return { ok: false, error: "this mesh requires a real native conversation event source; no identity was opened" };
   const held = localRecords().find(({ record }) => record.session === session && alive(record.owner));
   if (held) return { ok: false, error: `this native conversation already has a live identity on "${held.record.space}"; disconnect it before connecting again` };
-  const taken = await liveMeshNames(t);
+  const taken = await liveMeshNames(t, retired);
   if (!taken) return { ok: false, error: `the mesh "${t.space}" at ${t.server} is not answering. Start it with \`cotal up\`.` };
   if (taken.has(name)) return { ok: false, taken: true };
   const persona = defaultPersonaRef();
@@ -296,11 +296,18 @@ function localRecords(): Array<{ dir: string; record: IdentityRecord }> {
 
 /** Retire every credential directory of this user's whose owning process is gone: a host killed
  *  before it could retire. One that cannot be retired now stays for the next provision. */
-async function retireOrphans(): Promise<void> {
+async function retireOrphans(): Promise<Set<string>> {
+  const retired = new Set<string>();
   for (const { dir, record } of localRecords()) {
     if (alive(record.owner)) continue;
-    await retireDir(dir).catch(() => {});
+    try {
+      await retireDir(dir);
+      retired.add(record.lifecycleUid);
+    } catch {
+      // Keep both the recovery record and the name reservation until retirement succeeds.
+    }
   }
+  return retired;
 }
 
 /** Whether `pid` names a running process. A reused pid reads as alive, so its directory is kept. */
