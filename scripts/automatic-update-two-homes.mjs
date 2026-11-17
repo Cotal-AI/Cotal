@@ -60,7 +60,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
       const ok = async (home, label, args) => { const row = await call(home, label, entry, args); check(`${route} ${home} ${label} exits zero`, row.code === 0 && row.signal === null); return row; };
       const managerProbe = async (label, instanceId) => {
         const modules = join(prefix, 'lib/node_modules/cotal-ai/node_modules');
-        const script = `const{resolveControlTarget}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const{askManager}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/control/index.js')).href)});const t=await resolveControlTarget({space:'twohomes'},'control-caller-admin',${JSON.stringify(instanceId)},{readOnly:true,onRefusal:'throw'});const s=await askManager({versionSkew:()=>{},roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',3000,{instanceId:${JSON.stringify(instanceId)}});if(!s.ok)throw new Error(s.error);console.log(JSON.stringify(s.data));`;
+        const script = `const{localUpdateManagers}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/cli/dist/commands/update.js')).href)});const{assertRecordIdentity}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const candidates=localUpdateManagers({space:'twohomes'},${JSON.stringify(join(prefix, 'lib/node_modules/cotal-ai/dist/cotal.js'))});const owner=candidates.find(m=>m.instanceId===${JSON.stringify(instanceId)});if(!owner?.process||assertRecordIdentity(owner.process).kind!=='match')throw Error('Manager endpoint has no verified native owner');const{resolveControlTarget}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const{askManager}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/control/index.js')).href)});const t=await resolveControlTarget({space:'twohomes'},'control-caller-admin',${JSON.stringify(instanceId)},{readOnly:true,onRefusal:'throw'});const s=await askManager({versionSkew:()=>{},roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',3000,{instanceId:${JSON.stringify(instanceId)}});if(!s.ok||assertRecordIdentity(owner.process).kind!=='match')throw new Error(s.error??'Manager native identity changed');console.log(JSON.stringify({...s.data,native:owner.process}));`;
         const receipt = await call('B', label, process.execPath, ['--input-type=module', '-e', script]);
         check(`${route} ${label} exits zero`, receipt.code === 0 && receipt.signal === null);
         return JSON.parse(receipt.stdout);
@@ -114,7 +114,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         const a = await ok('A', 'updated home version', ['--version']);
         check(`${route} A is fully reconciled`, inventory(a.stdout, target.identity.version) && !a.stdout.includes('Reconciliation pending'));
         const selectedPath = selectionPath(canonical, logicalEntry, target.identity.version);
-        report.readOnly[route] = { targetSelectionAbsent: !existsSync(selectedPath), oldRoot, oldManifest: JSON.parse(readFileSync(join(oldRoot, 'extensions/extensions.json'), 'utf8')), oldManifestSha256: createHash('sha256').update(readFileSync(join(oldRoot, 'extensions/extensions.json'))).digest('hex') };
+        report.readOnly[route] = { targetSelectionAbsent: !existsSync(selectedPath), oldRoot, oldManifestRaw: readFileSync(join(oldRoot, 'extensions/extensions.json'), 'utf8'), oldManifest: JSON.parse(readFileSync(join(oldRoot, 'extensions/extensions.json'), 'utf8')), oldManifestSha256: createHash('sha256').update(readFileSync(join(oldRoot, 'extensions/extensions.json'))).digest('hex') };
         const stale = await ok('B', 'stale home version before command', ['--version']);
         check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && (inventory(stale.stdout, old.identity.version) || oldRoot !== canonical && stale.stdout === `cotal-ai ${target.identity.version}\n`) && report.readOnly[route].targetSelectionAbsent && !existsSync(selectedPath));
         check(`${route} home-only hint never asks for self replacement`, !stale.stdout.includes('update --self'));
@@ -201,9 +201,10 @@ function managerIdentity(served, pid) {
   assert(typeof served.version === 'string' && typeof served.instanceId === 'string', 'served Manager identity required');
   assert(Number.isSafeInteger(pid) && pid > 0);
   process.kill(pid, 0);
-  const birth = process.platform === 'linux' ? readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19] : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
+  const birth = process.platform === 'linux' ? readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19] : served.native?.token;
   assert(birth, 'Manager birth required');
-  return { version: served.version, instanceId: served.instanceId, pid, birth };
+  assert(served.native?.pid === pid && served.native.token === birth, 'served Manager endpoint differs from native lifetime');
+  return { version: served.version, instanceId: served.instanceId, pid, birth, native: served.native };
 }
 
 function inventory(output, version) {
