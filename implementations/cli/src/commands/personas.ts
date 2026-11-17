@@ -44,6 +44,10 @@ const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export async function personas(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
+  const sub = positionals[0] ?? "list";
+  if (positionals.length > (sub === "list" ? 1 : 2)) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal personas [list | show <name> | edit <name> | new <name> | rm <name>]");
+  }
   const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
   switch (positionals[0] ?? "list") {
