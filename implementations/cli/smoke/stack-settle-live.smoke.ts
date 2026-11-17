@@ -127,6 +127,8 @@
  *     `TARGET_NOT_FOUND`, says no member retains a stop request and names `cotal up`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
+ * 10b. After a clean whole-stack stop removed delivery's credential, `down delivery --dry-run` exits
+ *     0, `down delivery --yes` is a no-op and `down manager delivery --dry-run` exits 0.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
  *     stops that broker again and fails `OPERATION_FAILED`, naming the open-file limit. The next `up`
  *     under the normal limit starts the stack.
@@ -1496,6 +1498,25 @@ try {
     const spared = cli(root, "down", "--yes", "--json");
     const refused = cli(root, "down", "--with-agents", "--yes", "--json");
     check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
+  }
+
+  // 10b. Named stops of a member a clean whole-stack stop already stopped (#7111). That stop removed
+  // delivery's launch credential, and a stop reads only the adapter's declaration.
+  {
+    const space = "namedafter";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const stopped = cli(root, "down", "--yes", "--json");
+    const creds = join(root, ".cotal", spaceSegment(space), "delivery.creds");
+    check(`${space}: the whole-stack stop removed delivery's credential`, started.status === 0 && stopped.status === 0 && gone(space, "stack-delivery") && !existsSync(creds), { up: shown(started), down: shown(stopped) });
+    const preview = cli(root, "down", "delivery", "--space", space, "--dry-run", "--json");
+    const stop = cli(root, "down", "delivery", "--space", space, "--yes", "--json");
+    const setPreview = cli(root, "down", "manager", "delivery", "--space", space, "--dry-run", "--json");
+    check(`${space}: down delivery previews and stops the stopped member, and a set preview names both, without that credential`,
+      preview.status === 0 && preview.env?.outcome === "ok" && stop.status === 0 && stop.env?.outcome === "no-op" && setPreview.status === 0 && !existsSync(creds),
+      { preview: shown(preview), stop: shown(stop), set: shown(setPreview) });
   }
 
   // 11. A first up whose broker cannot create the space's streams.

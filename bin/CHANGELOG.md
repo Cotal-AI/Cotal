@@ -1,5 +1,32 @@
 # cotal-ai
 
+## 0.165.2
+
+### Patch Changes
+
+- ef35bc2: An already-current Linux self-update no longer asks you to stop a standalone Manager that keeps its loaded generation. It reports the same retention policy as a staged update, while hosted daemon checks and in-place updates stay unchanged.
+- Updated dependencies [f419ba9]
+- Updated dependencies [e36b376]
+- Updated dependencies [f57b717]
+- Updated dependencies [9c47f34]
+- Updated dependencies [575d7c6]
+- Updated dependencies [4767c1d]
+- Updated dependencies [9edbf60]
+- Updated dependencies [3d3b1dd]
+- Updated dependencies [c040eec]
+- Updated dependencies [614bd86]
+- Updated dependencies [88919a2]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/cli@0.165.2
+  - @cotal-ai/connector-core@0.165.2
+  - @cotal-ai/workspace@0.165.2
+  - @cotal-ai/auth@0.165.2
+  - @cotal-ai/delivery@0.165.2
+  - @cotal-ai/manager@0.165.2
+  - @cotal-ai/registry@0.165.2
+  - @cotal-ai/runtime@0.165.2
+  - @cotal-ai/seat@0.165.2
+
 ## 0.165.1
 
 ### Patch Changes

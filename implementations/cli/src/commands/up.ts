@@ -240,7 +240,7 @@ import { failManifest, refuseManifestSpaceMismatch } from "./topology.js";
 import { liveMeshProcesses } from "./clean.js";
 import { checkSpaceFlagValue, checkSpaceName } from "./meshes-add.js";
 import { checkLocalSpace } from "./space-registration.js";
-import { cleanedManifestStart, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
+import { cleanedManifestStart, interruptedStartBroker, namedOpenConfig, retainedOpenSpace } from "../lib/legacy-start.js";
 import {
   bindReaches,
   canonicalServer,
@@ -448,6 +448,10 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
   if (args.values["no-manager"] === true && args.values.runtime !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts", { remedy: "drop --runtime, or drop --no-manager to select a manager runtime" });
+  // Only an omitted --runtime selects the default runtime. An empty one, as an unset variable gives,
+  // is a value that names no runtime (#7114).
+  if (typeof args.values.runtime === "string" && !args.values.runtime.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime is empty, so it names no runtime; nothing was started or written", { remedy: "name a runtime, such as `--runtime pty`, or omit --runtime to use the default" });
   if (args.values["no-manager"] === true && args.values["max-sessions"] !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts", { remedy: "drop --max-sessions, or drop --no-manager to set the manager session ceiling" });
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
@@ -1803,6 +1807,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       }
     }
     if (!resumeAttempt) assertOrdinaryUpAllowed(cotalRoot(), values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats"));
+    // A start interrupted after it published its broker's pid and before it registered the space left
+    // that broker running on this root's store. No broker starts beside it, at its address or at
+    // another one, and it is not reported as a broker started elsewhere (#7123).
+    const interrupted = resumeAttempt ? undefined : interruptedStartBroker(cotalRoot());
+    if (interrupted)
+      throw new CommandFailure("refused", "CONFLICT", `the broker this folder started for "${interrupted.space}" still runs at ${interrupted.server} (pid ${interrupted.pid}), and no space is registered for it because the start that launched it did not finish; nothing was started`, { target: { root: cotalRoot(), space: interrupted.space, server: interrupted.server, pid: interrupted.pid }, remedy: "stop it with `cotal down`, then run `cotal up` again" });
     const restoredAttempt = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     if (restoredAttempt?.reentry) {
       if (!restoredAttempt.listenerProof)

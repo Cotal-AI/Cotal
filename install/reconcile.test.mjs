@@ -4,7 +4,8 @@ import { spawnSync } from 'node:child_process';
 
 const source = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
 const hook = source.match(/  write_launcher\n([\s\S]*?)  setup_path/)[1];
-assert.match(hook, /"\$BIN_DIR\/cotal" update --self/);
+assert.match(hook, /"\$BIN_DIR\/cotal" update/);
+assert.doesNotMatch(hook, /update --self/);
 for (const [previous, result, expected] of [['', 1, 0], ['0.164.0', 0, 0], ['0.160.7', 1, 1]]) {
   // The real-entry installer cells cover package installation. Isolate the shell gate here.
   const script = `
@@ -12,7 +13,7 @@ PREVIOUS_VERSION='${previous}'
 BIN_DIR=/fixture
 shquote() { printf "'%s'" "$1"; }
 die() { printf '%s\\n' "$@"; exit 1; }
-${hook.replace('"$BIN_DIR/cotal" update --self', `reconcile`)}
+${hook.replace('"$BIN_DIR/cotal" update', `reconcile`)}
 printf 'completed\\n'
 `;
   const run = spawnSync('sh', ['-c', `reconcile() { printf 'reconcile output\\n'; return ${result}; }\n${script}`], { encoding: 'utf8' });
@@ -20,7 +21,7 @@ printf 'completed\\n'
   if (!previous) assert.doesNotMatch(run.stdout, /reconcile output/);
   else assert.match(run.stdout, /reconcile output/);
   if (expected) {
-    assert.match(run.stdout, /Run '\/fixture\/cotal' update --self to finish this update\./);
+    assert.match(run.stdout, /Run '\/fixture\/cotal' update to finish this update\./);
     assert.doesNotMatch(run.stdout, /completed/);
   }
 }

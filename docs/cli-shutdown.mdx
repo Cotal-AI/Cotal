@@ -51,7 +51,9 @@ retains completed, failed/unknown and unattempted members. Reservation/preflight
 retain the full selected set. Release is attempted for every acquired definition hold; a reported
 release error makes an otherwise known outcome partial without erasing known stop results. An
 already unknown stop stays unknown. Lock cleanup is not independently proved. This is not atomic and no rollback or cleanup is claimed. Dry-run reads metadata without reservations, provider imports or native impact
-queries. Duplicate names and `--instance` with multiple names are usage errors. Named `--with-agents` refuses and points to
+queries. A stop and its dry run read a member's adapter declaration, not its launch inputs, so a
+member a whole-stack `down` already stopped previews and stops as a no-op although that `down`
+removed its credential. Duplicate names and `--instance` with multiple names are usage errors. Named `--with-agents` refuses and points to
 `cotal service stop <manager-name> --instance <full-id> --with-agents`; it is never dropped.
 
 

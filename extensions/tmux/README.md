@@ -10,7 +10,8 @@ import.
 ## What it does
 
 - `Runtime` (`tmux`): each agent gets its own window in a shared per-space tmux session
-  (`cotal-<space>`). Spawned unfocused; switch to `session:name` to watch it. Env is isolated
+  (`cotal-<space>`). A spawn that creates the session closes the shell window tmux opened it with,
+  so the session ends with its last seat. Spawned unfocused; switch to `session:name` to watch it. Env is isolated
   (`env -i`) so the tmux server's environment doesn't reach agents. That env is written to an
   owner-only launch script, which keeps it off tmux's command line, and the script removes its
   directory before it starts the agent. When it cannot remove the directory, the agent does not start.

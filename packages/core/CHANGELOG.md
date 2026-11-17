@@ -1,5 +1,12 @@
 # @cotal-ai/core
 
+## 0.165.2
+
+### Patch Changes
+
+- f419ba9: The first `cotal send` to an open space that runs elsewhere is now stored. The one-shot sender consumes nothing, so it never created the space's streams, and the send exited 3 with `OPERATION_UNKNOWN` until a chat session had started there. `send` now creates them before it publishes, as a chat session does. A space this machine started whose streams are gone still refuses with `TARGET_UNAVAILABLE`. The endpoint gains `ensureOpenSpaceStreams()`.
+- c040eec: One malformed message no longer stops the observer feed behind `cotal console` and `cotal history --follow`. The tap drops a message whose parts cannot be read, as history already does. A handler that throws is reported as an endpoint error, and the feed keeps reading later messages.
+
 ## 0.165.1
 
 ### Patch Changes

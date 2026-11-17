@@ -347,6 +347,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     readPreferences().defaults.harness === "codex" && !partial.env?.result.written.some((w: { what: string }) => w.what === "your harness preference"), readPreferences().defaults);
   const human = await run(FULL("claudespace", dir, "claude"));
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
+  check("missing application setup points to dependency repair before startup",
+    partial.env?.result.next.command === "install or repair claude, then run the same setup again" && /Next\s+install or repair claude/.test(human.stdout), shown(human));
 }
 
 // ── A self-hosted space ───────────────────────────────────────────────────────────────────────────

@@ -96,6 +96,8 @@ const liveProbe: Connector = {
   buildLaunch: (o: LaunchOpts): LaunchSpec => { captured.push(o); return { command: "/bin/true", args: [], env: {} }; },
 };
 registry.register(liveProbe);
+const binaryProbe: Connector = { ...liveProbe, name: "fg-probe-binary", requires: ["opencode"] };
+registry.register(binaryProbe);
 // A probe whose child ends the way `--opt` says: `exit <code>`, or killed by `<signal>` (#7043).
 const exitProbe: Connector = {
   kind: "connector",
@@ -197,6 +199,25 @@ const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number;
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
 try {
+  {
+    const path = process.env.PATH;
+    const pin = process.env.COTAL_OPENCODE_BIN;
+    process.env.PATH = "";
+    delete process.env.COTAL_OPENCODE_BIN;
+    try {
+      const missing = await openRun(["--agent", "fg-probe-binary"]);
+      check("a missing harness refuses before launch construction", missing.opts === undefined && missing.exited === 2, missing.stderr);
+      process.env.COTAL_OPENCODE_BIN = process.execPath;
+      const pinned = await openRun(["--agent", "fg-probe-binary"]);
+      check("a valid executable pin outside PATH still launches", pinned.opts !== undefined && pinned.exited === undefined, pinned.stderr);
+      process.env.COTAL_OPENCODE_BIN = join(root, "missing-opencode");
+      const invalid = await openRun(["--agent", "fg-probe-binary"]);
+      check("an invalid executable pin refuses before launch construction", invalid.opts === undefined && invalid.exited === 2, invalid.stderr);
+    } finally {
+      if (path === undefined) delete process.env.PATH; else process.env.PATH = path;
+      if (pin === undefined) delete process.env.COTAL_OPENCODE_BIN; else process.env.COTAL_OPENCODE_BIN = pin;
+    }
+  }
   // CONTROL FIRST. Without it every assertion below could be passing because the launch never
   // reached the connector at all, which is exactly how the first draft of this suite fooled itself.
   {
@@ -350,7 +371,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 20;
+const EXPECTED = 23;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

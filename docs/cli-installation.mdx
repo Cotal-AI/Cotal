@@ -76,7 +76,8 @@ skills. When you have no `harness` preference of your own, setup also records th
 yours, so a space you prepare later with `space create` uses it. A value you already set stays.
 A preferences folder another account could write is refused with `PERMISSION_DENIED`, exit 2, before
 anything is written (see [Preferences](config.mdx#preferences)).
-The result names the next command: `cotal up` in the project for a local space, or
+When an application executable is missing, the next step is to install or repair it and rerun setup.
+Otherwise, the result names the next command: `cotal up` in the project for a local space, or
 `cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
 setup wrote.
 
@@ -382,6 +383,13 @@ used. A missing or redirected global bin link, a conflicting `npm_config_prefix`
 root that disagrees with that prefix refuses before installation. Local/npx copies and source
 checkouts still install a separate global copy; Windows keeps npm's configured global root.
 
+If that installation is not writable by your account, the update refuses before changing it.
+For a root-owned npm installation, have an administrator run the printed
+`sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
+Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
+extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
+Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
+
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
 explains the wait, keeps its update lock and does not send terminal interrupts into the child
@@ -452,6 +460,10 @@ An interactive presence: join a space under your own name and role, without laun
 harness. Another participant whose name is only whitespace is shown as the id, in the roster,
 on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
+
+A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
+channel. It establishes durable membership when the channel's delivery policy is durable, even
+with replay disabled. A live channel keeps live-only membership.
 
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
 keeping that registration's TLS requirement. With no `--space`, an explicit `cotal use` selection
@@ -581,7 +593,11 @@ A package directory that is present without a readable `package.json` still fail
 a seed that failed this way in an earlier release, `cotal ext seed --repair` finishes it, and
 `cotal ext remove` then drops the entry.
 
-Removing an extension that owns a running local process is refused with its process or record remedy. There is no command that stops one extension's legacy process. Follow the emitted `stop pid <pid>, then retry`, `delete <pidPath>, then retry`, or resolve instruction before retrying removal, so uninstalling does not strand a process whose provider is gone. While it uninstalls, `remove` reserves each process record the package
+Removing an extension reclaims a pidfile when its recorded PID is proven dead. A running process,
+unreadable or unattributable record, or unconfirmed liveness still refuses removal with its process
+or record remedy. There is no command that stops one extension's legacy process. Follow the emitted
+stop or resolve instruction before retrying removal, so uninstalling does not strand a process
+whose provider is gone. While it uninstalls, `remove` reserves each process record the package
 declares under every mesh root, and a record folder it creates there is mode `0700`, even with a
 group-writable umask.
 

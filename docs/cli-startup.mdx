@@ -59,7 +59,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--tls-key <path>` | none | PEM private key for `--tls-cert`. Refused if group- or other-readable (tighten to `600`) |
 | `--file <cotal.yaml>`, `-f` | none | Launch a whole mesh from a manifest |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing. Without `-f` it refuses `USAGE_INVALID` before anything starts or is written. A preview from an unprepared folder under the machine home reads that folder's empty policy rather than inheriting the home store; applying there requires `space create` first. |
-| `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime |
+| `--runtime <name>` | `pty` (or the manifest's, with `-f`) | Agent runtime for the mesh manager (`pty` built in; others are installed extensions, explicit-only). Resolved + probed before the broker starts; an uninstalled/unreachable runtime fails loud. Without `-f`, that refusal is `DEPENDENCY_UNAVAILABLE` (exit 2) before anything is written, and for a known runtime the remedy names the `cotal ext add <pkg>` to run. With `-f`, overrides the manifest's runtime. An empty value, as an unset variable gives, names no runtime and refuses `USAGE_INVALID` (exit 1) |
 | `--max-sessions <n>` | 64 | Live-session ceiling for the mesh manager. Each console pane and each `cotal attach` is one session, so size for agents × panes, not agent count. Recorded on the mesh, and for a controller stack in its saved manager definition, and reused by every later manager launch, so a bare `up` after `down`, a repair or a resume does not silently drop back to 64. A running manager cannot change it: `cotal down` first, then `cotal up --max-sessions <n>` |
 | `--seat-cap <n\|unlimited>` | `unlimited` | Live seats this root's manager admits for one owner. Recorded in this root and read by the manager at each start, so a bare `up` after `down`, a repair or a resume keeps it. A running manager cannot change it: `cotal down` first, then `cotal up --seat-cap <n>`. Cannot be combined with `--restore`, `--file` or `--no-manager` |
 | `--manager-name <name>` | none | Name this root's manager. `who --all` and the manager choice show the name, and on a user-auth mesh `--on` takes it. It is recorded in the root, so a restart or repair keeps it. A running manager keeps the name it started with, so a different name is refused until `cotal down`. The name is one line of at most 128 characters with no `/` or `\`, and it may not look like an instance id (26 to 32 lowercase letters and digits). Cannot be combined with `--no-manager`, `--file` or `--restore` |
@@ -228,7 +228,10 @@ names them and the next step: `cotal up`
 finishes the start, and `cotal down --yes` stops them. For a native member whose startup is still
 unchecked, `down` makes a bounded wait for that same launch's verified readiness before reading
 its stop impact. It does not replace native stop authority with a process signal. When only its broker started and the space
-was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. An
+was not registered yet, it names that broker's pid, `cotal down --yes` and then `cotal up`. A start
+killed before it could say so leaves the same broker. The next `up` then refuses `CONFLICT`, exit 2,
+with or without `--server`, and names that broker's pid and `cotal down`, because the broker holds
+this root's store and no second one starts beside it. `cotal down` stops it. An
 interrupted `up --no-manager` names `cotal up --no-manager` in each of these, because bare `up` adds
 the manager, and the `cotal down --yes` that settles such an `up` names it as its Next. An `up`
 interrupted while it writes a new space's trust material leaves the space new, so the next `up`
