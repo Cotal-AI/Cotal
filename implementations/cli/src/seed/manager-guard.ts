@@ -1,10 +1,13 @@
-import { CommandFailure, assertRecordIdentity, logicalExecutionEntry, resolveControlTarget } from "@cotal-ai/workspace";
+import { globalConfigDir } from "@cotal-ai/core";
+import { CommandFailure, assertRecordIdentity, connectorConfigDir, logicalExecutionEntry, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { recordedUpdateManagers } from "../lib/update-managers.js";
 import { entryScript } from "./paths.js";
 
 /** Automatic migration cannot replace a live older Manager's home-local connector graph. */
 export async function assertAutomaticSeedManagers(generation: string): Promise<void> {
+  // The validated release selection preserves every older process's connector prefix.
+  if (connectorConfigDir() !== globalConfigDir()) return;
   for (const manager of recordedUpdateManagers({}, logicalExecutionEntry() ?? entryScript())) {
     if (!manager.process || assertRecordIdentity(manager.process).kind !== "match")
       throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a local Manager changed before connector reconciliation; no connectors were changed");

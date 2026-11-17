@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, lstatSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:net';
@@ -14,7 +14,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
   root = resolve(root);
   assert(!existsSync(root), 'two-home proof needs a new private root');
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const report = { source: 'real installed candidate pair', calls: [], checks: [], cleanup: 'not-started' };
+  const report = { source: 'real installed candidate pair', calls: [], checks: [], graphs: {}, managers: {}, cleanup: 'not-started' };
   report.platform = process.platform;
   report.arch = process.arch;
   report.environment = { hostedDisposable: process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', nodeVersion: process.version };
@@ -58,6 +58,13 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         } finally { clearTimeout(timer); }
       };
       const ok = async (home, label, args) => { const row = await call(home, label, entry, args); check(`${route} ${home} ${label} exits zero`, row.code === 0 && row.signal === null); return row; };
+      const managerProbe = async (label, instanceId) => {
+        const modules = join(prefix, 'lib/node_modules/cotal-ai/node_modules');
+        const script = `const{resolveControlTarget}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/index.js')).href)});const{askManager}=await import(${JSON.stringify(pathToFileURL(join(modules, '@cotal-ai/workspace/dist/control/index.js')).href)});const t=await resolveControlTarget({space:'twohomes'},'control-caller-admin',${JSON.stringify(instanceId)},{readOnly:true,onRefusal:'throw'});const s=await askManager({versionSkew:()=>{},roster:async()=>[]},t.space,t.server,'managerStatus',undefined,t.auth,'owner',3000,{instanceId:${JSON.stringify(instanceId)}});if(!s.ok)throw new Error(s.error);console.log(JSON.stringify(s.data));`;
+        const receipt = await call('B', label, process.execPath, ['--input-type=module', '-e', script]);
+        check(`${route} ${label} exits zero`, receipt.code === 0 && receipt.signal === null);
+        return JSON.parse(receipt.stdout);
+      };
       let running = false;
       try {
         const install = await call('A', 'install old closure', 'npm', ['install', '-g', `cotal-ai@${old.identity.version}`]);
@@ -67,8 +74,11 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
           const version = await ok(home, 'old version', ['--version']);
           check(`${route} ${home} built-ins start at A`, inventory(version.stdout, old.identity.version));
         }
+        const logicalEntry = realpathSync(entry);
         const fixture = join(directory, 'fixture'); mkdirSync(fixture, { mode: 0o700 });
-        const core = pathToFileURL(join(prefix, 'lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js')).href;
+        const fixtureRoot = selectedConnectorRoot(join(directory, 'B/config/cotal'), logicalEntry, old.identity.version);
+        const connectorModules = realpathSync(join(fixtureRoot, 'extensions/node_modules/@cotal-ai/connector-jcode'));
+        const core = pathToFileURL(execFileSync(process.execPath, ['--input-type=module', '-e', `import{createRequire}from'node:module';console.log(createRequire(${JSON.stringify(join(connectorModules, 'package.json'))}).resolve('@cotal-ai/core'));`], { encoding: 'utf8', env: environments.B }).trim()).href;
         writeFileSync(join(fixture, 'package.json'), JSON.stringify({ name: 'cotal-two-home-seat', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
         const joined = join(fixture, 'joined.json');
         writeFileSync(join(fixture, 'seat.mjs'), `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';const e=process.env;const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,creds:readFileSync(e.COTAL_CREDS,'utf8'),card:{id:e.COTAL_ID,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});await ep.start();writeFileSync(${JSON.stringify(joined)},JSON.stringify({pid:process.pid,name:e.COTAL_NAME,lifecycleUid:e.COTAL_LIFECYCLE_UID}));setTimeout(()=>ep.stop().finally(()=>process.exit(0)),2000);`);
@@ -81,11 +91,22 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         await new Promise(done => probe.close(done));
         running = true;
         await ok('B', 'start original space', ['up', '--server', server, '--detach', ...(route === 'launch' ? ['--no-manager'] : [])]);
+        const canonical = join(directory, 'B/config/cotal');
+        const oldRoot = selectedConnectorRoot(canonical, logicalEntry, old.identity.version);
+        const oldGraphs = [...new Set([canonical, oldRoot])].map(path => ({ path, before: connectorGraph(path) }));
+        if (route === 'old-manager') {
+          const status = await ok('B', 'old Manager identity before', ['status', '--json']);
+          const local = JSON.parse(status.stdout).stackManager;
+          assert(local && Number.isSafeInteger(local.pid) && typeof local.instanceId === 'string', 'live stack Manager identity required');
+          const served = await managerProbe('old Manager served identity before', local.instanceId);
+          report.managers[route] = { before: managerIdentity(served, local.pid) };
+          check('old-manager starts exact old Manager', report.managers[route].before.version === old.identity.version);
+        }
         if (route === 'up') { await ok('B', 'stop original space', ['down', '--yes']); running = false; }
         environments.A.npm_config_registry = target.url;
         if (route === 'old-manager') {
           const install = await call('A', 'old Manager candidate install setup', 'npm', ['install', '-g', `cotal-ai@${target.identity.version}`]);
-          check('old Manager exclusion setup installs exact target without claiming updater acceptance', install.code === 0 && install.signal === null);
+          check('old Manager setup installs exact target without claiming updater acceptance', install.code === 0 && install.signal === null);
           await ok('A', 'reconcile separate A home', ['ext', 'seed']);
         } else await ok('A', 'self update shared installation', ['update', '--self']);
         const a = await ok('A', 'updated home version', ['--version']);
@@ -93,21 +114,17 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         const stale = await ok('B', 'stale home version before command', ['--version']);
         check(`${route} B starts stale in shared installation`, stale.stdout.startsWith(`cotal-ai ${target.identity.version}\n`) && inventory(stale.stdout, old.identity.version));
         check(`${route} home-only hint never asks for self replacement`, !stale.stdout.includes('update --self'));
-        const manifest = join(directory, 'B/config/cotal/extensions/extensions.json');
-        const beforeManifest = readFileSync(manifest);
+        // --version is read-only. The next ordinary command creates the target selection.
+        const selectedPath = selectionPath(canonical, logicalEntry, target.identity.version);
         if (route === 'old-manager') {
-          const blocked = await call('B', 'old Manager exclusion', entry, ['spawn', '--detach', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events', '--json']);
-          check('older Manager blocks automatic connector migration', blocked.code !== 0 && `${blocked.stdout}${blocked.stderr}`.includes('LIFECYCLE_BLOCKED'));
-          check('older Manager home inventory remains unchanged', readFileSync(manifest).equals(beforeManifest));
-          check('older Manager exclusion starts no fixture process', !existsSync(joined));
+          await ok('B', 'ordinary old Manager agent launch', ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events', '--on', report.managers[route].before.instanceId]);
+          const seat = JSON.parse(readFileSync(joined, 'utf8'));
+          check('old-manager real old fixture joined', seat.pid > 0 && seat.name === 'twohome-proof' && typeof seat.lifecycleUid === 'string');
+          report.oldManagerSeat = seat;
           const retained = await ok('B', 'old Manager remains answering', ['ps', '--json']);
           check('old Manager control request still succeeds', JSON.parse(retained.stdout).outcome === 'ok');
-          await ok('B', 'home status after command', ['status', '--json']);
-          const recovery = join(directory, 'B/cotal/update-recovery.json');
-          check('old Manager exclusion leaves no recovery obligation', !existsSync(recovery) || JSON.parse(readFileSync(recovery, 'utf8')) === null);
-          continue;
         }
-        if (route === 'up') { await ok('B', 'ordinary next up', ['up', '--detach']); running = true; }
+        else if (route === 'up') { await ok('B', 'ordinary next up', ['up', '--detach']); running = true; }
         else {
           await ok('B', 'ordinary next agent launch', ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--no-events']);
           const seat = JSON.parse(readFileSync(joined, 'utf8'));
@@ -116,10 +133,20 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
         }
         const b = await ok('B', 'home version after ordinary command', ['--version']);
         check(`${route} ordinary command reconciles B completely`, inventory(b.stdout, target.identity.version) && !b.stdout.includes('Reconciliation pending'));
-        await ok('B', 'home status after command', ['status', '--json']);
+        const selectedRoot = selectedConnectorRoot(canonical, logicalEntry, target.identity.version, true);
+        check(`${route} target selected root is isolated`, selectedRoot !== canonical && selectedRoot !== oldRoot);
+        report.graphs[route] = { canonical, oldRoot, logicalEntry, version: target.identity.version, selectionPath: selectedPath, selection: JSON.parse(readFileSync(selectedPath, 'utf8')), selectedRoot, selected: connectorGraph(selectedRoot), old: oldGraphs.map(row => ({ ...row, after: connectorGraph(row.path) })) };
+        check(`${route} old graphs byte and link unchanged`, report.graphs[route].old.every(row => JSON.stringify(row.before) === JSON.stringify(row.after)));
+        const status = await ok('B', 'home status after command', ['status', '--json']);
+        if (route === 'old-manager') {
+          const local = JSON.parse(status.stdout).stackManager;
+          assert(local && local.instanceId === report.managers[route].before.instanceId, 'stack Manager pin changed');
+          report.managers[route].after = managerIdentity(await managerProbe('old Manager served identity after', local.instanceId), local.pid);
+          check('old-manager version PID and birth unchanged', JSON.stringify(report.managers[route].before) === JSON.stringify(report.managers[route].after));
+        }
         const recovery = join(directory, 'B/cotal/update-recovery.json');
         check(`${route} home has no recovery obligation`, !existsSync(recovery) || JSON.parse(readFileSync(recovery, 'utf8')) === null);
-        report[`${route}ManifestSha256`] = createHash('sha256').update(readFileSync(manifest)).digest('hex');
+        report[`${route}ManifestSha256`] = createHash('sha256').update(readFileSync(join(selectedRoot, 'extensions/extensions.json'))).digest('hex');
       } finally {
         if (running) {
           const cleanup = await call('B', 'final owned stack down', entry, ['down', '--yes']);
@@ -129,6 +156,51 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
     }
     report.cleanup = 'both owned stacks stopped'; report.acceptance = routes.length === 3 && new Set(routes).size === 3; save(); return report;
   } finally { if (target) await target.close(); await old.close(); save(); }
+}
+
+export function selectionPath(canonical, entry, version) {
+  return join(canonical, 'installs', createHash('sha256').update(entry).digest('hex'), 'sets', version, 'selection.json');
+}
+
+export function selectedConnectorRoot(canonical, entry, version, required = false) {
+  const path = selectionPath(canonical, entry, version);
+  if (!existsSync(path)) { assert(!required, 'selected root receipt missing'); return canonical; }
+  const file = lstatSync(path);
+  assert(file.isFile() && !file.isSymbolicLink() && file.uid === process.getuid() && (file.mode & 0o077) === 0 && file.size <= 8192, 'selection record is not private');
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  const root = join(path, '..', 'cotal');
+  assert(record.v === 1 && record.entry === entry && record.version === version && record.root === root, 'invalid installed selection');
+  for (let current = root; current !== canonical; current = resolve(current, '..')) {
+    assert(current !== resolve(current, '..'), 'selection escaped config');
+    const stat = lstatSync(current);
+    assert(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0, 'selection is not private');
+  }
+  for (const name of ['seed', 'extensions']) {
+    const stat = lstatSync(join(root, name));
+    assert(stat.isDirectory() && !stat.isSymbolicLink(), 'selected graph is not a real directory');
+  }
+  return root;
+}
+
+function connectorGraph(root) {
+  const rows = [];
+  const visit = (path, relative) => {
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) rows.push([relative, 'link', readlinkSync(path)]);
+    else if (stat.isDirectory()) { rows.push([relative, 'directory']); for (const name of readdirSync(path).sort()) visit(join(path, name), join(relative, name)); }
+    else { assert(stat.isFile(), 'unexpected graph entry'); rows.push([relative, 'file', createHash('sha256').update(readFileSync(path)).digest('hex')]); }
+  };
+  for (const name of ['seed', 'extensions']) if (existsSync(join(root, name))) visit(join(root, name), name);
+  return rows;
+}
+
+function managerIdentity(served, pid) {
+  assert(typeof served.version === 'string' && typeof served.instanceId === 'string', 'served Manager identity required');
+  assert(Number.isSafeInteger(pid) && pid > 0);
+  process.kill(pid, 0);
+  const birth = process.platform === 'linux' ? readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19] : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
+  assert(birth, 'Manager birth required');
+  return { version: served.version, instanceId: served.instanceId, pid, birth };
 }
 
 function inventory(output, version) {
