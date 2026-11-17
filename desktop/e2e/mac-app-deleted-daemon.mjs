@@ -82,6 +82,10 @@ const freshEntry = join(freshPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
 const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 const candidateEntry = process.env.DESKTOP_REPAIR_CLI;
+const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
+assert(['status', 'install'].includes(repairCommand), 'unsupported repair entry command');
+if (!candidateEntry) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
+report.repairCommand = repairCommand;
 const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args]);
 let closeParticipant;
 let serviceOwnership;
@@ -186,7 +190,26 @@ try {
       entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
-    const repaired = body(await candidate('candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
+    if (repairCommand === 'install') {
+      const installed = body(await candidate('candidate daemon install repairs missing program', ['daemon', 'install', '--json']));
+      assert.equal(installed.state, 'repaired', 'install must take its repair branch before any candidate status');
+      assert.equal(installed.unit, receipt.unit);
+      assert.equal(installed.unitPath, receipt.unitPath);
+      const installedSource = readFileSync(plist, 'utf8');
+      const installedReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      assert.equal(installedReceipt.unitSha256, createHash('sha256').update(installedSource).digest('hex'));
+      assert(!installedSource.includes(`${app}/`), 'install must replace the missing program before status can repair it');
+      assert(installedSource.includes(candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js')));
+      assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore, 'install repair preserves sign-in bytes');
+      serviceOwnership = { receiptPath, receiptSha256: createHash('sha256').update(readFileSync(receiptPath)).digest('hex'), sha256: installedReceipt.unitSha256 };
+      const installedJob = ok(await nativeAction('install-triggered repaired job before status', ['print']));
+      const installedPid = Number(/^\s*pid = (\d+)\s*$/m.exec(installedJob.stdout)?.[1]);
+      assert(Number.isSafeInteger(installedPid) && installedPid > 1 && installedPid !== before.pid, 'install itself must start a fresh native job');
+      heldProcesses.push(await identity(installedPid, 'install-triggered repaired daemon'));
+      report.installRepairAcceptance = { state: installed.state, pid: installedPid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true };
+    }
+    const repaired = body(await candidate(repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
+    if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
     assert.notEqual(repaired.pid, before.pid, 'repair starts a fresh daemon lifetime');
     assert.equal(repaired.version, report.candidate.version.split(/\r?\n/)[0].replace('cotal-ai ', ''));
     assert(repaired.managers.some(row => row.space === report.participant.space && row.state === 'answering'));
