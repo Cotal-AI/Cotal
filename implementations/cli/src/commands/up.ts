@@ -275,7 +275,7 @@ import { serviceSupervisorStore } from "../lib/service-supervision.js";
 import { serviceInstallIntents } from "../lib/service-install-intent.js";
 import { serviceUninstallIntents } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionStore } from "../lib/service-unit-action.js";
-import { assertStoreDirArgument, configuredStoreDir, lastServedStore, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
+import { assertStoreDirArgument, configuredStoreDir, lastServedStore, lastServedStores, missingStoreWarning, servedStore, sharedStoreAtStart, sharedStoreWarning, storeWriteProblem, warnForeignStoreEntries } from "../lib/store-dir.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
 import { metadataPositionals } from "../lib/command-path.js";
@@ -2224,7 +2224,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   await assertBrokerAddressFree(server, "cotal up");
   // A repair keeps its own store rules above, and a resume or restore names its store.
   if (!resumeAttempt && !repairing) {
-    if (values["store-dir"] === undefined) refuseUnnamedLastStore(cotalPath("nats"));
+    if (values["store-dir"] === undefined) values["store-dir"] = reopenLastStore(cotalPath("nats"));
     else refuseMissingNamedStore(resolve(values["store-dir"]));
     checkStartStore(values["store-dir"], values.space ?? folderSpace());
   }
@@ -5547,6 +5547,18 @@ function refuseUnnamedLastStore(storeDir: string): void {
   const last = lastServedStore(cotalRoot(), storeDir);
   if (last !== undefined)
     throw new CommandFailure("refused", "CONFLICT", `this root's last broker served the store ${last}, and this start names no store, so it would open a new empty one at ${storeDir}; nothing was started`, { target: { root: cotalRoot(), storeDir: last }, remedy: `reopen it with --store-dir ${last}, or move that store away to start empty` });
+}
+
+/** The store a bare start that names none opens: the store this root's last broker served, while
+ *  it holds data and the default store holds none, since the default would open empty and leave the
+ *  data where it was. When the broker configs name two such stores, the start refuses as
+ *  {@link refuseUnnamedLastStore} does, because which one to reopen is the operator's choice. */
+function reopenLastStore(storeDir: string): string | undefined {
+  if (existsSync(join(storeDir, "jetstream"))) return undefined;
+  const last = lastServedStores(cotalRoot(), storeDir);
+  if (last.length > 1) refuseUnnamedLastStore(storeDir);
+  if (last.length === 1) for (const line of hang("", `reopening ${last[0]}, the store this root's last broker served`, terminalWidth(process.stdout), c.dim)) console.log(line);
+  return last[0];
 }
 
 /** A `--store-dir` that does not exist yet, while the last served store holds data, is taken for a

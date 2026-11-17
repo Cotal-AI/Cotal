@@ -726,8 +726,10 @@ different `--store-dir` rather than silently opening a second store. `down` drop
 later start without `--store-dir` reads the store its last broker served from the broker config `up`
 wrote. A space named after its folder keeps the record, so its next start reopens the store the record
 names. When that store is not the default `.cotal/nats` and still holds JetStream data while the
-default store holds none, such as after `backup restore --store-dir`, the start refuses `CONFLICT`
-(exit 2) and names it. Pass `--store-dir <dir>` to reopen it, or remove it with
+default store holds none, such as after `backup restore --store-dir`, a bare `up` reopens it and
+prints `reopening <dir>, the store this root's last broker served`. `up -f` refuses `CONFLICT`
+(exit 2) and names it, and so does a bare `up` when the auth and open broker configs name two such
+stores. Pass `--store-dir <dir>` to reopen it, or remove it with
 `cotal clean store --force`. While that store holds data, a
 `--store-dir` that does not exist is taken for a mistyped path, and the start refuses `CONFLICT`
 (exit 2) and names both. Create the directory first to start a new empty store there.
