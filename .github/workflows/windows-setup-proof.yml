@@ -211,7 +211,7 @@ jobs:
         if: matrix.cell == 'foreign'
         shell: pwsh
         run: |
-          npm install --prefix "$env:RUNNER_TEMP/cli-service" cotal-ai@0.164.7
+          npm install --before=2026-11-16T19:38:00.000Z --prefix "$env:RUNNER_TEMP/cli-service" cotal-ai@0.164.7
           if($LASTEXITCODE -ne 0){throw 'Published CLI fixture install failed'}
       - name: Verify published installers and fixture broker
         shell: pwsh
