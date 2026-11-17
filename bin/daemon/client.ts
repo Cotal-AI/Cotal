@@ -161,7 +161,7 @@ export function readLine(sock: Socket, timeoutMs: number): Promise<string> {
 
 /** The only replies `queryDaemon` sees: it sends status (or a raw contract probe), never login-start,
  *  so no sign-in event can arrive on its connection. */
-export type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
+type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
 
 /** Send one request and return the daemon's parsed reply. */
 export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {

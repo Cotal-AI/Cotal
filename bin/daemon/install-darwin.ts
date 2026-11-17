@@ -40,7 +40,7 @@ export function launchAgentLabel(daemonHome: string | undefined): string {
 import { xmlText } from "./install-xml.js";
 export { xmlText } from "./install-xml.js";
 
-export interface LaunchAgentInput {
+interface LaunchAgentInput {
   readonly label: string;
   readonly argv: readonly string[];
   readonly searchPath: string;

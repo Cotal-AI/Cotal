@@ -7,7 +7,7 @@ import { installedDaemonIdentity, reconcileMissingShellRuntime, unitReceiptFile 
 import { daemonManagerIntentFile } from "./manager.js";
 
 /** Test hooks: the installed-service check, the daemon query and the wait bound. */
-export interface GenerationWaitProbe {
+interface GenerationWaitProbe {
   readonly installed?: () => boolean;
   readonly query?: typeof queryDaemon;
   readonly timeoutMs?: number;

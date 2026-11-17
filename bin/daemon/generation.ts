@@ -46,7 +46,7 @@ function packageFile(): string {
   throw new Error("the daemon's CLI package is not identifiable");
 }
 
-export async function reconcileInstalledGeneration(): Promise<void> {
+async function reconcileInstalledGeneration(): Promise<void> {
   const file = packageFile();
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });

@@ -1,9 +1,9 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { assertLifecycleToken, mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import { spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 
-export interface ManagerCleanupRecord {
+interface ManagerCleanupRecord {
   version: 1;
   space: string;
   provider: string;
@@ -104,9 +104,4 @@ export function validateManagerCleanupAuthority(record: ManagerCleanupRecord): v
   const identity = workspaceSecretStore(saved.root).identity;
   if (identity.kind !== saved.storeIdentity.kind || identity.root !== saved.storeIdentity.root || identity.id !== saved.storeIdentity.id)
     throw new Error(`Manager cleanup store identity changed: ${file}`);
-}
-
-export function clearManagerCleanup(home: string, space: string): void {
-  const file = managerCleanupFile(home, space);
-  if (regularFile(file)) unlinkSync(file);
 }

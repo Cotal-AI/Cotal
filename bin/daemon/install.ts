@@ -77,7 +77,7 @@ export { unitReceiptFile } from "./install-receipt.js";
 
 /** `cotal-daemon.service`, or `cotal-daemon-<16 hex>.service` for an explicit daemon home, derived
  *  the same way its socket directory is so the two always agree. */
-export function daemonUnitName(daemonHome: string | undefined): string {
+function daemonUnitName(daemonHome: string | undefined): string {
   if (daemonHome === undefined) return "cotal-daemon.service";
   return `cotal-daemon-${createHash("sha256").update(daemonHome).digest("hex").slice(0, 16)}.service`;
 }
@@ -101,7 +101,7 @@ export function pinnedPath(value = process.env.PATH ?? "", grammar: Pick<typeof 
   return entries.join(grammar.delimiter);
 }
 
-export interface RenderedUnit {
+interface RenderedUnit {
   readonly unit: string;
   readonly unitPath: string;
   readonly bytes: string;
@@ -242,7 +242,7 @@ function invokingUser(): string {
   return user;
 }
 
-export interface InstallPlan {
+interface InstallPlan {
   readonly mechanism: ServiceMechanism;
   readonly unit: string;
   readonly unitPath: string;
@@ -293,7 +293,7 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
 }
 
-export interface InstallResult extends InstallPlan {
+interface InstallResult extends InstallPlan {
   /** systemd only: linger is on once the install returns. */
   readonly lingerEnabled?: boolean;
   readonly omittedRelativePathEntries?: readonly string[];
@@ -341,7 +341,7 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined,
   return { ...plan, lingerEnabled: true, ...omitted, state: "installed" };
 }
 
-export interface UninstallPlan {
+interface UninstallPlan {
   readonly mechanism: ServiceMechanism;
   readonly unit: string;
   readonly unitPath: string;
@@ -578,7 +578,7 @@ export async function requestInstalledDaemon(socket: Awaited<ReturnType<typeof o
 }
 
 /** An automatic helper's captured authority, retained until its single activation deadline. */
-export interface WindowsAutomaticRestart {
+interface WindowsAutomaticRestart {
   readonly deadline: number;
   readonly receipt: string;
   readonly pid: number;
@@ -769,7 +769,7 @@ export async function restartInstalled(paths: DaemonPaths, daemonHome?: string, 
   return plan;
 }
 
-export interface UninstallResult extends UninstallPlan {
+interface UninstallResult extends UninstallPlan {
   readonly state: "removed";
   readonly removedServiceRecords: readonly string[];
 }
