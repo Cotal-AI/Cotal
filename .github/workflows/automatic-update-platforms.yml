@@ -562,7 +562,7 @@ jobs:
           assert.equal(report.platform, cell.platform);
           assert.equal(report.cleanupSafety?.passed, true, 'cleanup must be confirmed before matching');
           assert(!report.cleanupFailure && !report.error, 'harness or cleanup error cannot be an expected refusal');
-          if (cell.phase === 'candidate' || paired) assert.equal(report.candidate?.source, cell.sourceSHA);
+          if (cell.phase === 'candidate' || paired || cell.scenario === 'unreachable-registration') assert.equal(report.candidate?.source, cell.sourceSHA);
           const refusal = cell.chain ? undefined : matchKnownRefusal(cell, report);
           process.exitCode = refusal ? 0 : cellExitCode(report);
           NODE
@@ -676,7 +676,7 @@ jobs:
               assert.equal(report.source, cell.sourceVersion);
               assert.equal(report.sourceRequested, cell.sourceVersion);
               assert.equal(report.target, cell.finalTargetVersion ?? cell.targetVersion);
-              if (!paired) {
+              if (!paired && cell.scenario !== 'unreachable-registration') {
                 assert.equal(cell.sourceVersion, plan.sourceVersion);
                 assert.equal(cell.targetVersion, plan.targetVersion);
               }
@@ -687,7 +687,7 @@ jobs:
                 assert.equal(report.nextHop?.sourceVersion, cell.sourceVersion);
                 assert.equal(report.nextHop?.firstTargetVersion, plan.targetVersion);
                 assert.equal(report.nextHop?.finalTargetVersion, finalTarget);
-              } else if (plan.phase === 'candidate') {
+              } else if (plan.phase === 'candidate' || cell.scenario === 'unreachable-registration') {
                 assert.equal(report.tier, 'candidate-B (synthetic registry, real native processes)');
                 assert.equal(report.candidate?.direction, 'B');
                 assert.equal(report.candidate?.source, plan.sourceSHA, 'raw candidate source must match before refusal matching');
