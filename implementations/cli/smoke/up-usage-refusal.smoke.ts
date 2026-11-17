@@ -15,7 +15,8 @@
  * broker that exits on its bind. `up -f` on a root that holds a controller stack refuses CONFLICT
  * instead of starting a manifest stack beside it. An empty `--store-dir`, which used to open the
  * default store, and one that starts with a `~` no shell expanded, which made a folder named `~`,
- * refuse USAGE_INVALID on `up` and `clean`, the second naming the absolute path.
+ * refuse USAGE_INVALID on `up` and `clean`, the second naming the absolute path. An empty or blank
+ * `--runtime`, which used to start the stack on the default runtime, refuses USAGE_INVALID too.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from empty
  * folders outside them. Nothing is started; each refusal comes from validation. A `--server` that no
@@ -137,6 +138,12 @@ for (const { value, message, remedy } of storeDirs) {
   check(`up --store-dir ${JSON.stringify(value)} --json is one USAGE_INVALID refusal, exit 1, with its remedy`, json.status === 1 && json.envelope?.error?.code === "USAGE_INVALID" && json.envelope.error.message === message && json.envelope.error.remedy === remedy, shown(json));
   const clean = run(["clean", "store", "--dry-run", "--store-dir", value]);
   check(`clean store --store-dir ${JSON.stringify(value)} refuses the same way, exit 1, with no help`, clean.status === 1 && clean.stderr.includes(message) && clean.stderr.includes(remedy) && !/Usage|Options/.test(clean.stderr), shown(clean));
+}
+
+// An empty --runtime, as an unset variable gives, used to start the stack on the default runtime (#7114).
+for (const value of ["", "  "]) {
+  const json = run(["up", "--runtime", value, "--json"]);
+  check(`up --runtime ${JSON.stringify(value)} --json is one USAGE_INVALID refusal, exit 1, with its remedy`, json.status === 1 && json.envelope?.error?.code === "USAGE_INVALID" && json.envelope.error.message === "--runtime is empty, so it names no runtime; nothing was started or written" && json.envelope.error.remedy === "name a runtime, such as `--runtime pty`, or omit --runtime to use the default", shown(json));
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));

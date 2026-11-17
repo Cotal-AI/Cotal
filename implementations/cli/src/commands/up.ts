@@ -448,6 +448,10 @@ export function validateUpArguments(args: ParsedArgs): void {
     throw new CommandFailure("refused", "USAGE_INVALID", '--idp is for user-auth spaces; pair it with --user-auth, or set broker.auth: "user" in a manifest', { remedy: "use --user-auth --idp <auth base URL>, without --open" });
   if (args.values["no-manager"] === true && args.values.runtime !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --runtime because no manager starts", { remedy: "drop --runtime, or drop --no-manager to select a manager runtime" });
+  // Only an omitted --runtime selects the default runtime. An empty one, as an unset variable gives,
+  // is a value that names no runtime (#7114).
+  if (typeof args.values.runtime === "string" && !args.values.runtime.trim())
+    throw new CommandFailure("refused", "USAGE_INVALID", "--runtime is empty, so it names no runtime; nothing was started or written", { remedy: "name a runtime, such as `--runtime pty`, or omit --runtime to use the default" });
   if (args.values["no-manager"] === true && args.values["max-sessions"] !== undefined)
     throw new CommandFailure("refused", "USAGE_INVALID", "--no-manager cannot be combined with --max-sessions because no manager starts", { remedy: "drop --max-sessions, or drop --no-manager to set the manager session ceiling" });
   if (args.values.foreground === true && args.values.detach === true) throw new CommandFailure("refused", "USAGE_INVALID", "choose --foreground or --detach, not both");
