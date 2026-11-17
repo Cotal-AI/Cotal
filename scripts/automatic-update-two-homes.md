@@ -1,21 +1,23 @@
 # Two-home upgrade matrix integration
 
-`automatic-update-two-homes.mjs` exports `twoHomeUpgrade({oldDirectory,targetDirectory,root})` and has a CLI taking two normal guarded 24-package closure directories plus a new private root. It installs the old closure through npm into one shared prefix and gives homes A/B separate HOME/COTAL_HOME/XDG directories. No seed skip or inherited COTAL controls are used. Both targets are hash-verified by the existing candidate registries.
+`automatic-update-two-homes.mjs` exports `twoHomeUpgrade({oldDirectory,targetDirectory,root})`. It installs two hash-verified normal candidate closures into one shared POSIX prefix. Homes A and B have separate HOME/COTAL_HOME/XDG directories. No seed skip or inherited COTAL controls are used.
 
-The full cell has three serial routes with one prefix reused:
+The full cell has three serial routes:
 
-- `up`: A updates the installed CLI, B remains stale in read-only version output, then B's ordinary up reconciles all built-ins and serves a real Manager.
-- `launch`: B starts broker/delivery only and registers a no-sign-in fixture connector. A updates, B's first foreground agent launch reconciles then joins the real broker and retires its credentials on exit.
-- `old-manager`: an actual old Manager remains running in B. Exact target installation is explicit setup, not counted as successful self-update admission. Automatic B spawn must refuse LIFECYCLE_BLOCKED, preserve manifest bytes, start no seat and leave the old Manager answering. Explicit update admission is tested by the separately owned retained-reconciliation cell.
+- `up`: A updates the CLI, read-only B version output remains stale, then B's ordinary up reconciles its selected built-ins.
+- `launch`: B starts broker/delivery without a Manager. After A updates, B's first foreground fixture launch reconciles and joins the real broker.
+- `old-manager`: B keeps an actual old Manager. Installing the exact target is setup, not self-update admission evidence. B's foreground launch must safely reconcile the newer selected graph and launch the old fixture through the explicitly pinned old Manager. Its served version, instance, PID and native birth must remain unchanged.
 
-Each route ends with confirmed public down. The strict evidence grader `automatic-update-two-homes-evidence.mjs` rejects missing routes, nonzero ordinary commands, missing no-sign-in join, unsafe old-Manager migration, skipped assertions or missing cleanup. A focused route run deliberately has acceptance:false.
+Use a modern source candidate, such as A 0.166.0 and target 0.166.1000, for the retained Manager launch. A legacy source with a membership barrier is not evidence for this route. A refusal is a failure here, not successful exclusion coverage.
 
-## Registration
+The selector receipt is addressed by the actual installed bin's resolved logical entry and exact candidate version. Its private record and real private ancestors must match that identity. A missing old selection means canonical legacy state, not permission to exempt canonical mutation. The target selection is mandatory. Invalid records, unsafe directories and unsupported selection contexts cannot qualify safe isolated reconciliation.
 
-This branch registers a required configured POSIX candidate-to-next family for Linux and macOS in `upgrade-matrix-plan.mjs` and `.github/workflows/automatic-update-platforms.yml`, including artifact source identity and strict summary verification. It is not a fresh-install cell or native-service-only cell. Required evidence is A/B exact installed versions, both home-specific built-in inventories, real up and seat join, old-Manager unchanged inventory/answering proof, and confirmed owned-stack cleanup.
+Each route records sorted file hashes and literal symlink targets for the canonical seed/extensions graph and old selected graph before and after. The canonical graph may be empty when the source already selects an installed-release graph. Both snapshots must remain identical while the distinct newer selected graph reaches the target inventory. The fixture resolves its core from the old selected connector's peer graph before replacement, rather than importing the overwritten shared CLI core.
 
-PR7177 adds the separate foreign-install pair and changes its required census from40to42. This branch adds only the two-home pair to its own baseline. A combined tree must include both families and update exact census tests together, plus any separately added unreachable-registration state. No other lane branch is modified. Local workflow/source tests do not prove native hosted execution. Release-matrix qualification and selected-retention compatibility are required before this update-path PR merges.
+Raw command receipts include authenticated read-only managerStatus probes, read-only version inventories, selected records, graph rows and join receipts. The strict grader requires all three routes, the selected-root and old-graph checks, successful ordinary commands, both fixture joins, old Manager identity preservation, no recovery obligation and confirmed public down. A focused route returns acceptance:false. Source and target artifact bindings and harness file hashes remain available to the workflow grader.
 
-## Latest local observation
+## Qualification
 
-Exactfixed product b78abfacab normal24pack0.165.1004 vs unchangedmain e61f normal24pack0.165.1003: full callable completed64/64, strictgrader acceptance:true/routes3, resultSHA256aa2a8bcd4cdf55be552d82bef6210146f7fceca7ef55d61e63ec42d05e57e582. This is Linux actual public CLI/broker/Manager acceptance, not macOS hosted proof or workflow wiring acceptance. Before changing runtime behavior, authenticpublic162→currentmain showed normalBup/launchalreadyautoreconcile but wrongselfhint and unsafeoldManagerautowrite. Those distinctions are preserved.
+This change updates test source and expectations only. It has not been executed as part of this editing task. Earlier receipts expecting LIFECYCLE_BLOCKED do not qualify the revised contract. Static tests and workflow wiring are source proof, not hosted qualification. Release qualification still requires full real candidate runs on disposable native Linux and macOS runners with artifact and harness hashes bound by the workflow.
+
+The coordinator must verify the candidate's connector peer layout, stackManager status shape, authenticated managerStatus compatibility, native birth lookup and old fixture launch against the actual source release. All fail closed. The snapshot intentionally includes all seed/extensions entries, including any remaining lock records, so unexpected background writes fail rather than being hidden. No product guard, workflow, plan or release census is changed here. Canonical guard and invalid-selector security coverage remain separate required product checks.

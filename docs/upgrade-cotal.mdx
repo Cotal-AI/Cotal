@@ -32,7 +32,7 @@ copy keeps launching with its original connector generation until it is restarte
 Homes sharing one CLI installation keep separate built-in connector inventories.
 After another home updates the CLI, the next command that needs built-ins reconciles this home.
 Version and help remain read-only. A home-only version mismatch names `cotal update`, without `--self`.
-Automatic reconciliation does not replace connectors used by an older local Manager.
+Automatic reconciliation does not replace connectors used by an older local Manager. A validated separate connector selection can reconcile while that Manager keeps its original graph. If reconciliation still targets the shared canonical graph, an older recorded Manager blocks automatic generation migration.
 An active update holds reconciliation until its transaction finishes. Source checkouts do not seed installed homes.
 
 The `cotal` entry reads a versioned execution descriptor from its sibling retained-generation store.
