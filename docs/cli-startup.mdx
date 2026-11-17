@@ -686,6 +686,10 @@ way on a controller root (see [Backups](cli-backups.mdx#backups)).
 
 ### User-auth controller
 
+User-auth startup checks the required IdP and its JWKS before creating trust, credentials or store
+state, including in a fresh folder without `space create` and with `-f`. A missing or invalid IdP
+refuses `USAGE_INVALID`, exit 1, and leaves no static signing authority behind.
+
 User-auth controller startup requires a plain loopback IP and an auth provider with read-only
 server preflight. A first enable checks the required IdP and its JWKS before creating maintenance
 state, a stack journal, trust or credentials. Missing or invalid inputs are usage refusals; an

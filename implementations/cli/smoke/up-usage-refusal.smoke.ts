@@ -114,6 +114,35 @@ for (const { args, message } of cases) {
   check(`up ${args.join(" ")} prints the error and the help on stderr, nothing on stdout, exit 1`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Usage/.test(text.stderr), shown(text));
 }
 
+// First-enable user auth must not leave static signing authority on any startup route.
+for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
+  for (const idp of [undefined, "not-an-idp", "https://user:secret@example.com/auth"]) {
+    const project = mkdtempSync(join(tmpdir(), "cotal-up-idp-"));
+    process.on("exit", () => rmSync(project, { recursive: true, force: true }));
+    chmodSync(project, 0o700);
+    const space = `idp-${randomUUID().slice(0, 8)}`;
+    if (route === "prepared") run(["space", "create", space, "--root", project]);
+    const control = join(project, ".cotal");
+    const before = existsSync(control) ? readdirSync(control, { recursive: true }).sort() : [];
+    const args = ["up", "--no-manager", "--server", "nats://127.0.0.1:21800"];
+    if (route === "manifest") {
+      const manifest = join(project, "cotal.yaml");
+      writeFileSync(manifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  auth: user\nchannels: {}\nagents: {}\n`);
+      args.push("-f", manifest);
+    } else args.push("--user-auth", "--space", space, route === "detach" ? "--detach" : "--foreground");
+    if (idp !== undefined) args.push("--idp", idp);
+    const result = run(args, project);
+    check(`${route} user auth with ${idp === undefined ? "missing" : "invalid"} IdP refuses usage before effects`,
+      result.status === 1 && /no stack was prepared|--idp is not a valid URL|--idp must not embed credentials/.test(result.stderr) && !/Outcome unconfirmed|secret/.test(result.stdout + result.stderr) && /--idp|IdP/.test(result.stderr), shown(result));
+    const after = existsSync(control) ? readdirSync(control, { recursive: true }).sort() : [];
+    check(`${route} IdP refusal writes no trust, credentials or store state`, JSON.stringify(after) === JSON.stringify(before), { before, after });
+    if (route !== "prepared") {
+      const mint = run(["auth", "mint", "audit", "--profile", "admin", "--plain"], project);
+      check(`${route} refused root is not a static credential issuer`, mint.status !== 0, shown(mint));
+    }
+  }
+}
+
 const servers: { server: string; message: RegExp; example: string }[] = [
   { server: "http://127.0.0.1:43131", message: /--server must be a nats:\/\/ or tls:\/\/ URL/, example: "--server nats://127.0.0.1:43131" },
   { server: "nats://localhost:43131", message: /--server names the host localhost/, example: "--server nats://127.0.0.1:43131" },
@@ -473,11 +502,11 @@ try {
     const plainUp = run(["up", "--space", "legacyface", "--user-auth", "--idp", "https://idp.example.test/api/auth", "--server", `nats://127.0.0.1:${held}`, "--json"], legacy);
     removeMesh("legacyface");
     delete process.env.COTAL_HOME;
-    const launcher = /retained native launcher, which has no structured or plain receipt/;
-    check("a stopped root the legacy launcher registered with no prepared record keeps that launcher for the public face, not UNSUPPORTED for a prepared root",
-      face.status === 2 && face.envelope?.error?.code === "UNSUPPORTED" && launcher.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
-    check("…and an up that names no legacy-only option there takes that launcher too, writing no stack journal into the root",
-      plainUp.status === 2 && plainUp.envelope?.error?.code === "UNSUPPORTED" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
+    const launcher = /IdP did not serve usable JWKS/;
+    check("a stopped legacy root checks the IdP before its public-face startup",
+      face.status === 2 && face.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && launcher.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
+    check("…and ordinary user-auth startup there checks the IdP too, writing no stack journal",
+      plainUp.status === 2 && plainUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
   }
 
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);
