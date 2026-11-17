@@ -45,10 +45,10 @@ import {
   RECORD_KINDS, parseLedgerRow, principalKey, provisionEndpointGateOpen, publishContractArtifact, readAcceptedRow, readEndpointGateGeneration,
   recordSpecKey, recordsBucket, registerServiceInstance, serveEndpoint, serveIssuanceGateKv, serverConfig, serviceContractTable, setupSpaceStreams,
   singleDocumentClosure, standaloneConnectOpts, withIssuerSession, writeServiceStatus,
-  CotalEndpoint, lowerPersonaEndpoints,
+  lowerPersonaEndpoints,
   type CredentialLedgerRow, type EpCaller, type IssuedCaller,
 } from "@cotal-ai/core";
-import { cotalToolSpecs, type AgentConfig, type MeshAgent } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 import { agentLifecycleSecretFilePaths, authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, skipSuite, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
@@ -393,18 +393,20 @@ try {
     { pinnedReply, endpoints: pinnedRecord?.agent.launch.endpoints, rows: pinnedRows.filter((r) => r.includes("orders")), stderr: first.stderr().slice(-1500) });
   if (!pinnedSeat) throw new Error("the pinned helper did not start");
 
-  // The real tool handlers, over an endpoint that connects with the helper's own credential.
-  const helperEp = new CotalEndpoint({ space, servers, tls: false, creds: pinnedCreds, lifecycleUid: pinnedSeat.uid, acceptedToken: pinnedSeat.acceptedToken, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { id: pinnedSeat.actor, name: "helper_pinned_tools", kind: "endpoint" } });
-  stoppers.push(() => helperEp.stop());
+  // The real agent and tool handlers, connected with the helper's own credential.
+  const toolConfig: AgentConfig = { space, name: "helper_pinned_tools", servers, tls: false, creds: pinnedCreds, kind: "agent", id: pinnedSeat.actor, lifecycleUid: pinnedSeat.uid, acceptedToken: pinnedSeat.acceptedToken, subscribe: [], allowSubscribe: [], allowPublish: [] };
+  const toolAgent = new MeshAgent(toolConfig);
+  const helperEp = toolAgent.ep;
+  stoppers.push(() => toolAgent.stop());
   // A broker refusal is reported on the endpoint's error event as well as to the caller, as it is to
   // a connector's agent, which listens for it.
   const helperErrors: string[] = [];
   helperEp.on("error", (e: unknown) => { helperErrors.push(String((e as Error).message).slice(0, 200)); });
-  await helperEp.start();
-  const toolConfig: AgentConfig = { space, name: "helper_pinned_tools", servers, tls: false, creds: pinnedCreds, kind: "agent", id: pinnedSeat.actor, lifecycleUid: pinnedSeat.uid, subscribe: [], allowSubscribe: [], allowPublish: [] };
+  await toolAgent.start();
+  await toolAgent.waitUntilConnected();
   const tools = cotalToolSpecs(toolConfig, "smoke");
   const tool = async (name: "cotal_describe" | "cotal_invoke", args: Record<string, unknown>) => {
-    const r = await tools.find((t) => t.name === name)!.run({ ep: helperEp } as unknown as MeshAgent, toolConfig, args);
+    const r = await tools.find((t) => t.name === name)!.run(toolAgent, toolConfig, args);
     return { text: r.text, isError: r.isError === true };
   };
   const helperGot = (instance: string) => received.filter((r) => r.instance === instance && r.actor === pinnedSeat.actor).length;
