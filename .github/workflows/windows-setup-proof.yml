@@ -50,6 +50,8 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      - name: Check published installer selection
+        run: node --test desktop/test/setup-published-installer.test.mjs
       - name: Plan required proof cells
         id: plan
         shell: pwsh
@@ -226,8 +228,15 @@ jobs:
             if(!$pkg -or $pkg.name -cne 'cotal-ai' -or $pkg.version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
               throw 'Could not resolve last published cotal-ai version from npm registry'
             }
-            "COTAL_SETUP_LATEST_VERSION=$($pkg.version)" >> $env:GITHUB_ENV
-            $versions+=,$pkg.version
+            $selectedJson = node desktop/test/setup-published-installer.mjs
+            if($LASTEXITCODE -ne 0){throw 'Could not select a published Windows installer'}
+            $selected = $selectedJson | ConvertFrom-Json
+            Write-Host "Selected published Windows installer $($selected.version)"
+            if($selected.version -cne $pkg.version) {
+              Write-Host "Registry latest $($pkg.version) has no installer yet; using published Windows installer $($selected.version)"
+            }
+            "COTAL_SETUP_LATEST_VERSION=$($selected.version)" >> $env:GITHUB_ENV
+            $versions+=,$selected.version
           } elseif($cell -eq 'app-installed-0.164.9') {
             $versions+=,'0.164.9'
           } elseif($cell -eq 'early') {
@@ -237,8 +246,12 @@ jobs:
           }
           foreach($version in $versions) {
             $name="Cotal_${version}_x64-setup.exe"
-            $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} "https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v$version"
-            $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+            if($cell -eq 'app-installed-latest') {
+              $asset=@($selected)
+            } else {
+              $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} "https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v$version"
+              $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+            }
             if($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw "Published asset digest unavailable for $version"}
             $expected=$Matches[1]
             $path=Join-Path $env:RUNNER_TEMP $name
