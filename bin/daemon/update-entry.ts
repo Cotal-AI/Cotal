@@ -9,7 +9,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, repairMissingInstalledProgram, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -41,7 +41,7 @@ async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Prom
       }
       const installation = installedDaemonIdentity(paths);
       if (!installation.same) {
-        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update did not start or stop it.`);
         started = true;
         return false;
       }
@@ -82,6 +82,7 @@ const composed: Command = { ...command, async run(args) {
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   try {
+  if (process.platform === "darwin" && args.values.self === true && !process.env.COTAL_AUTO_UPDATE) await repairMissingInstalledProgram(daemonPaths());
   if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
   const runtime = { ...updateRuntime,
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {

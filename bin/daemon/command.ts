@@ -32,7 +32,7 @@ import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths,
 import { serveDaemon } from "./server.js";
 import { loginFromCli } from "./cli-login.js";
 import { connectCheckViaDaemon, managerViaDaemon, queryDaemon, registerViaDaemon, serviceViaDaemon } from "./client.js";
-import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, startInstalled } from "./install.js";
+import { admitWindowsNativeDaemon, applyInstall, applyUninstall, observeDaemonOwnedService, type DaemonOwnershipObservation, planInstall, planUninstall, repairMissingInstalledProgram, startInstalled } from "./install.js";
 import { exchangeDesktopRequest, runDesktopBridge } from "./desktop.js";
 import { runAccountSetup, runSetup } from "./setup.js";
 import { daemonCommandCopy } from "./guidance.js";
@@ -149,6 +149,7 @@ async function status(args: ParsedArgs): Promise<void> {
   const { paths, home } = resolveTarget(args);
   let reply;
   try {
+    await repairMissingInstalledProgram(paths, home);
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
@@ -339,6 +340,13 @@ async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promi
   const { paths, home } = resolveTarget(args);
   if (op === "install") {
     const dry = values["dry-run"] === true;
+    if (!dry && await repairMissingInstalledProgram(paths, home)) {
+      const result = { ...planUninstall(paths, home), state: "repaired" };
+      writeResult(presentation, { command: "daemon install", target: { unit: result.unit }, result }, () => ({ sections: [
+        { title: "Repaired", blocks: [{ kind: "lines", lines: ["The recorded service's missing program was replaced with this Cotal installation. An operator-disabled service remains stopped."] }] },
+      ] }));
+      return;
+    }
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
       { title: dry ? "Would install" : "Installed", blocks: [
