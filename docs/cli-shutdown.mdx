@@ -123,13 +123,15 @@ with its reason and does not stop the `down`; the JSON receipt carries the recor
 `operation.runs`. When the manager is
 live but the broker is not, `down` cannot read the manager's agent impact and refuses before any
 stop, from a managed seat's shell too. Run `cotal up --space <space>` to restart the broker from its recorded inputs while the
-manager keeps running, then run `cotal down`. On Linux, a broker process stopped by a signal, such
-as SIGSTOP, is read from its process state, and `down` refuses `TARGET_UNAVAILABLE`, exit 2, at
-once, naming its pid, and stops nothing. When the broker's process runs but does not answer, the
-manager read waits out its bound and `down` refuses the same way. The broker stops last and
-is never force killed, so `down` does not signal it. Resume a suspended broker with
-`kill -CONT <pid>` and run `cotal down` again; end one that stays unresponsive, then take the route
-above. The manager's stop rides a control credential whose issuance record the broker stores first,
+manager keeps running, then run `cotal down`. On Linux, when the owned broker is suspended by a
+signal such as SIGSTOP, `down --yes` rechecks its exact launch and process creation pin, sends
+SIGCONT, then continues the guarded stop. On an interactive terminal, `down` first asks permission
+to resume that broker so it can read the manager's impact, then asks for the usual stop confirmation.
+A dry run or a noninteractive stop without `--yes` never resumes it. The broker still stops last
+with SIGTERM after its dependant scope is checked, and is never force killed. If the running broker
+still does not answer, the manager read waits out its bound and `down` refuses `TARGET_UNAVAILABLE`,
+exit 2, without stopping a member. End that unresponsive broker, then take the route above.
+The manager's stop rides a control credential whose issuance record the broker stores first,
 and a store over its cap refuses that write. With a live manager, `down` then refuses
 `DEPENDENCY_UNAVAILABLE`, exit 2, before any stop, naming the store and the `--max-file-store` cap
 this machine recorded. Make room with `cotal history clear --yes`, then run `cotal down`. That

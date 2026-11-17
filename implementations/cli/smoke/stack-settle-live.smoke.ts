@@ -68,9 +68,9 @@
  *     STORE_SHARED warning, and `reset store`, its dry run, `reset space` and `clean store` refuse it
  *     CONFLICT with the hand-removal step and remove nothing. A recorded store removed by hand starts
  *     empty with a STORE_MISSING warning.
- *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
- *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing; `up` refuses the
- *     same way before it writes the journal or records the broker's readiness again. With the broker
+ *  4. Orphan manager. With the broker suspended under a live manager, confirmed `down` resumes its
+ *     exact owned process and stops the stack; `up` refuses TARGET_UNAVAILABLE with `kill -CONT`
+ *     before it writes the journal or records the broker's readiness again. With the broker
  *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -190,7 +190,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -1031,7 +1031,7 @@ try {
         && gone(space, "stack-manager") && firstManager !== null && await until(() => !alive(firstManager), 10_000), shown(presetName));
     // The stack's own start brings the manager back; the stopped record stays beside the new one.
     const restarted = cli(root, "up", "--json");
-    const manager = serviceInstances(space, "stack-manager").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
+    let manager = serviceInstances(space, "stack-manager").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
     if (manager !== null) owned.add(manager);
     const states = Object.fromEntries(((restarted.env?.result?.members ?? []) as { role: string; state: string }[]).map((member) => [member.role, member.state]));
     check("up then starts the manager again and reuses the broker and delivery",
@@ -1039,7 +1039,7 @@ try {
     const brokerFirst = cli(root, "down", "stack-broker", "--space", space, "--yes", "--json");
     check("the broker stop refusal names its stack dependants", brokerFirst.status === 2 && brokerFirst.env?.error?.code === "LIFECYCLE_BLOCKED" && brokerFirst.env.error.message.includes("stack-manager") && !brokerFirst.env.error.message.includes("legacy"), shown(brokerFirst));
 
-    const broker = pidOf(space, "stack-broker");
+    let broker = pidOf(space, "stack-broker");
     // A managed seat's shell dials the broker with its own credential first. The seat context is set
     // by hand, with a credential from another root of this suite that this broker does not trust.
     const uid = mintLifecycleUid();
@@ -1052,10 +1052,10 @@ try {
     const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
     const rejected = cliAs(seat, root, "down", "--yes", "--json");
     check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && rejected.env?.error?.message === "Authorization Violation" && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
-    // A suspended broker takes the connection and sends nothing; down reads its stopped state instead.
+    // Up and an unconfirmed down leave the suspended broker alone; a confirmed down resumes it.
     if (broker !== null) process.kill(broker, "SIGSTOP");
     const hungAt = Date.now();
-    const hung = cli(root, "down", "--yes", "--json");
+    const hung = cli(root, "down", "--json");
     const hungMs = Date.now() - hungAt;
     // Up refuses the same way, before it writes the journal or records the broker's readiness again.
     const readyAt = () => serviceInstances(space, "stack-broker")[0]?.record.value.adapterReadiness?.observedAt;
@@ -1064,13 +1064,21 @@ try {
     const upHung = cli(root, "up", "--json");
     const upMs = Date.now() - upAt;
     const readyAfter = readyAt(), journalAfter = readStackJournal(root)?.sha256;
-    if (broker !== null) process.kill(broker, "SIGCONT");
     check("up with a suspended broker refuses within 10s naming its pid and kill -CONT, and records nothing",
       upMs < 10_000 && upHung.status === 2 && upHung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(upHung.env.error.message.includes(`pid ${broker}`))
         && upHung.env.error.remedy === `resume it with kill -CONT ${broker} and run \`cotal up\` again` && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
       { upMs, readyBefore, readyAfter, journalChanged: journalAfter !== journalBefore, ...shown(upHung) });
-    check("down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
-    check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
+    check("unconfirmed down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
+    check("unconfirmed down leaves its broker suspended and its manager running", hung.status === 1 && broker !== null && processStopped(broker) && manager !== null && alive(manager), shown(hung));
+    const resumed = cli(root, "down", "--yes", "--json");
+    check("confirmed down resumes its suspended broker and stops the manager before the broker",
+      resumed.status === 0 && resumed.env?.outcome === "ok" && broker !== null && !alive(broker) && manager !== null && !alive(manager)
+        && gone(space, "stack-delivery") && serviceInstances(space, "stack-broker")[0]?.record.value.kernelStop?.observation === "exact-process-exit", shown(resumed));
+    const resumedStart = cli(root, "up", "--json");
+    track(space);
+    broker = runningPidOf(space, "stack-broker");
+    manager = runningPidOf(space, "stack-manager");
+    check("up starts the stack again for the dead-broker refusal", resumedStart.status === 0 && broker !== null && manager !== null, shown(resumedStart));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);
     const blocked = cli(root, "down", "--yes", "--json");
@@ -1837,6 +1845,32 @@ try {
     track(space);
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-broker"), { up: shown(restarted), down: shown(final) });
+  }
+  // An open broker-only stack needs no manager read, but its SIGTERM still needs it resumed.
+  if (process.platform === "linux") {
+    const space = "suspended-open", root = prepare(space), port = await freePort();
+    const started = cli(root, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const broker = runningPidOf(space, "stack-broker");
+    check("the open broker-only stack starts", started.status === 0 && broker !== null, shown(started));
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    check("its owned broker is suspended", broker !== null && await until(() => processStopped(broker), 5000));
+    const before = readStackJournal(root)?.sha256;
+    const preview = cli(root, "down", "--dry-run", "--json");
+    check("a suspended broker's dry run leaves it suspended and writes no journal",
+      preview.status === 0 && broker !== null && processStopped(broker) && readStackJournal(root)?.sha256 === before, shown(preview));
+    const unconfirmed = cli(root, "down", "--json");
+    check("down without confirmation leaves the broker suspended and writes no journal",
+      unconfirmed.status === 1 && broker !== null && processStopped(broker) && readStackJournal(root)?.sha256 === before, shown(unconfirmed));
+    const blocked = cli(root, "down", "--with-agents", "--yes", "--json");
+    check("a broker-only stop with an agent policy refuses without resuming the broker",
+      blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && broker !== null && processStopped(broker), shown(blocked));
+    const stopped = cli(root, "down", "--yes", "--json");
+    const members = stopped.env?.result?.members as { role: string; state: string }[] | undefined;
+    check("confirmed down resumes and stops its open broker with an exact-exit receipt",
+      stopped.status === 0 && stopped.env?.outcome === "ok" && (stopped.env.result?.operation as { phase?: string } | undefined)?.phase === "completed"
+        && members?.find((member) => member.role === "broker")?.state === "stopped" && broker !== null && !alive(broker)
+        && serviceInstances(space, "stack-broker")[0]?.record.value.kernelStop?.observation === "exact-process-exit", shown(stopped));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");
