@@ -392,9 +392,9 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
     if (when && !when(record)) return;
     const current = await resolveTargetOrThrow({ space: record.space });
     let target = record.retirementTarget ? { ...current, ...record.retirementTarget } : current;
-    if (!record.retirementTarget && record.remote && trust(target) !== record.trust) {
+    if (!record.retirementTarget && record.remote?.material && trust(target) !== record.trust) {
       try {
-        const address = new URL(record.remote.url);
+        const address = new URL(record.remote.material.exchangeUrl);
         const response = await pinnedFetch(discoveryDocumentUrl(address).href, "the original conversation registration");
         if (response.ok) {
           const checked = await checkDiscoveryDocument(response);

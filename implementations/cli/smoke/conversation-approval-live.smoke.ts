@@ -71,8 +71,6 @@ let enforceNames = false;
 const retiredActors = new Set<string>();
 const server = createServer({ key, cert: ca }, async (req, res) => {
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-  if (req.url === `/api/spaces/${SPACE}/conversation-identities/.well-known/cotal-mesh`)
-    return send(200, originalRegistration ?? bundle());
   if (req.url === `/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, originalRegistration ?? bundle());
   if (req.url === `/moved/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
   authenticated++;
@@ -540,7 +538,7 @@ try {
     recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: target.userAuth, policy: target.policy });
   });
-  for (const changedPin of ["addresses", "issuer", "audience"] as const) {
+  for (const changedPin of ["addresses", "issuer", "audience", "no-material"] as const) {
     await check(`a legacy retiring record with changed ${changedPin} is preserved without authenticated retirement`, async () => {
       const session = `session-legacy-${changedPin}`;
       const p = await pendingOf(provisionUserApp(target, "legacy", session, true));
@@ -548,6 +546,7 @@ try {
       await connected(provisionUserApp(target, "legacy", session, true));
       const file = savedFor(p.requestId), record = JSON.parse(readFileSync(file, "utf8"));
       delete record.retirementTarget;
+      if (changedPin === "no-material") delete record.remote.material;
       record.state = "retiring";
       writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
       const moved = bundle();
@@ -608,7 +607,7 @@ try {
     assert(existsSync(join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json")));
     enforceNames = false;
   });
-  assert.equal(assertions, 43);
+  assert.equal(assertions, 44);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
