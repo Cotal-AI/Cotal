@@ -4,18 +4,15 @@ use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
-pub struct Presence(pub Mutex<Preferences>);
+pub struct Presence(pub Mutex<Preferences>, pub Option<String>);
 
 fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("presence.json"))
 }
 
-pub fn load(app: &AppHandle) -> Result<Preferences, String> {
-    match fs::read(preference_path(app)?) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "Desktop preferences are invalid. No login setting was changed.".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Preferences::default()),
-        Err(e) => Err(e.to_string()),
-    }
+pub fn load(app: &AppHandle) -> Result<Presence, String> {
+    let (preferences, notice) = crate::presence::load_preferences(&preference_path(app)?)?;
+    Ok(Presence(Mutex::new(preferences), notice))
 }
 
 fn save(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
@@ -63,6 +60,7 @@ fn transient(app: &AppHandle) -> Result<bool, String> {
 }
 
 fn apply_login(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
+    if preferences.recovered { return Ok(()); }
     let enabled = preferences.login_enabled() && !transient(app)?;
     if app.autolaunch().is_enabled().map_err(|e| e.to_string())? != enabled {
         if enabled { app.autolaunch().enable() } else { app.autolaunch().disable() }
@@ -98,6 +96,7 @@ pub struct PresenceView {
     relocation_offer: bool,
     pin_offer: bool,
     pin_message: String,
+    preference_notice: Option<String>,
 }
 
 #[tauri::command]
@@ -115,6 +114,7 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
         relocation_offer: !relocation_declined && transient(&app)?,
         pin_offer,
         pin_message,
+        preference_notice: app.state::<Presence>().1.clone(),
     })
 }
 
@@ -125,6 +125,7 @@ pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String>
     let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
     if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
     if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
+    p.recovered = false;
     p.login = Some(enabled);
     apply_login(&app, &p)?;
     save(&app, &p)

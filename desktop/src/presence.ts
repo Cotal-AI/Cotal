@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-type Presence = { loginEnabled: boolean; relocationOffer: boolean; pinOffer: boolean; pinMessage: string };
+type Presence = { loginEnabled: boolean; relocationOffer: boolean; pinOffer: boolean; pinMessage: string; preferenceNotice?: string };
 let offerShown = false;
 let relocationShown = false;
 let working = false;
+let preferenceNoticeShown = false;
 let report: (message: string, error?: boolean) => void;
 
 function offer(id: string, message: string, primary: string, accept: () => Promise<void>, decline: () => Promise<void>): void {
@@ -29,6 +30,10 @@ export async function refreshPresence(connected = false): Promise<void> {
   working = true;
   try {
     const p = await invoke<Presence>("desktop_presence");
+    if (p.preferenceNotice && !preferenceNoticeShown) {
+      preferenceNoticeShown = true;
+      report(p.preferenceNotice, true);
+    }
     const checkbox = document.getElementById("autostart") as HTMLInputElement;
     checkbox.checked = p.loginEnabled;
     if (p.relocationOffer && !relocationShown) {
