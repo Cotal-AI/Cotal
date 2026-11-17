@@ -15,3 +15,11 @@ test('diagnostic preload records actual client and server close calls without pa
  assert(rows.some(row=>row.side==='client'&&row.event==='close'));
  assert(!text.includes('private-payload'));
 });
+
+test('unwritable trace output cannot suppress socket destruction or original error semantics',()=>{
+ const root=mkdtempSync('/var/tmp/socket-trace-unwritable-');
+ const program=`import{Socket}from'node:net';const s=new Socket();s.connect({path:${JSON.stringify(join(root,'daemon.sock'))}});s.on('error',()=>{});s.destroy();if(!s.destroyed)throw Error('original destroy was suppressed');s.removeAllListeners('error');const error=new Error('original-security-error');let same=false;try{s.emit('error',error);}catch(e){same=e===error;}if(!same)throw Error('original error semantics changed');`;
+ const result=spawnSync(process.execPath,['--import',new URL('./daemon-socket-trace.mjs',import.meta.url).pathname,'--input-type=module','-e',program],{env:{...process.env,DARWIN_SOCKET_TRACE_FILE:root},encoding:'utf8',timeout:5000});
+ assert.equal(result.status,0,result.stderr);
+ assert(result.stderr.includes('DARWIN_SOCKET_TRACE_INCOMPLETE'));
+});

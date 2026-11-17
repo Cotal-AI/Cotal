@@ -77,9 +77,19 @@ jobs:
           export DARWIN_SOCKET_TRACE_FILE="$RUNNER_TEMP/peer-frequency/socket-trace.ndjson"
           touch "$DARWIN_SOCKET_TRACE_FILE"
           chmod 600 "$DARWIN_SOCKET_TRACE_FILE"
+          prior_options=$(launchctl getenv NODE_OPTIONS || true)
+          prior_trace=$(launchctl getenv DARWIN_SOCKET_TRACE_FILE || true)
+          test -z "$prior_options"
+          test -z "$prior_trace"
+          restore_trace_environment() {
+            launchctl unsetenv NODE_OPTIONS
+            launchctl unsetenv DARWIN_SOCKET_TRACE_FILE
+            test -z "$(launchctl getenv NODE_OPTIONS || true)"
+            test -z "$(launchctl getenv DARWIN_SOCKET_TRACE_FILE || true)"
+          }
+          trap restore_trace_environment EXIT
           launchctl setenv NODE_OPTIONS "$NODE_OPTIONS"
           launchctl setenv DARWIN_SOCKET_TRACE_FILE "$DARWIN_SOCKET_TRACE_FILE"
-          trap 'launchctl unsetenv NODE_OPTIONS; launchctl unsetenv DARWIN_SOCKET_TRACE_FILE' EXIT
           node scripts/automatic-update-platform-baseline.mjs --source 0.165.4 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --expected-target 0.165.1004 --stopped-daemon-before-update true --peer-frequency true --output "$RUNNER_TEMP/peer-frequency/traced"
       - uses: actions/upload-artifact@v4
         if: always()

@@ -474,12 +474,16 @@ export async function matrixCell(options) {
   const daemon = (label, argv, timeout) => desktopRuntime
     ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv], timeout)
     : cotal(label, argv, timeout);
-  async function peerFrequency(stage) {
+  async function peerFrequency(stage, identity) {
     if (options['peer-frequency'] !== 'true') return;
     assert(hosted && process.platform === 'darwin' && state === 'daemon' && method === 'self', 'peer frequency is a hosted Darwin diagnostic only');
+    assert.equal(identity?.state, 'ready');
+    assert.equal(identity.version, stage === 'after-ready' ? report.source : report.target);
+    assert(Number.isSafeInteger(identity.pid) && identity.pid > 0 && Number.isFinite(Date.parse(identity.startedAt)), 'measured daemon lifetime must be identified');
     const { measureDaemonRequests } = await import('./darwin-peer-frequency.mjs');
     report.peerFrequency ??= [];
     const observation = await measureDaemonRequests({stage, request: (label, timeout) => daemon(label, ['daemon', 'status', '--json'], timeout)});
+    observation.identity = { pid: identity.pid, startedAt: identity.startedAt, version: identity.version, state: identity.state };
     report.peerFrequency.push(observation);
     save(join(output, `${id}-${stage}-peer-frequency.txt`), observation);
   }
@@ -763,7 +767,7 @@ export async function matrixCell(options) {
         const status = await daemon('native status before', ['daemon', 'status', '--json']);
         if (status.exit === 0 && JSON.parse(status.stdout).result?.state === 'ready') {
           report.daemonBefore = JSON.parse(status.stdout).result;
-          await peerFrequency('after-ready');
+          await peerFrequency('after-ready', report.daemonBefore);
           break;
         }
         await delay(1000);
@@ -1311,7 +1315,10 @@ export async function matrixCell(options) {
           active = await daemon('wait for target native generation', ['daemon', 'status', '--json']);
         }
         check('native daemon remains active at its expected generation', active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion), active);
-        if (active.exit === 0) { finalDaemon = JSON.parse(active.stdout).result; await peerFrequency('after-update'); }
+        if (active.exit === 0) {
+          finalDaemon = JSON.parse(active.stdout).result;
+          if (nativeGenerationReady(finalDaemon, expectedDaemonVersion)) await peerFrequency('after-update', finalDaemon);
+        }
         if (desktopRuntime) {
           const after = JSON.parse(active.stdout).result;
           check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
@@ -1464,6 +1471,10 @@ export async function matrixCell(options) {
       catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (overlay) report.registryRequests = await overlay.close();
+    if (/DARWIN_SOCKET_TRACE_INCOMPLETE/.test(report.calls.map(call => call.stdout + call.stderr).join('\n')) || JSON.stringify(report.daemonDiagnostics ?? {}).includes('DARWIN_SOCKET_TRACE_INCOMPLETE')) {
+      report.diagnosticFailure = 'socket trace incomplete, diagnostic result cannot be accepted';
+      report.result = 'failed'; report.refusal = report.diagnosticFailure;
+    }
     report.cleanupSafety = { required: true, uncertain, ownedStackExit: report.ownedStackCleanup?.exit, hostedAgentStopExit: report.managerHost?.stop?.exit, nativeUninstallExit: report.nativeUninstall?.exit, container: report.foreignContainerCleanup, passed: !uncertain && !report.cleanupFailure && (!installedService || report.cleanup === 'receipt-guarded native removal confirmed') && (!stackStarted || report.ownedStackCleanup?.exit === 0) && (!container || report.foreignStackEnd?.passed === true) && (!daemonHostedManager || report.managerHost?.stop?.exit === 0) };
     if (!report.cleanupSafety.passed) { report.result = 'failed'; report.cleanupFailure ??= 'cleanup safety not established; retained for disposable runner teardown'; }
     if (!report.refusal && report.result === 'failed') report.refusal = report.cleanupFailure;
