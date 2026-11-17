@@ -29,7 +29,11 @@ copy keeps launching with its original connector generation until it is restarte
 
 ## Execution generations
 
+After bare npm replacement, read commands use the validated previous retained connector inventory until reconciliation selects the running release's own set. Version reports pending reconciliation, and stale installed runtimes keep their version-skew remedy. These reads do not copy a set, publish selection records or recover a pending promotion in the previous set. Reconciliation still creates a separate current-release copy before changing connectors.
+
 Automatic connector reconciliation launches seed children through the same logical installed entry as their parent. A retained package's physical entry does not select a second connector prefix. Other subprocesses keep their existing generation behavior.
+
+`pnpm smoke:retained-reads:live <A-pack> <B-pack> <C-pack> <new-private-root>` checks an install of A, a self-update to B and bare npm replacement with C. The three normal guarded closure packs must share a source revision. It verifies read-only inventory visibility, pending reconciliation, stale runtime refusal and a separate C selection after explicit reconciliation. Append `pending-promotion` to interrupt B's extension publication and check that C's reads leave that pending state untouched, without reconciling it.
 
 `pnpm smoke:seed-child:live <source-pack> <target-pack> <new-private-root>` exercises a real self-update and the other home's first plain `up`. It requires two normal guarded closure packs from one source revision and verifies the retained bootstrap, one logical target selection and all seven connector versions.
 

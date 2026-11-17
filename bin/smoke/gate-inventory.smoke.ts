@@ -77,7 +77,8 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // directory and an approved nats-server named by two variables, which no CI job supplies.
 // 21 → 22 on 2026-11-17: the seed-child suite takes two packed closures and a new private root as
 // arguments, which no CI job supplies.
-const EXPECTED_EXEMPTIONS = 22;
+// 22 → 23 on 2026-11-17: the retained-reads suite takes three packed closures and a new private root.
+const EXPECTED_EXEMPTIONS = 23;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 /** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
  *  date tied to that investigated debt. Premise
@@ -100,6 +101,7 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:claude-registration-home:live": standing("drives the real claude CLI against isolated profiles and Cotal homes"),
   "smoke:auth-oracle-order:live": standing("takes an installed npm prefix and a new evidence directory as arguments"),
   "smoke:seed-child:live": standing("takes a source pack, a target pack and a new private root as arguments"),
+  "smoke:retained-reads:live": standing("takes three normal packed closures and a new private root as arguments"),
   "smoke:deleted-manager-entry": standing("needs an installed cotal-ai directory and an approved nats-server (COTAL_DELETED_MANAGER_INSTALL, COTAL_DELETED_MANAGER_BROKER)"),
   "smoke:backup-usermode:live": brokenExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
   // These four are #643's to fix (backup live coverage that can fail), not an inventory mystery.

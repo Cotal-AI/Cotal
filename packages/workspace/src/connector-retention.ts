@@ -49,15 +49,12 @@ function previousConfig(id: { entry: string; path: string }): string | undefined
   return record.root;
 }
 
-/** Connector and seed state selected for this installed execution. Legacy processes keep their original paths. */
-export function connectorConfigDir(): string {
-  const id = identity();
-  if (!id) return globalConfigDir();
+function currentConfig(id: { entry: string; version: string; path: string }): string | undefined {
   if (existsSync(id.path)) ownedAncestors(id.path);
   const bytes = readLocalRecordSource(join(id.path, "selection.json"), 8192, true);
   if (!bytes) {
     const previous = previousConfig(id);
-    return previous === join(id.path, "cotal") ? previous : globalConfigDir();
+    return previous === join(id.path, "cotal") ? previous : undefined;
   }
   ownedAncestors(id.path);
   const record = JSON.parse(bytes.toString("utf8")) as Selection;
@@ -70,19 +67,31 @@ export function connectorConfigDir(): string {
   return record.root;
 }
 
+/** Read this execution's selected state, or its validated predecessor until reconciliation selects a new copy. */
+export function connectorConfigDir(): string {
+  const id = identity();
+  return id ? currentConfig(id) ?? previousConfig(id) ?? globalConfigDir() : globalConfigDir();
+}
+
+/** Implicit recovery may mutate current or canonical state, never a predecessor exposed only for reads. */
+export function canRecoverConnectorConfig(): boolean {
+  const id = identity();
+  return !id || currentConfig(id) !== undefined || previousConfig(id) === undefined;
+}
+
 /** Each installed generation inherits connector state without mutating an earlier process's prefix. */
 export function inheritConnectorConfig(): void {
   const id = identity();
-  if (id && connectorConfigDir() === globalConfigDir()) retainConnectorConfig();
+  if (id && currentConfig(id) === undefined) retainConnectorConfig();
 }
 
 /** Preserve the original prefix in place and prepare a separate complete prefix for same-version repair. */
 export function retainConnectorConfig(): string {
   const id = identity();
   if (!id) throw new Error("retained connector reconciliation requires an installed POSIX execution");
-  const selected = connectorConfigDir();
-  if (selected !== globalConfigDir()) return selected;
-  const current = previousConfig(id) ?? selected;
+  const selected = currentConfig(id);
+  if (selected !== undefined) return selected;
+  const current = previousConfig(id) ?? globalConfigDir();
   const releaseClosure = claimUpdateClosureAccess();
   let releaseWriter = () => {};
   let releaseSeed = () => {};
@@ -98,7 +107,8 @@ export function retainConnectorConfig(): string {
       } catch (error) { pass.release(); throw error; }
     }
     assertExtensionPrefixIdle(current);
-    if (connectorConfigDir() !== globalConfigDir()) return connectorConfigDir();
+    const published = currentConfig(id);
+    if (published !== undefined) return published;
     if ((previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
     if (current !== globalConfigDir()) {
       const sourcePath = dirname(current);
