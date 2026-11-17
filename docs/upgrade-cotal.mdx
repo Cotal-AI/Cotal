@@ -304,9 +304,18 @@ daemon process is running, it starts the unchanged owned scheduled task once if 
 and has no running instance. It never enables a disabled task or reinstalls the service. On Linux
 and macOS, when the recorded owned user service is stopped before a manual `cotal update --self`,
 the updater starts the unchanged owned unit or LaunchAgent only when it is enabled and waits for the
-daemon to answer. On all three platforms, if the recorded stopped service belongs to another
-installation, such as the desktop app's bundled runtime, the updater leaves it stopped, does not wait
-for the new CLI version on that socket, and reports `the background service belongs to another Cotal installation (<path>). This update left it stopped.` On Linux, the updater starts
+daemon to answer. On Linux and macOS, a manual update also repairs an enabled recorded service whose
+executable or CLI entry is missing, including a removed desktop app bundle. It verifies the receipt,
+unchanged native source and loaded job before making changes. An answering daemon must fence its
+hosted Managers and confirm zero seats before its service is stopped. After the old daemon releases
+its lifetime lock, the updater writes this CLI's launch coordinates with a matching receipt, starts
+the service without changing its enabled state, and waits for the target daemon and its hosted
+Managers. Hosting intents and sign-in state are retained. A disabled service or changed source is
+not repaired. Windows missing-program repair is not supported.
+
+A present service from another installation is not rebound. The updater reads its endpoint before
+reporting it left running. If no daemon answers, it reports `No daemon answers; this update did not start it.`
+and does not wait for the new CLI version on that socket. On Linux, the updater starts
 a stopped unit only when `systemctl --user show` reports `UnitFileState=enabled`; any other state is
 left stopped and reported as `service is <state>; not started`. On macOS, the updater reads
 `launchctl print-disabled gui/<uid>`, requiring every entry in the `disabled services = { ... }` block

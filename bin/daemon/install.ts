@@ -33,6 +33,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, posix } from "node:path";
+import { homedir } from "node:os";
 import { recordedSourceIdentity, recordedSourceMarked } from "./install-identity.js";
 import { nativeRun } from "./install-native-run.js";
 import { checkWindowsRecordedUnit } from "./ownership-win32.js";
@@ -43,11 +44,11 @@ import { mkSecretDir, writeSecretFile, writeSecretFileAtomic } from "@cotal-ai/c
 import { codeSpan, CommandFailure, executionIdentity, readLocalRecordSource } from "@cotal-ai/workspace";
 import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource, daemonArgv, submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "@cotal-ai/cli";
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
-import { isStoppingLifetime, openVerified, readLine } from "./client.js";
+import { isStoppingLifetime, managerViaDaemon, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
-import { launchAgentService, xmlText } from "./install-darwin.js";
+import { launchAgentService, renderLaunchAgent, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
 import { daemonCommandCopy } from "./guidance.js";
 import { recoverPausedTask } from "./restart-recovery.js";
@@ -427,18 +428,94 @@ export async function startEnabledInstalled(paths: DaemonPaths, daemonHome: stri
   const identity = recordedDaemonIdentity(recorded);
   if (!identity.same) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon source names another installation (${identity.installed}); update did not start it`);
   const { receipt, plan, service } = recorded;
+  const state = installedEnabledState(recorded);
+  if (state !== "enabled") return { started: false, unit: plan.unit, state };
   if (service) {
-    if (service.isEnabled && !service.isEnabled(receipt)) return { started: false, unit: plan.unit, state: "disabled" };
     service.start(receipt);
     return { started: true, unit: plan.unit, state: "enabled" };
+  }
+  submitSystemdUnitControl("start", plan.unit);
+  return { started: true, unit: plan.unit, state: "enabled" };
+}
+
+function installedEnabledState({ receipt, plan, service }: ReturnType<typeof recordedUnit>): string {
+  if (service) {
+    if (!service.isEnabled) throw new CommandFailure("refused", "UNSUPPORTED", "this native service cannot prove its enabled state");
+    return service.isEnabled(receipt) ? "enabled" : "disabled";
   }
   const read = nativeRun("systemctl", ["--user", "--no-ask-password", "--no-pager", "show", plan.unit, "--property=UnitFileState", "--value"]);
   if (read.status !== 0) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} did not confirm UnitFileState (${read.detail}); nothing was started`);
   const state = read.stdout.trim();
   if (!state) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `systemctl --user show ${plan.unit} reported an empty UnitFileState; nothing was started`);
-  if (state !== "enabled") return { started: false, unit: plan.unit, state };
-  submitSystemdUnitControl("start", plan.unit);
-  return { started: true, unit: plan.unit, state: "enabled" };
+  return state;
+}
+
+/** Rebind only an unchanged POSIX service whose recorded launch files are gone. Keep its hosting state. */
+export async function repairMissingInstalledDaemon(paths: DaemonPaths, daemonHome?: string, deadline = Date.now() + 120_000): Promise<{ repaired: boolean; unit: string; state: string }> {
+  assertDesktopSetupComplete();
+  const recorded = recordedUnit(paths, daemonHome);
+  const { receipt, plan, service } = recorded;
+  if (plan.mechanism === "scheduled-task") throw new CommandFailure("refused", "UNSUPPORTED", "missing-program repair is supported only for POSIX daemon services");
+  const unchanged = () => {
+    const current = recordedUnit(paths, daemonHome);
+    if (JSON.stringify(current.receipt) !== JSON.stringify(receipt) || !recordedDaemonIdentity(current).missing)
+      throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation changed before repair; nothing further was changed");
+  };
+  unchanged();
+  const state = installedEnabledState(recorded);
+  if (state !== "enabled") return { repaired: false, unit: plan.unit, state };
+  const source = readFileSync(receipt.unitPath, "utf8");
+  const next = plan.mechanism === "systemd-user" ? renderDaemonUnit(dirname(receipt.unitPath), daemonHome).bytes
+    : renderLaunchAgent({ label: receipt.unit, argv: daemonServeArgv(daemonHome), searchPath: pinnedPath(), workingDirectory: homedir(), logPath: join(paths.state, "daemon.log") }).text;
+  const sha256 = createHash("sha256").update(next).digest("hex");
+  const lifetime = readLifetimeRecord(paths.lock);
+  let fenced = false;
+  let exclusion: ReturnType<typeof excludeLifetime> | undefined;
+  try {
+    try {
+      const reply = await queryDaemon({ paths });
+      if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the daemon did not answer before missing-program repair");
+      await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });
+      fenced = true;
+      const current = readLifetimeRecord(paths.lock);
+      if (!lifetime?.start || current?.pid !== lifetime.pid || current.start !== lifetime.start || reply.result.pid !== lifetime.pid)
+        throw new CommandFailure("refused", "CONFLICT", "the daemon lifetime changed before missing-program repair");
+    } catch (error) {
+      if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error;
+      exclusion = excludeLifetime(paths.lock);
+    }
+    unchanged();
+    if (installedEnabledState(recorded) !== "enabled") throw new CommandFailure("refused", "CONFLICT", "the daemon service was disabled before repair");
+    if (service) service.remove(receipt, true);
+    else submitSystemdUnitControl("stop", receipt.unit);
+    while (!exclusion) {
+      try { exclusion = excludeLifetime(paths.lock); }
+      catch (error) {
+        if (!(error instanceof EndpointRefusal && error.code === "LOCK_HELD")) throw error;
+        const current = readLifetimeRecord(paths.lock);
+        if (current?.pid !== lifetime?.pid || current?.start !== lifetime?.start || Date.now() >= deadline)
+          throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the old daemon did not release its lifetime for missing-program repair; the source and receipt were retained");
+        await delay(100);
+      }
+    }
+    unchanged();
+    if (Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "missing-program repair did not release the old daemon before the readiness deadline; the source and receipt were retained");
+    writeSecretFileAtomic(receipt.unitPath, next);
+    try { writeSecretFileAtomic(unitReceiptFile(paths), `${JSON.stringify({ ...receipt, unitSha256: sha256 })}\n`); }
+    catch (error) { writeSecretFileAtomic(receipt.unitPath, source); throw error; }
+    assertSystemdSource(receipt.unitPath, sha256);
+    if (!service) submitSystemdUnitRegistration("reload", receipt.unit);
+    exclusion.release(); exclusion = undefined;
+    const outcome = await startEnabledInstalled(paths, daemonHome);
+    return { repaired: outcome.started, unit: outcome.unit, state: outcome.state };
+  } catch (error) {
+    const current = readLifetimeRecord(paths.lock);
+    if (fenced && current?.pid === lifetime?.pid && current?.start === lifetime?.start) {
+      try { await managerViaDaemon({ paths }, { op: "managers-abort-restart" }); }
+      catch { /* Keep the repair failure as the primary error. */ }
+    }
+    throw error;
+  } finally { exclusion?.release(); }
 }
 
 /** Validate a present service receipt from persistent state without runtime discovery. Return false only when absent. */
@@ -453,11 +530,11 @@ export function preflightInstalledDaemon(paths: Pick<DaemonPaths, "state">, daem
 }
 
 /** The executable and entry pinned by the verified native source, compared with this CLI. */
-export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): { same: boolean; installed: string; installedEntry: string; current: string } {
+export function installedDaemonIdentity(paths: Pick<DaemonPaths, "state">, daemonHome?: string): ReturnType<typeof recordedSourceIdentity> {
   return recordedDaemonIdentity(recordedUnit(paths, daemonHome));
 }
 
-function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): { same: boolean; installed: string; installedEntry: string; current: string } {
+function recordedDaemonIdentity({ receipt, plan }: ReturnType<typeof recordedUnit>): ReturnType<typeof recordedSourceIdentity> {
   return recordedSourceIdentity(receipt, plan.mechanism, () => daemonServeArgv(receipt.daemonHome));
 }
 

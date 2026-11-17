@@ -18,7 +18,7 @@ const root = mkdtempSync(join(tmpdir(), "dup-"));
 const home = join(root, "home"), runtime = join(root, "run"), native = join(root, "native");
 for (const path of [home, runtime, native, join(root, ".cotal"), join(root, "tmp")]) mkdirSync(path, { mode: 0o700 });
 const env: NodeJS.ProcessEnv = {
-  PATH: `${native}:${process.env.PATH}`, HOME: home, USER: "smoke", LOGNAME: "smoke",
+  PATH: `${native}:${(process.env.PATH ?? "").split(":").filter(path => path.startsWith("/")).join(":")}`, HOME: home, USER: "smoke", LOGNAME: "smoke",
   XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_STATE_HOME: join(root, "state"),
   XDG_CACHE_HOME: join(root, "cache"), XDG_RUNTIME_DIR: runtime, TMPDIR: join(root, "tmp"),
   COTAL_HOME: home, COTAL_ALLOW_CHECKOUT_SEED: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off", DO_NOT_TRACK: "1", NO_COLOR: "1",
@@ -106,13 +106,25 @@ const port = (control.address() as AddressInfo).port;
 env.npm_config_registry = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
 const unitStateFile = join(root, "unit-file-state.txt");
 writeFileSync(unitStateFile, "enabled\n", { mode: 0o600 });
-writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nif(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value'){process.stdout.write(fs.readFileSync(${JSON.stringify(unitStateFile)},'utf8'));process.exit(0)}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
-const foreign = process.argv.includes("--foreign");
-const bytes = `[Service]\nExecStart="${process.execPath}" "${foreign ? join(root, "another-install/dist/cotal.js") : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
+writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nif(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value'){process.stdout.write(fs.readFileSync(${JSON.stringify(unitStateFile)},'utf8'));process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager daemon-reload'){process.exit(0)}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+const missingProgram = process.argv.includes("--missing-program");
+const stoppedMissing = missingProgram && process.argv.includes("--stopped");
+const disabledMissing = missingProgram && process.argv.includes("--disabled");
+const changedMissing = missingProgram && process.argv.includes("--changed");
+const foreign = process.argv.includes("--foreign") || missingProgram;
+const foreignEntry = join(root, "another-install/dist/cotal.js");
+if (foreign && !missingProgram) {
+  mkdirSync(dirname(foreignEntry), { recursive: true, mode: 0o700 });
+  writeFileSync(foreignEntry, "// Present, unrelated installation.\n", { mode: 0o600 });
+}
+const bytes = `[Service]\nExecStart="${missingProgram && !process.argv.includes("--missing-entry") ? join(root, "removed-app/cotal-node") : process.execPath}" "${foreign ? foreignEntry : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
 const unitPath = join(root, "config", "systemd", "user", "cotal-daemon.service");
 mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
 writeFileSync(unitPath, bytes, { mode: 0o600 });
 if (!process.argv.includes("--unrecorded")) writeFileSync(join(paths.state, "service-unit.json"), JSON.stringify({ v: 1, unit: "cotal-daemon.service", unitPath, unitSha256: createHash("sha256").update(bytes).digest("hex"), installedAt: new Date().toISOString() }));
+if (stoppedMissing) await old.close();
+if (disabledMissing) writeFileSync(unitStateFile, "disabled\n", { mode: 0o600 });
+if (changedMissing) writeFileSync(unitPath, `${bytes}# changed after install\n`, { mode: 0o600 });
 if (process.argv.includes("--provenance")) {
   const argv = process.argv, execArgv = process.execArgv;
   const marker = process.env.COTAL_DAEMON_NATIVE_SERVICE;
@@ -143,7 +155,7 @@ try {
     env.COTAL_UPDATE_TARGET_VERSION = version;
     env.COTAL_UPDATE_PARENT = String(process.pid);
   }
-  const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") || process.argv.includes("--setup-start-fails") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), ...(process.argv.includes("--setup-foreign") || process.argv.includes("--setup-start-fails") ? ["daemon", "setup", "--space", "absent", "--no-manager", "--wait", "0", "--json"] : ["update", ...(stoppedMissing || process.argv.includes("--self") ? ["--self"] : [])])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   let transition: Promise<void> | undefined;
   child.stdout.on("data", chunk => {
@@ -177,15 +189,35 @@ try {
     if (code === 0 || calls.join(",") !== "/stop,/start" || !output.includes("owned native start denied") || !output.includes("cotal daemon start")) throw new Error("R2-12 native failure or recovery command missing");
     console.log("PASS R2-12 native error and daemon start recovery retained");
   } else {
-  const after = await status();
+  const after = stoppedMissing && (disabledMissing || changedMissing) ? undefined : await status();
   if (process.argv.includes("--childless") && !output.includes("no live child")) throw new Error(`R2-10 childless refusal blocked update: ${output}`);
-  if (foreign) {
+  if (missingProgram) {
+    console.log("missing-program update", JSON.stringify({ code, calls, after, output }));
+    if (disabledMissing || changedMissing) {
+      if (code !== (changedMissing ? 1 : 0) || calls.length || after?.result.version !== (stoppedMissing ? undefined : "0.0.0") || readFileSync(unitPath, "utf8") !== `${bytes}${changedMissing ? "# changed after install\n" : ""}` || !output.includes(changedMissing ? "not the unit this daemon installed" : "service is disabled; missing-program service not repaired or started")) throw new Error("disabled or changed missing-program source was not retained");
+      console.log(`PASS ${changedMissing ? "changed" : "disabled"} missing-program service retained without native changes`);
+    } else {
+      if (code !== 0 || calls.join(",") !== "/stop,/start" || after?.result.version !== version || output.includes("left it stopped") || output.includes("another installation was left running")) throw new Error("missing recorded program was not repaired and verified through shipped update");
+      const receipt = JSON.parse(readFileSync(join(paths.state, "service-unit.json"), "utf8"));
+      const repaired = readFileSync(unitPath, "utf8");
+      if (!repaired.includes(join(repo, "bin/dist/cotal.js")) || repaired.includes("removed-app") || receipt.unitSha256 !== createHash("sha256").update(repaired).digest("hex")) throw new Error("repair did not retain a matching receipt for the current launch coordinates");
+      console.log("PASS missing recorded program repaired through shipped update with matching receipt and answering replacement");
+    }
+  } else if (foreign) {
     console.log("R2-4 foreign update", JSON.stringify({ code, calls, after, output }));
     if (process.argv.includes("--setup-foreign")) {
       if (calls.length || !output.includes("TARGET_NOT_FOUND") || after.result.version !== "0.0.0") throw new Error("R2-4 compatible foreign setup restarted the daemon");
     } else if (calls.length || !output.includes("another-install") || !output.includes("0.0.0")) throw new Error("R2-4 update restarted or failed to identify another installation");
     console.log("PASS R2-4 foreign installation is left running");
     if (!process.argv.includes("--setup-foreign")) {
+      const runningForeign = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update", "--self"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+      let runningForeignOut = "";
+      runningForeign.stdout.on("data", b => runningForeignOut += String(b));
+      runningForeign.stderr.on("data", b => runningForeignOut += String(b));
+      const runningForeignCode = await new Promise(resolve => runningForeign.once("exit", resolve));
+      const stillRunning = await status();
+      if (runningForeignCode !== 0 || calls.length || stillRunning.result.version !== "0.0.0" || !runningForeignOut.includes("another installation was left running") || runningForeignOut.includes("left it stopped") || runningForeignOut.includes("No daemon answers")) throw new Error(`foreign running state was misreported by update --self: ${runningForeignOut}`);
+      console.log("PASS update --self observes the answering foreign daemon before reporting it left running");
       await old.close();
       calls.length = 0;
       const stoppedForeign = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update", "--self"], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -193,7 +225,7 @@ try {
       stoppedForeign.stdout.on("data", b => stoppedForeignOut += String(b));
       stoppedForeign.stderr.on("data", b => stoppedForeignOut += String(b));
       const stoppedForeignCode = await new Promise(resolve => stoppedForeign.once("exit", resolve));
-      if (stoppedForeignCode !== 0 || calls.length || existsSync(paths.socket) || !stoppedForeignOut.includes(`machine daemon: the background service belongs to another Cotal installation (${join(root, "another-install/dist/cotal.js")}). This update left it stopped.`)) {
+      if (stoppedForeignCode !== 0 || calls.length || existsSync(paths.socket) || !stoppedForeignOut.includes(`machine daemon: the background service belongs to another Cotal installation (${join(root, "another-install/dist/cotal.js")}). No daemon answers; this update did not start it.`)) {
         throw new Error(`stopped foreign service was started or not reported: ${JSON.stringify({ stoppedForeignCode, calls, stoppedForeignOut })}`);
       }
       console.log("PASS stopped foreign installation is left stopped and named by update --self");
@@ -246,5 +278,10 @@ noDaemon.stdout.on("data", chunk => noRuntimeOutput += String(chunk));
 noDaemon.stderr.on("data", chunk => noRuntimeOutput += String(chunk));
 await new Promise(resolve => noDaemon.once("exit", resolve));
 console.log("R2-3 output", noRuntimeOutput);
-if (noRuntimeOutput.includes("running manager continuity check:") || !noRuntimeOutput.includes("Built-in connectors")) throw new Error("R2-3 no runtime directory blocked stock update continuity");
-console.log("PASS R2-3 update without runtime directory reaches stock reconciliation");
+if (changedMissing) {
+  if (!noRuntimeOutput.includes("installed daemon preflight:") || noRuntimeOutput.includes("Built-in connectors")) throw new Error("changed receipt admitted connector reconciliation without runtime discovery");
+  console.log("PASS changed receipt refuses without runtime discovery before connector reconciliation");
+} else {
+  if (noRuntimeOutput.includes("running manager continuity check:") || !noRuntimeOutput.includes("Built-in connectors")) throw new Error("R2-3 no runtime directory blocked stock update continuity");
+  console.log("PASS R2-3 update without runtime directory reaches stock reconciliation");
+}

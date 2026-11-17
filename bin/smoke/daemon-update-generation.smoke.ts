@@ -14,7 +14,7 @@ import { executeUpdate, update, updateRuntime, type UpdateRuntime } from "@cotal
 const counted = countedAssert(strictAssert);
 const assert: typeof strictAssert = counted.assert as typeof strictAssert;
 const root = realpathSync(mkdtempSync(join(tmpdir(), "ug-")));
-process.env.XDG_RUNTIME_DIR = mkdtempSync("/tmp/cotal-ug-");
+process.env.XDG_RUNTIME_DIR = mkdtempSync(join(root, "run-"));
 process.env.COTAL_HOME = join(root, "home");
 
 type Reply = Awaited<ReturnType<NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"] & {}>>;

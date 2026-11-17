@@ -2826,6 +2826,59 @@ const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.CO
         }
         if (setup.doc.result?.manager?.state !== "answering") throw new Error("setup did not become launch-ready");
         const manager = setup.doc.result.manager;
+        if (process.argv.includes("--missing-program-repair")) {
+          const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
+          const caller = { versionSkew: (text: string) => text, roster: async () => [] };
+          const pin = { instanceId: manager.instanceId };
+          const launched = await askManager(caller, ON, target.server, "start", { name: "repair_control", agent: "daemon-smoke", events: false, persona: { prompt: "Owned service repair control.", subscribe: [], allowSubscribe: [], allowPublish: [], capabilities: [] } }, target.auth, "owner", 40_000, pin);
+          assert.equal(launched.ok, true, launched.error);
+          const receiptFile = unitReceiptFile(paths);
+          const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+          const missing = readFileSync(receipt.unitPath, "utf8").replace(`ExecStart="${process.execPath}" "${cliEntry}"`, `ExecStart="${join(root, "removed-app/cotal-node")}" "${join(root, "removed-app/cotal.js")}"`);
+          assert.ok(missing.includes("removed-app"));
+          writeFileSync(receipt.unitPath, missing, { mode: 0o600 });
+          writeFileSync(receiptFile, JSON.stringify({ ...receipt, unitSha256: createHash("sha256").update(missing).digest("hex") }), { mode: 0o600 });
+          const calls: string[] = [];
+          const native = join(root, "repair-native");
+          mkdirSync(native, { mode: 0o700 });
+          const control = createHttpServer(async (request, response) => {
+            try {
+              calls.push(request.url!);
+              if (request.url === "/stop") await killAndAwaitExit(child, "SIGTERM");
+              else if (request.url === "/start") child = await startDaemon();
+              else throw new Error("unexpected repair native operation");
+              response.end("done");
+            } catch (error) { response.writeHead(500).end(String(error)); }
+          });
+          const metadata = createHttpServer((_request, response) => response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest: fixtureVersion }, versions: { [fixtureVersion]: { name: "cotal-ai", version: fixtureVersion } } })));
+          await new Promise<void>(resolve => control.listen(0, "127.0.0.1", resolve));
+          await new Promise<void>(resolve => metadata.listen(0, "127.0.0.1", resolve));
+          writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst a=process.argv.slice(2).join(' ');if(a==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}if(a.endsWith('--property=UnitFileState --value')){console.log('enabled');process.exit(0)}if(a==='--user --no-ask-password --no-pager daemon-reload')process.exit(0);const op=process.argv.at(-2);if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${(control.address() as AddressInfo).port}/'+op).then(r=>{if(!r.ok)process.exit(99)}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+          env.PATH = `${native}:${env.PATH}`;
+          const updating = async () => {
+            const updater = spawn(process.execPath, [cliEntry, "update", "--self", "--space", ON], { cwd: root, env: { ...env, npm_config_registry: `http://127.0.0.1:${(metadata.address() as AddressInfo).port}` }, stdio: ["ignore", "pipe", "pipe"] });
+            let output = "";
+            updater.stdout.on("data", b => output += String(b)); updater.stderr.on("data", b => output += String(b));
+            const code = await new Promise<number | null>(resolve => updater.once("exit", resolve));
+            return { code, output };
+          };
+          try {
+            const blocked = await updating();
+            check("MP1 occupied missing-program service refuses before native changes", blocked.code !== 0 && calls.length === 0 && /repair_control|active seat/.test(blocked.output) && readFileSync(receipt.unitPath, "utf8") === missing, blocked);
+            const occupied = await askManager(caller, ON, target.server, "managerStatus", undefined, target.auth, "owner", 10_000, pin);
+            check("MP2 refused repair preserves answering Manager and its seat", occupied.ok && (occupied.data as { agentCount?: number }).agentCount === 1, occupied);
+            const stopped = await askManager(caller, ON, target.server, "stop", { name: "repair_control" }, target.auth, "owner", 10_000, pin);
+            assert.equal(stopped.ok, true, stopped.error);
+            const repaired = await updating();
+            const after = (await cli("status")).doc.result;
+            check("MP3 empty hosted Manager restored by shipped missing-program update", repaired.code === 0 && calls.join(",") === "/stop,/start" && after?.version === fixtureVersion && after.managers?.some((row: any) => row.space === ON && row.state === "answering" && row.pid !== manager.pid), { repaired, after, calls });
+            const next = JSON.parse(readFileSync(receiptFile, "utf8"));
+            check("MP4 repair retains machine registration and matching source receipt", next.installedAt === receipt.installedAt && next.unitSha256 === createHash("sha256").update(readFileSync(next.unitPath)).digest("hex") && !readFileSync(next.unitPath, "utf8").includes("removed-app") && identityOf(ON)?.instanceId === setup.doc.result.instanceId);
+          } finally {
+            await Promise.all([control, metadata].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
+          }
+          return;
+        }
         if (process.argv.includes("--update-stop-agents-repro")) {
           const target = await resolveControlTarget({ space: ON }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
           const caller = { versionSkew: (text: string) => text, roster: async () => [] };

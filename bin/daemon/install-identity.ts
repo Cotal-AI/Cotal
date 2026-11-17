@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { CommandFailure } from "@cotal-ai/workspace/local-observation";
 import type { ServiceMechanism, UnitReceipt } from "./install.js";
 
@@ -11,7 +11,7 @@ export function recordedSourceMarked(receipt: UnitReceipt, mechanism: ServiceMec
 }
 
 /** Compare the verified source's executable and entry with the caller's immutable launch coordinates. */
-export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceMechanism, expected: readonly string[] | (() => readonly string[])): { same: boolean; installed: string; installedEntry: string; current: string } {
+export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceMechanism, expected: readonly string[] | (() => readonly string[])): { same: boolean; missing: boolean; installed: string; installedEntry: string; current: string } {
   const bytes = readFileSync(receipt.unitPath);
   const decode = (value: string) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'").replaceAll("&amp;", "&");
   let argv: string[];
@@ -37,6 +37,11 @@ export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceM
   if (mechanism === "launchd-agent") installed.entry = argv[argv.indexOf("daemon") - 2]!.replace(/daemon-cwd\.js$/, "cotal.js");
   if (mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
   if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
-  const canonical = (path: string) => { try { return realpathSync(path); } catch { return path; } };
-  return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), installed: `${installed.executable} ${installed.entry}`, installedEntry: installed.entry, current: `${current.executable} ${current.entry}` };
+  const missing = (path: string) => {
+    try { statSync(path); return false; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+  };
+  const absent = missing(installed.executable) || missing(installed.entry);
+  const canonical = (path: string) => { try { return realpathSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return path; throw error; } };
+  return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), missing: absent, installed: `${installed.executable} ${installed.entry}`, installedEntry: installed.entry, current: `${current.executable} ${current.entry}` };
 }

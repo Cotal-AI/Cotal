@@ -124,6 +124,17 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
     const result = run(LAUNCHCTL, args);
     if (result.status !== 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `launchctl ${args.join(" ")} did not confirm completion (${result.detail}); it was not retried`, { remedy: "inspect it with launchctl print, then remove the recorded plist with \`cotal daemon uninstall\`" });
   };
+  const unload = (label: string): void => {
+    const id = uid();
+    step(["bootout", `gui/${id}/${label}`]);
+    const deadline = Date.now() + 10_000;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    while (loaded(id, label)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the LaunchAgent ${label} did not unload within 10s; no bootstrap was submitted`, { remedy: "run the same setup command again to start the recorded service" });
+      Atomics.wait(pause, 0, 0, Math.min(100, remaining));
+    }
+  };
   /** Whether the recorded job is loaded, refused unless it is this daemon's label and unchanged plist. */
   const owned = (receipt: UnitReceipt): boolean => {
     // A receipt names only the label and plist this daemon home derives, so it can never steer a
@@ -227,23 +238,17 @@ export function launchAgentService(run: NativeRun, lookup: (label: string) => Da
       const id = uid();
       const isLoaded = owned(receipt);
       if (reload) {
-        if (isLoaded) {
-          step(["bootout", `gui/${id}/${receipt.unit}`]);
-          const deadline = Date.now() + 10_000;
-          const pause = new Int32Array(new SharedArrayBuffer(4));
-          while (loaded(id, receipt.unit)) {
-            const remaining = deadline - Date.now();
-            if (remaining <= 0) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", `the LaunchAgent ${receipt.unit} did not unload within 10s; no bootstrap was submitted`, { remedy: "run the same setup command again to start the recorded service" });
-            Atomics.wait(pause, 0, 0, Math.min(100, remaining));
-          }
-        }
+        if (isLoaded) unload(receipt.unit);
         step(["bootstrap", `gui/${id}`, receipt.unitPath]);
       } else if (isLoaded) step(["kickstart", "-k", `gui/${id}/${receipt.unit}`]);
       else step(["bootstrap", `gui/${id}`, receipt.unitPath]);
     },
     remove(receipt: UnitReceipt, preserveSource = false) {
       const id = uid();
-      if (owned(receipt)) step(["bootout", `gui/${id}/${receipt.unit}`]);
+      if (owned(receipt)) {
+        if (preserveSource) unload(receipt.unit);
+        else step(["bootout", `gui/${id}/${receipt.unit}`]);
+      }
       if (!preserveSource) rmSync(receipt.unitPath, { force: true });
     },
   };

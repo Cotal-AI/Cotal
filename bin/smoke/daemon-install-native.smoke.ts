@@ -51,6 +51,7 @@ import { launchAgentLabel, launchAgentService, renderLaunchAgent, xmlText } from
 import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsArgument } from "../daemon/install-win32.js";
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
+import { recordedSourceIdentity } from "../daemon/install-identity.js";
 
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 
@@ -267,6 +268,22 @@ try {
       ["/bin/launchctl", "print", target], ["/bin/launchctl", "print", target], ["/bin/launchctl", "print", target],
       ["/bin/launchctl", "bootstrap", `gui/${uid}`, plist],
     ]), delayed.calls);
+    {
+      check("removed app launch files are missing, not this installation", recordedSourceIdentity(refreshedReceipt, "launchd-agent", [process.execPath, "/present/cotal.js", "daemon", "serve"]).missing
+        && !recordedSourceIdentity(refreshedReceipt, "launchd-agent", [process.execPath, "/present/cotal.js", "daemon", "serve"]).same);
+      unloading = false; unloadReads = 0;
+      delayed.calls.length = 0;
+      const repairService = launchAgentService(delayed.run, () => originalJob);
+      repairService.remove(refreshedReceipt, true);
+      check("missing-program repair retains old plist until the exact loaded job is absent", unloadReads === 3 && readFileSync(plist, "utf8") === refreshed && delayed.calls.filter(c => c.args[0] === "bootout").length === 1 && !delayed.calls.some(c => ["bootstrap", "enable", "kickstart"].includes(c.args[0]!)));
+      const replacement = renderLaunchAgent({ label, argv: [process.execPath, "/present/cotal.js", "daemon", "serve"], searchPath: "/usr/bin:/bin", workingDirectory: home, logPath: join(state, "daemon.log") });
+      writeFileSync(plist, replacement.text, { mode: 0o600 });
+      const replacementReceipt = { ...receipt, unitSha256: replacement.sha256 };
+      delayed.calls.length = 0;
+      repairService.start(replacementReceipt);
+      check("repair bootstraps rewritten recorded plist without enable or stale kickstart", delayed.calls.at(-1)?.args.join(" ") === `bootstrap gui/${uid} ${plist}` && !delayed.calls.some(c => ["enable", "kickstart"].includes(c.args[0]!)));
+      writeFileSync(plist, refreshed, { mode: 0o600 });
+    }
     const stuck = recorder(() => ({}));
     let timeout: unknown;
     const started = Date.now();

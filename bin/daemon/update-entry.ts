@@ -40,9 +40,7 @@ async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Prom
       }
       const installation = installedDaemonIdentity(paths);
       if (!installation.same) {
-        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
-        started = true;
-        return false;
+        throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation changed while waiting for the installed generation");
       }
       started = true;
       const outcome = await startEnabledInstalled(paths, undefined);
@@ -294,14 +292,18 @@ const composed: Command = { ...command, async run(args) {
   // A version-changing update already waited for the installed generation before it returned.
   // Waiting again prints the same line a second time in this process.
   if (!daemonObserved) {
-    if (args.values.self === true && runtime.generationWaited !== true) {
+    let missing = false;
+    try {
+      const paths = daemonPaths();
+      missing = existsSync(unitReceiptFile(paths)) && installedDaemonIdentity(paths).missing && process.platform !== "win32";
+    } catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NO_RUNTIME_DIR")) throw error; }
+    if ((args.values.self === true || missing) && runtime.generationWaited !== true) {
       await waitForInstalledDaemonGeneration(expectedVersion, {
         lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline) : posixGenerationLifecycle(paths),
       });
     }
     return;
   }
-  if (currentPackages) return;
   const paths = daemonPaths();
   const current = await queryDaemon({ paths });
   if (!current.ok) throw new Error("the installed daemon did not answer after update");
@@ -310,10 +312,15 @@ const composed: Command = { ...command, async run(args) {
     return;
   }
   const installation = installedDaemonIdentity(paths);
+  if (installation.missing && process.platform !== "win32") {
+    await waitForInstalledDaemonGeneration(expectedVersion);
+    return;
+  }
   if (!installation.same) {
     console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
     return;
   }
+  if (currentPackages) return;
   if (current.result.version !== expectedVersion) {
     const hosted = (current.result.managers ?? []).some((manager) => manager.pid !== undefined);
     if (hosted) await managerViaDaemon({ paths }, { op: "managers-prepare-restart" });

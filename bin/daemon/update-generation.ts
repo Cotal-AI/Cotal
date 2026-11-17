@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 import { queryDaemon } from "./client.js";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
-import { installedDaemonIdentity, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, repairMissingInstalledDaemon, unitReceiptFile } from "./install.js";
 import { daemonManagerIntentFile } from "./manager.js";
 
 /** Test hooks: the installed-service check, the daemon query and the wait bound. */
@@ -20,6 +20,8 @@ export interface GenerationWaitProbe {
 }
 
 export async function waitForInstalledDaemonGeneration(version: string, probe: GenerationWaitProbe = {}): Promise<void> {
+  const bound = probe.timeoutMs ?? 120_000;
+  const deadline = Date.now() + bound;
   let paths;
   try { paths = daemonPaths(); }
   catch (error) {
@@ -31,16 +33,31 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     if (!probe.installed()) return;
   } else {
     if (!existsSync(unitReceiptFile(paths))) return;
-    const installation = installedDaemonIdentity(paths);
+    let installation = installedDaemonIdentity(paths);
+    if (installation.missing && process.platform !== "win32") {
+      if (process.env.COTAL_AUTO_UPDATE === "1") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the recorded daemon launch files are missing; run a manual `cotal update --self` from the installation that should own the service");
+      const outcome = await repairMissingInstalledDaemon(paths, undefined, deadline);
+      if (!outcome.repaired) {
+        if (!probe.quiet) console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; missing-program service not repaired or started`);
+        return;
+      }
+      if (!probe.quiet) console.log(`machine daemon: ${outcome.unit}: repaired missing launch files to this Cotal installation`);
+      installation = installedDaemonIdentity(paths);
+    }
     if (!installation.same) {
-      console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      try {
+        const reply = await (probe.query ?? queryDaemon)({ paths });
+        if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the foreign daemon's state could not be read: ${reply.error.message}`);
+        if (!probe.quiet) console.log(`machine daemon: ${installation.installed} runs Cotal ${reply.result.version}; another installation was left running`);
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error;
+        if (!probe.quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). No daemon answers; this update did not start it.`);
+      }
       return;
     }
   }
   const query = probe.query ?? queryDaemon;
-  const bound = probe.timeoutMs ?? 120_000;
   if (!probe.quiet) console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
-  const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
   const lifecycle = await probe.lifecycle?.(paths, deadline);
   try {
