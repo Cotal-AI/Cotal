@@ -131,12 +131,14 @@ try {
   const events = new Set<string>();
   const timeout = setTimeout(() => streamAbort.abort(), 10_000);
   await seed.multicast('live-contract', { channel: 'general' });
-  // The tap enforces the subject's sender, but does not validate the whole wire message. Send a
-  // senderless frame first, then a sender-matched partial payload on the same subject. Seeing the
-  // latter bounds the refusal check without waiting for a frame the tap must drop.
+  // The tap enforces the subject's sender and drops a message whose parts cannot be read (#7060),
+  // but does not validate the rest of the wire message. Send a senderless frame and a sender-matched
+  // frame with no parts first, then a sender-matched partial payload with readable parts on the same
+  // subject. Seeing the last bounds both refusal checks without waiting for frames the tap must drop.
   const rawSubject = chatSubject(space, 'local', 'raw_json', 'general');
   const senderless = JSON.stringify({ probe: 'senderless' });
-  const rawMessage = { from: { id: 'local.raw_json' }, probe: 'partial-message' };
+  const partless = JSON.stringify({ from: { id: 'local.raw_json' }, probe: 'partless' });
+  const rawMessage = { from: { id: 'local.raw_json' }, parts: [{ kind: 'text', text: 'partial-message' }], probe: 'partial-message' };
   const rawPayload = JSON.stringify(rawMessage);
   await new Promise<void>((resolve, reject) => {
     const socket = connectTcp(brokerPort, '127.0.0.1');
@@ -150,6 +152,7 @@ try {
     });
     socket.once('connect', () => socket.write(
       `CONNECT {}\r\nPUB ${rawSubject} ${Buffer.byteLength(senderless)}\r\n${senderless}\r\n` +
+      `PUB ${rawSubject} ${Buffer.byteLength(partless)}\r\n${partless}\r\n` +
       `PUB ${rawSubject} ${Buffer.byteLength(rawPayload)}\r\n${rawPayload}\r\nPING\r\n`,
     ));
   });
@@ -171,6 +174,7 @@ try {
         conforms(schema, value);
         if (name === 'message') {
           assert(value.msg?.probe !== 'senderless', 'The tap must drop the frame without its subject sender');
+          assert(value.msg?.probe !== 'partless', 'The tap must drop the frame whose parts cannot be read');
           if (value.msg?.probe === rawMessage.probe) {
             assert.deepEqual(value.msg, { ...rawMessage, channel: 'general' });
             sawRaw = true;
