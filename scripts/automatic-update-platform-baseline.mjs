@@ -1179,7 +1179,9 @@ export async function matrixCell(options) {
       const retained = report.versionChanging && extensionsBefore.root !== extensionsAfter.root;
       const before = report.sourceInventoryBeforeAction.slice(2);
       const after = retained ? extensionSourceInventory(extensionsBefore.root, report.extensionsBefore) : before;
-      check('earlier extension prefix unchanged', JSON.stringify(before) === JSON.stringify(after), { required: retained, root: extensionsBefore.root, before, after });
+      // A completed update prunes an earlier connector set that nothing uses any more. It is then gone whole; a refused update never touches it.
+      const pruned = retained && update.exit === 0 && after.length > 0 && after.every((entry) => entry.sha256 === null) && !existsSync(extensionsBefore.root);
+      check('earlier extension prefix unchanged', pruned || JSON.stringify(before) === JSON.stringify(after), { required: retained, pruned, root: extensionsBefore.root, before, after });
     }
     if (update.exit !== 0) check('source generation unchanged', JSON.stringify(report.sourceInventoryAfterAction) === JSON.stringify(report.sourceInventoryBeforeAction), { before: report.sourceInventoryBeforeAction, after: report.sourceInventoryAfterAction });
     if (policy) {
