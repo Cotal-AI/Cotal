@@ -104,7 +104,7 @@ export interface Talk {
 }
 
 /** The app's steps that end a session's own refusals. */
-export const APP_WORDS: ChatWords = {
+const APP_WORDS: ChatWords = {
   reopen: (channel) => `/quit ends this session, then enter in #${channel} opens one there`,
   answerOne: "open the sender in the tree, or answer the newest with /reply",
 }
@@ -120,7 +120,7 @@ const opened = new Set<string>()
 /** What the app's session asks for. It reads nothing itself, because the observer reads every
  *  channel. A static or user session may post to the channel it opened on, as `cotal chat <channel>`
  *  may. */
-export function appAdmission(mode: MeshTarget["mode"], label: string, postTo?: string): ChatAdmission {
+function appAdmission(mode: MeshTarget["mode"], label: string, postTo?: string): ChatAdmission {
   const post = postTo === undefined ? [] : [postTo]
   if (mode === "open") return { mode, label, channels: [] }
   if (mode === "auth") return { mode, label, subscribe: [], allowPublish: post }

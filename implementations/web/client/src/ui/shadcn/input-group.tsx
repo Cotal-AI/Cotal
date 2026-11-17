@@ -3,7 +3,6 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 
 import { Button } from "#client/ui/shadcn/button.tsx"
-import { Input } from "#client/ui/shadcn/input.tsx"
 import { Textarea } from "#client/ui/shadcn/textarea.tsx"
 
 function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
@@ -111,22 +110,6 @@ function InputGroupText({ className, ...props }: React.ComponentProps<"span">) {
   )
 }
 
-function InputGroupInput({
-  className,
-  ...props
-}: React.ComponentProps<"input">) {
-  return (
-    <Input
-      data-slot="input-group-control"
-      className={cn(
-        "flex-1 rounded-none border-0 bg-transparent shadow-none ring-0 focus-visible:ring-0 aria-invalid:ring-0 dark:bg-transparent",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
 function InputGroupTextarea({
   className,
   ...props
@@ -148,6 +131,5 @@ export {
   InputGroupAddon,
   InputGroupButton,
   InputGroupText,
-  InputGroupInput,
   InputGroupTextarea,
 }
