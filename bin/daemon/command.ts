@@ -22,6 +22,7 @@
  * and verified; it says nothing about any mesh or Cloud connection.
  */
 import { readFileSync, realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
@@ -509,6 +510,16 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
+    // The helper stays in this unit's cgroup. NotifyAccess=all permits its readiness
+    // message, and the default notification barrier waits for systemd to consume it.
+    const notified = spawnSync("/usr/bin/systemd-notify", ["--ready"], { timeout: 5000, stdio: "pipe" });
+    if (notified.error || notified.status !== 0) {
+      await updates.close();
+      await running.close();
+      throw new Error("could not notify systemd that the daemon is ready");
+    }
+  }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {
