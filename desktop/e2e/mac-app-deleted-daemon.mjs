@@ -124,9 +124,14 @@ let heldProcesses = [];
 let mounted = false;
 const mount = join(root, 'mounted');
 const plist = join(homedir(), 'Library/LaunchAgents/ai.cotal.daemon.plist');
+const { processBirth } = await import(pathToFileURL(resolve('bin/dist/daemon/lifetime.js')).href);
 async function identity(pid, stage) {
   assert(Number.isSafeInteger(pid) && pid > 1);
-  return { pid, process: await call(`${stage} process identity ${pid}`, '/bin/ps', ['-p', String(pid), '-o', 'pid=,lstart=,comm=']), textFiles: await call(`${stage} executable files ${pid}`, '/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'txt', '-Fn']) };
+  const birth = processBirth(pid);
+  const process = await call(`${stage} process identity ${pid}`, '/bin/ps', ['-p', String(pid), '-o', 'pid=,lstart=,comm=']);
+  const textFiles = await call(`${stage} executable files ${pid}`, '/usr/sbin/lsof', ['-a', '-p', String(pid), '-d', 'txt', '-Fn']);
+  assert.equal(processBirth(pid), birth, 'native lifetime changed during identity observation');
+  return { pid, birth, process, textFiles };
 }
 async function ownedService() {
   assert(serviceOwnership, 'no verified service ownership');
@@ -241,11 +246,12 @@ try {
       const sourceBefore = readFileSync(plist, 'utf8');
       const receiptBefore = readFileSync(receiptPath, 'utf8');
       const managerBefore = heldProcesses.find(row => row.pid === manager.pid);
-      assert(managerBefore, 'only the fixture-retained Manager can be suspended');
+      assert(managerBefore?.birth, 'only the fixture-retained Manager with a native birth token can be suspended');
       const current = await identity(manager.pid, 'unreadable Manager before suspension');
       assert.equal(current.process.stdout, managerBefore.process.stdout);
       try {
-        ok(await call('suspend only original Manager for unreadable observation', '/bin/kill', ['-STOP', String(manager.pid)]));
+        assert.equal(processBirth(manager.pid), managerBefore.birth, 'native Manager lifetime must match immediately before STOP');
+        process.kill(manager.pid, 'SIGSTOP');
         const suspended = ok(await call('confirm original Manager suspended state', '/bin/ps', ['-p', String(manager.pid), '-o', 'stat=']));
         assert.match(suspended.stdout.trim(), /^T/, 'the unreadable fault must actually be active');
         const refused = await candidate('unreadable real Manager refuses install repair', ['daemon', 'install', '--json']);
@@ -264,13 +270,20 @@ try {
       } finally {
         const held = await identity(manager.pid, 'resume only original Manager lifetime');
         assert.equal(held.process.stdout, managerBefore.process.stdout, 'never signal a replacement Manager');
-        ok(await call('resume original Manager after unreadable refusal', '/bin/kill', ['-CONT', String(manager.pid)]));
+        assert.equal(processBirth(manager.pid), managerBefore.birth, 'native Manager lifetime must match immediately before CONT');
+        process.kill(manager.pid, 'SIGCONT');
       }
       let answered = false;
       const recoveryDeadline = Date.now() + 20000;
       while (Date.now() < recoveryDeadline) {
-        const ps = await call('old public client verifies Manager usable after unreadable refusal', process.execPath, [oldEntry, 'ps', '--space', report.participant.space, '--json'], { timeout: Math.max(1, Math.min(5000, recoveryDeadline - Date.now())) });
-        if (ps.exit === 0 && !ps.signal && !ps.timedOut) { answered = true; break; }
+        const ps = await call('old public client verifies Manager usable after unreadable refusal', process.execPath, [oldEntry, 'ps', '--on', manager.instanceId, '--space', report.participant.space, '--json'], { timeout: Math.max(1, Math.min(5000, recoveryDeadline - Date.now())) });
+        if (ps.exit === 0 && !ps.signal && !ps.timedOut) {
+          const result = JSON.parse(ps.stdout).result;
+          assert.equal(result.kind, 'seats');
+          assert(result.managers?.some(row => row.instanceId === manager.instanceId && row.state === 'answered'), 'public control must answer from the original instance');
+          assert.equal(processBirth(manager.pid), managerBefore.birth, 'recovery must retain the original Manager lifetime');
+          answered = true; break;
+        }
         await delay(250);
       }
       assert(answered, 'same Manager must accept public control after resuming; no retained fence may dead-end it');
@@ -421,7 +434,12 @@ try {
         assert.equal((await nativeAction('cleanup enable did not load service', ['print'])).exit, 113);
         report.cleanupDisabledOverrideRestored = true;
       }
-    } catch (error) { report.cleanupOwnershipError = publicText(error); process.exitCode = 1; }
+    } catch (error) {
+      report.cleanupOwnershipError = publicText(error);
+      report.cleanupOwnershipUnconfirmed = 'The source or receipt may have changed during a failed repair. No replacement job or process was adopted for cleanup. This cell remains failed, no later cell may run, and disposable runner teardown owns any unknown survivors.';
+      report.cleanupUnverifiedNativeObservation = await call('passive exact-label observation after cleanup authority refusal', '/bin/launchctl', ['print', target]);
+      process.exitCode = 1;
+    }
   } else {
     try {
       const loaded = await call('unconfirmed install service observation', '/bin/launchctl', ['print', target]);
@@ -432,7 +450,7 @@ try {
   try {
     for (const held of heldProcesses) {
     const current = await call(`cleanup pinned process ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
-    if (current.exit === 0 && current.stdout === held.process.stdout) {
+    if (current.exit === 0 && current.stdout === held.process.stdout && held.birth && processBirth(held.pid) === held.birth) {
       try { process.kill(held.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') { report.cleanupSignalError = publicText(error); process.exitCode = 1; } }
       for (let attempt = 0; attempt < 50; attempt++) {
         const remaining = await call(`cleanup process exit ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
