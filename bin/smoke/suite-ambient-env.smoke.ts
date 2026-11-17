@@ -811,7 +811,6 @@ const FROZEN: readonly string[] = [
   "implementations/auth/smoke/down-manifest-usermode.smoke.ts",
   "implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts",
   "implementations/auth/smoke/int2-revoke-hold.smoke.ts",
-  "implementations/auth/smoke/_ps-arm2.smoke.ts",
   "implementations/auth/smoke/ps-operator-path.smoke.ts",
   "implementations/auth/smoke/ps-user-mode.smoke.ts",
   "implementations/cli/smoke/bind-fence-live.smoke.ts",
