@@ -1098,6 +1098,7 @@
     "smoke:run-host-live": "pnpm --filter cotal-ai... build && tsx bin/smoke/run-host-live.smoke.ts",
     "smoke:spawn-lifecycle-state": "tsx bin/smoke/spawn-lifecycle-state.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",
+    "smoke:claude-presence:live": "tsx bin/smoke/claude-presence-live.smoke.ts",
     "smoke:setup-pure:live": "pnpm --filter @cotal-ai/cli... build && tsx bin/smoke/setup-pure-live.smoke.ts",
     "smoke:up-control-plane-guidance:live": "tsx implementations/cli/smoke/up-control-plane-guidance.smoke.ts",
     "smoke:up-stack:live": "tsx bin/smoke/up-stack-live.smoke.ts",
