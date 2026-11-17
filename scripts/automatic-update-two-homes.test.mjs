@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, unlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -81,6 +82,148 @@ test('workflow downloads paired artifacts, runs actual callable and strict summa
 
 test('incomplete or success-only two-home evidence never grades acceptance', () => {
   for (const value of [undefined, {}, { acceptance: true, cleanup: 'both owned stacks stopped', checks: [] }]) assert.throws(() => verifyTwoHomeUpgrade(value));
+});
+
+function fullTwoHomeReport() {
+  const old = '0.166.3', target = '0.166.1003';
+  const packages = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'];
+  const inventory = version => `cotal-ai ${version}\n${['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].map(name => `  ${name} ${version}`).join('\n')}\n`;
+  const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const report = { platform: 'linux', arch: 'x64', environment: { hostedDisposable: true }, acceptance: true, cleanup: 'both owned stacks stopped', old: { version: old }, target: { version: target }, calls: [], checks: [], graphs: {}, readOnly: {}, managers: {}, seat: { pid: 4201, name: 'twohome-proof', lifecycleUid: 'launch-seat-uid' }, oldManagerSeat: { pid: 4202, name: 'twohome-proof', lifecycleUid: 'old-manager-seat-uid' } };
+  const check = name => report.checks.push({ name, passed: true });
+  for (const route of ['up', 'launch', 'old-manager']) {
+    const call = (home, label, args, stdout = '') => {
+      report.calls.push({ route, home, label, args, stdout, stderr: '', code: 0, signal: null });
+      check(`${route} ${home} ${label} exits zero`);
+    };
+    const canonical = `/private/twohomes/${route}/B/config/cotal`, logicalEntry = '/private/twohomes/prefix/lib/node_modules/cotal-ai/dist/cotal.js';
+    const oldRoot = join(dirname(selectionPath(canonical, logicalEntry, old)), 'cotal');
+    const path = selectionPath(canonical, logicalEntry, target), selectedRoot = join(dirname(path), 'cotal');
+    const oldManifest = { extensions: packages.map(name => ({ pkg: `@cotal-ai/${name}`, version: old })) };
+    const oldRows = [['extensions', 'directory'], ['extensions/extensions.json', 'file', hash(oldManifest)], ['extensions/node_modules/@cotal-ai/core', 'link', '/private/old/core']];
+    const selected = [['extensions', 'directory'], ['extensions/extensions.json', 'file', hash({ extensions: packages.map(name => ({ pkg: `@cotal-ai/${name}`, version: target })) })], ['extensions/node_modules/@cotal-ai/core', 'link', '/private/target/core']];
+    report.graphs[route] = { canonical, logicalEntry, oldRoot, version: target, selectionPath: path, selectedRoot, selection: { v: 1, entry: logicalEntry, version: target, root: selectedRoot }, selected, old: [{ path: canonical, before: [['installs', 'directory']], after: [['installs', 'directory']] }, { path: oldRoot, before: structuredClone(oldRows), after: structuredClone(oldRows) }] };
+    report.readOnly[route] = { targetSelectionAbsent: true, oldRoot, oldManifest, oldManifestRaw: JSON.stringify(oldManifest), oldManifestSha256: hash(oldManifest) };
+    report[`${route}ManifestSha256`] = selected[1][2];
+    call('A', 'install old closure', ['install', '-g', `cotal-ai@${old}`]);
+    for (const home of ['A', 'B']) {
+      call(home, 'seed old home', ['ext', 'seed']);
+      call(home, 'old version', ['--version'], inventory(old));
+    }
+    call('B', 'prepare space', ['space', 'create', 'twohomes', '--plain']);
+    call('B', 'start original space', ['up', '--detach']);
+    call('A', route === 'old-manager' ? 'old Manager candidate install setup' : 'self update shared installation', route === 'old-manager' ? ['install', '-g', `cotal-ai@${target}`] : ['update', '--self']);
+    call('A', 'updated home version', ['--version'], inventory(target));
+    call('B', 'stale home version before command', ['--version'], `cotal-ai ${target}\n`);
+    const launchLabel = route === 'up' ? 'ordinary next up' : route === 'launch' ? 'ordinary next agent launch' : 'ordinary old Manager agent launch';
+    call('B', launchLabel, route === 'up' ? ['up', '--detach'] : ['spawn', '--foreground', '--agent', 'two-home-seat', '--name', 'twohome-proof', '--on', 'old-manager-instance']);
+    call('B', 'home version after ordinary command', ['--version'], inventory(target));
+    call('B', 'home status after command', ['status', '--json'], JSON.stringify({ outcome: 'ok', completeness: 'complete' }));
+    call('B', 'final owned stack down', ['down', '--yes']);
+    for (const name of ['home has no recovery obligation', 'target selected root is isolated', 'old graphs byte and link unchanged', 'owned stack cleanup confirmed']) check(`${route} ${name}`);
+    if (route === 'old-manager') {
+      const identity = { version: old, instanceId: 'old-manager-instance', pid: 4100, birth: '847213', native: { pid: 4100, token: '847213' } };
+      report.managers[route] = { before: structuredClone(identity), after: structuredClone(identity) };
+      for (const when of ['before', 'after']) call('B', `old Manager served identity ${when}`, ['--input-type=module', '-e', '/* installed manager control probe */'], JSON.stringify({ version: old, instanceId: identity.instanceId, native: identity.native }));
+      call('B', 'old Manager remains answering', ['ps', '--json'], '{"outcome":"ok"}');
+      for (const name of ['starts exact old Manager', 'real old fixture joined', 'version PID and birth unchanged']) check(`old-manager ${name}`);
+    }
+  }
+  return report;
+}
+
+test('full modern selected-root evidence accepts all three routes with read-only CLI-only output', () => {
+  const report = fullTwoHomeReport();
+  assert.deepEqual(verifyTwoHomeUpgrade(report, { platform: 'linux', hosted: true }), { acceptance: true, routes: 3, checks: report.checks.length });
+});
+
+test('full report rejects missing or forged read-only inventory and changed old graph links on every route', () => {
+  for (const route of ['up', 'launch', 'old-manager']) {
+    const cases = [
+      [r => { delete r.readOnly[route]; }, /read-only old selection evidence missing/],
+      [r => { r.readOnly[route].targetSelectionAbsent = false; }, /read-only old selection evidence missing/],
+      [r => { delete r.readOnly[route].oldManifestRaw; }, /old manifest raw bytes missing/],
+      [r => { r.readOnly[route].oldManifestRaw = {}; }, /old manifest raw bytes missing/],
+      [r => { r.readOnly[route].oldManifestRaw += '\n'; }, /old manifest raw hash differs/],
+      [r => {
+        const evidence = r.readOnly[route];
+        evidence.oldManifestRaw = JSON.stringify({ extensions: [] });
+        evidence.oldManifestSha256 = createHash('sha256').update(evidence.oldManifestRaw).digest('hex');
+      }, /parsed old manifest differs from raw bytes/],
+      [r => { delete r.readOnly[route].oldManifest; }, /parsed old manifest differs from raw bytes/],
+      [r => { r.readOnly[route].oldManifest.extensions.pop(); }, /parsed old manifest differs from raw bytes/],
+      [r => { delete r.readOnly[route].oldManifest.extensions[0].version; }, /parsed old manifest differs from raw bytes/],
+      [r => { r.readOnly[route].oldManifest.extensions[0].version = r.target.version; }, /parsed old manifest differs from raw bytes/],
+      ...[
+        manifest => { manifest.extensions.pop(); },
+        manifest => { delete manifest.extensions[0].version; },
+        manifest => { manifest.extensions[0].version = 'forged-version'; },
+      ].map(change => [r => {
+        const evidence = r.readOnly[route];
+        change(evidence.oldManifest);
+        evidence.oldManifestRaw = JSON.stringify(evidence.oldManifest);
+        evidence.oldManifestSha256 = createHash('sha256').update(evidence.oldManifestRaw).digest('hex');
+      }, /every old built-in/]),
+      [r => {
+        const evidence = r.readOnly[route];
+        evidence.oldManifestRaw += '\n';
+        evidence.oldManifestSha256 = createHash('sha256').update(evidence.oldManifestRaw).digest('hex');
+      }, /old manifest raw inventory differs/],
+      [r => { delete r.readOnly[route].oldManifestSha256; }, /old manifest raw hash differs/],
+      [r => { r.readOnly[route].oldManifestSha256 = 'f'.repeat(64); }, /old manifest raw hash differs/],
+      [r => { r.calls.find(call => call.route === route && call.label === 'home status after command').stdout = JSON.stringify({ outcome: 'ok', completeness: 'partial' }); }, /final status is not complete and healthy/],
+      [r => { r.calls.find(call => call.route === route && call.label === 'home status after command').stdout = JSON.stringify({ outcome: 'error', completeness: 'complete' }); }, /final status is not complete and healthy/],
+      [r => { r.graphs[route].old[1].after[2][2] = '/private/forged/core'; }, /bytes or links changed/],
+      [r => { r.calls = r.calls.filter(call => call.route !== route || call.label !== 'final owned stack down'); }, /missing successful final owned stack down/],
+    ];
+    for (const [change, expected] of cases) {
+      const report = fullTwoHomeReport(); change(report);
+      assert.throws(() => verifyTwoHomeUpgrade(report), expected, route);
+    }
+  }
+});
+
+test('full report rejects failed or signalled nonrequired command receipts', () => {
+  for (const failure of [{ code: 1, signal: null }, { code: 0, signal: 'SIGTERM' }]) {
+    const report = fullTwoHomeReport();
+    report.calls.push({ route: 'extra', home: 'A', label: 'nonrequired diagnostic', args: ['diagnostic'], stdout: '', stderr: '', ...failure });
+    assert.throws(() => verifyTwoHomeUpgrade(report), /every recorded two-home command must succeed/);
+  }
+});
+
+test('full report requires served old Manager probes, retained identity, pinned launch and joined seats', () => {
+  const cases = [
+    [r => { r.calls = r.calls.filter(call => call.label !== 'old Manager served identity before'); }, /served Manager probe missing/],
+    [r => { r.calls = r.calls.filter(call => call.label !== 'old Manager served identity after'); }, /served Manager probe missing/],
+    [r => { r.managers['old-manager'].before.pid = 0; }, /old Manager identity missing/],
+    [r => { r.managers['old-manager'].before.birth = ''; }, /old Manager identity missing/],
+    [r => { r.managers['old-manager'].after.pid++; }, /old Manager identity changed/],
+    [r => { r.managers['old-manager'].after.birth = 'different-birth'; }, /old Manager identity changed/],
+    [r => { r.managers['old-manager'].before.version = r.target.version; }, /old Manager identity missing/],
+    [r => { r.calls.find(call => call.label === 'old Manager served identity after').stdout = JSON.stringify({ version: r.target.version, instanceId: 'old-manager-instance' }); }, /served Manager version differs/],
+    [r => { r.calls.find(call => call.label === 'ordinary old Manager agent launch').args = ['spawn', '--on', 'other-instance']; }, /launch not pinned/],
+    [r => { r.calls.find(call => call.label === 'ordinary old Manager agent launch').args = ['spawn']; }, /launch not pinned/],
+    [r => { delete r.oldManagerSeat; }, /fixture join missing/],
+    [r => { delete r.seat; }, /real no-sign-in seat join required/],
+  ];
+  for (const [change, expected] of cases) {
+    const report = fullTwoHomeReport(); change(report);
+    assert.throws(() => verifyTwoHomeUpgrade(report), expected);
+  }
+  for (const when of ['before', 'after']) {
+    for (const change of [native => { native.pid++; }, native => { native.token = 'forged-birth'; }]) {
+      const report = fullTwoHomeReport();
+      const receipt = report.calls.find(call => call.label === `old Manager served identity ${when}`);
+      const served = JSON.parse(receipt.stdout);
+      change(served.native);
+      receipt.stdout = JSON.stringify(served);
+      assert.throws(() => verifyTwoHomeUpgrade(report), /served Manager native lifetime differs/);
+    }
+  }
+  const missingNative = fullTwoHomeReport();
+  for (const when of ['before', 'after']) delete missingNative.managers['old-manager'][when].native;
+  assert.throws(() => verifyTwoHomeUpgrade(missingNative), /native Manager record differs/);
+  assert.throws(() => verifyTwoHomeUpgrade(fullTwoHomeReport(), { platform: 'darwin' }), /native platform differs/);
 });
 
 test('a Linux receipt cannot qualify a Darwin coordinate or pretend to be hosted', () => {

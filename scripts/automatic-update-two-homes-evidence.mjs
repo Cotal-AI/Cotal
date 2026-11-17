@@ -34,6 +34,7 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
   assert(Array.isArray(report.checks) && report.checks.length >= 60 && report.checks.every(check => check.passed === true), 'all two-home checks must be present and passing');
   assert(report.old?.version && report.target?.version && report.old.version !== report.target.version, 'distinct old and target releases required');
   assert.equal(new Set(report.checks.map(check => check.name)).size, report.checks.length, 'duplicate two-home assertion');
+  assert(report.calls.every(call => call.code === 0 && call.signal === null), 'every recorded two-home command must succeed');
   const identities = report.calls.map(call => `${call.route}/${call.home}/${call.label}`);
   assert.equal(new Set(identities).size, identities.length, 'duplicate two-home command receipt');
   for (const route of ['up', 'launch', 'old-manager']) {
@@ -44,7 +45,16 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
     assert(report.checks.some(check => check.name === `${route} home has no recovery obligation` && check.passed === true), `${route}: recovery obligation check missing`);
     assert(stale.stdout.startsWith(`cotal-ai ${report.target.version}\n`) && !stale.stdout.includes('update --self'), `${route}: wrong stale-home version or remedy`);
     const inventory = (output, version) => ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
-    assert(inventory(stale.stdout, report.old.version), `${route}: stale home must carry every old built-in`);
+    const readOnly = report.readOnly?.[route];
+    assert(readOnly?.targetSelectionAbsent === true && readOnly.oldRoot === report.graphs?.[route]?.oldRoot, `${route}: read-only old selection evidence missing`);
+    assert(typeof readOnly.oldManifestRaw === 'string', `${route}: old manifest raw bytes missing`);
+    assert.equal(createHash('sha256').update(readOnly.oldManifestRaw).digest('hex'), readOnly.oldManifestSha256, `${route}: old manifest raw hash differs`);
+    assert.deepEqual(JSON.parse(readOnly.oldManifestRaw), readOnly.oldManifest, `${route}: parsed old manifest differs from raw bytes`);
+    const oldEntries = readOnly.oldManifest?.extensions;
+    const builtins = ['@cotal-ai/connector-claude-code', '@cotal-ai/connector-opencode', '@cotal-ai/connector-codex', '@cotal-ai/connector-hermes', '@cotal-ai/connector-jcode', '@cotal-ai/pi', '@cotal-ai/web'];
+    assert(Array.isArray(oldEntries) && builtins.every(pkg => oldEntries.some(entry => entry.pkg === pkg && entry.version === report.old.version)), `${route}: old selected inventory must carry every old built-in`);
+    assert(inventory(stale.stdout, report.old.version) || readOnly.oldRoot !== report.graphs[route].canonical && stale.stdout === `cotal-ai ${report.target.version}\n`, `${route}: wrong read-only version output`);
+    assert.equal(readOnly.oldManifestSha256, report.graphs[route].old.find(row => row.path === readOnly.oldRoot)?.before.find(row => row[0] === 'extensions/extensions.json')?.[2], `${route}: old manifest raw inventory differs`);
     const updatedHome = calls.find(call => call.home === 'A' && call.label === 'updated home version');
     assert(inventory(updatedHome.stdout, report.target.version) && !updatedHome.stdout.includes('Reconciliation pending'), `${route}: updated A home is not reconciled`);
     verifySelectedGraphs(report.graphs?.[route], report.target.version);
@@ -56,6 +66,8 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
       const current = calls.find(call => call.home === 'B' && call.label === 'home version after ordinary command');
       assert(current?.code === 0 && inventory(current.stdout, report.target.version) && !current.stdout.includes('Reconciliation pending'), `${route}: home remains pending or skewed`);
     }
+    const health = JSON.parse(calls.find(call => call.home === 'B' && call.label === 'home status after command').stdout);
+    assert(health.outcome === 'ok' && health.completeness === 'complete', `${route}: final status is not complete and healthy`);
     if (route === 'old-manager') {
       assert(calls.some(call => call.home === 'B' && call.label === 'old Manager remains answering' && call.code === 0), 'old Manager must remain answering');
       for (const name of ['old-manager starts exact old Manager', 'old-manager real old fixture joined', 'old-manager version PID and birth unchanged'])
@@ -69,6 +81,8 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
         const served = JSON.parse(receipt.stdout);
         assert.equal(served.version, identity[key].version, 'served Manager version differs');
         assert.equal(served.instanceId, identity[key].instanceId, 'served Manager instance differs');
+        assert(served.native?.pid === identity[key].pid && served.native.token === identity[key].birth, 'served Manager native lifetime differs');
+        assert.deepEqual(served.native, identity[key].native, 'native Manager record differs');
       }
       const launch = calls.find(call => call.label === 'ordinary old Manager agent launch');
       assert.equal(launch.args[launch.args.indexOf('--on') + 1], identity.before.instanceId, 'old Manager launch not pinned');
