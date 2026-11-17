@@ -26,7 +26,7 @@ import { spawnSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { CommandFailure, logicalExecutionEntry, codeSpan, shellPath, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
 import { cloudAuthUrl, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
@@ -42,6 +42,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { readReceipt } from "./install-receipt.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -166,6 +167,13 @@ async function status(args: ParsedArgs): Promise<void> {
   try {
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
+    if (process.platform === "linux" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+      const receipt = readReceipt(paths);
+      if (receipt) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
+        remedy: `inspect the recorded service with ${codeSpan(`systemctl --user status -- ${shellPath(receipt.unit)}`)}; start it with ${codeSpan(daemonCommandCopy("start", home))}. If its executable is missing, run ${codeSpan(daemonCommandCopy("install", home))} for repair guidance`,
+        native: { code: e.code },
+      });
+    }
     if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
         remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
