@@ -84,7 +84,8 @@ const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...arg
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
 assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published'].includes(repairCommand), 'unsupported repair entry command');
-if (!candidateEntry && repairCommand !== 'self-update') assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
+if (!candidateEntry && repairCommand !== 'self-update' && !repairCommand.startsWith('crash-')) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
+if (repairCommand.startsWith('crash-')) assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE, 'crash proof requires a real guarded installed source closure');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
 report.repairCommand = repairCommand;
 let candidateEnv = env;
@@ -184,6 +185,17 @@ try {
     candidateEntry = join(installedPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
     assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.sourceVersion);
   }
+  if (repairCommand.startsWith('crash-')) {
+    const { candidateRegistry: openCandidateRegistry } = await import(pathToFileURL(resolve('scripts/automatic-update-platform-baseline.mjs')).href);
+    candidateRegistry = await openCandidateRegistry(resolve(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE), 'A', 'https://registry.npmjs.org/');
+    assert.equal(candidateRegistry.identity.source, process.env.GITHUB_SHA, 'guarded crash closure must bind this exact source');
+    report.installedCrashCandidate = candidateRegistry.identity;
+    const installedPrefix = join(root, 'candidate-install');
+    candidateEnv = { ...env, npm_config_registry: candidateRegistry.url, npm_config_prefix: installedPrefix };
+    ok(await npm('install real guarded candidate before crash measurement', ['install', '--global', '--prefix', installedPrefix, `cotal-ai@${candidateRegistry.identity.version}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
+    candidateEntry = join(installedPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
+    assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.version);
+  }
   mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
   const { prepareUpdateParticipant } = await import(pathToFileURL(resolve('implementations/auth/smoke/update-participant.fixture.ts')).href);
   closeParticipant = await prepareUpdateParticipant({ env, project, cotalHome, report });
@@ -256,7 +268,9 @@ try {
       const hostingBefore = readFileSync(hostingPath, 'utf8');
       const phase = repairCommand.slice('crash-'.length);
       const version = report.candidate.version.split(/\r?\n/, 1)[0].replace('cotal-ai ', '');
+      let verifiedNextSource;
       report.interruptionEvents = [];
+      assert.equal(version, report.installedCrashCandidate.version);
       assert(!readServiceRepair(join(cotalHome, 'daemon')), 'no preexisting repair intent can count as this child capture');
       const interrupted = await interruptRepairAtPhase({
         file: process.execPath, args: [candidateEntry, 'daemon', 'install', '--json'], cwd: project, env: candidateEnv,
@@ -274,6 +288,15 @@ try {
           assert(!intent.nextSource.includes(`${app}/`));
           assert(intent.nextSource.includes(candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js')));
           assert.deepEqual(intent.argv, [process.execPath, '--max-semi-space-size=1', candidateEntry, 'daemon', 'serve'], 'real repair destination must match this direct installed CLI invocation');
+          if (intent.nextSource !== verifiedNextSource) {
+            const converted = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '--', '-'], { input: intent.nextSource, env, encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
+            assert(!converted.error && !converted.signal && converted.status === 0, 'real next source must parse as a native plist');
+            const parsed = JSON.parse(converted.stdout);
+            assert.equal(parsed.Program, undefined, 'no separate Program may override the expected executable');
+            assert.equal(parsed.Label, receipt.unit);
+            assert.deepEqual(parsed.ProgramArguments, [process.execPath, '--max-semi-space-size=1', candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js'), homedir(), 'daemon', 'serve']);
+            verifiedNextSource = intent.nextSource;
+          }
           assert(intent.hostedSpaces.includes(report.participant.space));
           if (intent.phase === 'published') {
             assert.equal(actualSource, intent.nextSource);
