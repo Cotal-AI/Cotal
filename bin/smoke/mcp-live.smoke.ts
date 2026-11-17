@@ -17,7 +17,8 @@ for (const [key, folder] of Object.entries({ HOME: "home", XDG_CONFIG_HOME: "con
   mkdirSync(env[key]!, { recursive: true, mode: 0o700 });
 }
 Object.assign(env, { COTAL_TELEMETRY: "off", NO_COLOR: "1" });
-Object.assign(process.env, { COTAL_HOME: env.COTAL_HOME, TMPDIR: env.TMPDIR });
+process.env.COTAL_HOME = env.COTAL_HOME;
+process.env.TMPDIR = env.TMPDIR;
 const bin = resolve(import.meta.dirname, "../dist/cotal.js");
 const {
   CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, setupSpaceStreams, seedChannelRegistry,
