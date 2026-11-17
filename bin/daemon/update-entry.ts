@@ -20,10 +20,11 @@ import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 
-/** A reconcile child of a current parent: that parent waits after the child and prints the line. */
+/** A reconcile child of a parent that said it waits after the child and prints the line. A parent
+ *  from before that marker never waits there, so its child keeps the line. */
 export function currentParentWaits(env: NodeJS.ProcessEnv, parentPid: number, journaled: boolean): boolean {
   const parent = env.COTAL_UPDATE_PARENT;
-  return parent !== undefined && /^\d+$/.test(parent) && Number(parent) === parentPid && journaled;
+  return env.COTAL_UPDATE_PARENT_WAITS === "1" && parent !== undefined && /^\d+$/.test(parent) && Number(parent) === parentPid && journaled;
 }
 
 async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Promise<{ poll(): Promise<boolean | void>; close(): void }> {

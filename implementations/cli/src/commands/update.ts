@@ -76,6 +76,10 @@ import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
 
 const UPDATE_TARGET_ENV = "COTAL_UPDATE_TARGET_VERSION";
 const UPDATE_PARENT_ENV = "COTAL_UPDATE_PARENT";
+/** Set by a parent that waits for the installed daemon generation after its reconcile child and prints
+ *  the wait line. A child prints the line itself unless its parent set this: a parent from before this
+ *  marker never waits there, so the line would be lost. */
+export const UPDATE_PARENT_WAITS_ENV = "COTAL_UPDATE_PARENT_WAITS";
 
 export const updateFlags: readonly FlagSpec[] = [
   { name: "auto", type: "boolean", description: "show automatic updates, or set them with --auto off|on" },
@@ -333,7 +337,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           const entry = rt.verifyGlobalEntry(root, version);
           if (realpathSync(entry) !== realpathSync(entryScript())) throw new Error("paused repair must run from the verified installed CLI");
           snapshot.restore();
-          const env = { ...rt.env, [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
+          const env = { ...rt.env, [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
           const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
           if (reconciled.status !== 0) throw new Error(failure(reconciled));
           if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
@@ -363,7 +367,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
           entry = rt.verifyGlobalEntry(root, record.previous);
         }
         snapshot.restore();
-        const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid) };
+        const env = { ...rt.env, [UPDATE_TARGET_ENV]: record.previous, [UPDATE_PARENT_ENV]: String(rt.pid), ...(!startup && rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
         const reconciled = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [entry, "update"], env, true);
         if (reconciled.status !== 0) throw new Error(failure(reconciled));
         if (!startup && rt.env.COTAL_AUTO_UPDATE !== "1") {
@@ -628,6 +632,7 @@ async function reconcileCurrent(
       };
       delete env[UPDATE_TARGET_ENV];
       delete env[UPDATE_PARENT_ENV];
+      delete env[UPDATE_PARENT_WAITS_ENV];
       const extensionStarted = Date.now();
       const result = rt.spawn(bin, [...argv, "ext", "__update-add", entry.pkg, spec], env);
       rt.out(`✓ extension ${entry.pkg} install finished (${((Date.now() - extensionStarted) / 1000).toFixed(1)} s)`);
@@ -1277,6 +1282,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
     ...(prefix ? { npm_config_prefix: prefix } : {}),
     [UPDATE_TARGET_ENV]: targetVersion,
     [UPDATE_PARENT_ENV]: String(rt.pid),
+    ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}),
   };
   delete env[EXT_UPDATE_PARENT_ENV];
   rt.out(`Reconciling installed cotal-ai@${targetVersion}`);
@@ -1310,7 +1316,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
 
   async function reconcileVersion(version: string): Promise<boolean> {
     const verified = execution ? (execution.verify(version), version === targetVersion ? execution.entry : join(root, "cotal-ai", "dist/cotal.js")) : rt.verifyGlobalEntry(root, version);
-    const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid) };
+    const repairEnv: NodeJS.ProcessEnv = { ...rt.env, ...(prefix ? { npm_config_prefix: prefix } : {}), [UPDATE_TARGET_ENV]: version, [UPDATE_PARENT_ENV]: String(rt.pid), ...(rt.env.COTAL_AUTO_UPDATE !== "1" ? { [UPDATE_PARENT_WAITS_ENV]: "1" } : {}) };
     delete repairEnv[EXT_UPDATE_PARENT_ENV];
     const result = await rt.spawnGlobal(root, "reconcile", rt.nodePath, [verified, "update", ...targetArgv(target)], repairEnv, true);
     if (result.stderr) rt.stderr(result.stderr);
