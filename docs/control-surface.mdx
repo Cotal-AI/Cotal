@@ -35,6 +35,11 @@ The request subject also binds the caller's `owner`, `actor`, and lifecycle `uid
 The broker checks that identity in the subject grammar. Events, timers, sessions, and the journal support longer operations.
 See the [route and verb reference](control-discovery.mdx#request-routes).
 
+The principal route, `prin`, carries the commands an agent serves about itself, addressed by its own principal, lifecycle, and process.
+It needs no registration. The agent's own credential serves it, and the caller's credential says whether it may call with the `owner` or the `grant` word.
+The `agent` endpoint on it lets an authorized session read and answer the prompts an agent's harness raises.
+See [SPEC §13.21](../SPEC.md#1321-principal-route) and [§13.22](../SPEC.md#1322-the-agent-endpoint).
+
 ## Lifecycle identity [#lifecycle-identity]
 
 A principal `owner.actor` is a reusable routing alias. Despawn frees the actor name for later reuse.
