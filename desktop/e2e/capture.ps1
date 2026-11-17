@@ -44,18 +44,31 @@ public class CotalWindow {
     }, IntPtr.Zero)) throw new InvalidOperationException("EnumWindows failed during passive census.");
     return rows.ToArray();
   }
+  public static long SelectApplicationWindow(Observation[] rows) {
+    long selected = 0;
+    int count = 0;
+    foreach (var row in rows) {
+      int width = row.right - row.left, height = row.bottom - row.top;
+      if (row.windowClass == "Tauri Window" && row.boundsRead
+          && width >= 560 && height >= 500 && width <= 4000 && height <= 4000) {
+        selected = row.handle;
+        count++;
+      }
+    }
+    if (count != 1) throw new InvalidOperationException("Expected one visible same-process Tauri application window; found " + count + ".");
+    return selected;
+  }
 }
 '@
-$app = Get-Process -Id $AppPid
-# Observation only. MainWindowHandle below remains the existing selector.
+Get-Process -Id $AppPid | Out-Null
 $windowCensus = @()
 $windowCensusError = $null
 try { $windowCensus = @([CotalWindow]::VisibleWindows([uint32]$AppPid)) }
 catch { $windowCensusError = $_.Exception.Message }
 @{ at=[DateTime]::UtcNow.ToString('o'); pid=$AppPid; windows=$windowCensus; error=$windowCensusError } |
   ConvertTo-Json -Depth 5 -Compress | Add-Content -Encoding utf8 ([IO.Path]::ChangeExtension($Destination, '.windows.jsonl'))
-$window = $app.MainWindowHandle
-if ($window -eq [IntPtr]::Zero) { throw 'The app has no visible main window.' }
+if ($windowCensusError) { throw "The app window census failed: $windowCensusError" }
+$window = [IntPtr][CotalWindow]::SelectApplicationWindow($windowCensus)
 [CotalWindow]::ShowWindow($window, 9) | Out-Null
 [CotalWindow]::SetForegroundWindow($window) | Out-Null
 Start-Sleep -Milliseconds 500
