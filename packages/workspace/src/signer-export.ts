@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { acquireLock, stripSpaceAuth, writeSecretFileAtomic, writeSecretFileCreateOnly, type FlagSpec, type SpaceAuth } from "@cotal-ai/core";
+import { dirname, parse, resolve, sep } from "node:path";
+import { acquireLock, ensureDirNoSymlink, stripSpaceAuth, writeSecretFileAtomic, writeSecretFileCreateOnly, type FlagSpec, type SpaceAuth } from "@cotal-ai/core";
 import { authDir, findCotalRoot, getSoleSpaceAuth, getSpaceAuth, hasUserAuthState } from "./auth-paths.js";
 import { canonicalRoot } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget } from "./mesh-target.js";
@@ -42,12 +42,9 @@ function replacementIsSigner(bytes: Buffer, auth: SpaceAuth): void {
 export async function exportSpaceSigner(values: SignerExportInput, cwd = process.cwd()) {
   validateSignerExportInput(values);
   const path = resolve(values.out as string), folder = dirname(path);
-  // No folder is created for signing material, so a missing one is refused by name.
-  try { lstatSync(folder); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    throw new CommandFailure("refused", "TARGET_NOT_FOUND", `the --out folder ${folder} does not exist; nothing was written`, { target: { path }, remedy: `create it privately with (umask 077 && mkdir -p ${folder}), or choose a file in an existing private folder` });
-  }
+  const volume = parse(folder).root;
+  try { ensureDirNoSymlink(volume, ...folder.slice(volume.length).split(sep).filter(Boolean)); }
+  catch { throw new CommandFailure("refused", "PERMISSION_DENIED", "the --out folder could not be created or inspected safely; no signer was written", { target: { path }, remedy: "choose a private output folder with no symbolic links" }); }
   protectedLocalDirectory(folder);
   const lock = acquireLock(`${path}.cotal-export.lock`, { label: "signer export", waitMs: 0, onTimeout: () => new CommandFailure("refused", "CONFLICT", "another writer holds this signer export path") });
   try {
