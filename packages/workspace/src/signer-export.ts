@@ -22,7 +22,7 @@ export function validateSignerExportInput(values: SignerExportInput): void {
 }
 /** `open` is true only for a registration that records the space as open, never for missing trust. */
 function exportTarget(cwd: string, space?: string): { root: string; space: string; open?: boolean } {
-  try { const selected = resolveMeshTarget(cwd, { space, readOnly: true }); return { root: selected.root, space: selected.space, open: selected.mode === "open" && selected.origin !== undefined }; }
+  try { const selected = resolveMeshTarget(cwd, { space, readOnly: true, allowStoppedLocal: true }); return { root: selected.root, space: selected.space, open: selected.mode === "open" && selected.origin !== undefined }; }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     if (error.code === "not-started" && error.details.root && error.details.space) return { root: error.details.root, space: error.details.space };

@@ -90,6 +90,8 @@ export interface MeshTarget {
 export interface ResolveFlags {
   /** Diagnostic/preview resolution must retain a stale registration rather than repair it. */
   readOnly?: boolean;
+  /** File-only signing may use this project's retained broker configuration without connecting. */
+  allowStoppedLocal?: boolean;
   /** `--server <url>` — raw broker escape hatch. */
   server?: string;
   /** `--space <name>` — pick a specific running mesh from the registry. */
@@ -1128,6 +1130,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // is merely stopped: the stack runs from that folder, so `cotal up` here would refuse the name
       // or take it over rather than start what the caller asked for. Name that folder instead.
       const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
+      if (flags.allowStoppedLocal && named !== undefined && !elsewhere) return localTarget(root, retained.server, "local-space", flags.readOnly);
       throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).
