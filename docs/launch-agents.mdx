@@ -102,6 +102,10 @@ For example, `cotal ext add @cotal-ai/orca` installs the Orca provider.
 Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`.
 Runtime names come from the registry. A missing provider or application is refused rather than replaced with another runtime.
 
+The tmux runtime opens each seat in its own window of the space's `cotal-<space>` session.
+When a launch creates that session, Cotal closes the shell window tmux opens it with, so the session ends with its last seat, and tmux's server exits when it holds no other session.
+A session that was already there keeps its other windows.
+
 On Linux, a moved socket belonging to a live tmux server makes the session check fail, even when its path contains repeated whitespace.
 Cotal leaves that server's sessions in place.
 
