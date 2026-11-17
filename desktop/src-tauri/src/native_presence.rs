@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager};
 #[cfg(not(windows))]
 use tauri_plugin_autostart::ManagerExt;
 
-pub struct Presence(pub Mutex<Preferences>);
+pub struct Presence(pub Mutex<Preferences>, pub Option<String>);
 
 #[cfg(all(feature = "e2e", debug_assertions))]
 pub fn login_receipt(stage: &'static str, source: &'static str, requested: Option<bool>, ok: Option<bool>, observed: Option<bool>) {
@@ -30,12 +30,9 @@ fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("presence.json"))
 }
 
-pub fn load(app: &AppHandle) -> Result<Preferences, String> {
-    match fs::read(preference_path(app)?) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| "Desktop preferences are invalid. No login setting was changed.".into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Preferences::default()),
-        Err(e) => Err(e.to_string()),
-    }
+pub fn load(app: &AppHandle) -> Result<Presence, String> {
+    let (preferences, notice) = crate::presence::load_preferences(&preference_path(app)?)?;
+    Ok(Presence(Mutex::new(preferences), notice))
 }
 
 fn save(app: &AppHandle, preferences: &Preferences) -> Result<(), String> {
@@ -270,6 +267,7 @@ fn is_login_enabled(app: &AppHandle) -> Result<bool, String> {
 }
 
 fn apply_login(app: &AppHandle, preferences: &Preferences, _source: &'static str) -> Result<(), String> {
+    if preferences.recovered { return Ok(()); }
     let enabled = preferences.login_enabled() && !transient(app)?;
     let observed = is_login_enabled(app);
     #[cfg(all(feature = "e2e", debug_assertions))]
@@ -319,20 +317,21 @@ pub struct PresenceView {
     relocation_offer: bool,
     pin_offer: bool,
     pin_message: String,
+    preference_notice: Option<String>,
 }
 
 #[tauri::command]
 pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
-    let (connected, pin_offered, relocation_declined) = {
+    let (connected, pin_offered, relocation_declined, _recovered) = {
         let state = app.state::<Presence>();
         let p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
-        (p.connected, p.pin_offered, p.relocation_declined)
+        (p.connected, p.pin_offered, p.relocation_declined, p.recovered)
     };
     let (pin_offer, pin_message) = if connected && !pin_offered {
         pin_status(&app).await
     } else { (false, String::new()) };
     #[cfg(windows)]
-    let login_error = reconcile_owned_hklm_login().err();
+    let login_error = if _recovered { None } else { reconcile_owned_hklm_login().err() };
     #[cfg(not(windows))]
     let login_error = None;
     let login_enabled = is_login_enabled(&app);
@@ -344,6 +343,7 @@ pub async fn desktop_presence(app: AppHandle) -> Result<PresenceView, String> {
         relocation_offer: !relocation_declined && transient(&app)?,
         pin_offer,
         pin_message,
+        preference_notice: app.state::<Presence>().1.clone(),
     })
 }
 
@@ -357,6 +357,7 @@ pub fn set_login_preference(app: AppHandle, enabled: bool) -> Result<(), String>
         let mut p = state.0.lock().map_err(|_| "Desktop preferences are busy.")?;
         if enabled && !p.connected { return Err("Connect this computer before enabling Open at login.".into()); }
         if enabled && transient(&app)? { return Err("Move Cotal to Applications before enabling Open at login.".into()); }
+        p.recovered = false;
         p.login = Some(enabled);
         let apply_result = apply_login(&app, &p, "preference");
         save(&app, &p)?;

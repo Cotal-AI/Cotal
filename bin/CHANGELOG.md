@@ -1,5 +1,34 @@
 # cotal-ai
 
+## 0.166.2
+
+### Patch Changes
+
+- 2361917: Let pre-install checks briefly observe a seatless preserving Manager while its daemon releases a dead updater's hold.
+  
+  The read-only check stays bound to the same daemon and Manager and refuses live, unknown, occupied or changed custody without releasing holds or restarting services.
+- fb7041c: Release a Manager's update preservation when the requesting updater has exited.
+  
+  The daemon checks the authenticated updater's process lifetime and releases its exact preservation attempt. Live or unknown owners keep their fences, and update admission and service ownership behavior remain unchanged.
+- e7f9ee0: Remove unused retained connector release sets after publication while keeping releases used by local Managers, the daemon and surviving seats, and preserving older sets with unknown seat provenance.
+- e73eb92: Keep a local conversation's requested name when reconnecting after its previous host was killed.
+- 56b8180: Show the daemon generation wait line when a quiet update reconciliation refuses, while keeping successful updates to one wait line.
+- e97754f: Restore capability census ownership for dashboard launch flags and the waiting update parent marker, with references to their existing smoke coverage.
+- Updated dependencies [e7f9ee0]
+- Updated dependencies [e73eb92]
+- Updated dependencies [99afd1d]
+- Updated dependencies [f85c802]
+  - @cotal-ai/workspace@0.166.2
+  - @cotal-ai/manager@0.166.2
+  - @cotal-ai/cli@0.166.2
+  - @cotal-ai/auth@0.166.2
+  - @cotal-ai/connector-core@0.166.2
+  - @cotal-ai/delivery@0.166.2
+  - @cotal-ai/runtime@0.166.2
+  - @cotal-ai/registry@0.166.2
+  - @cotal-ai/core@0.166.2
+  - @cotal-ai/seat@0.166.2
+
 ## 0.166.1
 
 ### Patch Changes

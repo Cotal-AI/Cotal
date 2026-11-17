@@ -81,7 +81,7 @@ test("presence events report close explanation, presence errors and taskbar pin 
     transformCallback(fn: (event: { event: string; payload: string }) => void) { callbacks.set(++next, fn); return next; },
     async invoke(cmd: string, args: { event?: string; handler?: number } = {}) {
       if (cmd === "plugin:event|listen") { listeners.set(args.event!, args.handler!); return ++next; }
-      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "Cotal is pinned to your taskbar." };
+      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "Cotal is pinned to your taskbar.", preferenceNotice: "Desktop preferences could not be read. The original file was kept aside." };
       throw new Error(`Unexpected command ${cmd}`);
     },
   };
@@ -92,11 +92,40 @@ test("presence events report close explanation, presence errors and taskbar pin 
     callbacks.get(listeners.get("desktop-close-explained")!)!({ event: "desktop-close-explained", payload: "Cotal stays in your system tray." });
     callbacks.get(listeners.get("desktop-presence-error")!)!({ event: "desktop-presence-error", payload: "Login item could not be updated." });
     assert.deepEqual(notices, [
+      { message: "Desktop preferences could not be read. The original file was kept aside.", error: true },
       { message: "Cotal stays in your system tray.", error: false },
       { message: "Login item could not be updated.", error: true },
     ]);
     await api.refreshPresence(true);
     assert.equal(doc.querySelector("#pin-availability")?.textContent, "Cotal is pinned to your taskbar.");
+    assert.equal(notices.length, 3, "startup recovery is reported only once");
+  } finally { dom.window.close(); }
+});
+
+test("startup recovery remains visible when a machine-wide login notice is also reported", async () => {
+  const output = await build({ logLevel: "silent", configFile: false, build: { write: false, lib: { entry: fileURLToPath(new URL("../src/presence.ts", import.meta.url)), formats: ["iife"], name: "presence" } } });
+  const result = Array.isArray(output) ? output[0] : output;
+  assert.ok("output" in result);
+  const chunk = result.output.find(file => file.type === "chunk"); assert.ok(chunk && "code" in chunk);
+  const dom = new JSDOM('<main><div id="settings-startup"></div><input id="autostart" type="checkbox"><p id="notice"></p></main>', { runScripts: "outside-only", url: "http://localhost" });
+  const recovery = "Desktop preferences could not be read. The original file was kept aside at /fixture/presence.saved.json.";
+  const login = "An earlier version also set Cotal to open at login for every user of this computer.";
+  dom.window.__TAURI_INTERNALS__ = {
+    transformCallback: () => 1,
+    async invoke(cmd: string) {
+      if (cmd === "plugin:event|listen") return 1;
+      if (cmd === "desktop_presence") return { loginEnabled: false, relocationOffer: false, pinOffer: false, pinMessage: "", preferenceNotice: recovery, loginError: login };
+      throw new Error(`Unexpected command ${cmd}`);
+    },
+  };
+  try {
+    dom.window.eval(chunk.code + ";globalThis.presence = presence;");
+    const doc = dom.window.document as Document;
+    await dom.window.presence.startPresence((message: string) => { doc.getElementById("notice")!.textContent = message; });
+    assert(doc.body.textContent!.includes(recovery), "startup recovery and its saved-file path must remain visible");
+    assert(doc.body.textContent!.includes(login), "machine-wide login notice must remain visible");
+    await dom.window.presence.refreshPresence();
+    assert(doc.body.textContent!.includes(recovery), "later presence refresh must not erase startup recovery");
   } finally { dom.window.close(); }
 });
 

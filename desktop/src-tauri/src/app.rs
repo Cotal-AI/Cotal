@@ -371,7 +371,7 @@ pub fn run() {
             app.handle().set_activation_policy(tauri::ActivationPolicy::Accessory)?;
             #[cfg(all(feature = "e2e", debug_assertions, windows))]
             eprintln!("E2E native setup: app_config_dir={:?}", app.path().app_config_dir());
-            app.manage(native_presence::Presence(std::sync::Mutex::new(native_presence::load(app.handle())?)));
+            app.manage(native_presence::load(app.handle())?);
             #[cfg(all(feature = "e2e", debug_assertions, windows))]
             eprintln!("E2E native setup: presence loaded");
             let status = MenuItem::with_id(app, "status", "Checking connection…", false, None::<&str>)?;
