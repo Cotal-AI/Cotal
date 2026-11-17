@@ -60,7 +60,7 @@ export function renderMarkdown(src: string): string {
 }
 
 /** One piece of `markdownSegments`: prose as sanitized HTML, or one fenced block's raw text. */
-export type MarkdownSegment = { kind: "html"; html: string } | { kind: "code"; lang: string; text: string };
+type MarkdownSegment = { kind: "html"; html: string } | { kind: "code"; lang: string; text: string };
 
 /** Markdown split at fenced code: sanitized HTML for prose, raw text for each fence, in order.
  *

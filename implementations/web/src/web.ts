@@ -304,7 +304,7 @@ const CLIENT_TYPES: Record<string, string> = {
 
 /** One servable file of the client build. `immutable` marks a content-hashed asset, which a
  *  browser may cache forever because a new build gives it a new name. */
-export interface ClientFile { path: string; type: string; immutable: boolean }
+interface ClientFile { path: string; type: string; immutable: boolean }
 
 /** The answer when the client build is missing: the server keeps serving the API and says what to
  *  do instead of serving nothing. It speaks to both readers who can meet it: in a source checkout
@@ -751,7 +751,7 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
  *  a slow link, watching a busy agent, cannot take frames as fast as the tap produces them, and
  *  every byte it has not taken waits in this process. Past this the feed is told why and ended, and
  *  the browser's own reconnect opens a fresh one, watches again and reads the gap from history. */
-export const MAX_FEED_BUFFER_BYTES = 1_048_576;
+const MAX_FEED_BUFFER_BYTES = 1_048_576;
 
 /** What a feed write is. A `live` event is traffic the feed may fall behind on, so it is held to the
  *  ceiling. A `snapshot` is the state a feed is opened with (its hello, the roster, the presence view
@@ -761,7 +761,7 @@ export type FeedWrite = "live" | "snapshot";
 
 /** The parts of a feed's response that `writeFeed` uses. `once` is the stream's own, used to learn
  *  when the opening state has drained; a response without it is warmed by the zero-backlog check. */
-export interface FeedResponse {
+interface FeedResponse {
   readonly writableEnded: boolean;
   readonly writableLength: number;
   write(chunk: string): unknown;
@@ -822,7 +822,7 @@ export function writeFeed(
 }
 
 /** The state a feed opens with, in the order a browser needs it. */
-export interface FeedOpening {
+interface FeedOpening {
   /** The feed's id, which every watch request names. */
   feed: string;
   roster: unknown;
@@ -849,7 +849,7 @@ export function writeOpening(send: (event: string, data: unknown, kind: FeedWrit
  *  long as the feed is open, and the id is the caller's, so without a ceiling one browser could
  *  grow that map without bound by asking for ids nobody runs. The dashboard watches the agent whose
  *  session is open, in the panel and the centre, so it never comes near this. */
-export const MAX_WATCHES_PER_FEED = 64;
+const MAX_WATCHES_PER_FEED = 64;
 
 /** Which feeds watch which agent. A feed is counted once per agent however many times it asks.
  *
@@ -1153,7 +1153,7 @@ export const POST_OFF_CREDS = "This dashboard was started with --creds, which ca
 /** Why posting is off on a per-user sign-in mesh. */
 export const POST_OFF_USER = "Posting from the dashboard isn't available on a sign-in mesh yet. Use `cotal send`.";
 /** Why posting is off on a dashboard run as a service: the service holds a read-only credential. */
-export const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use `cotal send`.";
+const POST_OFF_SERVICE = "This dashboard runs as a read-only service. Use `cotal send`.";
 
 /** The operator credential's lifetime: 24 days. Core arms a reconnect fence with one `setTimeout`
  *  at the credential's expiry, and Node caps a timer at 2^31-1 ms (about 24.8 days), so a longer
@@ -1385,7 +1385,7 @@ async function connectWithoutSeed(
 
 /** Trusted native service embedding. The supplied connection is explicitly scoped by its
  *  credential file; no account signer, cached operator login or purger mint is substituted. */
-export interface WebServiceLifecycle {
+interface WebServiceLifecycle {
   readonly connection: Omit<Connection, "auth">;
   readonly onSession: (session: WebSession) => void | Promise<void>;
   readonly onReady: () => void | Promise<void>;

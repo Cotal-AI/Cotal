@@ -21,7 +21,7 @@ function target(root: string, space: string, server?: string) {
   return selected;
 }
 
-export const webServicePreset: ServicePreset = {
+const webServicePreset: ServicePreset = {
   kind: "service-preset", name: "web", adapter: "web-service", timeoutMs: 40000,
   summary: "the read-only web dashboard, on this space's dashboard credential",
   defaults: { root: { space: "root" }, creds: { space: "material", kind: WEB_CREDS_KIND }, "read-only": { value: true } },
@@ -62,7 +62,7 @@ function validateChild(args: ParsedArgs): void {
   serviceOperationId(args.values["service-instance"]); serviceOperationId(args.values["launch-request"]);
 }
 
-export const nativeWebServiceCommand: Command = {
+const nativeWebServiceCommand: Command = {
   kind: "command", name: "__service-web", hidden: true, prepareMeshTarget: false,
   summary: "native read-only dashboard child with private session and startup records",
   flags: [
