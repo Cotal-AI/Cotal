@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch', 'crash-prepared-concurrent'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry && repairCommand !== 'self-update' && !repairCommand.startsWith('crash-')) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand.startsWith('crash-')) assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE, 'crash proof requires a real guarded installed source closure');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
@@ -272,6 +272,7 @@ try {
       await ownedService();
       const { interruptRepairAtPhase } = await import('./mac-repair-interruption.mjs');
       const { readServiceRepair, assertServiceRepairPair, sourceDigest } = await import(pathToFileURL(resolve('bin/dist/daemon/service-repair.js')).href);
+      const coreLockInspector = repairCommand === 'crash-prepared-concurrent' ? await import(pathToFileURL(resolve('packages/core/dist/advisory-lock.js')).href) : undefined;
       const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
       const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
       const hostingBefore = readFileSync(hostingPath, 'utf8');
@@ -323,6 +324,31 @@ try {
           const job = spawnSync('/bin/launchctl', ['print', target], { env, encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
           assert(!job.error && !job.signal && [0, 113].includes(job.status), 'suspended native job must be readable or confirmed absent');
           return { exit: job.status, signal: job.signal, stdout: publicText(job.stdout), stderr: publicText(job.stderr) };
+        },
+        whileSuspended: repairCommand !== 'crash-prepared-concurrent' ? undefined : ({ pid, birth }) => {
+          const lockPath = join(cotalHome, 'daemon/service-repair.lock');
+          const held = coreLockInspector.inspectLock(lockPath);
+          assert.equal(held.state, 'active');
+          assert.equal(held.owner.pid, pid, 'the actual suspended public repair must own the operation lock');
+          assert.equal(processBirth(pid), birth);
+          const files = [join(cotalHome, 'daemon/service-repair.json'), receiptPath, plist, sessionPath, hostingPath, lockPath];
+          const bytes = files.map(file => readFileSync(file));
+          const competing = spawnSync(process.execPath, [candidateEntry, 'daemon', 'uninstall', '--yes', '--json'], { cwd: project, env: candidateEnv, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
+          const ownerAfter = coreLockInspector.inspectLock(lockPath);
+          const birthAfter = processBirth(pid);
+          const bytesAfter = files.map(file => readFileSync(file));
+          report.concurrentRepairAttempt = { exit: competing.status, signal: competing.signal, error: competing.error?.message, stdout: publicText(competing.stdout), stderr: publicText(competing.stderr), repairPid: pid, repairBirth: birth, birthAfter, ownerBefore: held, ownerAfter, beforeHashes: bytes.map(value => createHash('sha256').update(value).digest('hex')), afterHashes: bytesAfter.map(value => createHash('sha256').update(value).digest('hex')) };
+          save();
+          assert(!competing.error && !competing.signal, 'timeout or killed competing CLI is not a product refusal');
+          assert.equal(competing.status, 2);
+          const refused = JSON.parse(competing.stdout);
+          assert.equal(refused.error?.code, 'CONFLICT');
+          assert.match(refused.error?.message ?? '', /unfinished repair/);
+          assert.equal(birthAfter, birth, 'competing public uninstall must retain the first repair child');
+          assert.deepEqual(ownerAfter, held, 'competing public operation must not replace the real lock owner');
+          for (const [index, file] of files.entries()) assert.deepEqual(bytesAfter[index], bytes[index], `competing operation changed ${file}`);
+          report.concurrentRepairAttempt.protectedBytesAndOwnerUnchanged = true;
+          save();
         },
         record(event) { report.interruptionEvents.push(event); if (event.event === 'cleanup-unconfirmed') report.interruptionCleanupUnconfirmed = true; save(); },
       });

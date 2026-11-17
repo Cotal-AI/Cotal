@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
-export async function interruptRepairAtPhase({ file, args, cwd, env, phase, birth, inspect, confirmStopped, observeNative, record, timeoutMs = 90000 }) {
+export async function interruptRepairAtPhase({ file, args, cwd, env, phase, birth, inspect, confirmStopped, observeNative, whileSuspended, record, timeoutMs = 90000 }) {
   assert.equal(process.platform, 'darwin', 'repair interruption acceptance requires actual macOS');
   assert(['prepared', 'published'].includes(phase));
   assert(Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 130000);
@@ -50,6 +50,11 @@ export async function interruptRepairAtPhase({ file, args, cwd, env, phase, birt
         assert.deepEqual(afterNative, stopped, 'setup miss: persisted repair state changed during suspended native observation');
         captured = { ...stopped, native };
         record({ event: 'captured-real-phase', pid: child.pid, birth: stoppedBirth, phase, observation: captured });
+        if (whileSuspended) {
+          whileSuspended({ pid: child.pid, birth: stoppedBirth, phase });
+          assert(sameChild(), 'public repair child lifetime changed during concurrent operation');
+          assert.deepEqual(inspect(), stopped, 'concurrent operation changed the real suspended repair pair');
+        }
         send('SIGKILL'); suspended = false;
         const result = await awaitClose(10000);
         assert.equal(result.signal, 'SIGKILL', 'the exact interrupted public CLI must confirm the requested exit');
