@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
 import { acquireLock } from "./advisory-lock.js";
@@ -14,7 +14,9 @@ function identity(): { entry: string; version: string; path: string } | undefine
   const execution = executionIdentity();
   if (!execution) return;
   const loaded = dirname(dirname(execution.loadedEntry));
-  if (existsSync(join(loaded, "desktop-runtime.json")) || existsSync(join(dirname(dirname(execution.logicalEntry)), "desktop-runtime.json"))) return;
+  const logical = dirname(dirname(execution.logicalEntry));
+  if ([loaded, logical].some(root => basename(root) === "bin" && (existsSync(join(dirname(root), "implementations")) || existsSync(join(dirname(root), "pnpm-workspace.yaml"))))) return;
+  if (existsSync(join(loaded, "desktop-runtime.json")) || existsSync(join(logical, "desktop-runtime.json"))) return;
   const meta = JSON.parse(readFileSync(join(loaded, "package.json"), "utf8")) as { version?: unknown };
   if (typeof meta.version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(meta.version)) throw new Error("connector selection has no valid loaded version");
   const entry = execution.logicalEntry;
