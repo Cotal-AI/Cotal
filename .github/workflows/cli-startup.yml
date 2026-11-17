@@ -3,7 +3,7 @@ name: CLI startup
 on:
   workflow_dispatch:
   push:
-    branches: ['test/daemon-peer-close-repro']
+    branches: ['test/daemon-peer-close-repro', 'fix/daemon-closed-peer-uninstall']
 
 permissions:
   contents: read
@@ -40,6 +40,15 @@ jobs:
           df -g "$HOME"
           node -e 'const s=require("node:fs").statfsSync(process.env.HOME);if(s.bavail*s.bsize<30*1024**3)throw Error("30GiB free space required")'
           pnpm --filter @cotal-ai/seat build:native
+      - name: Build stock macOS process identity for the real service
+        if: github.event_name == 'push' && github.ref_name == 'fix/daemon-closed-peer-uninstall'
+        run: |
+          df -g "$HOME"
+          node -e 'const s=require("node:fs").statfsSync(process.env.HOME);if(s.bavail*s.bsize<30*1024**3)throw Error("30GiB free space required")'
+          node packages/workspace/scripts/build-native.mjs
+      - name: Typecheck peer-close regression smokes
+        if: github.event_name == 'push' && github.ref_name == 'fix/daemon-closed-peer-uninstall'
+        run: pnpm exec tsc --noEmit --target es2022 --module nodenext --strict --noUnusedLocals --types node bin/smoke/daemon-peer-close.smoke.ts bin/smoke/daemon-peer-close-guards.smoke.ts
       - name: Reproduce peer credential read after native socket close
         id: peer-close
         if: github.event_name == 'push'
@@ -66,6 +75,18 @@ jobs:
       - name: Verify live peer identity refusals on Darwin
         if: github.event_name == 'push'
         run: pnpm exec tsx bin/smoke/daemon-peer-close-guards.smoke.ts
+      - name: Verify real recorded daemon uninstall
+        if: github.event_name == 'push' && github.ref_name == 'fix/daemon-closed-peer-uninstall'
+        env:
+          COTAL_TEST_REAL_SERVICE: '1'
+        run: node bin/smoke/daemon-install-real.smoke.mjs
+      - name: Upload real public uninstall evidence
+        if: always() && github.event_name == 'push' && github.ref_name == 'fix/daemon-closed-peer-uninstall'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-uninstall-darwin
+          path: ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
       - name: Upload peer-close reproduction evidence
         if: always() && github.event_name == 'push' && steps.peer-close.outputs.scratch != ''
         uses: actions/upload-artifact@v4
