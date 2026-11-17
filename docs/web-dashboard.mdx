@@ -13,7 +13,7 @@ For a terminal display or authorized operator controls, use the [console](consol
 ## Configure the service [#web-dashboard]
 
 The supported dashboard is the `@cotal-ai/web` service preset.
-It needs a registered static-auth root, a protected credential file, and explicit read-only intent.
+It needs a registered static-auth root and a protected observer credential file. Read-only is the default.
 `cotal up` mints the credential for the space as its `web.creds`, and the preset uses that file unless you pass `--creds`.
 It is separate from stack startup.
 
@@ -45,6 +45,27 @@ The `host` and `port` definition options default to `127.0.0.1` and 7799. Wildca
 It opens no browser and starts no dependency automatically.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
 A page file that cannot be read returns `500` with the failed read identified.
+
+### Authorize posting
+
+Read-only remains the default. To enable the composer, mint a separate protected credential
+with only the channels the dashboard should post to, then save the service with both
+`--no-read-only` and `--posting-creds`:
+
+```bash
+cotal auth mint dashboard --space main --no-persona --allow-subscribe general --allow-publish general --out /absolute/private/dashboard-posting.creds
+cotal service add web --preset web --space main --no-read-only --posting-creds /absolute/private/dashboard-posting.creds
+cotal service start web --space main
+```
+
+Select #general in Channels, enter text in the composer, and choose Send.
+Posts use the separate credential's identity, labelled `operator`, and preserve mentions.
+The broker enforces that file's grants. A broader observer credential cannot authorize a refused post.
+The posting file must name a different identity from the observer file and pass the same
+signature, issuer, private-file and validity checks. No ambient operator credential or signer is used.
+Renew an expired posting credential explicitly and restart the service to load it.
+Channel deletion stays unavailable in both modes. User-auth and open targets remain unsupported.
+Anyone holding the private browser session can exercise the configured posting authority.
 
 ### Open the private session
 
