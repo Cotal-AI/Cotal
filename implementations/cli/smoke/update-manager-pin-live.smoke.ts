@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {spawn, type ChildProcess} from 'node:child_process';
 import {once} from 'node:events';
-import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,renameSync} from 'node:fs';
+import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,renameSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {prepareUpdateParticipant} from '../../auth/smoke/update-participant.fixture.js';
@@ -30,7 +30,7 @@ try{
  for(let attempt=0;attempt<180;attempt++){
   ids.length=0;
   for(const name of ['project','other']){const dir=join(root,name,'.cotal');const f=readdirSync(dir).find(name=>name.startsWith('remote-manager.')&&name.endsWith('.json'));if(f&&existsSync(join(dir,f)))ids.push(JSON.parse(readFileSync(join(dir,f),'utf8')).instanceId);}
-  if(ids.length===2&&logs.every(text=>text.includes('service endpoint activated')))break;
+  if(ids.length===2&&logs.every(text=>text.includes('service endpoint activated'))&&readdirSync(join(root,'project','.cotal')).some(name=>/^manager\..+\.pid\.identity$/.test(name)))break;
   assert(children.every(child=>child.exitCode===null),logs.join('\n'));await pause(250);
  }
  check.equal(ids.length,2,'two actual remote Manager identities exist');check.notEqual(ids[0],ids[1]);
@@ -42,6 +42,11 @@ try{
  const seen:string[]=[];
  check.equal(await reportRunningManagers({space},async flags=>{seen.push(String(flags.on));return readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true});},()=>recordedUpdateManagers({space},entry)),'none','portable census and real continuity compose without an unpinned exchange');
  check.deepEqual(seen,[ids[0]],'only the recorded local instance was read');
+ const otherInstall=join(root,'tmp','other-install');mkdirSync(join(otherInstall,'dist'),{recursive:true,mode:0o700});
+ writeFileSync(join(otherInstall,'package.json'),JSON.stringify({name:'cotal-ai',bin:{cotal:'dist/cotal.js'}}));writeFileSync(join(otherInstall,'dist','cotal.js'),'');
+ const otherEntry=join(otherInstall,'dist','cotal.js');
+ check.equal(recordedUpdateManagers({space},otherEntry).length,0,'a recorded Manager that loaded another installation is no custody of the one being updated');
+ check.equal(await readManagerContinuity({space},{installedEntry:otherEntry,readOnly:true}),'none','updating one installation is not held by a Manager that runs from another');
  const directory=join(root,'project','.cotal');
  const pidfile=readdirSync(directory).find(name=>/^manager\..+\.pid$/.test(name));
  check.ok(pidfile,'actual supervisor writes its local process record');
