@@ -1043,7 +1043,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
-    const onServer = loadMeshes().filter((e) => e.server === flags.server && !offline.has(e.space));
+    const serverKey = (server: string): string => {
+      try {
+        const url = new URL(server);
+        if (url.pathname === "/") url.pathname = "";
+        return url.href;
+      } catch {
+        return server;
+      }
+    };
+    const requestedServer = serverKey(flags.server);
+    const onServer = loadMeshes().filter((e) => serverKey(e.server) === requestedServer && !offline.has(e.space));
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",

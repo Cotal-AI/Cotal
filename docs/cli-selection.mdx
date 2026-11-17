@@ -256,7 +256,10 @@ In open or static-auth mode, an unanswered `--server` address that differs from 
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
 Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
 no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place. Target resolution given `--server` probes only records at that address,
+recorded broker in its place. A trailing slash or scheme case change in `--server` retains the
+registered space. Matching preserves the URL's transport scheme and TLS intent. If equivalent
+addresses name several registered spaces, pass `--space` to choose one.
+Target resolution given `--server` probes only records at that address,
 including when `--space` is omitted. `status --all` still checks every recorded address because
 `--all` asks for that scope. This refusal wording does not describe the infrastructure report from
 `status`.

@@ -91,6 +91,24 @@ try {
   // The new preflight must NOT prune a LIVE registered entry — the load-bearing safety property.
   ok("live registered entry survives the preflight prune sweep", loadMeshes().some((m) => m.space === "team-alpha"), loadMeshes());
 
+  for (const server of [`${OTHER}/`, OTHER.replace("nats:", "NATS:")]) {
+    const target = await resolveControlTarget({ server }, "control-caller-privileged");
+    ok(`equivalent broker spelling retains the registered space: ${server}`, target.space === "team-alpha", target);
+    ok(`equivalent broker spelling preserves the requested transport: ${server}`, target.server === server, target);
+  }
+  recordMesh({ space: "same-broker", server: `${OTHER}/`, root: projectRoot, mode: "open", ts });
+  let ambiguous: unknown;
+  try {
+    await resolveControlTarget({ server: OTHER.replace("nats:", "NATS:") }, "control-caller-privileged");
+  } catch (error) {
+    ambiguous = error;
+  }
+  ok("equivalent broker spellings still refuse multiple registered spaces", (ambiguous as { code?: string })?.code === "ambiguous-target", ambiguous);
+  const { removeMesh } = await import("@cotal-ai/workspace");
+  removeMesh("same-broker");
+  const tlsTarget = resolveMeshTarget(cwd, { server: OTHER.replace("nats:", "tls:") });
+  ok("a different transport does not match the plaintext registration", tlsTarget.space !== "team-alpha", tlsTarget);
+
   // 2. Bare (no flags) with a single registered mesh → still that mesh's broker.
   ok("bare resolves the single registered mesh", (await resolveControlTarget({}, "control-caller-privileged")).server === OTHER);
 
