@@ -35,7 +35,7 @@ jobs:
         run: |
           export NPM_BIN="$(command -v npm)"
           export DESKTOP_REPAIR_CLI="$RUNNER_TEMP/repair-cli/dist/cotal.js"
-          export DESKTOP_REPAIR_COMMAND=disabled
+          export DESKTOP_REPAIR_COMMAND=unreadable-source
           node --import tsx desktop/e2e/mac-app-deleted-daemon.mjs
       - name: Check evidence publication gate
         id: evidence
