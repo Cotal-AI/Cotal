@@ -423,8 +423,10 @@ Every connector bundle reads the same `cotal_docs` data (`docs-bundle.bin`, `doc
 directory, `extensions/<pkg>` for a connector and `implementations/web` for `web`. In a published
 install it is `<cotal-ai>/seeded-connectors/<name>`.
 
-The reconcile copies that payload into the durable store, `seed/store/<version>/<name>`, and puts
-the shared files back at every recorded path (`seed/shared.ts`). It refuses a missing or malformed
+The reconcile copies that payload into the durable store, `seed/store/<version>/<name>`. It makes
+its private copy's directories owner-writable, so read-only package installs can seed and repair
+without changing the shipped files. It puts the shared files back at every recorded path
+(`seed/shared.ts`). It refuses a missing or malformed
 manifest, a path outside the payload, and a shared file whose bytes are not the recorded ones. It
 validates the version as one safe path segment, and checks that the destination stays inside the
 store before it writes anything. `cotal update` compares each installed copy of the shared files
