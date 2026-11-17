@@ -101,6 +101,12 @@ complete 24-package closures stay readable through a paired registry. The source
 hashes, archive receipts, actual command and native before/after state are bound to the result.
 A target daemon that answers while its updater exits non-zero or times out is not a passing next hop.
 
+The synthetic packer logs the start and elapsed time of each phase: verifying A, native guards,
+the stamped build, packing, output verification and the final unchanged-A check. A failed phase
+is named before the error is rethrown. Archive inspection hashes every member in one traversal
+per archive, without a `tar` subprocess per file. Both synthetic versions still build separately.
+Archive hashes, the complete 24-package closure, member hashes and native guards remain required.
+
 Source 0.164.10 has the closing-step defect tracked in [#6842](https://github.com/Cotal-AI/Cotal/issues/6842).
 Its five manual-service layouts and daemon-hosted consent cell preserve the first hop's raw refusal
 and match only the measured platform-specific contract. On macOS, that contract records either
