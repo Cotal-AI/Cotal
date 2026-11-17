@@ -10,9 +10,10 @@ export function verifyTwoHomeUpgrade(report) {
   assert(report.old?.version && report.target?.version && report.old.version !== report.target.version, 'distinct old and target releases required');
   for (const route of ['up', 'launch', 'old-manager']) {
     const calls = report.calls.filter(call => call.route === route);
-    for (const label of ['install old closure', route === 'old-manager' ? 'old Manager candidate install setup' : 'self update shared installation', 'updated home version', 'stale home version before command', 'final owned stack down'])
+    for (const label of ['install old closure', route === 'old-manager' ? 'old Manager candidate install setup' : 'self update shared installation', 'updated home version', 'stale home version before command', 'home status after command', 'final owned stack down'])
       assert(calls.some(call => call.label === label && call.code === 0 && call.signal === null), `${route}: missing successful ${label}`);
     const stale = calls.find(call => call.label === 'stale home version before command');
+    assert(report.checks.some(check => check.name === (route === 'old-manager' ? 'old Manager exclusion leaves no recovery obligation' : `${route} home has no recovery obligation`) && check.passed === true), `${route}: recovery obligation check missing`);
     assert(stale.stdout.startsWith(`cotal-ai ${report.target.version}\n`) && !stale.stdout.includes('update --self'), `${route}: wrong stale-home version or remedy`);
     const inventory = (output, version) => ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
     assert(inventory(stale.stdout, report.old.version), `${route}: stale home must carry every old built-in`);
