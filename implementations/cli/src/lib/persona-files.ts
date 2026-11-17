@@ -335,12 +335,18 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     }
     try { commitPersona(path, source, edited); }
     catch (error) {
-      if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
-      // The edit was not saved, so the draft stays and the refusal says where it is.
-      const removed = readPersonaSource(path) === undefined;
+      // The edit was not saved, so the draft stays and the failure says where it is.
       keep = true;
-      throw new CommandFailure("refused", "CONFLICT", error.message, {
-        remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+      if (isCommandFailure(error) && error.code === "CONFLICT") {
+        const removed = readPersonaSource(path) === undefined;
+        throw new CommandFailure("refused", "CONFLICT", error.message, {
+          remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+        });
+      }
+      const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error), { cause: error });
+      const kept = `your edit is kept in ${draft}, so run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`;
+      throw new CommandFailure(failure.outcome, failure.code, failure.message, {
+        remedy: failure.remedy ? `${failure.remedy}; ${kept}` : kept, target: failure.target, changed: failure.changed, native: failure.native, cause: error,
       });
     }
     return { action: "saved" };

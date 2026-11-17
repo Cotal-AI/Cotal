@@ -21,7 +21,7 @@
  * Run: pnpm smoke:operation-space
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { agentFilePath } from "@cotal-ai/core";
@@ -174,6 +174,20 @@ for (const [label, editor, status, says] of [
     edit.status === status && (edit.stderr + edit.stdout).includes(says) && kept.length === 1 && (edit.stderr + edit.stdout).includes(kept[0]!) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
   for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
 }
+// A save refused because the catalog became unwritable while the editor was open keeps the edited
+// draft and names it beside the chmod that fixes the catalog. Root writes through any mode.
+if (process.platform !== "win32" && process.getuid?.() !== 0) {
+  const agents = dirname(persona), mode = statSync(agents).mode & 0o7777;
+  const editor = editorScript("ed-readonly", `printf '\\nUnsaved instructions.\\n' >> "$1"; chmod u-w '${agents}'`);
+  let edit: ReturnType<typeof outcome>;
+  try { edit = outcome(spawnSync(process.execPath, [BIN, "persona", "edit", "rev", "--plain"], { cwd: root, env: { ...env, EDITOR: editor, TMPDIR: drafts }, encoding: "utf8", timeout: 120_000 })); }
+  finally { chmodSync(agents, mode); }
+  const kept = readdirSync(drafts).map((dir) => join(drafts, dir, "rev.md")).filter((path) => existsSync(path));
+  check("persona edit refused PERMISSION_DENIED at save keeps the edited draft, names it with the chmod, and leaves the catalog file unchanged",
+    edit.status === 2 && edit.stderr.includes("PERMISSION_DENIED") && edit.stderr.includes(`chmod u+w ${agents}`) && kept.length === 1
+      && readFileSync(kept[0]!, "utf8").includes("Unsaved instructions.") && edit.stderr.includes(`your edit is kept in ${kept[0]}`) && readFileSync(persona, "utf8") === saved, { ...shown(edit), kept });
+  for (const dir of readdirSync(drafts)) rmSync(join(drafts, dir), { recursive: true });
+} else console.log("SKIP unwritable catalog at save: requires a non-root POSIX account");
 
 // Removing the seeded default says what it was and how it comes back; another removal does not.
 const removedOther = cotal("persona", "remove", "goodrole", "--yes", "--json");
