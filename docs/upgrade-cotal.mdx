@@ -24,6 +24,8 @@ for the processes that already loaded it. This does not restore files a prior ma
 already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
 Later releases inherit the selected prefix, including when its publication was interrupted.
 A recorded extension npm child must finish before its source prefix can be copied.
+The first installed reconciliation also selects a separate prefix. A Manager started from another
+copy keeps launching with its original connector generation until it is restarted.
 
 ## Execution generations
 

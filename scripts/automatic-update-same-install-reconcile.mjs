@@ -48,6 +48,13 @@ export async function sameInstallReconcileCell({ root, candidate, nextCandidate,
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('COTAL_') && !['npm_config_before', 'NPM_CONFIG_BEFORE', 'npm_config_registry', 'NPM_CONFIG_REGISTRY'].includes(name)));
   Object.assign(env, { PATH: `${join(home, '.local/bin')}:${env.PATH}`, HOME: home, COTAL_HOME: join(root, 'cotal'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_RUNTIME_DIR: join(root, 'runtime'), TMPDIR: join(root, 'tmp'), DO_NOT_TRACK: '1', COTAL_TELEMETRY: 'off', npm_config_cache: join(root, 'cache'), npm_config_audit: 'false', npm_config_fund: 'false', npm_config_logs_max: '0', SHELL: '/bin/bash' });
   if (seedSkip) env.COTAL_SKIP_CONNECTOR_SEED = '1';
+  if (process.env.RECONCILE_LIVE_LAUNCH === '1') {
+    const fake = resolve(import.meta.dirname, '../extensions/connector-jcode/smoke/fake-jcode.mjs');
+    const tools = join(root, 'tools'); mkdirSync(tools, { mode: 0o700 });
+    writeFileSync(join(tools, 'jcode'), `#!/bin/sh\nif [ "$1" = --version ]; then echo 'jcode 0.99.0'; exit 0; fi\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o700 });
+    env.PATH = `${tools}:${env.PATH}`;
+    env.COTAL_JCODE_TUI = '0';
+  }
   const report = { v: 1, root, seedSkip, expected, calls: [], source: 'public cotal-ai@0.162.0', platform: process.platform, startedAt: new Date().toISOString() };
   const run = async (label, file, args, override = {}) => {
     const child = spawn(file, args, { cwd: join(root, 'project'), env: { ...env, ...override }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -135,6 +142,9 @@ export async function sameInstallReconcileCell({ root, candidate, nextCandidate,
         const nextPing = `next-${Date.now()}`;
         assert.equal(await (await fetch(`http://127.0.0.1:${newReady.port}/${nextPing}`)).text(), `/${nextPing}`);
         report.next = { version: nextVersion.stdout, ps: nextSeats, challenge: nextPing, selectedBefore, selected: nextGraphs, oldPrefix: inventory(join(root, 'config/cotal/extensions')) };
+        if (process.env.RECONCILE_LIVE_LAUNCH === '1') {
+          ok(await publicCall('old-manager-firstparty-launch', ['spawn', '--agent', 'jcode', '--name', 'retained_jcode', '--detach', '--no-events', '--space', 'reconcile-proof', '--on', fresh.items[0].instanceId]));
+        }
       }
     }
     report.passed = true;
