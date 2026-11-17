@@ -1,5 +1,11 @@
 # @cotal-ai/connector-opencode
 
+## 0.166.0
+
+### Patch Changes
+
+- c23de83: Keep internal connector helpers and types module-private while preserving the published package exports.
+
 ## 0.165.4
 
 No changes in this release.

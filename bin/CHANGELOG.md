@@ -1,5 +1,73 @@
 # cotal-ai
 
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- ac3c362: Fix the daemon generation smoke fixture to verify a replacement whose CLI reports the new version.
+- 7fddf2e: Reject extra persona names in legacy `personas` commands before reading or changing the catalog.
+- cc7a9af: Remove an unused auth smoke probe that still expected Mesh manifests to deploy through spawn --file, keeping the maintained user-mode teardown suite as coverage.
+- 172b44b: Linux daemon installation now accepts home and config directories containing spaces.
+  Decode systemd's quoted environment values without evaluating shell text, while retaining directory validation and refusal of malformed values.
+- af715ee: Self-updates without a machine daemon now finish successfully after reconciliation.
+  Keep the no-daemon return even when the version-changing updater has already waited for its installed generation.
+- b4ae407: `cotal update --self` from a release before 0.166.0 prints the daemon wait line again. The reconcile step of the new version stayed quiet whenever an updater had started it, on the assumption that the updater prints `machine daemon: waiting up to 120s for Cotal <version> and its hosted Managers before the continuity check` afterwards. An updater from 0.164.10 does not wait there, so the update waited up to two minutes without saying why. The updater now tells its reconcile step that it waits, and the step stays quiet only then.
+- 417ad60: Windows setup now waits for the matching service reply when recovering from a timed-out preparation request.
+  
+  The installer keeps partial replies across reads and discards only replies to requests that timed out. Malformed or unknown replies refuse the connection, and a missing abort reply remains unconfirmed. This also works when setup talks to an older installed runtime.
+- Updated dependencies [3bebc51]
+- Updated dependencies [126e7e5]
+- Updated dependencies [af1cfe4]
+- Updated dependencies [764846a]
+- Updated dependencies [0bc52e5]
+- Updated dependencies [6eea404]
+- Updated dependencies [18b3348]
+- Updated dependencies [5c46721]
+- Updated dependencies [38ce17f]
+- Updated dependencies [a5e152a]
+- Updated dependencies [2947faa]
+- Updated dependencies [09fcc8a]
+- Updated dependencies [7fddf2e]
+- Updated dependencies [c2d9d90]
+- Updated dependencies [a1093f9]
+- Updated dependencies [cb88e19]
+- Updated dependencies [6faefbd]
+- Updated dependencies [3d2ef16]
+- Updated dependencies [0ee3034]
+- Updated dependencies [7a97e03]
+- Updated dependencies [459d5be]
+- Updated dependencies [cc7a9af]
+- Updated dependencies [2e6753b]
+- Updated dependencies [c6fdddb]
+- Updated dependencies [bab5d96]
+- Updated dependencies [3b09cff]
+- Updated dependencies [6446895]
+- Updated dependencies [b70b433]
+- Updated dependencies [8a17372]
+- Updated dependencies [172b44b]
+- Updated dependencies [69a37b7]
+- Updated dependencies [98466e7]
+- Updated dependencies [f18740d]
+- Updated dependencies [dd50061]
+- Updated dependencies [b4ae407]
+- Updated dependencies [501c465]
+- Updated dependencies [eb012be]
+- Updated dependencies [c826ae0]
+  - @cotal-ai/cli@0.166.0
+  - @cotal-ai/workspace@0.166.0
+  - @cotal-ai/core@0.166.0
+  - @cotal-ai/manager@0.166.0
+  - @cotal-ai/auth@0.166.0
+  - @cotal-ai/connector-core@0.166.0
+  - @cotal-ai/delivery@0.166.0
+  - @cotal-ai/runtime@0.166.0
+  - @cotal-ai/registry@0.166.0
+  - @cotal-ai/seat@0.166.0
+
 ## 0.165.4
 
 ### Patch Changes

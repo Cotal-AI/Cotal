@@ -1,5 +1,21 @@
 # @cotal-ai/core
 
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- 18b3348: Avoid creating an anycast scan consumer on spaces with an empty request-record bucket.
+  The delivery maintenance pass checks the bucket status before enumerating keys. Pending requests
+  and existing records keep their current maintenance behavior.
+- 38ce17f: An `@` inside an email address or a path no longer counts as a mention. Before, `mail ana@example.com` sent a mention of `example.com` and could wake an agent of that name. `mentionsIn` now starts no mention right after an ASCII letter or digit, `_`, `.`, `-` or `/`, so every surface that posts typed text follows the same rule. A mention typed right after Chinese, Japanese or Thai text, as in `你好@rover`, still counts.
+- a1093f9: An accepted `cotal spawn --detach --on <instance>` now reports its real outcome when the manager briefly serves nothing right after accepting it, instead of ending at once with `OPERATION_UNKNOWN`. A `goal-result` read that the broker answers with no responder did not run, so the goal follow reads again every 250ms until its wait deadline, while live progress can still settle the goal. Any other read failure still ends the follow with an unknown outcome, and a follow that times out after unanswered reads names the last one.
+- 2e6753b: Retire durable channel memberships from earlier sessions when the same principal leaves a channel.
+- 6446895: A manager's standing connections that the broker closed as their old credentials expired now come back as soon as the renewed credentials are adopted. The manager's own endpoint used to stay down until its reconnect backoff ended, up to a minute, and the goal-writer and session-ledger connections waited a fixed second. `CotalEndpoint.refreshCredsRequestSafe()` now redials an endpoint that is re-establishing instead of refusing. A closed standing connection makes its first re-dial attempt when an in-flight renewal adopts, and a goal-writer or session-ledger connection whose credential expired makes it at once, which starts the renewal.
+
 ## 0.165.4
 
 ### Patch Changes

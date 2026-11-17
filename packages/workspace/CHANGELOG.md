@@ -1,5 +1,29 @@
 # @cotal-ai/workspace
 
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- 3bebc51: Automatic updates on an installation this account cannot write now record the refusal once and stop retrying every hour.
+  
+  The updater writes the same refusal sentence that `cotal update --self` prints into the attempt record, without counting a failed attempt and without scheduling a retry. A successful `cotal update` after the installation changes records a new result and resumes automatic updates.
+- 126e7e5: Show distinct messages with empty IDs independently in the console and history follow while continuing to deduplicate nonempty IDs.
+- af1cfe4: Keep the registered space when a broker URL uses a trailing slash or different scheme case.
+- 2947faa: Refuse agent-profile credentials in console and watch before announcing a feed, with instructions to mint a separate observer credential.
+- 3d2ef16: Create missing signer export folders privately without following symbolic links, including output paths containing spaces or shell characters.
+- 3b09cff: Resolve presence-render census exclusions through a shared class rationale or an entry-specific exception reason.
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [a1093f9]
+- Updated dependencies [2e6753b]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/core@0.166.0
+
 ## 0.165.4
 
 ### Patch Changes

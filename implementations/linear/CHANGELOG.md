@@ -1,5 +1,11 @@
 # @cotal-ai/linear
 
+## 0.166.0
+
+### Patch Changes
+
+- 9b75f60: Keep unused dashboard and Linear implementation helpers private without changing the public package APIs.
+
 ## 0.165.4
 
 No changes in this release.
