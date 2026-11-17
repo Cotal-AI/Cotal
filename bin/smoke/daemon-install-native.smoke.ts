@@ -582,6 +582,43 @@ try {
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    const quotedRoot = join(root, "quoted"); mkdirSync(quotedRoot, { mode: 0o700 });
+    const quotedNative = join(quotedRoot, "native"); mkdirSync(quotedNative, { mode: 0o700 });
+    const quotedHome = join(quotedRoot, "home with space"); mkdirSync(quotedHome, { mode: 0o700 });
+    const quotedRuntime = join(quotedRoot, "runtime"); mkdirSync(quotedRuntime, { mode: 0o700 });
+    mkdirSync(join(quotedRoot, "daemon"), { mode: 0o700 });
+    const quotedContext = join(quotedRoot, "context.json"), quotedCalls = join(quotedRoot, "calls.jsonl");
+    for (const name of ["systemctl", "loginctl"]) writeFileSync(join(quotedNative, name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+    const quote = (value: string) => `$'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+    const special = join(quotedHome, "config 'quote' \\ café $(touch NEVER)");
+    const quotedCases: Array<{ name: string; environment: string; expected?: string; refusal?: string }> = [
+      { name: "quoted HOME", environment: `HOME=${quote(quotedHome)}`, expected: join(quotedHome, ".config") },
+      { name: "quoted XDG takes precedence", environment: `HOME=/wrong\nXDG_CONFIG_HOME=${quote(special)}`, expected: special },
+      { name: "octal UTF-8", environment: `HOME=$'${quotedHome}/caf\\303\\251'`, expected: join(quotedHome, "café", ".config") },
+      { name: "empty quoted XDG uses manager HOME", environment: `HOME=${quote(quotedHome)}\nXDG_CONFIG_HOME=$''`, expected: join(quotedHome, ".config") },
+      { name: "unterminated quote", environment: "HOME=$'/broken", refusal: "SCHEMA_INVALID" },
+      { name: "trailing shell content", environment: "HOME=$'/home';touch NEVER", refusal: "SCHEMA_INVALID" },
+      { name: "unknown escape", environment: "HOME=$'/home/\\q'", refusal: "SCHEMA_INVALID" },
+      { name: "invalid UTF-8", environment: "HOME=$'/home/\\377'", refusal: "SCHEMA_INVALID" },
+      { name: "escaped newline", environment: "HOME=$'/home/\\nname'", refusal: "TARGET_UNAVAILABLE" },
+      { name: "escaped NUL", environment: "HOME=$'/home/\\000name'", refusal: "TARGET_UNAVAILABLE" },
+      { name: "relative quoted path", environment: "HOME=$'relative home'", refusal: "TARGET_UNAVAILABLE" },
+      { name: "duplicate directory", environment: `HOME=${quote(quotedHome)}\nHOME=/other`, refusal: "SCHEMA_INVALID" },
+    ];
+    for (const cell of quotedCases) {
+      writeFileSync(quotedContext, JSON.stringify({ home: quotedHome, calls: quotedCalls, environmentOutput: cell.environment }), { mode: 0o600 });
+      const env = { ...process.env, HOME: quotedHome, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(quotedRoot, "cotal"), XDG_CONFIG_HOME: "/wrong-shell-config", XDG_RUNTIME_DIR: quotedRuntime, PATH: `${quotedNative}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: quotedContext, DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      for (const format of ["--plain", "--json"]) {
+        const child = spawnSync(process.execPath, [cli, "daemon", "install", "--daemon-home", join(quotedRoot, "daemon"), "--dry-run", format], { cwd: quotedRoot, env, encoding: "utf8", timeout: 30_000 });
+        const output = `${child.stdout}${child.stderr}`;
+        const doc = format === "--json" ? JSON.parse(child.stdout) as { result?: { unitPath?: string }; error?: { code?: string } } : undefined;
+        check(`N6 ${cell.name} ${format}`, !child.error && !child.signal && (cell.refusal
+          ? child.status === (cell.refusal === "SCHEMA_INVALID" ? 1 : 2) && (doc ? doc.error?.code === cell.refusal : output.includes(cell.refusal))
+          : child.status === 0 && (doc ? doc.result?.unitPath === join(cell.expected!, "systemd", "user", `cotal-daemon-${sha(join(quotedRoot, "daemon")).slice(0, 16)}.service`) : output.includes(cell.expected!))), { status: child.status, output });
+      }
+    }
+    check("N6 quoted directories never execute shell text or publish a unit", !existsSync(join(quotedRoot, "NEVER")) && !existsSync(join(quotedRoot, "daemon", "service-unit.json")));
+    check("N6 quoted directory previews use only directory and linger reads", readFileSync(quotedCalls, "utf8").trim().split("\n").every(line => ["directory-read", "linger-read"].includes(JSON.parse(line).operation)));
     const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
     for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home", "unrecorded-default", "unrecorded-managed", "unrecorded-directory", "unrecorded-symlink", "unrecorded-uninspectable"]) {
       const dir = join(root, `${kind}\u2014unicode`); mkdirSync(dir, { mode: 0o700 });

@@ -16,6 +16,39 @@ export function isOwnedUnitName(unit: string): boolean {
   return /^cotal-[0-9a-f]{64}\.service$/.test(unit) || /^cotal-daemon(?:-[0-9a-f]{16})?\.service$/.test(unit);
 }
 
+/** Decode systemctl's shell_maybe_quote(..., SHELL_ESCAPE_POSIX), never shell evaluation. */
+function systemdDirectoryValue(value: string): string {
+  if (!value.startsWith("$'")) return value;
+  const invalid = () => new CommandFailure("refused", "SCHEMA_INVALID", "the user manager returned an invalid quoted directory; no directory was selected");
+  if (!value.endsWith("'")) throw invalid();
+  const bytes: Buffer[] = [];
+  const escapes: Record<string, string> = { a: "\x07", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"' };
+  const body = value.slice(2, -1);
+  for (let i = 0; i < body.length;) {
+    if (body[i] === "'") throw invalid();
+    if (body[i] !== "\\") {
+      const end = body.indexOf("\\", i);
+      const text = body.slice(i, end < 0 ? undefined : end);
+      if (text.includes("'")) throw invalid();
+      bytes.push(Buffer.from(text));
+      i += text.length;
+      continue;
+    }
+    const escaped = body[++i];
+    if (escaped !== undefined && Object.hasOwn(escapes, escaped)) {
+      bytes.push(Buffer.from(escapes[escaped]!));
+      i++;
+    } else {
+      const octal = body.slice(i, i + 3);
+      if (!/^[0-3][0-7]{2}$/.test(octal)) throw invalid();
+      bytes.push(Buffer.from([Number.parseInt(octal, 8)]));
+      i += 3;
+    }
+  }
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(bytes)); }
+  catch { throw invalid(); }
+}
+
 /** The user manager's own config directory, never this CLI shell's XDG override. A missing
  *  bus or malformed environment is a refusal, not permission to guess a home path. */
 export function systemdUserUnitDirectory(): string {
@@ -30,7 +63,7 @@ export function systemdUserUnitDirectory(): string {
     const name = line.slice(0, index);
     if (name !== "HOME" && name !== "XDG_CONFIG_HOME") continue;
     if (paths.has(name)) throw new CommandFailure("refused", "SCHEMA_INVALID", "the user manager returned duplicate directory variables; no directory was selected");
-    paths.set(name, line.slice(index + 1));
+    paths.set(name, systemdDirectoryValue(line.slice(index + 1)));
   }
   const xdg = paths.get("XDG_CONFIG_HOME"), home = paths.get("HOME");
   const config = xdg === undefined || xdg === "" ? home && join(home, ".config") : xdg;
