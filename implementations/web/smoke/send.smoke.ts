@@ -323,8 +323,8 @@ try {
   const nativePort = await freePort();
   let nativeLog = "";
   const { execFileSync } = await import("node:child_process");
-  execFileSync(process.execPath, [fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "ext", "add", fileURLToPath(new URL("..", import.meta.url))], { cwd: work, env: { ...process.env }, stdio: "pipe" });
-  const native = spawn(process.execPath, [fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "__service-web", "--root", root, "--space", SPACE, "--server", STATIC, "--creds", credsFile, "--posting-creds", postingFile, "--host", "127.0.0.1", "--port", String(nativePort), "--service-instance", instanceId, "--launch-request", launchRequestId, "--ready-file", ready], { cwd: work, env: { ...process.env }, stdio: ["ignore", "pipe", "pipe"] });
+  execFileSync(process.execPath, [fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "ext", "add", fileURLToPath(new URL("..", import.meta.url))], { cwd: work, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: "pipe" });
+  const native = spawn(process.execPath, [fileURLToPath(new URL("../../../bin/dist/cotal.js", import.meta.url)), "__service-web", "--root", root, "--space", SPACE, "--server", STATIC, "--creds", credsFile, "--posting-creds", postingFile, "--host", "127.0.0.1", "--port", String(nativePort), "--service-instance", instanceId, "--launch-request", launchRequestId, "--ready-file", ready], { cwd: work, env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
   kids.push(native);
   native.stdout?.on("data", (d) => { nativeLog += d; });
   native.stderr?.on("data", (d) => { nativeLog += d; });
