@@ -16,6 +16,7 @@ import {
   readUpdateSettings,
   recordUpdateCompletion,
   recordUpdateDeferral,
+  recordUpdateRefusal,
   recordUpdateReplacement,
   setUpdateSetting,
   bindExtensionPeers,
@@ -68,7 +69,7 @@ import { recordedStackRemedy, type RecordedStackRemedy } from "../lib/recorded-s
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl, onFlag } from "../lib/control.js";
 import { managerPin } from "../lib/manager-choice.js";
-import { localUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
+import { localUpdateManagers, recordedUpdateManagers, type UpdateManager } from "../lib/update-managers.js";
 export { localUpdateManagers } from "../lib/update-managers.js";
 export { managerPin as updateManagerPin } from "../lib/manager-choice.js";
 import { assertRecordIdentity, brokerAddressKey } from "@cotal-ai/workspace";
@@ -113,6 +114,7 @@ export interface UpdateRuntime {
   readonly parentPid: number;
   readonly nodePath: string;
   now?(): number;
+  sleep?(milliseconds: number): Promise<void>;
   recoveryOwnerStart?(pid: number): string | undefined;
   /** Refuse unsupported or unwritable execution destinations before any persistent writes. */
   preflightExecution?(): void;
@@ -166,6 +168,8 @@ export interface UpdateRuntime {
   err(message: string): void;
   stdout(message: string): void;
   stderr(message: string): void;
+  /** Set when a manual version-changing update has already waited for the installed generation. */
+  generationWaited?: boolean;
 }
 
 export { installedCliVersion };
@@ -245,7 +249,9 @@ export async function update(args: ParsedArgs, rt: UpdateRuntime = updateRuntime
     try { rt.preflightExecution?.(); }
     catch (error) {
       if (isCommandFailure(error)) throw error;
-      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `This installation cannot update itself from this account: ${message(error)}; no changes were made`, {
+      const refusal = `This installation cannot update itself from this account: ${message(error)}; no changes were made`;
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateRefusal(rt.version(), refusal);
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", refusal, {
         native: { outcome: "not-executed" },
       });
     }
@@ -470,7 +476,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
-    if (latest.ok && compareSemver(latest.version, current) > 0) return upgradeAndReconcile(latest.version, current, rt, target);
+    if (latest.ok && compareSemver(latest.version, current) > 0) {
+      const code = await upgradeAndReconcile(latest.version, current, rt, target);
+      if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
+      return code;
+    }
     if (latest.ok && rt.isCurrent?.()) {
       try {
         const custody = await rt.reportRunningManager(target);
@@ -736,7 +746,7 @@ export async function reportRunningManagers(
   // Raw credentials are an explicit off-registry target, not an install-wide discovery request.
   if (typeof flags.creds === "string") return readOne(flags);
   const on = typeof flags.on === "string" ? await managerPin(flags, "cotal update") : undefined;
-  const local = process.platform === "linux" ? census({ ...flags, on }) : [];
+  const local = census({ ...flags, on });
   const selected = local.filter(manager =>
     (typeof flags.space !== "string" || manager.space === flags.space) &&
     (typeof flags.server !== "string" || brokerAddressKey(manager.server) === brokerAddressKey(flags.server)) &&
@@ -776,7 +786,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   // without it, naming `--on` as the remedy; the flag has to exist here for that remedy to be real,
   // and it has to reach the MINT below, since a credential cannot gain an instance rail after it is
   // issued. A name or host resolves to an instance id the same way `ps` resolves it.
-  const on = await managerPin(flags, "cotal update");
+  let on = await managerPin(flags, "cotal update");
   // #2158: a remote user mesh's manager runs under another install, on another machine. Replacing
   // THIS machine's binary interrupts no manager there, so there is no custody here to preserve and
   // no answer from that mesh's exchange can change what this install does. Peek the mode the same
@@ -784,12 +794,14 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
   // unfiltered) and skip the mint entirely for a remote entry, before it ever reaches the exchange.
   // The control resolve below reads the same sweep, so the whole chain sees one liveness verdict.
   let offline: readonly string[] | undefined;
+  let remoteSpace: string | undefined;
   if (typeof flags.creds !== "string") {
     const space = typeof flags.space === "string" ? flags.space : undefined;
     const server = typeof flags.server === "string" ? flags.server : undefined;
     let peek: MeshTarget | undefined;
     try {
-      offline = space || options.readOnly ? [] : (await pruneStaleMeshes(server)).offline;
+      // This sweep only probes. Read-only staged checks need the same liveness verdict.
+      offline = (await pruneStaleMeshes(server)).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
@@ -815,16 +827,30 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     // install is untouched by replacing this one, so it is no custody here, the same as a manager
     // that runs on another machine.
     if (peek?.mode === "user" && peek.userAuth?.remote === true) {
-      if (!supervisorMayServe(peek.space, options.installedEntry)) {
+      remoteSpace = peek.space;
+      const recorded = on === undefined ? recordedUpdateManagers({ space: peek.space, server: peek.server }, options.installedEntry) : [];
+      if (recorded.length > 1) {
+        let verdict: "none" | "legacy" = "none";
+        for (const manager of recorded) {
+          if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
+          if (await readManagerContinuity({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }, options) === "legacy") verdict = "legacy";
+        }
+        return verdict;
+      }
+      if (recorded.length === 1) on = recorded[0]!.instanceId;
+      if (on === undefined && process.platform !== "win32" && !supervisorMayServe(peek.space, options.installedEntry)) {
         console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
         return "none";
       }
       console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
+    // Explicit and in-folder targets are not filtered by the resolver's offline set.
+    if (peek && offline?.includes(peek.space) && on === undefined &&
+        !supervisorMayServe(peek.space, options.installedEntry)) return "none";
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
     // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
     // exchange would refuse on the stopped auth service first.
-    if (peek && await isStoppedLocalMesh(peek)) {
+    if (peek && remoteSpace === undefined && await isStoppedLocalMesh(peek)) {
       console.log(c.dim(`  ${peek.space}: stopped; no manager running`));
       return "none";
     }
@@ -838,6 +864,11 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       offline,
     }, "control-caller-admin", on, { onRefusal: "throw", readOnly: true });
   } catch (e) {
+    const failure = e instanceof ConnectRefusal ? e.failure() : isCommandFailure(e) ? e : undefined;
+    if (remoteSpace !== undefined && on === undefined && e instanceof ConnectRefusal && failure?.code === "PERMISSION_DENIED" && /\(view "manager-caller"\) was refused: manager-caller selection found (?:[2-9]|\d{2,}) live remote manager candidates for owner \S+ \([A-Za-z0-9_, -]+\); exactly one is required, so name one with --on <instanceId>/.test(failure.message)) {
+      console.log(`  ${remoteSpace}: several Managers are live and no local instance could be identified; continuing the software update.`);
+      return "none";
+    }
     // No running manager means no custody to preserve and nothing this update could interrupt. Only
     // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
     // with none selected. A selected stopped mesh was already read above; a named space that is not
@@ -955,7 +986,7 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
         const result = manifests[index]!;
         if (result.status === "rejected") throw new Error(`metadata for ${spec} is unavailable`);
         const manifest = result.value;
-        if (manifest.status !== 0) throw new Error(`metadata for ${spec} is unavailable`);
+        if (manifest.status !== 0) throw releaseReadError(manifest, `metadata for ${spec} is unavailable`);
         let meta: Record<string, unknown>;
         try {
           const parsed: unknown = JSON.parse(manifest.stdout);
@@ -984,11 +1015,42 @@ async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise
     // Its cache add accepts multiple specs. Bound each group rather than starting npm per archive.
     for (let offset = 0; offset < names.length; offset += 6) {
       const specs = names.slice(offset, offset + 6).map(name => `${name}@${version}`);
-      const archive = await rt.npmAsync(["cache", "add", ...specs, "--ignore-scripts", ...options]);
-      if (archive.status !== 0) throw new Error(`archives for ${specs.join(", ")} could not be downloaded and verified`);
+      const archive = await rt.npmAsync(["cache", "add", ...specs, "--json", "--ignore-scripts", ...options]);
+      if (archive.status !== 0) throw releaseReadError(archive, `archives for ${specs.join(", ")} could not be downloaded and verified`);
     }
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
+  }
+}
+
+class ReleaseNotAvailable extends Error {}
+
+function releaseReadError(result: CommandResult, detail: string): Error {
+  if (result.status !== null && !result.error) {
+    try {
+      const error = (JSON.parse(result.stdout) as { error?: { code?: unknown } }).error;
+      if (error?.code === "E404" || error?.code === "ETARGET") return new ReleaseNotAvailable(detail);
+    } catch { /* An unstructured failure is not evidence of registry propagation. */ }
+  }
+  return new Error(detail);
+}
+
+async function waitForReleaseArchives(version: string, current: string, rt: UpdateRuntime): Promise<boolean> {
+  const now = rt.now ?? Date.now;
+  const deadline = now() + 10 * 60_000;
+  for (;;) {
+    try { await checkReleaseArchives(version, rt); return true; }
+    catch (error) {
+      if (!(error instanceof ReleaseNotAvailable)) throw error;
+      const remaining = deadline - now();
+      if (remaining <= 0) {
+        recordUpdateDeferral(version, "waiting for registry or extension closure availability", true);
+        rt.out(`cotal-ai@${version} is still reaching the registry. Keeping cotal-ai@${current}; no global install was attempted. A later update check will try again.`);
+        return false;
+      }
+      rt.out(`Waiting for cotal-ai@${version} release archives to reach the registry (${Math.ceil(remaining / 1000)} s remaining); cotal-ai@${current} stays installed.`);
+      await (rt.sleep ?? (milliseconds => new Promise(resolveSleep => setTimeout(resolveSleep, milliseconds))))(Math.min(15_000, remaining));
+    }
   }
 }
 
@@ -1033,7 +1095,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   const releaseChecksStarted = Date.now();
   try {
     rt.out(`Checking cotal-ai@${targetVersion} release archives`);
-    await checkReleaseArchives(targetVersion, rt);
+    if (!await waitForReleaseArchives(targetVersion, current, rt)) return 0;
     rt.out(`Checking installed extension dependencies for ${targetVersion}`);
     checkInstalledClosure(targetVersion, rt);
     // In-place rollback downloads the previous release. Staged rollback retains its complete graph.

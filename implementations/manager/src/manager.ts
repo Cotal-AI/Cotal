@@ -370,7 +370,9 @@ export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal"
  * covered by the caller invoking `renewDaemonCreds` once synchronously before starting the timer,
  * so no separate floor is needed. The pass is idempotent, since `renewDaemonCreds` no-ops each
  * credential when its state is `healthy`, so a tick that lands before the window costs one health
- * check per owner. */
+ * check per owner. A managed seat's credential is judged as of the next tick instead, because the
+ * seat re-reads its file only once a minute and nothing pushes the renewal to it: a tick that
+ * lands in the window's last minute can come too late for the seat to adopt it. */
 export function credRenewIntervalMs(ttlSeconds: number): number {
   return Math.max(1, Math.floor((ttlSeconds / 4) * 1000));
 }
@@ -764,7 +766,7 @@ export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
  *  inside the cause so the reap line can say who asked, not just that a stop happened: on a shared
  *  host several principals hold stop authority, and `u_alice.actor`'s despawn must not read
  *  identically to `u_bob.actor`'s. */
-export type FreeSlotStopCause =
+type FreeSlotStopCause =
   | { kind: "stopped-requested"; requester: string }
   | { kind: "stopped-self" }
   | { kind: "stopped-reap"; parent: string }
@@ -872,7 +874,7 @@ export type ManagerResumeIdentity =
 
 /** A resumed seat's fork provenance: the session it forked, that session's title when it has one,
  *  and the SHA-256 the connector took over the source transcript it read. */
-export interface ForkProvenance {
+interface ForkProvenance {
   source: string;
   title?: string;
   transcriptSha256: string;
@@ -1479,7 +1481,7 @@ export interface SpawnAcceptance {
 /** The `turn` acceptance floor: the resolved seat incarnation the payload is addressed to, the
  *  goal coordinates the caller follows to the terminal, and the ABSOLUTE deadline the goal-bound
  *  hold is armed at — a follower bounds its wait on `deadlineAt`, never a relative window. */
-export interface TurnAcceptance {
+interface TurnAcceptance {
   name: string;
   owner: string;
   actor: string;
@@ -2665,7 +2667,8 @@ export class Manager {
           }
         } catch {}
       }
-      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
+      // A refused family needs another pass inside the final quarter of its lifetime.
+      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), Math.max(1, Math.floor(standingTtl * 1000 / 8)));
       this.resumeCredRenewal = () => {
         if (this.credRenewTimer || this.leaseStopping) return;
         this.credRenewTimer = setInterval(async () => {
@@ -3026,11 +3029,16 @@ export class Manager {
   }
 
   /** #2073: the shared bounded-retry shape for a closed standing connection: wait out each of
-   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. A stop landing while
-   *  this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
-  private async boundedReconnect(label: string, attempt: () => Promise<boolean>): Promise<boolean> {
+   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. Waiting does not repair
+   *  two closes, so they skip the first delay. One that closes while an all-duty renewal is in flight,
+   *  as one the broker expires just before adoption, tries when that renewal adopts. One whose
+   *  credential has `expired` tries at once, because its attempt renews the credential. A stop landing
+   *  while this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
+  private async boundedReconnect(label: string, attempt: () => Promise<boolean>, expired = false): Promise<boolean> {
+    let first = this.remoteBundleAdoption ?? (expired ? Promise.resolve() : undefined);
     for (const delayMs of STATIC_RECONCILE_RETRY_DELAYS_MS) {
-      await new Promise((r) => setTimeout(r, delayMs));
+      await (first ?? new Promise((r) => setTimeout(r, delayMs)));
+      first = undefined;
       if (this.leaseStopping) return true;
       try {
         if (await attempt()) return true;
@@ -3103,6 +3111,14 @@ export class Manager {
       // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
       // Same class-2 mechanics as the daemon creds: re-sign the file for the SAME nkey; the
       // agent endpoint's 75% source re-read adopts it.
+      //
+      // Each credential is judged as of the NEXT pass, so one whose renewal point falls before it
+      // is re-signed now, ahead of the endpoint's re-read. Judged as of now, a credential whose
+      // renewal point lands just after a pass waited a whole interval: the endpoint warned every
+      // minute that the file still held the old generation, and when the next pass came in the
+      // credential's last minute, the endpoint's one-minute retry could miss it and the connection
+      // expired.
+      const nextPassSec = Math.floor(Date.now() / 1000) + Math.ceil(credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC) / 1000);
       if (!this.userMode) {
         for (const a of [...this.agents.values()]) {
           // The `terminalizing` test here is an OPTIMISATION, NOT THE GUARD. There are awaits below
@@ -3115,7 +3131,7 @@ export class Manager {
           try {
             const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds, this.space));
             if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
-            const health = inspectCredHealth(stored);
+            const health = inspectCredHealth(stored, nextPassSec);
             if (health.state === "healthy") continue;
             if (health.state === "unbounded" || health.state === "unreadable") {
               console.error(`! managed cred renewal ${a.name}: credential is ${health.state}${health.error ? ` (${health.error})` : ""} - not renewed (a pre-TTL credential stays as minted until respawn)`);
@@ -4826,7 +4842,7 @@ export class Manager {
     // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
     // only — the action model gives failures a typed channel.
     const unwrap = (r: ControlReply): unknown => {
-      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details);
+      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, r.outcome);
       return r.data;
     };
     // The admin-family serve gate: every `manager.admin`-class
@@ -6842,14 +6858,14 @@ export class Manager {
     this.bootNotes = [];
     if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
-    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean; permissionRequests?: boolean }>;
+    let declared: Array<{ name: string; requires: readonly string[]; eventPlane: boolean }>;
     if (this.installedExtensions) {
       try {
         declared = loadExtensionsManifest().extensions.flatMap((ext) => extensionConnectors(ext));
       } catch (error) {
         const reason = rejectionText(error);
         this.bootNotes.push(`! manager boot: connector inventory unavailable - ${reason}`);
-        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, permissionRequests: false, reason }];
+        this.connectorStatuses = [{ agent: "(inventory)", state: "unavailable", binaries: {}, eventPlane: false, reason }];
         this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
         return;
       }
@@ -6858,30 +6874,20 @@ export class Manager {
         name: connector.name,
         requires: connector.requires ?? [],
         eventPlane: connector.eventChannel !== undefined,
-        permissionRequests: connector.permissionRequests === true,
       }));
     }
-    for (const { name, requires, eventPlane, permissionRequests = false } of declared) {
+    for (const { name, requires, eventPlane } of declared) {
       const { binaries, reason } = resolveHarness(name, requires);
       if (reason) {
-        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, permissionRequests, reason });
+        rows.push({ agent: name, state: "unavailable", binaries, eventPlane, reason });
         this.bootNotes.push(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
-        rows.push({ agent: name, state: "available", binaries, eventPlane, permissionRequests });
+        rows.push({ agent: name, state: "available", binaries, eventPlane });
       }
     }
     this.connectorStatuses = rows.sort((a, b) => a.agent.localeCompare(b.agent));
     if (!this.classSpawnEnabled())
       this.bootNotes.push("! manager: no agent application is available here, so a spawn without --on goes to another manager in this space");
-  }
-
-  /** The connector rows a status read serves. A connector relays permission prompts only where an
-   *  owner can answer them, and only a user-auth mesh mints the interactive ledger rows that answer
-   *  (SPEC §8.2), so on an open or static mesh every row reads false. The mode is known only after
-   *  boot inspects the connectors, so it is applied here. */
-  private servedConnectorStatuses(): ManagerConnectorStatus[] {
-    const answerable = this.meshMode === "user";
-    return this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries }, permissionRequests: answerable && row.permissionRequests }));
   }
 
   /** True when at least one declared connector is available. Empty inventory (or a failed
@@ -9762,7 +9768,7 @@ export class Manager {
       terminalSessions: this.execution !== "none",
       agentCount: ownerFilter === undefined ? this.agents.size : [...this.agents.values()].filter((a) => a.userOwner === ownerFilter).length,
       uptimeMs: Date.now() - this.startedAtMs,
-      connectors: this.servedConnectorStatuses(),
+      connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
       classSpawn: this.classSpawnEnabled(),
       staticReconciliation: this.staticReconciliationStatus(),
       stopImpact: {
@@ -10142,7 +10148,7 @@ export class Manager {
         // reopened past the slot's stamp.
         observeHolderGeneration: (holderInstanceId) =>
           readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: holderInstanceId }),
-        status: { connectors: this.servedConnectorStatuses() },
+        status: { connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })) },
       });
       const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
       // Open mesh: NO mint - the §13.1 fence is issuance-only and nothing is ever issued, so the
@@ -10303,7 +10309,7 @@ export class Manager {
       await this.dialGoalWriter(gw);
       console.error("manager goal-writer re-dialed");
       return true;
-    });
+    }, inspectCredHealth(gw?.creds ?? "").state === "expired");
     if (this.leaseStopping || recovered) return;
     console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
   }
@@ -10414,7 +10420,7 @@ export class Manager {
       await this.dialSessionLedgerConnection(sw, identity);
       console.error("manager session-ledger re-dialed");
       return true;
-    });
+    }, inspectCredHealth(sw?.creds ?? "").state === "expired");
     if (this.leaseStopping || recovered) return;
     console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
   }
@@ -13270,7 +13276,11 @@ export class Manager {
         }
         if (!admin && existing.owner !== caller) {
           const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
-          return { reply: { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` } };
+          return { reply: {
+            ok: false, code: "permission-denied", outcome: "not-executed",
+            error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can`,
+            details: [{ kind: "ai.cotal.persona-ownership-refused", operatorOwned: existing.owner === undefined }],
+          } };
         }
       }
       try {

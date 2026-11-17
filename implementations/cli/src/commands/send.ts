@@ -418,8 +418,12 @@ export async function send(args: ParsedArgs): Promise<void> {
     // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
     // send on the task stream. Confirmed absence of that stream refuses before publication. An
     // unread check does not refuse, and a direct message is not refused because the chat stream is gone.
+    // An open space that runs elsewhere gets its streams from its first participant, and this send
+    // may be that participant, as a chat session is when it starts (#7045).
     const storedOn = input.mode === "msg" ? chatStream(space) : input.mode === "dm" ? dmStream(space) : taskStream(space);
-    if (spaceStreamsExpected(space, connection.mode) && await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
+    if (spaceStreamsExpected(space, connection.mode)) {
+      if (await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
+    } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
     const rest = await bodyRest(body, ep.maxPayload, refusal);
     if ("over" in rest) throw tooLarge(rest.over);
     const { text } = rest;

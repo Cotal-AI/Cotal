@@ -245,13 +245,19 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
       const f = asCallable(a[0], "filter");
       const out: unknown[] = [];
       const len = xs.length;
-      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) out.push(xs[i]);
+      for (let i = 0; i < len; i += 1) {
+        const item = xs[i];
+        if (await f(frame, [item, i, xs])) out.push(item);
+      }
       return born(out, frame.depth);
     },
     find: async (frame, xs, a) => {
       const f = asCallable(a[0], "find");
       const len = xs.length;
-      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      for (let i = 0; i < len; i += 1) {
+        const item = xs[i];
+        if (await f(frame, [item, i, xs])) return item;
+      }
       return undefined;
     },
     findIndex: async (frame, xs, a) => {
@@ -262,7 +268,10 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
     },
     findLast: async (frame, xs, a) => {
       const f = asCallable(a[0], "findLast");
-      for (let i = xs.length - 1; i >= 0; i -= 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      for (let i = xs.length - 1; i >= 0; i -= 1) {
+        const item = xs[i];
+        if (await f(frame, [item, i, xs])) return item;
+      }
       return undefined;
     },
     findLastIndex: async (frame, xs, a) => {
@@ -505,14 +514,20 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       "filter",
       higher("filter", async (frame, list, f) => {
         const out: unknown[] = [];
-        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) out.push(list[i]);
+        for (let i = 0; i < list.length; i += 1) {
+          const item = list[i];
+          if (await f(frame, [item, i])) out.push(item);
+        }
         return born(out, frame.depth);
       }),
     ],
     [
       "find",
       higher("find", async (frame, list, f) => {
-        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return list[i];
+        for (let i = 0; i < list.length; i += 1) {
+          const item = list[i];
+          if (await f(frame, [item, i])) return item;
+        }
         return null;
       }),
     ],

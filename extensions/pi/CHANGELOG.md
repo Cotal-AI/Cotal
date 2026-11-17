@@ -1,5 +1,32 @@
 # @cotal-ai/pi
 
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Patch Changes
+
+- a97aade: Report harness work timestamps across the Claude Code, Codex, Hermes, OpenCode and pi connectors.
+  
+  Relay work events into the existing presence `activeAt` field so roster and operator surfaces can date the last reported work separately from heartbeats. No new wire field or progress verdict is added. Boundary-only hosts report less frequently than streaming hosts, and work age cannot distinguish a slow provider from a hung one.
+- 18d2cda: A channel post that mentions an agent who may not read the channel no longer drops that mention silently. On an authenticated mesh the delivery daemon sends the post's sender a mention notice that names those agents, so the sender can reach them another way. The connectors show it as `[mention notice from the delivery daemon]`, and Hermes runs it in its own `notice:mention` chat.
+
 ## 0.164.18
 
 No changes in this release.

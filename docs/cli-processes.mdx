@@ -598,6 +598,10 @@ cotal daemon service-disconnect --space <s> [--daemon-home <dir>] [--json|--plai
 cotal daemon service-status --space <s> [--daemon-home <dir>] [--json|--plain]
 ```
 
+On Linux, daemon installation reads its unit directory from the systemd user manager.
+Shell-quoted home and config paths, including spaces, are decoded without running a shell.
+Relative paths, control characters and malformed quoting are refused.
+
 Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
 `cotal daemon setup --idp <url>` for another host. With no known provider, bare
 `cotal daemon setup` selects Cotal Cloud in a terminal or a pipe and prints how to choose another host. `--no-browser` keeps approval in the terminal.
@@ -659,8 +663,9 @@ CPU utilisation uses the same busy-time percentage on all three platforms. Linux
 memory includes reclaimable memory through MemAvailable; macOS and Windows report free memory.
 The home volume and the root or system volume are reported, without personal directory paths,
 network mounts, loop devices or per-user runtime mounts. The sample contains no process list or CPU model.
-The first registration does not wait for measurement. Sampling runs in the background;
-subsequent registration heartbeats attach an available cached sample. There is no extra HTTP loop.
+The first registration does not wait for measurement. Sampling runs in the background on the
+five-second poll, including while signed out. Subsequent registration heartbeats attach an available
+cached sample. There is no extra HTTP loop.
 `cotal daemon status` prints the cached sample. JSON includes `vitals` with `sampledAt`,
 `cpu`, `memory`, `filesystems` and `uptimeSeconds`. This uptime is the computer's uptime,
 separate from the daemon's `uptimeMs`. Human status shows capacity in GiB with one decimal

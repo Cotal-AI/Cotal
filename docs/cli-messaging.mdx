@@ -102,6 +102,8 @@ that destination before it publishes. A channel post is stored on the chat strea
 on the DM stream, and a role send on the task stream. When that stream is confirmed absent, `send`
 refuses `TARGET_UNAVAILABLE` (exit 2) and publishes nothing. A direct message is still stored when
 only the chat stream is absent. A read that fails does not count as absence.
+On an open space that runs elsewhere, the first participant creates the space's streams, and `send`
+creates them before it publishes, as a chat session does when it starts.
 A broker that cannot write its store sends no
 acknowledgement at all, so when such a publish times out and the space's broker log on this machine
 records a store write failure, the `OPERATION_UNKNOWN` message names its time, cause and file and
@@ -241,7 +243,9 @@ command that takes a channel reads it with or without its `#`.
 daemon, it reads them the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
-`cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the
+`cotal send -c` does, so it wakes the agents it names. An `@` right after an ASCII letter or
+digit, `_`, `.`, `-` or `/` starts no mention, so an email address or a path names no one. That
+holds for `Done.@rover` too, so put a space before the `@`. A `--stdio` `send` carries only the
 `mentions` its request lists.
 
 A direct message to an agent the roster shows offline is stored, and the view adds the same

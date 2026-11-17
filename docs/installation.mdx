@@ -24,7 +24,9 @@ curl -fsSL https://get.cotal.ai | sh -s -- --no-setup
 ```
 
 Run the installer as your own user, without sudo.
-Rerunning it updates the CLI and runs `cotal update --self` to reconcile the existing installation.
+Rerunning it installs the selected release and runs `cotal update` to reconcile the existing installation.
+`--version <target-version>` keeps that release installed instead of selecting latest again.
+You can rerun it with Cotal's `nodebin` directory on PATH without replacing its runtime links with links to themselves.
 It installs inside your home directory and checks downloaded Node.js files against their published SHA-256 sums.
 It uses a suitable Node.js 22.10 or newer already on your machine, or installs one for Cotal.
 

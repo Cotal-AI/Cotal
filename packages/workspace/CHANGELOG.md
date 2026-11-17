@@ -1,5 +1,67 @@
 # @cotal-ai/workspace
 
+## 0.165.4
+
+### Patch Changes
+
+- 5413861: Allow stop, attach and terminal input to reach managed processes that have not joined the mesh.
+- d5ecb99: Allow file-only credential minting and signer export after stopping a local static space without repeating its broker address.
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+  - @cotal-ai/core@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- 9edbf60: A restore interrupted after its commit intent and before it bound a listener now recovers forward with bare `cotal up`, as its refusal advises. Before, every `up` exited 3 with "re-entry has no bound listener proof" and the restore stayed stuck. `up` now starts the listener when no process of this account names the attempt and the recorded port is free, including from a `degraded` record an earlier `up` left. While a listener the interrupted run started still runs, `up` names its pid and refuses, because a second server would open the restored store beside it.
+- Updated dependencies [f419ba9]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+
+### Patch Changes
+
+- e3777e8: Add a retained maintenance-lock check and pre-stop controller identity observation for migration hosts.
+  
+  The observation binds the controller operation, member launches, broker configuration and store identity without stopping services or admitting a migration. Controller preservation and restore commands remain unsupported.
+- 71c39a3: Protect daemon state inside a redirected Cotal home from being used as a project folder.
+  
+  Space creation and startup now treat the daemon record directory and its descendants as control paths, while still allowing project folders beside the home's records.
+- 2896d81: The terminal app can open a managed agent's live terminal in its middle column and type into it.
+  
+  `openTerminalSession()` from `@cotal-ai/workspace/attach` opens one attach session for a caller that draws the terminal itself. It locates and pins the seat as `attachSeat()` does, honors `expectedTarget`, touches no process terminal, does not reconnect, and returns every refusal as a message. Its `close()` hands the session back to the manager.
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+  - @cotal-ai/core@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

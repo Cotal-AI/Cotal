@@ -1,4 +1,6 @@
 /** Interrupted detached controller starts keep their signal exit and report what remains running.
+ *  A legacy broker-only start killed after it published `nats.pid` is refused by the next `up`, with
+ *  or without `--server`, and stopped by `down`.
  *  Uses private homes and ports, and stops only its own stacks through `down --yes`.
  *  Run: pnpm smoke:up-interrupt:live */
 import assert from "node:assert/strict";
@@ -186,6 +188,71 @@ for (const [name, signal, code, format, noManager] of [
     writeFileSync(join(base, `${name}-down.stderr`), stopped.stderr);
     assert.equal(stopped.status, 0, `private stack cleanup failed: ${stopped.stderr}\n${stopped.stdout}`);
     assert.equal(await listening(port), false, "private broker still listens after down");
+  }
+}
+
+// #7123: a legacy broker-only start killed after it published `nats.pid` and before it registered
+// its space. A space named unlike its folder loses its registration at `down`, so only the root's
+// own files name that broker afterwards.
+{
+  const home = join(base, "legacy-home"), root = join(base, "legacy-root"), config = join(home, "xdg");
+  for (const dir of [home, root, config]) mkdirSync(dir, { mode: 0o700 });
+  const env = { ...inherited, HOME: home, USERPROFILE: home, COTAL_HOME: home, XDG_CONFIG_HOME: config,
+    XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state"),
+    COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" };
+  const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: config });
+  const cli = (...args: string[]) => {
+    const options = { cwd: root, env, encoding: "utf8" as const, timeout: 180_000 };
+    assertSmokeSandboxDown(sandbox, args, options);
+    return spawnSync(process.execPath, ["--import", loader, entry, ...args], options);
+  };
+  const port = await freePort();
+  const start = ["up", "--server", `nats://127.0.0.1:${port}`, "--space", `legacy-interrupt-${process.pid}`, "--open", "--no-manager"];
+  const pidPath = join(root, ".cotal", "nats.pid");
+  let orphan: number | undefined;
+  try {
+    assert.equal(cli(...start).status, 0, "legacy broker-only start");
+    assert.equal(cli("down", "--yes").status, 0, "legacy stop");
+    const child = spawn(process.execPath, ["--import", loader, entry, ...start], { cwd: root, env, stdio: "ignore" });
+    const closed = new Promise<void>((done) => child.once("close", () => done()));
+    const until = Date.now() + 90_000;
+    while (!readPidfile(pidPath)) {
+      assert.equal(child.exitCode, null, "the interrupted start ended before it published nats.pid");
+      assert.ok(Date.now() < until, "nats.pid was not published before the deadline");
+      await sleep(1);
+    }
+    child.kill("SIGKILL");
+    await closed;
+    const orphanPid = Number(readPidfile(pidPath));
+    orphan = orphanPid;
+    const refusal = /the broker this folder started for "legacy-interrupt-\d+" still runs at nats:\/\/127\.0\.0\.1:\d+ \(pid (\d+)\)/;
+    for (const [label, args] of [["same flags", start], ["no --server", start.filter((arg, i) => arg !== "--server" && start[i - 1] !== "--server")]] as const) {
+      const again = cli(...args);
+      check(`legacy interrupt: up with ${label} refuses beside the broker it left`, () => {
+        assert.equal(again.status, 2, again.stderr);
+        assert.equal(Number(refusal.exec(again.stderr)?.[1]), orphanPid);
+        assert.match(again.stderr, /stop it with `cotal down`, then run `cotal up` again/);
+        assert.equal(readPidfile(pidPath), String(orphanPid), "no other broker was recorded");
+      });
+    }
+    const stopped = cli("down", "--yes");
+    check("legacy interrupt: down stops the broker the interrupted start left", () => {
+      assert.equal(stopped.status, 0, stopped.stderr);
+      assert.equal(existsSync(pidPath), false);
+      assert.throws(() => process.kill(orphanPid, 0));
+    });
+    check("legacy interrupt: the next start and stop succeed", () => {
+      assert.equal(cli(...start).status, 0);
+      assert.equal(cli("down", "--yes").status, 0);
+    });
+  } finally {
+    if (readPidfile(pidPath)) cli("down", "--yes");
+    // A stop that failed must not leave the broker this cell's interrupted start spawned. Its record
+    // still naming it is what shows the stop did not run.
+    if (orphan !== undefined && readPidfile(pidPath) === String(orphan)) try { process.kill(orphan, "SIGTERM"); } catch { /* already gone */ }
+    const until = Date.now() + 10_000;
+    while (await listening(port) && Date.now() < until) await sleep(100);
+    assert.equal(await listening(port), false, "legacy broker still listens after cleanup");
   }
 }
 assert.deepEqual(failures, [], "interrupted up regressions");

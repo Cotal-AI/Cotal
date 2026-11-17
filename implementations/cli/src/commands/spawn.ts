@@ -1,7 +1,7 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
-import { hostname } from "node:os";
+import { constants as osConstants, hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   assertValidRole,
@@ -98,6 +98,7 @@ import {
   preflightOrThrow,
   provenance,
   resolveAgentType,
+  resolveOnPath,
   resolveTargetOrThrow,
   serverFlag,
   spaceAccountPath,
@@ -1442,6 +1443,12 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     stderrLine("✗ ", `${(e as Error).message}`, c.red);
     process.exit(1);
   }
+  const binaryPins: Record<string, string | undefined> = { opencode: process.env.COTAL_OPENCODE_BIN, codex: process.env.COTAL_CODEX_BIN };
+  const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(binaryPins[bin]?.trim() || bin));
+  if (missing.length) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${agentType} needs ${missing.join(", ")} on PATH; nothing was launched`, {
+    target: { space, path },
+    remedy: `install or repair ${missing.join(", ")} on this machine, then run the same spawn again`,
+  });
   if (variant && !connector.supportsModelVariant) {
     stderrLine("✗ ", `${agentType} connector does not support model variants (variant)`, c.red);
     process.exit(1);
@@ -1807,8 +1814,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         resolve();
       });
     });
-    child.on("exit", (code) => {
-      process.exitCode = code ?? 0;
+    child.on("exit", (code, signal) => {
+      // A child killed by a signal has no exit code. Exit as a shell does, 128 plus the signal's
+      // number, so `cotal spawn ... && next` stops after a SIGKILL or SIGTERM (#7043).
+      process.exitCode = signal ? 128 + osConstants.signals[signal] : (code ?? 0);
       resolve();
     });
   });

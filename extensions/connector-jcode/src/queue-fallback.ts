@@ -119,7 +119,7 @@ export function deferralExhausted(unsettledRunDispatches: number, blockedForMs: 
  * redelivers elsewhere, and the reported connection state stops calling the seat `ready`. Terminal
  * for the SEAT's queued-turn tier, never for the MESSAGE.
  */
-export type ExhaustedDeferralAction = "replace-bridge" | "stop-attempting";
+type ExhaustedDeferralAction = "replace-bridge" | "stop-attempting";
 
 export function exhaustedDeferralAction(bridgeRecoveryAvailable: boolean): ExhaustedDeferralAction {
   return bridgeRecoveryAvailable ? "replace-bridge" : "stop-attempting";
@@ -140,7 +140,7 @@ export const FALLBACK_MAX_MS = 60_000;
  * - `wait` — nothing can be attempted right now; stay armed and look again later.
  * - `stop` — this host is shutting down; disarm.
  */
-export type FallbackAction = "drive" | "steer" | "queue-turn" | "wait" | "stop";
+type FallbackAction = "drive" | "steer" | "queue-turn" | "wait" | "stop";
 
 export interface FallbackState {
   /** The host is shutting down. */
@@ -171,7 +171,7 @@ export interface FallbackState {
   giveUpAfter: number;
 }
 
-export interface FallbackDecision {
+interface FallbackDecision {
   action: FallbackAction;
   /** Why, so a refusal is attributable rather than an unexplained `wait`. */
   reason:

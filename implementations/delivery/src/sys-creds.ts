@@ -194,7 +194,7 @@ export function tornRotationProblem(observerCreds: string, evictorCreds: string,
 /** What {@link loadSysPair} was asked for. The liveness verbs are READ-ONLY and must not even read
  *  the KICK cred — least privilege is not only about what a connection may do, but about what the
  *  process reads into memory on a path that never needs it. */
-export type SysCredsNeed = "observer" | "both";
+type SysCredsNeed = "observer" | "both";
 
 export interface SysPair {
   observer?: string;

@@ -1,4 +1,4 @@
-/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the runs a restore of an older backup rolled back, the other account a restore leaves in the store it set aside, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
+/** Live full/registry backup, restore, isolation, checkpoint, and ordinary-resume lifecycle, the disaster restore of a lost custom store, the bare `up` that reopens a restored store its record no longer names, the runs a restore of an older backup rolled back, the other account a restore leaves in the store it set aside, the `up -f` refusal while a restore is active, and the refusal of any `up` while its broker runs. */
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -706,8 +706,22 @@ async function unboundRestoreReentryScenario(detached: boolean): Promise<void> {
 
     const refused = run("up", ...(detached ? ["--detach"] : []), "--server", server, "--space", space);
     assert.notEqual(refused.status, 0);
-    assert.match(refused.stderr, /re-entry has no bound listener proof/);
+    assert.match(refused.stderr, /re-entry has no bound listener proof, and process \d+ started for it still runs/);
     assert.equal((JSON.parse(readFileSync(journalPath, "utf8")) as { state: string }).state, "degraded");
+
+    // #7127: once no process of the attempt runs, bare up starts its listener and recovers forward,
+    // from the degraded record the refusal left.
+    if (!detached) return;
+    process.kill(listenerPid, "SIGTERM");
+    await waitUntil(async () => !(await probeConnect(server, { timeoutMs: 200 })).ok, `${label} unbound listener stop`);
+    await waitUntil(async () => { try { process.kill(listenerPid!, 0); return false; } catch { return true; } }, `${label} unbound listener exit`);
+    listenerPid = undefined;
+    const recovered = run("up", "--detach", "--server", server, "--space", space);
+    assert.equal(recovered.status, 0, `${label} bare up recovers an unbound restore forward\nstdout:\n${recovered.stdout}\nstderr:\n${recovered.stderr}`);
+    const active = JSON.parse(readFileSync(journalPath, "utf8")) as { state: string; listenerProof?: { serverName: string } };
+    assert.equal(active.state, "active", "the recovered restore is active");
+    assert.ok(active.listenerProof, "the recovered restore bound its listener");
+    assert.equal(run("down", "--yes").status, 0);
   } finally {
     if (listenerPid) {
       try { process.kill(listenerPid, "SIGTERM"); } catch { /* already gone */ }
@@ -812,6 +826,101 @@ async function missingPidfileListenerScenario(): Promise<void> {
     run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/** #7049: a preserved custom store that is lost is rebuilt at the path its cut records. With
+ *  `--accept-missing-source` and no `--store-dir`, the restore chose `.cotal/nats` and failed
+ *  `OPERATION_UNKNOWN` before staging. Another `--store-dir` is refused before staging. */
+async function missingCustomSourceScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-custom-source-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-missing-custom-source-home-")));
+  const artifact = join(root, "space-backup");
+  const store = join(root, "registry-target");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "backup_missing_custom_source";
+  const { run } = sandboxRun(root, home);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  };
+  try {
+    must("up on a custom store", run("up", "--detach", "--open", "--server", server, "--space", space, "--store-dir", store));
+    must("send a message to keep", run("send", "-c", "preserved", "history-before-backup", "--space", space));
+    must("down --preserve-state", run("down", "--preserve-state"));
+    must("backup create", run("backup", "create", artifact));
+    renameSync(store, join(root, "saved-source"));
+    const elsewhere = run("backup", "restore", artifact, "--accept-missing-source", "--store-dir", join(root, "elsewhere"), "--json");
+    assert.equal(elsewhere.status, 1, `another --store-dir is a usage refusal\n${elsewhere.stdout}${elsewhere.stderr}`);
+    assert.match(elsewhere.stdout, /rebuilds it at its recorded path/);
+    assert.equal(readMaintenanceJournal(root)?.state, "ready", "the refusal left the preserved cut ready");
+    const restored = run("backup", "restore", artifact, "--accept-missing-source", "--json");
+    assert.equal(restored.status, 0, `a consented restore with no --store-dir rebuilds the recorded store\n${restored.stdout}${restored.stderr}`);
+    assert.equal((JSON.parse(restored.stdout) as { result: { store: string } }).result.store, store);
+    const kept = JSON.parse(run("history", "preserved", "--space", space, "--json").stdout) as { result: { items: { text: string }[] } };
+    assert.deepEqual(kept.result.items.map((item) => item.text), ["history-before-backup"], "the restored store serves the retained message");
+    must("down", run("down", "--yes"));
+  } finally {
+    run("down", "--yes");
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+/** #7017: after a registry restore into another store, `down` and the cleanup that retires the
+ *  previous store, the bare `up` the stop receipt names reopens the restored store. The space is not
+ *  named after its folder, so `down` dropped the record that named that store and only the broker
+ *  config its last start rendered names it. A root whose auth and open configs name two stores that
+ *  hold data still refuses `CONFLICT`, because which one to reopen is the operator's choice. */
+async function restoredStoreRestartScenario(): Promise<void> {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restored-store-restart-root-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-restored-store-restart-home-")));
+  const twoStores = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-root-")));
+  const twoHome = realpathSync.native(mkdtempSync(join(tmpdir(), "cotal-two-stores-home-")));
+  const artifact = join(root, "registry-backup");
+  const store = join(root, "registry-target");
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const space = "backup_restored_store_restart";
+  const { run } = sandboxRun(root, home);
+  const { run: runTwo } = sandboxRun(twoStores, twoHome);
+  const must = (label: string, result: ReturnType<typeof run>) => {
+    assert.equal(result.status, 0, `${label}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  };
+  try {
+    must("up", run("up", "--detach", "--open", "--server", server, "--space", space));
+    must("seed registry", run("channel", "set", "preserved", "--desc", "survives", "--space", space));
+    must("down --preserve-state", run("down", "--preserve-state"));
+    must("registry backup", run("backup", "create", artifact, "--only", "registry"));
+    const restored = run("backup", "restore", artifact, "--only", "registry", "--store-dir", store, "--json");
+    must("registry restore into another store", restored);
+    const { attemptId, store: restoredStore } = (JSON.parse(restored.stdout) as { result: { attemptId: string; store: string } }).result;
+    assert.equal(restoredStore, store, "the restore serves the named store");
+    const stopped = run("down", "--yes");
+    must("down", stopped);
+    assert.match(stopped.stdout, /cotal up +Start it again/, `the stop receipt names a bare \`cotal up\`\n${stopped.stdout}`);
+    must("cleanup-fallback", run("backup", "cleanup-fallback", attemptId, "--yes", "--discard-history"));
+    assert.equal(existsSync(join(root, ".cotal", "nats", "jetstream")), false, "the cleanup left the default store without data");
+    const started = run("up");
+    must("the bare up the stop receipt names", started);
+    assert.ok(started.stdout.includes(`reopening ${store}, the store this root's last broker served`), `bare up says it reopens the restored store\n${started.stdout}`);
+    const shown = run("channel", "show", "preserved", "--space", space, "--json");
+    must("channel show", shown);
+    assert.equal((JSON.parse(shown.stdout) as { result: { registry: { channels: Record<string, { description?: string }> } } }).result.registry.channels.preserved?.description, "survives", "the reopened store serves the restored registry");
+    assert.equal(existsSync(join(root, ".cotal", "nats", "jetstream")), false, "bare up did not open the empty default store");
+    must("down after the reopen", run("down", "--yes"));
+
+    const twoServer = `nats://127.0.0.1:${await freePort()}`;
+    must("auth up on store-a", runTwo("up", "--detach", "--no-manager", "--server", twoServer, "--space", "backup_two_stores", "--store-dir", join(twoStores, "store-a")));
+    must("down store-a", runTwo("down", "--yes"));
+    mkdirSync(join(twoStores, "store-b"));
+    must("open up on store-b", runTwo("up", "--detach", "--no-manager", "--open", "--server", twoServer, "--space", "backup_two_stores", "--store-dir", join(twoStores, "store-b")));
+    must("down store-b", runTwo("down", "--yes"));
+    const ambiguous = runTwo("up", "--no-manager");
+    assert.ok(ambiguous.status === 2 && /Code: +CONFLICT/.test(ambiguous.stderr) && ambiguous.stderr.includes("this start names no store"), `two stores with data still refuse a bare up\n${ambiguous.stdout}\n${ambiguous.stderr}`);
+    assert.equal(existsSync(join(twoStores, ".cotal", "nats", "jetstream")), false, "the refusal started nothing on the default store");
+  } finally {
+    runTwo("down", "--yes");
+    run("down", "--yes");
+    for (const dir of [root, home, twoStores, twoHome]) rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -1179,6 +1288,8 @@ async function linkedStoreScenario(): Promise<void> {
 
 await missingPidfileListenerScenario();
 await linkedStoreScenario();
+await missingCustomSourceScenario();
+await restoredStoreRestartScenario();
 await preservationCommitCrashScenario();
 await preservationStopCrashRecoveryScenario();
 await restoreClaimRaceScenario();

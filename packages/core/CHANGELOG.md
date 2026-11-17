@@ -1,5 +1,55 @@
 # @cotal-ai/core
 
+## 0.165.4
+
+### Patch Changes
+
+- 16d0381: Keep expected membership reconnects from producing false incomplete-census warnings. A sweep that started while the feed's data connection was down remains incomplete even if that connection returns before the sweep finishes.
+- 20ed7a7: Allow `cotal up --open --max-payload <bytes>` to configure the broker's message size limit and retain it across restarts.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+### Patch Changes
+
+- f419ba9: The first `cotal send` to an open space that runs elsewhere is now stored. The one-shot sender consumes nothing, so it never created the space's streams, and the send exited 3 with `OPERATION_UNKNOWN` until a chat session had started there. `send` now creates them before it publishes, as a chat session does. A space this machine started whose streams are gone still refuses with `TARGET_UNAVAILABLE`. The endpoint gains `ensureOpenSpaceStreams()`.
+- c040eec: One malformed message no longer stops the observer feed behind `cotal console` and `cotal history --follow`. The tap drops a message whose parts cannot be read, as history already does. A handler that throws is reported as an endpoint error, and the feed keeps reading later messages.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+- 0fa02a8: Correct contract validation for admitted JSON Schema 2020-12 references and evaluated annotations.
+  
+  Instance validation now uses json-schema-library 11.6.16, while Ajv retains schema meta-validation.
+  The synchronous validator exposes backend-neutral errors instead of Ajv metadata. Generated browser
+  contract modules import the shared interpreter and must be regenerated with this release.
+- 9eb591d: Agent files now refuse `cwd` and `worktree` frontmatter instead of silently ignoring the requested directory.
+  Set the directory on the spawn request with `--cwd`. Other unmodeled scalar hints still round-trip through `meta`.
+
+### Patch Changes
+
+- 6c77c15: Read the newest chat messages across a channel family without listing every concrete channel.
+  `CotalEndpoint.multiChannelHistory(["events.>"], { limit })` uses one broker filter and returns
+  the same subject-tagged, stream-ordered rows as the equivalent concrete-channel read.
+  The family must be the only filter, and the broker still enforces the caller's existing grants.
+- 18d2cda: A channel post that mentions an agent who may not read the channel no longer drops that mention silently. On an authenticated mesh the delivery daemon sends the post's sender a mention notice that names those agents, so the sender can reach them another way. The connectors show it as `[mention notice from the delivery daemon]`, and Hermes runs it in its own `notice:mention` chat.
+- 155234c: Pin `@nats-io/nkeys` to 2.0.3. Its 2.1.0 release no longer exposes the module the credential signer imports, so every fresh install and every update crashed at start with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- 100ea17: An authenticated seat whose DM durable is gone after a broker outage or restore now says so. `cotal_reconnect` and the `connectionIssue` in `cotal_connection_status` name the missing durable and the recovery: restart the session, or respawn it if a manager launched it. Before, reconnect reported a bare "consumer not found" and offered retries that could never bring the durable back, and status gave no reason. The endpoint now fails that rebind with `dm-durable-missing`. Open-mesh seats still recreate their durable on reconnect.
+- ab8290f: A refusal for a missing required property names the property again, for example `must have required property 'windowMs'`.
+
 ## 0.164.18
 
 No changes in this release.

@@ -55,12 +55,14 @@ Logs contain only its reference path.
 <Callout type="warn" title="Keep the session file private">
 
 Do not upload the session file or paste its contents into logs.
-Opening its link exchanges the bootstrap token for an HttpOnly, same-site session cookie.
+Opening its link exchanges the bootstrap token for an HttpOnly session cookie with `SameSite=Lax`.
 A spent token cannot open another session.
 
 </Callout>
 
 The session belongs to its origin. A localhost name and a literal loopback address do not share it.
+A link to the dashboard on another site, such as a homepage tile, opens it with the session.
+A request that another site's page sends, such as a fetch or a POST, is refused with 403 `cross-origin`, and the browser does not attach the cookie to it.
 Confirmed native shutdown removes only the unchanged original private record.
 
 This service hides delete controls and refuses channel-delete requests before acquiring mutation authority or trying another transport.

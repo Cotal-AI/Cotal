@@ -314,8 +314,8 @@ try {
 
     keys("-l", "quit")
     keys("Enter")
-    // The manager ends the session as `process-exit` or, when it frees the seat first, `target-despawn`.
-    const gone = new RegExp(`${agent} · session ended: the agent (exited|is gone) · esc closes`)
+    // The seat exits on its own, so the manager ends the session `process-exit`.
+    const gone = new RegExp(`${agent} · session ended: the agent exited · esc closes`)
     const ended = await settle((f) => gone.test(f), "the end of the session")
     save(dir, "07-ended")
     check(`${size}: when the seat exits the pane says so`, gone.test(ended) && footer(ended).startsWith(`${agent} session ended · esc back`), ended)

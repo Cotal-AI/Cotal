@@ -131,12 +131,12 @@ function isLiveOpencodeServe(pid: number): boolean {
 
 /** The foreground TUI's argv, built from the server it attaches to. Its env carries the server's
  *  basic-auth credentials, so the argv never needs the secret. */
-export type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
+type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
 
 /** Extra env for the server, built from inputs the caller writes into the agent's home. It runs only
  *  once no seat of this name is running, so a refused launch never rewrites files a running seat's
  *  server still reads. */
-export type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
+type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
 
 export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<void> {
   const port = process.env.COTAL_OPENCODE_PORT?.trim() || String(await freePort());

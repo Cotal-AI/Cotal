@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/cli",
   "description": "Cotal mesh CLI: up, join, watch, console, spawn, mint, channels, history, ext.",
-  "version": "0.164.18",
+  "version": "0.165.4",
   "homepage": "https://cotal.ai",
   "license": "Apache-2.0",
   "repository": {
@@ -61,10 +61,10 @@
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
-    "@nats-io/jetstream": "^3.4.0",
-    "@nats-io/kv": "^3.4.0",
-    "@nats-io/obj": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0",
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/kv": "3.4.0",
+    "@nats-io/obj": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
     "@clack/prompts": "^1.0.0",
     "ink": "^6.0.0",
     "react": "^19.0.0",
@@ -84,7 +84,7 @@
     "@cotal-ai/auth": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@nats-io/jwt": "0.0.10-5",
-    "@nats-io/nkeys": "^2.0.3",
+    "@nats-io/nkeys": "2.0.3",
     "@types/react": "^19.0.0",
     "@types/ws": "^8.18.1"
   },

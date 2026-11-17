@@ -212,8 +212,13 @@ pid.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
-static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
-address that instance directly. This happens by default; you do not need `--on`. When every instance
+static/open mesh these verbs use the live peer's holding-manager hint when it exists. If no live
+peer matches, they read each registered manager's live seat list, as `ps` does, then address the
+manager that holds the name. A running process can be stopped, attached or typed into before it
+joins the mesh, including when `ps` reports `join degraded`. `--on` reads the named manager's own
+seat when no live peer matches. Both paths retain the selected lifecycle and the manager's authority
+checks. A live peer with an invalid or missing holding-manager hint still refuses.
+This happens by default; you do not need `--on`. When every instance
 answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
 before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
 as Next. When an instance did not answer for itself, the seat may run there, so they refuse

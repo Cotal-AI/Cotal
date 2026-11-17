@@ -7,6 +7,7 @@
  * tap. Each field is asserted on the entry the view produced, and a message that carries none of
  * them must produce an entry without them.
  */
+import { connect } from "@nats-io/transport-node";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,10 +49,37 @@ try {
 
   const before = await alice.multicast("from history", { channel: "general", mentions: ["Bob"], replyTo: "m-history", contextId: "ctx-history" });
 
+  const wire = await connect({ servers });
+  stops.push(() => wire.close());
+  const publish = async (id: string, text: string) => {
+    wire.publish(`cotal.${space}.chat.local.publisher.general`, JSON.stringify({
+      id, ts: Date.now(), space, from: { id: "local.publisher", name: "publisher" },
+      channel: "general", parts: [{ kind: "text", text }],
+    }));
+    await wire.flush();
+  };
+  await publish("", "empty-history-first");
+  await publish("", "empty-history-second");
+
   const view = new MeshView(openObserver({ space, server: servers, name: "watch" }), {});
   stops.unshift(() => view.stop());
   await view.start();
   await wait(500);
+
+  check("prefill retains both empty-ID messages", view.snapshot().feed.filter((e) => e.id === "").length === 2, view.snapshot().feed);
+  const windowed = new MeshView(openObserver({ space, server: servers, name: "windowed" }), { window: 2 });
+  stops.unshift(() => windowed.stop());
+  await windowed.start();
+  await wait(500);
+  await publish("window-key", "window-nonempty");
+  await publish("", "window-empty-first");
+  await publish("", "window-empty-second");
+  await wait(500);
+  check("empty IDs survive independent window eviction", same(windowed.snapshot().feed.map((e) => e.text), ["window-empty-first", "window-empty-second"]), windowed.snapshot().feed);
+  await publish("window-key", "window-reused");
+  await publish("window-key", "window-duplicate");
+  await wait(500);
+  check("evicted nonempty ID can return and still deduplicates", same(windowed.snapshot().feed.map((e) => e.text), ["window-empty-second", "window-reused"]), windowed.snapshot().feed);
 
   const channel = await alice.multicast("@bob look", { channel: "general", mentions: ["bob", "carol"], replyTo: "m-1", contextId: "ctx-channel" });
   const bare = await alice.multicast("no thread fields", { channel: "general" });

@@ -88,11 +88,6 @@ import {
   takeServeFilter,
   takeReplyGrant,
   anycastBucket,
-  permissionBucket,
-  permissionAnswerSubject,
-  permissionReaderDurable,
-  permissionReplyGrant,
-  permissionServeFilter,
 } from "./subjects.js";
 import { LIVENESS_PLANES } from "./liveness.js";
 import {
@@ -791,10 +786,6 @@ export interface MintOpts {
   /** The issuer handles a static `agent` mint decides its listing generation over. The horizon is
    *  the credential's own expiry, so a mint with no expiry gets no listing generation. */
   listingSeam?: ListingSeam;
-  /** `agent` profile only: the principal is an INTERACTIVE ledger row, a person's own CLI or browser
-   *  actor. It may then read its owner's permission records and answer its owner's agents' prompts.
-   *  Only the auth callout sets it, from the row's kind in the ledger. A static mint refuses it. */
-  interactive?: true;
   /** The durable half of an issuance, REQUIRED beside {@link MintOpts.issued} on {@link mintCreds}:
    *  the credential is built first, then its evidence is staged create-only, the existing
    *  finalizer runs, and the attempt activates by CAS at the revision the stage observed; only
@@ -1332,12 +1323,6 @@ export function permissionsFor(
     throw new Error(`permissionsFor: a listing generation rides the agent and manager-caller views only, not "${profile}" (SPEC 13.15)`);
   if (opts.listing && opts.issued)
     throw new Error("permissionsFor: an issued credential lists under its own generation; a listing generation beside it is refused (SPEC 13.15)");
-  if (opts.interactive && profile !== "agent")
-    throw new Error(`permissionsFor: interactive marks an agent-profile mint of an interactive ledger row, not "${profile}"`);
-  // Only the auth callout reads a row's kind from the ledger, and only the callout sets a
-  // connection's reader id. A static mint, whose connection is its own nkey, is never interactive.
-  if (opts.interactive && pr.readerId === undefined)
-    throw new Error("permissionsFor: a static mint is never interactive; only the auth callout marks a mint interactive, from the ledger row's kind (SPEC 8.2)");
   if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
   if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
@@ -1647,11 +1632,6 @@ export function permissionsFor(
     // either: `live.<plane>.*.*` is not in `sub.allow`, so an agent cannot impersonate a responder
     // and answer a peer's probe with a comforting lie.
     ...LIVENESS_PLANES.map((plane) => livenessSubject(space, plane, pr.owner, pr.actor)),
-    // PERMISSION PROMPTS. Answers to this agent's prompts arrive on its serve filter (sub, below), and
-    // it publishes only beneath their `.reply.` leaf, a row that cannot express a request, so no agent
-    // answers its own prompt or a sibling's. Its connector writes only its own records.
-    permissionReplyGrant(space, pr.owner, pr.actor),
-    `$KV.${permissionBucket(space)}.${principalKey(pr.owner, pr.actor).key}.>`,
     // JetStream control plane — scoped to this agent's own streams/durables.
     "$JS.API.INFO",
     // STREAM.INFO: CHAT (join watermark, recall drop-marker, channel-list counts — a documented
@@ -1751,18 +1731,6 @@ export function permissionsFor(
       );
     }
   }
-  // An INTERACTIVE row answers its owner's agents' prompts as itself, and reads its owner's records
-  // through its own lifecycle's reader, which trusted infra creates and it only binds (SPEC §8.2). It
-  // holds no consumer create on the bucket: a create body's durable name and push target are fields
-  // no subject grant confines (nats-server#8274). No STREAM.INFO, which would list every key in the
-  // space, and no point reads.
-  const PERMKV = `KV_${permissionBucket(space)}`;
-  const answerAsMe = permissionAnswerSubject(space, pr.owner, "*", "*", pr.owner, pr.actor);
-  if (opts.interactive) {
-    const reader = permissionReaderDurable(pr.owner, pr.actor, uid);
-    pubAllow.push(answerAsMe, `$JS.API.CONSUMER.INFO.${PERMKV}.${reader}`, `$JS.API.CONSUMER.MSG.NEXT.${PERMKV}.${reader}`);
-  }
-  const permissionSub = [permissionServeFilter(space, pr.owner, pr.actor, "*"), ...(opts.interactive ? [`${answerAsMe}.reply.*`] : [])];
   // Spawn / admin capability control reach rides the v0.4 ep rows below (the manager `ctl` rail is
   // deleted) — the spawn set (owner-mode manager lifecycle) and the admin instrument set
   // (any-mode + manager.admin family) are added to the ep caller rows, not a ctl subject.
@@ -1847,10 +1815,6 @@ export function permissionsFor(
     `$JS.API.CONSUMER.CREATE.${DLV}`,
     `$JS.API.CONSUMER.CREATE.${DLV}.>`,
     `$JS.API.CONSUMER.DURABLE.CREATE.${DLV}.>`,
-    // Permission records: bind-only, like DM. Trusted infra creates each interactive row's reader.
-    `$JS.API.CONSUMER.CREATE.${PERMKV}`,
-    `$JS.API.CONSUMER.CREATE.${PERMKV}.>`,
-    `$JS.API.CONSUMER.DURABLE.CREATE.${PERMKV}.>`,
   ];
   // CHAT live read boundary (SPEC v0.3 §9 / Appendix B): mint the read ACL as a native `sub.allow`
   // over cotal.<space>.chat.*.<channel> — one per allowSubscribe channel, wildcards passed through
@@ -1881,7 +1845,7 @@ export function permissionsFor(
   // the `ctl.<tier>.<id>.reply.>` subtrees are gone with the ctl rail.
   // A take's reply rides the take's own request subtree, like the delivery control replies.
   const takeReplies = roles.map((role) => `${takeSubject(space, role, pr.owner, pr.actor)}.>`);
-  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...permissionSub, ...subChat, ...payloadReads, ...epSub] } };
+  return { pub: { allow: pubAllow, deny: pubDeny }, sub: { allow: [inbox, deliveryReplies, ...takeReplies, ...livenessReplies, ...subChat, ...payloadReads, ...epSub] } };
 }
 
 /** The reads a spawn-scoped manager-caller view carries on its one pinned instance. A launch uses
@@ -2621,7 +2585,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // ownership list consumed by inventory and teardown. The provisioner holds create-or-verify only on
   // those authority stores; lifecycle/session writes ride their narrower executor credentials.
   const buckets = [
-    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, permissionBucket, deliveryBucket, managerBucket,
+    presenceBucket, channelBucket, membersBucket, aclBucket, membershipBucket, anycastBucket, deliveryBucket, managerBucket,
   ].map((b) => `KV_${b(space)}`);
   // STREAM.CREATE + INFO for each (idempotent setup at `cotal up`; CREATE is create-if-matching, INFO covers
   // the client's existence checks). NO DELETE/PURGE — provisioning never tears a stream down.
@@ -2700,12 +2664,6 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
         ...streamReconcile,
         ...ttlCanaries,
         ...consumerCreate,
-        // Opening a permission reader (SPEC §8.2): CREATE under one owner's records, because the
-        // extended create subject binds the body's filter; INFO to read it back; and DELETE, which the
-        // open runs first, since a delete is the only thing that ends a pull left parked on a reader.
-        `$JS.API.CONSUMER.CREATE.KV_${permissionBucket(space)}.*.$KV.${permissionBucket(space)}.*.>`,
-        `$JS.API.CONSUMER.INFO.KV_${permissionBucket(space)}.*`,
-        `$JS.API.CONSUMER.DELETE.KV_${permissionBucket(space)}.*`,
         // KV value-writes — exactly the two registries provisioning writes: the agent read-ACL registry
         // (`commitAcl` at provision) and the channel registry (seed defaults at `cotal up`, channel admin).
         // NO presence/members/membership/delivery writes (the agent's own key, the delivery cred, and the
@@ -3398,6 +3356,8 @@ export function openServerConfig(opts: {
   /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
    *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
   maxFileStore?: number;
+  /** Native broker message size limit in bytes. Omitted leaves nats-server's default. */
+  maxPayload?: number;
   /** Native nats-server file logging and rotation. Rotation bounds require {@link logFile}. */
   logFile?: string;
   logfileSizeLimit?: number;
@@ -3407,11 +3367,13 @@ export function openServerConfig(opts: {
   const port = opts.port ?? 4222;
   const host = opts.host ?? "127.0.0.1";
   const logBlock = renderLogBlock("openServerConfig", opts);
+  if (opts.maxPayload !== undefined && (!Number.isSafeInteger(opts.maxPayload) || opts.maxPayload <= 0))
+    throw new Error("openServerConfig: maxPayload must be a positive safe integer of bytes");
   return `# Generated by \`cotal up\` - do not edit by hand.
 host: ${host}
 port: ${port}
 max_control_line: ${MAX_CONTROL_LINE_BYTES}
-${logBlock}${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
+${opts.maxPayload !== undefined ? `max_payload: ${opts.maxPayload}\n` : ""}${logBlock}${renderTlsBlock(opts.transport)}${renderJetStreamBlock("openServerConfig", opts.storeDir, opts.maxFileStore)}
 `;
 }
 

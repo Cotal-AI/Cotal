@@ -4,6 +4,20 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
 
+test('historical source bootstrap cutoff is isolated from the upgrade environment', () => {
+  const env = { PATH: '/node', npm_config_before: 'old', NPM_CONFIG_BEFORE: 'other' };
+  for (const source of ['0.155.0', '0.162.0', '0.164.10', '0.164.18']) {
+    assert.deepEqual(baseline.historicalBootstrapEnvironment(env, source), { PATH: '/node', npm_config_before: '2026-11-16T19:38:00.000Z' });
+  }
+  for (const source of ['0.165.0', '0.165.1', '0.165.1001']) {
+    assert.deepEqual(baseline.historicalBootstrapEnvironment(env, source), { PATH: '/node' });
+  }
+  assert.deepEqual(env, { PATH: '/node', npm_config_before: 'old', NPM_CONFIG_BEFORE: 'other' });
+  const driver = readFileSync(new URL('./automatic-update-platform-baseline.mjs', import.meta.url), 'utf8');
+  assert(driver.indexOf('bootstrapEnvironment = undefined;') < driver.indexOf('if (options.prepare !== undefined)'));
+  assert(driver.includes('npmBefore: (bootstrapEnvironment ?? env).npm_config_before ?? null'));
+});
+
 test('owned local fixture keeps its recorded identity and bytes while every other extension reaches target', () => {
   const before = [{pkg: 'cotal-upgrade-native-fixture', spec: '/owned/native-fixture', version: '0.164.11'}, {pkg: '@cotal-ai/tmux', spec: '@cotal-ai/tmux@0.164.11', version: '0.164.11'}];
   const extensions = [before[0], {...before[1], version: '0.164.1011'}];

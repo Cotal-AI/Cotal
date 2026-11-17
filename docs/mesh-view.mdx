@@ -177,6 +177,7 @@ A chat-only observer leaves `dms` empty. The console topology also uses endpoint
 `membership.unreadable` records the most recent read or watch failure, while retaining the last snapshot.
 A successful read clears the failure. A watch that closes after startup reports through the same field.
 A missing feed bucket produces an empty snapshot with no `asOf` heartbeat.
+A sweep that overlaps the feed's own data-connection reconnect keeps the previous membership and heartbeat. It does not report that expected gap as a missing-connection warning.
 Membership failures do not set `status.error`.
 
 The console topology checks the following states in order:

@@ -281,8 +281,7 @@ ledger files are excluded. The other endpoint stores are nonportable control sta
 submissions, facts, events, timer requests and fires, work pools, contract artifacts, and the
 auth, session and issued-authority stores. Restore recreates those streams empty with their
 canonical configs before exposing the normal listener, so endpoint sessions do not cross a backup.
-The delivery daemon's anycast request records are control state too and come back empty, and so
-do permission prompt records ([SPEC §8.2](../SPEC.md#82-permission-requests)). A full
+The delivery daemon's anycast request records are control state too and come back empty. A full
 restore brings back the requests the TASK queue held at the cut and recreates its durables from
 checkpoints, so a role request a holder had taken and not yet acked at the cut is on its role's
 queue again, even if that holder finished and acked it after the cut. The broker delivers it again
@@ -459,7 +458,9 @@ immediately before store mutation and never includes secret seeds. Restore never
 Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
 source needs explicit `--accept-missing-source`. Without it, the restore refuses `TARGET_NOT_FOUND`
-(exit 2), names the missing path and changes nothing. A default `.cotal/nats` that is a symbolic
+(exit 2), names the missing path and changes nothing. With it, the store is rebuilt at its recorded
+path, a custom `--store-dir` included, and later startups reopen it there. A `--store-dir` naming another
+path is refused before staging. A default `.cotal/nats` that is a symbolic
 link to the recorded source is that source, so the restore runs in place at the real path and the
 link keeps naming it. Quarantine and target restores use current canonical
 configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
@@ -531,9 +532,12 @@ or ambiguous owner is preserved and refused, never adopted by reachability alone
 daemons start, re-entry recreates the memory-only buckets on an adopted restore or resume listener,
 because the interrupted `up` may have stopped before it made them. The mesh record it then writes
 keeps the recorded attach host and session ceiling and the store cap the adopted broker started with.
-A restore journals its `--max-file-store` for this. A reconstructed
-commit/degraded attempt without either the exact bound proof or a durable dead-listener replacement
-record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
+A restore journals its `--max-file-store` for this. An attempt interrupted after commit intent and
+before it bound a listener recovers forward with bare `cotal up`, which starts that listener. It does
+so only when no process of this account names the attempt and the recorded port is free, because a
+listener spawned and never bound may still be opening the restored store, and NATS does not stop a
+second server from opening it too. While such a process runs, `up` names its pid and refuses, and
+the attempt is preserved. A host that cannot read command lines refuses the same way. A later ordinary startup may pass an `active`
 restore only when its details prove manager commit and its exact recorded listener is dead.
 
 

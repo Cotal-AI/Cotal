@@ -267,7 +267,7 @@ export interface ClaudeBlock {
   is_error?: boolean;
 }
 
-export interface ClaudeMapperOptions {
+interface ClaudeMapperOptions {
   /** The native session id — `threadId` for every event. §3 forbids anything else claiming it. */
   threadId: string;
   /** Mints a `runId`. Connector-minted by §3.1, so every `RUN_STARTED` carries `runIdSource`. */

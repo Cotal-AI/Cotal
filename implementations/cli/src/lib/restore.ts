@@ -25,7 +25,6 @@ import {
   consumerConfigFromCheckpoint,
   deliveryBucket,
   downloadStreamSnapshot,
-  ensurePermissionStore,
   finalizeStreamRestore,
   hardenPrivate,
   initiateStreamRestore,
@@ -68,6 +67,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
+  rearmUnboundRestoreCommitIntent,
   localProcessOwnerStatus, parsePositiveIntegerFlag, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
@@ -217,7 +217,9 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     inventory: resume.inventory,
     serverName,
     serverNonce,
-    reentry: !replacementPending,
+    // Only a bound listener is adopted or replaced. With none bound, the attempt starts its listener,
+    // the first one under its launch identity (#7127).
+    reentry: Boolean(journal.listenerProof),
     journalState: journal.state,
     ...(journal.state !== "commit-intent" && journal.managerCommit ? { managerCommit: journal.managerCommit } : {}),
     ...(journal.listenerProof ? { listenerProof: journal.listenerProof } : {}),
@@ -269,6 +271,18 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, he
     prepared.listenerProof = undefined;
     prepared.journalState = "commit-intent";
     prepared.reentry = false;
+  } finally {
+    if (!heldLock) releaseMaintenanceLock(lock);
+  }
+}
+
+/** Return a restore with no bound listener to commit intent before its listener starts (#7127). The
+ *  caller has proved that no listener this attempt spawned still runs. */
+export function rearmUnboundRestore(prepared: PreparedRestore, heldLock?: MaintenanceLock): void {
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
+  try {
+    rearmUnboundRestoreCommitIntent(lock);
+    prepared.journalState = "commit-intent";
   } finally {
     if (!heldLock) releaseMaintenanceLock(lock);
   }
@@ -684,7 +698,6 @@ async function createOmittedInfrastructure(
     await kvm.create(membership.bucket, membership.createOptions);
     const anycast = anycastStoreDefinition(space);
     await kvm.create(anycast.bucket, anycast.createOptions);
-    await ensurePermissionStore(jsm, space);
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
     // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow
@@ -1011,9 +1024,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
     if (lockedOverlap) throw lockedOverlap;
     // The cut records its source by real path, so a default .cotal/nats that links there is that
-    // source and is restored in place, not taken for an alternate target.
+    // source and is restored in place, not taken for an alternate target. A missing source is rebuilt
+    // where the cut records it, the only target its disaster restore takes (#7049).
     const defaultStore = join(root, ".cotal", "nats");
-    targetPath = resolve(flags["store-dir"] ?? (controller || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    const rebuild = source.state === "missing";
+    targetPath = resolve(flags["store-dir"] ?? (controller || rebuild || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    if (rebuild && targetPath !== journal.source.path)
+      throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that

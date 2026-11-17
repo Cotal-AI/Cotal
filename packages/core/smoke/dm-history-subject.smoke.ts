@@ -441,6 +441,29 @@ try {
   check("the tap drops an anycast whose payload sender is not the subject's", !tapped.has("tap-svc-spoof-3741"), [...tapped.keys()]);
   check("a frame off the messaging planes still reaches the tap as sent", tapRow("tap-off-plane-3741")?.from.id === mallory.id && tapRow("tap-off-plane-3741")?.channel === "other", tapRow("tap-off-plane-3741"));
 
+  // ── #7060: one bad frame must not end the tap's feed. A message whose parts cannot be read is
+  //    dropped, as history drops it, and a handler that throws is reported while later frames arrive.
+  const afterThrow = new Set<string>();
+  const tapErrors: string[] = [];
+  viewer.on("error", (e: Error) => tapErrors.push(e.message));
+  viewer.tap((_subject, msg) => {
+    if (msg?.id === "tap-chat-throw-7060") throw new Error("tap handler threw on tap-chat-throw-7060");
+    if (msg?.id) afterThrow.add(String(msg.id));
+  });
+  await wait(200);
+  const rawPoison = await connect({ servers: SERVER });
+  rawPoison.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-null-parts-7060", to: undefined, channel: "log", parts: null })));
+  rawPoison.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-after-parts-7060", to: undefined, channel: "log" })));
+  rawPoison.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-throw-7060", to: undefined, channel: "log" })));
+  rawPoison.publish(tapChat, JSON.stringify(envelope({ id: "tap-chat-after-throw-7060", to: undefined, channel: "log" })));
+  await rawPoison.flush();
+  await rawPoison.close();
+  for (let i = 0; i < 50 && !afterThrow.has("tap-chat-after-throw-7060"); i++) await wait(100);
+  check("the tap drops a message whose parts cannot be read", !tapped.has("tap-chat-null-parts-7060") && !afterThrow.has("tap-chat-null-parts-7060"), [...afterThrow]);
+  check("…and the feed reads the message after it", tapped.has("tap-chat-after-parts-7060"), [...tapped.keys()]);
+  check("a tap handler that throws is reported as an endpoint error", tapErrors.some((m) => m.includes("tap-chat-throw-7060")), tapErrors);
+  check("…and that feed reads the frame after it", afterThrow.has("tap-chat-after-throw-7060"), [...afterThrow]);
+
   await alice.stop();
   await bob.stop();
   await viewer.stop();

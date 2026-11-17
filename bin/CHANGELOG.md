@@ -1,5 +1,149 @@
 # cotal-ai
 
+## 0.165.4
+
+### Patch Changes
+
+- e50f5af: Refresh local computer vitals while the daemon is signed out.
+- Updated dependencies [62a04ab]
+- Updated dependencies [e7d413b]
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [e61f1d5]
+- Updated dependencies [5413861]
+- Updated dependencies [b1c2fb9]
+- Updated dependencies [d2923ec]
+- Updated dependencies [5d9c40b]
+- Updated dependencies [d5ecb99]
+- Updated dependencies [0ba9fe1]
+- Updated dependencies [ff2dc46]
+  - @cotal-ai/cli@0.165.4
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/connector-core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/manager@0.165.4
+  - @cotal-ai/auth@0.165.4
+  - @cotal-ai/delivery@0.165.4
+  - @cotal-ai/registry@0.165.4
+  - @cotal-ai/runtime@0.165.4
+  - @cotal-ai/seat@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- 1c0b96f: A leading flag typed with a typographic dash, such as `cotal ––json status` or `cotal −−version`, is now refused naming the flag to type with hyphens, as the same word after the command word already was. It was reported as an unknown command, and `−−version` was offered the `version` command.
+- c6a9c64: Explain the required administrator privileges for updating a non-writable npm installation and the separate normal-account reconciliation step.
+- 9620b5b: Keep the selected release and working Node runtime links when rerunning the shell installer.
+- 91b3067: Output redirected to a file that a file-size limit or a full disk cuts short now reports `✗ could not write to stdout` on stderr and exits 3. Before, Node's file stream counted a partial write as done, so `cotal docs cli-usage --json > report.json` under `ulimit -f 1` left 1024 bytes of invalid JSON and exited 0.
+- a4dd00e: `cotal update --self` no longer stops when a Manager for the selected hosted space runs on this machine from another Cotal installation. That Manager keeps its own files, so the update installs, reconciles and exits 0. Before, the update installed the new version, refused on that Manager and rolled back.
+- Updated dependencies [ac95cec]
+- Updated dependencies [070a882]
+- Updated dependencies [e67578a]
+- Updated dependencies [5d57737]
+- Updated dependencies [1c0b96f]
+- Updated dependencies [2072e00]
+- Updated dependencies [21f46ae]
+- Updated dependencies [4f52a07]
+- Updated dependencies [9620b5b]
+- Updated dependencies [91b3067]
+- Updated dependencies [a4dd00e]
+- Updated dependencies [3b68b85]
+  - @cotal-ai/cli@0.165.3
+  - @cotal-ai/runtime@0.165.3
+  - @cotal-ai/auth@0.165.3
+  - @cotal-ai/manager@0.165.3
+  - @cotal-ai/connector-core@0.165.3
+  - @cotal-ai/delivery@0.165.3
+  - @cotal-ai/registry@0.165.3
+  - @cotal-ai/core@0.165.3
+  - @cotal-ai/seat@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- ef35bc2: An already-current Linux self-update no longer asks you to stop a standalone Manager that keeps its loaded generation. It reports the same retention policy as a staged update, while hosted daemon checks and in-place updates stay unchanged.
+- Updated dependencies [f419ba9]
+- Updated dependencies [e36b376]
+- Updated dependencies [f57b717]
+- Updated dependencies [9c47f34]
+- Updated dependencies [575d7c6]
+- Updated dependencies [4767c1d]
+- Updated dependencies [9edbf60]
+- Updated dependencies [3d3b1dd]
+- Updated dependencies [c040eec]
+- Updated dependencies [614bd86]
+- Updated dependencies [88919a2]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/cli@0.165.2
+  - @cotal-ai/connector-core@0.165.2
+  - @cotal-ai/workspace@0.165.2
+  - @cotal-ai/auth@0.165.2
+  - @cotal-ai/delivery@0.165.2
+  - @cotal-ai/manager@0.165.2
+  - @cotal-ai/registry@0.165.2
+  - @cotal-ai/runtime@0.165.2
+  - @cotal-ai/seat@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+- Updated dependencies [467f84b]
+  - @cotal-ai/auth@0.165.1
+  - @cotal-ai/cli@0.165.1
+  - @cotal-ai/connector-core@0.165.1
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/delivery@0.165.1
+  - @cotal-ai/manager@0.165.1
+  - @cotal-ai/registry@0.165.1
+  - @cotal-ai/runtime@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/seat@0.165.1
+
+## 0.165.0
+
+### Patch Changes
+
+- 6703b26: Retain and verify a Linux migration's Node executable beside the existing native package generation, binding both in the maintenance resume document under the root and installation locks. This adds no public migration or activation command; controller preservation remains unsupported until its complete custody integration is available.
+- 8cddd39: Staged updates now remove abandoned staging folders and finished transactions while keeping all execution generations.
+  Cleanup runs under the installation's update lock when an update starts, after it succeeds, and when the daemon starts. It skips another account's store and reports removal failures without failing the update.
+- 7d0e4f8: Daemon login and setup now report invalid provider URLs as usage refusals without echoing or recording the rejected URL. Validation runs before account selection or native setup effects, and help consistently describes auth URLs and discovery hostnames.
+- 85e8596: Keep a manually reinstalled CLI usable when another account's old generation store is unreadable.
+  
+  A plain start leaves inaccessible retired descriptors untouched and runs the installed version.
+- Updated dependencies [1b5a7ed]
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [afd22be]
+- Updated dependencies [18d2cda]
+- Updated dependencies [6703b26]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [8cddd39]
+- Updated dependencies [7ecfa90]
+- Updated dependencies [2896d81]
+- Updated dependencies [5cd2046]
+  - @cotal-ai/manager@0.165.0
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/auth@0.165.0
+  - @cotal-ai/cli@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/connector-core@0.165.0
+  - @cotal-ai/delivery@0.165.0
+  - @cotal-ai/registry@0.165.0
+  - @cotal-ai/runtime@0.165.0
+  - @cotal-ai/seat@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

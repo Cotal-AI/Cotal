@@ -17,7 +17,7 @@ import {
   type RecordMapper,
 } from "@cotal-ai/connector-core";
 
-export interface JcodeContentBlock {
+interface JcodeContentBlock {
   type?: string;
   text?: string;
   id?: string;
@@ -28,7 +28,7 @@ export interface JcodeContentBlock {
   is_error?: boolean;
 }
 
-export interface JcodeMessage {
+interface JcodeMessage {
   role?: string;
   content?: JcodeContentBlock[];
   timestamp?: string;

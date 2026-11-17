@@ -1,5 +1,27 @@
 # @cotal-ai/tmux
 
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+### Patch Changes
+
+- 7938ccc: A tmux session the runtime creates no longer keeps the shell window tmux opened it with. After `cotal down --with-agents`, the `cotal-<space>` session and its tmux server used to keep running with only that shell. Now the session ends with its last seat. A session that was already there keeps its other windows.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+No changes in this release.
+
+## 0.165.0
+
+No changes in this release.
+
 ## 0.164.18
 
 No changes in this release.

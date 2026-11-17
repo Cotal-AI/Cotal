@@ -209,13 +209,15 @@ conflicting current-folder and selected-root account authorities refuse before p
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
 enrollment path, and nothing is written.
+After a local static space is stopped, signer export can still resolve its retained broker
+configuration and validated trust without starting a broker or repeating its address.
 
 
 ### Protected output
 
-`--out` is required. Its parent must exist and pass the protected physical-directory checks. A
-parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
-written.
+`--out` is required. Missing parent directories are created privately with mode `0700`, without
+following symbolic links. The parent must pass the protected physical-directory checks before the
+signer is written. Existing directories are not made less restrictive or repaired.
 Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
 never appear on stdout, in the receipt or in diagnostics. Keep this account-wide signer out of
 logs and support bundles; it is not a least-privilege endpoint credential.

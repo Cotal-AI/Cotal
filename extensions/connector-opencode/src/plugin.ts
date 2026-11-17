@@ -178,7 +178,7 @@ export { settleWithin };
  * The buffered-inbox + pending-run-turn composition that goes out ahead of a native prompt, read by
  * {@link SurfacedBatch.inject}. Returns `undefined` when there is nothing to prepend.
  */
-export function computeInjection(agent: MeshAgent): {
+function computeInjection(agent: MeshAgent): {
   prefix: string;
   surfacedIds: string[];
   turnIds: string[];

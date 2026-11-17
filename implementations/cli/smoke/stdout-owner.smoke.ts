@@ -12,17 +12,21 @@
  *   - an EIO, owned or not, is reported in one stderr line with no stack trace and exits 3, or with
  *     the non-zero status the command already set; owned, it also reaches the owner;
  *   - the views that must finish their own shutdown, and `down`, which must finish its stops, own
- *     stdout's errors and attach no listener of their own to process.stdout.
+ *     stdout's errors and attach no listener of their own to process.stdout;
+ *   - with stdout in a file under a file-size limit, a write cut short is reported as EFBIG and
+ *     exits 3, where Node's file stream reported it done and the process exited 0; with no limit
+ *     the whole write lands. Those cells need `bash` on PATH.
  * The views themselves (chat, watch, service logs, the service journal) and `down` are not driven here.
  *
  * Run: pnpm smoke:stdout-owner
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
-import { ownStdoutErrors, stdoutError } from "../src/lib/stdout-owner.js";
+import { completeFileWrites, ownStdoutErrors, stdoutError } from "../src/lib/stdout-owner.js";
 
 /** Resolves when the parent ends this child's stdin, which it does after closing the stdout pipe. */
 const inputEnded = (): Promise<void> => new Promise((resolve) => { process.stdin.on("end", resolve); process.stdin.resume(); });
@@ -107,6 +111,12 @@ const children: Record<string, () => Promise<void> | void> = {
     process.exitCode = 2;
     setTimeout(() => process.stdout.emit("error", eio()), 0);
   },
+  // stdout is a file here, so Node gave it a stream that writes with one writeSync.
+  "file-write": () => {
+    completeFileWrites();
+    process.stdout.write(`${"x".repeat(3000)}\n`);
+    stillRunning();
+  },
 };
 
 const mode = process.argv[2];
@@ -175,6 +185,41 @@ if (mode !== undefined) {
       const text = readFileSync(join(src, file), "utf8");
       check(`${file} owns stdout's errors and adds no listener of its own`, /\bownStdoutErrors\(/.test(text) && !direct.test(text));
     }
+  }
+
+  console.log("5. a stdout that is a file writes each chunk whole or fails");
+  {
+    /** Run `file-write` with stdout in a fresh file, under a 1 KiB file-size limit with SIGXFSZ
+     *  ignored as a shell's `ulimit -f 1; trap "" XFSZ` leaves it, or with no limit. */
+    const runToFile = (limited: boolean): Promise<{ code: number | null; stderr: string; bytes: number }> => {
+      const dir = mkdtempSync(join(tmpdir(), "cotal-stdout-file-"));
+      const path = join(dir, "out.json");
+      const fd = openSync(path, "w", 0o600);
+      const node = [process.execPath, ...process.execArgv, fileURLToPath(import.meta.url), "file-write"];
+      const [cmd, ...args] = limited ? ["bash", "-c", `ulimit -f 1; trap "" XFSZ; exec "$0" "$@"`, ...node] : node;
+      return new Promise((resolve) => {
+        const child = spawn(cmd!, args, { stdio: ["ignore", fd, "pipe"] });
+        closeSync(fd);
+        let stderr = "";
+        child.stderr!.setEncoding("utf8").on("data", (d: string) => { stderr += d; });
+        const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          const bytes = statSync(path).size;
+          rmSync(dir, { recursive: true, force: true });
+          resolve({ code, stderr, bytes });
+        });
+      });
+    };
+    // Node's file stream took the 1024 bytes the limit allowed and reported the write done, so an
+    // export cut short exited 0 with nothing on stderr (#7124).
+    const short = await runToFile(true);
+    check("a write the file-size limit cuts short is one stderr line naming EFBIG, exit 3, after the 1024 bytes that fit",
+      short.code === 3 && short.bytes === 1024 && short.stderr === "✗ could not write to stdout: EFBIG: file too large, write\n", short);
+    const whole = await runToFile(false);
+    check("with no limit the whole document is written and the process runs on", whole.code === 0 && whole.bytes === 3001 && whole.stderr.includes("still running"), whole);
+    const run = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "bin", "run.ts"), "utf8");
+    check("the binary makes its stdout write whole chunks to a file", /^completeFileWrites\(\);$/m.test(run));
   }
 
   finish();

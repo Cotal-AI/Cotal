@@ -29,6 +29,12 @@ const { LINEAR_MCP_ORIGIN } = await import("../src/origin.js");
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, x?: unknown): void => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.log(`  ✗ FAIL: ${n}`, x ?? ""); } };
 
+const oauth = await import("../src/oauth.js");
+const contract = await import("../src/contract.js");
+check("OAuth and contract modules retain their consumed functions, not file-local helpers",
+  typeof oauth.credentialFor === "function" && typeof contract.linearCommandDefs === "function"
+    && !("scopeFor" in oauth) && !("resultOrThrow" in contract));
+
 const seen = { redirect: false, refreshes: 0, outstanding: 0, maxOutstanding: 0, streamsOpen: 0, holdInit: false, initAborted: false, initializedAfterClose: false, closedAt: 0, bigEntry: false, deepEntry: false, bigHead: false };
 const server = createServer(async (req, res) => {
   const path = new URL(req.url ?? "/", "http://local").pathname;

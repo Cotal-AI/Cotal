@@ -3179,6 +3179,8 @@ process.exit(result.status ?? 93);
           const metadataFile = join(globalPrefix, "lib/node_modules/cotal-ai/package.json");
           const originalBytes = readFileSync(metadataFile, "utf8");
           const installed = JSON.parse(originalBytes);
+          const implementationMetadataFile = join(dirname(metadataFile), "node_modules/@cotal-ai/cli/package.json");
+          const implementationBytes = readFileSync(implementationMetadataFile, "utf8");
           const foreground = process.argv.includes("--generation-foreground-repro");
           const marked = process.argv.includes("--generation-marked-repro");
           if (marked) recordingRestart = false;
@@ -3207,6 +3209,9 @@ process.exit(result.status ?? 93);
               ? next.includes("explicitly stop") && next.includes(`cotal daemon serve${homeFlag}`) && !next.includes("cotal daemon start")
               : next.includes("no verified native launch marker") && next.includes(`cotal daemon setup${homeFlag} --space ${ON}`), observed);
             if (marked) {
+              check("Metadata-only replacement keeps the old daemon running", child.exitCode === null, { exitCode: child.exitCode });
+              // The entry reports the loaded implementation's version, not the npm wrapper's.
+              writeFileSync(implementationMetadataFile, JSON.stringify({ ...JSON.parse(implementationBytes), version: "9.9.9" }));
               for (let i = 0; i < 100 && child.exitCode === null; i++) await sleep(100);
               check("Verified native daemon releases old generation for activation", child.exitCode === 0, { exitCode: child.exitCode });
             } else {
@@ -3214,7 +3219,11 @@ process.exit(result.status ?? 93);
               const later = (await cli("status", "--space", ON)).doc.result?.managers?.[0];
               check("Replacement refusal remains childless across later observations", later?.state === "refused" && !later.pid && later.restarts === observed?.restarts, later);
             }
-          } finally { writeFileSync(metadataFile, originalBytes); if (foreground) writeFileSync(receipt, savedReceipt); }
+          } finally {
+            writeFileSync(metadataFile, originalBytes);
+            writeFileSync(implementationMetadataFile, implementationBytes);
+            if (foreground) writeFileSync(receipt, savedReceipt);
+          }
           return;
         }
         if (process.argv.includes("--connector-generation-scope-repro")) {

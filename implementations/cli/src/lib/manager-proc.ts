@@ -160,7 +160,13 @@ export function supervisorMayServe(space: string, installedEntry?: string): bool
     const pid = Number(row[1]), uid = Number(row[2]), command = row[3]!;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
     if (named !== undefined && named !== space) return false;
-    const scope = supervisorInstallScope(pid, uid, command, entry);
+    let argv: string | string[] = command;
+    if (process.platform === "linux") {
+      // ps flattens argv, so a path containing spaces must come from the kernel's boundaries.
+      try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); }
+      catch { argv = []; }
+    }
+    const scope = supervisorInstallScope(pid, uid, argv, entry);
     if (scope === "foreign") return false;
     const selected = named ?? environmentSpace(pid);
     if (selected !== undefined && selected !== space) return false;
@@ -181,9 +187,9 @@ function thisCliEntry(): string | undefined {
 
 /** Attribute a supervisor using its absolute entry, numeric owner and mount namespace.
  * A different namespace alone cannot exclude a bind-mounted installation. */
-export function supervisorInstallScope(pid: number, uid: number, command: string, entry: string | undefined): "local" | "foreign" | "unknown" {
+export function supervisorInstallScope(pid: number, uid: number, command: string | readonly string[], entry: string | undefined): "local" | "foreign" | "unknown" {
   let other = false;
-  for (const word of command.trim().split(/\s+/)) {
+  for (const word of typeof command === "string" ? command.trim().split(/\s+/) : command) {
     if (!isAbsolute(word)) continue;
     let resolved: string;
     try {

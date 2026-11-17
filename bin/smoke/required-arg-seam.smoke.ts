@@ -562,7 +562,9 @@ const SEAMS: Seam[] = [
   // and remote-registration-expiry's liveness observer.
   // 448/357 -> 449/358: reconnect-missing-inbox-auth adds its target-pinned teardown connection,
   // which states `tls: false` for the suite's loopback broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 449, untypecheckedSites: 358 },
+  // 451/359 -> 452/360: agui-egress-acl-auth adds its payload-rail subscriber connection, which
+  // states `tls: false` for the suite's loopback broker.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 452, untypecheckedSites: 360 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

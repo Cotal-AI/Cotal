@@ -92,26 +92,29 @@ try {
   // it; one whose entry cannot be told apart still counts.
   const idle = "setInterval(() => {}, 1 << 30)";
   const thisEntry = process.argv[1]!;
-  const otherInstall = join(root, "other-install", "lib", "node_modules", "cotal-ai");
+  const otherInstall = join(root, "other install", "lib", "node_modules", "cotal-ai");
   mkdirSync(join(otherInstall, "dist"), { recursive: true });
   writeFileSync(join(otherInstall, "package.json"), JSON.stringify({ name: "cotal-ai", bin: { cotal: "dist/cotal.js" } }));
   const otherEntry = join(otherInstall, "dist", "cotal.js");
   writeFileSync(otherEntry, `${idle};\n`);
   const { supervisorInstallScope } = await import("../src/lib/manager-proc.js");
-  assert.equal(supervisorInstallScope(process.pid, process.getuid!(), `node ${otherEntry} supervise`, thisEntry), "foreign", "same-user separate installation stays excluded");
-  assert.equal(supervisorInstallScope(process.pid, process.getuid!() + 1, `node ${otherEntry} ${thisEntry} supervise`, thisEntry), "local", "a proven current entry is not hidden by another CLI-looking argument");
-  mkdirSync(join(root, "other-install", "bin"), { recursive: true });
-  const otherShim = join(root, "other-install", "bin", "cotal");
+  assert.equal(supervisorInstallScope(process.pid, process.getuid!(), ["node", otherEntry, "supervise"], thisEntry), "foreign", "same-user separate installation stays excluded");
+  assert.equal(supervisorInstallScope(process.pid, process.getuid!() + 1, ["node", otherEntry, thisEntry, "supervise"], thisEntry), "local", "a proven current entry is not hidden by another CLI-looking argument");
+  mkdirSync(join(root, "other install", "bin"), { recursive: true });
+  const otherShim = join(root, "other install", "bin", "cotal");
   symlinkSync(otherEntry, otherShim);
   const otherNode = join(root, "othernode");
   symlinkSync(process.execPath, otherNode);
   const loader = join(root, "loader.mjs");
   writeFileSync(loader, "export {};\n");
+  const spacedEntry = join(root, "this installation entry");
+  symlinkSync(thisEntry, spacedEntry);
   const cases: [string, string, string[], boolean][] = [
     ["another install's entry", process.execPath, [otherEntry, "supervise", "--space", space], baseline],
     ["another install's bin symlink", process.execPath, [otherShim, "supervise", "--space", space], baseline],
     ["another install's entry behind a loader", process.execPath, ["--import", loader, otherEntry, "supervise", "--space", space], baseline],
     ["this process's entry", process.execPath, ["-e", idle, thisEntry, "supervise", "--space", space], true],
+    ["this process's entry through a path containing spaces", process.execPath, ["-e", idle, spacedEntry, "supervise", "--space", space], true],
     ["this process's entry under another node binary", otherNode, ["-e", idle, thisEntry, "supervise", "--space", space], true],
     ["this process's entry behind a loader", process.execPath, ["--import", loader, "-e", idle, thisEntry, "supervise", "--space", space], true],
   ];

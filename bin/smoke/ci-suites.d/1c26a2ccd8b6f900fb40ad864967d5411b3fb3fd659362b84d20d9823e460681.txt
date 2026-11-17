@@ -1,0 +1,3 @@
+# A channel post that mentions an agent who may not read the channel sends the sender a mention
+# notice from the delivery daemon naming that agent, on live and durable channels (#7075).
+smoke:mention-unreadable:auth

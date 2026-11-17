@@ -1,5 +1,79 @@
 # @cotal-ai/manager
 
+## 0.165.4
+
+### Patch Changes
+
+- 0ba9fe1: Report a repeated remote persona create as an ownership refusal, preserve the saved file, and point to local editing on the manager's host.
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [5413861]
+- Updated dependencies [d5ecb99]
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/seat@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.165.3
+  - @cotal-ai/seat@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- Updated dependencies [f419ba9]
+- Updated dependencies [9edbf60]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/workspace@0.165.2
+  - @cotal-ai/seat@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- 467f84b: A Manager renewal pass now re-signs a managed seat's credential when the credential will be past its renewal point by the next pass, so the seat adopts the new credential at its own renewal point. Before, a seat whose renewal point fell just after a pass warned every minute for up to six hours, and when the next pass came in the credential's last minute the seat's connection could expire before it read the new file.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/seat@0.165.1
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+
+### Patch Changes
+
+- 1b5a7ed: An attached terminal now reports that the agent exited when the agent's own process ends, instead of reporting that it was stopped.
+  
+  The manager ended every live attach session with `target-despawn` when it freed a seat, and its exit watcher runs before the session sees the process exit, so a natural exit reached the caller as a stop. A seat that exits on its own, including the last exit of a spent restart budget, now ends its sessions with `process-exit`. A stop, a reap and a failed restart still end them with `target-despawn`, and a child the manager stops because its parent exited is logged as reaped instead of as exiting on its own. The session also sends the seat's last output before its end frame, which the coalescing buffer used to drop when the exit watcher ended the session first.
+- 7ecfa90: Restore named inspection, model-pin audits and helper shutdown for managed static control sessions on their holding manager.
+  
+  Keep instance reads within the spawner's issued authority, preserve workflow starter ceilings without adding implicit reads to run-spawned helpers, and renew each seat with its original issued scope.
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [2896d81]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/seat@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

@@ -23,7 +23,7 @@ import {
 export const AUTH_SERVICE_ENDPOINT = "auth";
 
 /** The auth cluster document's URN (§13.7 content-addressed authority). */
-export const AUTH_CLUSTER_URN = "ai.cotal.auth";
+const AUTH_CLUSTER_URN = "ai.cotal.auth";
 
 // ---- input/output schemas (closed shape) --------------------------------------------------------
 

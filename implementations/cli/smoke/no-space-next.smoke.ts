@@ -3,11 +3,11 @@
  * refuses with TARGET_NOT_FOUND (exit 2) and the remedy the workspace gives for a missing mesh.
  * `doctor auth` in a folder whose root holds no space reports a partial result (exit 4) whose
  * remedy says to run it in a space's root, in JSON and in the text report; in the root of a space
- * registered as open it is a no-op that says the space issues no credentials. `cotal persona` with
- * nothing selected, or with a `--server` no registration names, refuses with TARGET_NOT_FOUND and
- * says no space is selected here, since its catalog is read offline. Nothing is written. In a
- * folder a space is prepared for, the same `--server` reads that folder's catalog under the
- * prepared space's name, as `cotal up` there starts it.
+ * registered as open it is a no-op, with or without `--fix`, that says the space issues no
+ * credentials. `cotal persona` with nothing selected, or with a `--server` no registration names,
+ * refuses with TARGET_NOT_FOUND and says no space is selected here, since its catalog is read
+ * offline. Nothing is written. In a folder a space is prepared for, the same `--server` reads that
+ * folder's catalog under the prepared space's name, as `cotal up` there starts it.
  * Broker-free; the mesh registry is private to this run.
  *
  * Run: pnpm smoke:no-space-next
@@ -148,8 +148,9 @@ try {
     assert.deepEqual(await personaTarget({ server: "nats://127.0.0.1:1" }, prepared), { root: prepared, space: "b2" }, "persona --server <unregistered> in a prepared folder names its prepared space");
   }
 
-  // 5. doctor auth in the root of a space registered as open: it issues no credentials, so there is
-  //    nothing to check, and the report says so rather than sending the user to a space's root.
+  // 5. doctor auth in the root of a space registered as open, with or without --fix: it issues no
+  //    credentials, so there is nothing to check or repair, and the report says so rather than
+  //    sending the user to a space's root.
   {
     const openRoot = join(base, "open");
     mkdirSync(join(openRoot, ".cotal"), { recursive: true });
@@ -163,6 +164,16 @@ try {
     const text = await diagnose({}, openRoot);
     assert.ok(text.out.replace(/\s+/g, " ").includes("This space is open: it authenticates no one and issues no credentials, so there are none to check."), `doctor text in an open space's root says why: ${text.out}`);
     assert.ok(!`${text.out}${text.err}`.includes("in a space's root folder"), "doctor in an open space's root does not send the user to a space's root");
+    for (const values of [{ fix: true, json: true }, { space: "offen", fix: true, json: true }]) {
+      const what = `doctor ${values.space === undefined ? "" : "--space offen "}--fix in an open space's root`;
+      const fixed = await diagnose(values, openRoot);
+      const fixedEnvelope = JSON.parse(fixed.out) as { outcome: string; result: { space: string | null; credentialScope: string; repair: { requested: boolean; attempted: boolean } } };
+      assert.equal(fixedEnvelope.outcome, "no-op", `${what}: no-op`);
+      assert.equal(fixedEnvelope.result.space, "offen", `${what}: names the space`);
+      assert.equal(fixedEnvelope.result.credentialScope, "open-space", `${what}: an open-space scope`);
+      assert.deepEqual([fixedEnvelope.result.repair.requested, fixedEnvelope.result.repair.attempted], [true, false], `${what}: repair requested, not attempted`);
+      assert.ok(fixed.code === undefined || fixed.code === 0, `${what}: exit 0 (${fixed.code})`);
+    }
   }
 } finally {
   process.chdir(startCwd);

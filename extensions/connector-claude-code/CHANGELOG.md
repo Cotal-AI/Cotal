@@ -1,5 +1,38 @@
 # @cotal-ai/connector-claude-code
 
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+
+### Patch Changes
+
+- 2a07373: The Claude Code plugin no longer rewrites a `cotal_connect` call to add the session. The server uses the one native session it has already bound.
+- a97aade: Report harness work timestamps across the Claude Code, Codex, Hermes, OpenCode and pi connectors.
+  
+  Relay work events into the existing presence `activeAt` field so roster and operator surfaces can date the last reported work separately from heartbeats. No new wire field or progress verdict is added. Boundary-only hosts report less frequently than streaming hosts, and work age cannot distinguish a slow provider from a hung one.
+
 ## 0.164.18
 
 No changes in this release.

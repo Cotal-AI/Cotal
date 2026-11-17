@@ -493,7 +493,9 @@ class Interpreter {
     kind: string,
     asCallee: boolean,
   ): Callable {
-    const m = table[prop];
+    // An own entry only: the tables are ordinary objects, and an inherited name such as
+    // `constructor` would hand the program a host function (#7058).
+    const m = Object.hasOwn(table, prop) ? table[prop] : undefined;
     if (m === undefined) {
       throw new RuntimeFault(
         "L4014",

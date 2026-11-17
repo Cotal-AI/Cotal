@@ -194,7 +194,9 @@ try {
   check("a valid re-sign has a DIFFERENT fingerprint (distinct generation)", credsFingerprint(renewed) !== credsFingerprint(initial));
   served = renewed;
   const logBeforeAdopt = feedLog.length;
+  const reconnectPolls = setInterval(() => { void feed?.poll(); }, 20);
   const adopt = await feed.reloadRwCreds(credsFingerprint(renewed)).then((w) => ({ ok: true, w }), (e: Error) => ({ ok: false, e: e.message }));
+  try { await wait(2_500); } finally { clearInterval(reconnectPolls); }
   check("explicit reload ADOPTS a validly re-signed cred (broker-accepted window returned)", adopt.ok && (adopt as { w: { identity: string } }).w.identity === feedId.id, adopt);
   const afterAdopt = await provesLive(feed, renewed, hb);
   check("conn B works on the ADOPTED cred (heartbeat advanced, read back with the new generation)", afterAdopt > hb, { afterAdopt, hb });

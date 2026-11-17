@@ -90,6 +90,8 @@ export interface MeshTarget {
 export interface ResolveFlags {
   /** Diagnostic/preview resolution must retain a stale registration rather than repair it. */
   readOnly?: boolean;
+  /** File-only signing may use this project's retained broker configuration without connecting. */
+  allowStoppedLocal?: boolean;
   /** `--server <url>` — raw broker escape hatch. */
   server?: string;
   /** `--space <name>` — pick a specific running mesh from the registry. */
@@ -1043,7 +1045,17 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
     // server URL - so "the entry on that server" is not a single thing. `.find()` would silently
     // hand back whichever sorted first, connecting the caller to an arbitrary tenant; refuse and
     // name them instead (`--space` picks one explicitly, handled above).
-    const onServer = loadMeshes().filter((e) => e.server === flags.server && !offline.has(e.space));
+    const serverKey = (server: string): string => {
+      try {
+        const url = new URL(server);
+        if (url.pathname === "/") url.pathname = "";
+        return url.href;
+      } catch {
+        return server;
+      }
+    };
+    const requestedServer = serverKey(flags.server);
+    const onServer = loadMeshes().filter((e) => serverKey(e.server) === requestedServer && !offline.has(e.space));
     if (onServer.length > 1)
       throw new MeshTargetError(
         "ambiguous-target",
@@ -1128,6 +1140,7 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       // is merely stopped: the stack runs from that folder, so `cotal up` here would refuse the name
       // or take it over rather than start what the caller asked for. Name that folder instead.
       const elsewhere = named === undefined ? undefined : legacyStackElsewhere(root, named);
+      if (flags.allowStoppedLocal && named !== undefined && !elsewhere) return localTarget(root, retained.server, "local-space", flags.readOnly);
       throw new MeshTargetError("not-started", `the mesh${named === undefined ? "" : ` "${named}"`} in ${root} last ran at ${retained.server}, and no space is registered for it here`, { root, server: retained.server, lastRun: true, ...(named === undefined ? {} : { stackSpace: named }), ...(elsewhere === undefined ? {} : { recordedRoot: elsewhere.recordedRoot, stackRemedy: elsewhere.remedy }) });
     }
     // No record for this root (migration, or our broker went down and the entry was just pruned).

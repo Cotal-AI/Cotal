@@ -72,7 +72,7 @@ import {
  */
 const STOP_POLL_MS = 100;
 
-export interface EngineHostRequest {
+interface EngineHostRequest {
   readonly source: string;
   readonly runId: string;
   readonly pins: RunPins;

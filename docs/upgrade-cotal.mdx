@@ -9,7 +9,13 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 Upgrade an existing installation without recreating its space identity or losing its trust material.
 Use the [upgrade history](UPGRADING.md) for the migration instructions that apply to your source and target releases.
+When `cotal up` starts its own local broker for a stopped space, it converts an older File-backed derived membership feed to Memory before starting services and reports the conversion; durable channel membership and message history are kept.
 A computer that has never had `~/.config/cotal` needs one manual `npm install -g cotal-ai@latest` to receive the missing-config updater fix.
+
+If the registry lists a new release before its archives are available, `cotal update --self`
+shows its progress and waits up to ten minutes. If the archives are still unavailable, it keeps
+the installed version and exits successfully. Invalid release metadata, failed integrity checks
+and other installation errors still refuse the update.
 
 ## Execution generations
 
@@ -37,11 +43,16 @@ The initial admission verifies the daemon lifetime from those checks. Rollback a
 restart obtains fresh zero-seat admission instead of reusing that earlier lifetime.
 Rollback restores captured connector configuration before verifying the previous execution.
 It releases its own admission fences even when the daemon still runs the target generation.
+The updater pins recorded local Managers on Linux, macOS and Windows and continues with a mesh-naming notice if no local instance can be identified and the exchange refuses because several Managers are live.
 A successful manual update waits for the target daemon generation, not its updater's loaded version.
+If no machine daemon is installed, successful reconciliation completes the update without querying a daemon endpoint.
 An unwritable installation refuses before staging and names the owning install command.
 If this first check refuses, `cotal update --self` exits 2 and reports that the installation
 cannot update itself from this account and no changes were made. The original reason and owning
 command remain in the refusal. A failure after update work begins can still have an unknown outcome.
+When the daemon's automatic update on Linux meets this refusal, it records the same sentence once,
+does not count a failed attempt and schedules no retry. After the installation changes, a successful
+`cotal update` records a new result and automatic updates resume.
 Update attempts, successful publications and daemon startup retire abandoned staging and completed
 transactions under the update lock. All execution generations remain, including earlier generations
 that loaded processes may still use. Another account's store is untouched; a cleanup warning does not fail the update.
@@ -65,7 +76,9 @@ Native ownership checks retain the bootstrap's validated logical installation id
 run in a worker, so a restarted retained daemon still matches its recorded native launch source.
 A standalone Manager can keep its
 loaded generation without stopping seats. New launches still enforce extension generation
-compatibility. Restarting the machine daemon still requires its existing hosted-seat admission
+compatibility. On Linux, an already-current installed package closure reports the same retained
+standalone Manager generation without asking you to stop it.
+Restarting the machine daemon still requires its existing hosted-seat admission
 and consent checks.
 
 All execution generations are retained. The update that first installs this support still runs the

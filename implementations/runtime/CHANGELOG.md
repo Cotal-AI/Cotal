@@ -1,5 +1,68 @@
 # @cotal-ai/runtime
 
+## 0.165.4
+
+### Patch Changes
+
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [5413861]
+- Updated dependencies [d5ecb99]
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/lang@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- 3b68b85: Preserve the tested element in workflow filter, find and findLast results when a predicate replaces or removes it.
+- Updated dependencies [3b68b85]
+  - @cotal-ai/lang@0.165.3
+  - @cotal-ai/core@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- Updated dependencies [f419ba9]
+- Updated dependencies [54b892f]
+- Updated dependencies [9edbf60]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/lang@0.165.2
+  - @cotal-ai/workspace@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/lang@0.165.1
+
+## 0.165.0
+
+### Patch Changes
+
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [2896d81]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/lang@0.165.0
+
 ## 0.164.18
 
 ### Patch Changes

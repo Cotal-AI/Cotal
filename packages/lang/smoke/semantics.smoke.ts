@@ -343,6 +343,56 @@ const ys = map(xs, (x, i) => { if (i === 0) { xs.push(3); } return x * 10; });
 log(xs, ys);
 `);
 
+await same("filter, find and findLast retain the element read before the predicate", `
+const items = [1, 2];
+const selected = items.filter((item, index, array) => {
+  array[index] = item + 10;
+  return true;
+});
+const first = items.find((item, index, array) => {
+  array[index] = 99;
+  return true;
+});
+const last = items.findLast((item, index, array) => {
+  array[index] = 77;
+  return true;
+});
+log({ items, selected, first, last });
+`);
+
+await same("selection predicates can reject and remove the current element", `
+const xs = [1, 2, 3];
+const selected = xs.filter((item, index, array) => {
+  array[index] = item + 10;
+  return item % 2 === 1;
+});
+const first = xs.find((item, index, array) => {
+  array[index] = 99;
+  return index === 1;
+});
+const ys = [4, 5];
+const last = ys.findLast((item, index, array) => {
+  array.pop();
+  return index === 0;
+});
+log(xs, selected, first, ys, last);
+`);
+
+await same("selection retains object identity rather than copying the tested value", `
+const original = { value: 1 };
+const xs = [original];
+const selected = xs.filter((item, index, array) => {
+  item.value = 2;
+  array[index] = { value: 99 };
+  return true;
+});
+xs[0] = original;
+const first = xs.find((item, index, array) => { array[index] = {}; return true; });
+xs[0] = original;
+const last = xs.findLast((item, index, array) => { array[index] = {}; return true; });
+log(selected[0] === original, first === original, last === original, selected[0].value);
+`);
+
 await same("replacement strings mean what JavaScript says: $-patterns, first vs all", `
 log("aba".replace("a", "$&x"), "aba".replaceAll("a", "$&x"));
 log("aba".replace("a", "X"), "price: 5".replace("5", "$$9"), "abc".replace("b", "[$\`|$']"));

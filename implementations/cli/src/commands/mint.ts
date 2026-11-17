@@ -126,7 +126,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   let held: ReturnType<typeof acquireLock> | undefined;
   let target: { space?: string; name: string; profile: string; path?: string; identity?: string; lifecycleUid?: string } = { name, profile };
   try {
-    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target);
+    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target, !values.provision);
     const { root, space } = resolvedTarget;
     target = { ...target, space };
     recordOperationSpace(space);

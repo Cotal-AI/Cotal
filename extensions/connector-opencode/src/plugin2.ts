@@ -56,7 +56,7 @@ const guard = globalThis as { __cotalOpencodeSetup?: SetupState };
  *  route and body. An empty listing during location boot is polled every 200 ms until the
  *  provider appears rather than refused on the first read. The wait is bounded: a server that
  *  never lists anything within the deadline is a real refusal, not a hang. */
-export const MODEL_LIST_SETTLE_MS = 10_000;
+const MODEL_LIST_SETTLE_MS = 10_000;
 
 /** The bare nudge a focus @mention wake submits; the mention itself is read with cotal_inbox. */
 const MENTION_NUDGE = "📨 You were mentioned — read it with cotal_inbox.";

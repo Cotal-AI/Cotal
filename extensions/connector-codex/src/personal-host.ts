@@ -22,7 +22,7 @@ const THREAD = /^[A-Za-z0-9_-]{1,128}$/;
 /** What the person decided about the conversation's pending request. */
 export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired" | "refused"; id: string }
 
-export interface CodexPersonalHostOptions {
+interface CodexPersonalHostOptions {
   cotal: () => readonly string[];
   env: NodeJS.ProcessEnv;
   /** Codex's own record of a thread. */
@@ -34,7 +34,7 @@ export interface CodexPersonalHostOptions {
   watch?: typeof WATCH;
 }
 
-export interface CodexPersonalHost extends GatewayHost {
+interface CodexPersonalHost extends GatewayHost {
   threadFor(connection: string): string | undefined;
   closeAll(): Promise<void>;
 }
@@ -65,7 +65,7 @@ interface Watch {
 }
 
 /** The thread a tool call came from, from the metadata Codex attaches to it. */
-export function codexThreadOf(meta: Readonly<Record<string, unknown>> | undefined): string {
+function codexThreadOf(meta: Readonly<Record<string, unknown>> | undefined): string {
   const id = meta?.threadId;
   if (typeof id !== "string" || !THREAD.test(id))
     throw new Error("this call carries no Codex conversation identity; this server serves only the Codex conversation that started it");

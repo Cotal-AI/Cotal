@@ -124,7 +124,7 @@ try {
   await until(() => gets > before, "conditional 304 poll");
   assert.equal(conditional, etag); assert.equal(daemon.status().account!.desiredRevision, 1);
   mode = 503; const errors = gets;
-  await until(() => gets > errors, "503 leaves desired revision unchanged");
+  await until(() => gets > errors && daemon.status().account?.message === "account computer request failed; existing connections are unchanged", "503 leaves desired revision unchanged");
   assert.equal(daemon.status().account!.desiredRevision, 1);
   assert.equal(daemon.status().account!.message, "account computer request failed; existing connections are unchanged");
   mode = 304; const recovered = gets;
@@ -149,5 +149,15 @@ try {
   } finally { if (deadline) clearTimeout(deadline); }
   assert.equal(existsSync(paths.socket), false, "shutdown cancels initial account poll before releasing endpoint");
   console.log("ok shutdown cancels pending initial account check");
+  const signedOutHome = join(root, "signed-out");
+  mkdirSync(signedOutHome, { mode: 0o700 });
+  const signedOutPaths = daemonPathsFor(signedOutHome, { XDG_RUNTIME_DIR: runtime });
+  daemon = await serveDaemon({ paths: signedOutPaths, version: "0.157.2", sessionDir: signedOutHome });
+  await until(() => !!daemon.status().vitals, "signed-out daemon has an initial sample");
+  const firstSample = daemon.status().vitals!.sampledAt;
+  await until(() => daemon.status().vitals?.sampledAt !== firstSample, "signed-out daemon refreshes computer vitals");
+  const refreshed = await queryDaemon({ paths: signedOutPaths });
+  assert.ok(refreshed.ok && refreshed.result.account?.mode === "signed-out");
+  assert.notEqual(refreshed.result.vitals?.sampledAt, firstSample);
   console.log(`account computers smoke passed; retained private fixture ${root}`);
 } finally { await daemon.close(); fixture.closeAllConnections(); await new Promise<void>(resolve => fixture.close(() => resolve())); }

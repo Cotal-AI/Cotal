@@ -107,6 +107,16 @@ async function runCase(mode: "open" | "auth", manifest = false) {
     const file = join(root, "cotal.yaml");
     if (manifest) writeFileSync(file, `apiVersion: cotal/v1\nkind: Mesh\nspace: logrot\nbroker:\n  auth: ${mode !== "open"}\n  servers: ${server}\n  logFile: ${JSON.stringify(logFile)}\n  logfileSizeLimit: 2048\n  logfileMaxNum: 3\nchannels: {}\nagents: {}\n`);
     const restartArgs = manifest ? ["-f", file] : [];
+    if (!manifest) {
+      const withoutLog = cliRun("up", "--no-manager", "--server", server, ...(mode === "open" ? ["--open"] : []));
+      check(`${label} initial start without native logging succeeds`, withoutLog.status === 0, withoutLog.stderr);
+      const journalBefore = readFileSync(join(root, ".cotal/stack-controller.json"), "utf8");
+      const refused = cliRun("up", "--no-manager", "--log-file", logFile, "--json");
+      check(`${label} running broker refuses enabling logging and names stop`, refused.status === 2 && JSON.parse(refused.stdout).error.code === "CONFLICT" && JSON.parse(refused.stdout).error.remedy.includes("cotal down --yes"), refused.stdout);
+      check("refused log change leaves the journal untouched", readFileSync(join(root, ".cotal/stack-controller.json"), "utf8") === journalBefore);
+      const stopWithoutLog = cliRun("down", "--yes");
+      check("stop before enabling native logging succeeds", stopWithoutLog.status === 0, stopWithoutLog.stderr);
+    }
     const first = cliRun("up", "--no-manager", ...(manifest ? restartArgs : ["--root", root, ...(mode === "open" ? ["--open"] : []), "--server", server, "--log-file", logFile, "--logfile-size-limit", "2048", "--logfile-max-num", "3"]));
     check(`${label} startup succeeds with native log options`, first.status === 0, { stdout: first.stdout, stderr: first.stderr });
     check("startup serves the requested port", await portOpen());
@@ -144,6 +154,33 @@ async function runCase(mode: "open" | "auth", manifest = false) {
     checkPrivateLogs("oversized-log startup rotations");
     const finalStop = cliRun("down", "--yes");
     check("final stop succeeds", finalStop.status === 0, { stdout: finalStop.stdout, stderr: finalStop.stderr });
+    if (!manifest) {
+      const config = join(root, mode === "open" ? ".cotal/server-open.conf" : ".cotal/auth/server.conf");
+      const replacementLog = join(root, "logs", "replacement.log");
+      const changed = cliRun("up", "--no-manager", "--log-file", replacementLog, "--logfile-size-limit", "4096", "--logfile-max-num", "2");
+      check(`${label} stopped broker accepts a new log path and rotation settings`, changed.status === 0, { stdout: changed.stdout, stderr: changed.stderr });
+      const expected = () => {
+        const text = readFileSync(config, "utf8");
+        const broker = readStackJournal(root)?.journal.broker;
+        return text.includes(`log_file: ${JSON.stringify(replacementLog)}`) && text.includes("logfile_size_limit: 4096") && text.includes("logfile_max_num: 2") && broker?.logFile === replacementLog && broker.logfileSizeLimit === 4096 && broker.logfileMaxNum === 2;
+      };
+      check("changed logging is rendered, persisted and owner-private", expected() && (statSync(replacementLog).mode & 0o777) === 0o600);
+      for (const flags of [["--log-file", logFile], ["--log-file", replacementLog, "--logfile-size-limit", "8192"], ["--log-file", replacementLog, "--logfile-max-num", "4"]]) {
+        const journalBefore = readFileSync(join(root, ".cotal/stack-controller.json"), "utf8");
+        const configBefore = readFileSync(config, "utf8");
+        const refused = cliRun("up", "--no-manager", ...flags, "--json");
+        check("running broker refuses each changed logging setting", refused.status === 2 && JSON.parse(refused.stdout).error.code === "CONFLICT", refused.stdout);
+        check("refused changes leave config and journal untouched", readFileSync(config, "utf8") === configBefore && readFileSync(join(root, ".cotal/stack-controller.json"), "utf8") === journalBefore);
+      }
+      check("stop after changing logging succeeds", cliRun("down", "--yes").status === 0);
+      const bare = cliRun("up", "--no-manager");
+      check("bare restart reuses all changed logging settings", bare.status === 0 && expected(), { stdout: bare.stdout, stderr: bare.stderr });
+      check("stop before path-only change succeeds", cliRun("down", "--yes").status === 0);
+      const pathOnly = cliRun("up", "--no-manager", "--log-file", logFile);
+      const retained = readStackJournal(root)?.journal.broker;
+      check("path-only change keeps omitted rotation settings", pathOnly.status === 0 && retained?.logFile === logFile && retained.logfileSizeLimit === 4096 && retained.logfileMaxNum === 2 && readFileSync(config, "utf8").includes("logfile_size_limit: 4096") && readFileSync(config, "utf8").includes("logfile_max_num: 2"), pathOnly.stderr);
+      check("stop after path-only change succeeds", cliRun("down", "--yes").status === 0);
+    }
     console.log(`broker-logging-live ${label}: OK (rotation_count=${rotated.length}; startup_rotation_count=${startupRotated.length})`);
   } finally {
     const cleanup = cliRun("down", "--yes");

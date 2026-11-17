@@ -335,6 +335,21 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
 
+// A confirmed scripted local setup creates its explicitly named project folder.
+{
+  const dir = join(home, "new-project");
+  const created = await json([...FULL("new-project", dir), "--yes"]);
+  check("--yes creates a missing local project and prepares its default persona",
+    created.status === 0 && findPreparedSpace("new-project")?.root === dir &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")) &&
+      created.env?.result?.written?.some((w: { what: string }) => w.what === "project folder"), shown(created));
+  const file = join(home, "project-file");
+  writeFileSync(file, "keep");
+  const rejected = await json([...FULL("project-file", file), "--yes"]);
+  check("--yes still refuses an existing non-directory without changing it",
+    refused(rejected, 1, "USAGE_INVALID") && readFileSync(file, "utf8") === "keep", shown(rejected));
+}
+
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
 {
   const dir = project("p-claude");
@@ -347,6 +362,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     readPreferences().defaults.harness === "codex" && !partial.env?.result.written.some((w: { what: string }) => w.what === "your harness preference"), readPreferences().defaults);
   const human = await run(FULL("claudespace", dir, "claude"));
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
+  check("missing application setup points to dependency repair before startup",
+    partial.env?.result.next.command === "install or repair claude, then run the same setup again" && /Next\s+install or repair claude/.test(human.stdout), shown(human));
 }
 
 // ── A self-hosted space ───────────────────────────────────────────────────────────────────────────

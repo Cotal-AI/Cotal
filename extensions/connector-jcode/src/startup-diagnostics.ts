@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { hardenPrivate } from "@cotal-ai/core";
 import { activeModelRoute, type RuntimeIdentity } from "./route-identity.js";
 
-export type JcodeConnectorFailureCode =
+type JcodeConnectorFailureCode =
   | "model_prefix_rejected"
   | "model_refused"
   | "model_mismatch"
@@ -229,7 +229,7 @@ function acceptedEffortLadder(error: unknown): string[] {
 
 /** Compose a bounded effort-refusal diagnostic. `invalid_request` is intentionally fixed: Jcode
  * rejected this API operation, while provider-supplied codes and text are untrusted. */
-export interface JcodeEffortIdentity {
+interface JcodeEffortIdentity {
   model: string;
   provider: string;
   apiMethod?: string;
