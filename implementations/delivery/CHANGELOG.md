@@ -1,5 +1,25 @@
 # @cotal-ai/delivery
 
+## 0.166.0
+
+### Patch Changes
+
+- 459d5be: Keep file-local delivery and workflow runtime helpers private without changing package entrypoints or runtime behavior.
+- Updated dependencies [3bebc51]
+- Updated dependencies [126e7e5]
+- Updated dependencies [af1cfe4]
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [2947faa]
+- Updated dependencies [a1093f9]
+- Updated dependencies [3d2ef16]
+- Updated dependencies [2e6753b]
+- Updated dependencies [3b09cff]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/workspace@0.166.0
+  - @cotal-ai/core@0.166.0
+
 ## 0.165.4
 
 ### Patch Changes

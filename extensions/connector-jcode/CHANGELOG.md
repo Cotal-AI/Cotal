@@ -1,5 +1,11 @@
 # @cotal-ai/connector-jcode
 
+## 0.166.0
+
+### Patch Changes
+
+- cdf1c43: Keep internal Codex and Jcode connector helpers and types module-private without changing their published APIs.
+
 ## 0.165.4
 
 ### Patch Changes

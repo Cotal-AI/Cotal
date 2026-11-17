@@ -1,5 +1,53 @@
 # @cotal-ai/cli
 
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- 3bebc51: Automatic updates on an installation this account cannot write now record the refusal once and stop retrying every hour.
+  
+  The updater writes the same refusal sentence that `cotal update --self` prints into the attempt record, without counting a failed attempt and without scheduling a retry. A successful `cotal update` after the installation changes records a new result and resumes automatic updates.
+- 126e7e5: Show distinct messages with empty IDs independently in the console and history follow while continuing to deduplicate nonempty IDs.
+- 764846a: Document space adoption in command help and correct controller-stack log and teardown preview instructions.
+- 0bc52e5: Refuse a changed `up --max-sessions` while the controller manager runs, naming its current ceiling and the stop/start commands instead of silently ignoring the request.
+- 6eea404: Validate the first user-auth IdP before native startup writes trust, credentials or store state, and report missing or invalid inputs as usage refusals.
+- a5e152a: Report native broker permission and file-size write failures with the recovery step that keeps stored history. Recognize the broker's permission warning and stream-write error alongside critical file-store errors.
+- 2947faa: Refuse agent-profile credentials in console and watch before announcing a feed, with instructions to mint a separate observer credential.
+- 09fcc8a: `cotal persona edit` now keeps your edited draft and names its path when saving fails for any reason, such as a persona catalog that became read-only while the editor was open.
+- 7fddf2e: Reject extra persona names in legacy `personas` commands before reading or changing the catalog.
+- c2d9d90: `cotal personas new` now refuses a `--role` that is not a single NATS-safe token (`[A-Za-z0-9_-]`), as `cotal persona create` does, instead of saving it and suggesting a `cotal spawn` that refuses it. Nothing is written on the refusal, so `--force` no longer replaces a working persona with one that cannot launch.
+- 3d2ef16: Create missing signer export folders privately without following symbolic links, including output paths containing spaces or shell characters.
+- 0ee3034: Resume a suspended owned broker during confirmed whole-stack shutdown instead of requiring a manual signal and retry.
+- 7a97e03: Wait for the personal Codex server to exit independently of mesh presence in the live shutdown check.
+- c6fdddb: Create a missing local project folder when setup receives `--yes`.
+- bab5d96: Recommend a targeted connector install when setup finds no connectors after built-ins were removed.
+- 8a17372: Reject extra operands to extension add and remove before changing installed packages.
+- 172b44b: Linux daemon installation now accepts home and config directories containing spaces.
+  Decode systemd's quoted environment values without evaluating shell text, while retaining directory validation and refusal of malformed values.
+- f18740d: `cotal up` with no `--store-dir` reopens the store this folder's last broker served, such as a `backup restore --store-dir` target, when the default `.cotal/nats` holds no data, instead of refusing `CONFLICT` and asking for the path it already named. It prints the store it reopens. When the auth and open broker configs name two such stores, it still refuses, and `up -f` keeps its refusal.
+- dd50061: Allow software updates past unreachable registered brokers when no local Manager of this installation serves their spaces, without changing the registrations.
+- b4ae407: `cotal update --self` from a release before 0.166.0 prints the daemon wait line again. The reconcile step of the new version stayed quiet whenever an updater had started it, on the assumption that the updater prints `machine daemon: waiting up to 120s for Cotal <version> and its hosted Managers before the continuity check` afterwards. An updater from 0.164.10 does not wait there, so the update waited up to two minutes without saying why. The updater now tells its reconcile step that it waits, and the step stays quiet only then.
+- 501c465: `cotal up` now starts the broker again on a new websocket port when another process took the one it picked before the broker could bind it, instead of failing with "Unable to listen for websocket connections".
+- c826ae0: Allow connector seeding and repair from read-only package installs by making private seed-store directories owner-writable.
+- Updated dependencies [3bebc51]
+- Updated dependencies [126e7e5]
+- Updated dependencies [af1cfe4]
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [2947faa]
+- Updated dependencies [a1093f9]
+- Updated dependencies [3d2ef16]
+- Updated dependencies [2e6753b]
+- Updated dependencies [3b09cff]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/workspace@0.166.0
+  - @cotal-ai/core@0.166.0
+
 ## 0.165.4
 
 ### Patch Changes
