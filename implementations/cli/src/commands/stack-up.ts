@@ -709,8 +709,6 @@ export async function startControllerStack(request: StackUpRequest, native: Stac
       throw new CommandFailure("refused", "CONFLICT", `--auth-timeout ${request.authTimeout} differs from the running broker's (${recordedTimeout === undefined ? "nats-server's default" : `${recordedTimeout} seconds`}), which is fixed at its start; nothing was prepared`, { target: { root, space }, remedy: `stop the stack with \`cotal down --yes\` from ${root}, then run \`cotal up --auth-timeout ${request.authTimeout}\`` });
   }
   if (request.maxPayload !== undefined) {
-    // An open stack renders the open broker configuration, which carries no payload limit.
-    if (mode === "open") throw new CommandFailure("refused", "USAGE_INVALID", "--max-payload sets the broker's message size limit, which the open broker configuration does not render; nothing was prepared", { target: { root, space }, remedy: "drop --max-payload" });
     // A running broker keeps the limit it was started with, which the same record carries.
     const recordedPayload = readBrokerPolicy(root)?.maxPayload;
     if (request.maxPayload !== recordedPayload && brokerIsRunning())

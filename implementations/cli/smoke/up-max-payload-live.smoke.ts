@@ -15,6 +15,8 @@
  *  1. `up --max-payload N` renders `max_payload: N`, records it, and the listener advertises N.
  *  2. a running broker refuses a different `--max-payload`: the value is fixed at its start.
  *  3. `down`, then a PLAIN `up` with no flag renders and serves N again from the record.
+ *  4. Open legacy and controller starts serve and retain the limit without adding authentication,
+ *     and accept a replacement limit once stopped.
  *
  * Sandboxes COTAL_HOME and a project root under a scratch base with proven-clean `.cotal` ancestry;
  * kills only its own children. Needs `nats-server` on PATH.
@@ -30,9 +32,9 @@ import { makeScratch, assertScratchHeld } from "../../../bin/smoke/_scratch.js";
 
 const scratch = makeScratch("cotal-up-maxpayload-");
 const home = mkdtempSync(join(scratch, "home-"));
-const root = mkdtempSync(join(scratch, "root-"));
+let root = mkdtempSync(join(scratch, "root-"));
 const configDir = join(home, "xdg");
-const sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+let sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
 process.env.COTAL_HOME = home;
 
 const { authDir } = await import("@cotal-ai/workspace");
@@ -93,42 +95,66 @@ function servedMaxPayload(port: number, timeoutMs = 5_000): Promise<number | und
   });
 }
 
-const confText = () => readFileSync(join(authDir(root), "server.conf"), "utf8");
+let open = false;
+const confText = () => readFileSync(open ? join(root, ".cotal", "server-open.conf") : join(authDir(root), "server.conf"), "utf8");
 const recordedPayload = () => (JSON.parse(readFileSync(join(root, ".cotal", "broker-policy.json"), "utf8")) as { maxPayload?: number }).maxPayload;
 
-try {
-  mkdirSync(join(root, ".cotal"), { recursive: true });
+async function checkMode(mode: "auth" | "open-legacy" | "open-controller"): Promise<void> {
+  open = mode !== "auth";
+  root = mkdtempSync(join(scratch, `${mode}-`));
+  sandbox = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: configDir });
+  console.log(`\n${mode}:`);
+  if (mode !== "open-controller") mkdirSync(join(root, ".cotal"), { recursive: true });
   assertScratchHeld(root, "up max-payload fixture");
   const port = await freePort();
   const server = `nats://127.0.0.1:${port}`;
-  const space = "payload";
-  const asked = SERVICE_CALLER_PAYLOAD_FLOOR;
+  const space = `payload-${mode}`;
+  if (mode === "open-controller") {
+    const prepared = await run(["space", "create", space, "--root", root]);
+    ok("controller fixture is prepared", prepared.status === 0, prepared.out.slice(-1500));
+  }
+  let asked = open ? 2097152 : SERVICE_CALLER_PAYLOAD_FLOOR;
+  const flags = mode === "open-controller" ? ["--open"] : ["--no-manager", ...(open ? ["--open"] : [])];
 
   console.log(`1) cotal up --max-payload ${asked}`);
-  const first = await run(["up", "--detach", "--no-manager", "--space", space, "--server", server, "--max-payload", String(asked)]);
+  const first = await run(["up", "--detach", ...flags, "--space", space, "--server", server, "--max-payload", String(asked), ...(mode === "open-controller" ? ["--json"] : [])]);
   ok("up --max-payload exits 0", first.status === 0, first.out.slice(-1500));
   ok("…and renders max_payload into the broker config", confText().includes(`\nmax_payload: ${asked}\n`), confText().split("\n").filter((l) => l.startsWith("max_payload")));
+  if (open) ok("open config carries no authentication material", !/^(operator|system_account|resolver):/m.test(confText()), confText());
   ok("…and records it in the broker policy", recordedPayload() === asked, recordedPayload());
   ok("…and the listener ADVERTISES it, so the broker is serving the limit", await servedMaxPayload(port) === asked, await servedMaxPayload(port));
 
   console.log("\n2) a running broker refuses a different --max-payload");
-  const conflict = await run(["up", "--space", space, "--server", server, "--max-payload", String(asked + 4096)]);
+  const conflict = await run(["up", ...flags, "--space", space, "--server", server, "--max-payload", String(asked + 4096)]);
   ok("a different --max-payload on a running broker exits non-zero", conflict.status !== 0, { status: conflict.status, out: conflict.out.slice(-800) });
   ok("…naming that the limit is fixed at start and the `cotal down` that frees it",
-    conflict.out.includes("can't change --max-payload") && conflict.out.includes("cotal down"), conflict.out.slice(-800));
+    (conflict.out.includes("can't change --max-payload") || conflict.out.includes("fixed at its start")) && conflict.out.includes("cotal down"), conflict.out.slice(-800));
   ok("…and changes neither the record nor what is served", recordedPayload() === asked && await servedMaxPayload(port) === asked);
 
   console.log("\n3) down, then a PLAIN up renders the recorded limit again");
   const down = await run(["down", "--yes"]);
   ok("down exits 0", down.status === 0, down.out.slice(-1500));
-  const again = await run(["up", "--detach", "--no-manager", "--space", space, "--server", server]);
+  const again = await run(["up", "--detach", ...flags, "--space", space, "--server", server]);
   ok("a plain up with no flag exits 0", again.status === 0, again.out.slice(-1500));
   ok("…and renders the recorded max_payload again", confText().includes(`\nmax_payload: ${asked}\n`), confText().split("\n").filter((l) => l.startsWith("max_payload")));
   ok("…and the restarted listener still advertises it", await servedMaxPayload(port) === asked, await servedMaxPayload(port));
   ok("…and the record is unchanged", recordedPayload() === asked, recordedPayload());
 
+  if (open) {
+    const stopped = await run(["down", "--yes"]);
+    ok("open stack stops before replacing its payload limit", stopped.status === 0, stopped.out.slice(-1500));
+    asked += 4096;
+    // No --open: the controller must also accept the limit when its recorded mode selects open.
+    const replace = await run(["up", "--detach", "--no-manager", ...(mode === "open-legacy" ? ["--open"] : []), "--space", space, "--server", server, "--max-payload", String(asked)]);
+    ok("stopped open stack accepts a replacement limit", replace.status === 0, replace.out.slice(-1500));
+    ok("replacement is rendered, recorded and served", confText().includes(`\nmax_payload: ${asked}\n`) && recordedPayload() === asked && await servedMaxPayload(port) === asked);
+  }
   const last = await run(["down", "--yes"]);
   ok("the final down exits 0", last.status === 0, last.out.slice(-1500));
+}
+
+try {
+  for (const mode of ["auth", "open-legacy", "open-controller"] as const) await checkMode(mode);
   console.log(`\nup-max-payload live smoke: OK - ${pass} checks`);
 } finally {
   for (const cp of kids) { try { cp.kill("SIGKILL"); } catch { /* already gone */ } }
