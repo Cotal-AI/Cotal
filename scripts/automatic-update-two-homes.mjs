@@ -8,7 +8,7 @@ import { createServer } from 'node:net';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
 /** Two homes share one installed CLI, but each must reconcile its own built-ins before launch. */
-export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
+export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, routes = ['up', 'launch', 'old-manager'] }) {
   assert(['linux', 'darwin'].includes(process.platform), 'two-home installed-prefix proof is POSIX only');
   root = resolve(root);
   assert(!existsSync(root), 'two-home proof needs a new private root');
@@ -21,7 +21,8 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
   try {
     target = await candidateRegistry(resolve(targetDirectory), 'B', 'https://registry.npmjs.org/');
     report.old = old.identity; report.target = target.identity;
-    for (const route of ['up', 'launch', 'old-manager']) {
+    for (const route of routes) {
+      assert(['up', 'launch', 'old-manager'].includes(route), 'unknown two-home route');
       const directory = join(root, route);
       const prefix = join(root, 'prefix');
       const entry = join(prefix, 'bin', 'cotal');
@@ -70,7 +71,11 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
         await ok('B', 'start original space', ['up', '--server', server, '--detach', ...(route === 'launch' ? ['--no-manager'] : [])]);
         if (route === 'up') { await ok('B', 'stop original space', ['down', '--yes']); running = false; }
         environments.A.npm_config_registry = target.url;
-        await ok('A', 'self update shared installation', ['update', '--self']);
+        if (route === 'old-manager') {
+          const install = await call('A', 'old Manager candidate install setup', 'npm', ['install', '-g', `cotal-ai@${target.identity.version}`]);
+          check('old Manager exclusion setup installs exact target without claiming updater acceptance', install.code === 0 && install.signal === null);
+          await ok('A', 'reconcile separate A home', ['ext', 'seed']);
+        } else await ok('A', 'self update shared installation', ['update', '--self']);
         const a = await ok('A', 'updated home version', ['--version']);
         check(`${route} A is fully reconciled`, inventory(a.stdout, target.identity.version) && !a.stdout.includes('Reconciliation pending'));
         const stale = await ok('B', 'stale home version before command', ['--version']);
@@ -104,7 +109,7 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
         }
       }
     }
-    report.cleanup = 'both owned stacks stopped'; report.acceptance = true; save(); return report;
+    report.cleanup = 'both owned stacks stopped'; report.acceptance = routes.length === 3 && new Set(routes).size === 3; save(); return report;
   } finally { if (target) await target.close(); await old.close(); save(); }
 }
 
@@ -113,7 +118,7 @@ function inventory(output, version) {
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const [oldDirectory, targetDirectory, root] = process.argv.slice(2);
+  const [oldDirectory, targetDirectory, root, route] = process.argv.slice(2);
   assert(oldDirectory && targetDirectory && root, 'usage: automatic-update-two-homes.mjs <old-packed-closure> <target-packed-closure> <new-private-root>');
-  await twoHomeUpgrade({ oldDirectory, targetDirectory, root });
+  await twoHomeUpgrade({ oldDirectory, targetDirectory, root, ...(route ? { routes: [route] } : {}) });
 }

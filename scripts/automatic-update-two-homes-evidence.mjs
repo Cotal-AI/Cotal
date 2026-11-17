@@ -10,7 +10,7 @@ export function verifyTwoHomeUpgrade(report) {
   assert(report.old?.version && report.target?.version && report.old.version !== report.target.version, 'distinct old and target releases required');
   for (const route of ['up', 'launch', 'old-manager']) {
     const calls = report.calls.filter(call => call.route === route);
-    for (const label of ['install old closure', 'self update shared installation', 'updated home version', 'stale home version before command', 'final owned stack down'])
+    for (const label of ['install old closure', route === 'old-manager' ? 'old Manager candidate install setup' : 'self update shared installation', 'updated home version', 'stale home version before command', 'final owned stack down'])
       assert(calls.some(call => call.label === label && call.code === 0 && call.signal === null), `${route}: missing successful ${label}`);
     const stale = calls.find(call => call.label === 'stale home version before command');
     assert(stale.stdout.startsWith(`cotal-ai ${report.target.version}\n`) && !stale.stdout.includes('update --self'), `${route}: wrong stale-home version or remedy`);
