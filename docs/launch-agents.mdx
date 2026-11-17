@@ -112,7 +112,7 @@ Cotal leaves that server's sessions in place.
 
 <Callout type="warn" title="Manager replacement and seat lifetime">
 
-On Linux, a normal manager stop releases its custodied seats for a successor to adopt.
+On Linux, a normal manager stop releases its custodied seats for a successor to adopt, including on an open mesh.
 Terminal attachments reconnect through the successor. An explicit stop of the agents still ends them.
 A custodian with no connected manager stops its child after ten minutes, so restart the manager within that window.
 On macOS and Windows, replacing or stopping the manager still closes its in-process PTYs.
@@ -131,6 +131,7 @@ If the child printed a connector line beginning with `[cotal-<name>]` or `[cotal
 
 On Linux, a manager launches, adopts and reaps seats under detached per-seat custodians.
 A custodian exits a few seconds after its agent ends.
+The manager releases its custody connection when it observes exit, so an idle manager does not keep a childless custodian alive.
 Use `cotal manager seats` to list those custodians and `cotal manager seats --drain` to retire only ones whose agents have exited.
 A custodian keeps exit evidence beside the custody record, so a successor manager can report the same outcome.
 If the record cannot be written, the reason appears in `custodian.log`; a later reap reports missing or unreadable evidence.

@@ -8,11 +8,11 @@
  * needs no claude/mesh; tmux/cmux are skipped (logged) when not present on the machine.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
-import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
+import { reapSeat, readRecord, recordPath, type SeatRecord } from "@cotal-ai/seat";
 import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
 import { detachKey } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-package smoke import
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
@@ -26,9 +26,12 @@ function check(label: string, cond: boolean): void {
 function skip(label: string, why: string): void {
   console.log(`• ${label} skipped (${why})`);
 }
-function closeHandle(h: unknown): void {
-  const closer = h as { close?: () => void } | undefined;
-  closer?.close?.();
+async function stopHandle(h: AgentHandle): Promise<void> {
+  h.stop({ graceful: false });
+  await h.waitForExit?.();
+  h.release?.();
+  if (process.platform === "linux" && h.kind === "pty" && h.reference)
+    await reapSeat(custody, h.reference.id);
 }
 function attachError(fn: () => unknown): string {
   try {
@@ -39,6 +42,18 @@ function attachError(fn: () => unknown): string {
   }
 }
 
+const root = mkdtempSync(join(tmpdir(), "cotal-attach-"));
+const custody = join(root, "s");
+const previousRoot = process.env.COTAL_SEAT_ROOT;
+const previousHome = process.env.COTAL_HOME;
+process.env.COTAL_SEAT_ROOT = custody;
+process.env.COTAL_HOME = join(root, "home");
+mkdirSync(process.env.COTAL_HOME, { mode: 0o700 });
+const records: SeatRecord[] = [];
+const remember = (handle: AgentHandle): void => {
+  if (process.platform === "linux" && handle.reference)
+    records.push(readRecord(recordPath(custody, handle.reference.id)));
+};
 const SESSION = "cotal-smoke";
 const spec: LaunchSpec = { command: "sleep", args: ["60"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } };
 const cwd = process.cwd();
@@ -46,14 +61,14 @@ const cwd = process.cwd();
 // pty (default) — the one streamable backend: attach() returns a live session, never throws.
 {
   const h = createRuntime("pty", SESSION).spawn("smoke-pty", spec, cwd);
+  remember(h);
   let sess: { onData?: unknown; cols?: unknown } | undefined;
   const err = attachError(() => (sess = h.attach()));
   check(
     "pty: attach() returns a live session (streams, no throw)",
     err === "" && typeof sess?.onData === "function" && typeof sess?.cols === "number",
   );
-  h.stop({ graceful: false });
-  closeHandle(h);
+  await stopHandle(h);
 }
 
 // Runtime-selection contract (no fallbacks): `auto` is deterministic pty — even inside $TMUX. tmux
@@ -122,6 +137,7 @@ check("pty: declares that it streams a terminal", createRuntime("pty", SESSION).
     check("tmux: hint is tmux-specific, never a cmux tab", !err.includes("cmux tab"));
     check("tmux: the throw is what the runtime declared", rt.streamsTerminal === false && err !== "");
     h.stop({ graceful: false });
+    await h.waitForExit?.();
     try {
       execFileSync("tmux", ["kill-session", "-t", SESSION], { stdio: "ignore" });
     } catch {
@@ -153,6 +169,7 @@ check("pty: declares that it streams a terminal", createRuntime("pty", SESSION).
       );
       check("cmux: the throw is what the runtime declared", rt.streamsTerminal === false && err !== "");
       h.stop({ graceful: false });
+      await h.waitForExit?.();
     }
   }
 }
@@ -166,38 +183,47 @@ check("pty: declares that it streams a terminal", createRuntime("pty", SESSION).
   const capable: Runtime = { kind: "capable", streamsTerminal: false, spawn: () => handle, adopt: () => handle };
   check("present adopt returns the runtime handle", requireRuntimeAdopt(capable, { kind: "capable", id: "opaque" }) === handle);
 
-  // A pty spawn starts no custodian on any platform, so it carries no custody reference (#1391).
-  // On Linux the same runtime still adopts a seat that an earlier manager left under a custodian.
+  // Linux spawns carry the reference a same-root successor adopts. Other platforms refuse custody.
   const pty = createRuntime("pty", SESSION);
   const spawned = pty.spawn("smoke-pty-adopt", spec, cwd);
-  check("pty spawn records no custody reference", spawned.reference === undefined);
+  remember(spawned);
   if (process.platform === "linux") {
-    const root = mkdtempSync(join(tmpdir(), "cotal-attach-"));
-    process.env.COTAL_SEAT_ROOT = root;
-    const custodial = new CustodialPtyRuntime();
-    const legacy = custodial.spawn("smoke-pty-legacy", spec, cwd);
+    check("Linux pty spawn records a durable custody reference", spawned.reference?.kind === "pty");
+    spawned.release?.();
+    const successor = createRuntime("pty", SESSION);
     let adopted: AgentHandle | undefined;
-    const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(pty, legacy.reference!)));
+    const ptyErr = attachError(() => (adopted = requireRuntimeAdopt(successor, spawned.reference!)));
     check(
-      "pty adopts a seat an earlier custodial manager left running",
-      ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid === legacy.pid,
+      "same-root successor adopts the original pty seat",
+      ptyErr === "" && adopted !== undefined && typeof adopted.attach === "function" && adopted.pid === spawned.pid,
     );
-    legacy.stop({ graceful: false });
-    await legacy.waitForExit?.();
-    closeHandle(adopted);
-    closeHandle(legacy);
-    await custodial.reap(legacy.reference!);
-    rmSync(root, { recursive: true, force: true });
+    if (adopted) {
+      await adopted.attach().backlog();
+      await stopHandle(adopted);
+    } else await reapSeat(custody, spawned.reference!.id);
   } else {
+    check("non-Linux pty spawn records no custody reference", spawned.reference === undefined);
     const ptyErr = attachError(() => requireRuntimeAdopt(pty, { kind: "pty", id: "missing" }));
     check(
       `pty adopt throws custody transport unsupported on ${process.platform}`,
       ptyErr === `custody transport unsupported on ${process.platform}`,
     );
+    await stopHandle(spawned);
   }
-  spawned.stop({ graceful: false });
-  closeHandle(spawned);
 }
+
+if (process.platform === "linux") {
+  const live = (pid: number): boolean => {
+    try {
+      const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+      return text.slice(text.lastIndexOf(") ") + 2).split(" ")[0] !== "Z";
+    } catch { return false; }
+  };
+  check("attach smoke leaves no live PTY children or custodians", records.every((record) => !live(record.childPid) && !live(record.custodianPid)));
+}
+if (previousRoot === undefined) delete process.env.COTAL_SEAT_ROOT; else process.env.COTAL_SEAT_ROOT = previousRoot;
+if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+console.log(`Retained attach fixture: ${root}`);
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

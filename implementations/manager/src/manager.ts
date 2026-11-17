@@ -2625,11 +2625,13 @@ export class Manager {
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
       void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
-    // A default stop records a user-mode seat it released while the seat was still running. This
+    // A default stop records a user-mode or open-mesh seat it released while it was still running. This
     // start adopts that seat, or retires it when the runtime proves it gone. Static seats stay on
     // the sweep above.
     if (this.userMode)
       void this.adoptReleasedSeats().catch((e) => console.error(`! a released seat was not adopted: ${rejectionText(e)}`));
+    else if (!this.auth)
+      await this.adoptReleasedSeats();
     // The manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -3882,8 +3884,8 @@ export class Manager {
       if (reference) {
         try {
           // A static manager records an adoptable seat at launch and keeps that record current. A
-          // user-mode manager records nothing until here.
-          if (this.userMode)
+          // user-mode or open-mesh manager records nothing until here.
+          if (this.userMode || !this.auth)
             writeSeatRecord(this.workspaceRoot, { version: "cotal-seat-record/v1", instanceId: this.managerInstanceId, crashes: a.restart?.crashes ?? [], agent: this.resumeEntryOf(a) });
           writeReleasedSeatReference(this.workspaceRoot, this.space, a.name, { version: "cotal-released-seat/v1", lifecycleUid: a.lifecycleUid, kind: reference.kind, id: reference.id });
         } catch (e) {
@@ -3903,7 +3905,7 @@ export class Manager {
     return { failures, stop };
   }
 
-  /** Take back user-mode seats a previous manager released while they were still running. A seat
+  /** Take back user-mode or open-mesh seats a previous manager released while they were still running. A seat
    *  the runtime adopts is watched, and retired when that watch proves it gone. A seat the runtime
    *  has already reaped is retired now. Anything the runtime cannot prove is left recorded. */
   private async adoptReleasedSeats(): Promise<void> {
@@ -3924,7 +3926,9 @@ export class Manager {
     const reference = readReleasedSeatReference(this.workspaceRoot, this.space, name);
     const record = reference ? readSeatRecord(this.workspaceRoot, this.space, name) : undefined;
     const identity = record?.agent.identity;
-    if (!reference || !record || identity?.mode !== "user" || identity.lifecycleUid !== reference.lifecycleUid) return;
+    if (!reference || !record || !identity || identity.mode === "static" || identity.lifecycleUid !== reference.lifecycleUid) return;
+    if (record.instanceId !== this.managerInstanceId || record.agent.space !== this.space)
+      throw new Error(`released seat ${name} belongs to another manager instance or space`);
     try {
       await this.validateRetainedAuthority(record.agent);
     } catch (e) {
@@ -3963,14 +3967,13 @@ export class Manager {
       name,
       role: record.agent.role,
       agent: launch.connector,
-      id: principalKey(identity.owner, identity.actor).key,
+      id: identity.mode === "user" ? principalKey(identity.owner, identity.actor).key : identity.id,
       lifecycleUid: identity.lifecycleUid,
-      userOwner: identity.owner,
-      secretPaths: {
+      ...(identity.mode === "user" ? { userOwner: identity.owner, secretPaths: {
         actorToken: identity.actorToken.path,
         sentinelCreds: identity.sentinelCredential.path,
         health: identity.health.path,
-      },
+      } } : {}),
       spawner: record.agent.spawner,
       authorityParent: record.agent.authorityParent,
       startedAt: Date.parse(record.agent.startedAt) || Date.now(),
@@ -5755,7 +5758,7 @@ export class Manager {
     // A released seat's record is the next manager's only pointer to it. It stays until the
     // retirement is confirmed. Dropping it here let a refused retirement leave the lifecycle active
     // with nothing left for that manager to adopt.
-    if (!this.releasedSeatPending(a)) this.dropSeatRecord(a);
+    if ((!this.auth && !this.userMode) || !this.releasedSeatPending(a)) this.dropSeatRecord(a);
     if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
     // End any live §13.6 attach session bound to THIS incarnation with the reason its cause names.
     // Fires once per agent on every free path (despawn / self-stop / reap / exit) via the `agents`
@@ -5770,6 +5773,14 @@ export class Manager {
     // is usually the seat ending, but a stop that could not prove the process gone leaves one the
     // terminal must still address before it frees the alias.
     const target = this.teardownTarget(a);
+    // A naturally exited custodial seat has no later waitForExit caller to close its proxy.
+    // Close only after the runtime reports exit: an accepted stop may free its slot while the
+    // child is still dying, and its pending stop proof still needs that connection.
+    try {
+      if (a.handle.status() === "exited") a.handle.release?.();
+    } catch (error) {
+      console.error(`! ${a.name}: exited seat custody could not be released: ${rejectionText(error)}`);
+    }
     // On a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
     // and the alias frees only when all of it completes (not the retirement alone). The detached

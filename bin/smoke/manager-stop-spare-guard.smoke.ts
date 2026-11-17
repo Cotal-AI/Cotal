@@ -43,6 +43,7 @@ const SPARE_COVERAGE = new Set([
   "implementations/manager/smoke/preserve-state.smoke.ts",
   "implementations/manager/smoke/lease-loss-keeps-serving.smoke.ts",
   "implementations/manager/smoke/shutdown-custody.smoke.ts",
+  "implementations/manager/smoke/open-pty-continuity.smoke.ts",
 ]);
 
 /**
