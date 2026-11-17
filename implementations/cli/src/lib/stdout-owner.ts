@@ -1,4 +1,6 @@
 import { writeSync } from "node:fs";
+import { Socket } from "node:net";
+import type { Writable } from "node:stream";
 
 /** How many commands currently own process.stdout's errors. */
 let owners = 0;
@@ -19,6 +21,31 @@ export function stdoutError(error: NodeJS.ErrnoException): void {
   if (error.code === "EPIPE") process.exit(process.exitCode ?? 0);
   reportLostOutput(error);
   process.exit(Number(process.exitCode ?? 0) || 3);
+}
+
+/**
+ * Make a stdout that is a file, not a pipe or a terminal, write all of each chunk or fail. Node
+ * writes a file with one `writeSync` and ignores how many bytes it took, so a file-size limit or a
+ * full disk that takes part of a write dropped the rest with no error, and a truncated JSON export
+ * exited 0 (#7124). The rest is written again, and the write that takes nothing fails, as EFBIG or
+ * ENOSPC, through the stream's error, which {@link stdoutError} reports.
+ */
+export function completeFileWrites(stream: Writable = process.stdout): void {
+  const fd = (stream as { fd?: unknown }).fd;
+  if (stream instanceof Socket || typeof fd !== "number") return;
+  stream._write = (chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void) => {
+    try {
+      for (let done = 0; done < chunk.length;) {
+        const wrote = writeSync(fd, chunk, done, chunk.length - done);
+        if (wrote === 0) throw Object.assign(new Error("stdout took no bytes"), { code: "EIO" });
+        done += wrote;
+      }
+    } catch (error) {
+      callback(error as Error);
+      return;
+    }
+    callback();
+  };
 }
 
 /** Say on stderr, in one line, that stdout could not be written. A closed pipe says nothing. */
