@@ -1616,13 +1616,17 @@ export async function candidateRegistry(directory, direction, upstream) {
       }
         if (path.includes('/-/')) {
           const archiveResponse = await fetch(`${upstream.replace(/\/$/, '')}/${request.url.slice(1)}`, { signal: AbortSignal.timeout(30000) });
-          response.writeHead(archiveResponse.status, { 'content-type': 'application/octet-stream' }).end(Buffer.from(await archiveResponse.arrayBuffer())); return;
+          const body = Buffer.from(await archiveResponse.arrayBuffer());
+          response.writeHead(archiveResponse.status, { 'content-type': 'application/octet-stream' }).end(body); return;
         }
         const name = path.startsWith('@') ? path.split('/').slice(0, 2).join('/') : path.split('/')[0];
       const selector = path.slice(name.length + 1);
       if (!cache.has(name)) {
         const upstreamResponse = await fetch(`${upstream.replace(/\/$/, '')}/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(30000) });
-        if (!upstreamResponse.ok) { response.writeHead(upstreamResponse.status).end(await upstreamResponse.text()); return; }
+        if (!upstreamResponse.ok) {
+          const body = await upstreamResponse.text();
+          response.writeHead(upstreamResponse.status).end(body); return;
+        }
         cache.set(name, await upstreamResponse.json());
       }
       const packument = structuredClone(cache.get(name));
@@ -1634,7 +1638,10 @@ export async function candidateRegistry(directory, direction, upstream) {
       }
       const body = selector ? packument.versions[packument['dist-tags'][selector] ?? selector] : packument;
       response.writeHead(body ? 200 : 404, { 'content-type': 'application/json' }).end(JSON.stringify(body ?? { error: 'version not found' }));
-    } catch (error) { response.writeHead(502).end(JSON.stringify({ error: error.message })); }
+    } catch (error) {
+      if (!response.headersSent) response.writeHead(502);
+      response.end(JSON.stringify({ error: error.message }));
+    }
   });
   await new Promise((resolveListen, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolveListen); });
   url = `http://127.0.0.1:${server.address().port}`;

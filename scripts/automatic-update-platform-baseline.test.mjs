@@ -3,6 +3,7 @@ import { candidateRegistry, bootstrapVersion, selectedTargets, cliReportsVersion
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import * as baseline from './automatic-update-platform-baseline.mjs';
+import { ServerResponse } from 'node:http';
 
 test('historical source bootstrap cutoff is isolated from the upgrade environment', () => {
   const env = { PATH: '/node', npm_config_before: 'old', NPM_CONFIG_BEFORE: 'other' };
@@ -590,6 +591,69 @@ test('candidate overlay serves packed closure, stock metadata and read-only poli
   const second = await npmVersion();
   assert.equal(second.exit, 0, `second cell public latest after stopped first overlay: ${second.stderr}`);
   assert.match(JSON.parse(second.stdout), /^\d+\.\d+\.\d+$/);
+});
+
+for (const scenario of [
+  { label: 'returns 502 when upstream archive body rejects', archive: true, rejects: true },
+  { label: 'returns 502 when upstream error metadata body rejects', rejects: true },
+  { label: 'returns 502 when upstream fetch rejects', fetchRejects: true },
+  { label: 'preserves upstream archive status and bytes', archive: true },
+  { label: 'preserves upstream error metadata status and body' },
+  { label: 'ends an already-started response without rewriting headers', archive: true, endRejects: true },
+]) test(`candidate overlay ${scenario.label}`, async t => {
+  const path = scenario.archive ? '/dependency/-/dependency-1.0.0.tgz' : '/dependency';
+  const status = scenario.archive ? 200 : 503;
+  const method = scenario.archive ? 'arrayBuffer' : 'text';
+  const body = scenario.archive ? Buffer.from([0, 1, 255]) : 'upstream unavailable';
+  const root = mkdtempSync('/var/tmp/upgrade-matrix/registry-body-');
+  const packages = [];
+  for (const [i, name] of JSON.parse(readFileSync(new URL('../.changeset/config.json', import.meta.url))).fixed.flat().entries()) {
+    const dir = join(root, String(i));
+    mkdirSync(join(dir, 'package'), { recursive: true });
+    writeFileSync(join(dir, 'package/package.json'), JSON.stringify({ name, version: '0.999.0' }));
+    const archive = `${i}.tgz`;
+    await create({ cwd: dir, file: join(root, archive), gzip: true }, ['package']);
+    packages.push({ name, version: '0.999.0', archive, sha256: createHash('sha256').update(readFileSync(join(root, archive))).digest('hex') });
+  }
+  writeFileSync(join(root, 'manifest.json'), JSON.stringify({ source: 'a'.repeat(40), packages }));
+  const fetchClient = globalThis.fetch;
+  let upstreamCalls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (!String(url).startsWith('https://registry.npmjs.org/')) return fetchClient(url, options);
+    upstreamCalls++;
+    assert(options.signal instanceof AbortSignal, 'upstream deadline remains in force');
+    if (scenario.fetchRejects) throw new Error('upstream fetch aborted');
+    return { ok: status === 200, status, [method]: async () => {
+      if (scenario.rejects) throw new Error('upstream body aborted');
+      return body;
+    } };
+  });
+  if (scenario.endRejects) {
+    const end = ServerResponse.prototype.end;
+    let first = true;
+    t.mock.method(ServerResponse.prototype, 'end', function (...args) {
+      if (first) {
+        first = false;
+        assert.equal(this.headersSent, true);
+        throw new Error('response end failed');
+      }
+      return end.apply(this, args);
+    });
+  }
+  const overlay = await candidateRegistry(root, 'B', 'https://registry.npmjs.org/');
+  try {
+    const response = await fetch(overlay.url + path, { signal: AbortSignal.timeout(2000) });
+    assert.equal(response.status, scenario.rejects || scenario.fetchRejects ? 502 : status);
+    if (scenario.rejects || scenario.fetchRejects || scenario.endRejects) {
+      assert.deepEqual(await response.json(), { error: scenario.endRejects ? 'response end failed' : scenario.fetchRejects ? 'upstream fetch aborted' : 'upstream body aborted' });
+    } else {
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.from(body));
+    }
+    assert.equal(upstreamCalls, 1);
+    const local = await fetch(`${overlay.url}/__candidate/${packages[0].archive}`);
+    assert.equal(local.status, 200, 'registry keeps serving after upstream failure');
+    assert.deepEqual(Buffer.from(await local.arrayBuffer()), readFileSync(join(root, packages[0].archive)));
+  } finally { await overlay.close(); }
 });
 
 test('candidate registry configuration removes only unchanged owned bytes and preserves prior account settings', () => {
