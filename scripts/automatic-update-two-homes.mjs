@@ -20,7 +20,13 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root, rout
   report.environment = { hostedDisposable: process.env.GITHUB_ACTIONS === 'true' && process.env.RUNNER_ENVIRONMENT === 'github-hosted', nodeVersion: process.version };
   report.harnessSource = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..'), encoding: 'utf8' }).trim();
   report.harnessFiles = Object.fromEntries(['automatic-update-two-homes.mjs', 'automatic-update-two-homes-evidence.mjs'].map(name => [name, createHash('sha256').update(readFileSync(new URL(name, import.meta.url))).digest('hex')]));
-  const save = () => writeFileSync(join(root, 'result.json'), JSON.stringify(report, null, 2));
+  const save = () => {
+    const result = JSON.stringify(report, null, 2);
+    const transcript = report.calls.map(call => `${call.route}/${call.home}/${call.label}\n${call.stdout}${call.stderr}`).join('\n');
+    writeFileSync(join(root, 'result.json'), result);
+    writeFileSync(join(root, 'transcript.log'), transcript);
+    writeFileSync(join(root, 'evidence.sha256'), [['result.json', result], ['transcript.log', transcript]].map(([name, bytes]) => `${createHash('sha256').update(bytes).digest('hex')}  ${name}`).join('\n') + '\n');
+  };
   const check = (name, value) => { report.checks.push({ name, passed: Boolean(value) }); save(); assert(value, name); };
   const old = await candidateRegistry(resolve(oldDirectory), 'A', 'https://registry.npmjs.org/');
   let target;
