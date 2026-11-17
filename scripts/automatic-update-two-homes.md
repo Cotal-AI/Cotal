@@ -12,9 +12,9 @@ Each route ends with confirmed public down. The strict evidence grader `automati
 
 ## Registration
 
-Add this as a required configured POSIX candidate-to-next family for Linux and macOS in `upgrade-matrix-plan.mjs`, `.github/workflows/automatic-update-platforms.yml` and the baseline/candidate paired evidence dispatch. It is not a fresh-install cell or native-service-only cell. Required evidence is A/B exact installed versions, both home-specific built-in inventories, real up and seat join, old-Manager unchanged inventory/answering proof, and confirmed owned-stack cleanup. Include the new scripts in artifact source identity and strict summary verification.
+This branch registers a required configured POSIX candidate-to-next family for Linux and macOS in `upgrade-matrix-plan.mjs` and `.github/workflows/automatic-update-platforms.yml`, including artifact source identity and strict summary verification. It is not a fresh-install cell or native-service-only cell. Required evidence is A/B exact installed versions, both home-specific built-in inventories, real up and seat join, old-Manager unchanged inventory/answering proof, and confirmed owned-stack cleanup.
 
-PR7177 currently adds the foreign-install pair and changes the required census from40to42. Its author owns that pending integration, so this change adds the independent callable and grader without silently editing their branch/census. Register two new POSIX coordinates after7177 integration, or in an explicitly ordered combined tree, and update census tests together. A successful local callable run is not proof that CI invokes it. Release-matrix qualification and selected-retention compatibility are required before this update-path PR merges.
+PR7177 adds the separate foreign-install pair and changes its required census from40to42. This branch adds only the two-home pair to its own baseline. A combined tree must include both families and update exact census tests together, plus any separately added unreachable-registration state. No other lane branch is modified. Local workflow/source tests do not prove native hosted execution. Release-matrix qualification and selected-retention compatibility are required before this update-path PR merges.
 
 ## Latest local observation
 
