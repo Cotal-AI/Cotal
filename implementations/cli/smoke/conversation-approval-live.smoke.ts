@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -51,7 +51,7 @@ const contractGrant = (actor: string, s: Selection | null | undefined) => s
       allowPublish: [eventChannel({ owner, actor }), ...s.channels.filter((c) => c.access === "read-post").map((c) => c.channel)], subscribe: [], endpoints: [] }
   : { scope: [], role: null, allowSubscribe: [], allowPublish: [eventChannel({ owner, actor })], subscribe: [] };
 const bundle = () => ({ space: SPACE, server: "nats://127.0.0.1:1", tlsRequired: false,
-  userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/s/${SPACE}` } },
+  userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/registration/${SPACE}` } },
   policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
   cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${SPACE}/conversation-identities` },
     conversationIdentitySelection: { version: 1 },
@@ -71,8 +71,10 @@ let enforceNames = false;
 const retiredActors = new Set<string>();
 const server = createServer({ key, cert: ca }, async (req, res) => {
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-  if (req.url === `/s/${SPACE}/.well-known/cotal-mesh`) return send(200, originalRegistration ?? bundle());
-  if (req.url === `/moved/s/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
+  if (req.url === `/api/spaces/${SPACE}/conversation-identities/.well-known/cotal-mesh`)
+    return send(200, originalRegistration ?? bundle());
+  if (req.url === `/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, originalRegistration ?? bundle());
+  if (req.url === `/moved/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
   authenticated++;
   assert.equal(req.headers.authorization, "Bearer isolated-fixture-human-session");
   if (req.method === "POST") {
@@ -115,7 +117,7 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     if (a.state === "approved") {
       const actor = `pa_${base32(26)}`, lifecycleUid = mintLifecycleUid();
       a.material = { v: 1, requestId: body.requestId, space: SPACE, owner, actor, lifecycleUid, grant: contractGrant(actor, a.approved),
-        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: movedRegistration?.userAuth.endpoints.url ?? `${base}/s/${SPACE}`,
+        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: movedRegistration?.userAuth.endpoints.url ?? `${base}/registration/${SPACE}`,
         retire: { url: `${base}/api/spaces/${SPACE}/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` },
         approval: { id: a.id, decidedAt: a.decidedAt, approved: a.approved } };
       a.state = "issued";
@@ -518,7 +520,7 @@ try {
     const moved = bundle();
     moved.server = "nats://127.0.0.1:2";
     moved.userAuth.idp.url = `${base}/moved-idp`;
-    moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+    moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
     movedRegistration = moved;
     recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
@@ -551,7 +553,7 @@ try {
       const moved = bundle();
       moved.server = "nats://127.0.0.1:2";
       moved.userAuth.idp.url = `${base}/moved-idp`;
-      moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+      moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
       if (changedPin === "issuer") moved.userAuth.idp.issuer = `${base}/different-issuer`;
       if (changedPin === "audience") moved.userAuth.idp.audience = "different-audience";
       movedRegistration = moved;
@@ -588,12 +590,15 @@ try {
     const moved = bundle();
     moved.server = "nats://127.0.0.1:2";
     moved.userAuth.idp.url = `${base}/moved-idp`;
-    moved.userAuth.endpoints.url = `${base}/moved/s/${SPACE}`;
+    moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
     movedRegistration = moved;
     recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
       userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
     deleteIdpSession(home, `${base}/idp`);
     const before = deletes;
+    const unreadable = join(home, "app-identities", "unconfirmed-000-unreadable");
+    mkdirSync(unreadable, { mode: 0o700 });
+    writeFileSync(join(unreadable, "identity.json"), "not JSON", { mode: 0o600 });
     const refused = await cli({ name: "moved", space: SPACE, session, events: true });
     assert.equal(refused.code, 1);
     assert.equal(refused.reply.retryable, false);

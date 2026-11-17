@@ -293,8 +293,10 @@ async function provisionOnSpace(
       if (response.status === 409 && response.body !== null && typeof response.body === "object" &&
           (response.body as { error?: unknown }).error === "name-taken" && readdirSync(root).some((entry) => {
             if (!entry.startsWith("unconfirmed-") || !existsSync(join(root, entry, RECORD))) return false;
-            const earlier = read(join(root, entry));
-            return earlier.session === session && earlier.space === target.space && earlier.label === name;
+            try {
+              const earlier = read(join(root, entry));
+              return earlier.session === session && earlier.space === target.space && earlier.label === name;
+            } catch { return false; }
           }))
         throw new ConversationRequestError("this conversation's earlier identity still holds the name; revoke the offline agent at the authority, or connect under another name", false);
       const outcome = creationOutcome(record, authority, response, "creation");
@@ -392,7 +394,7 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
     let target = record.retirementTarget ? { ...current, ...record.retirementTarget } : current;
     if (!record.retirementTarget && record.remote && trust(target) !== record.trust) {
       try {
-        const address = new URL(`/s/${encodeURIComponent(record.space)}`, record.remote.url);
+        const address = new URL(record.remote.url);
         const response = await pinnedFetch(discoveryDocumentUrl(address).href, "the original conversation registration");
         if (response.ok) {
           const checked = await checkDiscoveryDocument(response);
