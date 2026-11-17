@@ -37,9 +37,14 @@ const REFERENCE_BUILTINS: Record<string, unknown> = {
   entries: (o: object) => Object.entries(o),
   has: (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k),
   merge: (a: object, b: object) => ({ ...a, ...b }),
-  // The free array walk spells the method (§5.2), so the reference IS the method, length capture
-  // included: what the free spelling must match is what JavaScript answers.
+  // The free array walks spell the methods (§5.2), so each reference IS the method, length capture
+  // included: what the free spelling must match is what JavaScript answers. `find` yields `null`
+  // where the method yields `undefined`, the one difference §5.2 names.
   map: (xs: unknown[], f: (x: unknown, i: number) => unknown) => xs.map((x, i) => f(x, i)),
+  filter: (xs: unknown[], f: (x: unknown, i: number) => unknown) => xs.filter((x, i) => f(x, i)),
+  find: (xs: unknown[], f: (x: unknown, i: number) => unknown) => xs.find((x, i) => f(x, i)) ?? null,
+  some: (xs: unknown[], f: (x: unknown, i: number) => unknown) => xs.some((x, i) => f(x, i)),
+  every: (xs: unknown[], f: (x: unknown, i: number) => unknown) => xs.every((x, i) => f(x, i)),
   range: (n: number) => Array.from({ length: n }, (_, i) => i),
   sum: (xs: number[]) => xs.reduce((a, b) => a + b, 0),
   min: Math.min,
@@ -341,6 +346,18 @@ await same("the free map spells the method: a callback that appends does not gro
 const xs = [1, 2];
 const ys = map(xs, (x, i) => { if (i === 0) { xs.push(3); } return x * 10; });
 log(xs, ys);
+`);
+
+await same("free filter, find, some and every capture the length too: the appended element is not tested", `
+const a = [1, 2];
+const kept = filter(a, (x, i) => { if (i === 0) { a.push(3); } return true; });
+const b = [1, 2];
+const found = find(b, (x, i) => { if (i === 0) { b.push(3); } return x === 3; });
+const c = [1, 2];
+const any = some(c, (x, i) => { if (i === 0) { c.push(3); } return x === 3; });
+const d = [1, 2];
+const all = every(d, (x, i) => { if (i === 0) { d.push(3); } return x < 3; });
+log(a, kept, b, found, c, any, d, all);
 `);
 
 await same("filter, find and findLast retain the element read before the predicate", `

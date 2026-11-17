@@ -347,7 +347,8 @@ occurrence where `s.replace(a, b)` replaces the first, in each case exactly as J
 method. The string `replace` and `replaceAll` methods honour JavaScript's replacement patterns
 (`$$`, `$&`, `` $` ``, `$'`): the replacement is a string with ECMAScript's substitution, not a
 template. Callback methods read the array's length once, before the first call, as JavaScript's do,
-so a callback that pushes does not extend its own iteration. And a method is looked up at the call,
+so a callback that pushes does not extend its own iteration. The free `map`, `filter`, `find`,
+`some` and `every` read it the same way. And a method is looked up at the call,
 never read as a value (L4020, §4.2).
 
 ### 5.3 The total order
@@ -1399,3 +1400,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-30 | `spawn` takes an inline persona, `{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?, capabilities?, save? }`, as its first argument (§6.1). The record is closed and a malformed one is refused before the step key is minted (L3049). The whole definition is hashed as `inline` and a catalog spawn's hash is unchanged (§6.4). The definition and its digest are bound into the entry before submission (§6.5), and a migration hands an adopted seat only to a spawn of the same definition (§11.2). |
 | 2026-11-04 | A client deadline is an instance of the NATS client's `TimeoutError`, not an error that carries that name. The client's request and API deadlines reject that class with no cause. `AbortSignal.timeout` raises a `DOMException` of the same name, and any error can be renamed to it; matching the name retried those and, after the bound, failed the step as L4026. They are not a client deadline, so they fail on the first attempt as `L4000`. |
 | 2026-11-04 | An inline persona takes `endpoints`, a list of `{ endpoint, commands, instanceId? }` records naming the endpoint commands handed to the helper (§6.1). A malformed entry is refused with L3049 before the step key is minted, and the list is hashed with the rest of the definition (§6.4). |
+| 2026-11-17 | The free `map`, `filter`, `find`, `some` and `every` read the array's length once, before the first call, as their methods do (§5.2). Measured before it: a callback that pushed onto the array it walked was called for the appended element, so `map([1, 2], f)` with a push in the first call answered `[10, 20, 30]` where `xs.map(f)` answered `[10, 20]`, and a callback that pushed on every call ran until the run failed with L4013. |
