@@ -37,7 +37,10 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     if (!lifetime?.start || lifetime.pid !== reply.result.pid || processBirth(lifetime.pid) !== lifetime.start) throw new Error("machine daemon lifetime changed during pre-install check");
     const active = (reply.result.managers ?? []).filter(manager => manager.pid !== undefined);
     let preservingDeadline: number | undefined;
-    const hostedIdentity = (status: typeof reply.result) => JSON.stringify(status.managers.filter(row => row.pid !== undefined).map(row => [row.space, row.pid, row.instanceId]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    const hostedIdentity = (status: typeof reply.result) => {
+      if (!Array.isArray(status.managers)) throw new Error("hosted Manager inventory is unknown during preserving observation");
+      return JSON.stringify(status.managers.filter(row => row.pid !== undefined).map(row => [row.space, row.pid, row.instanceId]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    };
     const initialHostedIdentity = hostedIdentity(reply.result);
     let occupied = 0;
     for (const manager of active) {
@@ -49,6 +52,7 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
         let observed = reply.result;
         const pin = () => {
           if (processBirth(lifetime.pid) !== lifetime.start || observed.pid !== lifetime.pid || hostedIdentity(observed) !== initialHostedIdentity) throw new Error("machine daemon or hosted Manager identities changed during preserving observation");
+          if (!Array.isArray(observed.managers)) throw new Error("hosted Manager inventory is unknown during preserving observation");
           const current = observed.managers.find(row => row.space === manager.space && row.instanceId === manager.instanceId);
           if (!current || current.pid !== manager.pid || processBirth(manager.pid!) !== managerBirth) throw new Error("hosted Manager lifetime changed during preserving observation");
         };

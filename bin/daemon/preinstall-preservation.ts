@@ -13,6 +13,7 @@ export interface PreservationObservation {
 
 /** Inspect existing records only. Missing or unreadable ownership never proves death. */
 export function preinstallPreservationObservation(status: DaemonStatus): PreservationObservation {
+  if (!Array.isArray(status.managers)) return { owner: "unknown", age: "unknown", seats: "unknown" };
   const active = status.managers.filter(row => row.pid !== undefined);
   const evidence = status.update?.restartEvidence;
   const complete = evidence?.prepared === true && evidence.managers.length === active.length
