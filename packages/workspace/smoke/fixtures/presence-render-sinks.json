@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 1074,
+    "total": 1068,
     "honest-text": 71,
     "presence-only-glyph/count": 138,
     "command-ack": 13,
-    "non-render/control": 852
+    "non-render/control": 846
   },
   "renderers": [
     {
@@ -7780,48 +7780,6 @@
       "anchor": "nt(`reconcile failed: ${failure(child)}`, child.status ?? 1, r",
       "class": "non-render/control",
       "rationale": "Rollback receives the reconciliation failure reason and child exit code, not peer presence."
-    },
-    {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "its verdict. */\n  hook: \"waiting\" | \"gone\" | \"answered\";\n",
-      "class": "non-render/control",
-      "rationale": "The Held.hook union describes a permission hook awaiting its verdict, not a peer presence state."
-    },
-    {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "romise.resolve(), hook: \"waiting\", ran: false, tainted: f",
-      "class": "non-render/control",
-      "rationale": "A newly held permission prompt starts with its hook waiting for a verdict; this initializes internal custody state."
-    },
-    {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "\n        if (h.hook === \"waiting\") h.hook = \"gone\";\n     ",
-      "class": "non-render/control",
-      "rationale": "Hook withdrawal changes an unanswered permission hook to gone; it does not report an agent's presence or progress."
-    },
-    {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "         if (h.hook === \"waiting\" && !h.ran && h.scope ==",
-      "class": "non-render/control",
-      "rationale": "Tool completion matches an unanswered permission hook by scope and tool input before settling that prompt."
-    },
-    {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "alues()) if (h.hook === \"waiting\" && !h.ran && h.scope ==",
-      "class": "non-render/control",
-      "rationale": "Ending a harness scope settles its unanswered permission hooks; the waiting comparison selects internal prompt custody."
-    },
-    {
-      "path": "extensions/connector-core/src/permission-desk.ts",
-      "kind": "status-token",
-      "anchor": "\n        if (h.hook === \"waiting\" && !h.ran && h.record.s",
-      "class": "non-render/control",
-      "rationale": "The desk selects the newest pending permission prompt whose hook still awaits an answer; it returns a request ID, not presence text."
     }
   ]
 }

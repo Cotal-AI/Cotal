@@ -1,5 +1,18 @@
 # Upgrading a running deployment
 
+## Harness permission requests withdrawn
+
+Releases 0.165.0 and 0.165.1 let a Claude Code connector hold a permission prompt for its owner
+to answer from another session. This release removes that. Claude Code's own dialog is again the
+only way to answer a prompt.
+
+A space set up on 0.165 keeps an empty `cotal_permissions_<space>` bucket. Nothing reads or
+writes it, and its records age out after 30 days.
+
+The Manager cluster advances to revision 51. A `status.connectors` row no longer carries
+`permissionRequests`, and the closed status schema rejects a row that does. Upgrade Managers and
+their callers together. `@cotal-ai/core` no longer exports `./permissions`.
+
 ## Tool payload publication
 
 Upgrading starts publishing mapped tool inputs and results by default for Claude and Jcode seats
