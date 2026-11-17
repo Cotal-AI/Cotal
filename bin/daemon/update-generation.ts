@@ -40,7 +40,8 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
   }
   const query = probe.query ?? queryDaemon;
   const bound = probe.timeoutMs ?? 120_000;
-  if (!probe.quiet) console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
+  const waitLine = `machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`;
+  if (!probe.quiet) console.log(waitLine);
   const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
   const lifecycle = await probe.lifecycle?.(paths, deadline);
@@ -79,5 +80,8 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     }
     await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));
   }
+  } catch (error) {
+    if (probe.quiet) console.log(waitLine);
+    throw error;
   } finally { lifecycle?.close(); }
 }
