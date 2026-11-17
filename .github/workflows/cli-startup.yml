@@ -52,6 +52,20 @@ jobs:
           printf '%s\n' "$scratch" > "$RUNNER_TEMP/peer-close-scratch.txt"
           pnpm exec tsx bin/smoke/daemon-peer-close.smoke.ts "$GITHUB_WORKSPACE" "$scratch" > "$RUNNER_TEMP/peer-close-result.log" 2>&1
           cat "$RUNNER_TEMP/peer-close-result.log"
+      - name: Verify native peer close during the second identity read
+        id: peer-pid-close
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          scratch=$(mktemp -d /private/tmp/cotal-peer-XXXXXX)
+          printf 'scratch=%s\n' "$scratch" >> "$GITHUB_OUTPUT"
+          pnpm exec tsx bin/smoke/daemon-peer-close.smoke.ts "$GITHUB_WORKSPACE" "$scratch" pid > "$RUNNER_TEMP/peer-pid-close-result.log" 2>&1
+          cat "$RUNNER_TEMP/peer-pid-close-result.log"
+      - name: Verify live peer identity refusals on Darwin
+        if: github.event_name == 'push'
+        run: pnpm exec tsx bin/smoke/daemon-peer-close-guards.smoke.ts
       - name: Upload peer-close reproduction evidence
         if: always() && github.event_name == 'push' && steps.peer-close.outputs.scratch != ''
         uses: actions/upload-artifact@v4
@@ -64,6 +78,18 @@ jobs:
             ${{ steps.peer-close.outputs.scratch }}/peer-*/identity.json
             ${{ steps.peer-close.outputs.scratch }}/peer-*/closed.json
             ${{ steps.peer-close.outputs.scratch }}/peer-*/outcome.json
+          if-no-files-found: error
+      - name: Upload second-read peer-close evidence
+        if: always() && github.event_name == 'push' && steps.peer-pid-close.outputs.scratch != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-peer-pid-close-darwin
+          path: |
+            ${{ runner.temp }}/peer-pid-close-result.log
+            ${{ steps.peer-pid-close.outputs.scratch }}/reservation/owner.json
+            ${{ steps.peer-pid-close.outputs.scratch }}/peer-*/identity.json
+            ${{ steps.peer-pid-close.outputs.scratch }}/peer-*/closed.json
+            ${{ steps.peer-pid-close.outputs.scratch }}/peer-*/outcome.json
           if-no-files-found: error
       - name: Read macOS process identity through the native binding
         if: github.event_name != 'push'
