@@ -113,6 +113,25 @@ function scripted(steps: (Reply | Error)[]) {
   }
 }
 
+// A parent from before the marker binds its child the same way and never waits after it. Its child
+// keeps the line: the update from 0.164.10 otherwise waits up to 120 s without saying so.
+{
+  const olderParent = { COTAL_UPDATE_PARENT: String(process.pid) };
+  assert.equal(currentParentWaits(olderParent, process.pid, true), false, "a child of an older parent is not quiet");
+  assert.equal(currentParentWaits({ ...olderParent, COTAL_UPDATE_PARENT_WAITS: "1" }, process.pid, true), true, "a child of a waiting parent is quiet");
+  assert.equal(currentParentWaits({ ...olderParent, COTAL_UPDATE_PARENT_WAITS: "1" }, process.pid + 1, true), false, "the marker of another process does not quiet this child");
+  const lines: string[] = [];
+  const prior = console.log;
+  console.log = (line?: unknown) => { lines.push(String(line)); };
+  try {
+    await waitForInstalledDaemonGeneration("0.13.2", {
+      installed: () => true, timeoutMs: 1_000, quiet: currentParentWaits(olderParent, process.pid, true),
+      query: (async () => status("0.13.2")) as NonNullable<Parameters<typeof waitForInstalledDaemonGeneration>[1]>["query"],
+    });
+  } finally { console.log = prior; }
+  assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1, "the child of an older parent prints the wait once");
+}
+
 // A stale recorded service is knowable before either replacement or connector writes.
 for (const self of [true, false]) {
   const state = join(root, `stale-${self}`);
