@@ -954,6 +954,7 @@ nats-server reports a stream's write error natively only through `healthz`, whic
 system-account user, so `status` reads a bounded tail of that log instead and keeps only lines tagged
 with the running broker's process ID since its last start. When the broker logged a store write
 failure, such as a full disk, the selected space shows a `Store` row with its time, cause and file.
+This includes the broker's permission-denied warning and stream-write errors from a file-size limit.
 The broker keeps that error until it restarts, so messages sent meanwhile are not stored. The first
 Next is `cotal down`, to run once the logged cause is fixed: write access to the store again for a
 permission error, or free space for a full disk. Then `cotal up` starts the broker again. When the

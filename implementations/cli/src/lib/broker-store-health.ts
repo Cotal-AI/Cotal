@@ -97,7 +97,7 @@ export function storeWriteRepair(failed: Extract<StoreWriteObservation, { state:
  *  which it does not load. Recovery can leave `STREAM.INFO`'s lost-data field empty. */
 const STORE_DAMAGE = /^\[\d+\] (\S+ \S+) \[WRN\] +((?:Filestore \[[^\]]+\] indexCacheBuf corrupt |JetStream consumer '.+' delivered sequence \d+ past last stream sequence of |Stream metafile ".+": checksums do not match).*)$/;
 
-/** The newest `Critical write error` the running broker logged since it started, else the newest
+/** The newest native store write failure the running broker logged since it started, else the newest
  *  damage it logged in a stored file. */
 export function brokerStoreWrite(root: string, space: string): StoreWriteObservation {
   let broker: { pid: number; read: () => { lines: string[]; path: string | null } } | undefined;
@@ -126,7 +126,7 @@ export function brokerStoreWrite(root: string, space: string): StoreWriteObserva
   const enabled = since.findLastIndex((line) => line.includes("[INF] Starting JetStream"));
   const jetStreamDisabled = since.slice(enabled + 1).some((line) => /disabling JetStream|JetStream out of space, will be DISABLED/.test(line));
   for (const line of [...since].reverse()) {
-    const failed = /^\[\d+\] (\S+ \S+) \[ERR\] .*?ritical write error: (.+)$/.exec(line);
+    const failed = /^\[\d+\] (\S+ \S+) \[(?:ERR|WRN)\] (?:.*?ritical write error: |Filesystem permission denied while writing msg, disabling JetStream: |JetStream failed to store a msg on stream '[^']+': )(.+)$/.exec(line);
     if (!failed) continue;
     // Go reports a failed file operation as `<op> <path>: <cause>`.
     const parts = /^\S+ (\/.+): ([^:]+)$/.exec(failed[2]!);
