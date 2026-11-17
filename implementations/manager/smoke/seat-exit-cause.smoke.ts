@@ -89,8 +89,8 @@ interface ManagedLike {
   id: string; name: string; lifecycleUid: string; handle: AgentHandle;
   suppressCleanup: boolean; terminalizing: boolean; startedAt: number; spawner?: string;
   // Every managed seat carries its launch spec; freeing the slot hands its subscribe grant to the
-  // teardown target.
-  launch: { allowSubscribe: string[] };
+  // teardown target and reads its source to decide whether an inline snapshot goes with the seat.
+  launch: { allowSubscribe: string[]; source: { kind: "persona" } };
 }
 
 function managerWith(handle: AgentHandle, opts: { preserveStopTimeoutMs?: number; also?: AgentHandle[] } = {}): { manager: Manager; agents: Map<string, ManagedLike> } {
@@ -105,7 +105,7 @@ function managerWith(handle: AgentHandle, opts: { preserveStopTimeoutMs?: number
   (manager as unknown as { attach: unknown }).attach = { stop: async () => {} };
   for (const one of [handle, ...(opts.also ?? [])]) agents.set(one.name, {
     id: `local.${one.name}`, name: one.name, lifecycleUid: `uid-${one.name}`,
-    handle: one, suppressCleanup: false, terminalizing: false, startedAt: Date.now(), launch: { allowSubscribe: [] },
+    handle: one, suppressCleanup: false, terminalizing: false, startedAt: Date.now(), launch: { allowSubscribe: [], source: { kind: "persona" } },
   });
   return { manager, agents };
 }

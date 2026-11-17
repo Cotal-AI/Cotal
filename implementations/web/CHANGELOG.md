@@ -1,5 +1,659 @@
 # @cotal-ai/web
 
+## 0.166.1
+
+### Patch Changes
+
+- 04338d1: Enable dashboard service posting with an explicitly supplied separate credential while keeping read-only mode the default.
+- eaffa0a: Open an authenticated local dashboard browser session with `cotal service start web`, reusing a running dashboard and preserving manual access with `--no-open`.
+
+## 0.166.0
+
+### Patch Changes
+
+- 9b75f60: Keep unused dashboard and Linear implementation helpers private without changing the public package APIs.
+
+## 0.165.4
+
+### Patch Changes
+
+- 3853c66: The dashboard session cookie is now `SameSite=Lax`, so a link to the dashboard on another site, such as a homepage tile, opens it in the browser profile that exchanged the launch link. With `SameSite=Strict` that navigation answered 401 `unauthenticated`. Another site's fetches and POSTs are still refused with 403 `cross-origin`, and the browser does not attach the cookie to them.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+No changes in this release.
+
+## 0.165.0
+
+### Patch Changes
+
+- 503c3eb: Stop unfinished legacy dashboard delete uploads after ten seconds without changing the channel.
+  The body deadline returns HTTP 408 and closes the connection even when the caller keeps sending small chunks. The existing 8 KiB limit and read-only service refusal are unchanged.
+
+## 0.164.18
+
+No changes in this release.
+
+## 0.164.17
+
+No changes in this release.
+
+## 0.164.16
+
+No changes in this release.
+
+## 0.164.15
+
+No changes in this release.
+
+## 0.164.14
+
+No changes in this release.
+
+## 0.164.13
+
+No changes in this release.
+
+## 0.164.12
+
+No changes in this release.
+
+## 0.164.11
+
+No changes in this release.
+
+## 0.164.10
+
+No changes in this release.
+
+## 0.164.9
+
+No changes in this release.
+
+## 0.164.8
+
+No changes in this release.
+
+## 0.164.7
+
+No changes in this release.
+
+## 0.164.6
+
+No changes in this release.
+
+## 0.164.5
+
+No changes in this release.
+
+## 0.164.4
+
+No changes in this release.
+
+## 0.164.3
+
+### Patch Changes
+
+- 688601b: The dashboard shows a role that is only whitespace as no role, so an agent row, the Agent tab and an endpoint row no longer start with an empty role and a separator.
+
+## 0.164.2
+
+No changes in this release.
+
+## 0.164.1
+
+### Patch Changes
+
+- 30c1f57: A participant whose name is blank is shown by its id. This covers `cotal watch`, `who`, `endpoints`, `channel members`, `join`, `chat`, the console, the compose target and palette, the terminal UI, the dashboard badge, the connector roster, orientation and inbox, a Hermes injected turn, the offline notice, the ambiguous-name error and the pending delivery label. A blank name used to print as nothing or as a line break. The same now holds for a pi mention, a once-task spawner, space delete, a DM recipient in chat, the Manager list, a legacy seat, the attach picker, the preserve refusal, teardown, the join receipt, the console agent and confirm lines, a spawn result, an anycast take or DM result, a pane label in the Manager's browser console, and the principals `cotal chat --plain` names for a shared display name.
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- 5e697a9: The dashboard does not show a roster name that is only whitespace. The row and the resolved name use the participant's id instead.
+- 81af608: The dashboard graph does not label an agent with a name that is only whitespace. The node uses the id.
+
+## 0.163.5
+
+### Patch Changes
+
+- cbd0340: The dashboard's copyable command for a static mesh event grant is `cotal auth mint`. `cotal mint` no longer issues a credential.
+- 798a8d2: A read-only dashboard's composer keeps its disabled send inside the row. A long copyable command shrinks instead of pushing the button past the screen.
+
+## 0.163.4
+
+### Patch Changes
+
+- 6bc7e5c: A read-only dashboard's copyable send command uses `cotal send -t` and `cotal send -c`, the flags the CLI accepts. The old `cotal send dm` and `cotal send msg` words were refused as naming no destination.
+
+## 0.163.3
+
+No changes in this release.
+
+## 0.163.2
+
+No changes in this release.
+
+## 0.163.1
+
+No changes in this release.
+
+## 0.163.0
+
+No changes in this release.
+
+## 0.162.0
+
+No changes in this release.
+
+## 0.161.1
+
+No changes in this release.
+
+## 0.161.0
+
+No changes in this release.
+
+## 0.160.8
+
+No changes in this release.
+
+## 0.160.7
+
+No changes in this release.
+
+## 0.160.6
+
+No changes in this release.
+
+## 0.160.5
+
+No changes in this release.
+
+## 0.160.4
+
+No changes in this release.
+
+## 0.160.3
+
+### Patch Changes
+
+- 94313d0: Keep recovery commands copyable in narrow terminals and command help examples concise.
+  
+  Mark embedded commands as code spans in daemon diagnostics, update notices, and operator guidance so the terminal renderer keeps each command together.
+
+## 0.160.2
+
+No changes in this release.
+
+## 0.160.1
+
+No changes in this release.
+
+## 0.160.0
+
+No changes in this release.
+
+## 0.159.1
+
+No changes in this release.
+
+## 0.159.0
+
+No changes in this release.
+
+## 0.158.1
+
+No changes in this release.
+
+## 0.158.0
+
+No changes in this release.
+
+## 0.157.9
+
+No changes in this release.
+
+## 0.157.8
+
+No changes in this release.
+
+## 0.157.7
+
+No changes in this release.
+
+## 0.157.6
+
+No changes in this release.
+
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+
+## 0.157.4
+
+No changes in this release.
+
+## 0.157.3
+
+No changes in this release.
+
+## 0.157.2
+
+No changes in this release.
+
+## 0.157.1
+
+No changes in this release.
+
+## 0.157.0
+
+No changes in this release.
+
+## 0.156.0
+
+No changes in this release.
+
+## 0.155.2
+
+No changes in this release.
+
+## 0.155.1
+
+No changes in this release.
+
+## 0.155.0
+
+No changes in this release.
+
+## 0.154.0
+
+No changes in this release.
+
+## 0.153.1
+
+No changes in this release.
+
+## 0.153.0
+
+No changes in this release.
+
+## 0.152.0
+
+No changes in this release.
+
+## 0.151.3
+
+No changes in this release.
+
+## 0.151.2
+
+No changes in this release.
+
+## 0.151.1
+
+No changes in this release.
+
+## 0.151.0
+
+No changes in this release.
+
+## 0.150.0
+
+No changes in this release.
+
+## 0.149.0
+
+No changes in this release.
+
+## 0.148.2
+
+No changes in this release.
+
+## 0.148.1
+
+No changes in this release.
+
+## 0.148.0
+
+No changes in this release.
+
+## 0.147.8
+
+No changes in this release.
+
+## 0.147.7
+
+No changes in this release.
+
+## 0.147.6
+
+No changes in this release.
+
+## 0.147.5
+
+No changes in this release.
+
+## 0.147.4
+
+No changes in this release.
+
+## 0.147.3
+
+### Patch Changes
+
+- ab7e979: The web dashboard has a new look built on shadcn components, with the same views and controls. Hover text is a tooltip, the Activity and Agents filters are toggle groups, the theme menu is a dropdown, and deleting a channel asks in an alert dialog. The left side is a sidebar that collapses to its icon rail from the button at the start of each view's header or with Ctrl+B (Cmd+B on a Mac); on a phone that button opens the places as a sheet, and the details panel and a message's long-press actions open as sheets too. Channels and direct messages open at the newest message, follow new ones while you are at the bottom, and offer a button to jump back to it. Messages are bubbles with your own on the end side, a run from one sender is grouped, and a long message opens with Show more.
+
+## 0.147.2
+
+No changes in this release.
+
+## 0.147.1
+
+No changes in this release.
+
+## 0.147.0
+
+No changes in this release.
+
+## 0.146.0
+
+### Minor Changes
+
+- e3cfcdb: `cotal up` mints a read-only dashboard credential for a static space, its `web.creds`, and the `web` service preset uses it as the `--creds` default, so `cotal service start web` starts with no flags. `doctor auth` reports the file, and `clean` and a space reset remove it.
+
+## 0.145.1
+
+No changes in this release.
+
+## 0.145.0
+
+No changes in this release.
+
+## 0.144.0
+
+No changes in this release.
+
+## 0.143.0
+
+No changes in this release.
+
+## 0.142.0
+
+No changes in this release.
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+
+## 0.141.10
+
+No changes in this release.
+
+## 0.141.9
+
+No changes in this release.
+
+## 0.141.8
+
+No changes in this release.
+
+## 0.141.7
+
+No changes in this release.
+
+## 0.141.6
+
+No changes in this release.
+
+## 0.141.5
+
+No changes in this release.
+
+## 0.141.4
+
+No changes in this release.
+
+## 0.141.3
+
+No changes in this release.
+
+## 0.141.2
+
+No changes in this release.
+
+## 0.141.1
+
+No changes in this release.
+
+## 0.141.0
+
+No changes in this release.
+
+## 0.140.8
+
+No changes in this release.
+
+## 0.140.7
+
+No changes in this release.
+
+## 0.140.6
+
+No changes in this release.
+
+## 0.140.5
+
+No changes in this release.
+
+## 0.140.4
+
+No changes in this release.
+
+## 0.140.3
+
+No changes in this release.
+
+## 0.140.2
+
+No changes in this release.
+
+## 0.140.1
+
+No changes in this release.
+
+## 0.140.0
+
+No changes in this release.
+
+## 0.139.1
+
+No changes in this release.
+
+## 0.139.0
+
+### Minor Changes
+
+- 6454ee0: The Claude Code connector publishes a `CUSTOM` event named `cotal.toolResult` on the event plane at each tool result, with the value `{ toolCallId, isError }` and the result's timestamp. It carries no tool input or output: tool arguments and results stay off the channel, and the marker only says which call finished and whether it returned an error. The closed schema admits only that shape, and the vocabulary gate checks it before the frame is written: a marker whose value is malformed, or that carries `rawEvent`, is refused as a vocabulary error rather than frozen in the write-ahead log, where it would halt recovery on every restart. The write path strips `rawEvent` from a marker, and a frozen frame from an older version that still carries one halts. The gate also refuses a marker for a call that is still open. `cotal console` draws the marker as `done` or `failed` under its call, and the dashboard uses it to show whether each call is running, done or failed and how long it took. A connector downgraded across a write-ahead log that holds a marker refuses the event name and halts.
+- c3d4af4: The `cotal web` dashboard tells agents apart and shows what each one is doing. Every avatar carries a badge with the first letter of the agent's name, plus its number (`reviewer_2` reads R2), on a colour chosen from the name, so two agents on one harness differ even in greyscale. Each agent has a page at `#/agent/<id>`, reached from the Agent tab's peek and its Open <name>'s page button, or the View work action on any live message from that agent. The page's Work tab shows the agent's text, its tool names and times, where each turn starts and ends, and its own posts. It shows no tool inputs, results or reasoning, because the event plane does not carry them. The server reads one agent's events only while a browser has its page or its peek open: the newest 200 first, then 200 more per Load earlier up to 2,000, and it forwards live frames only to the browsers watching that agent. Live and history frames are both checked by their subject's sender: history is read from the agent's own subject, and a live frame whose subject names another sender is dropped. The check is only as strong as the mesh's publish permissions. On a mesh with auth only the agent holds the grant to publish on its own subject; on an open mesh any raw NATS client can publish there, so Work can show frames the agent did not publish. A feed that falls more than 1 MiB behind on live events is closed so the browser reconnects. The state a feed opens with is sent whatever its size, and while it is still unsent on a slow link it does not count toward that limit. In `@cotal-ai/core`, `channelHistory` takes a `publisher` option that reads a channel's history from one principal's subject only. The agent card gains `meta["ai.cotal.events"]`, `on` when the agent arms its event plane and `off` when it does not, so the page can tell an agent that publishes no events from one that has not started a turn. The dashboard also keeps the newest 500 direct messages, lists the ten most recent conversations in the sidebar, refuses a history `limit` above 2,000, and shows a working agent as `Working` with no "progress unknown" suffix.
+- dd3f276: New `cotal web` dashboard parts are built on shadcn/ui and Tailwind, scoped so the existing styles are untouched, with no new download for installers.
+  
+  An agent's work shows as turns with grouped tool calls that say running, done or failed and how long they took, from the connector's result marker. Code in an agent's prose gets a code block, highlighted the first time it is on screen.
+  
+  Each agent is now a page at `#/agent/<id>` with Work, Messages and Profile tabs, and the address keeps the tab. Work holds the agent's turns, tool calls, text, posts and direct messages; Messages lists what it sent on this page by place; Profile is its card, including whether it publishes work events. The panel's Agent tab becomes a peek with the current turn's last three steps and a link to the page. On a phone, picking an agent opens its page. Old `#/agent/<id>/<message id>` links still open Work at that message. "Session" is no longer a word in the dashboard: a message's action reads View work.
+  
+  Working agents move everywhere they appear while presence says they work: the status dot breathes, the working icon turns, a channel names who is working under its messages with View work, the channel header and the sidebar count working members, and a working agent's topology node gets a circling arc. The Agents view shows each working agent's running step, for up to 12 agents at once. Reduced motion stops all of it. When two live agents share a first letter, their badges take two letters each.
+
+## 0.138.2
+
+No changes in this release.
+
+## 0.138.1
+
+No changes in this release.
+
+## 0.138.0
+
+### Patch Changes
+
+- 85f288b: Show reported conditions and status, activity and work ages in the dashboard's roster, waiting cards and agent details, including graph details. Use core's canonical age functions through its new browser-safe presence-ages subpath, so a 90-second heartbeat displays as 1m rather than rounding to 2m. Wrap the fact lines instead of hiding them behind ellipses.
+
+## 0.137.0
+
+No changes in this release.
+
+## 0.136.8
+
+No changes in this release.
+
+## 0.136.7
+
+No changes in this release.
+
+## 0.136.6
+
+No changes in this release.
+
+## 0.136.5
+
+No changes in this release.
+
+## 0.136.4
+
+No changes in this release.
+
+## 0.136.3
+
+No changes in this release.
+
+## 0.136.2
+
+No changes in this release.
+
+## 0.136.1
+
+No changes in this release.
+
+## 0.136.0
+
+No changes in this release.
+
+## 0.135.21
+
+No changes in this release.
+
+## 0.135.20
+
+No changes in this release.
+
+## 0.135.19
+
+No changes in this release.
+
+## 0.135.18
+
+No changes in this release.
+
+## 0.135.17
+
+No changes in this release.
+
+## 0.135.16
+
+No changes in this release.
+
+## 0.135.15
+
+No changes in this release.
+
+## 0.135.14
+
+No changes in this release.
+
+## 0.135.13
+
+No changes in this release.
+
+## 0.135.12
+
+No changes in this release.
+
+## 0.135.11
+
+No changes in this release.
+
+## 0.135.10
+
+No changes in this release.
+
+## 0.135.9
+
+No changes in this release.
+
+## 0.135.8
+
+No changes in this release.
+
+## 0.135.7
+
+No changes in this release.
+
+## 0.135.6
+
+No changes in this release.
+
+## 0.135.5
+
+No changes in this release.
+
+## 0.135.4
+
+No changes in this release.
+
+## 0.135.3
+
+No changes in this release.
+
+## 0.135.2
+
+No changes in this release.
+
+## 0.135.1
+
+No changes in this release.
+
+## 0.135.0
+
+### Minor Changes
+
+- a35249d: An agent can follow a channel family such as `team.>` and still get the posts it missed while away. The family holds a durable membership of its own, keyed with its final `>` stored as `=`, and each channel under it keeps its own delivery class, so the agent gets stored copies of posts on the durable channels and live delivery on the rest. It gets one copy of each post even when it also joined the channel by name. A family in an agent file's `subscribe` gets its membership at startup. The root `>` and patterns with `*` stay live only.
+  
+  `cotal_join` refuses a name that is no channel name, checks a pattern against the read ACL by containment, and says whether a join keeps stored copies. `cotal_channels` lists a followed family with the state of its stored copies. When an agent's 1000 stored copies were full, its next `cotal_inbox` reply says earlier posts may have been dropped and points to `cotal history <channel>`.
+  
+  An agent definition whose `subscribe` names a pattern that no single `allowSubscribe` entry contains, such as `perm.>` under `perm.*`, is now refused when it is loaded, as `cotal_join` already refused it. `cotal_persona` writes nothing the manager could not load back, which also refuses a `subscribe` channel outside `allowSubscribe`. `cotal_channels` no longer warns of a backstop on a channel read only through a pattern with `*`, shows a nested family as covered by the family above it, and shows a family the broker stopped the agent reading as no longer followed while its stored copies close. `cotal_channel_info` refuses a name that is no channel name.
+  
+  `cotal channel members`, the console topology and the web graph show a family follower as a durable member of the durable channels under the family, and the removal checks in `cotal down` and `cotal team` count it on every channel under it. The graph draws those links once it has read each channel's delivery class. The manager purges a retired agent's family row.
+
 ## 0.134.0
 
 No changes in this release.

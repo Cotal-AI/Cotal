@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
@@ -40,9 +41,6 @@ function rememberLegacyRail(key: string): void {
   legacyRail.set(key, Date.now() + LEGACY_RAIL_RECHECK_MS);
   if (legacyRail.size > LEGACY_RAIL_MAX) legacyRail.delete(legacyRail.keys().next().value!);
 }
-
-/** Forget every remembered legacy-rail verdict. For tests that reuse a process across stacks. */
-export function forgetLegacyRail(): void { legacyRail.clear(); }
 
 /** Runs a call's submission under a goal follow. `prepare` runs the bearer command, opens the
  *  control connection and resolves the manager by the follow's deadline. It publishes nothing, so
@@ -90,7 +88,7 @@ export async function withUserManagerListing<T>(
     // A remembered legacy verdict may be stale: with no listing binding, check the issued read once.
     return await ask(nc, listing ?? (skipped ? await issued() : undefined));
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await drainAndClose(nc);
   }
 }
 
@@ -188,10 +186,10 @@ export async function invokeUserManager(
       try {
         service = await resolve(signal);
         const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
-        if (unfollowable) throw new Error(unfollowable.reply.error!.message);
+        if (unfollowable) throw new Error(unfollowable.reply.error.message);
       } catch (error) {
         return { ...result, reply: { ...result.reply, error: {
-          ...result.reply.error!,
+          ...result.reply.error,
           message: `${command} WAS NOT RUN; manager instance ${instanceId} refused before effects, and re-resolution failed: ${error instanceof Error ? error.message : String(error)}`,
         } } };
       }
@@ -210,17 +208,6 @@ export async function invokeUserManager(
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
     const control = nc;
-    if (control) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          control.drain().catch(() => control.close()),
-          new Promise<void>((resolve) => { timer = setTimeout(resolve, 2_000); timer.unref(); }),
-        ]);
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-        await control.close();
-      }
-    }
+    if (control) await drainAndClose(control, 2_000);
   }
 }

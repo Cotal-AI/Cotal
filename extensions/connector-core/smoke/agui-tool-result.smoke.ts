@@ -283,7 +283,7 @@ try {
   {
     let i = 0;
     const mapper = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-cr-${++i}` });
-    const { pumped, wire, types } = await drive("claude-result", mapper.map as RecordMapper<unknown>, [
+    const { ep, pumped, wire, types } = await drive("claude-result", mapper.map as RecordMapper<unknown>, [
       {
         uuid: "cr-prompt",
         type: "user",
@@ -306,6 +306,25 @@ try {
         timestamp: "2026-08-15T00:00:02.000Z",
         message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t-cr", content: CLAUDE_RESULT }] } as ClaudeEntry["message"],
       } satisfies Partial<ClaudeEntry>,
+      // A second call whose result the record marks as an error, carrying the same mark.
+      {
+        uuid: "cr-tool-err",
+        type: "assistant",
+        timestamp: "2026-08-15T00:00:03.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "t-cr-err", name: "Bash", input: { cmd: "x" } }],
+        } as ClaudeEntry["message"],
+      } satisfies Partial<ClaudeEntry>,
+      {
+        uuid: "cr-result-err",
+        type: "user",
+        timestamp: "2026-08-15T00:00:04.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t-cr-err", is_error: true, content: CLAUDE_RESULT }],
+        } as ClaudeEntry["message"],
+      } satisfies Partial<ClaudeEntry>,
     ]);
     c("carrier:claude-result mark is absent from the recorded publish", !wire.includes(CLAUDE_RESULT), {
       types,
@@ -315,6 +334,24 @@ try {
       "carrier:claude-result CONTROL TOOL_CALL_RESULT is not on the publish",
       !types.includes("TOOL_CALL_RESULT"),
       types,
+    );
+    // In place of the dropped result, the publish carries the content-free marker: the call's id and
+    // whether it failed, read off the recorded publish rather than the mapper's return.
+    const markers = publishedEvents(ep)
+      .filter((e) => e.type === "CUSTOM" && (e as { name?: unknown }).name === "cotal.toolResult")
+      .map((e) => (e as { value?: unknown }).value as { toolCallId?: unknown; isError?: unknown });
+    const markersFor = (id: string) => markers.filter((v) => v?.toolCallId === id);
+    c(
+      "carrier:claude-result the publish holds one cotal.toolResult for the call, with isError false, and no mark",
+      markersFor("t-cr").length === 1 &&
+        JSON.stringify(markersFor("t-cr")[0]) === JSON.stringify({ toolCallId: "t-cr", isError: false }) &&
+        !JSON.stringify(markers).includes(CLAUDE_RESULT),
+      { markers: markers.length, types, err: pumped.err?.message },
+    );
+    c(
+      "carrier:claude-result a result the record marks is_error publishes its marker with isError true",
+      markersFor("t-cr-err").length === 1 && markersFor("t-cr-err")[0]?.isError === true,
+      { markers: markers.length, isError: markersFor("t-cr-err").map((v) => v?.isError) },
     );
   }
 
@@ -1022,7 +1059,7 @@ try {
     }
   }
 
-  const EXPECTED = 54;
+  const EXPECTED = 56;
   c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 } finally {
   rmSync(dir, { recursive: true, force: true });

@@ -7,6 +7,7 @@ those claims, so treat the labels themselves as claims.
   mutation reddens that cell.
 - **M-nomut** — a cell exercises it, but it is a measurement of broker or grant behavior with no
   first-party logic to mutate. Its negatives rest on a positive control in the same cell.
+- **C**: a current ordinary cell exercises the claim; no mutation proof is claimed for this revision.
 - **A** — asserted. Reasoning from reading source, or a design or policy statement. No cell.
 
 The **A** lines are where a review budget is best spent. Five started as **A** and became
@@ -66,9 +67,9 @@ cells while this page was being written: 7, 22, 23, 46 and 51. Each row that mov
 | # | Claim | | Backing |
 |---|---|---|---|
 | 32 | `$SYS.REQ.USER.INFO` returns the server's own view including enforced allow lists, on NATS 2.14.5 | M-nomut | every discovery cell depends on parsing that response; the positive control is a conforming discovery returning the exact minted reference |
-| 33 | No current profile can request its own server view | M | census cell of that name, with an in-cell positive control; mutation "the server-view detector stops matching" |
+| 33 | Only provisioner and teardown hold the server-view grant | C | census cell "only provisioner and teardown hold the server-view grant", with detector controls, the closed trusted-holder set and exact grant checks. The optional detector mutation config is retained but was not rerun for this correction |
 | 34 | A connection without that grant cannot discover its generation | M | static cell of that name |
-| 35 | Therefore adding the grant is part of the issuance change | A | follows from 33 and 34, but is a conclusion, not a cell |
+| 35 | Server-view discovery for peer-held profiles would require granting it to them | A | follows from 33 and 34; this prototype does not select an issuer change |
 | 36 | An unrestricted publish ceiling names no generation and refuses | M | same static cell, second half |
 | 37 | Two generations, a wildcard generation, or a malformed field refuse | M | cell "discovery refuses ambiguous or unbindable grant rows"; mutations "discovery accepts more than one bound generation", "discovery stops validating the parsed reference" |
 | 38 | Foreign-space rows are ignored | M | same cell; mutation "discovery accepts rows from another space" |

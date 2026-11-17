@@ -88,8 +88,10 @@ they self-register into. The wire standard — depends on nothing else in the re
 - `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator and client-surface
 layer over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
 helpers, the command-copy renderer, and what terminal surfaces share: the live space model
-(`MeshView`, `openObserver`), the manager control calls (`@cotal-ai/workspace/control`), and the
-managed-launch request (`requestManagedLaunch`). Depends on core; not part of the wire standard.
+(`MeshView`, `openObserver`), the manager control calls (`@cotal-ai/workspace/control`), the
+managed-launch request (`requestManagedLaunch`), the chat session (`@cotal-ai/workspace/chat`), and
+the terminal attach (`@cotal-ai/workspace/attach`).
+Depends on core; not part of the wire standard.
 - `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
 suites — the broker ownership that kills a spawned `nats-server` when a suite is
 *signalled* rather than only when it returns, and the spawn-site census behind
@@ -105,8 +107,8 @@ program with no broker. Depends on nothing else in the repo; it knows about effe
 - `**@cotal-ai/seat**` (`packages/seat`): local PTY seat custody. A one-shot launcher starts one
 detached custodian process per seat. The custodian owns the `node-pty` object, child relationship,
 screen mirror, and exit observation. A manager worker adopts a proxy handle over a permissioned
-Unix socket. Depends on nothing else in the repo; it knows about PTYs, not about NATS. Linux is
-the only platform this package supports; others throw from it. The built-in `pty` runtime does not
+Unix socket. Depends on nothing else in the repo; it knows about host processes, not about NATS.
+Custody is Linux only; its host primitives for the daemon endpoint build on Linux, macOS and Windows. The built-in `pty` runtime does not
 launch through it: the manager spawns pty seats in-process on every platform, and uses this
 package only to adopt and reap seats that an earlier manager left under a custodian (on Linux;
 elsewhere `adopt` throws).
@@ -132,9 +134,9 @@ user's own pi, no bundled runtime) that embeds `MeshAgent` in the session's proc
 drives it off the inbox with true mid-turn steering; also covers agents built on pi's SDK.
 See [docs/connect-pi.mdx](docs/connect-pi.mdx).
 - `**@cotal-ai/cmux**` (`extensions/cmux`): the cmux integration: a driver over the cmux CLI
-plus a self-registering `cmux` Runtime and `TerminalLayout` provider.
+plus a self-registering `cmux` Runtime provider.
 - `**@cotal-ai/tmux**` (`extensions/tmux`): the tmux integration: a driver over the tmux CLI
-plus a self-registering `tmux` Runtime and `TerminalLayout` provider.
+plus a self-registering `tmux` Runtime provider.
 - `**@cotal-ai/orca**` (`extensions/orca`): the Orca integration: a driver over the public Orca
 CLI plus a self-registering `orca` Runtime provider.
 - `**@cotal-ai/herdr**` (`extensions/herdr`): the Herdr integration: a driver over the herdr CLI
@@ -145,6 +147,12 @@ Herdr session (they survive the manager's terminal going away).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
+- `**@cotal-ai/tui**` (`implementations/tui`): the terminal app, one full-screen workspace that
+lists this machine's spaces and opens one, which the human watches unseen and writes to through a
+chat session opened on the first write. Built on OpenCode's Solid and OpenTUI
+components, vendored under `vendor/opencode/` and held to their recorded hashes by
+`scripts/check-vendor.mjs`. Private, needs Node 26.4 or newer, and depends on core and workspace.
+The `cotal` binary does not start it yet.
 - `**@cotal-ai/linear**` (`implementations/linear`): serves the official Linear MCP server as a
 registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, plus the
 `cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
@@ -172,21 +180,20 @@ endpoint methods; those go into `core`, generalized.
 - **Never fix an issue you could not reproduce.** Reproduce the failure (live, not just in
 reasoning or a unit simulation) before writing a fix; the repro is also the only proof the
 fix works. If you can't reproduce it, report that and stop, don't ship a guess.
-- **A test that passes with the fix reverted proves nothing — so prove it doesn't.** `pnpm
-mutation-proof` breaks the implementation on purpose and requires the suite to go red **on the
-assertion you name**. It refuses an absent or ambiguous target, refuses a dirty tree (git must be
-your recovery, not the tool), refuses an already-red suite, verifies its own restore, and reports
-`SURVIVED` rather than a pass when the suite fails to notice. A proof that is killed cannot
-restore, so it records what it broke before it breaks it: the next run puts the file back, and
-`node scripts/mutation-proof.mjs --recover` does only that. Red alone is not proof: an unrelated
-early failure is also red. And a killed mutation shows the test *depends* on that code — not that a
-real entry point *reaches* it; if the test builds its inputs by hand, prove that part separately.
-The fixture census (`pnpm smoke:mutation-fixtures`) refuses a mutation whose command builds the
-mutated package with no `afterRestore` that rebuilds it, because that run leaves a `dist/` compiled
-from the mutant.
+- **Prove fixes against unchanged pre-fix code.** Run the real reproducer or regression test against
+that implementation before editing it, then run it against the fix. If a baseline is needed later,
+use a separate checkout at the pre-fix commit and install and build its dependencies before testing.
+Name the expected failure: a setup error or unrelated early failure is not proof. If the test builds
+its inputs by hand, also show that a real entry point reaches that code.
+- **Mutation and fix-reversion proofs require an explicit request.** Do not run them otherwise,
+including in delegated work, reviews or checks that execute mutations indirectly. Mutation configs
+(`*/mutations/*.json`) and `pnpm mutation-proof` are optional tools, not a delivery gate. A change
+does not need to add, update or re-pin them.
 - **Every package's `typecheck` also runs a `tsconfig.smoke.json` over its smoke tree.** A new
 package with smoke files adds the same pair, because a smoke file that is typechecked by nothing
-runs green over real type errors.
+runs green over real type errors. Configurations extending `tsconfig.base.json` also enable
+`noUnusedLocals`, so builds and typechecks reject unused imports, locals and private members.
+When removing an unused binding, preserve any initialization or validation the expression performs.
 - **Keep the code clean and minimal.** No bloat, no overcomplication.
 - **Do only what is asked**, not more, not less. Do not add features or abstractions that are
 not explicitly requested or clearly needed.
@@ -273,6 +280,9 @@ produced them.
 
 - **Changesets.** Packages are 0.x, so a breaking change is a **minor**. The `fixed` group versions every package in lockstep, so one changeset
 bumps them all; list every package with a first-party change and write one clear summary.
+The summary's first sentence is the change's headline: the GitHub Release lists it under
+`## What changed` and the Discord announcement carries only those sentences, so write it as one
+plain sentence a user understands on its own, and put the mechanism after it.
 Verify the plan with `pnpm changeset status` before committing.
 - **PR title** is a plain Conventional Commit subject (`!` marks a breaking change). **PR body**
 states the full scope of the work, not just the headline.

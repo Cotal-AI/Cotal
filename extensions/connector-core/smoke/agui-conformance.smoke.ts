@@ -151,6 +151,7 @@ import {
   toolCallEnd,
   toolCallResult,
   toolCallStart,
+  toolResultMarker,
   type AguiEvent,
   type AguiInterrupt,
 } from "../src/agui.js";
@@ -351,10 +352,9 @@ const metaCarriers: Array<[string, { safeParse: (v: unknown) => { success: boole
   ["toolCallArgs", ToolCallArgsEventSchema, toolCallArgs({ toolCallId: "tc1", delta: "{}", timestamp: TS, cotal: CM })],
   ["toolCallEnd", ToolCallEndEventSchema, toolCallEnd({ toolCallId: "tc1", timestamp: TS, cotal: CM })],
   ["toolCallResult", ToolCallResultEventSchema, toolCallResult({ messageId: "r1#0", toolCallId: "tc1", content: "ok", timestamp: TS, cotal: CM })],
-  // CUSTOM has no constructor — the `cotal.*` table is empty BY POLICY (§5), which is a rule this
-  // plane enforces and not a property of the schema. Built by hand so the schema-level sweep stays
-  // complete; the policy refusal is asserted separately in section 5.
-  ["custom", CustomEventSchema, { type: "CUSTOM", name: "x", value: {}, timestamp: TS, cotal: CM }],
+  // CUSTOM's one constructor is the tool result marker, the only member of the `cotal.*` table
+  // (section 5). The table is a rule this plane enforces, not a property of the schema.
+  ["toolResultMarker", CustomEventSchema, toolResultMarker({ toolCallId: "tc1", isError: false, timestamp: TS, cotal: CM })],
 ];
 c("the passthrough sweep covers every schema the parse block covers",
   metaCarriers.length === 14, metaCarriers.length);
@@ -627,9 +627,33 @@ refuses("a provider id reused across two observations is refused as a re-open",
   /re-opened "msg_provider_01" while already open/);
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 5. THE `cotal.*` CUSTOM TABLE IS EMPTY, AND THAT IS THE SPECIFICATION
+// 5. THE `cotal.*` CUSTOM TABLE HOLDS ONE MEMBER, THE CONTENT-FREE TOOL RESULT MARKER
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-c("the v1 CUSTOM table has ZERO members", COTAL_CUSTOM_EVENTS.length === 0, COTAL_CUSTOM_EVENTS);
+// The name is spelled out rather than compared with the exported constant, because consumers key on
+// the literal and a renamed constant would otherwise pass against itself.
+c("the CUSTOM table holds only cotal.toolResult",
+  COTAL_CUSTOM_EVENTS.length === 1 && COTAL_CUSTOM_EVENTS[0] === "cotal.toolResult", COTAL_CUSTOM_EVENTS);
+const marker = toolResultMarker({ toolCallId: "tc-done", isError: false, timestamp: TS });
+c("the real CustomEventSchema accepts the marker", CustomEventSchema.safeParse(marker).success === true,
+  CustomEventSchema.safeParse(marker).error?.issues);
+// The marker stands in for TOOL_CALL_RESULT, so it arrives after its call closed, as a result does.
+let markerAfterEndErr = "";
+try {
+  const b = new AguiBrackets();
+  b.accept(turn(1)[0]!);
+  b.accept(toolCallStart({ toolCallId: "tc-done", toolCallName: "Read", timestamp: TS }));
+  b.accept(toolCallEnd({ toolCallId: "tc-done", timestamp: TS }));
+  b.accept(marker);
+} catch (e) { markerAfterEndErr = (e as Error).message; }
+c("the brackets accept a marker after its call's TOOL_CALL_END", markerAfterEndErr === "", markerAfterEndErr);
+refuses("the brackets refuse a marker while its call is open",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(turn(1)[0]!);
+    b.accept(toolCallStart({ toolCallId: "tc-open", toolCallName: "Read", timestamp: TS }));
+    b.accept(toolResultMarker({ toolCallId: "tc-open", isError: false, timestamp: TS }));
+  },
+  /cotal\.toolResult for "tc-open" while its call is still open/);
 refuses("an undeclared CUSTOM name is refused rather than emitted",
   () => {
     const b = new AguiBrackets();

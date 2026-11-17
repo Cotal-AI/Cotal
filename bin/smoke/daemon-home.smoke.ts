@@ -18,6 +18,8 @@
  * Cells (each asserts counts or exact codes, never just "no error"):
  *  H0 control, no flag: legacy `serve` binds the fixed legacy socket, and `status` answers with
  *     that serve's pid. This is green today and must stay green;
+ *  H0b a different COTAL_HOME refuses the same default listener with advice for both daemon forms,
+ *     identical in plain and JSON. The matching home still reaches the same ready daemon;
  *  H1 a managed `serve --daemon-home D` beside a live legacy daemon: binds a different socket under
  *     `$XDG_RUNTIME_DIR/cotal/`. Both answer their own pid. The legacy socket keeps its inode and
  *     mtime. The no-flag client still reaches legacy. D holds a live lock owned by the managed pid;
@@ -45,7 +47,13 @@
  *     - the smoke process holds `D/daemon.lock` through the same kernel `flock` the daemon takes;
  *     - a different same-uid process listens at the derived path;
  *     - `status --daemon-home D` refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2, and the
- *       listener receives 0 bytes.
+ *       listener receives 0 bytes. Plain and JSON give the same conditional explicit-home advice.
+ *  H6 managed catalog refresh keeps shared registrations, sentinel files and selection unchanged,
+ *     including on provider failure; default refresh still applies additions and removals. An
+ *     account switch drops the old catalog cache in either home, but only the default daemon
+ *     removes the old account's shared registrations, their credential files and selection. A
+ *     manual registration and its credential file stay.
+ *     An unrelated damaged registration stays untouched while healthy entries refresh.
  *
  * Not covered here, and still to add: register approval carry-over (needs the stock auth service
  * sandbox of daemon-register.smoke.ts), a foreign-owned home (needs a user namespace) and the
@@ -54,8 +62,9 @@
  * Run: tsx bin/smoke/daemon-home.smoke.ts   (Linux only)
  */
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -63,7 +72,7 @@ import { fileURLToPath } from "node:url";
 import { skipSuite } from "@cotal-ai/smoke-kit";
 import { flockExclusiveNb } from "@cotal-ai/seat";
 import { saveIdpSession } from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
+import { getCurrent, loadMeshes, meshFile, readMeshRegistry, recordMesh, setCurrent, userAuthStateDir, type MeshEntry } from "@cotal-ai/workspace";
 import { daemonPaths } from "../daemon/endpoint.js";
 
 if (process.platform !== "linux") skipSuite(`daemon-home smoke: Linux only; skipped on ${process.platform}`);
@@ -90,7 +99,7 @@ async function cell(title: string, body: () => Promise<void>): Promise<void> {
 // ---------- owned sandbox ----------
 const root = mkdtempSync(join(scratchParent, "cdh-"));
 chmodSync(root, 0o700);
-const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed"), user = join(root, "user");
+const home = join(root, "home"), rt = join(root, "rt"), meshRoot = join(root, "mesh"), managed = join(root, "managed\u2014unicode '$home"), user = join(root, "user");
 for (const d of [home, rt, meshRoot, managed, user]) mkdirSync(d, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 const legacy = daemonPaths({ XDG_RUNTIME_DIR: rt });
@@ -138,10 +147,12 @@ function track(child: ChildProcess): ChildProcess {
   return child;
 }
 
-type Doc = { outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
-/** One CLI invocation to completion. */
-async function cli(args: string[], timeoutMs = 30_000): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
-  const child = track(spawn(process.execPath, daemonArgv(args), { cwd: root, env: childEnv, stdio: ["ignore", "pipe", "pipe"] }));
+type Doc = { command?: string; target?: { space?: string; idp?: string } | null; outcome?: string; result?: Record<string, any>; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string } } };
+/** One CLI invocation to completion. A command string exercises copied guidance through the built CLI. */
+async function cli(args: string[] | string, timeoutMs = 30_000, env: NodeJS.ProcessEnv = childEnv): Promise<{ status: number | null; doc: Doc; out: string; err: string }> {
+  const child = track(typeof args === "string"
+    ? spawn("/bin/sh", ["-c", `cotal() { exec "$DAEMON_COPY_NODE" "$DAEMON_COPY_ENTRY" "$@"; }\n${args} --json`], { cwd: root, env: { ...env, DAEMON_COPY_NODE: process.execPath, DAEMON_COPY_ENTRY: join(repo, "bin", "dist", "cotal.js") }, stdio: ["ignore", "pipe", "pipe"] })
+    : spawn(process.execPath, daemonArgv(args), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] }));
   let out = "", err = "";
   child.stdout!.on("data", (b) => { out += String(b); });
   child.stderr!.on("data", (b) => { err += String(b); });
@@ -184,19 +195,25 @@ const fileState = (p: string) => { const st = lstatSync(p); return { ino: st.ino
 
 // ---------- a loopback fixture for the space's service authority (connect-check reads one GET) ----------
 const ACCOUNT = `A${"B".repeat(55)}`;
-const hits: Array<{ method: string }> = [];
+const hits: Array<{ method: string; url: string }> = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
-  hits.push({ method: req.method ?? "" });
+  if (req.url === "/api/auth/token") {
+    res.writeHead(200, { "content-type": "application/json" });
+    const token = [JSON.stringify({ alg: "EdDSA" }), JSON.stringify({ sub: "fixture", exp: Date.now() / 1000 + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+    res.end(JSON.stringify({ token }));
+    return;
+  }
+  hits.push({ method: req.method ?? "", url: req.url ?? "" });
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ v: 1, kind: "service-endpoint-authority-info", space: "ready", accountPublicKey: ACCOUNT }));
 });
 await new Promise<void>((r) => authority.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${(authority.address() as AddressInfo).port}`;
-const IDP = "https://idp.example.test/api/auth";
+const IDP = `${base}/api/auth`;
 const userMesh = (space: string): MeshEntry => ({
   space, server: "nats://127.0.0.1:4222", root: meshRoot, mode: "user", origin: "manual",
-  userAuth: { provider: "cotal", idp: { url: IDP, issuer: "https://idp.example.test", audience: "https://idp.example.test" }, endpoints: { url: base }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
+  userAuth: { provider: "cotal", idp: { url: IDP, issuer: base, audience: base }, endpoints: { url: base }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
   ts: new Date().toISOString(),
 });
 const identities = (dir: string): string[] => existsSync(join(dir, "daemon")) ? readdirSync(join(dir, "daemon"), { recursive: true }).map(String).filter((p) => p.endsWith("service-identity.json")).sort() : [];
@@ -204,12 +221,84 @@ const identities = (dir: string): string[] => existsSync(join(dir, "daemon")) ? 
 let legacyServe: Serve | undefined, managedServe: Serve | undefined;
 let derived: string | undefined;
 try {
+  await cell("G0 mode discovery needs no running daemon", async () => {
+    const missing = await cli([]);
+    check("G0 the missing-mode error itself includes desktop", missing.status === 1 && missing.err.split("\n")[0]!.includes("desktop"), missing.err.slice(0, 400));
+    check("G0 the remedy names help, not a live status read", missing.err.includes("cotal help daemon") && !missing.err.split("\n")[1]!.includes("cotal daemon status"), missing.err.slice(0, 400));
+    const help = await cli(["--help"]);
+    check("G0 scoped help succeeds before any daemon starts", help.status === 0 && help.out.includes("desktop"), { status: help.status });
+    for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status"]) {
+      const scoped = await cli([mode, "--help"]);
+      check(`G0 ${mode} help requires an explicit space without promising a resolved default`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} --space <s>`) && scoped.out.includes("target space (required") && !scoped.out.includes("the resolved mesh"), scoped.out);
+      const missingSpace = await cli([mode, "--json"]);
+      check(`G0 ${mode} still refuses an omitted space`, missingSpace.status === 1 && missingSpace.doc.error?.code === "USAGE_INVALID" && missingSpace.doc.error.message?.includes("needs --space <s>") === true, missingSpace.doc);
+    }
+    const setupHelp = await cli(["setup", "--help"]);
+    check("G0 setup permits account-only setup and describes its scoped space flags", setupHelp.status === 0 && setupHelp.out.includes("[--space <s>]") && setupHelp.out.includes("--no-manager and --wait require --space") && !setupHelp.out.includes("the resolved mesh"), setupHelp.out);
+    const missingProvider = await cli(["setup", "--json"], 30_000, { ...childEnv, DBUS_SESSION_BUS_ADDRESS: `unix:path=${join(root, "absent-bus")}` });
+    check("G0 fresh account-only setup selects Cloud before the unavailable service manager", missingProvider.status === 2 && missingProvider.doc.error?.code === "DEPENDENCY_UNAVAILABLE" && missingProvider.err.includes("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.") && !missingProvider.out.includes("pass --idp"), missingProvider.doc);
+    for (const flags of [["--no-manager"], ["--wait", "0"]]) {
+      const scoped = await cli(["setup", ...flags, "--json"]);
+      check(`G0 setup ${flags[0]} still requires an explicit space`, scoped.status === 1 && scoped.doc.error?.code === "USAGE_INVALID" && scoped.doc.error.message === "--no-manager and --wait require --space <s>", scoped.doc);
+    }
+    check("G0 setup provider options describe URLs and discovery names without claiming to be login-only", !setupHelp.out.includes("login:") && setupHelp.out.includes("--idp <auth URL or name>") && setupHelp.out.includes("issuer-authorized discovery hostname") && setupHelp.out.includes("--client-id <id>"), setupHelp.out);
+    const loginHelp = await cli(["login", "--help"]);
+    check("G0 login usage permits Cloud or another provider", loginHelp.status === 0 && loginHelp.out.includes("cotal daemon login [--cloud | --idp <auth URL or name>]"), loginHelp.out);
+    const statusHelp = await cli(["status", "--help"]);
+    check("G0 local status keeps its optional space selector", statusHelp.status === 0 && statusHelp.out.includes("cotal daemon status [--space <s>]"), statusHelp.out);
+    for (const mode of ["spaces", "start", "desktop"]) {
+      const scoped = await cli([mode, "--help"]);
+      check(`G0 ${mode} has scoped usage and examples`, scoped.status === 0 && scoped.out.includes(`cotal daemon ${mode} [`) && scoped.out.includes("Examples"), scoped.out);
+    }
+    check("G0 discovery creates no runtime entries or lifetime lock", runtimeEntries().length === 0 && !existsSync(lockFile(home)) && !existsSync(lockFile(managed)));
+  });
+
+  await cell("G2 failure documents retain their selected operation", async () => {
+    const absent = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("G2 absent status retains its mode and null local target", absent.status === 2 && absent.doc.command === "daemon status" && absent.doc.target === null, absent.doc);
+    for (const mode of ["connect-check", "register", "service-connect", "service-disconnect", "service-status", "setup"]) {
+      const result = await cli([mode, "--daemon-home", managed, "--space", "missing", "--json", ...(mode === "setup" ? ["--wait", "bad"] : [])]);
+      check(`G2 ${mode} refuses with its selected space and command`, result.status === (mode === "setup" ? 1 : 2) && result.doc.command === `daemon ${mode}` && result.doc.target?.space === "missing", result.doc);
+    }
+    for (const mode of ["login", "setup"]) {
+      for (const idp of ["http://user:PRIVATE_MARKER@127.0.0.1/api/auth", "http://127.0.0.1/api/auth?PRIVATE_MARKER=1", "http://127.0.0.1/api/auth#PRIVATE_MARKER", "http://provider.example/api/auth", "https://"]) {
+        const invalid = await cli([mode, "--daemon-home", managed, "--idp", idp, "--json"]);
+        check(`G2 ${mode} rejects a provider URL without recording or echoing it`, invalid.status === 1 && invalid.doc.outcome === "refused" && invalid.doc.error?.code === "USAGE_INVALID" && invalid.doc.command === `daemon ${mode}` && invalid.doc.target === null && !(invalid.out + invalid.err).includes("PRIVATE_MARKER"), { status: invalid.status, command: invalid.doc.command, target: invalid.doc.target });
+      }
+    }
+    for (const [input, idp] of [["http://127.0.0.1:9/api/auth/", "http://127.0.0.1:9/api/auth"], ["https://cotal.cloud", "https://cotal.cloud/api/auth"], ["https://cloud.cotal.ai/", "https://cloud.cotal.ai/api/auth"]]) {
+      const valid = await cli(["login", "--daemon-home", managed, "--idp", input!, "--json", "--no-browser"]);
+      check("G2 a valid provider retains its normalized target before a missing-daemon refusal", valid.status === 2 && valid.doc.outcome === "refused" && valid.doc.command === "daemon login" && valid.doc.target?.idp === idp, valid.doc);
+    }
+    check("G2 failure-context reads create no runtime entries or daemon lock", runtimeEntries().length === 0 && !existsSync(lockFile(managed)));
+  });
+
   await cell("H0 control: no flag keeps the fixed legacy socket", async () => {
     legacyServe = await serve([]);
     check("H0 legacy serve reports ready at $XDG_RUNTIME_DIR/cotal/daemon.sock", live(legacyServe) && legacyServe.socket === legacy.socket, { socket: legacyServe.socket, status: legacyServe.status, err: legacyServe.err.slice(0, 300) });
     const st = await cli(["status", "--json"]);
     check("H0 no-flag status answers ready with the legacy serve's pid, exit 0", st.status === 0 && st.doc.result?.state === "ready" && st.doc.result?.pid === legacyServe.child.pid, { status: st.status, doc: st.doc });
     check("H0 the runtime dir holds exactly the legacy socket", JSON.stringify(runtimeEntries()) === JSON.stringify(["daemon.sock"]), runtimeEntries());
+  });
+
+  await cell("H0b a default daemon's COTAL_HOME mismatch has actionable recovery advice", async () => {
+    const otherHome = join(root, "other-home");
+    mkdirSync(otherHome, { mode: 0o700 });
+    const before = fileState(legacy.socket);
+    childEnv.COTAL_HOME = otherHome;
+    try {
+      const json = await cli(["status", "--json"]);
+      const plain = await cli(["status", "--plain"]);
+      const remedy = json.doc.error?.remedy ?? "";
+      check("H0b mismatched COTAL_HOME refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER in both formats", json.status === 2 && json.doc.error?.code === "PERMISSION_DENIED" && json.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER" && plain.status === 2 && plain.err.includes("PEER_NOT_LOCK_OWNER"), { json, plain });
+      check("H0b Next distinguishes default COTAL_HOME from explicit --daemon-home and matches plain output", remedy.includes("For the default daemon use its COTAL_HOME") && remedy.includes("For an explicit --daemon-home use the same directory as the intended daemon") && remedy.includes("inspect the conflicting listener with your operating system") && remedy.endsWith("No process was stopped") && plain.err.includes(remedy), { remedy, plain: plain.err });
+    } finally {
+      childEnv.COTAL_HOME = home;
+    }
+    const json = await cli(["status", "--json"]);
+    const plain = await cli(["status", "--plain"]);
+    check("H0b matching COTAL_HOME still reports the original daemon ready in both formats", json.status === 0 && json.doc.result?.state === "ready" && json.doc.result?.pid === legacyServe?.child.pid && plain.status === 0 && plain.out.includes("ready") && plain.out.includes(String(legacyServe?.child.pid)), { json, plain });
+    check("H0b refusal leaves the default socket unchanged", JSON.stringify(fileState(legacy.socket)) === JSON.stringify(before));
   });
 
   await cell("H1 a managed daemon home binds its own socket beside a live legacy daemon", async () => {
@@ -227,6 +316,231 @@ try {
     check("H1 the legacy socket keeps its inode and mtime", legacyAfter.ino === legacyBefore.ino && legacyAfter.mtimeMs === legacyBefore.mtimeMs, { legacyBefore, legacyAfter });
     check("H1 D/daemon.lock is held by the managed serve, whose record names its pid", !lockFree(managed) && lockRecordPid(managed) === managedServe.child.pid, { free: lockFree(managed), recorded: lockRecordPid(managed), pid: managedServe.child.pid });
     check("H1 no lock was created in the legacy home", !existsSync(lockFile(home)));
+  });
+
+  await cell("H1b remedies retain the selected daemon and known provider or space", async () => {
+    recordMesh(userMesh("needs-login"));
+    const quotedHome = `'${managed.replace(/'/g, `'\\''`)}'`;
+    for (const extra of [[], ["--daemon-home", managed]]) {
+      const homeFlag = extra.length ? ` --daemon-home ${quotedHome}` : "";
+      for (const mode of ["connect-check", "register"]) {
+        const expected = `run \`cotal daemon login --idp '${IDP}'${homeFlag}\``;
+        const result = await cli([mode, "--space", "needs-login", ...extra, "--json"]);
+        check(`H1b ${mode} JSON has a concrete sign-in remedy (${extra.length ? "managed" : "default"})`, result.status === 2 && result.doc.error?.cause?.code === "NOT_SIGNED_IN" && result.doc.error.remedy === expected && !result.out.includes("<url>"), result);
+        const plain = await cli([mode, "--space", "needs-login", ...extra, "--plain"]);
+        check(`H1b ${mode} plain prints the same Next`, plain.status === 2 && plain.err.includes("Next") && plain.err.includes(expected), plain.err);
+      }
+    }
+    for (const mode of ["service-connect", "service-status"]) {
+      const result = await cli([mode, "--space", "needs-login", "--daemon-home", managed, "--json"]);
+      const expected = `run \`cotal daemon register --space needs-login --daemon-home ${quotedHome}\` first`;
+      check(`H1b ${mode} JSON names the selected space and daemon`, result.status === 2 && result.doc.error?.cause?.code === "NOT_REQUESTED" && result.doc.error.remedy === expected && !result.out.includes("<s>"), result);
+      const plain = await cli([mode, "--space", "needs-login", "--daemon-home", managed, "--plain"]);
+      check(`H1b ${mode} plain prints the same Next`, plain.status === 2 && plain.err.includes("Next") && plain.err.includes(expected), plain.err);
+    }
+    const st = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("H1b refusal reads leave the selected daemon serving", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, st.doc);
+    rmSync(meshFile("needs-login"));
+  });
+
+  await cell("H1c copied recovery commands preserve leading-hyphen spaces", async () => {
+    const quotedHome = `'${managed.replace(/'/g, `'\\''`)}'`;
+    for (const space of ["copy-control", "-leading-dash", "--json", "-1"]) {
+      recordMesh(userMesh(space));
+      const option = space.startsWith("-") ? `--space=${space}` : `--space ${space}`;
+      for (const mode of ["service-connect", "service-status"]) {
+        await cli(["service-disconnect", `--space=${space}`, "--daemon-home", managed, "--json"]);
+        const result = await cli([mode, `--space=${space}`, "--daemon-home", managed, "--json"]);
+        const command = `cotal daemon register ${option} --daemon-home ${quotedHome}`;
+        const remedy = `run \`${command}\` first`;
+        check(`H1c ${mode} emits a parseable register command for ${space}`, result.status === 2 && result.doc.error?.cause?.code === "NOT_REQUESTED" && result.doc.error.remedy === remedy, result);
+        if (result.doc.error?.remedy !== remedy) throw new Error("unexpected copied registration command");
+        const copied = await cli(result.doc.error.remedy.slice(5, -7));
+        check(`H1c copied ${mode} remedy reaches ${space} on the selected daemon`, copied.status === 2 && copied.doc.command === "daemon register" && copied.doc.target?.space === space && copied.doc.error?.cause?.code === "NOT_SIGNED_IN" && copied.doc.error.remedy?.includes(IDP) === true && copied.doc.error.remedy.includes(quotedHome), copied);
+        await cli(["service-disconnect", `--space=${space}`, "--daemon-home", managed, "--json"]);
+        const plain = await cli([mode, `--space=${space}`, "--daemon-home", managed, "--plain"]);
+        const printed = /`([^`]+)`/.exec(plain.err)?.[1];
+        check(`H1c ${mode} plain command preserves Unicode punctuation for ${space}`, plain.status === 2 && printed === command, plain);
+        if (printed !== command) throw new Error("plain command changed the selected daemon home");
+        const copiedPlain = await cli(printed);
+        check(`H1c copied plain ${mode} remedy reaches ${space}`, copiedPlain.status === 2 && copiedPlain.doc.target?.space === space && copiedPlain.doc.error?.cause?.code === "NOT_SIGNED_IN", copiedPlain);
+      }
+      const setup = await cli(["setup", "--no-manager", `--space=${space}`, "--daemon-home", managed, "--wait", "0", "--json"]);
+      check(`H1c setup manual recovery retains ${space}`, setup.status === 2 && setup.doc.error?.cause?.code === "RUNNING_WITHOUT_UNIT", setup);
+      const commands = [...(setup.doc.error?.remedy ?? "").matchAll(/`([^`]+)`/g)].map(match => match[1]!);
+      const expected = ["register", "service-connect"].map(op => `cotal daemon ${op} ${option} --daemon-home ${quotedHome}`);
+      if (JSON.stringify(commands) !== JSON.stringify(expected)) throw new Error("unexpected copied setup commands");
+      for (const command of commands) {
+        const copied = await cli(command);
+        check(`H1c copied setup ${command.includes(" register ") ? "register" : "service-connect"} reaches ${space}`, copied.status === 2 && copied.doc.target?.space === space && ["NOT_SIGNED_IN", "NOT_REQUESTED"].includes(copied.doc.error?.cause?.code ?? ""), copied);
+      }
+      rmSync(meshFile(space));
+    }
+    const status = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("H1c copied commands leave the selected daemon serving", status.status === 0 && status.doc.result?.pid === managedServe?.child.pid, status.doc);
+  });
+
+  await cell("G1 flags are scoped before daemon actions", async () => {
+    for (const flags of [["--idp", "not-a-url"], ["--wait", "not-a-number"], ["--refresh"], ["--dry-run"], ["--yes"], ["--client-id", ""]]) {
+      const result = await cli(["status", "--daemon-home", managed, "--json", ...flags]);
+      check(`G1 status refuses ${flags[0]} from another mode`, result.status === 1 && result.doc.error?.code === "USAGE_INVALID" && result.doc.error.message?.includes(flags[0]!) === true, { status: result.status, doc: result.doc });
+    }
+    const filtered = await cli(["status", "--daemon-home", managed, "--space", "nonexistent", "--json"]);
+    check("G1 status accepts the hosted Manager space filter", filtered.status === 0 && filtered.doc.result?.pid === managedServe?.child.pid && filtered.doc.result?.managers?.[0]?.space === "nonexistent" && filtered.doc.result?.managers?.[0]?.state === "stopped", filtered);
+    const unused = join(root, "unused"); mkdirSync(unused, { mode: 0o700 });
+    const before = runtimeEntries();
+    const dry = await cli(["serve", "--daemon-home", unused, "--dry-run", "--json"]);
+    check("G1 serve --dry-run refuses rather than starting a daemon", dry.status === 1 && dry.doc.error?.code === "USAGE_INVALID" && dry.doc.error.message?.includes("--dry-run") === true, { status: dry.status, doc: dry.doc });
+    check("G1 refused serve creates no socket or lifetime lock", JSON.stringify(runtimeEntries()) === JSON.stringify(before) && !existsSync(lockFile(unused)));
+    const st = await cli(["status", "--daemon-home", managed, "--json"]);
+    check("G1 valid status still reaches the same daemon", st.status === 0 && st.doc.result?.pid === managedServe?.child.pid, { status: st.status, doc: st.doc });
+  });
+
+  await cell("H6 managed catalog refresh never applies to the shared registry", async () => {
+    let origin = "", idp = "", catalogHits = 0, unavailable = false;
+    let slugs = ["catalog-new"], sub = "catalog-account", denied = false;
+    const session = "owned-catalog-session";
+    const catalog = createHttpServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      const send = (status: number, value: unknown, headers = {}) => res.writeHead(status, { "content-type": "application/json", ...headers }).end(JSON.stringify(value));
+      if (req.url === "/api/auth/device/code") return void send(200, { device_code: "owned-device", user_code: "OWNED", verification_uri: `${origin}/verify`, verification_uri_complete: `${origin}/verify?code=OWNED`, expires_in: 60, interval: 1 });
+      if (req.url === "/api/auth/device/token") return void (denied ? send(400, { error: "access_denied" }) : send(200, { access_token: session, expires_in: 3600 }));
+      if (req.headers.authorization !== `Bearer ${session}`) return void send(401, {});
+      if (req.url === "/api/auth/token") {
+        // Catalog discovery decodes the provider's account claims; no broker authenticates here.
+        const token = [JSON.stringify({ alg: "none" }), JSON.stringify({ sub, iss: origin, exp: Math.floor(Date.now() / 1000) + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+        return void send(200, { token }, { link: `<${origin}/catalog>; rel="https://cotal.ai/relations/space-catalog"` });
+      }
+      if (req.url !== "/catalog") return void send(404, {});
+      catalogHits++;
+      if (unavailable) return void send(503, {});
+      send(200, {
+        v: 1, account: { idpUrl: idp, issuer: origin, sub },
+        spaces: slugs.map((slug) => ({
+          id: slug, slug, name: slug, kind: "team", role: "member",
+          registration: {
+            space: slug, server: "nats://127.0.0.1:4222", tlsRequired: false, sentinelCreds: `fixture-sentinel-${slug}`,
+            userAuth: { provider: "cotal", idp: { url: idp, issuer: origin, audience: origin }, endpoints: { url: `${origin}/exchange` } },
+          },
+        })),
+      });
+    });
+    await new Promise<void>((r) => catalog.listen(0, "127.0.0.1", r));
+    origin = `http://127.0.0.1:${(catalog.address() as AddressInfo).port}`;
+    idp = `${origin}/api/auth`;
+    const sharedState = (): string => {
+      const files: { path: string; mode: number; hash: string }[] = [];
+      const visit = (path: string, relative: string): void => {
+        if (!existsSync(path)) return;
+        const stat = lstatSync(path);
+        if (stat.isDirectory()) for (const name of readdirSync(path).sort()) visit(join(path, name), `${relative}/${name}`);
+        else files.push({ path: relative, mode: stat.mode & 0o777, hash: createHash("sha256").update(readFileSync(path)).digest("hex") });
+      };
+      for (const name of ["meshes", "catalog", "current-mesh"]) visit(join(home, name), name);
+      return JSON.stringify(files);
+    };
+    try {
+      saveIdpSession(managed, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      const empty = sharedState();
+      const first = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 managed refresh reaches the catalog and keeps its own cache", first.status === 0 && first.doc.result?.refresh === "complete" && catalogHits > 0 && existsSync(join(managed, "space-catalogs.json")), first.doc);
+      check("H6 managed-only refresh creates no shared registration or credential", sharedState() === empty && !existsSync(join(home, "idp-sessions.json")));
+      slugs = ["catalog-kept", "catalog-removed"];
+      saveIdpSession(home, idp, { token: session, sub: "catalog-account", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+      const initial = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 default refresh registers its own catalog", initial.status === 0 && loadMeshes().some((m) => m.space === "catalog-removed"), initial.doc);
+      const corrupt = join(home, "meshes", "corrupt.json");
+      const damaged = "{broken json";
+      writeFileSync(corrupt, damaged, { mode: 0o600 });
+      const listed = await cli(["spaces", "--json"]);
+      check("H6 damaged registration leaves healthy spaces visible without refresh", listed.status === 4 && listed.doc.outcome === "partial" && listed.doc.result?.refresh === "not-requested" && listed.doc.result?.unreadable === 1 && listed.doc.result?.spaces.length === 2, listed.doc);
+      setCurrent("catalog-removed");
+      const before = sharedState();
+      slugs = ["catalog-kept", "catalog-added"];
+      const changed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 managed refresh preserves shared registrations, credentials and selection", changed.status === 4 && changed.doc.result?.refresh === "complete" && changed.doc.result?.unreadable === 1 && sharedState() === before && getCurrent() === "catalog-removed", changed.doc);
+      check("H6 managed space list still reflects the shared registry", changed.doc.result?.spaces.some((s: { space: string }) => s.space === "catalog-removed") === true && changed.doc.result?.spaces.every((s: { space: string }) => s.space !== "catalog-added") === true);
+      unavailable = true;
+      const failed = await cli(["spaces", "--refresh", "--daemon-home", managed, "--json"]);
+      check("H6 a failed managed refresh does not write shared failure metadata", failed.status === 4 && failed.doc.result?.refresh === "failed" && sharedState() === before, failed.doc);
+      unavailable = false;
+      const applied = await cli(["spaces", "--refresh", "--json"]);
+      const refreshed = readMeshRegistry().entries;
+      check("H6 default refresh adds and removes healthy registrations beside damage", applied.status === 4 && applied.doc.outcome === "partial" && applied.doc.result?.refresh === "complete" && applied.doc.result?.unreadable === 1 && applied.doc.result?.spaces.map((s: { space: string }) => s.space).sort().join() === "catalog-added,catalog-kept" && refreshed.some((m) => m.space === "catalog-added") && !refreshed.some((m) => m.space === "catalog-removed"), applied.doc);
+      check("H6 default refresh clears its removed selection", getCurrent() === undefined);
+      const plain = await cli(["spaces", "--refresh", "--plain"]);
+      check("H6 plain refresh reports partial success and the unreadable count", plain.status === 4 && /Catalog refresh:\s+complete/.test(plain.out) && /Unreadable:\s+1/.test(plain.out) && plain.out.includes("catalog-added"), plain);
+      const cached = Object.values(JSON.parse(readFileSync(join(home, "space-catalogs.json"), "utf8")).accounts) as { applied: boolean }[];
+      check("H6 healthy catalog application completes despite an unrelated damaged file", cached.length === 1 && cached[0]?.applied === true && readFileSync(corrupt, "utf8") === damaged);
+      unavailable = true;
+      const failedDefault = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 provider failure with damage remains a partial listing, not an endpoint failure", failedDefault.status === 4 && failedDefault.doc.result?.refresh === "failed" && failedDefault.doc.result?.unreadable === 1 && failedDefault.doc.result?.spaces.length === 2 && readMeshRegistry().entries.every((m) => Boolean(m.catalogError)) && readFileSync(corrupt, "utf8") === damaged, failedDefault.doc);
+      unavailable = false;
+      const blocked = meshFile("catalog-blocked");
+      writeFileSync(blocked, damaged, { mode: 0o600 });
+      slugs = ["catalog-kept", "catalog-added", "catalog-blocked"];
+      const targeted = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 a catalog cannot overwrite its own damaged canonical target", targeted.status === 4 && targeted.doc.result?.refresh === "failed" && targeted.doc.result?.unreadable === 2 && readFileSync(blocked, "utf8") === damaged && readFileSync(corrupt, "utf8") === damaged, targeted.doc);
+      rmSync(blocked);
+      rmSync(corrupt);
+      slugs = ["catalog-kept", "catalog-added"];
+      const recovered = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 duplicate fixture starts from a fully applied healthy catalog", recovered.status === 0 && recovered.doc.result?.refresh === "complete" && recovered.doc.result?.unreadable === 0, recovered.doc);
+      const canonical = meshFile("catalog-kept");
+      const legacy = join(home, "meshes", "catalog-kept.json");
+      const keptBytes = readFileSync(canonical, "utf8");
+      writeFileSync(legacy, keptBytes, { mode: 0o600 });
+      writeFileSync(canonical, damaged, { mode: 0o600 });
+      setCurrent("catalog-kept");
+      unavailable = true;
+      const failedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 provider failure preserves damaged canonical and usable legacy bytes", failedDuplicate.status === 4 && failedDuplicate.doc.result?.refresh === "failed" && failedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, failedDuplicate.doc);
+      check("H6 failure metadata still reaches unrelated healthy registrations", Boolean(readMeshRegistry().entries.find((m) => m.space === "catalog-added")?.catalogError));
+      unavailable = false;
+      slugs = ["catalog-added"];
+      const removedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 catalog removal preserves damaged canonical, legacy and selection", removedDuplicate.status === 4 && removedDuplicate.doc.result?.refresh === "complete" && removedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes && getCurrent() === "catalog-kept", removedDuplicate.doc);
+      slugs = ["catalog-kept", "catalog-added"];
+      const appliedDuplicate = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 application failure cannot rewrite damage from a usable legacy duplicate", appliedDuplicate.status === 4 && appliedDuplicate.doc.result?.refresh === "failed" && appliedDuplicate.doc.result?.unreadable === 1 && readFileSync(canonical, "utf8") === damaged && existsSync(legacy) && readFileSync(legacy, "utf8") === keptBytes, appliedDuplicate.doc);
+      writeFileSync(canonical, keptBytes, { mode: 0o600 });
+      rmSync(legacy);
+      check("H6 no private registry or sentinel tree was created", !existsSync(join(managed, "meshes")) && !existsSync(join(managed, "catalog")));
+
+      const subjects = (dir: string): string[] => Object.values(JSON.parse(readFileSync(join(dir, "space-catalogs.json"), "utf8")).accounts as Record<string, { sub: string }>).map((a) => a.sub).sort();
+      const oldSpaces = loadMeshes().filter((m) => m.origin === "catalog");
+      const sentinels = oldSpaces.map((m) => m.userAuth?.sentinelCredsPath).filter((p): p is string => typeof p === "string");
+      check("H6 switch fixture has two discovered spaces and their sentinel files", oldSpaces.length === 2 && sentinels.length === 2 && sentinels.every((p) => existsSync(p)));
+      const manual = userMesh("catalog-manual"); recordMesh(manual);
+      const manualSentinel = manual.userAuth!.sentinelCredsPath!;
+      mkdirSync(dirname(manualSentinel), { recursive: true, mode: 0o700 });
+      writeFileSync(manualSentinel, "manual-sentinel", { mode: 0o600 });
+      setCurrent("catalog-kept");
+      const beforeSwitch = sharedState();
+      sub = "catalog-next";
+      const managedLogin = await cli(["login", "--idp", idp, "--daemon-home", managed, "--json"]);
+      check("H6 managed account switch removes its old catalog entry", managedLogin.status === 0 && subjects(managed).join() === "catalog-next", managedLogin.doc);
+      check("H6 managed account switch preserves shared credentials, records and selection", sharedState() === beforeSwitch && getCurrent() === "catalog-kept");
+      sub = "catalog-account";
+      const same = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 signing in as the same account preserves discovered spaces", same.status === 0 && sharedState() === beforeSwitch, same.doc);
+      denied = true;
+      const rejected = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 a denied sign-in preserves the prior account and its spaces", rejected.status !== 0 && subjects(home).join() === "catalog-account" && sharedState() === beforeSwitch, rejected.doc);
+      denied = false; sub = "catalog-next";
+      const switched = await cli(["login", "--idp", idp, "--json"]);
+      check("H6 default account switch removes its old catalog entry", switched.status === 0 && switched.doc.result?.previousSub === "catalog-account" && subjects(home).join() === "catalog-next", switched.doc);
+      check("H6 default account switch removes its old registrations", oldSpaces.every((old) => !loadMeshes().some((m) => m.space === old.space)));
+      check("H6 default account switch deletes its old credential files and reports none kept", sentinels.every((p) => !existsSync(p)) && switched.doc.result?.credentialsKept === undefined, switched.doc);
+      check("H6 default account switch clears the removed selection", getCurrent() === undefined);
+      check("H6 default account switch preserves manual registration", JSON.stringify(loadMeshes().find((m) => m.space === manual.space)) === JSON.stringify(manual));
+      check("H6 default account switch preserves the manual registration's credential file", readFileSync(manualSentinel, "utf8") === "manual-sentinel");
+      slugs = ["catalog-next-space"];
+      const next = await cli(["spaces", "--refresh", "--json"]);
+      check("H6 refreshing the new account discovers only its own spaces", next.status === 0 && loadMeshes().filter((m) => m.origin === "catalog").map((m) => m.space).join() === "catalog-next-space", next.doc);
+    } finally {
+      await new Promise<void>((r) => catalog.close(() => r()));
+    }
   });
 
   await cell("H2 managed state is disjoint and nothing migrates from legacy", async () => {
@@ -247,7 +561,10 @@ try {
     check("H2 exactly one identity under D/daemon and still exactly one under $COTAL_HOME/daemon", identities(managed).length === 1 && identities(home).length === 1, { managed: identities(managed), home: identities(home) });
     check("H2 the legacy identity and session are byte-identical (no migration, no rewrite)", identities(home).length === 1 && readFileSync(join(home, "daemon", identities(home)[0]!), "utf8") === legacyIdentity && readFileSync(join(home, "idp-sessions.json"), "utf8") === legacySession);
     check("H2 D/meshes is never created and $COTAL_HOME/meshes is unchanged", !existsSync(join(managed, "meshes")) && JSON.stringify(readdirSync(join(home, "meshes"), { recursive: true }).map(String).sort()) === JSON.stringify(meshesBefore));
-    check("H2 the authority saw GETs only (0 POST)", hits.length >= 1 && hits.every((h) => h.method === "GET"), hits);
+    // A daemon whose home holds a sign-in also sends its account computer heartbeat (PUT
+    // /api/cli/machines/<id>) here on its own schedule; that request is not connect-check's.
+    const authorityHits = hits.filter((h) => !h.url.startsWith("/api/cli/machines/"));
+    check("H2 the authority saw GETs only (0 POST)", authorityHits.length >= 1 && authorityHits.every((h) => h.method === "GET"), hits);
   });
 
   await cell("H3 home validation refuses before any bind or lock", async () => {
@@ -305,6 +622,9 @@ try {
       const r = await cli(["status", "--daemon-home", managed, "--json"]);
       await sleep(200);
       check("H5 status refuses PERMISSION_DENIED / PEER_NOT_LOCK_OWNER, exit 2", r.status === 2 && r.doc.error?.code === "PERMISSION_DENIED" && r.doc.error?.cause?.code === "PEER_NOT_LOCK_OWNER", { status: r.status, doc: r.doc });
+      const plain = await cli(["status", "--daemon-home", managed, "--plain"]);
+      const remedy = r.doc.error?.remedy ?? "";
+      check("H5 explicit-home advice is conditional and matches plain output", remedy.includes("For an explicit --daemon-home use the same directory as the intended daemon") && plain.status === 2 && plain.err.includes("PEER_NOT_LOCK_OWNER") && plain.err.includes(remedy), { remedy, plain: plain.err });
       check("H5 the impostor listener received 0 bytes", !out.includes("GOT-BYTES"), out);
     } finally {
       await kill(listener);

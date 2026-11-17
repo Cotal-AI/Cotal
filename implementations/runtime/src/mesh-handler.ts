@@ -68,8 +68,6 @@ import {
   listRunMigrations,
   markRunNoticeConsumed,
   listRunNoticesForRun,
-  readRunRecord,
-  writeRunStatus,
   EpEnvelopeError,
   replyTargetUnmapped,
   unansweredRequest,
@@ -89,7 +87,6 @@ import {
   type RunAdmissionView,
   assertAdmittedPublish,
   assertAdmittedSubscribe,
-  assertNotRevoked,
   isStreamNotFound,
 } from "@cotal-ai/core";
 import { renderRunContext } from "./run-context.js";
@@ -102,7 +99,6 @@ import {
   Cancelled,
   EffectError,
   Journal,
-  EffectRefused,
   askSchemaShape,
   conformsToAskSchema,
   type AskFieldKind,
@@ -115,6 +111,7 @@ import {
   type CheckpointRaw,
   type CheckpointRequest,
   type EffectContext,
+  type InlineSpawnDefinition,
   type JournalEntry,
   type MonitorRequest,
   type NotifyRequest,
@@ -124,6 +121,7 @@ import {
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,
+  digest,
   journalEntryKeyString,
   stepKeyString,
 } from "@cotal-ai/lang";
@@ -135,7 +133,7 @@ import type { RunScopeAuthority } from "./run-scope-authority.js";
 import { askAttemptToken, observeToken, pauseTokens, waitTimeoutToken, waitTimers } from "./pause-tokens.js";
 import { delay } from "./delay.js";
 
-export interface RunMeshServices {
+interface RunMeshServices {
   readonly pauses: RunPauseHost;
   readonly waits: RunWaitHost;
   readonly authority: RunScopeAuthority;
@@ -349,7 +347,7 @@ export class MeshHandler {
           : String((err as Error)?.message ?? err));
     }
     if (reply.reply.ok === false)
-      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error?.message ?? "refused with no message");
+      throw cwdResolutionRefusal(req.persona, instanceId, cwd, reply.reply.error.message);
     const data = reply.reply.data as { cwd?: unknown; host?: unknown } | undefined;
     if (typeof data?.cwd !== "string" || data.cwd.length === 0 || !isAbsolute(data.cwd))
       throw cwdResolutionRefusal(req.persona, instanceId, cwd,
@@ -674,8 +672,18 @@ export class MeshHandler {
    */
   async release(entries: readonly JournalEntry[]): Promise<void> {
     const owed = this.services ? await this.services.authority.releaseEntries() : entries;
-    for (const e of owed)
-      if (e.kind === "spawn" && e.requestId !== undefined) await this.dischargeSpawn(e);
+    for (const e of owed) {
+      if (e.kind !== "spawn" || e.requestId === undefined) continue;
+      try {
+        await this.dischargeSpawn(e);
+      } catch (err) {
+        // The program finished. A cleanup failure neither changes its outcome nor excuses
+        // skipping the remaining seats. Cancellation discharge still throws and stays owed.
+        const handle = (e.result as Partial<AgentHandleValue> | undefined)?.agent;
+        const seat = typeof handle === "string" ? handle : e.external?.name ?? journalEntryKeyString(e);
+        console.error(`run ${this.binding.runId}: completion could not confirm release of ${seat} (spawn goal "${e.external?.goalId ?? e.requestId}"): ${String(err)}; inspect it with \`cotal ps\` and stop any remaining seat with \`cotal stop\``);
+      }
+    }
   }
 
   /**
@@ -829,19 +837,31 @@ export class MeshHandler {
     // class rail, and so is a split refusal `invokeManager` gave up repairing, since it states that
     // nothing ran. A bounded run of them leaves the discharge open rather than claiming it gone.
     const allocator = fact.committer?.instanceId;
+    let unanswered = 0;
     for (let attempt = 0; ; attempt += 1) {
-      const reply = await this.invokeManager(await this.manager("despawn"), "despawn", { graceful: true }, {
-        target: { mode: "owner", ...target },
-        deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
-      });
+      let reply: EpAttributedReply;
+      try {
+        reply = await this.invokeManager(await this.manager("despawn"), "despawn", { graceful: true }, {
+          target: { mode: "owner", ...target },
+          deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
+        });
+      } catch (err) {
+        // Silence leaves the outcome unknown. Repeating this despawn is safe only because every
+        // attempt pins the same lifecycle, including when the first one already retired it.
+        if (!unansweredRequest(err) || ++unanswered >= SPAWN_DISCHARGE_UNANSWERED_ATTEMPTS
+          || attempt === MANAGER_ROUTE_ATTEMPTS) throw err;
+        this.managerServices.delete("despawn");
+        await delay(GOAL_POLL_MS);
+        continue;
+      }
       // Tolerated refusals are the two "already gone" shapes: `not-found` (no such agent), and
       // `expired` (the target's lifecycle mapping is gone or rotated — this despawn pins one
       // incarnation, and an incarnation the mapping no longer names is not running).
-      const code = reply.reply.ok === false ? reply.reply.error?.code : undefined;
-      if (code === undefined) return;
+      if (reply.reply.ok) return;
+      const code = reply.reply.error.code;
       const unrun = replyRefusedBeforeEffect(reply.reply.error);
       if (!unrun && code !== "not-found" && code !== "expired")
-        throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
+        throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error.message}`);
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
@@ -985,7 +1005,7 @@ export class MeshHandler {
     // `onExpiry` rides beside them for the operator view, as this attempt was armed (`fail` when the
     // program sets none). What an expiry does is still decided from the source, never read from here.
     if (bound?.asks === undefined)
-      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? "fail", ...(req.to !== undefined ? { addressee: req.to } : {}) });
+      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, ...(req.schema !== undefined ? { schema: req.schema } : {}), deadlineAt: deadline, onExpiry: req.onExpiry ?? "fail", ...(req.to !== undefined ? { addressee: req.to } : {}) });
 
     // AN ESCALATION IS ADDRESSED, so where the addressee is an agent of this run it is TOLD.
     // Attempt 0 has no addressee (the reference allows `to` only with `onExpiry: "escalate"`,
@@ -1419,6 +1439,14 @@ export class MeshHandler {
         throw new EffectError("L4000", "spawn", `spawn(${req.persona}) requested placement ${req.placement.instanceId} but the accepted seat's recorded host is ${typeof floor?.host === "string" ? floor.host : "unrecorded"}; an adopted or resumed seat cannot be moved by a new request`);
     };
     if (ext !== undefined) checkRecordedPlacement(ext);
+    // An inline persona is bound with its digest before anything is submitted, and every later bind
+    // restates it, so a resume submits the definition it recorded and a migration hands a seat only
+    // to a spawn of the same definition. The input hash already ties the two; this checks it.
+    const inlineDigest = req.inline === undefined ? undefined : digest(req.inline);
+    const recordedInline = readInlineBinding(recorded?.inline);
+    if (recordedInline !== undefined && recordedInline.digest !== inlineDigest)
+      throw new Error(`spawn(${req.persona}): the journal recorded an inline definition with digest ${recordedInline.digest}, and this spawn's is ${inlineDigest ?? "a catalog persona"}; a resume never submits another definition than the one it recorded`);
+    let inline = recordedInline ?? (req.inline === undefined ? undefined : { definition: req.inline, digest: inlineDigest! });
     // A budget this host cannot meter is refused before anything is submitted: accepting it and
     // enforcing nothing would be the silent no-op the effect table exists to prevent.
     const permits = req.permits !== undefined ? readPermits(req.permits, req.persona) : undefined;
@@ -1441,12 +1469,17 @@ export class MeshHandler {
         throw new Error(`spawn(${req.persona}): the migrated seat's entry carries no readable handle or goal; a garbled hand-over is refused rather than minted over`);
       if (req.worktree !== undefined && handle.worktree !== req.worktree)
         throw new Error(`spawn(${req.persona}) asks for worktree "${req.worktree}" but the seat the migration hands it holds ${handle.worktree === undefined ? "none" : `"${handle.worktree}"`}; an adopted seat keeps its tree, so the edited program names that tree or none`);
+      const adoptedInline = readInlineBinding(floor?.inline);
+      if (adoptedInline?.digest !== inlineDigest)
+        throw new Error(`spawn(${req.persona}) is ${inlineDigest === undefined ? "a catalog spawn" : `an inline definition with digest ${inlineDigest}`}, but the seat the migration hands it was spawned from ${adoptedInline === undefined ? "a catalog persona" : `an inline definition with digest ${adoptedInline.digest}`}; an adopted seat keeps its definition, so the edited program spawns that same definition, or the migration releases the seat`);
+      inline = adoptedInline;
       checkRecordedPlacement(floor);
       // Refused validation leaves the hand-over queued; claim it before the first await.
       adoptions!.shift();
       ext = {
         goalId: adopted.requestId,
         ...(floor !== undefined ? pickAcceptanceFloor(floor) : {}),
+        ...(inline !== undefined ? { inline } : {}),
         ...(typeof floor?.host === "string" ? { host: floor.host } : {}),
         ...(handle.worktree !== undefined ? { worktree: handle.worktree } : {}),
         ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
@@ -1467,6 +1500,9 @@ export class MeshHandler {
         // resolve recorded and cannot drift under a re-resolve. A spawn naming no cwd has nothing
         // to resolve and skips both the invoke and the bind, so its behaviour is unchanged.
         let resolution = readCwdResolution(recorded?.resolution);
+        // PERSIST BEFORE SUBMITTING, as the resolution below is: the definition a resume submits is
+        // the one this bind recorded.
+        if (inline !== undefined && recordedInline === undefined) await ctx.bind({ inline });
         try {
           const command = req.cwd !== undefined && resolution === undefined ? "resolve-cwd" : "spawn";
           const service = await this.manager(command, req.placement?.instanceId);
@@ -1476,11 +1512,13 @@ export class MeshHandler {
             // PERSIST BEFORE SUBMITTING. The resolution is what phase B dispatches and what a
             // resume re-reads; binding it after the submission would leave a crash in between with
             // a launched seat whose directory no record names.
-            await ctx.bind({ resolution });
+            await ctx.bind({ ...(inline !== undefined ? { inline } : {}), resolution });
           }
           const spawnService = service.commands.has("spawn") ? service : await this.manager("spawn", req.placement?.instanceId);
           reply = await this.invokeManager(spawnService, "spawn",
-            spawnArgs(resolution === undefined ? req : { ...req, cwd: resolution.cwd }), {
+            // The run id lets a static manager that does not host this run, placed or reached through
+            // the class queue, read the run's admission and bound the helper by it (SPEC 14.8).
+            { ...spawnArgs({ ...req, ...(inline !== undefined ? { inline: inline.definition } : {}), ...(resolution !== undefined ? { cwd: resolution.cwd } : {}) }), runId: this.binding.runId }, {
               id: goalId,
               deadlineMs: SPAWN_ACCEPT_DEADLINE_MS,
             });
@@ -1501,9 +1539,9 @@ export class MeshHandler {
           // (L4001); every other refusal (persona unknown, name taken) is the host declining the
           // request (L4000), the manager's own code carried in the detail.
           const err = reply.reply.error;
-          throw new EffectError(err?.code === "resource-exhausted" ? "L4001" : "L4000", "spawn",
-            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`,
-            err?.code !== undefined ? { code: err.code } : undefined);
+          throw new EffectError(err.code === "resource-exhausted" ? "L4001" : "L4000", "spawn",
+            `spawn(${req.persona}) was refused by the ${this.binding.endpoint} endpoint: ${err.message}`,
+            { code: err.code });
         }
         const floor = reply === undefined ? undefined : (reply.reply.data as Record<string, unknown> | undefined);
         if (floor !== undefined && floor.goalId !== goalId)
@@ -1518,6 +1556,7 @@ export class MeshHandler {
           // `bind` REPLACES the external record, so the phase-A resolution is re-stated here or the
           // acceptance bind would erase it and a resume would re-resolve against a moved target.
           ...(resolution !== undefined ? { resolution } : {}),
+          ...(inline !== undefined ? { inline } : {}),
           ...(req.worktree !== undefined ? { worktree: req.worktree } : {}),
           ...(req.onFork !== undefined ? { onFork: req.onFork } : {}),
           ...(req.permits !== undefined ? { permits: req.permits } : {}),
@@ -1750,24 +1789,28 @@ export class MeshHandler {
 
     const actx = await this.actionCtx();
     const watch: DeathWatch = {};
+    // Only re-enter the read, never the relay submission or its outcome processing. Each read
+    // gets the pause plane's bounded timeout/starvation policy and names itself in diagnostics.
+    const poll = <T>(what: string, read: () => Promise<T>): Promise<T> => servedDespiteStarvation(async () => {
+      if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      return await read();
+    }, this.lag, `turn(${name}#${uid}) ${what}`, this.onStarved);
+    const result = () => poll("readGoalResult", () => readGoalResult(actx, ref));
+    const expired = () => poll("expired", () => this.expired(primary));
     const decided = async (): Promise<boolean> =>
-      ctx.signal.cancelled || (await readGoalResult(actx, ref)) !== undefined || (await this.expired(primary)) !== undefined;
+      ctx.signal.cancelled || (await result()) !== undefined || (await expired()) !== undefined;
     try {
-        for (;;) {
-        if (ctx.signal.cancelled) {
-          await this.cancelTimer(primary);
-          await this.withdrawCancelledRelay(goalId);
-          throw new Cancelled(ctx.signal.reason ?? "cancelled");
-        }
-        const fact = await readGoalResult(actx, ref);
+      for (;;) {
+        if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+        const fact = await result();
         if (fact !== undefined) {
           await this.cancelTimer(primary);
           return await this.turnOutcome(req, fact, ext, scope, name, uid);
         }
-        const ended = await this.expired(primary);
+        const ended = await expired();
         if (ended !== undefined)
           throw new EffectError("L4003", "turn-deadline", `turn(${name}#${uid}) deadline elapsed before a yield`);
-        const reason = await this.presenceDeath(name, uid, watch, decided);
+        const reason = await poll("presenceDeath", () => this.presenceDeath(name, uid, watch, decided));
         if (reason !== undefined) {
           await this.cancelTimer(primary);
           throw new EffectError("L4002", "turn", `turn(${name}#${uid}) found the agent down (${reason}) before a yield`);
@@ -1779,6 +1822,32 @@ export class MeshHandler {
       // seat's death, a refused handoff, a cancellation) is not a reply, whatever the relay
       // records later: `wait(replied)` reads the verdict this branch raised, never a stale yield.
       this.turnGoals.get(`${name}#${uid}`)?.delete(goalId);
+      // In particular a read that exhausted its retry budget must not leave a live relay that
+      // tells the seat its later yield continued a turn the run already abandoned. The ordinary
+      // turn verdicts already have an authority: death, the shared deadline, or a yielded handoff.
+      // Do not ask a dead manager to confirm the client's independent deadline or death verdict.
+      const terminal = e instanceof EffectError && ["L4002", "L4003", "L4004", "L4005"].includes(e.code);
+      if (!terminal) {
+        // Neither cleanup failure may prevent the other resource from being retired.
+        const cleanup = await Promise.allSettled([
+          this.cancelTimer(primary),
+          this.withdrawCancelledRelay(goalId, deadlineAt),
+        ]);
+        const failures = cleanup.flatMap((r, i) => r.status === "rejected"
+          ? [{ resource: i === 0 ? "primary timer claim" : "relay withdrawal", error: r.reason as unknown }]
+          : []);
+        if (failures.length > 0) {
+          const message = `${e instanceof Error ? e.message : String(e)}; turn cleanup failed: `
+            + failures.map((f) => `${f.resource}: ${f.error instanceof Error ? f.error.message : String(f.error)}`).join("; ");
+          const cause = new AggregateError([e, ...failures.map((f) => f.error)], message);
+          if (e instanceof EffectError) {
+            const error = new EffectError(e.code, e.kind, message, e.detail);
+            error.cause = cause;
+            throw error;
+          }
+          throw cause;
+        }
+      }
       throw e;
     }
   }
@@ -2090,10 +2159,10 @@ export class MeshHandler {
     }
     if (reply.reply.ok === false) {
       const err = reply.reply.error;
-      if (err?.code === "expired")
+      if (err.code === "expired")
         throw new EffectError("L4002", kind, `${kind}(${step}): ${name}#${uid} ${seatDownReading(err, seat.host)} before its relay began: ${err.message}`);
-      if (err?.code === "deadline-exceeded" && this.now() >= deadlineAt) return;
-      throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+      if (err.code === "deadline-exceeded" && this.now() >= deadlineAt) return;
+      throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err.message}`);
     }
   }
 
@@ -2117,7 +2186,7 @@ export class MeshHandler {
       const reply = await this.invokeManager(await this.manager("cancel"), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
       if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
       if (accepter === undefined || reply.responder.instanceId === accepter) {
-        const err = reply.reply.error!;
+        const err = reply.reply.error;
         throw new EpEnvelopeError(err.code as EpErrorCode, `the relay "${goalId}" could not be withdrawn from its seat: ${err.message}`);
       }
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
@@ -2142,8 +2211,7 @@ export class MeshHandler {
    * goal is read, and the relay may be served until then, so a failed read is tried again as well.
    * A goal record that can never yield a deadline is thrown.
    */
-  private async withdrawCancelledRelay(goalId: string): Promise<void> {
-    let deadlineAt: number | undefined;
+  private async withdrawCancelledRelay(goalId: string, deadlineAt?: number): Promise<void> {
     for (;;) {
       try {
         if (deadlineAt === undefined) {
@@ -2929,6 +2997,8 @@ const GOAL_POLL_MS = 2_000;
  *  side (the manager replies at identity mint, before any provision), so this bounds a lost
  *  broker, not the spawn itself — the spawn's own outcome rides the goal terminal. */
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
+/** Total unanswered attempts per seat. Separate from class routing so an outage is bounded. */
+const SPAWN_DISCHARGE_UNANSWERED_ATTEMPTS = 3;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
 /** How many class-rail calls a despawn, a relay withdrawal or a lapse's inspect sends before it stops
@@ -2965,7 +3035,7 @@ export function canonicalCwd(cwd: string): string {
 
 /** What phase A establishes and the step journal keeps: the canonical directory as the SERVING host
  *  stated it, plus the authoritative identity that stated it. Phase B dispatches `cwd` from here. */
-export interface CwdResolution {
+interface CwdResolution {
   cwd: string;
   endpoint: string;
   instanceId: string;
@@ -2977,7 +3047,7 @@ export interface CwdResolution {
  *  `L4000` is the host declining the request, and it is raised before any submission, so nothing is
  *  bound, allocated or launched. There is no raw-path arm: a fall-back to the caller's string is
  *  fail-OPEN, and launching somewhere plausible is the outcome being removed. */
-export function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
+function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
   return new EffectError("L4000", "spawn",
     `spawn(${persona}) cwd ${JSON.stringify(cwd)} was not resolved by manager instance ${instanceId}: ${cause}; refusing rather than dispatching a path this host never canonicalized`);
 }
@@ -2999,6 +3069,8 @@ function readCwdResolution(value: unknown): CwdResolution | undefined {
 export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
   return {
     name: req.persona,
+    // An inline persona travels as the manager's `persona` record, whose `name` is the spawn's own.
+    ...(req.inline !== undefined ? { persona: Object.fromEntries(Object.entries(req.inline).filter(([k]) => k !== "name")) } : {}),
     ...(req.model !== undefined ? { model: req.model } : {}),
     ...(req.variant !== undefined ? { variant: req.variant } : {}),
     // #1616 item 5: the cwd dispatched here is ALREADY the canonical form, resolved by the serving
@@ -3012,6 +3084,17 @@ export function spawnArgs(req: SpawnRequest): Record<string, unknown> {
     ...(req.events !== undefined ? { events: req.events } : {}),
     ...(req.runtime !== undefined ? { runtime: req.runtime } : {}),
   };
+}
+
+/** An inline binding read back off a journal entry, or `undefined` when the entry has none. A
+ *  binding that is present but unreadable is refused, never read as a catalog spawn. */
+function readInlineBinding(value: unknown): { definition: InlineSpawnDefinition; digest: string } | undefined {
+  if (value === undefined) return undefined;
+  const r = value as { definition?: unknown; digest?: unknown } | null;
+  if (r === null || typeof r !== "object" || typeof r.digest !== "string" || r.definition === null || typeof r.definition !== "object"
+    || digest(r.definition) !== r.digest)
+    throw new Error(`a journalled inline persona binding is unreadable or does not match its digest (${JSON.stringify(value)?.slice(0, 120)}); refused rather than read as a catalog spawn`);
+  return { definition: r.definition as InlineSpawnDefinition, digest: r.digest };
 }
 
 /** The acceptance-floor fields worth binding: the allocated identity a discharge despawns by, and

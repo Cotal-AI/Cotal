@@ -178,7 +178,7 @@ export { settleWithin };
  * The buffered-inbox + pending-run-turn composition that goes out ahead of a native prompt, read by
  * {@link SurfacedBatch.inject}. Returns `undefined` when there is nothing to prepend.
  */
-export function computeInjection(agent: MeshAgent): {
+function computeInjection(agent: MeshAgent): {
   prefix: string;
   surfacedIds: string[];
   turnIds: string[];
@@ -291,7 +291,8 @@ export const cotal: Plugin = async () => {
   // plugin's initializer would deadlock the server. Return hooks first, but do not join or
   // create a session until the server has answered. This is a managed serve process: on a
   // refusal, exit it so the shim reports the failure instead of waiting for a handshake.
-  void modelReady.then(() => agent.start(), (error: Error) => {
+  const meshReady = modelReady.then(() => agent.start());
+  void meshReady.catch((error: Error) => {
     log(error.message);
     process.exit(1);
   });
@@ -413,6 +414,7 @@ export const cotal: Plugin = async () => {
         mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
         return AguiEmitter.start<OpenCodeRecord>({
           endpoint: agent.ep,
+          withholdPayloads: config.eventPayloadsWithheld,
           wal,
           subjectFrontier,
           source: bound,
@@ -955,7 +957,7 @@ export const cotal: Plugin = async () => {
    *  can't be picked. Awaited by ensureSession before the first drive. */
   const sessionReady: Promise<string | undefined> = (async () => {
     try {
-      await modelReady;
+      await meshReady;
       const res = await opencodeApi<{ id?: string }>("/session", {
         method: "POST",
         body: JSON.stringify({ title: `cotal:${config.space}:${config.name}` }),
@@ -1059,13 +1061,22 @@ export const cotal: Plugin = async () => {
     try {
       const id = await ensureSession();
       if (!id) return; // no visible session yet, retry on the next event/wake
+      // COMPOSED, NOT CHOSEN BETWEEN, and that is what lets a wake arrive at ANY point relative to
+      // the boot. The floor says the operator's prompt is the first turn this connector submits; a
+      // wake says nothing more than "go and look", and its body is recovered by the pull it triggers
+      // rather than carried here. Two claims that do not compete, so one turn answers both and
+      // neither has to wait for the other. Choosing one and re-parking the other is the deadlock.
+      const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
+      // A role request is shown only once its take is recorded (SPEC §8.1), so only a turn that
+      // carries the inbox takes one, and the recheck below covers this await too.
+      const items = text ? [] : await agent.takeChosen("automatic", (preview) => preview);
       // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
       // creation is a server round trip, so a drive admitted while the seat was running can park
       // here and come back after `quiesce` has set `stopping` and published departure. Submitting
       // then is the defect this change exists to stop, arriving through the one door that was
       // already past the check rather than through a door that was never guarded. A reviewer
       // reproduced it live by holding POST /session and disposing while a real DM was parked here.
-      // Nothing has been consumed at this point: `peekInbox` has not run and nothing is surfaced, so
+      // Nothing has been consumed at this point: a take acks nothing and nothing is surfaced, so
       // returning leaves the batch in the inbox for a later wake IN THIS PROCESS. That is the whole
       // of the promise. A batch still held when the seat tears down does not survive the process:
       // measured, by restarting the identity on a fresh uid and then on the same one and finding the
@@ -1073,19 +1084,12 @@ export const cotal: Plugin = async () => {
       if (phaseClosed()) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
-      // COMPOSED, NOT CHOSEN BETWEEN, and that is what lets a wake arrive at ANY point relative to
-      // the boot. The floor says the operator's prompt is the first turn this connector submits; a
-      // wake says nothing more than "go and look", and its body is recovered by the pull it triggers
-      // rather than carried here. Two claims that do not compete, so one turn answers both and
-      // neither has to wait for the other. Choosing one and re-parking the other is the deadlock.
-      const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
       // Run turns ride the same composed submission; their ids commit as surfaced only once the
       // submission lands below (two-phase — a failed submit re-surfaces them, never a lie).
       const turnPeek = agent.peekPendingTurns();
       if (text) {
         parts.push({ type: "text", text });
       } else {
-        const items = agent.peekInbox("automatic");
         if (items.length === 0 && !turnPeek) return;
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);
@@ -1222,14 +1226,18 @@ export const cotal: Plugin = async () => {
   /** Native TUI / API prompts enter through OpenCode's chat.message hook before the model loop
    *  starts. This is the real "next turn" boundary for human-typed input: prepend the buffered Cotal
    *  batch to the user's text, then ack it when the resulting turn ends. We only mutate an existing
-   *  text part so we don't need to manufacture OpenCode's internal part IDs. */
-  function injectIntoPrompt(output: { parts?: unknown[] }): void {
+   *  text part so we don't need to manufacture OpenCode's internal part IDs. A role request held for
+   *  its take rides the prompt only once its take is recorded, so the prompt takes the held requests
+   *  it will carry first; OpenCode awaits this hook before it saves the prompt. */
+  async function injectIntoPrompt(output: { parts?: unknown[] }): Promise<void> {
     if (driving) return; // drive() is submitting the batch itself; an open batch is refused by `inject`
     const textPart = output.parts?.find(
       (p): p is { type: "text"; text: string } =>
         typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
     );
     if (!textPart) return;
+    if (!batch.open) await agent.takeChosen("automatic", (preview) => preview);
+    if (driving) return;
     const prefix = batch.inject();
     if (prefix === undefined) return;
     textPart.text = `${prefix}\n\n${textPart.text}`;
@@ -1464,6 +1472,7 @@ export const cotal: Plugin = async () => {
           const s = event.properties.status;
           // Presence only — session.idle owns ack + drive (so a duplicate idle can't mis-ack).
           if (s.type === "busy") {
+            agent.noteActivity();
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {
@@ -1540,6 +1549,10 @@ export const cotal: Plugin = async () => {
           // the source then reads the durable store and decides what is settled enough to publish.
           const partSession = (event.properties as { part?: { sessionID?: string } }).part?.sessionID;
           if (!ours(partSession)) return;
+          const part = event.properties.part;
+          const delta = event.properties.delta;
+          if (busy && (part.type === "tool" || ((part.type === "text" || part.type === "reasoning") && typeof delta === "string" && delta.length > 0)))
+            agent.noteActivity();
           eventsFor(sessionID)?.flush(sessionID);
           break;
         }
@@ -1558,6 +1571,7 @@ export const cotal: Plugin = async () => {
     // Surface the running tool as presence activity (parity with Claude's PreToolUse).
     "tool.execute.before": async (input) => {
       if (!ours(input.sessionID)) return;
+      agent.noteActivity();
       await safeStatus("working", input.tool);
     },
   } satisfies Partial<Hooks>;
@@ -1585,7 +1599,7 @@ export const cotal: Plugin = async () => {
       // default: before the first prompt the dashboard truthfully shows "not reported".
       if (input.model)
         await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
-      injectIntoPrompt(output);
+      await injectIntoPrompt(output);
     },
 
     // The host disposing this plugin's instance, which it does with its process still serving (a

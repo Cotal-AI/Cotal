@@ -80,10 +80,22 @@ jobs:
         with:
           name: cold-native-arm64
           path: ${{ runner.temp }}/cold-native-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-darwin-*
+          path: ${{ runner.temp }}/seat-host-native
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-win32-*
+          path: ${{ runner.temp }}/seat-host-native
       - run: node scripts/seat-assemble-natives.mjs
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/cold-native-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/cold-native-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-host-native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
       - uses: actions/download-artifact@v4
         with:
           name: workspace-native-x64

@@ -49,7 +49,8 @@
  *
  * What is still NOT graded here: cells 4 and 5 prove the pin ROUTES (an absent instance is refused
  * or deadlines rather than falling through), not that a pinned `spawn`/`stop`/`attach` completes against a real
- * instance; those mutate, and a live-mutation cell is a different fixture. And this suite does not
+ * instance; those mutate, and a live-mutation cell is a different fixture. Cell 16 completes one pinned
+ * spawn, to grade its goal follow rather than its routing. And this suite does not
  * grade the class-queue split itself (SPEC 13.2 behaviour, not this seam).
  *
  * Cell 11 starts a manager with no agent application installed and grades the refusal a pinned and
@@ -63,6 +64,10 @@
  * that names the flag and the read, with a Next naming a longer `--timeout`.
  * Cell 15 sweeps `--timeout` until a contract read returns after the deadline and the call fails
  * before it publishes, and grades that this failure's Next names a longer `--timeout` as well.
+ * Cell 16 completes one pinned `spawn --detach --json` on a manager whose serve connection drops
+ * right after the follow's describe is answered and redials 1.5s later, the same process and epoch
+ * throughout. It grades that the launch reports its outcome from that instance rather than an
+ * unknown outcome on the first goal-result read that had no responder (#6438).
  *
  * Mutation-proof target `cli-on-mint`: drop the instance from the mint (in
  * `packages/workspace/src/connect.ts`, force `pinned` to `undefined`) and cell 3's
@@ -73,6 +78,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer, connect as tcpConnect, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -176,6 +182,9 @@ function envelopeOf(r: Run): PsEnvelope | undefined {
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
+let m3: InstanceType<typeof Manager> | undefined;
+const relaySockets = new Set<Socket>();
+const relay = createServer();
 
 try {
   let up = false;
@@ -476,6 +485,24 @@ try {
   check("persona create --on writes this root's catalog file with no owner, and its JSON says local files changed",
     createdJson.status === 0 && created?.outcome === "ok" && created.result?.localFilesChanged === true && created.result.perCallCaller === true && existsSync(remoteRev) && !/^owner:/m.test(readFileSync(remoteRev, "utf8")),
     { status: createdJson.status, stdout: createdJson.stdout.slice(-600) });
+  const savedPersona = readFileSync(remoteRev, "utf8");
+  const repeatedJson = await cotal(["persona", "create", "remote-rev", "--prompt", "Second private prompt", "--subscribe", "", "--on", IID2, "--space", space, "--json"], root2);
+  mustHaveRun(repeatedJson, "repeated `persona create --on --json`");
+  let repeated: { outcome?: string; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string; outcome?: string } } } | undefined;
+  try { repeated = JSON.parse(repeatedJson.stdout); } catch { repeated = undefined; }
+  check("a repeated static create is a known ownership refusal with a local edit remedy, not an unknown write",
+    repeatedJson.status === 2 && repeated?.outcome === "refused" && repeated.error?.code === "PERMISSION_DENIED" &&
+      repeated.error.cause?.code === "permission-denied" && repeated.error.cause.outcome === "not-executed" &&
+      repeated.error.message?.includes("operator-owned") === true && repeated.error.remedy?.includes("cotal persona edit remote-rev") === true &&
+      repeated.error.remedy.includes("manager's host") && !repeatedJson.out.includes("Second private prompt"),
+    { status: repeatedJson.status, stdout: repeatedJson.stdout });
+  const repeatedText = await cotal(["persona", "create", "remote-rev", "--prompt", "Second private prompt", "--subscribe", "", "--on", IID2, "--space", space], root2);
+  mustHaveRun(repeatedText, "repeated `persona create --on`");
+  check("the text refusal explains ownership and names the edit on the manager's host without printing the prompt",
+    repeatedText.status === 2 && /operator-owned/.test(strip(repeatedText.out)) &&
+      strip(repeatedText.out).includes("cotal persona edit remote-rev") && strip(repeatedText.out).includes("manager's host") &&
+      !repeatedText.out.includes("Second private prompt"), { status: repeatedText.status, out: strip(repeatedText.out) });
+  check("both refused creates leave the original persona bytes unchanged", readFileSync(remoteRev, "utf8") === savedPersona);
   const createdText = await cotal(["persona", "create", "remote-rev2", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space], root2);
   mustHaveRun(createdText, "`persona create --on`");
   const receipt = strip(createdText.out);
@@ -808,10 +835,81 @@ try {
     lateJson.run.status === 5 && JSON.stringify(lateEnv?.error) === JSON.stringify({ code: "OPERATION_FAILED", message: published(lateJson.ms), remedy: "rerun it with a longer --timeout and the same other flags, such as `cotal endpoint invoke manager ps --timeout 10000`" }),
     { timeoutMs: lateJson.ms, status: lateJson.run.status, stdout: lateJson.run.stdout.slice(-900) });
 
+  // A pinned spawn follows its accepted goal by reading `goal-result` from the accepting instance.
+  // That instance can serve nothing for a moment while it stays the same process and epoch, when its
+  // serve connection reconnects in place. A read the broker answers with no responder did not run, so
+  // the follow reads again and the launch reports its real outcome. A relay carries only this
+  // manager's connections. It drops the serve connection right after that connection answers the
+  // follow's describe (the first describe answer after a spawn acceptance), then holds that
+  // connection's redial handshake for 1.5s. The CLI dials the broker directly.
+  console.log("\n16. a pinned spawn reports its outcome when the accepting manager serves nothing for a moment after acceptance");
+  let relayArmed = false, relayCut = false, relayHeld = 0;
+  let cutJwt: string | undefined;
+  relay.on("connection", (client) => {
+    const upstream = tcpConnect(PORT, "127.0.0.1");
+    relaySockets.add(client).add(upstream);
+    let jwt: string | undefined, held: Buffer[] | undefined, seen = "", accepted = false;
+    const drop = () => { client.destroy(); upstream.destroy(); };
+    client.on("data", (chunk: Buffer) => {
+      if (held) { held.push(chunk); return; }
+      const text = chunk.toString("latin1");
+      jwt ??= /"jwt":"([^"]+)"/.exec(text)?.[1];
+      if (jwt !== undefined && jwt === cutJwt && relayHeld === 0) {
+        relayHeld++;
+        held = [chunk];
+        setTimeout(() => { for (const c of held!.splice(0)) upstream.write(c); held = undefined; }, 1500);
+        return;
+      }
+      upstream.write(chunk);
+      if (!relayArmed || relayCut) return;
+      seen = (seen + text).slice(-262_144);
+      const reply = /\.ep(?:\.v1)?\.reply\.manager\./;
+      if (!accepted) {
+        const at = seen.indexOf('"goalId"');
+        if (at >= 0 && reply.test(seen)) { accepted = true; seen = seen.slice(at); }
+      } else if (reply.test(seen) && seen.includes('"descriptor"')) {
+        relayCut = true;
+        cutJwt = jwt;
+        upstream.end(drop);
+      }
+    });
+    upstream.on("data", (c: Buffer) => { client.write(c); });
+    for (const s of [client, upstream]) {
+      s.on("error", drop);
+      s.on("close", () => { relaySockets.delete(s); drop(); });
+    }
+  });
+  const relayPort = await freePort();
+  await new Promise<void>((done) => relay.listen(relayPort, "127.0.0.1", done));
+  const root7 = mkRoot("ws7");
+  writeFileSync(join(root7, ".cotal", "agents", "gap.md"), "---\nname: gap\nrole: worker\n---\n");
+  m3 = new Manager({ space, servers: `nats://127.0.0.1:${relayPort}`, runtime: "pty", workspaceRoot: root7 });
+  await m3.start();
+  const IID7 = (m3 as unknown as MgrPriv).managerInstanceId;
+  const epoch7 = () => (m3 as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch;
+  const epochBefore = epoch7();
+  relayArmed = true;
+  const gap = await cotal(["spawn", "gap", "--detach", "--on", IID7, "--harness", "ps-census-stub", "--no-events", "--space", space, "--json"], root1);
+  relayArmed = false;
+  mustHaveRun(gap, "the pinned spawn across a serve-connection gap");
+  if (!relayCut || relayHeld !== 1) {
+    process.exitCode = 1;
+    throw new Error(`FIXTURE FAILURE, not a product defect: the relay did not drop and hold the serve connection after acceptance (cut=${relayCut}, held=${relayHeld})\n${gap.stdout.slice(-800)}`);
+  }
+  let gapEnv: { outcome?: string; target?: { managerInstanceId?: string; managerEpoch?: number }; result?: { name?: string; readiness?: string; managerInstanceId?: string }; error?: unknown } | undefined;
+  try { gapEnv = JSON.parse(gap.stdout); } catch { gapEnv = undefined; }
+  check("a pinned spawn whose manager had no serve subscription right after acceptance still reports ok, joined, from that instance and epoch",
+    gap.status === 0 && gapEnv?.outcome === "ok" && gapEnv.result?.name === "gap" && gapEnv.result.readiness === "joined" &&
+      gapEnv.result.managerInstanceId === IID7 && gapEnv.target?.managerEpoch === epochBefore && epoch7() === epochBefore,
+    { status: gap.status, stdout: gap.stdout.slice(-1200) });
+
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
   await m1?.stop({ withAgents: true }).catch(() => {});
   await m2?.stop({ withAgents: true }).catch(() => {});
+  await m3?.stop({ withAgents: true }).catch(() => {});
+  for (const s of relaySockets) s.destroy();
+  relay.close();
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished

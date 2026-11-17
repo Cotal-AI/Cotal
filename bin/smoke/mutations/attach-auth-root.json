@@ -9,10 +9,10 @@
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-auth-root.json",
   "why": [
     "EVERY ATTACH CELL RUNS THE BINARY, so the command builds first. The suite drives `tsx",
-    "bin/cotal.ts` and `@cotal-ai/cli` resolves to `dist/`, so a mutation on `src` that is not built",
+    "bin/cotal.ts` and `@cotal-ai/cli` and `@cotal-ai/workspace` resolve to `dist/`, so a mutation on `src` that is not built",
     "is a mutation the run never sees: it would come back SURVIVED and read as `this line does not",
     "matter` when what was measured is `this line was not in the artifact`. `@cotal-ai/workspace`",
-    "builds first because the CLI's dist consumes it, and mutations 3 and 4 live there.",
+    "builds first because the CLI's dist consumes it, and every mutation here outside the suite lives there.",
     "",
     "MUTATION 1 IS THE DEFECT ITSELF, restored verbatim rather than approximated: the pre-fix line",
     "asked the CURRENT DIRECTORY which root holds the seed, after resolution had already answered",
@@ -74,22 +74,22 @@
     },
     {
       "name": "the defect restored: redemption walks up from the cwd for the seed instead of using the one the mesh resolved",
-      "file": "implementations/cli/src/commands/agents.ts",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
       "find": "  const material = attachSessionMaterial(t);",
-      "replace": "  const { authDir: mAuthDir, findCotalRoot: mFind, loadSpaceAuth: mLoad } = await import(\"@cotal-ai/workspace\");\n  const material = attachSessionMaterial({ ...t, spaceAuth: mLoad(mAuthDir(mFind()), t.space) });",
+      "replace": "  const { authDir: mAuthDir, findCotalRoot: mFind, loadSpaceAuth: mLoad } = await import(\"../auth-paths.js\");\n  const material = attachSessionMaterial({ ...t, spaceAuth: mLoad(mAuthDir(mFind()), t.space) });",
       "expectRed": "attach from a fossil-anchored directory redeems and opens the session",
       "cell": "attach from a fossil-anchored directory redeems and opens the session",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "This is issue #722 verbatim. The cwd holds a fossil `.cotal` whose chain the broker does not trust, so the session-caller credential is minted from it and the connect is refused."
     },
     {
       "name": "the divergent-anchor report is deleted, leaving the command correct and the operator blind",
-      "file": "implementations/cli/src/commands/agents.ts",
-      "find": "  if (shadow)\n    console.error(\n      `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space \"${t.space}\".\\n` +\n      `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,\n    );",
+      "file": "packages/workspace/src/attach/attach-seat.ts",
+      "find": "  if (shadow)\n    (v.notice ?? writeNotice)({\n      tone: \"warning\",\n      text:\n        `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space \"${t.space}\".\\n` +\n        `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,\n    });",
       "replace": "  void shadow;",
       "expectRed": "…and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
       "cell": "…and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
-      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build",
       "note": "A careless edit, not a malicious one: the report is dropped and the detector call kept. Everything still typechecks and every functional cell still passes."
     },
     {

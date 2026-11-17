@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CotalEndpoint as CotalEndpointType, EpCaller, EpEnvelopeError as EpEnvelopeErrorType } from "@cotal-ai/core";
+import type { CotalEndpoint as CotalEndpointType, EpEnvelopeError as EpEnvelopeErrorType } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));

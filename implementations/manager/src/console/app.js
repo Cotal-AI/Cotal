@@ -34,11 +34,18 @@ function layout() {
   for (const p of panes.values()) p.fit.fit();
 }
 
+/** The name a console pane shows. A missing or whitespace-only name is the agent's id. */
+function shownConsoleAgent(agent) {
+  if (typeof agent.name === "string" && agent.name.trim()) return agent.name;
+  if (typeof agent.id === "string" && agent.id.trim()) return agent.id;
+  return "(unnamed)";
+}
+
 function addPane(agent) {
   const el = document.createElement("div");
   el.className = "pane";
   el.innerHTML = `<div class="bar"><span class="dot"></span><span class="name"></span><span class="role"></span></div><div class="term"></div>`;
-  el.querySelector(".name").textContent = agent.name;
+  el.querySelector(".name").textContent = shownConsoleAgent(agent);
   el.querySelector(".role").textContent = agent.role ? `· ${agent.role}` : "";
   grid.appendChild(el);
 

@@ -11,17 +11,21 @@ import { serviceEndpointHostCall, type ServiceEndpointValues } from "./service-h
  */
 import * as prompts from "@clack/prompts";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, assertValidRole, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type FlagSpec, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
-import { CommandFailure, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, removeCatalogMeshes, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
+import { CommandFailure, resolvePreference, STORE_CONTENTS, storeContentsText, credentialMintFlags, validateCredentialMintArguments, validateCredentialRevokeArguments, exportSpaceSigner, signerExportFlags, validateSignerExportInput, inputDisabledByFlag, isWorkspaceTargetError, resolveMeshTarget, targetErrorCode, spaceFlag, isCommandFailure, oneLine, boundedValue, SHOWN_VALUE_MAX, jsonFlag, plainFlag, presentationOf, renderReport, writeResult, findCotalRoot, getSpaceAuth, homeCotalDir, keptCatalogCredentials, loadMeshes, removeCatalogAccount, untilInputEnds, userAuthStateDir, deprecatedDaemonEntry, workspaceErrorParts, workspaceSecretStore, type CredentialAction, type MeshEntry, type MeshTarget, type RefusalCode } from "@cotal-ai/workspace";
 import {
-  deleteIdpSession,
+  type DeviceLoginPrompt,
+  stageIdpSession,
+  commitStagedIdpSession,
+  fetchStagedIdpSpaceCatalog,
+  signedInMachineAccounts,
   deleteIdpSpaceCatalog,
   establishIdpSession,
   IdpUnreachableError,
-  loadIdpSession,
   listIdpAccounts,
   normalizeIdpUrl,
-  revokeIdpSession,
 } from "./login.js";
+import { refreshServiceSessions } from "./service-sessions.js";
+import { signOutIdpSession } from "./logout.js";
 import { inspectHandleFile } from "./handle-inspect.js";
 import { checkedEviction } from "./barrier-evict.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -29,6 +33,8 @@ import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import { findInteractiveActor, findManagedActor, loadActorLedger, withManagedGrantTransaction, type ActorRow } from "./ledger.js";
 import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
+
+import { isDiscoveryName, resolveDiscoveryLogin, resolveNativeMigration, COTAL_CLOUD_IDP, cloudAuthUrl, openLoginBrowser, readCurrent, setAdoptedCurrent } from "@cotal-ai/workspace";
 
 const DEFAULT_CLIENT_ID = "cotal-cli";
 
@@ -112,6 +118,19 @@ function canChooseAccount(): boolean {
 
 function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): void {
   presentationOf(args.values);
+  if (args.positionals.length) {
+    if (mode !== "login" || args.positionals.length !== 1 || !isDiscoveryName(args.positionals[0]!))
+      throw new CommandFailure("refused", "USAGE_INVALID", "login accepts one canonical discovery hostname");
+    if (args.values.cloud || args.values.idp !== undefined || args.values["migrate-from"] !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "a discovery name cannot be combined with --cloud, --idp or --migrate-from");
+  }
+  if (args.values["migrate-from"] !== undefined) {
+    if (mode !== "login" || args.values.cloud || args.values.idp !== undefined)
+      throw new CommandFailure("refused", "USAGE_INVALID", "--migrate-from cannot be combined with --cloud or --idp");
+    const old = normalizeIdpUrl(String(args.values["migrate-from"]));
+    if (!old.startsWith("https://")) throw new CommandFailure("refused", "USAGE_INVALID", "--migrate-from requires an HTTPS auth URL");
+  }
+  if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
   if (args.values.idp !== undefined) {
     try { normalizeIdpUrl(String(args.values.idp)); }
     catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
@@ -121,35 +140,109 @@ function validateAccountArguments(args: ParsedArgs, mode: "login" | "logout"): v
   if (mode === "login" && inputDisabledByFlag()) throw new CommandFailure("refused", "UNSUPPORTED", "this provider login uses device approval and has no noninteractive grant in this client", { remedy: "sign in from an interactive terminal" });
 }
 
-async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
-  if (typeof args.values.idp === "string") return normalizeIdpUrl(args.values.idp);
+/** Choose a login provider without requesting a session. Logout retains its cached-account choices. */
+export async function chooseAccount(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
+  return (await chooseAccountChoice(args, mode))?.url;
+}
+
+/** Keep discovery pins with the selected provider until the session is proved. */
+export async function chooseAccountChoice(args: ParsedArgs, mode: "login" | "logout"): Promise<{ url: string; discoveryPins?: { url: string; issuer: string; audience: string } } | undefined> {
+  if (args.positionals.length) {
+    validateAccountArguments(args, mode);
+    const discoveryPins = await resolveDiscoveryLogin(args.positionals[0]!);
+    return { url: discoveryPins.url, discoveryPins };
+  }
+  const url = await chooseAccountUrl(args, mode);
+  return url === undefined ? undefined : { url };
+}
+
+async function chooseAccountUrl(args: ParsedArgs, mode: "login" | "logout"): Promise<string | undefined> {
+  if (args.values.cloud && args.values.idp !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--cloud and --idp cannot be combined");
+  if (mode === "login" && args.values.cloud === true) return COTAL_CLOUD_IDP;
+  if (typeof args.values.idp === "string") return normalizeIdpUrl(mode === "login" ? cloudAuthUrl(args.values.idp) : args.values.idp);
   let cached: ReturnType<typeof listIdpAccounts>;
   try { cached = listIdpAccounts(homeCotalDir()); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "cached account metadata could not be read; it was not reset"); }
   const providers = new Map(cached.map((item) => [item.idp, item.sub]));
   if (mode === "login") for (const mesh of loadMeshes()) if (mesh.userAuth?.idp.url) providers.set(normalizeIdpUrl(mesh.userAuth.idp.url), providers.get(normalizeIdpUrl(mesh.userAuth.idp.url)));
-  if (providers.size === 1) return providers.keys().next().value;
+  if (mode === "login" && providers.size === 0) {
+    console.error("Signing in to Cotal Cloud. For another host, use cotal login --idp <url>.");
+    return COTAL_CLOUD_IDP;
+  }
+  if (providers.size === 1 && (mode === "logout" || providers.has(COTAL_CLOUD_IDP) || !canChooseAccount())) return providers.keys().next().value;
   if (mode === "logout" && providers.size === 0) return undefined;
-  if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select the provider explicitly with --idp outside an interactive terminal");
-  if (providers.size) {
-    const chosen = await untilInputEnds((signal) => prompts.select({ message: mode === "login" ? "Choose a sign-in provider" : "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })), signal }));
+  if (!canChooseAccount() || presentationOf(args.values) === "json") throw new CommandFailure("refused", "USAGE_INVALID", "select Cotal Cloud with --cloud or another provider with --idp outside an interactive terminal");
+  if (mode === "login") {
+    const chosen = await untilInputEnds(signal => prompts.select({ message: "Choose a sign-in provider", initialValue: COTAL_CLOUD_IDP, options: [
+      { value: COTAL_CLOUD_IDP, label: "Cotal Cloud (cotal.cloud)" },
+      ...[...providers].filter(([idp]) => idp !== COTAL_CLOUD_IDP).map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })),
+      { value: "custom", label: "Another host" },
+    ], signal }));
+    if (prompts.isCancel(chosen)) return undefined;
+    if (chosen !== "custom") return chosen;
+  }
+  if (mode === "logout" && providers.size) {
+    const chosen = await untilInputEnds((signal) => prompts.select({ message: "Choose the account to sign out", options: [...providers].map(([idp, sub]) => ({ value: idp, label: oneLine(idp), ...(sub ? { hint: oneLine(sub) } : {}) })), signal }));
     return prompts.isCancel(chosen) ? undefined : chosen;
   }
   const answer = await untilInputEnds((signal) => prompts.text({ message: "Sign-in provider auth URL", placeholder: "https://example.org/api/auth", signal, validate: (value) => {
     try { normalizeIdpUrl(value ?? ""); }
     catch { return "Enter the HTTPS auth base URL without a query, fragment or embedded credentials."; }
   } }));
-  return prompts.isCancel(answer) ? undefined : normalizeIdpUrl(answer);
+  return prompts.isCancel(answer) ? undefined : normalizeIdpUrl(cloudAuthUrl(answer));
+}
+
+async function runNativeMigration(args: ParsedArgs, from: string): Promise<void> {
+  const dir = homeCotalDir();
+  const oldUrl = normalizeIdpUrl(from);
+  const entries = loadMeshes().filter(entry => entry.origin === "catalog" && entry.userAuth && normalizeIdpUrl(entry.userAuth.idp.url) === oldUrl);
+  const pins = new Map(entries.map(entry => {
+    const idp = entry.userAuth!.idp;
+    return [JSON.stringify([idp.issuer, idp.audience]), idp];
+  }));
+  if (!entries.length || pins.size !== 1)
+    throw new Error("native migration requires registered catalog spaces with one trusted issuer and audience for the old auth URL");
+  const trusted = [...pins.values()][0]!;
+  const accounts = signedInMachineAccounts(dir).filter(account => account.idpUrl === oldUrl);
+  const oldAccount = accounts[0];
+  if (accounts.length !== 1 || !oldAccount || oldAccount.issuer !== trusted.issuer || entries.some(entry => entry.catalogOwner !== oldAccount.ownerKey))
+    throw new Error("native migration requires one saved account matching the old registered catalog spaces");
+  const consumer = resolveSpaceCatalogConsumer();
+  if (!consumer.prepareMigration) throw new Error("the registered space catalog consumer does not support native migration");
+  const resolution = await resolveNativeMigration({ url: oldUrl, issuer: trusted.issuer, audience: trusted.audience });
+  const idp = resolution.bundle.userAuth.idp.url;
+  const presentation = presentationOf(args.values);
+  const candidate = await stageIdpSession({
+    dir, idpUrl: idp, migrationFrom: oldUrl, clientId: String(args.values["client-id"] ?? DEFAULT_CLIENT_ID),
+    expectedPins: { idpUrl: idp, issuer: trusted.issuer, audience: trusted.audience, sub: oldAccount.sub },
+    onPrompt: (p: DeviceLoginPrompt) => {
+      console.error(renderReport({ sections: [{ title: "Approve native migration", blocks: [
+        { kind: "fields", rows: [["From", oldUrl], ["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", `in ${Math.ceil(p.expiresInSec / 60)} minutes`]] },
+        { kind: "lines", lines: ["Waiting for fresh provider approval. Ctrl-C aborts. Do not share the approval link or code."] },
+      ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
+      openLoginBrowser(p.verificationUriComplete, args.values);
+    },
+  });
+  const catalog = await fetchStagedIdpSpaceCatalog(candidate, consumer.validate);
+  const commit = consumer.prepareMigration(oldAccount, catalog.account, catalog.snapshot);
+  // Validation precedes writes. These commits are separate local writes, not a cross-file transaction.
+  commitStagedIdpSession(candidate);
+  commit();
+  console.log(`Migrated ${entries.length} registered spaces to ${idp}. Legacy sessions and authority records were retained. No manager service sessions were refreshed.`);
 }
 
 async function runLogin(args: ParsedArgs): Promise<void> {
   const values = args.values as { idp?: string; "client-id"?: string };
   validateAccountArguments(args, "login");
   const presentation = presentationOf(args.values);
-  const idpArg = await chooseAccount(args, "login");
-  if (idpArg === undefined) { console.error("Sign-in cancelled. No provider session was requested."); return; }
+  if (typeof args.values["migrate-from"] === "string") {
+    await legibly(() => runNativeMigration(args, args.values["migrate-from"] as string));
+    return;
+  }
+  const choice = await chooseAccountChoice(args, "login");
+  if (choice === undefined) { console.error("Sign-in cancelled. No provider session was requested."); return; }
   await legibly(async () => {
-    const idp = normalizeIdpUrl(idpArg);
+    const idp = normalizeIdpUrl(choice.url);
     // establishIdpSession proves the session mints user JWTs BEFORE persisting it — a failed
     // proof leaves no cache entry to fool requireIdpSession later. Every provider request runs
     // before that, so a provider that cannot be reached leaves nothing cached: a dependency
@@ -158,22 +251,28 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       dir: homeCotalDir(),
       idpUrl: idp,
       clientId: values["client-id"] ?? DEFAULT_CLIENT_ID,
+      expectedPins: choice.discoveryPins && { idpUrl: choice.discoveryPins.url, issuer: choice.discoveryPins.issuer, audience: choice.discoveryPins.audience },
       onPrompt: (p) => {
         console.error(renderReport({ sections: [{ title: "Approve sign-in", blocks: [
           { kind: "fields", rows: [["Provider", idp], ["Open", p.verificationUriComplete], ["Or open", p.verificationUri], ["Approval code", p.userCode], ["Expires", `in ${Math.ceil(p.expiresInSec / 60)} minutes`]] },
           { kind: "lines", lines: [{ text: "Waiting for the provider's approval. Ctrl-C aborts this request. Do not share the approval link or code.", tone: "hint" }] },
         ] }] }, presentation === "plain" ? "plain" : "rich", process.stderr));
+        openLoginBrowser(p.verificationUriComplete, args.values);
       },
     }).catch((error: unknown) => {
       if (error instanceof IdpUnreachableError)
         throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${error.message}; no session was cached`, { target: { idp }, remedy: "check --idp <auth base URL>; it must serve <base>/device/code" });
       throw error;
     });
+    const skippedServices: string[] = [];
+    const refreshedServices = refreshServiceSessions(homeCotalDir(), idp, session, skippedServices);
     const provider = resolveAuthProvider();
+    let credentialsKept: ReturnType<typeof removeCatalogAccount>["credentialsKept"] = [];
     if (previousSub) {
-      const removed = removeCatalogMeshes(deleteIdpSpaceCatalog(homeCotalDir(), idp, previousSub));
-      if (removed.length)
-        console.log(`Removed the previous account's discovered spaces: ${removed.join(", ")}. No replacement was selected automatically.`);
+      const switched = removeCatalogAccount(deleteIdpSpaceCatalog(homeCotalDir(), idp, previousSub));
+      credentialsKept = switched.credentialsKept;
+      if (switched.removed.length)
+        console.log(`Removed the previous account's discovered spaces: ${switched.removed.join(", ")}. No replacement was selected automatically.`);
     }
     let discovered: MeshEntry[] = [];
     if (provider.hasSpaceCatalog?.({ dir: homeCotalDir(), idpUrl: idp, sub })) {
@@ -182,17 +281,48 @@ async function runLogin(args: ParsedArgs): Promise<void> {
       const owners = new Set(results.map((r) => r.account.ownerKey));
       discovered = loadMeshes().filter((m) => m.origin === "catalog" && owners.has(m.catalogOwner ?? "")).sort((a, b) => a.space.localeCompare(b.space));
     }
+    let selected = readCurrent();
+    if (!selected && !previousSub && discovered.length) {
+      let choice = discovered.find(mesh => mesh.catalogKind === "personal")?.space
+        ?? (discovered.length === 1 ? discovered[0]!.space : undefined);
+      if (!choice && canChooseAccount()) {
+        const answer = await untilInputEnds(signal => prompts.select({ message: "Choose a space", options: discovered.map(mesh => ({ value: mesh.space, label: oneLine(mesh.catalogName ?? mesh.space) })), signal }));
+        if (!prompts.isCancel(answer)) choice = answer;
+      }
+      if (choice && !readCurrent()) { setAdoptedCurrent(choice); selected = choice; }
+    }
+    const saved = resolvePreference("name").value;
     // WHO signed in must be human-readable (per-user auth exists for operator-visible identity):
     // prefer the IdP's email/name claim; the raw `sub` stays as the stable id (dim when secondary).
     console.log(renderReport({ sections: [
-      { title: "Signed in", blocks: [{ kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()]] }, { kind: "lines", lines: [{ text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" }] }] },
+      { title: "Signed in", blocks: [
+        { kind: "fields", rows: [["Account", label || sub], ["Subject", sub], ["Provider", idp], ["Session expires", new Date(session.expiresAt * 1000).toISOString()], ["Chat name", session.name ?? "none"]] },
+        { kind: "lines", lines: [
+          ...(saved ? [{ text: `Chat sessions use your saved name "${saved}".`, tone: "hint" as const }]
+            : session.name ? []
+            : [{ text: "The provider gave no user name, email or name that can be a chat name, so a chat session on a user-auth space refuses unless you pass `--name <name>` to `cotal chat` or save a name with `cotal config set name <name>`.", tone: "failed" as const }]),
+          { text: "Account identity is verified. Each space's grants decide access separately. No session token is printed.", tone: "hint" },
+        ] },
+      ] },
+      ...(refreshedServices.length ? [{ title: "Manager services signed in", blocks: [{ kind: "lines" as const, lines: refreshedServices.map(service => `Signed in ${oneLine(service)} with the same approval.`) }] }] : []),
+      ...(skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: skippedServices }] }] : []),
       ...(discovered.length ? [{ title: "Your spaces", blocks: [{ kind: "fields" as const, rows: discovered.map((m): [string, string] => [m.space, [m.catalogName ?? m.space, m.catalogRole].filter(Boolean).join(" · ")]) }] }] : []),
-      { title: "Next", blocks: [{ kind: "commands", items: discovered.length
-        ? [{ command: "cotal use <name>", description: "Select one of your spaces for the commands that follow" }, { command: "cotal space", description: "See every registered space" }]
-        : [{ command: "cotal space", description: "See registered spaces and choose one" }, { command: "cotal sync", description: "Refresh spaces the provider makes available to this account" }] }] },
+      ...(selected ? [{ title: "Selected space", blocks: [{ kind: "lines" as const, lines: [`Selected ${oneLine(selected)}. Change it with cotal use <name>.`] }] }] : []),
+      { title: "Next", blocks: [{ kind: "commands", items: selected
+        ? [{ command: "cotal status", description: "See your space and this machine" }, { command: "cotal chat", description: "Join a conversation" }, { command: "cotal space", description: "See your spaces" }]
+        : discovered.length
+          ? [{ command: "cotal use <name>", description: "Select one of your spaces" }, { command: "cotal status", description: "See this machine and the selected space" }]
+          : [{ command: "cotal space", description: "See registered spaces and choose one" }, { command: "cotal sync", description: "Refresh your account's spaces" }] }] },
     ] }, presentation === "plain" ? "plain" : "rich", process.stdout));
+    // The switch is done; a credential file it could not delete leaves the run partial.
+    if (credentialsKept.length) {
+      const { message, remedy } = keptCatalogCredentials(credentialsKept);
+      throw new CommandFailure("partial", "OPERATION_PARTIAL", message, { target: { idp }, remedy });
+    }
   });
 }
+
+const DAEMON_SIGN_OUT_NOTICE = "A connected daemon stays connected on the computer's own service proof, not the human session. To end it, run `cotal daemon service-disconnect --space <space>` on this computer, or remove the computer in the dashboard.";
 
 async function runLogout(args: ParsedArgs): Promise<void> {
   validateAccountArguments(args, "logout");
@@ -202,33 +332,15 @@ async function runLogout(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "logout", target: null, result: { kind: "logout", providerSelected: false, serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No sign-out performed", blocks: [{ kind: "lines", lines: ["No provider was selected. No server session was revoked."] }] }] }));
     return;
   }
-  const dir = homeCotalDir();
-  let session: ReturnType<typeof loadIdpSession>;
-  try { session = loadIdpSession(dir, idp); }
-  catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the cached login could not be read; nothing was cleared", { target: { idp } }); }
-  if (!session) {
-    writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }] }] }] }));
+  const local = args.values.local === true;
+  const result = await signOutIdpSession({ dir: homeCotalDir(), idp, local });
+  if ("localLogin" in result) {
+    writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", localLogin: "absent", serverRevoked: null, daemonNotice: DAEMON_SIGN_OUT_NOTICE }, noOp: true }, () => ({ sections: [{ title: "No cached sign-in", blocks: [{ kind: "fields", rows: [["Provider", idp]] }, { kind: "lines", lines: [{ text: "No local session was found. Other server sessions were not checked or revoked.", tone: "hint" }, { text: DAEMON_SIGN_OUT_NOTICE, tone: "hint" }] }] }] }));
     return;
   }
-  // `--local` forgets this machine's login without contacting the provider, whose session stays valid.
-  const local = args.values.local === true;
-  if (!local) {
-    try { await revokeIdpSession(idp, session.token); }
-    catch { throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "server-side session revocation was not confirmed; the local login is kept so it can be retried", { target: { idp }, remedy: `retry logout for this provider, or revoke the session at the provider; to forget the login on this machine only, run \`cotal logout --idp ${idp} --local\`` }); }
-  }
-  let localCleared = false;
-  let removed: string[] = [];
-  try {
-    deleteIdpSession(dir, idp);
-    localCleared = true;
-    if (session.sub) removed = removeCatalogMeshes(deleteIdpSpaceCatalog(dir, idp, session.sub));
-  } catch {
-    if (local && !localCleared) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the cached login could not be confirmed cleared; the provider was not contacted", { target: { idp } });
-    if (local) throw new CommandFailure("partial", "OPERATION_PARTIAL", "the cached login was cleared, but discovered-space cleanup was not confirmed; the provider was not contacted", { target: { idp }, changed: [{ kind: "local-login", idp, cleared: true }] });
-    throw new CommandFailure("partial", "OPERATION_PARTIAL", localCleared ? "the server session was revoked and the cached login cleared, but discovered-space cleanup was not confirmed" : "the server session was revoked, but local cleanup was not confirmed", { target: { idp }, changed: [{ kind: "idp-session", idp, revoked: true }, ...(localCleared ? [{ kind: "local-login", idp, cleared: true }] : [])] });
-  }
-  writeResult(presentation, { command: "logout", target: { idp }, result: { kind: "logout", serverRevoked: !local, localLoginCleared: true, removedRegistrations: removed } }, (result) => ({ sections: [
-    { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }] }] },
+  writeResult(presentation, { command: "logout", target: { idp }, result: { ...result, daemonNotice: DAEMON_SIGN_OUT_NOTICE } }, (result) => ({ sections: [
+    { title: local ? "Signed out on this machine" : "Signed out", blocks: [{ kind: "fields", rows: [["Provider", idp], ["Provider session", local ? { text: "not contacted; it stays valid until it expires or is revoked at the provider", tone: "waiting" } : { text: "revoked", tone: "ok" }], ["Local login", "cleared"], ["Discovered spaces removed", String(result.removedRegistrations.length)]] }, { kind: "lines", lines: [{ text: "This does not claim that independently running agents or other provider sessions were stopped.", tone: "hint" }, { text: result.daemonNotice, tone: "hint" }] }] },
+    ...(result.skippedServices.length ? [{ title: "Manager services skipped", blocks: [{ kind: "lines" as const, lines: result.skippedServices }] }] : []),
     { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal login", description: "Sign in deliberately when needed" }] }] },
   ] }));
 }
@@ -273,7 +385,7 @@ async function resolveGrantOwner(
 
 /** The two explicit shapes of a grant in either spelling, printed by its usage refusal. */
 const grantForms = (command: "auth" | "actor"): string =>
-  `cotal ${command} grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,role:default; a named flag still overrides its field), or cotal ${command} grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--role r] [--label l]`;
+  `cotal ${command} grant <actor> --sub <IdP subject> --full   (all channels, scope spawn,run,role:default; a named flag still overrides its field), or cotal ${command} grant <actor> --sub <IdP subject> --scope a,b --allow-subscribe a,b --allow-publish a,b   ('' = none, e.g. --scope '' --allow-subscribe general --allow-publish ''). [--role r] [--label l]`;
 
 /** The grant verbs of each spelling. */
 const grantUsage = (command: "auth" | "actor"): string =>
@@ -395,7 +507,7 @@ async function runActor(args: ParsedArgs, target: AuthTarget, command: "auth" | 
       const grantRow = {
         owner,
         actor,
-        scope: csv(values.scope, ["spawn", "role:default"]),
+        scope: csv(values.scope, ["spawn", "run", "role:default"]),
         allowSubscribe: csv(values["allow-subscribe"], [">"]),
         allowPublish: csv(values["allow-publish"], [">"]),
         ...(values.role ? { role: values.role } : {}),
@@ -516,8 +628,8 @@ const authCommands: Command[] = [
       { name: "space", type: "string", value: "<s>", description: "space whose ledger to manage (default: the resolved mesh, as for auth grants)" },
       { name: "sub", type: "string", value: "<subject>", description: "the IdP subject (shown by `cotal login`) the actor belongs to; with list, only that subject's rows" },
       { name: "owner", type: "string", value: "<u_…>", description: "the derived owner token (alternative to --sub)" },
-      { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
-      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
+      { name: "full", type: "boolean", description: "grant: the full row - every ACL flag left off takes its wide default (all channels; scope spawn,run,role:default). Without it, grant needs --scope, --allow-subscribe and --allow-publish" },
+      { name: "scope", type: "string", value: "<a,b>", description: "capability scope for the bearer, from admin, run, spawn, supervise and role:<r> (with --full: default spawn,run,role:default; '' = none; spawn = may run agents, role:<r> = may delegate role r)" },
       { name: "allow-subscribe", type: "string", value: "<a,b>", description: "channel read ACL (with --full: default > = all channels) - the user's envelope: their agents can never read beyond it" },
       { name: "allow-publish", type: "string", value: "<a,b>", description: "channel post ACL (with --full: default > = all channels) - also the envelope for their agents' posting" },
       { name: "role", type: "string", value: "<r>", description: "role (scopes the task-queue consumer)" },
@@ -559,14 +671,18 @@ const authCommands: Command[] = [
     kind: "command",
     name: "login",
     group: "Identity",
-    summary: "sign in to a space's IdP (device code) and cache the session --idp <auth base URL> [--client-id <id>]",
-    examples: [{ command: "cotal login", note: "choose a provider and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
-    usage: "cotal login [--idp <auth base URL>] [--client-id <id>] [--plain]",
+    summary: "sign in to Cotal Cloud or another host with device approval",
+    examples: [{ command: "cotal login", note: "sign in to Cotal Cloud and approve sign-in" }, { command: "cotal login --idp <url>", note: "sign in to one provider" }],
+    usage: "cotal login [<name> | --cloud | --idp <auth base URL> | --migrate-from <old auth URL>] [--client-id <id>] [--no-browser] [--plain]",
+    positionals: "[<name>]",
     prepareMeshTarget: false,
     outputs: ["plain"],
     validate: (args) => validateAccountArguments(args, "login"),
     flags: [
       plainFlag,
+      { name: "cloud", type: "boolean", description: "Sign in to Cotal Cloud" },
+      { name: "migrate-from", type: "string", value: "<old auth URL>", description: "Approve an endorsed native origin migration for a registered account" },
+      { name: "no-browser", type: "boolean", description: "Print approval instructions without opening a browser" },
       { name: "idp", type: "string", value: "<auth base URL>", description: "Auth base URL, e.g. <origin>/api/auth" },
       { name: "client-id", type: "string", value: "<id>", description: "OAuth device-flow client id" },
     ],
@@ -667,7 +783,7 @@ function validateGrantUsage(command: "auth" | "actor", mode: string | undefined,
   const values = flags as { owner?: string; sub?: string; role?: string; parent?: string; scope?: string; full?: boolean; "allow-subscribe"?: string; "allow-publish"?: string };
   const problems: string[] = [];
   const omitted = mode === "grant" && !values.full ? (["scope", "allow-subscribe", "allow-publish"] as const).filter((flag) => values[flag] === undefined) : [];
-  if (omitted.length) problems.push(`with ${omitted.map((flag) => `--${flag}`).join(", ")} left off: an omitted flag would be the WIDE default (scope spawn,role:default, read '>', post '>')`);
+  if (omitted.length) problems.push(`with ${omitted.map((flag) => `--${flag}`).join(", ")} left off: an omitted flag would be the WIDE default (scope spawn,run,role:default, read '>', post '>')`);
   if (values.owner === undefined && values.sub === undefined) problems.push("with no --sub <IdP subject> (shown by `cotal login`) or --owner <u_…> to say whose actor it is");
   else if (values.owner !== undefined && values.sub !== undefined) problems.push("with both --sub and --owner: choose one explicit authority target");
   else if (values.owner === "" || values.sub === "") problems.push("with an empty --sub or --owner");

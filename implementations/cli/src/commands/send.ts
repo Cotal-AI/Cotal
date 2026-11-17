@@ -15,8 +15,12 @@ import {
   effectiveReplay,
   readChannelRegistry,
   channelBucket,
+  chatStream,
+  dmStream,
+  taskStream,
   AmbiguousPeerError,
   CotalEndpoint,
+  mentionsIn,
   type FlagSpec,
   type FlagValues,
   type PeerCandidate,
@@ -24,16 +28,13 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, spaceStreamsExpected, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning } from "@cotal-ai/workspace";
+import { CLI_USER_ACTOR, CommandFailure, agentGrants, codeSpan, connectOrThrow, connectSpace, endpointAuth, recordOperationSpace, jsonFlag, plainFlag, presentationOf, writeResult, targetFlags, userAuthStateDir, workspaceSecretStore, type Connection, type ConnectFlags, type OutputWarning, concreteChannelProblem, offlineRecipientNotice, spaceStreamsExpected } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue } from "../lib/completion.js";
-import { batchedRead, openTransient } from "../lib/transient.js";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
+import { batchedRead, openTransient, streamGoneAt } from "../lib/transient.js";
+import { streamsAbsent } from "../lib/space-streams.js";
 import { listDeclaredChannels, listDeclaredRoles } from "../lib/personas.js";
 import { personaCatalog } from "../lib/persona-files.js";
 import { brokerStoreWrite, recordedStore, storeRefusedWrite, storeWriteRepair } from "../lib/broker-store-health.js";
-import { chatStreamGone, streamsAbsent } from "../lib/space-streams.js";
-import { mentionsIn } from "../lib/mentions.js";
-import { offlineRecipientNotice } from "../lib/offline-recipient.js";
 import { shellWord } from "../lib/endpoint-errors.js";
 import { UnusableFile } from "../lib/unusable-file.js";
 
@@ -414,6 +415,15 @@ export async function send(args: ParsedArgs): Promise<void> {
     ? `the message is longer than this broker's ${ep.maxPayload}-byte message limit; nothing was sent`
     : `the message is ${bytes} bytes, and with its envelope it exceeds this broker's ${ep.maxPayload}-byte message limit; nothing was sent`, { target, remedy: "shorten the message, or split it across several sends" });
   try {
+    // A channel post is stored on the chat stream, a direct message on the DM stream, and a role
+    // send on the task stream. Confirmed absence of that stream refuses before publication. An
+    // unread check does not refuse, and a direct message is not refused because the chat stream is gone.
+    // An open space that runs elsewhere gets its streams from its first participant, and this send
+    // may be that participant, as a chat session is when it starts (#7045).
+    const storedOn = input.mode === "msg" ? chatStream(space) : input.mode === "dm" ? dmStream(space) : taskStream(space);
+    if (spaceStreamsExpected(space, connection.mode)) {
+      if (await streamGoneAt(connection, storedOn)) throw streamsAbsent(connection);
+    } else if (!connection.creds && !connection.bearer) await ep.ensureOpenSpaceStreams();
     const rest = await bodyRest(body, ep.maxPayload, refusal);
     if ("over" in rest) throw tooLarge(rest.over);
     const { text } = rest;
@@ -465,8 +475,7 @@ export async function send(args: ParsedArgs): Promise<void> {
       if (input.mode === "msg" && isPublishPermissionDenied(error)) throw await channelDenied(input.target, target, connection, registered, values.creds !== undefined ? connection.creds : undefined);
       const full = storeFullRefusal(error, connection.root, space, target);
       if (full) throw full;
-      // No stream stores a message whose space's streams were removed, so the send stored nothing.
-      if (spaceStreamsExpected(space, connection.mode) && await chatStreamGone(ep)) throw streamsAbsent(connection);
+      // Later stream absence cannot rule out storage before an acknowledgement was lost.
       // A broker sends nothing back for a stream it cannot write, so its own log here may name why.
       const store = connection.root ? brokerStoreWrite(connection.root, space) : undefined;
       if (store?.state === "write-failed") {

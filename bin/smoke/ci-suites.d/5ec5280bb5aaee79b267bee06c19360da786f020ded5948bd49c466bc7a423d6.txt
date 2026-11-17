@@ -1,0 +1,2 @@
+# One deadline bounds a lock acquisition while a live process reclaims a stale lock, on the sync and async acquirers (#3249).
+smoke:advisory-lock-reclaim-deadline

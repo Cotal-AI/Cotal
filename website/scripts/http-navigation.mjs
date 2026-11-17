@@ -10,6 +10,10 @@ export const httpSidebarTitles = {
     'watch-feed': 'Live events',
     'read-dashboard-meta': 'Metadata',
     'delete-dashboard-channel': 'Delete legacy channel',
+    'send-as-operator': 'Post as the operator',
+    'watch-agent': 'Watch an agent',
+    'unwatch-agent': 'Unwatch an agent',
+    'read-agent-events': 'Agent events',
   },
   auth: {
     'auth-health': 'Health',
@@ -17,6 +21,7 @@ export const httpSidebarTitles = {
     'auth-exchange': 'Exchange token',
     'auth-manager-service-authority': 'Manager authority',
     'auth-manager-instances': 'Manager instances',
+    'auth-endpoint-deregister': 'Remove Manager registration',
     'auth-service-endpoint-authority-info': 'Authority metadata',
     'auth-service-endpoint-authority': 'Service authority',
     'auth-service-endpoint-host': 'Host operation',

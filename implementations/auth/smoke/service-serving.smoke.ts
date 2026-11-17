@@ -103,7 +103,7 @@ try {
   const on = await startAuthService({ context: { accountPublicKey, lifecycleUid: "life-0" }, space, servers: fx.servers, store: a.store, storeIdentity: a.store.identity,
     stateDir, publicFace: { port: 0, trustedProxy: false }, serviceEndpoints: { startup: { kind: "normal" } } });
   handles.push(on);
-  const host = on.serviceEndpointHost!, pub = on.publicUrl!;
+  const host = on.serviceEndpointHost!;
   saveAuthServiceInfo(clientDir, { url: on.url, pid: process.pid, cap: on.cap });
   const clientStore: SecretStore = {
     get: async (k) => (k === authClientSentinelKey(space) ? a.sentinelCreds : undefined),
@@ -387,7 +387,7 @@ try {
   await point("(e) spec written, no reopen", "org.example.stop-e", async (s) => {
     const id = await simIntent(ownerA, s.proposal); eStop = await simSpec(s, s.proposal, id); return { r: s.proposal, who: "a" };
   }, { at: "registering:barrier", resumed: "registered", cancelled: "revoking:deny-new-landed" });
-  c.check("E(e) the stop came from the stopped reopen, which left the gate frozen", /sim stop before reopen/.test(eStop) && /left frozen/.test(eStop), eStop);
+  c.check("E(e) the stop came from the stopped reopen, which left the gate frozen", /sim stop before reopen/.test(eStop) && /reopen's outcome is unknown.*gate is still frozen/.test(eStop), eStop);
   const f = await point("(f) registered, reply lost", ordersEp, async (s) => { await registered(s); return { r: s.proposal, who: "a" }; },
     { at: "registered", resumed: "registered", cancelled: "revoking:deny-new-landed" });
   const gf = await gate(ordersEp, f.sr.instanceId), fAgain = await viaProvider("a", f.run.r), gf2 = await gate(ordersEp, f.sr.instanceId);

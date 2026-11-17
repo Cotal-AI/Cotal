@@ -12,7 +12,7 @@
 import { Algorithms, decode, encode } from "@nats-io/jwt";
 import { SignJWT, generateKeyPair } from "jose";
 import { createAccount, createCurve, createServer, createUser } from "@nats-io/nkeys";
-import { AUTH_CALLOUT_SUBJECT, CALLOUT_TIMEOUT_REASON, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
+import { CALLOUT_TIMEOUT_REASON, createCalloutAuth, startAuthCallout, USER_TOKEN_VER, type StartAuthCalloutOpts } from "../src/index.js";
 import { createSpaceAuth } from "@cotal-ai/core";
 
 let pass = 0, fail = 0;

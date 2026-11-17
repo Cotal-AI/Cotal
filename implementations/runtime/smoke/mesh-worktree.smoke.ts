@@ -32,12 +32,14 @@ import {
   timerWriterContext,
   timerWriterConsumerConfig,
   timerWriterDurable,
-  armCheckpointTimer,
   eptReqStreamName,
   presenceBucket,
-  readCheckpointSettle,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -70,7 +72,7 @@ import {
 import { type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshworktree";
 const EP = "manager";
@@ -81,17 +83,7 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshworktree", uid: "a".re
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
+
 /** Grade a rejection as a value rather than a process kill (the bare-call trap). */
 const safe = (p: Promise<unknown>): Promise<unknown> =>
   p.catch((e: unknown) => ({ threw: true, name: (e as Error)?.name, code: (e as { code?: string })?.code, message: (e as Error)?.message ?? String(e) }));
@@ -119,52 +111,21 @@ const kv = await openRecordsBucket(nc, SPACE);
 // Rows live until deleted — a seat stays alive for the whole suite unless a cell kills it.
 const presenceKv = await new Kvm(nc).create(presenceBucket(SPACE));
 
-// The timer pump for the wait's own mediated timeout. Drain WIDE before a block that needs an arm.
+// Initialize the timer writer's consumer and context for mediated timeouts.
 await jsm.consumers.add(eptReqStreamName(SPACE), timerWriterConsumerConfig(SPACE, { ackWaitMs: 5_000 }));
-const writerC = await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
-const wctx = await timerWriterContext(nc, SPACE);
-const armPending = async (expect = 4): Promise<void> => {
-  for await (const m of await writerC.fetch({ max_messages: expect, expires: 1_200 })) {
-    await armCheckpointTimer(wctx, { subject: m.subject, headers: m.headers, data: m.data });
-    m.ack();
-  }
-};
-
-// ── the suite-served manager-shaped goal endpoint (spawn + turn), the turn suite's rig ─────────
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
+await js.consumers.get(eptReqStreamName(SPACE), timerWriterDurable(SPACE));
+await timerWriterContext(nc, SPACE);
 
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
 };
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.worktreemgr", revision: 1, attributes: [], events: [],
   commands: [
@@ -182,7 +143,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -387,13 +348,6 @@ const journalEntries = async (runId: string, kind: string): Promise<JournalEntry
     .filter((r) => r.kind === "step")
     .map((r) => (r as { entry: unknown }).entry as JournalEntry)
     .filter((e) => e.kind === kind);
-};
-/** Spawn one seat through the handler under test, so the roster registration is the real path. */
-const spawnSeat = async (handler: MeshHandler, tag: string, persona = "builder"): Promise<{ agent: string; persona: string } | undefined> => {
-  const got = await withDeadline(safe(handler.spawn({ persona }, stepCtx(token(tag)).ctx)), 20_000, `the ${persona} spawn`);
-  if (got !== undefined && typeof (got as { agent?: unknown }).agent === "string") return got as { agent: string; persona: string };
-  console.log("  ! spawn did not yield a handle:", JSON.stringify(got));
-  return undefined;
 };
 /** Spawn one seat with a worktree through the handler under test. */
 const spawnInto = async (handler: MeshHandler, tag: string, worktree: string, persona = "builder"): Promise<unknown> =>
@@ -623,7 +577,7 @@ await parallel({
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 20;
+const EXPECTED_CELLS = 25;
 const ran = ok + fail;
 console.log(`mesh-worktree.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -3,7 +3,7 @@ import * as auth from "../../auth/dist/index.js";
 // Native acceptance composition. The IdP publishes a real signed JWKS, auth-service owns
 // all grants/issuance, and the participant owns genuine PTY children. No provider/model runs.
 if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href);
+  (await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href)).startExecutionProgram();
 } else {
   await main();
 }
@@ -22,7 +22,7 @@ async function main() {
   const { nativeRemoteManager } = await import("./_native-remote-manager.js");
   const { nativeAccountConnections } = await import("./_native-account-connections.js");
   const { remoteManagerClient } = await import("../dist/index.js");
-  const { meshSessionTransport } = await import("../../cli/src/lib/attach-client.js");
+  const { meshSessionTransport } = await import("../../../packages/workspace/src/attach/attach-client.js");
   await import("../../runtime/dist/index.js");
   const { emitSentinel } = await import("@cotal-ai/smoke-kit");
   let passed = 0;

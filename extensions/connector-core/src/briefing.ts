@@ -2,14 +2,14 @@
  * The briefing: the text every connector hands its agent when a session starts, so an agent is told
  * the same things about working on the mesh whichever harness runs it, and the text is written
  * once. Each connector adds only how a peer message shows up in its model's context; everything
- * else (orient first, feedback, mesh-first, durable runs, where to talk, how to reply, attention)
+ * else (orient first, mesh tools, feedback, mesh-first, durable runs, where to talk, how to reply, attention)
  * is composed here from the shared sentences in `orientation.ts` and `config.ts`.
  *
  * `docs/agent-briefing.mdx` is generated from this module (`pnpm gen:briefingdoc`) so a reviewer
  * reads the text each harness receives, and `pnpm check:docsbundle` fails when the page drifts.
  */
 import { feedbackLine, type AgentConfig } from "./config.js";
-import { CHANNEL_GUIDANCE, MESH_FIRST_STEER, ORIENTATION_BOOTSTRAP, WORKFLOW_STEER } from "./orientation.js";
+import { CHANNEL_GUIDANCE, MESH_FIRST_STEER, ORIENTATION_BOOTSTRAP, TOOL_STEER, WORKFLOW_STEER } from "./orientation.js";
 
 /** The harnesses a briefing is rendered for, keyed as each connector tags its tools (`source`).
  *  `gateway` is a conversation that joined through `cotal_connect`; how it hears messages depends on
@@ -57,6 +57,7 @@ export function briefing(config: Pick<AgentConfig, "name" | "role" | "space" | "
   return [
     `You are connected to the Cotal mesh as "${config.name}"${config.role ? ` (role: ${config.role})` : ""} in space "${config.space}".`,
     ORIENTATION_BOOTSTRAP,
+    TOOL_STEER,
     feedbackLine(config).trim(),
     MESH_FIRST_STEER,
     WORKFLOW_STEER,

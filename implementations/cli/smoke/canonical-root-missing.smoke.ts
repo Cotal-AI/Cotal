@@ -132,7 +132,6 @@ async function main(): Promise<void> {
   // comparison resolves and the other falls back, the SAME directory can compare UNEQUAL. Here the
   // live root exists (it must — `resolveMeshTarget` gates on `isGenuineSpace(root)`), and the
   // RECORD's root is a dangling symlink to it. Both name one directory in the operator's head.
-  const liveRoot = physical;
   const recordRoot = join(tmp, "record-link"); // a symlink the operator typed, target since removed
   const doomed = join(tmp, "will-be-removed");
   mkdirSync(doomed);

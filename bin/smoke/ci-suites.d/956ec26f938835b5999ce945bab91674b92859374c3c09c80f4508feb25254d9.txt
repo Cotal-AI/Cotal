@@ -1,0 +1,2 @@
+# The rolling message rate counts one window ending at now, scales to per second and drops aged hits.
+smoke:web-rate

@@ -227,13 +227,13 @@ try {
     adopted?.attachHost === "127.0.0.1" && adopted.maxSessions === 7, adopted);
   ok("…and the store cap the restored broker runs with", adopted?.maxFileStore === CAP, adopted);
 
-  runSync(["down"]);
+  runSync(["down", "--yes"]);
   console.log(`\nUP RESTORE RE-ENTRY SMOKE OK ✅  (${pass} passed)`);
 } catch (e) {
   console.error("  ✗ FAIL:", (e as Error).message);
   process.exitCode = 1;
 } finally {
-  try { runSync(["down"]); } catch { /* best effort */ }
+  try { runSync(["down", "--yes"]); } catch { /* best effort */ }
   await sleep(500);
   // Every runtime record this root holds, whatever space each belongs to. The records are
   // space-keyed now (`manager.<hex>.pid`), and a teardown running after a failure cannot assume

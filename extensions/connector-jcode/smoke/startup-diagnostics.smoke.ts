@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HarnessError } from "@1jehuang/jcode-sdk";
-import { classifyReadinessFailure, classifyReadinessProviderRefusal, installJcodeDiagnosticLog, writeJcodeDiagnostic } from "../src/startup-diagnostics.js";
+import { classifyReadinessFailure, classifyReadinessProviderRefusal, installJcodeDiagnosticLog, JcodeModelMismatch, writeJcodeDiagnostic } from "../src/startup-diagnostics.js";
 
 let pass = 0;
 const check = (name: string, condition: boolean, actual?: unknown): void => {
@@ -44,6 +44,21 @@ try {
     const failure = classifyReadinessFailure(new HarnessError("internal", message));
     check(`${name} keeps only a fixed startup category`, failure?.code === expected && !failure.message.includes("PRIVATE_CANARY"));
   }
+  const namedStatuses = new Set([401, 402, 403, 429]);
+  for (let status = 400; status <= 499; status++) {
+    if (namedStatuses.has(status)) continue;
+    const message = authEnvelope.replace("401 Unauthorized", `${status} PRIVATE_CANARY`);
+    const failure = classifyReadinessFailure(new HarnessError("internal", message));
+    check(`HTTP ${status} exposes only the client-error category`,
+      failure?.code === "provider_client_error" && !failure.message.includes("PRIVATE_CANARY"));
+  }
+  for (const statusLine of ["400", "422 Unprocessable Entity\r", "499 <unknown status code>"]) {
+    check(`client-error classification accepts status line ${JSON.stringify(statusLine)}`,
+      classifyReadinessFailure(new HarnessError("internal", authEnvelope.replace("401 Unauthorized", statusLine)))?.code === "provider_client_error");
+  }
+  check("structured model refusal takes precedence over the status-only category",
+    (classifyReadinessProviderRefusal(new HarnessError("internal", envelope), "owned-pin") ??
+      classifyReadinessFailure(new HarnessError("internal", envelope)))?.message === classified?.message);
   for (const [name, error] of [
     ["plain error", new Error(authEnvelope)],
     ["other SDK code", new HarnessError("invalid_request", authEnvelope)],
@@ -52,11 +67,62 @@ try {
     ["unrelated 403", new HarnessError("internal", "unrelated\n  status: 403 Forbidden\nPRIVATE_CANARY")],
     ["unrelated 429", new HarnessError("internal", "unrelated\n  status: 429 Too Many Requests\nPRIVATE_CANARY")],
     ["HTTP 500", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "500 Internal Server Error"))],
+    ["HTTP 399", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "399 PRIVATE_CANARY"))],
+    ["HTTP 4000", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "4000 PRIVATE_CANARY"))],
+    ["HTTP 40", new HarnessError("internal", authEnvelope.replace("401 Unauthorized", "40 PRIVATE_CANARY"))],
+    ["unrelated 400", new HarnessError("internal", "unrelated\n  status: 400 Bad Request\nPRIVATE_CANARY")],
+    ["other SDK code with 400", new HarnessError("invalid_request", authEnvelope.replace("401 Unauthorized", "400 Bad Request"))],
     ["wrong send prefix", new HarnessError("internal", `unrelated ${sendEnvelope}`)],
-    ["model refusal", new HarnessError("internal", envelope)],
   ] as const) {
     check(`readiness failure leaves ${name} unchanged`, classifyReadinessFailure(error) === undefined);
   }
+
+  const mismatch = new JcodeModelMismatch("requested-model", "high", {
+    model: "previous-model", provider: "active-provider", routes: [],
+  });
+  check("model mismatch keeps its stable code and separates requested and reported identities",
+    mismatch.code === "model_mismatch" &&
+      mismatch.message.includes('requested model "requested-model"') &&
+      mismatch.message.includes('reported model "previous-model"') &&
+      mismatch.message.includes('reported provider "active-provider"'));
+  check("missing model route is distinguished from a rejected effort",
+    mismatch.message.includes("no matching model route was reported") &&
+      mismatch.message.includes("matching model routes: 0") &&
+      mismatch.message.includes('requested tier "high" was not applied'));
+  const ambiguous = new JcodeModelMismatch("requested-model", "high", {
+    model: "requested-model", provider: "other-provider",
+    routes: [{ model: "requested-model", provider: "first" }, { model: "requested-model", provider: "second" }],
+  });
+  check("ambiguous routes name the failed provider disambiguation and count",
+    ambiguous.message.includes("matching routes could not be disambiguated by the reported provider") &&
+      ambiguous.message.includes("matching model routes: 2"));
+  const providerless = new JcodeModelMismatch(undefined, "low", {
+    model: "default-model", provider: "", routes: [{ model: "default-model", provider: "" }],
+  });
+  check("variant-only launch reports the default model and providerless selected route",
+    providerless.message.includes("the selected route has no provider") &&
+      providerless.message.includes("requested model (provider default)") &&
+      providerless.message.includes('reported model "default-model"') &&
+      providerless.message.includes("reported provider (unreported)") &&
+      providerless.message.includes("matching model routes: 1"));
+  const absent = new JcodeModelMismatch(undefined, "high", undefined);
+  check("missing runtime identity is explicit rather than fabricated",
+    absent.message.includes("no model was reported") &&
+      absent.message.includes("reported model (unreported)") &&
+      absent.message.includes("reported provider (unreported)"));
+  for (const unsafe of ["line\nPRIVATE_CANARY", "\u001b[31mPRIVATE_CANARY", "x".repeat(257), "https://user:PRIVATE_CANARY@host"]) {
+    const bounded = new JcodeModelMismatch(unsafe, unsafe, { model: unsafe, provider: unsafe });
+    check("unsafe or oversized model, provider and effort fields are withheld",
+      !bounded.message.includes(unsafe) && !bounded.message.includes("PRIVATE_CANARY") &&
+        bounded.message.includes("requested model (withheld)") &&
+        bounded.message.includes("reported model (withheld)") &&
+        bounded.message.includes("reported provider (withheld)") &&
+        bounded.message.includes("requested tier (withheld) was not applied") &&
+        bounded.message.length < 500);
+  }
+  const privateRoute = { model: "requested-model", provider: "", detail: "PRIVATE_CANARY", api_method: "PRIVATE_CANARY" };
+  const privateFields = new JcodeModelMismatch("requested-model", "high", { routes: [privateRoute] });
+  check("route details and API metadata never enter mismatch diagnostics", !privateFields.message.includes("PRIVATE_CANARY"));
 
   const home = join(root, "home");
   mkdirSync(home, { mode: 0o700 });

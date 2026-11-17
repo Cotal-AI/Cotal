@@ -10,7 +10,7 @@ import type { MeshSnapshot, MeshViewOptions } from "@cotal-ai/workspace/view";
 import { MeshView } from "@cotal-ai/workspace/view";
 
 // Re-exported so the UI components keep importing the model shape from one place.
-export type { FeedEntry, MeshViewOptions, FeedDelivery, MembershipView } from "@cotal-ai/workspace/view";
+export type { FeedEntry, FeedDelivery, MembershipView } from "@cotal-ai/workspace/view";
 export type MeshState = MeshSnapshot;
 
 /** Focusable panes across the console (normal panels + the DM and topology lenses). */

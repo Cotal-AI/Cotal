@@ -48,6 +48,10 @@ import {
   presenceBucket,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -87,7 +91,7 @@ import { cotalLangRunHost } from "../src/run-host.js";
 import { resolveCheckpoint } from "../src/resolve-checkpoint.js";
 import { createRunScopeAuthority } from "../src/run-scope-authority.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "hostreplay";
 const EP = "manager";
@@ -99,17 +103,6 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -143,44 +136,16 @@ const driver = await planesOn();
 const mediator = await planesOn();
 const rival = await planesOn();
 
-// ── the suite-served manager-shaped endpoint (spawn + turn) ────────────────────────────────────
-// An ask addresses a seat this run spawned and is told to it over the turn relay, so the suite
-// serves the manager's shape for both: spawn registers the seat and commits its terminal, and turn
-// accepts the relay.
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
 };
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.hostreplay", revision: 1, attributes: [], events: [],
   commands: [
@@ -196,7 +161,7 @@ const store = await contractStoreContext(nc, SPACE);
 const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT])
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA])
     values.push(source, { v: 1, root: contractDigest(source), members: [] });
   values.push(DOCUMENT, MANIFEST);
   for (const v of values) {
@@ -460,7 +425,8 @@ try {
   const answered = await answerPanel(runId, open);
   c("the three answers landed within the same second", open.length === 3 && answered.ms < 1_000 && answered.answers.every((a) => a === "ok"), answered);
   const out = await withDeadline(drive.outcome, 30_000, "the shared-id panel");
-  await withDeadline(readers, 30_000, "the status readers");
+  c("the status readers ended within its deadline",
+    await withDeadline(readers.then(() => true), 30_000, "the status readers") === true);
   const panel = await panelHeld(runId, out);
   c("no branch fails while status reads the drive's own takeover id", panel.held, panel.detail);
   const rows = views.map((v) => (typeof v === "object" ? v.journal : undefined));
@@ -569,7 +535,7 @@ try {
   await nc.close();
 }
 
-const EXPECTED_CELLS = 14;
+const EXPECTED_CELLS = 20;
 const ran = ok + fail;
 console.log(`run-host-replay.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

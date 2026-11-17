@@ -53,7 +53,7 @@ import {
 import type { JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshconclave";
 const EP = "manager";
@@ -63,17 +63,6 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshconclave", uid: "a".re
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -238,7 +227,8 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
     JSON.stringify(live?.record));
   c("the minted channel's registry row exists while the room is open, and names the run",
     (await readChannelConfig(channelsKv, room?.channel ?? ""))?.description?.includes("cv-2") === true);
-  await withDeadline(handler.closeConclave({ members: [{ agent: a.handle, persona: "dev" }] }, s.ctx), 20_000, "the close");
+  c("the close ended within its deadline",
+    await withDeadline(handler.closeConclave({ members: [{ agent: a.handle, persona: "dev" }] }, s.ctx).then(() => true), 20_000, "the close") === true);
   const after = await readMember(membersKv, room?.channel ?? "", a.principal, a.uid);
   c("the close tombstones the row it created", after?.record.leaveCursor !== undefined, JSON.stringify(after?.record));
 }
@@ -373,7 +363,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
   const room = await withDeadline(h1.openConclave(req, s1.ctx).then((v) => v, (e: unknown) => { console.log("  ! open rejected:", (e as Error)?.message?.slice(0, 120)); return undefined; }), 20_000, "the first open");
   const ch = room?.channel ?? "";
   const first = await readMember(membersKv, ch, a.principal, a.uid);
-  c("the first open committed the row", first?.record.leaveCursor === undefined, JSON.stringify(first?.record));
+  c("the first open committed the row", room !== undefined && first !== undefined && first.record.leaveCursor === undefined, JSON.stringify(first?.record));
 
   // (b) the world moves — chat traffic advances the frontier — and the process "crashes". A fresh
   // handler re-enters with the recorded plan; the landed row's join cursor must not roll forward:
@@ -394,7 +384,8 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
     { before: first?.record, after: after?.record });
 
   // (c) the close on the re-entered handler releases; (d) a second close is a no-op.
-  await withDeadline(h2.closeConclave(req, s2.ctx), 20_000, "the close");
+  c("the close ended within its deadline",
+    await withDeadline(h2.closeConclave(req, s2.ctx).then(() => true), 20_000, "the close") === true);
   const closed = await readMember(membersKv, ch, a.principal, a.uid);
   c("the re-entered handler's close tombstones the row", closed?.record.leaveCursor !== undefined, JSON.stringify(closed?.record));
   const h3 = mk("cv-7");
@@ -428,7 +419,7 @@ const derivedChannel = (requestId: string) => `conclave-${createHash("sha256").u
     handler.closeConclave(req, s.ctx).then(() => null, (e: unknown) => e as Error), 20_000, "the close");
   const after = await readMember(membersKv, ch, a.principal, a.uid);
   c("the close tolerates the stale-write verdict rather than failing the scope",
-    err === null, err?.message?.slice(0, 120));
+    room !== undefined && err === null, err?.message?.slice(0, 120));
   c("and the member's newer membership is still open",
     after?.record.generation === 2 && after.record.leaveCursor === undefined, JSON.stringify(after?.record));
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, resolveService, invokeCommand, withIssuerSession, mintGeneration, mintAcceptedToken, registry, credsClaims, actionContext, recordGoalIndex, readGoalIndex, bindGoal, createGoal, recordAtomicKey, RECORD_KINDS, recordsKvStreamName, admissionBucket, type Connector, type RemoteManagerAuthorityRequest, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
+import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, resolveService, invokeCommand, withIssuerSession, mintGeneration, mintAcceptedToken, instanceOnlyManagerCapabilities, runCallerCapabilities, operatorInstrumentCapabilities, registry, credsClaims, actionContext, recordGoalIndex, readGoalIndex, bindGoal, createGoal, recordAtomicKey, RECORD_KINDS, recordsKvStreamName, admissionBucket, type Connector, type RemoteManagerAuthorityRequest, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { spaceKey } from "@cotal-ai/workspace";
 import { Manager, remoteManagerClient as client, registerRemoteManagerAuthority, managerClusterArtifacts, type ManagerOptions } from "../dist/index.js";
@@ -118,7 +118,11 @@ try {
   };
   const initial = await start();
   const id = newIdentity(), uid = mintLifecycleUid(), issued = { generation: mintGeneration(Math.floor(Date.now() / 1000) + 172_800), acceptedToken: mintAcceptedToken() };
-  const creds = await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, (s) => mintCreds(a.auth, id, "manager-caller", { lifecycleUid: uid, managerInstanceId: state.instanceId, principal: { owner: initial.owner, actor: "probe" }, capabilities: ["admin", "spawn", "run"], expiresInSeconds: 300, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
+  // An issued caller pinned to the instance, minted as an agent: it holds its own presence key, which
+  // a source-free issuance needs (SPEC 13.15).
+  const pinned = instanceOnlyManagerCapabilities([{ endpoint: "manager", command: "describe" }, { endpoint: "manager", command: "status" },
+    ...runCallerCapabilities(initial.owner), ...operatorInstrumentCapabilities("admin", initial.owner)], state.instanceId);
+  const creds = await withIssuerSession({ servers: fx.servers, space: a.space, auth: a.auth, tls: false }, (s) => mintCreds(a.auth, id, "agent", { lifecycleUid: uid, principal: { owner: initial.owner, actor: "probe" }, capabilities: ["admin", "spawn", "run"], endpointCapabilities: pinned, expiresInSeconds: 300, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
   callerNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds, tls: false }) });
   const caller = { owner: initial.owner, actor: "probe", uid, generation: issued.generation };
   const selected = await resolveService(callerNc, a.space, "manager", caller, { instanceId: state.instanceId });
@@ -153,6 +157,7 @@ try {
   await new Promise((r) => setTimeout(r, 500));
   check("native readiness remains real after all-duty candidate preflight/adoption", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
   const originalExpiry = Math.max(...[initial.opts.remoteAuthority!.serveCreds, initial.opts.remoteAuthority!.goalWriterCreds, initial.opts.remoteAuthority!.sessionLedgerCreds].map((cred) => Number(credsClaims(cred).exp))) * 1000;
+  check("rejected family retries before original standing credentials expire", originalExpiry > Date.now());
   assert.ok(originalExpiry - Date.now() < 30_000, "fixture active duties must have bounded short TTL");
   await new Promise((r) => setTimeout(r, Math.max(0, originalExpiry - Date.now() + 250)));
   check("real noexec status survives original serve/goal/session JWT expiry", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);

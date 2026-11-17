@@ -1,7 +1,8 @@
 /** Native custody guard acceptance on an owned loopback broker. Service rows are explicit
  * test-operator fixtures because public main has no service admission writer. The operations
  * under test are the actual lifecycle/root/ledger entrypoints, not copied implementations.
- * No tenant account, production credential or service admission is used. */
+ * No tenant account, production credential or service admission is used.
+ * --retain-state keeps the owned stopped broker directory for native evidence readback. */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -26,7 +27,9 @@ const root = process.env.JCODE_SCRATCH_DIR ?? process.env.HOME ?? ".";
 const dir = mkdtempSync(join(root, SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), `listen: 127.0.0.1:${port}\njetstream { store_dir: ${JSON.stringify(join(dir, "js"))} }\nauthorization { users = [ { user: "fixture", password: "local-only" } ] }\n`);
 const broker = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-const releaseBroker = teardownOnSignal(broker, dir);
+const retainState = process.argv.includes("--retain-state");
+const releaseBroker = teardownOnSignal(broker, retainState ? undefined : dir);
+if (retainState) console.log(`retained custody state: ${dir}`);
 const space = "servicecustody";
 const accountPublicKey = createAccount().getPublicKey();
 const owner = `u_${"a".repeat(26)}`;
@@ -133,6 +136,58 @@ try {
   check("ordinary root issuance still works", typeof ordinaryRoot === "string");
   check("ordinary stamped-root retry remains same ID", await ensureRootCredential(reg, ordinary) === ordinaryRoot);
   check("ordinary gate remains open", (await observeGate(reg, ordinary.lifecycleUid))?.row.state === "open");
+
+  // Exercise the real reader on an ordinary UID whose alias can name DIFFERENT custody.
+  const ordinaryToken = { owner: ordinary.owner, act: { actor: ordinary.actor, lifecycleUid: ordinary.lifecycleUid, credentialId: ordinaryRoot } } as ValidatedUserToken;
+  await authorizeConnectCredential(connectReader, ordinaryToken, Date.now);
+  check("ordinary root reader allows its current native rows", true);
+  const ordinaryDescendant = mintLifecycleUid();
+  await auth.create(`cred.${ordinary.lifecycleUid}.${ordinaryDescendant}`, enc({ credentialId: ordinaryDescendant, holderPrincipal: `${ordinary.owner}.${ordinary.actor}`, lifecycleUid: ordinary.lifecycleUid, sourceChain: ["handle.issuer.grant"], state: "active", exp: Date.now() + 60_000 }));
+  const descendantToken = { ...ordinaryToken, act: { ...ordinaryToken.act, credentialId: ordinaryDescendant } };
+  await authorizeConnectCredential(connectReader, descendantToken, Date.now);
+  check("ordinary descendant reader allows its current native rows", true);
+  const headKey = `lifecycle.${ordinary.owner}.${ordinary.actor}`;
+  const ordinaryHead = (await records.get(headKey))!.json<Record<string, unknown>>();
+  const rejectBoth = async (label: string, expected: RegExp) => {
+    await refuses(`root ${label}`, () => authorizeConnectCredential(connectReader, ordinaryToken, Date.now), expected);
+    await refuses(`descendant ${label}`, () => authorizeConnectCredential(connectReader, descendantToken, Date.now), expected);
+  };
+  await records.put(headKey, enc({ ...ordinaryHead, lifecycleUid: uid }));
+  await rejectBoth("refuses a different service-owned alias UID", /immutable service/);
+  await records.put(headKey, enc({ ...ordinaryHead, serviceCustody: { v: 1, uidDigest: digest } }));
+  await rejectBoth("refuses a service-marked alias despite ordinary target UID", /service custody/);
+  await records.put(headKey, enc({ ...ordinaryHead, lifecycleUid: null }));
+  await rejectBoth("refuses malformed alias custody", /no UID/);
+  await records.delete(headKey);
+  await rejectBoth("refuses an alias deletion marker", /marker/);
+  await records.put(headKey, enc(ordinaryHead));
+  const ownUidKey = `uid.${ordinary.lifecycleUid}`;
+  const originalUidBytes = (await records.get(ownUidKey))!.value;
+  await records.put(ownUidKey, enc({ owner: false, actor: ordinary.actor }));
+  await rejectBoth("refuses malformed target UID custody", /custody/);
+  await records.delete(ownUidKey);
+  await rejectBoth("refuses target UID deletion marker", /marker/);
+  await records.put(ownUidKey, originalUidBytes);
+
+  // A new invocation must observe native changes after an earlier successful check.
+  await authorizeConnectCredential(connectReader, ordinaryToken, Date.now);
+  await records.put(headKey, enc({ ...ordinaryHead, currentCredentialId: mintLifecycleUid() }));
+  await refuses("root recheck refuses a moved credential stamp", () => authorizeConnectCredential(connectReader, ordinaryToken, Date.now), /current root credential/);
+  await authorizeConnectCredential(connectReader, descendantToken, Date.now);
+  check("descendant does not require the root credential stamp", true);
+  await records.put(headKey, enc({ ...ordinaryHead, state: "retiring" }));
+  await refuses("root refuses a retiring head without its operation", () => authorizeConnectCredential(connectReader, ordinaryToken, Date.now), /without its durable op intent/);
+  await records.put(headKey, enc(ordinaryHead));
+  await beginHeadRetirementWithinBarrier(reg, { ...ordinary, opId: mintLifecycleUid() });
+  await refuses("root recheck refuses a retiring head", () => authorizeConnectCredential(connectReader, ordinaryToken, Date.now), /not active/);
+  await records.put(headKey, enc(ordinaryHead));
+  await authorizeConnectCredential(connectReader, descendantToken, Date.now);
+  await markLedgerRowRevoked(auth, `cred.${ordinary.lifecycleUid}.${ordinaryDescendant}`);
+  await refuses("descendant recheck observes actual credential revocation", () => authorizeConnectCredential(connectReader, descendantToken, Date.now), /not active/);
+  await authorizeConnectCredential(connectReader, ordinaryToken, Date.now);
+  await markLedgerRowRevoked(auth, `cred.${ordinary.lifecycleUid}.${ordinaryRoot}`);
+  await refuses("root recheck observes actual credential revocation", () => authorizeConnectCredential(connectReader, ordinaryToken, Date.now), /not active/);
+
   await records.delete(`uid.${racedUid}`);
   await refuses("deleted custody reservation never becomes reusable absence", () => coreGateCreateFrozen(transport, { lifecycleUid: racedUid, op: { opId: mintLifecycleUid(), kind: "activation" } }), /marker/);
   check("restore or deletion refusal does not create a gate", (await auth.get(`gate.${racedUid}`)) === null);
@@ -142,7 +197,7 @@ try {
   broker.kill("SIGTERM");
   await new Promise<void>((r) => { if (broker.exitCode !== null) r(); else broker.once("exit", () => r()); });
   releaseBroker();
-  rmSync(dir, { recursive: true, force: true });
+  if (!retainState) rmSync(dir, { recursive: true, force: true });
 }
 console.log(`SERVICE-CUSTODY native guards: ${passed} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

@@ -1,7 +1,7 @@
 /**
  * Durable-membership registry — read/write helpers over the per-space members KV bucket
- * (`cotal_members_<space>`). One {@link MembershipRecord} per (concrete channel, owner) under
- * {@link memberKey}. This is the Plane-3 source of truth for `channelMembers()` and the fan-out's
+ * (`cotal_members_<space>`). One {@link MembershipRecord} per (concrete channel or family, owner)
+ * under {@link memberKey}. This is the Plane-3 source of truth for `channelMembers()` and the fan-out's
  * member list, **moved off JetStream consumer topology** (core-sub joins create no consumer to
  * enumerate — the migration trap).
  *
@@ -13,7 +13,7 @@
  * **sequence** (`joinCursor`/`leaveCursor`), never wall-clock.
  */
 import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
-import { membersBucket, memberKey, parseMemberKey, isConcreteChannel, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
+import { membersBucket, memberKey, parseMemberKey, isConcreteChannel, isChannelFamily, subjectMatches, assertLifecycleToken, parsePrincipalKey } from "./subjects.js";
 import type { MembershipRecord } from "./types.js";
 import { liveKvEntries } from "./kv-scan.js";
 
@@ -195,8 +195,9 @@ export async function deleteMember(kv: KV, channel: string, owner: string, lifec
 
 /**
  * Scan the registry, yielding every live (non-deleted) record matching the filter. `channel` →
- * that channel's members (fan-out's per-channel list); `owner` → that owner's memberships. With no
- * filter, every record. Tombstones (with `leaveCursor`) ARE yielded — a caller that wants only
+ * the rows on exactly that channel or family; `covering` → the rows that cover a concrete channel,
+ * its own and every family above it (fan-out's per-post list); `owner` → that owner's memberships.
+ * With no filter, every record. Tombstones (with `leaveCursor`) ARE yielded — a caller that wants only
  * currently-open memberships filters on `leaveCursor === undefined`.
  *
  * ONE pass. This was a `keys()` scan plus a sequential per-key `get()`, which cost one round trip
@@ -207,7 +208,7 @@ export async function deleteMember(kv: KV, channel: string, owner: string, lifec
  */
 export async function listMembers(
   kv: KV,
-  filter: { channel?: string; owner?: string } = {},
+  filter: { channel?: string; covering?: string; owner?: string } = {},
 ): Promise<MembershipRecord[]> {
   const out: MembershipRecord[] = [];
   for (const e of await liveKvEntries(kv)) {
@@ -217,6 +218,8 @@ export async function listMembers(
     // members.ts API calls this identity token `owner` throughout — under the owner+actor grammar an
     // "owner" here IS the full principal `<owner>.<actor>`, so `filter.owner` compares to it directly.
     if (filter.channel !== undefined && parsed.channel !== filter.channel) continue;
+    if (filter.covering !== undefined && parsed.channel !== filter.covering &&
+      !(isChannelFamily(parsed.channel) && subjectMatches(parsed.channel, filter.covering))) continue;
     if (filter.owner !== undefined && parsed.principal !== filter.owner) continue;
     // Same decode + skip-garbled behaviour readMember applies; the DEL/PURGE half is already handled
     // by the collapse in liveKvEntries.
@@ -274,8 +277,8 @@ function inventoryPassAfterNow(kv: KV): Promise<KvEntry[]> {
 
 /**
  * Authoritative membership inventory for one exact lifecycle: reads every live entry from the
- * members registry and derives the complete, lifecycle-exact list of concrete channels holding
- * durable membership rows for `(principal, lifecycleUid)`.
+ * members registry and derives the complete, lifecycle-exact list of concrete channels and families
+ * holding durable membership rows for `(principal, lifecycleUid)`.
  *
  * Unlike {@link listMembers}, which silently skips undecodable JSON values for display and fan-out,
  * this inventory derives membership keys from validated exact keys (`<channel>/<principal>.<lifecycleUid>`)
@@ -298,7 +301,7 @@ export async function listLifecycleMemberChannels(
     const parsed = parseMemberKey(e.key);
     if (!parsed) continue;
     if (parsed.principal !== principal || parsed.lifecycleUid !== lifecycleUid) continue;
-    if (!isConcreteChannel(parsed.channel)) continue;
+    if (!isConcreteChannel(parsed.channel) && !isChannelFamily(parsed.channel)) continue;
     channels.add(parsed.channel);
   }
   return [...channels].sort();

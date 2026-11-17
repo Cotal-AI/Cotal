@@ -25,6 +25,9 @@ import { launchEnv } from "@cotal-ai/connector-core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { Manager } from "../src/manager.js";
+import { createRuntime } from "../src/runtime/index.js";
+import { childlessRuntime } from "./_childless-runtime.js";
+import type { Runtime } from "@cotal-ai/core";
 import "@cotal-ai/tmux";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";
 import { pickFreePort } from "./_free-port.js";
@@ -90,6 +93,10 @@ type Row = {
 };
 
 const manager = new Manager({ space, servers, runtime: "tmux", workspaceRoot: root, wsPort, consolePort: 0 });
+// Only the fixed echoing, childless stub may claim work closure in this dispatch regression.
+(manager as unknown as { runtimes: Map<string, Runtime> }).runtimes.set("pty",
+  childlessRuntime(createRuntime("pty", `cotal-${space}`), join(root, "childless-runtime"),
+    (spec) => spec.command === "node" && JSON.stringify(spec.args) === JSON.stringify(["-e", `process.stdin.pipe(process.stdout); await import(${STUB});`])));
 const rows = (manager as unknown as { agents: Map<string, Row> }).agents;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let name = "";

@@ -31,7 +31,8 @@ export { SPAWN_INPUT_KEYS, type ManagerStaticReconciliationSweep } from "./manag
 export { managerBrowserContractSource, managerClusterArtifacts } from "./manager-service-contract.js";
 export type { ManagerStatus, ManagerStopImpact } from "./manager-service-contract.js";
 export { measureManagerVitals, MANAGER_VITALS_MAX_MOUNTS, MANAGER_VITALS_MAX_MOUNT_BYTES } from "./vitals.js";
-export type { ManagerVitals, ManagerVitalsDeps } from "./vitals.js";
+export type { ManagerVitals, ManagerVitalsDeps, ComputerVitals, ComputerVitalsDeps } from "./vitals.js";
+export { measureComputerVitals } from "./vitals.js";
 export { RunHosting, type RunHostingContext } from "./run-hosting.js";
 export * as remoteManagerClient from "./remote-authority.js";
 export { registerRemoteManagerAuthority } from "./remote-register.js";

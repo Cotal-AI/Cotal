@@ -1,8 +1,9 @@
 import { readFileSync, writeFileSync, lstatSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
+import { stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
-import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertValidChannel, assertValidName, ensureDirNoSymlink, isConcreteChannel, realDirNoSymlink, unlinkFileNoFollow, type MeshLaunchAgent, type MeshLaunchSpec } from "@cotal-ai/core";
 
 /**
  * Load + materialize a resolved launch spec for `supervise --launch`.
@@ -175,6 +176,54 @@ export function materializePersona(root: string, runId: string, a: MeshLaunchAge
   writeFileSync(tmp, `${fm.join("\n")}${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
   renameSync(tmp, path);
   return path;
+}
+
+/** The snapshots unsaved inline personas launch from (SPEC 13.7). No spawn may name a file here. */
+export function inlinePersonaDir(root: string): string {
+  return join(root, ".cotal", "run", "inline");
+}
+
+/** One lifecycle's inline persona snapshot. The path is keyed by the lifecycle uid, so the file is
+ *  that lifecycle's, as its lifecycle-keyed credential file is. */
+export function inlineSnapshotPath(root: string, lifecycleUid: string): string {
+  return join(inlinePersonaDir(root), `${lifecycleUid}.md`);
+}
+
+/** Write the snapshot an unsaved inline persona launches from, create-only and 0600, and return its
+ *  path. Like {@link materializePersona} it carries only what a connector reads, after a generated
+ *  artifact header, and never an access field: the grant comes from the spawn. The body follows the
+ *  frontmatter, so a body that starts with `---` reads back as body. */
+export function writeInlineSnapshot(
+  root: string,
+  lifecycleUid: string,
+  p: { name: string; role?: string; model?: string; variant?: string; description?: string; body?: string },
+): string {
+  const dir = ensureDirNoSymlink(root, ".cotal", "run", "inline");
+  const path = resolve(dir, `${lifecycleUid}.md`);
+  if (dirname(path) !== dir) throw new Error(`unsafe lifecycle uid "${lifecycleUid}" - snapshot path escapes ${dir}`);
+  // The catalog writer's serializer, so every string the record accepted reads back as itself.
+  const fm: Record<string, string> = { name: p.name };
+  if (p.role) fm.role = p.role;
+  if (p.model) fm.model = p.model;
+  if (p.variant) fm.variant = p.variant;
+  if (p.description) fm.description = p.description;
+  const header = `<!-- Generated runtime artifact: the inline persona of lifecycle ${lifecycleUid}, written by its spawn. Do NOT edit - the seat refuses a changed snapshot on restart, and the file is deleted when the seat retires. It is not a reusable persona and carries no access authority. -->`;
+  const body = p.body ? `${p.body.trim()}\n` : "";
+  // Create-only (`wx` never follows a link planted at the path): the uid is fresh, so a file already
+  // there is not this spawn's to replace.
+  writeFileSync(path, `---\n${stringifyYaml(fm, { lineWidth: 0 }).trimEnd()}\n---\n${header}\n\n${body}`, { mode: 0o600, flag: "wx" });
+  return path;
+}
+
+/** Remove one lifecycle's snapshot without following a link: `.cotal/run/inline` must be a real
+ *  directory chain and the snapshot a regular file, as the run tree's other destructive callers
+ *  require. A snapshot that is not there counts as removed; anything refused or not removed throws. */
+export function removeInlineSnapshot(root: string, lifecycleUid: string): void {
+  const dir = realDirNoSymlink(root, ".cotal", "run", "inline");
+  if (!dir) return;
+  const path = resolve(dir, `${lifecycleUid}.md`);
+  if (dirname(path) !== resolve(dir)) throw new Error(`unsafe lifecycle uid "${lifecycleUid}" - snapshot path escapes ${dir}`);
+  unlinkFileNoFollow(path);
 }
 
 /** Build the manager spawn opts for a launch agent: identity/role/model/variant + the resolved object

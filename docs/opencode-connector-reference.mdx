@@ -31,7 +31,10 @@ in-process plugin does everything.
   not-yet-built feature (see [Limits](#session-lifecycle)).
 - **Per-agent database.** The session SQLite DB is moved per agent
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
-  agents don't lock each other or drop files into a target repo. Each launch records its server in
+  agents don't lock each other or drop files into a target repo. A launch first claims the name with
+  a lock file, `launch.lock`, which it holds until it exits. A second launch of the name while the
+  first runs is refused as already running, and a claim left by a launcher that died is reclaimed.
+  Each launch records its server in
   a file of its own in that directory, `serve.<token>.pid` with a token minted for the launch, and
   checks every record there before it starts a server, including a `serve.pid` an earlier version
   wrote. A record that the previous launcher removes during that check counts as no record, and so
@@ -100,7 +103,9 @@ in-process plugin does everything.
   seat end.
 - **A refused setup joins nothing on 2.x.** The agent joins the mesh only after OpenCode has
   accepted the plugin's session and tool hooks. If OpenCode refuses one, setup fails before the
-  join, so no seat stays on the roster without the hooks that drive it.
+  join, so no seat stays on the roster without the hooks that drive it. Concurrent setup calls share
+  the attempt's result. A refused attempt can be retried; a completed setup keeps later location
+  boots inert until its teardown finishes.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector
@@ -112,6 +117,20 @@ in-process plugin does everything.
 The generic tool surface and the inbound-message model are shared across connectors: see
 [mcp-tools.md](mcp-tools.mdx) and [connect-claude.md](connect-claude.mdx).
 
+## Startup diagnostics
+
+The launcher waits 120 seconds for the plugin's session handshake and keeps poking the server throughout that window.
+The manager waits 125 seconds so a timed-out launcher can stop its server and report the failure.
+OpenCode 1.19.5 may spend about 60 seconds recovering dependency-install locks left by a first model-catalog lookup before loading the plugin.
+Cotal does not modify those locks.
+
+Before starting the server, the launcher opens an owner-private `boot.<token>.log` beside the agent database.
+It records stdout and stderr until the TUI attaches, plus a startup failure diagnostic.
+The file remains after exit and later launches use new files, so retrying does not overwrite the failed boot.
+The launcher prints the log's full path before boot output.
+Read it on the execution host when startup fails, correct any setup error, then launch again.
+These logs can contain application configuration errors and should be shared with care.
+
 ## Model reporting
 
 OpenCode model ids use `provider/model` form, and a model may expose **variants** (a
@@ -120,8 +139,14 @@ can see:
 
 ```bash
 cotal models --harness opencode            # ids + variants, from the manager
-cotal models --harness opencode --refresh  # refresh the provider cache first
+cotal models --harness opencode --refresh  # 1.x: refresh the provider cache first
 ```
+
+On 1.x the catalog comes from `opencode models --pure --verbose`. On 2.x it comes from
+`opencode api --standalone GET /api/model`, which starts a private OpenCode server for that one
+request and stops it on exit. `--refresh` does not apply to 2.x. A 2.x read that fails, returns
+something other than a model list, or takes longer than 6 seconds reports the catalog unavailable
+with the reason.
 
 The catalog runs the OpenCode binary a launch runs: `COTAL_OPENCODE_BIN` when you set it, otherwise
 the absolute path the manager resolved at boot. A binary placed earlier on PATH after boot is not
@@ -145,6 +170,10 @@ the connector declares a two-minute readiness window for this check and the mesh
 
 ## Event plane
 
+The shared launch and emitter carry payload-withholding safety controls. This release does not
+qualify OpenCode payload mapping or native payload acceptance. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
+
 A spawned session publishes a structured account of what it did: run
 boundaries per turn, assistant text, and each tool call with its start and its end. Tool
 arguments and tool results are not republished onto this channel.
@@ -154,9 +183,28 @@ channel, the grant, and how to read it. The launcher sets `COTAL_EVENTS` by defa
 `--no-events` to opt out on an unrestricted space. A required registration carries
 `eventsRequired` in launch material, or `COTAL_EVENTS_REQUIRED=1` on the direct env fallback, so a
 personal user-mode OpenCode session arms without a separate event flag. Its own publish grant must
-cover the principal-keyed event channel or the connector refuses before joining. The session boundary
-is captured at adopt, before the mesh link connects, so a session created before the first bind still
-publishes and nothing it writes while the connector is still starting up is silently dropped.
+cover the principal-keyed event channel or the connector refuses before joining.
+
+The connector checks transcript state before joining. If the broker retains events for this principal
+but the selected state root has no acknowledged frontier, the event plane does not start. On a space
+that requires events the launch refuses. Where events are optional the seat starts, the plane stays
+down, and the reason is kept on the connection status. Reuse the previous state root or launch with a
+new principal to publish again. The check reads retained counts, not transcript contents, and does not
+change the append expectation or discard local logs.
+
+When OpenCode exits before its session is ready, the launcher's final line names the exit code and
+repeats the connector's last message. A host that reports only the last line of a failed launch,
+as the Manager does, then reports the reason and not a generic exit.
+
+The managed session is created and announced only after the mesh join completes. Its event boundary
+is captured at adopt, before any prompt is admitted.
+
+Both OpenCode lines publish the same events. On 2.x the connector reads the session it launched
+through OpenCode's message list, `GET /api/session/:id/message`, from its first record, and publishes
+each item once it is final. Text and reasoning are final when their model step has finished
+streaming, and a tool call when it has completed or failed. OpenCode 2.x keeps a streaming text empty
+in that list until the text ends, so assistant text arrives whole at the end of each step. A 2.x
+session's activity on the event stream is what prompts each read.
 
 Four things are specific to OpenCode and worth knowing before you read a stream:
 
@@ -173,6 +221,7 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   process, and `/new` is a context reset that keeps the mesh identity. Each session publishes under
   its own thread id on the one `events.<owner>.<actor>` channel. Before the switch, the session you
   are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
+  On 2.x the connector does not follow `/new`, so only the session it launched is published.
 - **Failed turns publish run errors.** OpenCode reports a turn that
   died (an upstream API error, a provider auth failure, or an output-length stop) on its own
   `session.error` event, and that turn ends its run with `RUN_ERROR` carrying the fixed message
@@ -184,7 +233,10 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   A prompt you type while a turn end is still settling waits until the position read of every
   pending turn end on that session has answered, a turn that ended twice included, before OpenCode
   saves it, so the close keeps its own turn. The wait covers that read, not the publication of the
-  close on the events channel.
+  close on the events channel. OpenCode 2.x records how each turn ended in the session itself, as
+  succeeded, failed or interrupted, and the connector closes the run from that record, after the
+  turn's own records: a failed turn with the same `RUN_ERROR`, and an interrupted one as an ordinary
+  end. A turn that fails before any output opened no run, so it publishes nothing.
 
 Reasoning is off by default.
 
@@ -197,9 +249,6 @@ Reasoning is off by default.
 - **No tool-sharing.** `connectors.opencode.mcpServers` is not implemented and throws if set.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
-- **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
-  OpenCode 2.x yet; spawn with `--no-events`. A registration that requires events cannot opt out,
-  so the 2.x connector refuses it with the same message.
 - **On 2.x, `cotal models` lists no OpenCode catalog.** The 2.x catalog is served by a running
   opencode server, not the CLI, so the connector reports `supported: false` with that reason. Pass
   `--model provider/model` directly instead.

@@ -681,10 +681,10 @@ repair_install_modes() {
 link_node_bin() {
   _nb="$INSTALL_DIR/nodebin"
   mkdir -p "$_nb"
-  ln -sf "$NODE_BIN" "$_nb/node"
-  ln -sf "$NPM_BIN" "$_nb/npm"
+  ln -sf "$(resolved_target "$NODE_BIN")" "$_nb/node"
+  ln -sf "$(resolved_target "$NPM_BIN")" "$_nb/npm"
   _npx=$(dirname "$NPM_BIN")/npx
-  [ -e "$_npx" ] && ln -sf "$_npx" "$_nb/npx"
+  [ -e "$_npx" ] && ln -sf "$(resolved_target "$_npx")" "$_nb/npx"
   return 0
 }
 
@@ -695,6 +695,14 @@ link_node_bin() {
 INSTALLED_VERSION="" PREVIOUS_VERSION=""
 
 read_installed_version() {
+  _entry="$INSTALL_DIR/lib/node_modules/$COTAL_PKG/dist/cotal.js"
+  if [ -f "$_entry" ]; then
+    _in_use=$(COTAL_SKIP_CONNECTOR_SEED=1 COTAL_NO_UPDATE_CHECK=1 "$NODE_BIN" "$_entry" --version 2>/dev/null | sed -n '1s/^cotal-ai //p' || true)
+    if [ -n "$_in_use" ]; then
+      printf '%s' "$_in_use"
+      return 0
+    fi
+  fi
   _pkg="$INSTALL_DIR/lib/node_modules/$COTAL_PKG/package.json"
   [ -f "$_pkg" ] || return 0
   # Read the file, do not resolve it as a module: cotal-ai is ESM, and this must not depend
@@ -1197,6 +1205,12 @@ main() {
   ok_line "Cotal $INSTALLED_VERSION"
 
   write_launcher
+  if [ -n "$PREVIOUS_VERSION" ] || [ -e "${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json" ]; then
+    if ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
+      die "Cotal was installed, but reconciliation did not complete." \
+        "Run $(shquote "$BIN_DIR/cotal") update to finish this update."
+    fi
+  fi
   setup_path
   case "$PATH_STATE" in
     already) ok_line "$(tildify "$BIN_DIR") is on your PATH" ;;

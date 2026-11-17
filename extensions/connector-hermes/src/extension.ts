@@ -117,7 +117,7 @@ export const hermesConnector: Connector = {
     // This one is written after every refusal above, and its directory is a launch artifact the
     // launcher removes once the child has exited.
     const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
     return {
       command: LAUNCH_COMMAND,
       args: [LAUNCH_ENTRY],

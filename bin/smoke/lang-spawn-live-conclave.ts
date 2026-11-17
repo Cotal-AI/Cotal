@@ -67,7 +67,8 @@ export async function checkSpawnConclave(c: Check): Promise<void> {
     const issued = { generation: mintGeneration(expiresAt), acceptedToken: mintAcceptedToken() };
     const caller: IssuedCaller = { owner: DEV_OWNER, actor: id.id, uid, generation: issued.generation };
     const creds = await withIssuerSession({ servers: broker.servers, space, auth, tls: false }, (s) =>
-      mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run"], allowSubscribe: [">"], allowPublish: [">"],
+      // The starter holds the worker role as a capability, so its run may hand that role to wf3.
+      mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["run", "role:worker"], allowSubscribe: [">"], allowPublish: [">"],
         expiresAt, issued, issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] } }));
     callerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     const service = await resolveService(callerNc, space, "manager", caller);

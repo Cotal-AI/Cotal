@@ -1,5 +1,5 @@
 import { fromPublic } from "@nats-io/nkeys";
-import { rawDigest, canonicalJson } from "./canonical.js";
+import { rawDigest, canonicalJson, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken, principalKey } from "./subjects.js";
@@ -362,7 +362,13 @@ export interface RemoteManagedAgentEnrollmentRequest {
     subscribe?: string[];
     allowSubscribe?: string[];
     allowPublish?: string[];
+    eventPayloads?: false;
   };
+  /** The spawn request this enrollment answers, when a caller asked for it: the request subject the
+   *  manager served, and the run whose driver sent it. The host bounds the helper by the caller it
+   *  observed publishing that subject, never by this field's word. Absent for a spawn the manager
+   *  starts on its own behalf, whose parent is the manager. */
+  spawn?: { served: string; runId?: string };
   identities: RemoteManagerAuthorityRequest["identities"];
 }
 
@@ -533,7 +539,8 @@ export function remoteManagerRegistrationProof(
 }
 
 /** The one terminal operation identity for a managed lifecycle. It is derived, never selected:
- * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op. */
+ * manager retries, hosted authority issuance, and the auth barrier therefore converge on one op.
+ * The id is 26 hex chars, so it is itself a lifecycle token (`[a-z0-9]{26,32}`). */
 export function managedRetirementOpId(lifecycleUid: string): string {
   return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }
@@ -580,6 +587,25 @@ export interface RemoteManagerEnvelope {
   identities: RemoteManagerAuthorityRequest["identities"];
 }
 
+/** The base fields shared by manager requests and user intents. A manager's lifecycle checks stay
+ *  between the same base checks as before, preserving the first refusal for multi-fault requests. */
+function parseBaseRequestEnvelope(
+  o: Record<string, unknown>, kind: string, what: string, managerLifecycle = false,
+): Pick<RemoteManagerEnvelope, "space" | "actor" | "instanceId" | "requestId"> {
+  if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
+  const fields = managerLifecycle
+    ? ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"]
+    : ["space", "actor", "instanceId", "requestId"];
+  for (const key of fields)
+    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
+  assertValidOwnerToken(o.actor as string);
+  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
+  if (managerLifecycle) assertLifecycleToken(o.managerLifecycleUid as string, `${what} lifecycleUid`);
+  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
+    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  return { space: o.space as string, actor: o.actor as string, instanceId: o.instanceId as string, requestId: o.requestId as string };
+}
+
 /** Closed parser for the envelope of a request from a registered manager. `what` names the request
  *  in every refusal, so each request keeps its own prefix. The epoch differs per request
  *  (`serveEpoch` or `processEpoch`), so each caller checks its own. `registrationProof` is false for
@@ -589,25 +615,18 @@ export function parseRemoteManagerEnvelope(
   o: Record<string, unknown>, kind: string, what: string, registrationProof: boolean,
 ): Omit<RemoteManagerEnvelope, "registrationProof"> & { registrationProof?: string };
 export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string, registrationProof = true) {
-  if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
-    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
-  assertLifecycleToken(o.managerLifecycleUid as string, `${what} lifecycleUid`);
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
-    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  const { space, actor, instanceId, requestId } = parseBaseRequestEnvelope(o, kind, what, true);
   if (registrationProof) {
-    if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof))
+    if (!isContractDigest(o.registrationProof))
       enrollmentError(what, "requires a sha256 registrationProof");
   } else if (o.registrationProof !== undefined) enrollmentError(what, "must not carry registrationProof");
   const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
-    space: o.space as string,
-    actor: o.actor as string,
-    instanceId: o.instanceId as string,
+    space,
+    actor,
+    instanceId,
     managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string,
+    requestId,
     ...(registrationProof ? { registrationProof: o.registrationProof as string } : {}),
     identities,
   };
@@ -644,18 +663,34 @@ export function parseRemoteManagedAgentEnrollmentRequest(raw: unknown): RemoteMa
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
     "v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId",
-    "registrationProof", "serveEpoch", "target", "identities",
+    "registrationProof", "serveEpoch", "target", "spawn", "identities",
   ]);
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   const envelope = parseManagedAgentEnvelope(o, what, "manager-managed-agent-enrollment");
   const target = parseLaunchTarget(o.target, what, true);
+  const spawn = o.spawn === undefined ? undefined : parseEnrollmentSpawn(o.spawn, what);
   return {
     v: 1,
     kind: "manager-managed-agent-enrollment",
     ...envelope,
     target: { ...target, tokenHash: parseTokenHash((o.target as Record<string, unknown>).tokenHash, what) },
+    ...(spawn !== undefined ? { spawn } : {}),
   };
+}
+
+/** The served spawn an enrollment answers: a request subject and, for a run's spawn, its run id.
+ *  Only the shape is checked here; the host checks the subject against what it observed. */
+function parseEnrollmentSpawn(value: unknown, what: string): { served: string; runId?: string } {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) enrollmentError(what, "spawn must be an object when present");
+  const v = value as Record<string, unknown>;
+  for (const key of Object.keys(v))
+    if (key !== "served" && key !== "runId") enrollmentError(what, `spawn carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
+  if (typeof v.served !== "string" || v.served.length === 0 || v.served.length > 512 || !v.served.startsWith("cotal."))
+    enrollmentError(what, "spawn.served must be the served request subject");
+  if (v.runId !== undefined && (typeof v.runId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(v.runId)))
+    enrollmentError(what, "spawn.runId must be a run id token when present");
+  return { served: v.served as string, ...(v.runId !== undefined ? { runId: v.runId as string } : {}) };
 }
 
 /** The digest, never the secret: a request that carried the plaintext standing token would put an
@@ -670,7 +705,7 @@ function parseTokenHash(value: unknown, what: string): string {
 function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean): DelegatedUserLaunchTarget {
   if (target === null || typeof target !== "object" || Array.isArray(target)) enrollmentError(what, "requires a target");
   const t = target as Record<string, unknown>;
-  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish", ...(withTokenHash ? ["tokenHash"] : [])]);
+  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish", "eventPayloads", ...(withTokenHash ? ["tokenHash"] : [])]);
   for (const key of Object.keys(t))
     if (!targetAllowed.has(key)) enrollmentError(what, `target carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (typeof t.actor !== "string" || t.actor.length === 0) enrollmentError(what, "target requires a non-empty actor");
@@ -687,6 +722,8 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
       if (typeof cap !== "string" || !/^[A-Za-z0-9_:-]{1,64}$/.test(cap))
         enrollmentError(what, "target.capabilities must contain only 1-64 character capability tokens");
   }
+  if (t.eventPayloads !== undefined && t.eventPayloads !== false)
+    enrollmentError(what, "target.eventPayloads must be false when present");
   const subscribe = parseEnrollmentList(t.subscribe, what, "subscribe");
   const allowSubscribe = parseEnrollmentList(t.allowSubscribe, what, "allowSubscribe");
   const allowPublish = parseEnrollmentList(t.allowPublish, what, "allowPublish");
@@ -698,6 +735,7 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
     ...(subscribe !== undefined ? { subscribe } : {}),
     ...(allowSubscribe !== undefined ? { allowSubscribe } : {}),
     ...(allowPublish !== undefined ? { allowPublish } : {}),
+    ...(t.eventPayloads === false ? { eventPayloads: false as const } : {}),
   };
 }
 
@@ -1208,22 +1246,16 @@ export function parseDelegatedUserIntentRequest(raw: unknown): DelegatedUserInte
   const allowed = new Set(["v", "kind", "space", "actor", "accountPublicKey", "instanceId", "requestId", "intent"]);
   for (const key of Object.keys(o))
     if (!allowed.has(key)) enrollmentError(what, `carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "delegated-user-intent") enrollmentError(what, 'must carry { v: 1, kind: "delegated-user-intent" }');
-  for (const key of ["space", "actor", "instanceId", "requestId"] as const)
-    if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
-    enrollmentError(what, "requestId must be a 22-64 character idempotency token");
+  const { space, actor, instanceId, requestId } = parseBaseRequestEnvelope(o, "delegated-user-intent", what);
   const intent = parseOperation(o.intent, what, "intent");
   return {
     v: 1,
     kind: "delegated-user-intent",
-    space: o.space as string,
-    actor: o.actor as string,
+    space,
+    actor,
     accountPublicKey: parseAccountPublicKey(o.accountPublicKey, what),
-    instanceId: o.instanceId as string,
-    requestId: o.requestId as string,
+    instanceId,
+    requestId,
     intent: intent.operation === "launch"
       ? { operation: "launch", target: parseLaunchTarget(intent.target, what, false) }
       : { operation: "retire", target: parseRetirementTarget(intent.target, what) },

@@ -417,10 +417,6 @@ check(
 // looks like. Measured: without this the mutation graded INCONCLUSIVE. Once the guard fires, the
 // next sleep rejects and the run unwinds, so the mutant produces a named failure and the suite ends.
 let abandoned = false;
-const stoppableSleep = (ms: number) =>
-  abandoned
-    ? Promise.reject(new Error("the cell abandoned this run"))
-    : new Promise<void>((r) => { setTimeout(r, ms); });
 
 const frozenSleep = async () => {
   if (abandoned) throw new Error("the cell abandoned this run");

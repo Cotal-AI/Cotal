@@ -1,0 +1,2 @@
+# The right panel: its tabs and defaults, the Members tab, the Agent tab, the delete dialog, the Topology tab at panel size, and picking an agent.
+smoke:web-panel

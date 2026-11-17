@@ -17,11 +17,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import {
-  createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
+  createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
   DEV_OWNER, digestIdToken, epCall, invokeCommand, resolveService, readAcceptedRow, readGoalResult, readGoalIndex, registry,
   type AgentHandle, type Connector, type EpCaller, type IssuedCaller, type LaunchOpts, type LaunchSpec, type OnceSeat, type Runtime,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, agentLifecycleSecretFilePaths, mintControlInstrument, workspaceSecretStore } from "@cotal-ai/workspace";
 import "@cotal-ai/connector-claude-code";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
@@ -127,6 +127,7 @@ else {
 const confirmStub: Connector = {
   kind: "connector", name: "once-confirm-stub", requires: ["node"], supportsPrompt: true, supportsTurnRelay: true,
   onceNeedsConfirmed: "its startup did not show the channel",
+  idleWakeNeedsConfirmed: "its startup did not show the channel, so mesh traffic does not wake it while idle",
   buildLaunch: (o): LaunchSpec => ({
     command: "node", args: ["--input-type=module", "-e", startupChild(startupMode)], env: envFor(o),
     confirm: "LOAD THE CHANNEL", confirmNotice: "THE CHANNEL IS LIVE", confirmReady: ["input ready"],
@@ -152,12 +153,12 @@ try {
   type Seat = { id: string; lifecycleUid: string; handle: AgentHandle; issued?: { generation: string; acceptedToken: string } };
   const M = manager as unknown as { agents: Map<string, Seat>; reserved: Map<string, string> };
 
-  // The spawner: a caller that may spawn and turn seats, exactly as a run's instrument connects.
-  const runnerId = newIdentity();
-  const runner: EpCaller = { owner: DEV_OWNER, actor: runnerId.id, uid: mintLifecycleUid() };
+  // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
+  // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
+  const { creds: runnerCreds, epCaller: runner } = await mintControlInstrument({ server: broker.servers, space, tlsRequired: false, auth }, "admin");
   runnerNc = await connect({
     servers: broker.servers,
-    ...standaloneConnectOpts({ creds: await mintCreds(auth, runnerId, "control-caller-admin", { lifecycleUid: runner.uid }), tls: false }),
+    ...standaloneConnectOpts({ creds: runnerCreds, tls: false }),
     maxReconnectAttempts: 0,
   });
   const call = (command: string, args: Record<string, unknown> | undefined, opts: { id?: string; target?: { actor: string; lifecycleUid: string; mode?: "owner" | "any" } } = {}) =>
@@ -248,7 +249,9 @@ try {
   check("...and one character over it is refused, naming both sizes",
     fits.every((f) => f.over === `once: the prompt is too long for one once-frame-stub turn (the task renders to ${f.size} characters, over ${f.size - 1})`), fits);
   const supervised = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "x", once: {}, supervise: { restarts: 1, windowMs: 60_000 } }, { id: goalId("sv") });
-  check("once with supervise is refused: a once seat is never restarted", supervised.ok === false && /never restarted/.test(errorText(supervised)), supervised);
+  // The pty runtime refuses supervise on its own since it cannot respawn a name in place; a runtime that
+  // can still refuses it on a once seat, which is never restarted.
+  check("once with supervise is refused: a once seat is never restarted", supervised.ok === false && /never restarted|cannot enforce/.test(errorText(supervised)), supervised);
   const tooLong = await call("spawn", { name: "helper", agent: "once-stub", cwd: repoRoot, events: false, prompt: "\u0001".repeat(20_000), once: {} }, { id: goalId("tl") });
   check("a prompt whose relay record cannot fit the goal index is refused", tooLong.ok === false && /too long for one task/.test(errorText(tooLong)), tooLong);
   check("...and none of them allocated a seat or a reservation", M.agents.size === seatsBefore && M.reserved.size === 0, { agents: [...M.agents.keys()], reserved: [...M.reserved.keys()] });
@@ -503,6 +506,35 @@ try {
   const rLost = await resultOf(taskOf(lostId), 20_000);
   check("...and its task is cancelled `launch-failed` once goal writes land again",
     rLost?.state === "cancelled" && reasonOf(rLost) === "launch-failed" && (await readGoalResult(actx, refOf(lostId)))?.state !== "succeeded", rLost);
+
+  console.log("\n15. a plain spawn on that connector: a startup without the prompt succeeds and says the seat is not woken (#5737)");
+  const WAKE = "its startup did not show the channel, so mesh traffic does not wake it while idle";
+  const rowsOf = (r: Reply): Array<{ name?: string; startupNotice?: string }> =>
+    Array.isArray(r.data) ? r.data as Array<{ name?: string; startupNotice?: string }> : [];
+  const despawnPlain = async (name: string | undefined) => {
+    const seat = name === undefined ? undefined : M.agents.get(name);
+    if (seat) await call("despawn", {}, { target: { actor: seat.id, lifecycleUid: seat.lifecycleUid, mode: "any" } });
+  };
+  const plainSpawn = async (id: string) => {
+    const accepted = await call("spawn", { name: "helper", agent: "once-confirm-stub", cwd: repoRoot, events: false }, { id });
+    const terminal = await resultOf(id, 60_000);
+    const name = accepted.data?.name as string | undefined;
+    const ps = await call("ps", undefined);
+    const row = rowsOf(ps).find((r) => r.name === name);
+    return { accepted, terminal, name, notice: (terminal?.data as { startupNotice?: unknown } | undefined)?.startupNotice, row, ps };
+  };
+  startupMode = "ready";
+  const plainReady = await plainSpawn(goalId("plain-ready"));
+  check("the spawn succeeds, and its result carries the connector's clause as startupNotice",
+    plainReady.terminal?.state === "succeeded" && plainReady.notice === WAKE, { terminal: plainReady.terminal });
+  check("...and the seat's ps row carries the same clause", plainReady.row?.startupNotice === WAKE, { name: plainReady.name, ps: plainReady.ps });
+  await despawnPlain(plainReady.name);
+  startupMode = "confirmed";
+  const plainConfirmed = await plainSpawn(goalId("plain-confirmed"));
+  check("a startup that answered the prompt and showed the notice succeeds with no startupNotice, on the result or the ps row",
+    plainConfirmed.terminal?.state === "succeeded" && plainConfirmed.notice === undefined && plainConfirmed.row !== undefined && plainConfirmed.row.startupNotice === undefined,
+    { terminal: plainConfirmed.terminal, row: plainConfirmed.row });
+  await despawnPlain(plainConfirmed.name);
 } finally {
   for (const nc of seatConns) await nc.drain().catch(() => nc.close());
   await runnerNc?.drain().catch(() => runnerNc?.close());
@@ -513,7 +545,7 @@ try {
   await broker.stop().catch(() => {});
 }
 
-const EXPECTED_CELLS = 67;
+const EXPECTED_CELLS = 70;
 console.log(`\n${fail === 0 && pass === EXPECTED_CELLS ? "SPAWN ONCE SMOKE OK ✅" : "SPAWN ONCE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);
 if (pass + fail !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE — ran ${pass + fail} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);

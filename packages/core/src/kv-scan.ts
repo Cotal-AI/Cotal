@@ -126,17 +126,31 @@ export interface LiveKvEntriesOptions {
  */
 export async function liveKvEntries(
   kv: KV,
+  options?: LiveKvEntriesOptions,
+): Promise<KvEntry[]>;
+export async function liveKvEntries(
+  kv: KV,
+  filter: string | string[] | undefined,
+  options?: LiveKvEntriesOptions,
+): Promise<KvEntry[]>;
+export async function liveKvEntries(
+  kv: KV,
   filterOrOptions?: string | string[] | LiveKvEntriesOptions,
   options?: LiveKvEntriesOptions,
 ): Promise<KvEntry[]> {
-  let filter: string | string[] | undefined;
   // The three-argument form may deliberately omit the filter: (kv, undefined, options).
-  let opts: LiveKvEntriesOptions | undefined = options;
+  let filter: string | string[] | undefined;
+  let opts: LiveKvEntriesOptions | undefined;
   if (typeof filterOrOptions === "string" || Array.isArray(filterOrOptions)) {
     filter = filterOrOptions;
     opts = options;
   } else if (filterOrOptions && typeof filterOrOptions === "object") {
+    if (options !== undefined) {
+      throw new TypeError("liveKvEntries does not accept a third argument when the second argument is options");
+    }
     opts = filterOrOptions;
+  } else {
+    opts = options;
   }
 
   if (opts?.signal?.aborted) {
@@ -323,21 +337,14 @@ export async function walkKvLatest(kv: KV, filter: string): Promise<KvEntry[]> {
   const latest = new Map<string, KvEntry>();
   let seq = 1;
   for (;;) {
-    let sm;
-    try {
-      // The client types `next_by_subj` only on its Direct Get request; the STREAM.MSG.GET API takes
-      // the same `{seq, next_by_subj}` body (measured on nats-server 2.14.5: walks forward through a
-      // wildcard filter and answers "no message" past the last match), so the request is passed as
-      // the API's own shape rather than the narrower one the typing declares.
-      const req: NextMsgRequest = { seq, next_by_subj: subject };
-      sm = await bucket.jsm.streams.getMessage(bucket.stream, req as unknown as MsgRequest);
-    } catch (e) {
-      // 10037 is the stream saying nothing at or after `seq` matches: the end of the walk. The
-      // pinned client answers `null` for it; older ones threw. Every other error is the broker.
-      if ((e as { code?: unknown })?.code === 10037) break;
-      throw e;
-    }
-    if (sm === null || sm === undefined) break;
+    // The client types `next_by_subj` only on its Direct Get request; the STREAM.MSG.GET API takes
+    // the same `{seq, next_by_subj}` body (measured on nats-server 2.14.5: walks forward through a
+    // wildcard filter and answers "no message" past the last match), so the request is passed as
+    // the API's own shape rather than the narrower one the typing declares.
+    const req: NextMsgRequest = { seq, next_by_subj: subject };
+    const sm = await bucket.jsm.streams.getMessage(bucket.stream, req as unknown as MsgRequest);
+    // The client answers the stream's 10037 (nothing at or after `seq` matches) with `null`.
+    if (sm === null) break;
     const e = bucket.smToEntry(sm);
     const prior = latest.get(e.key);
     if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
@@ -365,6 +372,9 @@ const DIRECT_BATCH = 1024;
  * still behind it; the walk ends at 0 or when the broker has nothing at or after the cursor, and a
  * page that ends with neither throws {@link IncompleteKvScan} instead of returning a short list.
  *
+ * Each completed page releases its native reply subscription immediately, without waiting for the
+ * native five-second timeout. The callback is the client's supported cleanup-owning read path.
+ *
  * A credential that may not publish the Direct Get request fails with the broker's
  * `PermissionViolationError` as soon as the broker reports it.
  */
@@ -389,15 +399,29 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
           // Not gated on `bucket.direct`: `kvm.open` binds without reading the stream, so that flag holds
           // the caller's open options, not the stream's `allow_direct`. A stream without it has no Direct
           // Get responder and the request fails.
-          const iter = await bucket.jsm.direct.getBatch(bucket.stream, { seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>` });
-          page = iter;
-          for await (const sm of iter) {
-            const e = bucket.smToEntry(sm);
-            const prior = latest.get(e.key);
-            if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
-            last = sm.seq;
-            pending = sm.pending;
-          }
+          // The native callback path unsubscribes when its iterator closes. Its iterator-only
+          // path keeps each completed reply subscription until the five-second timeout.
+          await new Promise<void>((resolve, reject) => {
+            bucket.jsm.direct.getBatch(bucket.stream, {
+              seq, batch: DIRECT_BATCH, next_by_subj: `${bucket.prefix}.>`,
+              callback: (done, sm) => {
+                if (done) {
+                  done.err ? reject(done.err) : resolve();
+                  return;
+                }
+                try {
+                  const e = bucket.smToEntry(sm);
+                  const prior = latest.get(e.key);
+                  if (prior === undefined || e.revision >= prior.revision) latest.set(e.key, e);
+                  last = sm.seq;
+                  pending = sm.pending;
+                } catch (e) {
+                  page?.stop(e as Error);
+                  reject(e);
+                }
+              },
+            }).then((iter) => { page = iter; }, reject);
+          });
         } catch (e) {
           // 404 is the stream saying nothing at or after `seq` matches: an empty bucket, or the end.
           if (last === 0 && (e as { code?: unknown })?.code === 404) break;
@@ -422,11 +446,31 @@ export async function lastKvEntries(kv: KV): Promise<KvEntry[]> {
 export async function liveKvValues<T>(
   kv: KV,
   decode: (e: KvEntry) => T | undefined,
+  options?: LiveKvEntriesOptions,
+): Promise<T[]>;
+export async function liveKvValues<T>(
+  kv: KV,
+  decode: (e: KvEntry) => T | undefined,
+  filter: string | string[] | undefined,
+  options?: LiveKvEntriesOptions,
+): Promise<T[]>;
+export async function liveKvValues<T>(
+  kv: KV,
+  decode: (e: KvEntry) => T | undefined,
   filterOrOptions?: string | string[] | LiveKvEntriesOptions,
   options?: LiveKvEntriesOptions,
 ): Promise<T[]> {
+  let entries: KvEntry[];
+  if (filterOrOptions && typeof filterOrOptions === "object" && !Array.isArray(filterOrOptions)) {
+    if (options !== undefined) {
+      throw new TypeError("liveKvValues does not accept a fourth argument when the third argument is options");
+    }
+    entries = await liveKvEntries(kv, filterOrOptions);
+  } else {
+    entries = await liveKvEntries(kv, filterOrOptions, options);
+  }
   const out: T[] = [];
-  for (const e of await liveKvEntries(kv, filterOrOptions, options)) {
+  for (const e of entries) {
     const v = decode(e);
     if (v !== undefined) out.push(v);
   }

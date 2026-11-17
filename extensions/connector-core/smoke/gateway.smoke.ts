@@ -98,6 +98,8 @@ const reserved = new Set<string>();
 const pendingApproval = { requestId: "approval-request-0123456789012345", proposed: null,
   approval: { id: "a".repeat(26), url: `https://authority.example/approve/${"a".repeat(26)}`, expiresAt: "2099-01-01T00:00:00.000Z" } };
 const resumedApprovals: string[] = [];
+let approvalRecorded = false;
+let approvalNow = 0;
 const host: GatewayHost = {
   account(auth: AuthInfo | undefined): string {
     const account = auth?.extra?.account;
@@ -108,11 +110,13 @@ const host: GatewayHost = {
     opened.push(`${account}/${name}`);
     selections.set(`${account}/${name}`, selection);
     if (name === "approval_probe") {
-      if (approvalId) {
-        resumedApprovals.push(`${account}/${approvalId}`);
-        throw new Error("the authority has not recorded the person's approval");
-      }
-      throw new ApprovalRequired(pendingApproval);
+      if (approvalId) resumedApprovals.push(`${account}/${approvalId}`);
+      if (approvalId && approvalRecorded) throw new Error("the authority has not recorded the person's approval");
+      throw new ApprovalRequired(pendingApproval, "team");
+    }
+    if (name === "approval_now") {
+      approvalNow += 1;
+      if (approvalNow === 1) throw new ApprovalRequired(pendingApproval, "team");
     }
     if (name === "approval_collision") throw new NameTaken(name);
     if (name === "quota_probe") throw new Error("quota exceeded");
@@ -164,7 +168,7 @@ const http = createServer(async (req, res) => {
   const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
   // /mcp-selection is the same embedder with permission requests turned on, as Cotal Cloud serves it.
   const selection = req.url === "/mcp-selection";
-  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalResume: true, selection, ...(auth ? { auth } : {}) });
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, waitSeconds: WAIT, approvalHoldSeconds: 3, approvalResume: true, selection, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
@@ -242,8 +246,8 @@ try {
   const tools = (await a.listTools()).tools;
   const names = new Set(tools.map((t) => t.name));
   const readOnly = new Set(["cotal_orientation", "cotal_connection_status", "cotal_roster", "cotal_docs", "cotal_channel_info", "cotal_channels"]);
-  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_anycast", "cotal_join"]);
-  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
+  const additive = new Set(["cotal_connect", "cotal_send", "cotal_dm", "cotal_join"]);
+  const destructive = new Set(["cotal_disconnect", "cotal_wait", "cotal_inbox", "cotal_anycast", "cotal_status", "cotal_channel_mode", "cotal_leave"]);
   check(
     "every gateway tool declares its read and update effects",
     tools.length === readOnly.size + additive.size + destructive.size && tools.every((t) =>
@@ -255,8 +259,10 @@ try {
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
   check("a hosted gateway does not offer native space selection", tools.find((t) => t.name === "cotal_connect")?.inputSchema.properties?.space === undefined);
   const plainConnect = tools.find((t) => t.name === "cotal_connect");
-  check("without selection a hosted connect offers no permission request",
-    ["channels", "role", "capabilities"].every((k) => plainConnect?.inputSchema.properties?.[k] === undefined) && !plainConnect?.description?.includes("Ask for what"),
+  check("without selection a hosted connect offers no permission request or automatic replacement name",
+    ["channels", "role", "capabilities"].every((k) => plainConnect?.inputSchema.properties?.[k] === undefined) && !plainConnect?.description?.includes("Ask for what") &&
+      !!plainConnect?.description?.includes("A signed-in or hosted connection refuses a taken name") &&
+      !!plainConnect?.description?.includes("On an open or static local mesh"),
     plainConnect?.inputSchema.properties);
   const selecting = await clientFor("tok-a", selectionUrl);
   const selectingConnect = (await selecting.listTools()).tools.find((t) => t.name === "cotal_connect");
@@ -327,25 +333,35 @@ try {
 
   // ---- permission requests are not connections ----
   const beforeApproval = live.size;
+  const probesBefore = opened.filter((o) => o === "acct_a/approval_probe").length;
+  const heldFrom = Date.now();
   const pendingResult = await a.callTool({ name: "cotal_connect", arguments: { name: "approval_probe" } });
+  const heldMs = Date.now() - heldFrom;
+  const probes = opened.filter((o) => o === "acct_a/approval_probe").length - probesBefore;
   const approvalBody = pendingResult.structuredContent as Record<string, unknown>;
   const approvalText = (pendingResult.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("\n");
   check("pending approval returns the person's link and no usable connection", !pendingResult.isError &&
     approvalBody.status === "pending" && approvalBody.name === "approval_probe" &&
     approvalBody.requestId === pendingApproval.requestId && !("connection_id" in approvalBody) &&
-    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") && live.size === beforeApproval);
+    approvalText.includes(pendingApproval.approval.url) && approvalText.includes("not connected") &&
+    approvalText.includes('This connection would join space "team".') && approvalBody.space === "team" && live.size === beforeApproval);
   check("structured-only clients receive the same person-only approval and retry instructions", typeof approvalBody.message === "string" &&
     approvalBody.message.includes("do not open the decision page or approve on their behalf") &&
-    approvalBody.message.includes("retry cotal_connect") && approvalBody.message.includes("Do not poll") &&
+    approvalBody.message.includes("Call cotal_connect again") && approvalBody.message.includes("This call waited") &&
+    approvalBody.message.includes("does not start another request") &&
     approvalBody.message.includes(pendingApproval.approval.id));
-  check("pending approval never renames or issues", opened.filter((o) => o === "acct_a/approval_probe").length === 1 &&
-    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe"));
+  check("a held connect asks the host again every 2 seconds until its hold ends", probes === 3 && heldMs >= 3000 && heldMs < 6000, { probes, heldMs });
+  check("pending approval retries the same approval and never renames or issues", probes > 1 &&
+    !opened.includes("acct_a/approval_probe_2") && !reserved.has("acct_a/approval_probe") && resumedApprovals.length > 0);
+  approvalRecorded = true;
   const resume = await call(a, "cotal_connect", { name: "approval_probe", approval_id: pendingApproval.approval.id });
   check("approval_id reaches the host but cannot approve its request", resume.isError &&
     resume.text.includes("has not recorded") && resumedApprovals[0] === `acct_a/${pendingApproval.approval.id}` && live.size === beforeApproval);
   const changedName = await call(a, "cotal_connect", { name: "approval_collision", approval_id: pendingApproval.approval.id });
   check("an approval resume never renames on collision", changedName.isError && changedName.text.includes("new permission approval") &&
     !opened.includes("acct_a/approval_collision_2"));
+  const decided = await call(a, "cotal_connect", { name: "approval_now" });
+  check("a hosted connect returns connected when the person approves during the wait", !decided.isError && decided.text.startsWith("Connected as approval_now."), decided);
   const beforeSelfApproval = opened.length;
   const selfApproval = await call(a, "cotal_connect", { name: "approval_probe", approved: true }).catch(() => ({ isError: true, text: "schema refusal" }));
   const foreignFlag = await call(a, "cotal_connect", { name: "approval_probe", approval_id: "INVALID" }).catch(() => ({ isError: true, text: "schema refusal" }));
@@ -387,7 +403,7 @@ try {
   check(
     "a pattern send through the gateway is refused and names both ways",
     patternSend.isError && patternSend.text.includes('"lobby.>" is a pattern') && patternSend.text.includes("post once to one channel it matches") &&
-      patternSend.text.includes("A pattern follow has no durable backstop") && patternSend.text.includes("cotal_channels lists the existing ones"),
+      patternSend.text.includes("one that is away gets a stored copy if that channel is durable") && patternSend.text.includes("cotal_channels lists the existing ones"),
     patternSend,
   );
   const familySend = await call(a, "cotal_send", { connection_id: id1, text: "family-probe", channel: "lobby.news" });

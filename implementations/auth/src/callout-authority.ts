@@ -25,12 +25,13 @@ import type { NativeServiceCalloutAuthority } from "./native-service-callout.js"
 import { calloutPermissions, type EndpointCallerResolver, type ListingIssuer, type UserCallerIssuer } from "./permissions.js";
 import { effectiveEndpointCaller } from "./service-caller-effective.js";
 import { verifySessionRedemption } from "./session-redemption.js";
+import type { ServiceKeys } from "./store.js";
 import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 
 export type ManagerGateVerdict = "candidate" | "unknown" | "not open" | "not this owner's" | "not registered";
 
 /** Leader reads of one manager instance's issuance gate and its registered service records. */
-export interface ManagerGateReads {
+interface ManagerGateReads {
   observeManagerGate(instanceId: string): Promise<EpGateState | null>;
   /** The gate of a legacy manager. An environment-manager gate refuses. */
   observeLegacyManagerGate(instanceId: string): Promise<EpGateState | null>;
@@ -103,13 +104,13 @@ export interface CalloutAuthority {
   ) => Promise<UserTokenSession>;
 }
 
-export interface CalloutAuthorityDeps {
+interface CalloutAuthorityDeps {
   space: string;
   /** The issuer session this process holds for user-caller issuance. Its owner closes it. */
   issuer: HeldIssuerSession;
   /** The provider state dir holding the actor ledger. */
   dir: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   /** The registry the issuance rows are written on and endpoint caller rights are read from. */
   registry: LifecycleRegistry;
   /** The proved connect-credential reader. Throws while it is not bound. */
@@ -144,6 +145,9 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
   return {
     resolveEndpointCaller: async (t) => {
       refuse();
+      // A chat session is not an actor grant, so no caller policy can name it: it is minted no
+      // endpoint capability, and the chat arm above is its connect authority.
+      if (chat.isChatPrincipal(t.owner, t.act.actor)) return { capabilities: [] };
       const grantee = { owner: t.owner, actor: t.act.actor, lifecycleUid: assertLifecycleToken(t.act.lifecycleUid ?? "", "caller lifecycleUid") };
       const effective = await effectiveEndpointCaller(registry, dataAccount.pub, dir, grantee);
       const checkCallerPayload = deps.checkCallerPayload;
@@ -249,10 +253,11 @@ export function calloutAuthority(deps: CalloutAuthorityDeps): CalloutAuthority {
  *  their callout here, so they answer with the same options and the same limits. */
 export function serveCallout(nc: CalloutConnection, args: {
   space: string;
+  eventPayloadsWithheld?: boolean;
   /** The provider state dir holding the actor ledger. */
   dir: string;
   callout: Pick<CalloutAuth, "xkey" | "account">;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   issuer: UserTokenIssuer;
   hooks: CalloutAuthority;
   serviceAuthority?: NativeServiceCalloutAuthority;
@@ -262,6 +267,7 @@ export function serveCallout(nc: CalloutConnection, args: {
   connectLimiter?: ConnectLimiter;
 }): { done: Promise<void> } {
   const { space, dir, callout, issuer, hooks } = args;
+  const resolveAcl = chatAwareAclResolver(dir, ledgerAclResolver(dir));
   return startAuthCallout(nc, {
     ...(args.serviceAuthority !== undefined ? { serviceAuthority: args.serviceAuthority } : {}),
     xkeySeed: callout.xkey.seed,
@@ -273,7 +279,7 @@ export function serveCallout(nc: CalloutConnection, args: {
     recordIssuance: hooks.recordIssuance,
     // A chat principal resolves from its closed row (the agent leaf, no role); every other
     // principal from the grant ledger.
-    permissionsFor: calloutPermissions(chatAwareAclResolver(dir, ledgerAclResolver(dir)), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing),
+    permissionsFor: calloutPermissions((token) => ({ ...resolveAcl(token), ...(args.eventPayloadsWithheld === true ? { eventPayloads: false as const } : {}) }), hooks.authorizeManagerCaller, hooks.verifySession, hooks.issueUserCaller, hooks.resolveEndpointCaller, hooks.issueListing),
     log: (l) => console.error(l),
     ...(args.limits !== undefined ? { limits: args.limits } : {}),
     ...(args.connectLimiter !== undefined ? { connectLimiter: args.connectLimiter } : {}),

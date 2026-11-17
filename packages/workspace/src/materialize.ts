@@ -1,17 +1,34 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { registry, type Extension, type ExtensionRef } from "@cotal-ai/core";
 import {
   bindExtensionPeers,
   extensionPackageDir,
   extensionProvides,
-  installedExtensionVersion,
+  hostPackageDir,
+  installedExtensionPackage,
   loadExtensionsManifest,
   type InstalledExtension,
+  type InstalledExtensionPackage,
 } from "./extensions.js";
 import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
+import { SEEDED_EXTENSIONS } from "./official-connectors.js";
+
+/** Whether this process is running from the desktop app's bundled runtime (`desktop-runtime.json`). */
+export function isBundledDesktopRuntime(): boolean {
+  try {
+    let dir = hostPackageDir("@cotal-ai/workspace");
+    for (let i = 0; i < 4; i++) {
+      if (existsSync(join(dir, "desktop-runtime.json"))) return true;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch { /* Non-installed host or unresolvable peer root is not a bundled desktop runtime. */ }
+  return false;
+}
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -22,18 +39,6 @@ import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
  * name→package hint used to phrase a not-found error.
  */
 
-/** The range the installed extension declares for a shared peer (undefined when it declares none). */
-function declaredPeerRange(pkg: string, peer: string): string | undefined {
-  try {
-    const meta = JSON.parse(readFileSync(join(extensionPackageDir(pkg), "package.json"), "utf8")) as {
-      peerDependencies?: Record<string, string>;
-    };
-    return meta.peerDependencies?.[peer];
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
  * behind. Every caller links this host's peer into the extension (`bindExtensionPeers`) before the
@@ -41,7 +46,7 @@ function declaredPeerRange(pkg: string, peer: string): string | undefined {
  * Prescribing `cotal ext add` without ranking them tells the operator to reinstall whichever side is
  * CURRENT, and no reinstall of an extension can add an export to an older core.
  */
-function importFailure(pkg: string, version: string, e: unknown, remedy: string): Error {
+function importFailure(pkg: string, version: string, e: unknown, remedy: string, meta: InstalledExtensionPackage): Error {
   const message = e instanceof Error ? e.message : String(e);
   const missing = /The requested module '([^']+)' does not provide an export named '([^']+)'/.exec(message);
   // Any other import failure (a syntax error, an unresolvable specifier) is the extension's own file
@@ -50,7 +55,7 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string)
 
   const [, peer, symbol] = missing;
   const head = `extension ${pkg}@${version} failed to import: it needs \`${symbol}\` from ${peer}`;
-  const skew = diagnosePeerSkew(pkg, version, peer, declaredPeerRange(pkg, peer));
+  const skew = diagnosePeerSkew(pkg, version, peer, meta.peerDependencies?.[peer]);
   if (!skew) {
     return new Error(
       `${head}, which the linked ${peer} does not export. This cotal cannot locate its own ${peer} to compare against, ` +
@@ -84,11 +89,13 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string)
  * Import an installed package's declared entry so it self-registers. `cotal ext add` and every later
  * load import through here, so a missing peer export is reported as a ranked skew on both paths.
  * `remedy` closes a failure the extension's own build must fix: an installed extension is reinstalled,
- * while an add has already rolled its candidate back.
+ * while an add has already rolled its candidate back. `metadata` carries the caller's validated read
+ * through entry selection and failure diagnosis; a standalone call reads it once here.
  */
-export async function importExtensionEntry(pkg: string, version: string, remedy: string): Promise<void> {
+export async function importExtensionEntry(pkg: string, version: string, remedy: string, metadata?: InstalledExtensionPackage): Promise<void> {
   const dir = extensionPackageDir(pkg);
-  const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string; exports?: unknown };
+  const meta = metadata ?? installedExtensionPackage(pkg);
+  if (!meta) throw new Error(`extension ${pkg} is not installed at ${dir} - ${remedy}`);
   let entry = meta.main ?? "index.js";
   const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
   if (typeof dot === "string") entry = dot;
@@ -99,7 +106,7 @@ export async function importExtensionEntry(pkg: string, version: string, remedy:
   try {
     await import(pathToFileURL(join(dir, entry)).href);
   } catch (e) {
-    throw importFailure(pkg, version, e, remedy);
+    throw importFailure(pkg, version, e, remedy, meta);
   }
 }
 
@@ -159,22 +166,22 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // publishes ALL of a package's keys, so a sibling ref requested concurrently is live here too.
   if (registry.has(advertised.kind, advertised.name)) return;
   const pkg = ext.pkg;
-  const onDisk = installedExtensionVersion(pkg);
+  const onDisk = installedExtensionPackage(pkg);
   if (!onDisk) {
     throw new Error(`extension ${pkg} is in the manifest but not installed at ${extensionPackageDir(pkg)} - \`cotal ext add ${ext.spec}\` again`);
   }
-  if (onDisk !== ext.version) {
+  if (onDisk.version !== ext.version) {
     throw new Error(
-      `extension ${pkg} is ${onDisk} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
+      `extension ${pkg} is ${onDisk.version} on disk but the manifest pinned ${ext.version} (its cached command surface may be stale) - re-add it: \`cotal ext add ${ext.spec}\``,
     );
   }
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.
   // Rebind before the first import in this process so registration lands in this host's core registry.
-  bindExtensionPeers([pkg], pkg);
+  bindExtensionPeers([pkg], pkg, { operationMetadata: onDisk });
   // The import self-registers into OUR registry (core is linked); runStaged keeps those
   // registrations invisible until we've validated them, so a throw discards the stage untouched.
   const { staged } = await registry.runStaged(() =>
-    importExtensionEntry(pkg, ext.version, `reinstall it: \`cotal ext add ${ext.spec}\``),
+    importExtensionEntry(pkg, ext.version, `reinstall it: \`cotal ext add ${ext.spec}\``, onDisk),
   );
   // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
   // registrations (never leave a package's other keys live when its advertised one is absent).
@@ -205,10 +212,11 @@ export function manifestExtensionNames(kind: string): string[] {
  * "already registered" short-circuit and any composition-root gating stay with the caller — this
  * ALWAYS consults the machine manifest. `hint(ref)` phrases the not-found error (the CLI names the
  * exact `cotal ext add <pkg>` for an official name; a bare caller gets the generic form).
+ * `expectedGeneration` checks first-party manifest pins under the extension lock, even on a cache hit.
  */
 export async function materializeFromManifest<T extends Extension = Extension>(
   ref: ExtensionRef,
-  opts: { hint?: (ref: ExtensionRef) => string } = {},
+  opts: { hint?: (ref: ExtensionRef) => string; expectedGeneration?: string } = {},
 ): Promise<T> {
   await enqueueLoad(() =>
     withExtensionLock(async () => {
@@ -218,6 +226,16 @@ export async function materializeFromManifest<T extends Extension = Extension>(
       if (!ext) {
         throw new Error(
           opts.hint?.(ref) ?? `no installed extension provides ${ref.kind} "${ref.name}" - install it with \`cotal ext add <npm-package>\``,
+        );
+      }
+      if (opts.expectedGeneration !== undefined && ext.pkg.startsWith("@cotal-ai/") && ext.version !== opts.expectedGeneration) {
+        const seeded = Object.values(SEEDED_EXTENSIONS).some((item) => item.pkg === ext.pkg);
+        throw new Error(
+          seeded
+            ? `connector ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; stop its seats and restart the Manager from the installed CLI before launching new agents`
+            : isBundledDesktopRuntime()
+              ? `this Cotal app runs ${opts.expectedGeneration}, and another Cotal install on this account moved the shared extension ${ext.pkg} to ${ext.version}`
+              : `extension ${ext.pkg}@${ext.version} differs from this Manager's loaded generation ${opts.expectedGeneration}; run \`cotal update --self\` to reconcile this installation, then stop its seats and restart the Manager from the installed CLI`,
         );
       }
       await loadOne(ext, ref);

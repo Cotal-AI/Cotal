@@ -25,7 +25,7 @@
 
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
-import { EffectResultTooLarge, Journal, JournalAppendRejected, type JournalStore } from "../journal.js";
+import { EffectResultTooLarge, Journal, JournalAppendRejected } from "../journal.js";
 import { EngineUnavailable, messageOf, nameOf } from "../errors.js";
 import { assertCrossable } from "../values.js";
 import { Cancelled, EffectError, RootCancellation, RunHeld, RunReleased, type EffectHandler } from "../effects.js";
@@ -34,11 +34,21 @@ import { runOnEngine } from "./host.js";
 import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
+import { PACKAGE_VERSION } from "./package-version.js";
 
-// ONCE PER THREAD, and before the run exists.
+// Refuse before lockdown installs SES's uncaught-exception handler, so Worker reports the cause.
+if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
+const hostPackageVersion = (workerData as { hostPackageVersion?: unknown } | undefined)?.hostPackageVersion;
+if (hostPackageVersion !== PACKAGE_VERSION) {
+  const host = typeof hostPackageVersion === "string" ? hostPackageVersion : "unreported";
+  throw new EngineUnavailable(
+    `worker package ${PACKAGE_VERSION} does not match host package ${host}; ` +
+    `restart the manager using the same Cotal version before starting or resuming workflows`,
+  );
+}
+// Once per admitted thread, before the run exists.
 lockdown();
 
-if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
 const port = parentPort;
 const cancellation = new RootCancellation();
 let started = false;

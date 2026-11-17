@@ -33,7 +33,7 @@ process.env.COTAL_HOME = home;
 const { probeConnect, registry, CotalEndpoint, GOAL_ENTITY_RUNNING_DETAIL_KIND } = await import("@cotal-ai/core");
 const { recordMesh } = await import("@cotal-ai/workspace");
 const { launchAgent, START_TIMEOUT_MS } = await import("@cotal-ai/cli");
-const { MeshAgent, SPAWN_TIMEOUT_MS } = await import("@cotal-ai/connector-core");
+const { MeshAgent, SPAWN_TIMEOUT_MS, cotalToolSpecs } = await import("@cotal-ai/connector-core");
 const { Manager } = await import("@cotal-ai/manager");
 import type { Connector } from "@cotal-ai/core";
 
@@ -145,6 +145,7 @@ const operatorCon: Connector = {
 registry.register(operatorCon);
 
 let mgr: InstanceType<typeof Manager> | undefined;
+let otherManager: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
 let ep: InstanceType<typeof CotalEndpoint> | undefined;
 try {
@@ -367,6 +368,65 @@ try {
     }
   }
 
+  // A two-Manager late join through the shipped agent tool must reuse its accepted goal on retry.
+  {
+    const secondRoot = mkdtempSync(join(tmpdir(), "cotal-readiness-other-"));
+    mkdirSync(join(secondRoot, ".cotal", "agents"), { recursive: true });
+    for (const root of [workspaceRoot, secondRoot])
+      writeFileSync(join(root, ".cotal", "agents", "toolpending.md"), "---\nname: toolpending\n---\nLate tool join.\n");
+    otherManager = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot: secondRoot });
+    await otherManager.start();
+    const config = { space: SPACE, name: "tool-caller", servers: SERVER, kind: "agent" as const, tls: false, subscribe: [], allowSubscribe: [], allowPublish: [] };
+    const tool = cotalToolSpecs(config).find(t => t.name === "cotal_spawn")!;
+    const caller = new MeshAgent(config);
+    caller.start();
+    try {
+      for (let i = 0; i < 100 && !caller.connected; i++) await sleep(100);
+      ok("two-Manager tool caller connected", caller.connected);
+      // Both placements use real managers and real process joins. The second explicitly serves
+      // on the other Manager, so result identity and retry checks cannot pass on a local default.
+      for (const host of [mgr, otherManager]) {
+        const instance = (host as unknown as { managerInstanceId: string }).managerInstanceId;
+        const original = (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+        (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+        try {
+          const input = { name: "toolpending", agent: "slow-e2e", instance, events: false };
+          const first = await tool.run(caller, config, input);
+          const retry = await tool.run(caller, config, input);
+          console.log(`tool pending ${instance}: ${JSON.stringify(first)}`);
+          ok("late tool spawn reports accepted goal and unknown readiness without a tool error",
+            !first.isError && first.structured?.status === "starting" && typeof first.structured.goalId === "string" && first.text.includes("accepted") && first.text.includes("not known yet"), first);
+          ok("identical tool retry returns the same accepted goal", retry.structured?.goalId === first.structured?.goalId && !retry.isError, retry);
+          const census = await ep.invokeService("manager", "ps", undefined, { instanceId: instance });
+          const rows = census.reply.data as Array<{ name: string; lifecycleUid: string }>;
+          ok("the selected Manager owns one seat and no numbered duplicate", census.reply.ok && rows.filter(r => r.name.startsWith("toolpending")).length === 1, census.reply);
+          ok("the tool names the Manager that accepted the goal", first.structured?.manager === instance, first);
+        } finally {
+          (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = original;
+        }
+      }
+      for (const host of [mgr, otherManager])
+        (host as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 2_000;
+      const unpinned = { name: "toolpending", agent: "slow-e2e", events: false };
+      let splitObserved = false;
+      for (let attempt = 0; attempt < 8 && !splitObserved; attempt++) {
+        const described = await caller.ep.describeService("manager", { refresh: true });
+        const input = { ...unpinned, name: `classpending${attempt}` };
+        for (const root of [workspaceRoot, secondRoot])
+          writeFileSync(join(root, ".cotal", "agents", `${input.name}.md`), `---\nname: ${input.name}\n---\nClass queue probe.\n`);
+        const anycast = await tool.run(caller, config, input);
+        const anycastRetry = await tool.run(caller, config, input);
+        console.log(`class describe ${described.responder.instanceId}; tool: ${JSON.stringify(anycast)}`);
+        ok("an unpinned tool returns its accepting Manager and reuses its claim on retry",
+          !anycast.isError && typeof anycast.structured?.manager === "string" && anycastRetry.structured?.goalId === anycast.structured?.goalId, { anycast, anycastRetry });
+        splitObserved = anycast.structured?.manager !== described.responder.instanceId;
+      }
+      ok("a different real Manager won a class request than answered describe", splitObserved);
+    } finally { await caller.stop(); }
+    await otherManager.stop();
+    otherManager = undefined;
+  }
+
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
   for (const name of ["slowpoke", "slowlaunch", "jcodeslow", "ghost", "picker", "ghostspawn", "latepending"]) {
@@ -390,6 +450,7 @@ try {
 } finally {
   await ep?.stop().catch(() => {});
   await driver?.stop().catch(() => {});
+  await otherManager?.stop().catch(() => {});
   await mgr?.stop().catch(() => {});
   await Promise.all(kids.map((k) => {
     k.kill("SIGKILL");

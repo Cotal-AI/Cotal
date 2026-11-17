@@ -1,0 +1,2 @@
+# A silent accepted connection stays distinct from a refused port in status and space reports.
+smoke:status-silent-broker

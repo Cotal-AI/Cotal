@@ -7,3 +7,4 @@ smoke:history-read
 smoke:docs-ext-read
 smoke:service-host-record
 smoke:win32-custody
+smoke:list-dir-native

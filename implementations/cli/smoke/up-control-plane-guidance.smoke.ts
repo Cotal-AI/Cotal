@@ -1,10 +1,12 @@
 /** Exercise the retained launcher through the built, shipped CLI on owned loopback brokers. */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalLocalProcessPath, MANAGER_PIDFILE, probeLiveness } from "@cotal-ai/workspace";
 import { assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+
+import { lastLoggedLine } from "../src/lib/private-log.js";
 
 const suite = createSuite();
 const cli = resolve(import.meta.dirname, "../../../bin/dist/cotal.js");
@@ -18,6 +20,35 @@ const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 let cleaned = true;
 
 try {
+  const log = join(sandbox, "boot.log");
+  writeFileSync(log, "✗ an older manager failed\n", { mode: 0o600 });
+  const info = lstatSync(log), started = { offset: info.size, dev: info.dev, ino: info.ino };
+  suite.check("a manager's startup quote excludes earlier boot errors", lastLoggedLine(log, started.offset, started) === undefined);
+  const reason = "✗ delivery and manager must use the same version; next: restart delivery";
+  appendFileSync(log, `2026-11-09T00:00:00.000Z ${reason}\n`);
+  suite.check("a manager's startup quote carries its new error and recovery step",
+    lastLoggedLine(log, started.offset, started) === `2026-11-09T00:00:00.000Z ${reason}`);
+  appendFileSync(log, "console: http://localhost/?token=must-not-quote\n");
+  suite.check("a manager's startup quote never copies a console credential line", lastLoggedLine(log, started.offset, started) === undefined);
+  appendFileSync(log, `\u001b[31m${reason}\u001b[0m\n`);
+  suite.check("a colored error is recognized before terminal sanitization", lastLoggedLine(log, started.offset, started)?.includes("restart delivery") === true);
+  if (process.platform !== "win32") {
+    chmodSync(log, 0o644);
+    suite.check("a manager's startup quote refuses a nonprivate log", lastLoggedLine(log, started.offset, started) === undefined);
+    chmodSync(log, 0o600);
+  }
+  renameSync(log, `${log}.previous`);
+  writeFileSync(log, `${reason}\n`, { mode: 0o600 });
+  suite.check("a manager's startup quote refuses a replacement inode", lastLoggedLine(log, started.offset, started) === undefined);
+  rmSync(log);
+  symlinkSync(`${log}.previous`, log);
+  suite.check("a manager's startup quote never follows a symlink", lastLoggedLine(log, started.offset, started) === undefined);
+  rmSync(log);
+  renameSync(`${log}.previous`, log);
+  writeFileSync(log, "✗ short\n");
+  suite.check("a manager's startup quote does not read before its offset after truncation", lastLoggedLine(log, started.offset, started) === undefined);
+  suite.check("the existing service quote still accepts ordinary diagnostic lines", lastLoggedLine(log, 0) === "✗ short");
+
   for (const malformed of [true, false]) {
     const label = malformed ? "refused" : "clean";
     const space = `guidance-${label}`;
@@ -65,7 +96,7 @@ try {
             JSON.stringify([[recordCheck], [`rm ${pidfile}`, "Remove it once no manager runs for this folder"], ["cotal up --no-manager", "Then refresh the stack without a manager"]]), output);
         // `down` refuses that record too, without calling it a process. Its Next states the check
         // only the operator can make before it names the removal. Nothing is stopped or removed.
-        const refused = run("down");
+        const refused = run("down", "--yes");
         const refusedOutput = plain(refused.stdout + refused.stderr);
         suite.check("down over that pidfile exits 1 and says the record names no process",
           refused.status === 1 && !refusedOutput.includes("Stop that process") &&
@@ -75,7 +106,7 @@ try {
           JSON.stringify(refusedNext.slice(refusedNext.lastIndexOf("Next") + 1).map((line) => line.trim().split(/ {2,}/))) === JSON.stringify([
             [recordCheck],
             [`rm ${pidfile}`, "Remove it once no manager runs for this folder"],
-            ["cotal down", "Then stop the stack"],
+            ["cotal down --yes", "Then stop the stack"],
           ]), refusedOutput);
         suite.check("down keeps that pidfile and the broker",
           readFileSync(pidfile, "utf8") === "garbage" && brokerPid !== undefined && probeLiveness(brokerPid) === "alive", refusedOutput);
@@ -94,7 +125,7 @@ try {
     } finally {
       // Only the fixture's own malformed bytes can be removed; never discard a successor's record.
       if (malformed && existsSync(pidfile) && readFileSync(pidfile, "utf8") === "garbage") rmSync(pidfile);
-      const down = run("down");
+      const down = run("down", "--yes");
       let stopped = brokerPid === undefined || probeLiveness(brokerPid) === "dead";
       for (let i = 0; !stopped && i < 100; i++) {
         await new Promise((r) => setTimeout(r, 50));

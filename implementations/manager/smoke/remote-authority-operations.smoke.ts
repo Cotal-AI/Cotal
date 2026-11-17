@@ -215,8 +215,12 @@ const startOpts: unknown[] = [];
 const startAgentReply = { ok: true as const, data: { eventsNotice: "event plane not armed: arming it on spawn needs the admin tier; the spawn was served with events: false" } };
 remoteOnly.startAgent = async (opts) => { startOpts.push(opts); return startAgentReply; };
 let spawnCaller = epCaller;
+// A whole parsed subject: the spawn handler rebuilds the request subject it served (SPEC 13.6).
 const spawnCtx = (events?: boolean) => ({
-  subject: { caller: spawnCaller, command: "spawn", route: "inst", target: { mode: "owner" as const } },
+  subject: {
+    plane: "request", route: "inst", endpoint: "manager", instanceId, command: "spawn",
+    target: { mode: "owner" as const, tOwner: foreignTarget.userOwner }, caller: spawnCaller, nonce: "ffeeddccbbaa99887766554433221100",
+  },
   request: { args: { name: "probe", ...(events !== undefined ? { events } : {}) }, target: { owner: foreignTarget.userOwner, actor: "worker", lifecycleUid: mintLifecycleUid() } },
 });
 const spawn = (events?: boolean) => Promise.resolve(handlers.get("spawn")!(spawnCtx(events) as never));

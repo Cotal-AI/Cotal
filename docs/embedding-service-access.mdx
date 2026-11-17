@@ -40,6 +40,11 @@ another account, a bearer from another issuer, space, subject or key, one that n
 witness or no serve duty, a closure set or artifact that is not the embedded one, and a closure
 that does not read at its digest. `authorizeTrustedServeSnapshot` stays the host's.
 
+A signed bearer issued more than five seconds ahead of the process clock throws
+`ServiceAccessNotYetValidError`, an `EpEnvelopeError` with code `permission-denied` and no bearer
+material. The caller can distinguish this clock refusal from a transport failure without parsing
+error text. Expiry has no clock tolerance.
+
 ## Renewal source [#renewal-source]
 
 For a serving connection, the auth provider's `serviceEndpointRenewal({ store, dir, witness })` hook
@@ -56,8 +61,15 @@ it is what `authorizeGuestServeGrant` takes. `bearer()` and `credential()` share
 two in flight together send one request under the same persisted ids, and an ended or closed
 source refuses both the same way. It owns no timer. A transport failure, `rate-limited`, a missing
 or rejected sign-in, or a store failure leaves it `unavailable`, and the next pull replays the same
-request; any other denial from the space ends it, and later pulls send nothing. `state()` reports
-expiries only, errors are fixed sentences, and `close()` aborts a pull in flight.
+request; any other denial from the space ends it, and later pulls send nothing. For record read,
+parse, create or write failures, the stock source reports `{ state: "unavailable", cause: "store" }`.
+Inspect the store and restore the original record if damaged; retrying must keep its request IDs.
+If an access bearer returned by the authority has expired by the caller's clock, the source reports
+`{ state: "unavailable", cause: "credential-expired" }` and does not store or return that material.
+Check the caller's and authority's clocks before retrying. Expiry checks remain unchanged.
+The optional cause contains no stored or remote text. `state()` reports lifecycle state, fixed failure
+classifications and expiries, never tokens. Errors are fixed sentences, and `close()` aborts a pull
+in flight.
 
 ## Recovery [#replay-and-recovery]
 

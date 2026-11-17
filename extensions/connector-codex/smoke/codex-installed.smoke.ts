@@ -26,7 +26,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { once } from "node:events";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -199,8 +198,8 @@ async function teardown(): Promise<{ status: number; stdout: string; stderr: str
   if (tornDown) return tornDown;
   if (!meshUp) return (tornDown = { status: 0, stdout: "", stderr: "" });
   const options = { cwd: ROOT, env: cliEnv, encoding: "utf8" as const };
-  assertSmokeSandboxDown(sandbox, ["down"], options);
-  const r = spawnSync("node", [CLI, "down"], options);
+  assertSmokeSandboxDown(sandbox, ["down", "--yes"], options);
+  const r = spawnSync("node", [CLI, "down", "--yes"], options);
   tornDown = { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
   for (let i = 0; i < 40 && (await portOpen(PORT)); i++) await sleep(250);
   return tornDown;

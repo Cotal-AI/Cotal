@@ -170,6 +170,27 @@ try {
     const nc = await connect({ servers });
     try {
       const kv = await new Kvm(nc).open(presenceBucket(space));
+      // A completed Direct Get must release its reply subscription before another read starts.
+      // Count native registrations, not consumers: Direct Get never creates a consumer.
+      await lastKvEntries(kv);
+      await nc.flush();
+      const nativeSubscriptions = () => (nc as unknown as { protocol: { subscriptions: { size(): number } } }).protocol.subscriptions.size();
+      const subscriptionsBefore = nativeSubscriptions();
+      for (let i = 0; i < 20; i++) await lastKvEntries(kv);
+      await nc.flush();
+      check("completed reads release native reply subscriptions without waiting five seconds", nativeSubscriptions() === subscriptionsBefore, { before: subscriptionsBefore, after: nativeSubscriptions() });
+      const empty = await new Kvm(nc).create(`empty-${randomUUID().slice(0, 8)}`, { history: 1, allow_direct: true });
+      const emptySubscriptionsBefore = nativeSubscriptions();
+      const emptyEntries = await lastKvEntries(empty);
+      await nc.flush();
+      check("an empty Direct Get reads empty without retaining a subscription", emptyEntries.length === 0 && nativeSubscriptions() === emptySubscriptionsBefore, { rows: emptyEntries.length, before: emptySubscriptionsBefore, after: nativeSubscriptions() });
+      await empty.put("alive", "yes");
+      await empty.put("gone", "old");
+      await empty.delete("gone");
+      await empty.put("alive", "new");
+      const latest = await lastKvEntries(empty);
+      check("Direct Get keeps the latest rewrite and deletion marker", latest.length === 2 && latest.find((e) => e.key === "alive")?.string() === "new" && latest.find((e) => e.key === "gone")?.operation === "DEL");
+      await empty.destroy();
       const N = 1_100;
       const record = (id: string, name: string, ts: number) => JSON.stringify({ card: { id, name, kind: "agent" }, status: "idle", ts });
       await Promise.all(Array.from({ length: N }, (_, i) => kv.put(`u_load.seat${i}`, record(`u_load.seat${i}`, `seat${i}`, Date.now()))));

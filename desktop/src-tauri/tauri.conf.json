@@ -1,0 +1,88 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cotal",
+  "version": "../../bin/package.json",
+  "identifier": "ai.cotal.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Cotal",
+        "width": 880,
+        "height": 660,
+        "minWidth": 560,
+        "minHeight": 660,
+        "visible": false,
+        "backgroundColor": "#fffcee",
+        "skipTaskbar": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Connect your computer to Cotal",
+    "externalBin": [
+      "binaries/cotal-node"
+    ],
+    "resources": {
+      "runtime/": "runtime/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "rpm": {
+        "compression": {
+          "type": "xz",
+          "level": 6
+        }
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.5",
+      "entitlements": "entitlements.plist",
+      "dmg": {
+        "windowSize": { "width": 660, "height": 400 },
+        "appPosition": { "x": 180, "y": 170 },
+        "applicationFolderPosition": { "x": 480, "y": 170 }
+      }
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Cotal",
+        "installerHooks": "installers/hooks.nsh",
+        "template": "installers/installer.nsi"
+      },
+      "wix": {
+        "template": "installers/main.wxs"
+      }
+    }
+  },
+  "mainBinaryName": "cotal-desktop",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "cotal"
+        ]
+      }
+    }
+  }
+}

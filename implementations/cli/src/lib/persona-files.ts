@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import {
   cachedPreferences, CommandFailure, ConfirmationRequired, inputDisabledByFlag, isCommandFailure, isGenuineSpace, isWorkspaceTargetError, loadMeshes, movedProject,
-  resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
+  localWriteFailure, resolveMeshTarget, resolvePreference, targetErrorCode, workspaceErrorParts,
 } from "@cotal-ai/workspace";
 import { DEFAULT_AGENT_NAME } from "./default-persona.js";
 import { shellWord } from "./endpoint-errors.js";
@@ -35,10 +35,10 @@ export function personaCatalog(values: { space?: string; server?: string }): Per
     if (error.code === "not-started" && !values.server && error.details.root && error.details.space && !error.details.rootMissing)
       return catalogAt(error.details.root, error.details.space);
     const { message, remedy } = workspaceErrorParts({ kind: "target", error });
-    // Every caller selects with --space, and some take no --server, so the shared remedy's
-    // `--server` would name a flag the command refuses. A prepared space is selectable by name.
-    // The catalog is read offline, so no running mesh is not the reason: nothing selects a space.
-    const none = error.code === "no-meshes";
+    // A folder whose records name no space already has its next step, including a team file there.
+    // Every other no-mesh refusal is a machine with nothing selected: the catalog is read offline,
+    // and some callers take no --server, so the shared remedy's `--server` would name a flag they refuse.
+    const none = error.code === "no-meshes" && error.details.root === undefined;
     const next = none ? "run `cotal up` in a project, or name a prepared or registered space with `--space <name>`" : remedy;
     throw new CommandFailure("refused", targetErrorCode(error.code), none ? "no space is selected, and this folder is not a space's project" : message, next ? { remedy: next } : {});
   }
@@ -159,9 +159,12 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
   if (oversized) throw oversized;
   const dir = dirname(path);
   assertCatalogWritable(dir);
-  mkSecretDir(dir);
-  const lockPath = join(realpathSync(dirname(path)), `.${basename(path)}.lock`);
-  const lock = acquireLock(lockPath, { label: "local persona write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another local persona write holds the catalog lock") });
+  let lock: ReturnType<typeof acquireLock>;
+  try {
+    mkSecretDir(dir);
+    const lockPath = join(realpathSync(dirname(path)), `.${basename(path)}.lock`);
+    lock = acquireLock(lockPath, { label: "local persona write", onTimeout: () => new CommandFailure("refused", "CONFLICT", "another local persona write holds the catalog lock") });
+  } catch (error) { throw localWriteFailure(error, path); }
   try {
     const current = readPersonaSource(path);
     if (!sameSource(expected, current))
@@ -170,7 +173,10 @@ export function commitPersona(path: string, expected: PersonaSource | undefined,
     if (twin !== undefined)
       throw new CommandFailure("refused", "CONFLICT", `persona '${basename(path, ".md")}' differs from the existing '${twin}' only in case; nothing was written`, { remedy: `choose another name, or change the existing one with \`cotal persona edit ${twin}\`` });
     if (bytes === undefined) unlinkSync(path);
-    else writeSecretFileAtomic(path, bytes);
+    else {
+      try { writeSecretFileAtomic(path, bytes); }
+      catch (error) { throw localWriteFailure(error, path); }
+    }
   } finally { lock.release(); }
 }
 
@@ -185,7 +191,7 @@ function draftFolder(): string {
       throw new CommandFailure("refused", "PERMISSION_DENIED", `the temporary directory ${parent} is not writable by this account (${code}), so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: `make ${parent} writable by you, or set TMPDIR to a folder you own` });
     if (code === "ENOENT" || code === "ENOTDIR")
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the temporary directory ${parent} ${code === "ENOENT" ? "does not exist" : "is not a directory"}, so no private draft was made; nothing was changed`, { target: { path: parent }, remedy: "set TMPDIR to an existing folder you own, or unset it" });
-    throw error;
+    throw localWriteFailure(error, parent);
   }
 }
 
@@ -226,7 +232,11 @@ export function serializePersona(def: AgentDef): Promise<Buffer> {
     throw new CommandFailure("refused", "USAGE_INVALID", "--model is empty", { remedy: "name a model, or leave --model out for the application default" });
   return withDraft(def.name, path => {
     try { writeSecretFile(path, ""); saveAgentFile(path, def); }
-    catch (error) { throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona fields: ${(error as Error).message.replace(/^saveAgentFile: /, "")}`); }
+    catch (error) {
+      // The serializer also writes a private draft. Only validation errors describe bad fields.
+      if ((error as NodeJS.ErrnoException).code !== undefined) throw localWriteFailure(error, path);
+      throw new CommandFailure("refused", "SCHEMA_INVALID", `invalid persona fields: ${(error as Error).message.replace(/^saveAgentFile: /, "")}`);
+    }
     const bytes = readFileSync(path);
     validatePersona(bytes, path, def.name);
     return bytes;
@@ -325,12 +335,18 @@ export async function editPersona(path: string, name: string, catalog: PersonaCa
     }
     try { commitPersona(path, source, edited); }
     catch (error) {
-      if (!isCommandFailure(error) || error.code !== "CONFLICT") throw error;
-      // The edit was not saved, so the draft stays and the refusal says where it is.
-      const removed = readPersonaSource(path) === undefined;
+      // The edit was not saved, so the draft stays and the failure says where it is.
       keep = true;
-      throw new CommandFailure("refused", "CONFLICT", error.message, {
-        remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+      if (isCommandFailure(error) && error.code === "CONFLICT") {
+        const removed = readPersonaSource(path) === undefined;
+        throw new CommandFailure("refused", "CONFLICT", error.message, {
+          remedy: `your edit is kept in ${draft}; ${removed ? `restore it with \`cotal persona create ${name} --file ${draft}\`` : `compare it with \`cotal persona show ${name}\`, then edit again`}, and remove ${dirname(draft)} when you are done`,
+        });
+      }
+      const failure = isCommandFailure(error) ? error : new CommandFailure("unknown", "OPERATION_UNKNOWN", error instanceof Error ? error.message : String(error), { cause: error });
+      const kept = `your edit is kept in ${draft}, so run \`cotal persona edit ${name}\` again and paste it in, then remove ${dirname(draft)}`;
+      throw new CommandFailure(failure.outcome, failure.code, failure.message, {
+        remedy: failure.remedy ? `${failure.remedy}; ${kept}` : kept, target: failure.target, changed: failure.changed, native: failure.native, cause: error,
       });
     }
     return { action: "saved" };

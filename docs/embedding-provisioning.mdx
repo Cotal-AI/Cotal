@@ -45,6 +45,33 @@ const deliveryCreds = await mintCreds(auth, newIdentity(), "delivery");
 await store.put(deliveryCredsKey(space, { injected: true }), deliveryCreds);
 ```
 
+`setupSpaceStreams` creates the derived `cotal_membership_<space>` bucket in Memory. It refuses an
+existing File-backed membership bucket because changing storage requires deletion. Stop every
+membership writer and reader, mint the exact one-shot recreation credential, and opt in:
+
+```ts
+import { mintCreds, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+
+const recreateCreds = await mintCreds(auth, newIdentity(), "membership-store-recreate");
+await setupSpaceStreams({
+	servers: brokerUrl,
+	space,
+	creds: provisionerCreds,
+	recreateFileMembership: { creds: recreateCreds },
+});
+```
+
+The recreation credential can inspect and delete only `KV_cotal_membership_<space>`. The ordinary
+provisioner creates and verifies the empty Memory replacement. The membership feed is derived and
+stays stale until its writer finishes a complete authoritative rebuild and stamps a fresh heartbeat.
+The host must call `reconcileSpaceMemoryBuckets` with provisioner authority after a wake or broker
+restart, before treating presence or membership as ready. The call recreates their missing Memory
+buckets. A transport reconnect alone does not restore them. It refuses a missing File delivery or
+manager lease bucket and does not widen any standing credential.
+`startMembershipFeed` requires this host provisioning before startup; it cannot create stores with
+its scoped writer credential. Starting it against a missing membership store refuses with the
+privileged recovery command and API named in the error.
+
 [SPEC §4](../SPEC.md#4-delivery-modes) requires the creation-time delivery class to be discoverable on the wire.
 A daemon-backed space records `durable`; it does not rely on a receiver's fallback policy.
 The delivery credential key is per-space. The bare `delivery.creds` kind is not its store key.
@@ -55,6 +82,13 @@ The host must provision auth material and its IdP pin and ledger before starting
 
 `maxFileStore` is an optional positive integer cap in bytes.
 Other values throw.
+
+For channel-less agents, `provisionAgentDurables` creates DM but omits DLV when the resolved
+`allowSubscribe` is empty. Pass that full resolved ACL to `CotalEndpoint` as `allowSubscribe`;
+active `channels: []` alone does not establish an empty read ACL. An explicit empty ACL skips the
+DLV bind. A denied bind without that evidence refuses startup. Re-granting channel reads creates
+DLV with its existing `DeliverPolicy.All` policy; the new endpoint uses the updated resolved ACL.
+The auth service applies the same conditional DLV readback when admitting chat sessions.
 
 ### Multiple spaces on a broker
 
@@ -68,6 +102,85 @@ unreadable. The rest of the CLI lifecycle is still broker-wide: `down`, `clean` 
 on a multi-space root rather than scoping to one tenant, and the per-space lifecycle is the
 remaining multi-space operator layer. See
 [Known gaps](embedding.mdx#hosted-composition-gaps).
+
+#### Space accounts without a reload
+
+With the default MEMORY resolver, the broker learns accounts only from its config, so every added
+or removed space means rendering the whole config again and reloading the broker. A reload takes
+longer with every account already on it, and it re-runs auth callout for live callout sessions.
+
+A host can render the broker with `accountResolver: { kind: "full", directory, limit, intervalMs }`
+instead. nats-server then keeps each account's signed claim in `directory`, and a space account is
+added at run time:
+
+```ts
+import {
+  createSpaceAccountAuth,
+  hibernateAccountClaim,
+  pushAccountClaim,
+  retireAccountClaim,
+  wakeAccountClaim,
+} from "@cotal-ai/core";
+
+const space = await createSpaceAccountAuth(broker, "acme");
+// `system` is a connection as a system-account user allowed to publish $SYS.REQ.ACCOUNT.*.CLAIMS.UPDATE.
+await pushAccountClaim(system, { accountJwt: space.account.jwt, expectedServerIds: [system.info!.server_id], maxWaitMs: 5000 });
+
+// Later, to stop the space: its live connections close and its users are refused.
+const retired = await retireAccountClaim(broker, space.account.jwt, Math.floor(Date.now() / 1000));
+await pushAccountClaim(system, { accountJwt: retired, expectedServerIds: [system.info!.server_id], maxWaitMs: 5000 });
+```
+
+A host can temporarily unload an inactive full-resolver account without classifying it as retired.
+Keep the active template in durable host state, choose an `iat` newer than that template, and push
+the hibernated claim. Wake by re-signing the saved active template at another newer `iat`.
+
+```ts
+const sleeping = await hibernateAccountClaim(broker, activeTemplateJwt, hibernateIat);
+await pushAccountClaim(system, { accountJwt: sleeping, expectedServerIds, maxWaitMs: 5000 });
+
+const awake = await wakeAccountClaim(broker, activeTemplateJwt, wakeIat);
+await pushAccountClaim(system, { accountJwt: awake, expectedServerIds, maxWaitMs: 5000 });
+```
+
+Hibernation preserves the account identity, signing keys, account authorization, and every
+per-user revocation. It removes JetStream limits, sets connection and leaf limits to zero, and
+omits the wildcard retirement revocation. The same helpers accept the dedicated auth-callout
+account even though that account has no JetStream allocation. Wake refuses a hibernated or retired
+claim as its template. Persist the active template separately and serialize claim updates per
+account.
+
+For a dedicated auth-callout account, persist each pushed transition with
+`saveCalloutAccountJwt(store, space, accountJwt)`. This updates the versioned callout document
+without making the host restate its private JSON shape. Before restarting a callout service after a
+long sleep, `renewCalloutCredentials(store, space)` re-signs the callout and sentinel credentials
+for their existing user nkeys and stores both bounded generations together. It does not rotate the
+account identity, signing key, xkey, or user identities.
+
+- **A stock root records the choice.** `cotal up --account-resolver full` starts the broker on the
+  full resolver at `<root>/.cotal/account-jwts` and records it in `.cotal/broker-policy.json`. A host
+  that renders the same broker passes `brokerAccountResolver(root, readBrokerPolicy(root)?.accountResolver)`
+  from `@cotal-ai/workspace`, so both renders name the same directory and limit. nats-server switches
+  resolvers only at start, so a reload that changes the resolver is refused.
+- **The directory is broker state.** It sits beside `store_dir`: give it the same ownership and
+  backup coverage. A pushed claim survives a restart there even when the config does not list it.
+- **Keep rendering the config.** List every active space in the preloads as before, so a fresh
+  directory boots complete. nats-server keeps a newer pushed claim over an older preload.
+- **Removal is a retired claim.** Dropping a space from the preloads does not remove it: its last
+  pushed claim stays in the directory and loads again at the next start. Native deletion stays off. The retired claim keeps the account's
+  JetStream data in place; deleting the space's streams is a separate step.
+- **One writer per account.** The host orders the pushes for one account and owns the set of
+  servers it expects to answer. `pushAccountClaim` refuses an answer other than "jwt updated", an
+  unexpected server, or a missing answer.
+- **Switching resolvers is a restart.** nats-server refuses to change resolvers on a reload. `cotal up`
+  keeps using MEMORY.
+
+## Run admission storage
+
+`ensureAdmissionStore` creates the admission bucket with its write-once, no-rollup, no-delete
+and no-purge policy in the initial native stream CREATE. Creation needs INFO and CREATE authority
+for that stream, but no UPDATE grant. An existing store is verified without changing its policy;
+a malformed store or a denied inspection refuses. This does not make workflow storage lazy.
 
 ## Issued-authority stores from before 0.111.0
 
@@ -113,7 +226,14 @@ low-level operator primitives. Handle them as account-authority material:
 - Never log signer material or export it into env. Do not co-locate signer access with an untrusted
   connector/runtime process at the same OS uid (file permissions do not contain a same-uid reader;
   see the manager's isolation note). Segregate per tenant; rotate on compromise
-  (`rotateDataAccountSigningKey`).
+  (`rotateDataAccountSigningKey`). A rotation replaces the account's signing keys and keeps the rest of
+  its claim, so the account's connection and leaf-node limits and its revocations still hold after it.
+  It ends users a signing key issued, not users the account's own identity key signed.
+  Persist the rotated record with `replaceSpaceAccountAuth(store, { space, account })` from
+  `@cotal-ai/workspace`. It writes that space's account record and nothing else, so the broker
+  record the spaces share is not rewritten. Keep the record you replace: putting it back is the
+  same call. A `SecretStore` has no compare-and-swap, so keep other writers of the space's trust
+  records out while the call runs.
 
 ## Hosted composition gaps [#hosted-composition-gaps]
 
@@ -138,7 +258,9 @@ issuer and scope at 75% of its lifetime.
    (`createBrokerAuth` + `createSpaceAccountAuth` + N-space `serverConfig`, persisted as
    `broker.json` + `account.<key>.json`) and `cotal up` renders the whole tenant list. The CLI
    still lacks tenant-account provisioning and per-space teardown/backup/restore on that
-   broker. Its broker-wide lifecycle verbs refuse on a multi-space root, naming the tenants.
+   broker. A host composition can add and retire space accounts without a reload through the full
+   resolver ([above](#space-accounts-without-a-reload)). Its broker-wide lifecycle verbs refuse
+   on a multi-space root, naming the tenants.
    The existing `cotal space add` registers a connection, and `space delete` removes a
    space's streams; neither supplies that tenant-account lifecycle.
 3. **A non-Better-Auth production IdP.** The exchange core (`createIdpBridge`) is EdDSA-generic, but

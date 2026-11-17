@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
 import {
   discardLaunchArtifacts,
   reclaimWithChild,
@@ -11,10 +9,10 @@ import {
   type RuntimeKind,
   type RuntimeProvider,
   type RuntimeReference,
+  rejectionText,
 } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
-import { rejectionText } from "../rejection-text.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
@@ -63,7 +61,9 @@ export class RuntimeReapUnproven extends Error {
  * `reserve` mints the custody reference BEFORE any process exists, so the caller can record it
  * durably and hand the same reference to `spawn`; the reference then precedes the processes it
  * addresses. `reap` signals only a process whose identity it verifies against its own record,
- * proves it and its descendants gone, and forgets the record.
+ * proves the seat and the work covered by its custody mechanism gone, and forgets the record.
+ * Legacy PTY reap covers the original process group, not detached sessions; automatic restart
+ * requires the separate Runtime.reapWork guarantee.
  */
 export interface CustodialRuntime extends Runtime {
   reserve(): RuntimeReference;
@@ -310,15 +310,4 @@ export function exitProof(handle: AgentHandle): Promise<void> | undefined {
   }
   // Called from a continuation so a wait that throws becomes a rejection.
   return exited ? Promise.resolve().then(wait) : undefined;
-}
-
-/** Walk up from `startDir` to the pnpm workspace root (for spawning `pnpm cotal …`). */
-export function findWorkspaceRoot(startDir: string = process.cwd()): string {
-  let dir = resolve(startDir);
-  for (;;) {
-    if (existsSync(join(dir, "pnpm-workspace.yaml"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return resolve(startDir);
-    dir = parent;
-  }
 }

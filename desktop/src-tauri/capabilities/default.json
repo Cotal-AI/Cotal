@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "Local UI and its own login startup preference. No renderer shell, filesystem or remote IPC grants.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "deep-link:default"
+  ]
+}

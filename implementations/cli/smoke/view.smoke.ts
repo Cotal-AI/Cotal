@@ -5,12 +5,18 @@
  * depend on: delivery classification, same-sender/same-text unicast burst coalescing, the
  * status-sorted roster split, and the derived operator signals (counts + DM roll-up).
  */
+import { checkWatchOutput } from "./watch-output.js";
 import { EventEmitter } from "node:events";
 import { renderReport } from "@cotal-ai/workspace";
 // By dist path, the same module the package name resolves to, so a MeshView mutation is graded against the build its command runs.
 import { MeshView } from "../../../packages/workspace/dist/view/index.js";
 import { runLog } from "../src/render.js";
 import { feedLine, observedText, watchReport, WATCH_TEXT_LIMIT } from "../src/watch-data.js";
+import { followLine, historySender, where, type HistoryItem } from "../src/commands/history.js";
+import { whoLabel } from "../src/commands/who.js";
+import { printEndpoints } from "../src/commands/endpoints.js";
+import { memberName } from "../src/commands/channel-members.js";
+import { joinPeerLabel } from "../src/commands/join.js";
 import {
   chatSubject,
   unicastSubject,
@@ -66,6 +72,7 @@ class MockEndpoint extends EventEmitter {
   tap(handler: (subject: string, m: CotalMessage | undefined) => void): void {
     this.tapHandler = handler;
   }
+  channelDeliveryClass() { return "live"; }
   async listChannels(): Promise<{ channel: string; messages: number }[]> {
     return [];
   }
@@ -118,8 +125,53 @@ check(
 check("signals.waiting surfaces the blocked agent", s.signals.waiting.length === 1 && s.signals.waiting[0].card.name === "bob");
 const watchRoster = renderReport(watchReport(s, "roster"), "plain", 200).split("\n");
 check("the watch roster names a working agent's progress as unknown", watchRoster.some((line) => /\balice\b.*working - progress unknown/.test(line)) && !watchRoster.some((line) => /\bbob\b.*progress unknown/.test(line)));
+check("the watch roster includes endpoint kind and identity alongside agents", watchRoster.some((line) => /console.*endpoint.*ID_CON/.test(line)) && watchRoster.some((line) => /alice.*agent.*ID_ALICE/.test(line)));
+  const blankSender = feedLine({ id: "blank", ts: 1_700_000_000_000, from: { id: "local.blank", name: " \n" }, delivery: "multicast", channel: "general", text: "hello" });
+  check("a blank sender name is replaced by the id", blankSender.includes("local.blank") && !blankSender.includes("\\u000a"));
+  const blankRoster = watchReport({
+    ...s,
+    agents: [{ ...s.agents[0]!, card: { ...s.agents[0]!.card, id: "local.blank", name: " " }, activity: " \n" }],
+    endpoints: [],
+  }, "roster");
+  const blankBlock = blankRoster.sections[0]?.blocks[0];
+  const blankRow = (blankBlock && "rows" in blankBlock ? blankBlock.rows[0] : undefined) as Readonly<Record<string, unknown>> | undefined;
+  check("a blank roster name and activity use the id and not reported", blankRow?.name === "local.blank" && blankRow?.activity === "not reported");
+const endpointOnly = renderReport(watchReport({ ...s, agents: [] }, "roster"), "plain", 200);
+check("an endpoint-only roster is not reported empty", endpointOnly.includes("console") && !endpointOnly.includes("No participants"));
+const emptyRoster = renderReport(watchReport({ ...s, agents: [], endpoints: [] }, "roster"), "plain", 200);
+check("an empty roster names its participant scope", emptyRoster.includes("No participants in this observer snapshot."));
 {
-  // A message past the row bound is cut, and the line says how much it lost and which read shows it whole.
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    printEndpoints([
+      { card: { id: "local.blank", name: " \n", kind: "agent", role: " \t" }, status: "idle", ts: Date.now(), activity: " \n" },
+      { card: { id: "local.ada", name: "ada", kind: "agent", role: "worker" }, status: "idle", ts: Date.now(), activity: "writing" },
+    ] as never, "demo");
+  } finally { console.log = log; }
+  const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  check("endpoints shows the id for a blank participant name and none for a blank role", text.includes("local.blank") && /local\.blank\s+none\s+agent/.test(text) && !text.includes("\\u000a"));
+  check("endpoints keeps a real participant name and role", /ada\s+worker\s+agent/.test(text));
+  check("endpoints says a blank activity was not reported", text.includes("not reported") && text.includes("writing"));
+}
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const shown = memberName(name, "local.blank");
+  check(`channel members shows the id for a roster name ${JSON.stringify(name)}`, shown === "local.blank" && !shown.includes("\n"));
+}
+check("channel members keeps a real roster name", memberName("ada", "local.ada") === "ada");
+check("channel members says a missing roster name was not reported", memberName(null, "local.blank") === "name not reported");
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const label = joinPeerLabel({ name, id: "local.blank" });
+  check(`join shows the id for a participant named ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
+}
+check("join keeps a participant name", joinPeerLabel({ name: "ada", id: "local.ada" }) === "ada");
+check("join keeps a name and its role", joinPeerLabel({ name: "ada", id: "local.ada", role: "worker" }) === "ada/worker");
+check("join uses the id when a blank name has a role", joinPeerLabel({ name: " ", id: "local.blank", role: "worker" }) === "local.blank/worker");
+const waitingReport = renderReport(watchReport(s, "waiting"), "plain", 200);
+check("the waiting view keeps the agent-only signal scope", waitingReport.includes("bob") && !waitingReport.includes("console") && !waitingReport.includes("alice"));
+{
+  // A message past the row bound is cut, and the line says how much it lost and which read carries the whole text.
   const long = `${"x".repeat(200_000)}END-MARK`;
   const from = { id: ids.alice, name: "alice" };
   const post = { id: "long", ts: Date.now(), from, delivery: "multicast" as const, channel: "general", text: long };
@@ -129,10 +181,10 @@ check("the watch roster names a working agent's progress as unknown", watchRoste
   const whole = marker(feedLine(post));
   const row = marker(feedLine({ ...post, text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
   const dm = marker(feedLine({ ...post, delivery: "unicast", channel: undefined, toIds: [ids.bob], text: cut.text, omittedCodeUnits: cut.omittedCodeUnits }));
-  check("a watch line cut at the row bound names the code units not shown and the history read that shows it whole",
-    whole?.[1] === String(lost) && whole[2] === "; `cotal history general` shows it whole" && !feedLine(post).includes("END-MARK"));
-  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history general` shows it whole");
-  check("a cut direct message points at cotal history --dms", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms` shows it whole");
+  check("a watch line cut at the row bound names the code units not shown and the history read that carries the whole text",
+    whole?.[1] === String(lost) && whole[2] === "; `cotal history general --json` carries the whole text" && !feedLine(post).includes("END-MARK"));
+  check("a stream row already cut keeps the count it lost", row?.[1] === String(lost) && row[2] === "; `cotal history general --json` carries the whole text");
+  check("a cut direct message points at cotal history --dms --json", dm?.[1] === String(lost) && dm[2] === "; `cotal history --dms --json` carries the whole text");
   check("control: a message within the bound has no marker", marker(feedLine({ ...post, text: "short" })) === null);
 }
 
@@ -192,6 +244,12 @@ check(
     && s3Alice?.conversations.flatMap((c) => c.messages).filter((m) => m.text === "forged line").length === 1,
 );
 
+mock.emit("roster", [...roster, presence("local.blank", " \n\t", "agent", "idle"), presence("local.ada2", " ada", "agent", "idle")]);
+const named = view.snapshot();
+check("a blank roster name resolves to the id", named.nameOf("local.blank") === "local.blank" && !named.nameOf("local.blank").includes("\n"));
+check("a real roster name is kept, including surrounding spaces", named.nameOf("local.ada2") === " ada");
+check("an unknown id stays an eight-character prefix", named.nameOf("local.unknown12") === "local.un");
+
 await view.stop();
 
 // ---- stop after the connection is closed for good ----
@@ -216,6 +274,9 @@ await view.stop();
   const stopped = await Promise.race([closed.stop().then(() => true), wait(2_000).then(() => false)]);
   check("stop returns when only the endpoint's stop settles the membership watch (Ctrl-C after the connection is gone)", stopped);
 }
+
+// Exercise the actual watch outputs before runLog registers its long-lived signal handlers.
+await checkWatchOutput();
 
 // ---- the line stream (console --plain and pipes): ASCII on --plain and under a non-UTF-8 locale ----
 /** The lines one runLog prints for a join and two feed entries, under `LC_ALL=locale`. */
@@ -251,6 +312,34 @@ for (const [what, plain, locale] of [["--plain under a UTF-8 locale", true, "C.U
   check("control: a pipe under a UTF-8 locale draws the status mark, the arrow and the count sign",
     /● working · progress unknown/.test(text) && /alice\/alice → #general: a → b/.test(text) && /\(3×\)/.test(text));
 }
+
+{
+  const blankSender = (name: string): HistoryItem => ({
+    seq: 1,
+    id: "m1",
+    ts: "2026-11-13T23:13:20.000Z",
+    channel: "general",
+    to: null,
+    from: { id: "local.blank", name },
+    text: "hello",
+  });
+  for (const name of [" ", "", "\n", " \n\t"]) {
+    const line = followLine(blankSender(name));
+    check(`history shows the id for a sender named ${JSON.stringify(name)}`, historySender(name, "local.blank") === "local.blank" && line.includes("local.blank") && !line.includes("\n") && !line.includes("\\u000a"));
+  }
+  check("history keeps a sender name", historySender("ada", "local.ada") === "ada" && followLine({ ...blankSender("ada"), from: { id: "local.ada", name: "ada" } }).includes("ada"));
+  const dm: HistoryItem = { ...blankSender("ada"), from: { id: "local.ada", name: "ada" }, channel: null, to: "local.peer" };
+  check("history shows the id for a DM recipient whose name is blank", where(dm, new Map([["local.peer", " "]])) === "DM to local.peer");
+  check("history shows a DM recipient name", where(dm, new Map([["local.peer", "ada"]])) === "DM to ada");
+  check("history leaves an unnamed DM recipient unknown", where({ ...dm, to: null }, new Map()) === "DM to ?");
+}
+for (const name of [" ", "", "\n", " \n\t"]) {
+  const label = whoLabel(name, "local.blank");
+  check(`who shows the id for a name ${JSON.stringify(name)}`, label === "local.blank" && !label.includes("\n"));
+}
+check("who keeps a participant name", whoLabel("ada", "local.ada") === "ada");
+check("who keeps a name and its role", whoLabel("ada", "local.ada", "worker") === "ada/worker");
+check("who uses the id when a blank name has a role", whoLabel(" ", "local.blank", "worker") === "local.blank/worker");
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

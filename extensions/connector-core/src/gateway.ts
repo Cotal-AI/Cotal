@@ -19,7 +19,7 @@ import type { Readable, Writable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { McpError, ErrorCode, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { assertValidName, conversationSelection, SELECTION_MAX_ITEMS, type ConversationPending, type ConversationSelection } from "@cotal-ai/core";
 import { DOCS_VERSION } from "./docs.js";
@@ -40,12 +40,17 @@ export class NameTaken extends Error {
   }
 }
 
+const SPACE_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
 /** An issuer is waiting for the person to review permissions. This is not a connection or an
- *  authorization; only the authority's authenticated approval page can record the decision. */
+ *  authorization; only the authority's authenticated approval page can record the decision.
+ *  `space`, when the host knows which mesh this approval would join, is named in the pending result. */
 export class ApprovalRequired extends Error {
-  constructor(readonly pending: ConversationPending) {
+  readonly space?: string;
+  constructor(readonly pending: ConversationPending, space?: string) {
     super("the person must approve this connection's permissions");
     this.name = "ApprovalRequired";
+    this.space = space !== undefined && SPACE_NAME.test(space) ? space : undefined;
   }
 }
 
@@ -63,15 +68,18 @@ export interface GatewayConnection {
  *  value a tool argument chose. */
 export interface GatewayHost {
   /** The account the request authenticated as. Throw when the request carries no valid
-   *  authentication; the tool then runs nothing. */
-  account(auth: AuthInfo | undefined): string;
+   *  authentication; the tool then runs nothing. `meta` is the tool call's request `_meta`, which
+   *  the MCP client sets and the model's arguments cannot reach. Only a host whose client is the
+   *  native harness itself, over stdio, may bind to it. */
+  account(auth: AuthInfo | undefined, meta?: Readonly<Record<string, unknown>>): string;
   /** Open a fresh connection for `account` named exactly `name`. Throw {@link NameTaken} only for
    *  an authoritative name collision. The collision check and the issue must be one atomic step per
    *  account: an `open` racing another for the same name throws `NameTaken` rather than also
    *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
    *  so they must not carry secrets. `selection` is only a proposal, never the person's consent.
    *  Throw {@link ApprovalRequired} until the person approves through the authority's own UI; issue
-   *  only their approved selection within their current access. `approvalId` is an untrusted resume
+   *  only their approved selection within their current access. Pass that error the space this
+   *  connection is bound to when the caller cannot name it. `approvalId` is an untrusted resume
    *  handle, never proof of approval. Bind it to this account, name and unchanged request, and do not
    *  reuse an issued approval for another connection. `space`, when the native schema offers it, is
    *  the registered mesh the caller named. Omit it to keep the embedder's default resolution. A
@@ -131,8 +139,9 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false };
 const ADDITIVE = { readOnlyHint: false, destructiveHint: false };
 const UPDATING = { readOnlyHint: false, destructiveHint: true };
 
-// Inbox and wait consume messages. Status can change attention, and disconnect, leave and channel
-// mode can remove a connection or subscription. None of those are read-only queries.
+// Inbox and wait consume messages, and anycast can cancel a request. Status can change attention,
+// and disconnect, leave and channel mode can remove a connection or subscription. None of those are
+// read-only queries.
 const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_connect: ADDITIVE,
   cotal_disconnect: UPDATING,
@@ -144,7 +153,7 @@ const GATEWAY_ANNOTATIONS: Readonly<Record<string, ToolAnnotations>> = {
   cotal_inbox: UPDATING,
   cotal_send: ADDITIVE,
   cotal_dm: ADDITIVE,
-  cotal_anycast: ADDITIVE,
+  cotal_anycast: UPDATING,
   cotal_status: UPDATING,
   cotal_channel_info: READ_ONLY,
   cotal_channels: READ_ONLY,
@@ -170,7 +179,7 @@ function gatewayAnnotations(name: string): ToolAnnotations {
 /** What `cotal_connect` says about selection when the embedder enables it. */
 const SELECTION_TEXT =
   "Ask for what this conversation already knows it needs, in this call: the channels the person named or the " +
-  "task needs, a role it should answer, and spawn or run if it will start agents or workflow runs. The person " +
+  "task needs, a role it should answer, and spawn or run if it will start agents or workflow runs. On a signed-in mesh, the person " +
   "then approves one request instead of a second one later. " +
   "Channels, role and capabilities are a proposal for the person to review, edit and approve in Cotal, " +
   "not permission to connect. Without them the proposal has no ordinary channel access or role, but still " +
@@ -205,6 +214,10 @@ export const GATEWAY_NAME_ATTEMPTS = 20;
  *  byte goes out when the wait ends: Claude Code gives a remote server 60 seconds to that byte,
  *  Cloudflare ends an origin response after about 100, and claude.ai ends a tool call after 240. */
 export const GATEWAY_WAIT_SECONDS = 50;
+/** How often a held `cotal_connect` asks the host again about a pending approval. */
+const APPROVAL_POLL_MS = 2000;
+/** What a held `cotal_connect` leaves of the wait bound for the connect that follows an approval. */
+const APPROVAL_SETTLE_SECONDS = 25;
 
 /** How an embedder tunes the surface for what sits in front of it. */
 export interface GatewayOptions {
@@ -226,6 +239,11 @@ export interface GatewayOptions {
   /** The longest `cotal_wait` may hold one call, in whole seconds. Defaults to
    *  {@link GATEWAY_WAIT_SECONDS}. Keep it under every proxy and client timeout on the path. */
   waitSeconds?: number;
+  /** How long `cotal_connect` holds one call while its permission request is pending, in whole
+   *  seconds. It asks the host again every 2 seconds with the same approval and returns connected
+   *  when the person approves. 0 returns the pending result at once, which is the default here.
+   *  {@link handleGatewayRequest} sets it for an endpoint with `approvalResume`. */
+  approvalHoldSeconds?: number;
   /** A way to wake the client other than a held `cotal_wait`, for an embedder whose client can be
    *  woken. Without it a conversation hears messages only when it calls a tool. */
   wake?: GatewayWake;
@@ -325,6 +343,15 @@ function wakeCount(agent: MeshAgent): number {
   return agent.inboxWake() + mentionsOf(agent).count;
 }
 
+/** Resolves true when `signal` aborts, false when `ms` elapses. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    signal?.addEventListener("abort", () => { clearTimeout(timer); resolve(true); }, { once: true });
+  });
+}
+
 /**
  * Resolve true once `agent` has something that should wake it, or false after `ms`, on abort, or
  * when the agent stops.
@@ -398,15 +425,22 @@ export function registerCotalGatewayTools(
   if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {
     throw new Error(`waitSeconds must be a whole number of seconds, at least 1; got ${waitSeconds}`);
   }
+  const approvalHoldSeconds = options.approvalHoldSeconds ?? 0;
+  if (!Number.isInteger(approvalHoldSeconds) || approvalHoldSeconds < 0) {
+    throw new Error(`approvalHoldSeconds must be a whole number of seconds, 0 or more; got ${approvalHoldSeconds}`);
+  }
   const offered = options.tools ?? GATEWAY_TOOLS;
   for (const name of offered) if (!NATIVE_GATEWAY_TOOLS.has(name)) throw new Error(`the gateway cannot offer ${name}`);
   // What one connection may call: what is registered and what its host granted it.
   const toolsOf = (c: GatewayConnection) => new Set([...offered].filter((name) => (c.tools ?? GATEWAY_TOOLS).has(name)));
   const wake = options.wake;
-  // Connections signalled and not read since, how many cotal_wait calls hold each one, and the
-  // check for each watched connection, which the rewake runs again.
+  // Connections signalled and not read since, how many waits and reads hold each one, those that
+  // got something while held, the check each one's last hold runs, and the check for each watched
+  // connection, which the rewake runs again.
   const signalled = new WeakSet<MeshAgent>();
   const holding = new WeakMap<MeshAgent, number>();
+  const missed = new WeakSet<MeshAgent>();
+  const checks = new WeakMap<MeshAgent, () => void>();
   const watched = new Map<GatewayConnection, (fireNow?: boolean) => void>();
   wake?.attach?.((connection, fireNow) => {
     if (connection) watched.get(connection)?.(fireNow);
@@ -417,7 +451,12 @@ export function registerCotalGatewayTools(
     // Counted before `fire` runs, so a focus @mention is in the count `fire` reads.
     mentionsOf(c.agent);
     const fire = () => {
-      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;
+      if (c.agent.stopping || signalled.has(c.agent) || wakeCount(c.agent) === 0) return;
+      // A held connection is checked again when the last hold ends (see holdFor).
+      if ((holding.get(c.agent) ?? 0) > 0) {
+        missed.add(c.agent);
+        return;
+      }
       if (wake.signal(c, renderInboxPreview(c.agent.inboxSnapshot()))) signalled.add(c.agent);
     };
     const replay = (fireNow = true) => {
@@ -426,6 +465,7 @@ export function registerCotalGatewayTools(
       if (fireNow) fire();
     };
     watched.set(c, replay);
+    checks.set(c.agent, fire);
     c.agent.on("incoming", fire);
     c.agent.on("mention-wake", fire);
     c.agent.once("stopping", () => {
@@ -434,6 +474,21 @@ export function registerCotalGatewayTools(
       c.agent.off("mention-wake", fire);
     });
   };
+  // A wait or an inbox read clears the latch and holds its connection, so nothing is signalled while
+  // it runs. A read that shows a message which arrived meanwhile cannot leave the latch set over an
+  // empty inbox, and when the last hold ends, whatever arrived meanwhile and is still unread is
+  // signalled once.
+  const holdFor = async <T>(c: GatewayConnection, run: () => Promise<T>): Promise<T> => {
+    signalled.delete(c.agent);
+    holding.set(c.agent, (holding.get(c.agent) ?? 0) + 1);
+    try {
+      return await run();
+    } finally {
+      const left = (holding.get(c.agent) ?? 1) - 1;
+      holding.set(c.agent, left);
+      if (left === 0 && missed.delete(c.agent)) checks.get(c.agent)?.();
+    }
+  };
 
   server.registerTool(
     "cotal_connect",
@@ -441,21 +496,25 @@ export function registerCotalGatewayTools(
       title: "Cotal: connect this conversation",
       annotations: gatewayAnnotations("cotal_connect"),
       description:
-        "Request a Cotal connection for THIS conversation. The person must review, edit and approve its " +
-        "permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
+        "Request a Cotal connection for THIS conversation. " +
+        (options.space ? "On a signed-in mesh, the person must " : "The person must ") +
+        "review, edit and approve its permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
         "approval link and stop; never approve for them or poll. After their decision, retry the same request " +
         "as the pending result directs. Keep the returned connection_id and pass it on every other cotal_* " +
-        "call. If a new name is taken, the next free name is chosen (name_2, name_3, ...) and reported. " +
+        "call. A signed-in or hosted connection refuses a taken name; it does not choose a replacement. " +
+        "On an open or static local mesh, the next free name is chosen (name_2, name_3, ...) and reported. " +
         "Never reuse another conversation's connection_id or approval_id." +
         (options.selection ? ` ${SELECTION_TEXT}` : "") +
         (options.space
-          ? " Optional space names one mesh already registered and signed in on this computer, overriding the default target without changing configuration. Omit it to use the CLI's default target."
+          ? " Optional space names one mesh registered on this computer, and signed in when it is a signed-in space, overriding the default target without changing configuration. Omit it to use the CLI's default target. " +
+            "An open or static mesh this computer runs needs no browser approval: the connection holds the channels, role and capabilities of that mesh's default persona, " +
+            "or the part of them it asks for. Connecting shares this native conversation's activity from that point onward, including user and assistant messages and tool inputs and results; earlier history is not shared."
           : ""),
       inputSchema: z.strictObject({
         name: z.string().min(1).describe("The agent name to request, for example claude_web."),
         ...(options.connectContext ? { context: z.string().min(1).max(128).optional().describe("Conversation binding supplied by the native host.") } : {}),
         ...(options.space ? { space: z.string().min(1).max(64).optional()
-          .describe("Registered signed-in mesh to join for this conversation. Overrides the default target without changing configuration. A blank name is refused.") } : {}),
+          .describe("Registered mesh to join for this conversation. Overrides the default target without changing configuration. A blank name is refused.") } : {}),
         ...(options.selection ? SELECTION_SHAPE : {}),
         ...(options.approvalResume ? { approval_id: z.string().regex(/^[a-z2-7]{26}$/).optional()
           .describe("The approval.id from THIS conversation's pending result. Resumes only that unchanged request; it does not approve it.") } : {}),
@@ -464,7 +523,7 @@ export function registerCotalGatewayTools(
     async ({ name, ...input }, extra) => {
       let account: string;
       try {
-        account = host.account(extra.authInfo);
+        account = host.account(extra.authInfo, extra._meta);
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
@@ -496,34 +555,53 @@ export function registerCotalGatewayTools(
         }
         try {
           const context = "context" in input && typeof input.context === "string" ? input.context : undefined;
-          const c = await host.open(account, candidate, context, selection, approvalId, space);
-          watch(c);
-          const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
-          const listening = wake ? `\n${wake.listening(c)}` : "";
-          // A conversation that joins here had no launch-time system prompt, so the connect result
-          // is where it is handed its bearings: the orientation card, then the shared briefing.
-          const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
-          return toContent({
-            text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
-          });
-        } catch (e) {
-          if (e instanceof ApprovalRequired) {
-            const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
-            const message = `Permission approval required. This conversation is not connected.\n` +
-              `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
-              `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
-              `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
-            // Some native clients give the model only structuredContent, not the text blocks.
-            const structuredContent = { v: 1, status: "pending", name: candidate,
-              requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message };
-            return {
-              content: [
-                { type: "text" as const, text: message },
-                { type: "text" as const, text: JSON.stringify(structuredContent) },
-              ],
-              structuredContent,
-            };
+          // A client that cannot be woken hears the decision only from a call. With a hold, this call
+          // asks the host again with the same approval until the person decides or the hold ends.
+          let resumeId = approvalId;
+          const deadline = Date.now() + approvalHoldSeconds * 1000;
+          for (;;) {
+            try {
+              const c = await host.open(account, candidate, context, selection, resumeId, space);
+              watch(c);
+              const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
+              const listening = wake ? `\n${wake.listening(c)}` : "";
+              // A conversation that joins here had no launch-time system prompt, so the connect result
+              // is where it is handed its bearings: the orientation card, then the shared briefing.
+              const card = await orientationCard(c.agent, c.config, source, undefined, toolsOf(c));
+              return toContent({
+                text: `Connected as ${c.config.name}${renamed}.\nconnection_id: ${c.id}\nPass this connection_id on every cotal_* call in this conversation.\n${accessLine(c.config)}${listening}\n\n${card}\n\n${briefing(c.config, "gateway")}`,
+              });
+            } catch (e) {
+              if (!(e instanceof ApprovalRequired)) throw e;
+              const remaining = deadline - Date.now();
+              if (approvalHoldSeconds > 0 && remaining > 0 && !(await pause(Math.min(APPROVAL_POLL_MS, remaining), extra.signal))) {
+                resumeId = e.pending.approval.id;
+                continue;
+              }
+              const resume = options.approvalResume ? ` and approval_id ${JSON.stringify(e.pending.approval.id)}` : "";
+              const joined = e.space ?? space;
+              const next = approvalHoldSeconds > 0
+                ? `This call waited and the person has not decided. Call cotal_connect again with name ${JSON.stringify(candidate)}${resume} and the same requested permissions to keep waiting. That call does not start another request.`
+                : `After they approve, retry cotal_connect with name ${JSON.stringify(candidate)}${resume} and the same requested permissions. Do not poll or start another request while waiting.`;
+              const message = `Permission approval required. This conversation is not connected.\n` +
+                (joined ? `This connection would join space ${JSON.stringify(joined)}.\n` : "") +
+                `The person must open ${e.pending.approval.url}, review or edit the permissions, and choose Approve or Deny.\n` +
+                `Expires: ${e.pending.approval.expiresAt}. Only the person's decision in Cotal counts; do not open the decision page or approve on their behalf.\n` +
+                next;
+              // Some native clients give the model only structuredContent, not the text blocks.
+              const structuredContent = { v: 1, status: "pending", name: candidate,
+                requestId: e.pending.requestId, approval: e.pending.approval, proposed: e.pending.proposed, message,
+                ...(joined ? { space: joined } : {}) };
+              return {
+                content: [
+                  { type: "text" as const, text: message },
+                  { type: "text" as const, text: JSON.stringify(structuredContent) },
+                ],
+                structuredContent,
+              };
+            }
           }
+        } catch (e) {
           if (e instanceof NameTaken) {
             if (approvalId) return refuse("The approved name is no longer available. Nothing was connected; a different name requires a new permission approval.");
             continue;
@@ -546,7 +624,7 @@ export function registerCotalGatewayTools(
     async ({ connection_id }, extra) => {
       let account: string;
       try {
-        account = host.account(extra.authInfo);
+        account = host.account(extra.authInfo, extra._meta);
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
@@ -566,7 +644,7 @@ export function registerCotalGatewayTools(
     },
     async ({ connection_id }, extra) => {
       let account: string;
-      try { account = host.account(extra.authInfo); }
+      try { account = host.account(extra.authInfo, extra._meta); }
       catch (e) { return refuse(`not authenticated: ${errorText(e)}`); }
       const connection = await host.find(account, connection_id);
       if (!connection) return refuse(CONNECTION_REQUIRED);
@@ -605,7 +683,7 @@ export function registerCotalGatewayTools(
     async ({ connection_id, seconds }, extra) => {
       let account: string;
       try {
-        account = host.account(extra.authInfo);
+        account = host.account(extra.authInfo, extra._meta);
       } catch (e) {
         return refuse(`not authenticated: ${errorText(e)}`);
       }
@@ -614,23 +692,18 @@ export function registerCotalGatewayTools(
       const inbox = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === "cotal_inbox");
       if (!inbox) return refuse("cotal_wait is not available on this connection.");
       const limit = seconds ?? waitSeconds;
-      holding.set(c.agent, (holding.get(c.agent) ?? 0) + 1);
-      let woke: boolean;
-      try {
-        woke = await waitForWake(c.agent, limit * 1000, extra.signal);
-      } finally {
-        holding.set(c.agent, (holding.get(c.agent) ?? 1) - 1);
-      }
-      if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
-      if (!woke) {
-        return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
-      }
-      signalled.delete(c.agent);
-      try {
-        return toContent(await runFor(inbox, c, {}, extra.signal));
-      } catch (e) {
-        return refuse(errorText(e));
-      }
+      return holdFor(c, async () => {
+        const woke = await waitForWake(c.agent, limit * 1000, extra.signal);
+        if (c.agent.stopping) return refuse(CONNECTION_REQUIRED);
+        if (!woke) {
+          return toContent({ text: `No new messages in ${limit} second${limit === 1 ? "" : "s"}. Call cotal_wait again to keep listening.` });
+        }
+        try {
+          return toContent(await runFor(inbox, c, {}, extra.signal));
+        } catch (e) {
+          return refuse(errorText(e));
+        }
+      });
     },
   );
 
@@ -649,7 +722,7 @@ export function registerCotalGatewayTools(
         const { connection_id, ...rest } = args as { connection_id: string } & Record<string, unknown>;
         let account: string;
         try {
-          account = host.account(extra.authInfo);
+          account = host.account(extra.authInfo, extra._meta);
         } catch (e) {
           return refuse(`not authenticated: ${errorText(e)}`);
         }
@@ -658,13 +731,14 @@ export function registerCotalGatewayTools(
         // A tool the host did not grant this connection, or whose capability its credential lacks.
         const own = cotalToolSpecs(c.config, source, undefined, toolsOf(c)).find((s) => s.name === spec.name);
         if (!own) return refuse(`${spec.name} is not available on this connection.`);
-        let result: ReturnType<typeof toContent>;
-        if (spec.name === "cotal_inbox") signalled.delete(c.agent);
-        try {
-          result = toContent(await runFor(own, c, rest, extra.signal));
-        } catch (e) {
-          result = refuse(errorText(e));
-        }
+        const run = async () => {
+          try {
+            return toContent(await runFor(own, c, rest, extra.signal));
+          } catch (e) {
+            return refuse(errorText(e));
+          }
+        };
+        const result = spec.name === "cotal_inbox" ? await holdFor(c, run) : await run();
         // cotal_inbox already says what it left buffered.
         const notice = spec.name === "cotal_inbox" || wake?.inboxNotice?.(c) === false ? undefined : waitingNotice(c.agent);
         return notice ? { ...result, content: [...result.content, notice] } : result;
@@ -691,6 +765,22 @@ export const GATEWAY_CONNECTING =
 /** The server instructions {@link handleGatewayRequest} sends when the embedder gives none. */
 export const GATEWAY_INSTRUCTIONS = `${GATEWAY_CONNECTING} ${GATEWAY_LISTENING}`;
 
+/** Optional MCP Events methods. The host owns validation, subscription storage, callback verification
+ * and delivery. The account is resolved from transport authentication, never from method parameters. */
+export interface GatewayEvents {
+  list(account: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  subscribe(account: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  unsubscribe(account: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+/** A public, secret-free MCP Events error supplied by the host without importing the gateway's SDK. */
+export class GatewayEventError extends Error {
+  constructor(readonly code: number, message: string, readonly data?: unknown) {
+    super(message);
+    this.name = "GatewayEventError";
+  }
+}
+
 /** One HTTP request to a gateway endpoint. */
 export interface GatewayRequest {
   req: IncomingMessage;
@@ -701,6 +791,8 @@ export interface GatewayRequest {
   /** What the embedder authenticated this request as, handed to {@link GatewayHost.account}.
    *  Without it every tool refuses and runs nothing. */
   auth?: AuthInfo;
+  /** Advertise and serve MCP Events only when this authenticated endpoint implements them. */
+  events?: GatewayEvents;
   /** The source tag on messages this endpoint sends. */
   source?: string;
   instructions?: string;
@@ -712,6 +804,10 @@ export interface GatewayRequest {
   selection?: boolean;
   /** See {@link GatewayOptions.waitSeconds}. */
   waitSeconds?: number;
+  /** See {@link GatewayOptions.approvalHoldSeconds}. With `approvalResume`, defaults to `waitSeconds`
+   *  less 25 seconds, never below 0: a client of this endpoint cannot be woken, and the connect that
+   *  follows an approval needs the rest of the bound. */
+  approvalHoldSeconds?: number;
 }
 
 /**
@@ -722,7 +818,8 @@ export interface GatewayRequest {
  * The endpoint is stateless. Each POST gets a fresh server and transport and a JSON response, so
  * nothing survives between requests except what the host stores. There is no server-initiated
  * stream and no session to end, so every other method answers 405, as the Streamable HTTP
- * transport allows. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
+ * transport allows. A `cotal_wait` call holds its POST open for up to `waitSeconds`. A `cotal_connect`
+ * call whose permission request is pending holds its POST open for up to `approvalHoldSeconds`.
  */
 export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest): Promise<void> {
   if (r.req.method !== "POST") {
@@ -735,7 +832,30 @@ export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest)
   // imported, which makes Node load its internal undici, and a process that serves only stdio never needs either.
   const { StreamableHTTPServerTransport } = await import("@modelcontextprotocol/sdk/server/streamableHttp.js");
   const server = new McpServer({ name: "cotal", version: DOCS_VERSION }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
-  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
+  const approvalHoldSeconds = r.approvalHoldSeconds
+    ?? (r.approvalResume ? Math.max(0, (r.waitSeconds ?? GATEWAY_WAIT_SECONDS) - APPROVAL_SETTLE_SECONDS) : 0);
+  registerCotalGatewayTools(server, host, r.source, { approvalResume: r.approvalResume, selection: r.selection, approvalHoldSeconds, ...(r.waitSeconds === undefined ? {} : { waitSeconds: r.waitSeconds }) });
+  if (r.events) {
+    // MCP Events is a draft extension not yet named by the SDK's capability type.
+    const capabilities: Parameters<typeof server.server.registerCapabilities>[0] & { events: Record<string, never> } = { events: {} };
+    server.server.registerCapabilities(capabilities);
+    for (const action of ["list", "subscribe", "unsubscribe"] as const) {
+      server.server.setRequestHandler(z.object({
+        method: z.literal(`events/${action}`),
+        params: z.record(z.string(), z.unknown()).optional(),
+      }), async (request, extra) => {
+        if (!extra.authInfo) throw new McpError(ErrorCode.InvalidRequest, "Authentication is required for MCP Events.");
+        let account: string;
+        try { account = host.account(extra.authInfo); }
+        catch { throw new McpError(ErrorCode.InvalidRequest, "Authentication is required for MCP Events."); }
+        try { return await r.events![action](account, request.params ?? {}); }
+        catch (error) {
+          if (error instanceof GatewayEventError) throw new McpError(error.code, error.message, error.data);
+          throw new McpError(ErrorCode.InternalError, "The MCP Events request could not be completed.");
+        }
+      });
+    }
+  }
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   r.res.on("close", () => {
     void transport.close();
@@ -775,7 +895,8 @@ export interface GatewayStdio {
 /**
  * Serve the gateway surface over stdio with this package's own MCP server, for a client such as
  * Claude Desktop that runs one local process for every conversation. A stdio request carries no
- * authentication, so `host.account` receives `undefined` and names the local user. A client that
+ * authentication, so `host.account` receives `undefined` and the request's `_meta`, and names the
+ * local user or the conversation the client's metadata names. A client that
  * cancels a call aborts its signal, as a closed HTTP request does.
  */
 export async function serveGatewayStdio(host: GatewayHost, o: GatewayStdio = {}): Promise<{ close(): Promise<void> }> {

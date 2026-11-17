@@ -27,8 +27,9 @@
  * No broker: the MeshAgent constructor builds an endpoint but never connects, so `ep` is swapped for
  * one that throws. Run: pnpm smoke:manager-invoke-verdict
  */
-import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, managerCallerBinding } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, EP_UNDECLARED_ARG, managerCallerBinding } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
+import { DOCS_VERSION } from "../src/docs.js";
 import type { AgentConfig } from "../src/config.js";
 import { cotalToolSpecs } from "../src/tool-specs.js";
 
@@ -223,6 +224,19 @@ for (const [label, config, expected] of [
   check(`${label} another endpoint never receives a manager pin`, calls.at(-1)?.opts.instanceId === undefined);
   await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "status" });
   check(`${label} generic untargeted call retains its existing class route`, calls.at(-1)?.opts.instanceId === undefined);
+  // An explicit instance pins any endpoint, and wins over the manager pin a seat would otherwise use.
+  const pin = "p".repeat(26);
+  await tools.find(t => t.name === "cotal_describe")!.run(agent, config, { endpoint: "com.example.orders", instance: pin });
+  check(`${label} an explicit instance pins a third-party describe`, calls.at(-1)?.endpoint === "com.example.orders" && calls.at(-1)?.opts.instanceId === pin);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "com.example.orders", command: "list", instance: pin });
+  check(`${label} an explicit instance pins a third-party invoke`, calls.at(-1)?.opts.instanceId === pin);
+  await tools.find(t => t.name === "cotal_invoke")!.run(agent, config, { endpoint: "manager", command: "turn-pending", self: true, instance: pin });
+  check(`${label} an explicit instance wins over the manager pin`, calls.at(-1)?.opts.instanceId === pin && calls.at(-1)?.opts.target?.mode === "self");
+}
+{
+  const schema = cotalToolSpecs(cfg).find(t => t.name === "cotal_invoke")!.schema;
+  check("cotal_invoke refuses an instance that is not a lifecycle token before any call",
+    !schema.safeParse({ endpoint: "com.example.orders", command: "list", instance: "Not-A-Token" }).success && schema.safeParse({ endpoint: "com.example.orders", command: "list", instance: "p".repeat(26) }).success);
 }
 
 // Constructed throw exercises the actual managerInvoke -> spawn -> tool rendering pipeline.
@@ -302,7 +316,73 @@ for (const [label, config, expected] of [
     !SILENCE.test(answered.result.text) && !answered.result.text.includes("may already have been recorded"), answered);
 }
 
-const EXPECTED_CELLS = 74;
+// An argument the manager's contract does not declare means the manager runs another release. The
+// refusal names the key, this connector's release, and which side to update by the version the bound
+// manager reports. An unbound refusal names no manager, so none is asked.
+{
+  console.log("\nan argument the manager does not declare is named as version skew:");
+  const renderSkew = async (bound: boolean, version: string | undefined) => {
+    const agent = new MeshAgent(cfg);
+    const calls: string[] = [];
+    const refusal = new EpEnvelopeError("bad-request", "args do not validate against the input schema: / must NOT have additional properties: \"endpoints\"",
+      [{ kind: EP_UNDECLARED_ARG, property: "endpoints", ...(bound ? { instanceId: "m1" } : {}) }], "not-executed");
+    (agent as unknown as { ep: unknown }).ep = {
+      invokeService: async (_endpoint: string, command: string) => {
+        calls.push(command);
+        if (command !== "status") throw refusal;
+        return { reply: { ok: true, data: version === undefined ? {} : { version } }, responder: { instanceId: "m1" } };
+      },
+      principal: { owner: "local", actor: "caller" },
+    };
+    (agent as unknown as { _connected: boolean })._connected = true;
+    const r = await agent.purgeHistory();
+    return { text: r.ok === false ? (r.error ?? "") : "UNEXPECTED ok:true", calls };
+  };
+  const head = `bad-request: args do not validate against the input schema: / must NOT have additional properties: "endpoints". The manager's purge does not take "endpoints", which this connector at Cotal ${DOCS_VERSION} sends`;
+  const older = await renderSkew(true, "0.1.0");
+  check("an older bound manager is named as the side to update, with the command and the way around it",
+    older.text === `${head}. The manager runs Cotal 0.1.0, the older side: on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "endpoints", call again without it`
+      && older.calls.join(",") === "purge,status", older);
+  const newer = await renderSkew(true, "999.0.0");
+  check("a newer bound manager makes this connector the side to update",
+    newer.text === `${head}. The manager runs Cotal 999.0.0, so this connector is the older side: run \`cotal update --self\` here and start a new session`, newer);
+  const unbound = await renderSkew(false, "0.1.0");
+  check("an unbound refusal asks no manager and still names the key and the update",
+    unbound.text === `${head}, so the manager most likely runs an older Cotal: on the manager's host run \`cotal update --self\`, then \`cotal manager restart\`, or, if you set "endpoints", call again without it`
+      && unbound.calls.join(",") === "purge", unbound);
+}
+
+// These constructed replies grade retry bookkeeping, not broker delivery. The real two-Manager
+// readiness suite separately observes the allocation count through the shipped tool.
+{
+  const agent = selfAgent(cfg);
+  let launches = 0;
+  let state: "starting" | "unavailable" | "joined" = "starting";
+  (agent as unknown as { ep: unknown }).ep = {
+    principal: { owner: "local", actor: "caller" },
+    invokeService: async (_endpoint: string, command: string) => {
+      if (command === "ps") {
+        if (state === "unavailable") throw new Error("census unavailable");
+        return { responder: { instanceId: "a".repeat(26), epoch: 0 }, reply: { ok: true, data: [{ name: "retry-seat", lifecycleUid: "u".repeat(26), presenceIdentityVerified: state === "joined", status: "running" }] } };
+      }
+      launches++;
+      return { responder: { instanceId: "a".repeat(26), epoch: 0 }, reply: { ok: false, error: { code: "uncertain", message: "still starting" }, data: { name: "retry-seat", uid: "u".repeat(26), goalId: `retry-goal-${launches}` } } };
+    },
+  };
+  const first = await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "a", beta: "b" } });
+  const retry = await agent.spawn("retry-seat", undefined, { launchOptions: { beta: "b", alpha: "a" } });
+  check("equivalent option ordering reuses the pending goal", launches === 1 && (retry.data as { goalId: string }).goalId === (first.data as { goalId: string }).goalId, retry);
+  state = "unavailable";
+  await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "a", beta: "b" } });
+  check("an unavailable census cannot authorize a duplicate", launches === 1, launches);
+  await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "different" } });
+  check("a different spawn request remains distinct", launches === 2, launches);
+  state = "joined";
+  await agent.spawn("retry-seat", undefined, { launchOptions: { alpha: "a", beta: "b" } });
+  check("verified exact-incarnation join releases the pending claim", launches === 3, launches);
+}
+
+const EXPECTED_CELLS = 94;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

@@ -5,6 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { assertSmokeProofCoverage } from "./presence-render-proofs.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
@@ -16,13 +17,14 @@ type Entry = {
   kind: CandidateKind;
   anchor: string;
   class: Classification;
-  rationale: string;
+  rationale?: string;
   proof?: { path: string; anchor: string };
 };
 type Renderer = { name: string; path: string; anchor: string; rationale: string };
 type Manifest = {
   expected: Record<"total" | Classification, number>;
   renderers: Renderer[];
+  classRationales: Partial<Record<Classification, string>>;
   entries: Entry[];
 };
 type Candidate = { path: string; kind: CandidateKind; anchor: string };
@@ -37,7 +39,11 @@ const renderRoots = [
   join(root, "implementations/cli/src"),
   join(root, "packages/workspace/src/view"),
   join(root, "packages/workspace/src/control"),
+  join(root, "packages/workspace/src/chat"),
+  join(root, "packages/workspace/src/attach"),
   join(root, "implementations/web/src"),
+  join(root, "implementations/web/client/src"),
+  join(root, "implementations/tui/src"),
 ];
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);
 const sourceExt = /\.(?:ts|tsx|js|mjs|mts)$/;
@@ -332,22 +338,38 @@ const connectorHonestStatusAnchor = 'status === "working" ? "working · progress
 const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
 const inkRosterProgressAnchor = 'return "progress unknown";';
-const webMonitorProgressAnchor = 'const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
-const webGraphProgressAnchor = '<div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>';
+const tuiOverviewStatusAnchor = '{ label: "status", value: `${STATUS[p.status].mark} ${STATUS[p.status].word}${p.status === "working" ? " · progress unknown" : ""}` },';
 const proofAnchors = new Map<string, string>([
   ["extensions/connector-core/src/orientation.ts", connectorHonestStatusAnchor],
   ["extensions/connector-core/src/tool-specs.ts", connectorRosterProgressAnchor],
   ["implementations/cli/src/ui.ts", sharedStatusBadgeAnchor],
   ["implementations/cli/src/console/ui/Detail.tsx", inkDetailStatusAnchor],
   ["implementations/cli/src/console/ui/Roster.tsx", inkRosterProgressAnchor],
-  ["implementations/web/src/web/app.js", webMonitorProgressAnchor],
-  ["implementations/web/src/web/graph.js", webGraphProgressAnchor],
+  ["implementations/tui/src/screen.ts", tuiOverviewStatusAnchor],
 ]);
+
+// Entries with the same exclusion mechanics inherit their class reason. An exception
+// supplies its own reason instead. Repeated wording is allowed and has no count limit.
+function exclusionRationale(entry: Pick<Entry, "class" | "rationale">, defaults: Manifest["classRationales"]): string {
+  const rationale = entry.rationale ?? defaults[entry.class];
+  assert.ok(typeof rationale === "string" && rationale.trim().length >= 12, `manifest rationale is missing or too short for ${entry.class}`);
+  return rationale;
+}
+const sharedReason = "Status routing does not assert human work progress.";
+assert.equal(exclusionRationale({ class: "non-render/control" }, { "non-render/control": sharedReason }), sharedReason);
+assert.equal(exclusionRationale({ class: "non-render/control", rationale: "HTTP response status is not peer progress." }, { "non-render/control": sharedReason }), "HTTP response status is not peer progress.");
+assert.throws(() => exclusionRationale({ class: "non-render/control" }, {}), /rationale is missing or too short/);
+assert.throws(() => exclusionRationale({ class: "non-render/control", rationale: " " }, { "non-render/control": sharedReason }), /rationale is missing or too short/);
+assert.throws(() => exclusionRationale({ class: "non-render/control" }, { "non-render/control": "short" }), /rationale is missing or too short/);
+for (const [classification, rationale] of Object.entries(manifest.classRationales)) {
+  assert.ok(Object.hasOwn(manifest.expected, classification) && classification !== "total", `unknown rationale class: ${classification}`);
+  exclusionRationale({ class: classification as Classification, rationale }, {});
+}
 
 const entryKeys = new Set<string>();
 const counts: Record<Classification, number> = { "honest-text": 0, "presence-only-glyph/count": 0, "command-ack": 0, "non-render/control": 0 };
 for (const entry of manifest.entries) {
-  assert.ok(entry.rationale.trim().length >= 12, `manifest rationale is missing or too short for ${entry.path}: ${entry.anchor}`);
+  exclusionRationale(entry, manifest.classRationales);
   const key = candidateKey(entry);
   assert.ok(!entryKeys.has(key), `manifest duplicates candidate ${entry.path}: ${entry.anchor}`);
   entryKeys.add(key);
@@ -358,13 +380,16 @@ for (const entry of manifest.entries) {
   counts[entry.class]++;
   if (entry.class === "honest-text") {
     assert.ok(entry.proof, `honest-text entry lacks output/shared-renderer proof: ${entry.path}: ${entry.anchor}`);
-    const proofBody = readFileSync(join(root, entry.proof!.path), "utf8");
-    const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
-    assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
-    if (entry.proof!.path.includes("/smoke/")) assert.ok(/assert|check|ok\(/.test(entry.proof!.anchor), `smoke proof is not an output assertion: ${entry.proof!.path}: ${entry.proof!.anchor}`);
-    else assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    if (!entry.proof!.path.includes("/smoke/")) {
+      const proofBody = readFileSync(join(root, entry.proof!.path), "utf8");
+      const proofCount = proofBody.split(entry.proof!.anchor).length - 1;
+      assert.equal(proofCount, 1, `honest-text proof anchor must exist exactly once in ${entry.proof!.path} but occurs ${proofCount} time(s): ${entry.proof!.anchor}`);
+      assert.equal(proofAnchors.get(entry.proof!.path), entry.proof!.anchor, `honest-text source proof is not a checked honest renderer: ${entry.proof!.path}: ${entry.proof!.anchor}`);
+    }
   } else assert.equal(entry.proof, undefined, `${entry.class} entry must not carry honest-text proof: ${entry.path}: ${entry.anchor}`);
 }
+
+assertSmokeProofCoverage(manifest.entries, (path) => readFileSync(join(root, path), "utf8"));
 
 const unclassified = candidates.filter((candidate) => !entryKeys.has(candidateKey(candidate)));
 assert.deepEqual(unclassified, [], `unclassified shipped presence-render candidate(s):\n${unclassified.map((candidate) => `  ${candidate.path} [${candidate.kind}]`).join("\n")}\nClassify each narrow sink in ${relative(root, manifestPath)}.`);

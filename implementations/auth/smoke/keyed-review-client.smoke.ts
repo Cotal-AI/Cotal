@@ -4,11 +4,10 @@ import nodeAssert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { connect } from "@nats-io/transport-node";
 import { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
-import type { ResolvedService, RemoteRunSubmissionRequest } from "@cotal-ai/core";
+import type { ResolvedService } from "@cotal-ai/core";
 import { encodeUser } from "@nats-io/jwt";
 import { fromSeed, fromPublic } from "@nats-io/nkeys";
 const counted = countedAssert(nodeAssert);
@@ -17,11 +16,11 @@ const assert: typeof nodeAssert = counted.assert;
 const home = mkdtempSync(join(tmpdir(), "keyed-client-home-"));
 process.env.COTAL_HOME = home;
 const core = await import("@cotal-ai/core");
-const workspace = await import("@cotal-ai/workspace");
-const { cotalAuthProvider } = await import("../src/provider.js");
-const { saveIdpSession } = await import("../src/login.js");
-const { ensurePinnedIdp, ensureCalloutAuth, saveAuthServiceInfo } = await import("../src/store.js");
-const { MemoryStore } = await import("./_hosted-auth-fixture.js");
+await import("@cotal-ai/workspace");
+await import("../src/provider.js");
+await import("../src/login.js");
+await import("../src/store.js");
+await import("./_hosted-auth-fixture.js");
 
 // A described snapshot contains validated contracts in production. This fixture constructs the
 // public shape only to isolate helper propagation, not to claim digest-verified native Describe.

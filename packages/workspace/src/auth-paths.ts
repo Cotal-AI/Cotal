@@ -5,10 +5,12 @@ import { join, dirname, resolve, sep } from "node:path";
 import { homeCotalDir, homeRecordEntries, userCotalDir } from "./cotal-home.js";
 import {
   composeSpaceAuth,
+  isWellFormedUnicode,
   jwtIssuedAt,
   mkSecretDir,
   newIdentity,
   oneLine,
+  validateSpaceAccountAuth,
   validateSpaceAuthForRead,
   writeSecretFile,
   writeSecretFileAtomic,
@@ -112,25 +114,6 @@ export function spaceFromKey(key: string): string | undefined {
   const space = Buffer.from(key, "hex").toString("utf8");
   if (space === "" || space === "." || space === "..") return undefined;
   return spaceKey(space) === key ? space : undefined;
-}
-
-/** Whether every UTF-16 code unit is either a BMP scalar or part of a valid surrogate PAIR — i.e.
- *  the string has no LONE surrogate. `String.prototype.isWellFormed` is ES2024 (past this build's
- *  lib target), so scan the units directly. Paired surrogates (emoji/supplementary) pass; a stray
- *  high or low surrogate fails. This is the exact predicate that makes {@link spaceKey}'s UTF-8 hex
- *  injective — `Buffer.from` folds every lone surrogate to U+FFFD, collapsing distinct names. */
-function isWellFormedUnicode(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high not followed by low
-      i++; // valid pair — skip the low half
-    } else if (c >= 0xdc00 && c <= 0xdfff) {
-      return false; // lone low surrogate
-    }
-  }
-  return true;
 }
 
 /** THE per-space path/key segment — `space.<hex>`, the {@link spaceKey} under a fixed prefix so a
@@ -548,9 +531,10 @@ export function loadManagerInstanceIdentity(root: string, space: string): Manage
 }
 
 /** First-start identity mint through {@link claimIdentityRecord}: of N concurrent creators on a
- *  fresh root, exactly one creates the file and the others adopt the winner. */
-export function createManagerInstanceIdentity(root: string, space: string, candidate: ManagerInstanceIdentity): ManagerInstanceIdentity {
-  return claimIdentityRecord(managerInstanceFile(root, space), MANAGER_INSTANCE, instanceIdentityOf, () => candidate);
+ *  fresh root, exactly one creates the file and the others adopt the winner. `mint` runs only when
+ *  no record exists, so a restart does not mint a lifecycle uid and a serve nkey it then discards. */
+export function createManagerInstanceIdentity(root: string, space: string, mint: () => ManagerInstanceIdentity): ManagerInstanceIdentity {
+  return claimIdentityRecord(managerInstanceFile(root, space), MANAGER_INSTANCE, instanceIdentityOf, mint);
 }
 
 /** The manager's goal-writer and session-ledger nkeys for `space`. Both are siblings of the serve
@@ -607,8 +591,8 @@ export function loadAuthInstanceIdentity(root: string, space: string): AuthInsta
 }
 
 /** First-start identity mint for the auth plane, as {@link createManagerInstanceIdentity}. */
-export function createAuthInstanceIdentity(root: string, space: string, candidate: AuthInstanceIdentity): AuthInstanceIdentity {
-  return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, () => candidate);
+export function createAuthInstanceIdentity(root: string, space: string, mint: () => AuthInstanceIdentity): AuthInstanceIdentity {
+  return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, mint);
 }
 
 /** Remove this root's auth-plane instance record for `space`. A hosted context calls it once its
@@ -1472,6 +1456,77 @@ export async function putSpaceAuth(store: SecretStore, auth: SpaceAuth): Promise
   const accountAtRest: SpaceAccountAuth = { space: auth.space, account: auth.account };
   await store.put(BROKER_AUTH_KEY, JSON.stringify(brokerAtRest, null, 2));
   await store.put(accountKey, JSON.stringify(accountAtRest, null, 2));
+}
+
+/** Replace ONE space's existing account record through the seam: the record a data signing-key
+ *  rotation, or the rollback of one, changes. It puts {@link spaceAccountKey} and no other key. The
+ *  broker record is read to verify the chain and is never written, so a change made for one space
+ *  cannot touch the trust every space on the broker shares. {@link putSpaceAuth} writes both records
+ *  and stays the provisioning writer.
+ *
+ *  It replaces; it does not provision or repair. Both split records must already be in the store and
+ *  validate together ({@link validateSpaceAccountAuth}). A missing broker or account record, the
+ *  legacy monolith on its own, a blank broker record, a corrupt generation and an existing record
+ *  outside this broker's chain all refuse. The replacement must name the same space and be the same
+ *  account (public key and seed), carry a claim this broker's operator issued for that account, and
+ *  hold a signing seed that claim trusts. Every refusal comes before the put.
+ *
+ *  A replacement that is byte-equal to the stored record is not written again, which makes a retry
+ *  after an unknown outcome safe. After a put the record is read back and must equal what was
+ *  written, and the broker record must still be the one the replacement was validated against.
+ *
+ *  NOT atomic across keys and not a compare-and-swap: a {@link SecretStore} promises whole-value puts
+ *  and nothing more. The host must exclude every other writer of this space's account record and of
+ *  the broker record for the whole call. The read-back reports a writer it can see; it prevents none.
+ *  Errors name store keys and the caller's own space label, never stored bytes. */
+export async function replaceSpaceAccountAuth(store: SecretStore, replacement: SpaceAccountAuth): Promise<void> {
+  const who = "replaceSpaceAccountAuth";
+  const space: unknown = (replacement as { space?: unknown } | null | undefined)?.space;
+  if (typeof space !== "string" || space.length === 0) throw new Error(`${who}: the replacement names no space`);
+  const accountKey = spaceAccountKey(space);
+  const brokerRaw = await store.get(BROKER_AUTH_KEY);
+  if (brokerRaw === undefined)
+    throw new Error(`${who}: the store has no broker trust record (${BROKER_AUTH_KEY}) - refusing to write an account record with no broker record to chain it to; provision the space with putSpaceAuth`);
+  const existingRaw = await store.get(accountKey);
+  if (existingRaw === undefined)
+    throw new Error(`${who}: space "${space}" has no account record (${accountKey}) to replace - this writer never creates one; provision the space with putSpaceAuth`);
+
+  const broker = parseStoreRecord<BrokerAuth>(brokerRaw, BROKER_AUTH_KEY, "broker trust record");
+  if (broker === null || typeof broker !== "object" || !broker.operator?.seed || !broker.operator.jwt || !broker.sys?.pub || !broker.sys.jwt)
+    throw new Error(`${who}: the broker trust record (${BROKER_AUTH_KEY}) is blank or incomplete - restore it from backup before replacing an account record`);
+  brokerGen(broker.gen, BROKER_AUTH_KEY);
+  const existing = parseStoreRecord<SpaceAccountAuth>(existingRaw, accountKey, "space account record");
+  if (existing === null || typeof existing !== "object" || existing.space !== space)
+    throw new Error(`${who}: the space account record (${accountKey}) does not name space "${space}" - it was renamed or corrupted; repair or replace it`);
+  try {
+    validateSpaceAccountAuth(broker, existing, space);
+  } catch {
+    throw new Error(
+      `${who}: the trust records (${BROKER_AUTH_KEY} + ${accountKey}) failed trust-chain validation for space "${space}" - refusing to replace a record that is corrupt, mismatched, or outside this broker's trust chain; repair or restore it first`,
+    );
+  }
+
+  let next: SpaceAccountAuth;
+  try {
+    next = validateSpaceAccountAuth(broker, replacement, space);
+  } catch (e) {
+    throw new Error(`${who}: the replacement for space "${space}" is not a valid account record of this broker (${e instanceof Error ? oneLine(e.message) : "invalid"})`);
+  }
+  if (next.account.pub !== existing.account.pub || next.account.seed !== existing.account.seed)
+    throw new Error(`${who}: the replacement is a different account from the one space "${space}" holds - this writer changes an account's claim and signing key, never its identity`);
+
+  const doc = JSON.stringify({ space: next.space, account: next.account } satisfies SpaceAccountAuth, null, 2);
+  if (doc === existingRaw) return;
+  try {
+    await store.put(accountKey, doc);
+  } catch (e) {
+    // The store's own error rides as the cause: its text is the backend's, so it stays out of the message.
+    throw new Error(`${who}: the put of ${accountKey} failed - the record may hold the previous or the new value; read it back before retrying`, { cause: e });
+  }
+  if ((await store.get(accountKey)) !== doc)
+    throw new Error(`${who}: ${accountKey} does not read back as written - another writer changed it, or the store did not keep the value; the host must exclude other writers of this space's trust records for the whole call`);
+  if ((await store.get(BROKER_AUTH_KEY)) !== brokerRaw)
+    throw new Error(`${who}: the broker trust record (${BROKER_AUTH_KEY}) changed during the call - ${accountKey} now holds a record that was validated against the earlier broker record; validate the pair again, and exclude writers of the broker record for the whole call`);
 }
 
 /** Remove the space trust material through the seam - the authoritative delete for a non-FS store.

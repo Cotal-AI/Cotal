@@ -1,12 +1,15 @@
 # Session recovery for a managed seat
 
-A design record, not a description of shipped behavior. Every claim about current behavior
-names the file and the function it was read from. Everything else is proposed.
+Status: checkpoint capture and seal, the three admission gates, the per-seat writer generation,
+the continuity class, the restore, and carrying the session files shipped in 0.51.0 (#1745,
+#1748). Since 0.59.0 the jcode connector declares `supportsResume`, so `sessionContinuityClass`
+gives `fork`, and the checkpoint still records `drain-only` because no session bytes travel
+with it. The eviction evidence for the residual case in 3.3, everything in section 4, and a
+cross-host writer fence are not built. The note below says which sections are implemented,
+where, and what changed against what they propose. Every claim about current behavior names
+the file and the function it was read from. The design below that note is left as written.
 
 ## Status
-
-Part of this record now ships. The design below is left as written; this note says which sections
-are implemented, where, and what changed against what they propose.
 
 Shipped:
 
@@ -755,6 +758,8 @@ for pi, with the additional caveat that reopening by id is not available regardl
 
 ### 5.3 jcode declares neither flag
 
+As written below, before 0.59.0. The status note above records what changed.
+
 `jcodeConnector` in `extensions/connector-jcode/src/extension.ts` declares
 `supportsModelVariant` and `supportsToolListAnnounce`, and neither continuity flag. It refuses both
 inputs: `continueSession` because its private Harness API instance is retired with the seat, and `resume` with `the private Harness API instance never shares a session with another seat`. So `sessionContinuityClass` gives `drain-only`, the default-deny
@@ -1144,19 +1149,19 @@ Named so that a reader does not mistake absence for completeness.
 1. **The repository bundle has no command.** Steps 5 and 7 are manual. The capture rule for untracked
    files is declared in the checkpoint, and a destination that cannot reproduce that rule refuses,
    but nothing enforces the rule at capture time.
-2. **The per-seat generation is not implemented.** Section 3.2 names the file it belongs in and the
+2. **The per-seat generation is not implemented.** As written before the generation gate landed. Section 3.2 names the file it belongs in and the
    publication primitive it must use. Today only `instanceId` and `serveIdentity` are persisted in
    `packages/workspace/src/auth-paths.ts`, and the epoch is derived at registration.
-3. **The freshness horizon is a new field with no shipped reader.** Nothing in the current admission
+3. **The freshness horizon is a new field with no shipped reader.** As written before the recency gate landed. Nothing in the current admission
    path reads a clock.
 4. **pi's transcript location is an operator input.** This repository names the pointer file and not
    the store. Any default written here would be a guess.
 5. **A turn-boundary cut is not expressible.** The connector contract has no cooperative pause, and
    `Manager.runPreservation` hard-stops deliberately so that leave hooks do not run.
-6. **Two of three shipped harnesses are not continuable.** Claude Code is `fork`, jcode is
+6. **Two of three shipped harnesses are not continuable.** As written before 0.59.0. Claude Code is `fork`, jcode is
    `drain-only`, by their own declarations in `extensions/connector-claude-code/src/extension.ts` and
    `extensions/connector-jcode/src/extension.ts`. Cross-host seat continuity is a pi capability
-   today, not a Cotal capability.
+   today, not a Cotal capability. The status note records the change.
 7. **Inbound delivery is at-least-once across a cross-host move, not at the same frontier.** The
    durable is rebuilt at its contiguous ack floor by `consumerConfigFromCheckpoint` in
    `packages/core/src/backup.ts`, so an acknowledgement taken out of order above that floor is

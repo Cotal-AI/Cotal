@@ -21,7 +21,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { connect, credsAuthenticator, tokenAuthenticator } from "@nats-io/transport-node";
 import {
   mintCreds, newIdentity, mintLifecycleUid, setupSpaceStreams, issuedUserCaller, resolveService,
-  prepareKeyedRunSubmission, invokeKeyedRunSubmission, readKeyedRunSubmission, invokeCommand, epRequestSubject,
+  invokeCommand, epRequestSubject,
 } from "@cotal-ai/core";
 import {
   deriveOwnerForIdpSubject, ensurePinnedIdp, grantActor, loadOwnerSecret, startAuthService,

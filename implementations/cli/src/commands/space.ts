@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { CompletionResult, FlagSpec, FlagValues, ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
-  brokerAnswers,
+  brokerCheck,
   findMesh,
   findPreparedSpace,
   folderSpace,
@@ -18,9 +18,9 @@ import {
   plainFlag,
   preparedLifecycle,
   presentationOf,
-  pruneStaleMeshes,
   writeResult,
   type Cell,
+  type BrokerCheck,
   type MeshEntry,
   type OutputWarning,
   type Presentation,
@@ -33,10 +33,13 @@ import { registryFailure } from "../lib/registry-errors.js";
 import { SPACE_MODES } from "./meshes-add.js";
 import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 import { spaceDelete } from "./space-delete.js";
+import { spaceExport } from "./space-export.js";
+import { stackRootGone } from "../lib/stack-journal.js";
 
 export const spaceFlags = [
   jsonFlag,
   plainFlag,
+  { name: "out", type: "string", value: "<private-file>", description: "export: create a private connection-bundle file without overwriting", completion: "files" },
   { name: "server", type: "string", value: "<url>", description: "add: the space's broker URL" },
   { name: "root", type: "string", value: "<dir>", description: "add: the folder for the space's personas and, for an auth space, its .cotal/auth trust (default: this project; required outside one); create: the folder it starts in (default: this one)" },
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: auth when --root holds the space's trust, else open)" },
@@ -54,7 +57,7 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 
 /** Whether a registration's broker answered. A discovered catalog entry is never dialed by a read, so
  *  its broker is `not-checked` rather than a guessed answer. */
-export type Check = "reachable" | "unreachable" | "not-checked";
+export type Check = BrokerCheck | "not-checked";
 
 /** One registered space, as `cotal space` lists it: the same row `cotal status --json` gives under
  *  `meshes.items`. */
@@ -111,6 +114,8 @@ interface PreparedDetail extends PreparedRow {
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
 export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
   readonly kind: "space";
+  /** The local stack's journal and broker configuration are no longer at its recorded root. */
+  readonly rootGone: boolean;
   readonly recordedAt: string;
   readonly attachHost: string | null;
   readonly maxSessions: number | null;
@@ -123,7 +128,7 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
 /**
  * `cotal space` lists the spaces this machine can reach, and `cotal space show [<name>]` shows one in
  * full. Both read the local registry and probe brokers; neither writes anything. A broker that does
- * not answer leaves its registration in place, reported `unreachable`. Spaces `space create`
+ * not answer leaves its registration in place, with timeouts distinct from refused connections. Spaces `space create`
  * prepared are listed apart, with no broker to probe. `space add`, `space create` and
  * `space forget` change what is recorded (see `space-registration.ts`).
  */
@@ -132,6 +137,12 @@ export async function space(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;
   if (values.adopt !== undefined && sub !== "create") throw usage("--adopt belongs to space create");
+  if (values.out !== undefined && sub !== "export") throw usage("--out belongs to space export");
+  if (sub === "export") {
+    const invalid = ADD_FLAGS.find((flag) => values[flag] !== undefined);
+    if (invalid || values["dry-run"] !== undefined) throw usage("space export takes only --out and output formatting flags");
+    return spaceExport(rest, values.out, presentation);
+  }
   if (sub === "delete") {
     const invalid = ADD_FLAGS.find((flag) => flag !== "yes" && values[flag] !== undefined);
     if (invalid) throw usage(`--${invalid} belongs to space add, not delete`);
@@ -152,12 +163,11 @@ export async function space(args: ParsedArgs): Promise<void> {
 
 async function read(sub: "show" | undefined, rest: string[], presentation: Presentation): Promise<void> {
   if (sub === undefined) {
-    const sweep = await pruneStaleMeshes();
     const current = getCurrent() ?? null;
-    const offline = new Set(sweep.offline);
-    const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
+    const items = await Promise.all(loadMeshes().map(async (m) => row(m, current, m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired))));
+    const offline = items.filter((m) => m.check !== "reachable" && m.check !== "not-checked").map((m) => m.space);
     const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
-    const folder = folderSpaceOverSelection(process.cwd(), current, sweep.offline) ?? null;
+    const folder = folderSpaceOverSelection(process.cwd(), current, offline) ?? null;
     const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), folder, items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;
@@ -187,11 +197,11 @@ async function read(sub: "show" | undefined, rest: string[], presentation: Prese
       writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
       return;
     }
-    const check: Check = m.origin === "catalog" ? "not-checked" : (await brokerAnswers(m.server)) ? "reachable" : "unreachable";
+    const check: Check = m.origin === "catalog" ? "not-checked" : await brokerCheck(m.server, m.tlsRequired);
     // The space this folder registered is the target of the commands run here only while it runs,
     // which its broker answering shows.
     if (current !== null && registered !== undefined && registered !== current) {
-      if (check === "unreachable") noteFolderSpaceShown(registered, "stopped", current);
+      if (check !== "reachable" && check !== "not-checked") noteFolderSpaceShown(registered, "stopped", current);
       else noteFolderSpace(registered, current);
     }
     writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
@@ -234,6 +244,7 @@ export function detail(m: MeshEntry, current: string | null, check: Check): Spac
   return {
     kind: "space",
     ...base,
+    rootGone: stackRootGone(m.space, m.root),
     recordedAt: m.ts,
     attachHost: m.attachHost ?? null,
     maxSessions: m.maxSessions ?? null,
@@ -255,6 +266,8 @@ function selectionWarnings(result: SpacesResult): OutputWarning[] {
 const originText = (origin: SpaceRow["origin"]): string => (origin === "manual" ? "registered" : origin === "catalog" ? "discovered" : "started here");
 
 function checkCell(s: Pick<SpaceRow, "check">): Cell {
+  if (s.check === "slow-link") return { text: "not answering", tone: "waiting", mark: "●" };
+  if (s.check === "broker-stopped") return { text: "broker process is stopped", tone: "waiting", mark: "●" };
   if (s.check === "reachable") return { text: "reachable", tone: "ok", mark: "●" };
   if (s.check === "unreachable") return { text: "unreachable", tone: "waiting", mark: "●" };
   return { text: "not checked", tone: "hint", mark: "○" };
@@ -284,7 +297,7 @@ function spacesView(result: SpacesResult): Report {
   }];
   // A prepared space is listed below, so the empty line names what is missing without denying it.
   if (result.items.length === 0)
-    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Prepare a local space or connect to one you already run.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
+    return { sections: [{ title: "Spaces", blocks: [{ kind: "lines", lines: result.prepared.length ? [ran ? "No space is running or registered." : "No space has been started or registered yet."] : ["No spaces registered.", { text: "Sign in to Cotal Cloud with `cotal login`, or prepare a local space.", tone: "hint" }] }] }, ...prepared, { title: "Next", blocks: [{ kind: "commands", items: [...(result.prepared.length ? [] : [{ command: "cotal login", description: "Sign in to Cotal Cloud" }]), { command: "cotal setup", description: "Choose a local or self-hosted space" }, { command: "cotal space add <name> --server <url>", description: "Register an existing broker" }] }] }] };
   return {
     sections: [{
       title: "Spaces",
@@ -340,7 +353,7 @@ function spaceView(s: SpaceDetail): Report {
     ["server", s.server],
     ["mode", s.modeChecked ? s.mode : { text: `${s.mode}, not checked: added with --force`, tone: "waiting" }],
     ["origin", originText(s.origin)],
-    ["root", s.root],
+    ["root", s.rootGone ? { text: `${s.root} · folder was moved or deleted`, tone: "failed" } : s.root],
     ["recorded", s.recordedAt],
   ];
   if (s.tlsRequired) fields.push(["tls", "required"]);
@@ -356,6 +369,7 @@ function spaceView(s: SpaceDetail): Report {
     if (s.catalog.error) fields.push(["catalog error", { text: s.catalog.error, tone: "failed" }]);
   }
   const hints: Cell[] = s.current ? [] : [{ text: `select it with \`cotal use ${s.space}\``, tone: "hint" }];
+  if (s.rootGone) hints.unshift({ text: `stop the stack whose folder was moved or deleted with \`cotal down --space ${s.space} --yes\``, tone: "waiting" });
   if (!s.modeChecked) hints.push({ text: `check its mode by adding it again without --force: \`cotal space forget ${s.space}\`, then \`cotal space add ${s.space} --server ${s.server} --root ${s.root}\``, tone: "hint" });
   return { sections: [{ title: `Space · ${s.space}`, blocks: [{ kind: "fields", rows: fields }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };
 }
@@ -365,9 +379,9 @@ function spaceView(s: SpaceDetail): Report {
 export function spaceComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, spaceFlags);
   if (flag?.name === "mode") return { items: SPACE_MODES.map((value) => ({ value })), directive: "nofiles" };
-  if (flag?.name === "root" || flag?.name === "file") return { items: [], directive: "default" };
-  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }], directive: "nofiles" };
-  if ((argv[0] === "show" || argv[0] === "forget" || argv[0] === "delete") && argv.length === 2)
+  if (flag?.name === "root" || flag?.name === "file" || flag?.name === "out") return { items: [], directive: "default" };
+  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }, { value: "delete" }, { value: "export" }], directive: "nofiles" };
+  if ((argv[0] === "show" || argv[0] === "forget" || argv[0] === "delete" || argv[0] === "export") && argv.length === 2)
     return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }

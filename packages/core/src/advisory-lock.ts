@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
+import { createPrivateRecord } from "./secret-fs.js";
 
 /**
  * A machine-local, crash-safe advisory file lock, shared by every serialized workstation mutation
@@ -181,7 +182,7 @@ function inspectLockSnapshot(path: string): LockInspection & { readonly ino?: nu
  *  success, false if the path already exists. */
 function publishAtomic(path: string, content: string): boolean {
   const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
+  createPrivateRecord(tmp, content);
   try {
     linkSync(tmp, path);
     return true;
@@ -302,7 +303,9 @@ function reclaimPollMs(pollMs: number): number {
 
 /**
  * Acquire the lock at `path`. Returns a handle whose {@link HeldLock.release} removes it (idempotent,
- * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live one, then throws.
+ * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live holder or a live
+ * reclaimer, then throws. One deadline bounds both waits, as in {@link acquireLockAsync}: a reclaimer
+ * that never finishes used to hold a zero-wait acquisition, and this event loop, until it did (#3249).
  */
 export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
   const waitMs = opts.waitMs ?? 300000;
@@ -312,18 +315,11 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
 
   for (;;) {
     const result = tryAcquireOnce(attempt);
-    switch (result.kind) {
-      case "acquired":
-        return result.held;
-      case "retry":
-        continue;
-      case "reclaiming":
-        sleepSync(reclaimPollMs(pollMs));
-        continue;
-      case "held":
-        if (Date.now() >= deadline) throw lockTimeoutError(path, opts, result.owner, waitMs);
-        sleepSync(pollMs);
-    }
+    if (result.kind === "acquired") return result.held;
+    if (result.kind === "retry") continue;
+    const left = deadline - Date.now();
+    if (left <= 0) throw lockTimeoutError(path, opts, result.owner, waitMs);
+    sleepSync(Math.min(result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs, left));
   }
 }
 

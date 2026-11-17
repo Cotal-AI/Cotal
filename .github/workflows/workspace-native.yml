@@ -38,10 +38,17 @@ jobs:
           if "${{ inputs.test_controls }}"=="true" (set "CONTROLS=--test-controls") else (set "CONTROLS=")
           node packages/workspace/scripts/build-native.mjs %CONTROLS%
           if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
           if "${{ inputs.test_controls }}"=="true" (
             cl /nologo /O2 /MT /W4 /WX /std:c11 /Fopackages\workspace\build\test\win32-${{ matrix.arch }}\query-control.obj /Fepackages\workspace\build\test\win32-${{ matrix.arch }}\query-control.exe packages\workspace\smoke\fixtures\win32-denied-process.c /link /Brepro advapi32.lib
           )
           if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-win32-${{ matrix.arch }}
+          path: packages/seat/build/Release/win32-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: workspace-native-${{ matrix.arch }}
@@ -72,6 +79,13 @@ jobs:
           node-version: 22
       - name: Compile against pinned Node-API headers
         run: node packages/workspace/scripts/build-native.mjs
+      - name: Compile the daemon host primitives
+        run: node packages/seat/scripts/build-native.mjs --host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seat-native-darwin-${{ matrix.arch }}
+          path: packages/seat/build/Release/darwin-${{ matrix.arch }}/peercred.node
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: workspace-native-darwin-${{ matrix.arch }}

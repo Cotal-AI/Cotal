@@ -1,0 +1,280 @@
+import { execFileSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+
+const [mode, rawRoot, targetVersion] = process.argv.slice(2);
+if (process.platform !== 'win32' || !['prepare', 'finish', 'abort'].includes(mode) || !rawRoot || !/^\d+\.\d+\.\d+$/.test(targetVersion ?? '')) throw new Error('Unsupported installer service invocation.');
+const root = resolve(rawRoot);
+for (const key of Object.keys(process.env)) if (key.startsWith('COTAL_')) delete process.env[key];
+process.env.COTAL_SKIP_CONNECTOR_SEED = '1';
+process.env.COTAL_TELEMETRY = 'off';
+const directory = join(process.env.LOCALAPPDATA, 'CotalSetup');
+mkdirSync(directory, { recursive: true });
+let lastStep = 'entry';
+process.on('exit', code => {
+  try {
+    const file = join(directory, 'helper.log');
+    const lines = existsSync(file) ? readFileSync(file, 'utf8').trimEnd().split('\n').slice(-199) : [];
+    lines.push(JSON.stringify({ mode, code, step: lastStep }));
+    writeFileSync(file, `${lines.join('\n')}\n`);
+  } catch { /* Diagnostics must not replace the helper's actual exit status. */ }
+});
+const stateFile = join(directory, 'service-update.json');
+const resultFile = join(directory, 'result.json');
+const messageFile = join(directory, 'message.txt');
+rmSync(resultFile, { force: true });
+rmSync(messageFile, { force: true });
+const script = fileURLToPath(new URL('service-task.ps1', import.meta.url));
+const ps = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')), COTAL_SETUP_ROOT: root, COTAL_SETUP_VERSION: targetVersion };
+const write = (file, value) => { const temp = `${file}.${process.pid}.tmp`; writeFileSync(temp, `${JSON.stringify(value)}\n`); renameSync(temp, file); };
+const task = action => {
+  lastStep = `task:${action}`;
+  try { return JSON.parse(execFileSync(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Action', action], { env, windowsHide: true, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024 })); }
+  catch (error) { throw new Error(`The owned task could not complete ${action}: ${String(error.stderr ?? error.message).trim()}`); }
+};
+let state;
+let socket;
+let request;
+let modules;
+let prepared = false;
+let committed = false;
+let paused = false;
+let skippedProcesses = [];
+let executableNames = [];
+function outcome(code, message, name = code === 0 ? 'updated' : 'refused', activeAgents = 0) {
+  lastStep = `outcome:${code}`;
+  message = message.replace(/[\r\n\x00-\x1f]/g, ' ').slice(0, 1800);
+  write(resultFile, { schema: 1, outcome: name, code, message, activeAgents, fromVersion: state?.oldVersion ?? null, toVersion: targetVersion, skippedProcesses: state?.skippedProcesses ?? skippedProcesses, executableNames: state?.executableNames ?? executableNames, completedAt: new Date().toISOString() });
+  writeFileSync(messageFile, `${message}\r\n`);
+  process.stdout.write(`${message}\n`);
+  process.exitCode = code;
+}
+async function load() {
+  lastStep = 'load';
+  process.argv = [process.execPath, join(root, 'runtime', 'dist', 'cotal.js')];
+  process.execArgv = [];
+  const get = name => import(pathToFileURL(join(root, 'runtime', 'dist', 'daemon', `${name}.js`)).href);
+  const [endpoint, client, lifetime] = await Promise.all(['endpoint', 'client', 'lifetime'].map(get));
+  return modules = { endpoint, client, lifetime, paths: endpoint.daemonPaths() };
+}
+// This helper talks to the installed runtime, which may predate reply correlation.
+function createServiceRequester(socket) {
+  const expired = new Set();
+  let buffer = '';
+  let pending;
+  let failure;
+  const fail = error => {
+    if (failure) return;
+    failure = error;
+    buffer = '';
+    pending?.finish(error);
+    socket.off('data', onData);
+    socket.off('end', onEnd);
+    socket.off('close', onEnd);
+    socket.destroy();
+  };
+  const onEnd = () => fail(new Error('The pinned service closed the connection without a reply.'));
+  const onData = chunk => {
+    buffer += chunk;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      if (Buffer.byteLength(buffer.slice(0, nl + 1), 'utf8') > 64 * 1024) return fail(new Error('The pinned service reply exceeds the line limit.'));
+      let response;
+      try { response = JSON.parse(buffer.slice(0, nl)); }
+      catch { return fail(new Error('The pinned service returned an invalid reply.')); }
+      buffer = buffer.slice(nl + 1);
+      if (!response || typeof response !== 'object' || Array.isArray(response) || response.v !== 1
+          || typeof response.id !== 'string' || typeof response.ok !== 'boolean' || 'event' in response)
+        return fail(new Error('The pinned service returned an invalid reply.'));
+      if (response.ok
+          ? !response.result || typeof response.result !== 'object' || Array.isArray(response.result)
+          : !response.error || typeof response.error.code !== 'string' || typeof response.error.message !== 'string')
+        return fail(new Error('The pinned service returned an invalid reply.'));
+      // Only a request that actually timed out may leave a reply to discard.
+      if (expired.delete(response.id)) continue;
+      if (!pending || response.id !== pending.id) return fail(new Error('The pinned service returned an unknown reply.'));
+      pending.finish(undefined, response);
+    }
+    if (Buffer.byteLength(buffer, 'utf8') >= 64 * 1024) fail(new Error('The pinned service reply exceeds the line limit.'));
+  };
+  socket.setEncoding('utf8');
+  socket.on('data', onData);
+  socket.on('end', onEnd);
+  socket.on('close', onEnd);
+  socket.on('error', fail);
+  return async (op, commit = false) => {
+    if (failure) throw failure;
+    if (pending) throw new Error('A pinned service request is already pending.');
+    lastStep = `request:${op}:${commit}`;
+    const id = randomUUID().replaceAll('-', '');
+    const response = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        expired.add(id);
+        pending.finish(new Error("timed out waiting for the daemon's reply"));
+      }, op === 'daemon-stop' && !commit ? 70_000 : 25_000);
+      pending = { id, finish: (error, value) => {
+        clearTimeout(timer);
+        pending = undefined;
+        if (error) reject(error); else resolve(value);
+      } };
+      try { socket.write(`${JSON.stringify({ v: 1, id, op, ...(commit ? { commit: true } : {}) })}\n`); }
+      catch (error) { fail(error); }
+    });
+    lastStep = `response:${op}:${commit}`;
+    if (!response.ok) {
+      const error = new Error(response.error.message);
+      error.code = response.error.code;
+      throw error;
+    }
+    return response.result;
+  };
+}
+async function absent() {
+  lastStep = 'absent';
+  try { const probe = await modules.client.openVerified({ paths: modules.paths, timeoutMs: 1000 }); probe.destroy(); return false; }
+  catch (error) { if (error instanceof modules.endpoint.EndpointRefusal && error.code === 'NOT_RUNNING') return true; throw error; }
+}
+async function waitDead() {
+  lastStep = 'wait-dead';
+  const deadline = Date.now() + 130_000;
+  do {
+    // Never connect to a closing listener whose lifetime record may already be empty.
+    if (modules.lifetime.processBirth(state.oldPid) !== state.oldBirth && await absent()) {
+      const native = task('inspect');
+      if (!native.enabled && native.instances === 0) return;
+    }
+    await delay(200);
+  } while (Date.now() < deadline);
+  throw new Error('The old service did not confirm shutdown within 130 seconds. Run cotal daemon start before retrying setup.');
+}
+function census(servicePid) {
+  const scan = task('census');
+  if (!Array.isArray(scan?.processes) || !Array.isArray(scan?.skipped) || !Array.isArray(scan?.executableNames)) throw new Error('The owned task returned an invalid census response.');
+  const rows = scan.processes;
+  skippedProcesses = scan.skipped;
+  executableNames = scan.executableNames;
+  if (state) {
+    state.skippedProcesses = skippedProcesses;
+    state.executableNames = executableNames;
+  }
+  const service = rows.find(row => row.pid === servicePid);
+  const launcher = service && rows.find(row => row.pid === service.parentPid && row.path.toLowerCase() === join(root, 'cotal-desktop.exe').toLowerCase());
+  const allowed = new Set([process.pid, servicePid, launcher?.pid]);
+  // GUI launchers and their bounded bridge children belong to the app tree.
+  for (const row of rows) if (row.path.toLowerCase() === join(root, 'cotal-desktop.exe').toLowerCase()) allowed.add(row.pid);
+  let changed;
+  do {
+    changed = false;
+    for (const row of rows) if (allowed.has(row.parentPid) && !allowed.has(row.pid)) { allowed.add(row.pid); changed = true; }
+  } while (changed);
+  const foreign = rows.filter(row => !allowed.has(row.pid));
+  if (foreign.length) throw new Error(`Close programs using this installation before retrying: ${foreign.map(row => `${row.name} (${row.pid})`).join(', ')}. No files were replaced.`);
+}
+async function finish(rollback = false) {
+  lastStep = rollback ? 'rollback' : 'finish';
+  state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  if (state.schema !== 1 || state.installPath !== root || state.targetVersion !== targetVersion || !['preparing', 'copying', 'ready'].includes(state.phase)) throw new Error('The setup handover is missing, invalid or belongs to another installation. Run the installer again.');
+  const native = task('inspect');
+  if (Boolean(native.installed) !== state.installed || state.installed && native.receiptDigest !== state.receiptDigest) throw new Error('The owned installation changed during setup. No task was started.');
+  const version = JSON.parse(readFileSync(join(root, 'runtime', 'package.json'), 'utf8')).version;
+  if (version !== (rollback ? state.oldVersion : targetVersion)) throw new Error('The installed version does not match the setup handover. Run the installer again.');
+  if (!rollback) {
+    const manifest = JSON.parse(readFileSync(join(root, 'runtime', 'desktop-runtime.json'), 'utf8'));
+    if (manifest.version !== targetVersion || !Array.isArray(manifest.files) || manifest.files.length === 0) throw new Error('The replacement runtime inventory is invalid. Run the installer again.');
+    const hashDeadline = Date.now() + 120_000;
+    for (const file of manifest.files) {
+      if (Date.now() >= hashDeadline) throw new Error('Runtime verification exceeded 120 seconds. Run the installer again.');
+      if (typeof file.path !== 'string' || file.path.split(/[\\/]/).includes('..') || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error('The replacement runtime inventory contains an invalid path or digest.');
+      const bytes = readFileSync(join(root, 'runtime', file.path));
+      if (createHash('sha256').update(bytes).digest('hex') !== file.sha256) throw new Error(`The replacement runtime is incomplete at ${file.path}. Run the installer again.`);
+    }
+  }
+  state.phase = 'ready';
+  write(stateFile, state);
+  if (state.installed && state.taskEnabled) task('enable');
+  if (state.running) {
+    task('start');
+    await load();
+    const deadline = Date.now() + 60_000;
+    do {
+      try {
+        const reply = await modules.client.queryDaemon({ paths: modules.paths, timeoutMs: 1000 });
+        if (reply.ok && reply.result.version === version && reply.result.state === 'ready') {
+          rmSync(stateFile);
+          outcome(0, rollback ? 'Setup cancelled. The previous background service is running.' : `Cotal ${version} is installed and its background service is running.`, rollback ? 'cancelled' : 'updated');
+          return;
+        }
+      } catch (error) {
+        if (!(error instanceof modules.endpoint.EndpointRefusal && error.code === 'NOT_RUNNING')) throw error;
+      }
+      await delay(500);
+    } while (Date.now() < deadline);
+    rmSync(stateFile);
+    outcome(23, `Cotal ${version} is installed and service startup was requested, but readiness was not confirmed within 60 seconds. Check cotal daemon status.`, 'started-unconfirmed');
+    return;
+  }
+  rmSync(stateFile);
+  outcome(0, state.recoveryMessage ?? (state.foreign ? `Cotal ${version} is installed. The service from another installation was left unchanged.` : state.installed ? `Cotal ${version} is installed. The background service remains stopped.` : `Cotal ${version} is installed. No background service was installed.`));
+}
+try {
+  if (mode === 'finish' || mode === 'abort') {
+    if (mode === 'abort' && !existsSync(stateFile)) { outcome(0, 'Setup cancelled. No service state changed.', 'cancelled'); }
+    else await finish(mode === 'abort');
+  } else {
+    if (existsSync(stateFile)) throw new Error('An interrupted setup must be recovered by the installer before loading installed commands.');
+    const native = task('inspect');
+    const oldVersion = existsSync(join(root, 'runtime', 'package.json')) ? JSON.parse(readFileSync(join(root, 'runtime', 'package.json'), 'utf8')).version : null;
+    state = { schema: 1, installPath: root, targetVersion, oldVersion, installed: native.installed, foreign: native.foreign ?? false, receiptDigest: native.receiptDigest ?? null, taskEnabled: native.enabled ?? false, running: false, phase: 'preparing' };
+    if (native.installed) {
+      await load();
+
+      try { socket = await modules.client.openVerified({ paths: modules.paths }); }
+      catch (error) { if (!(error instanceof modules.endpoint.EndpointRefusal && error.code === 'NOT_RUNNING')) throw error; }
+      socket?.on('error', () => {});
+      if (socket) {
+        request = createServiceRequester(socket);
+        const status = await request('status');
+        state.oldVersion = status.version;
+        state.oldPid = status.pid;
+        state.oldBirth = modules.lifetime.processBirth(status.pid);
+        if (!state.oldBirth || !native.enabled) throw new Error('The service lifetime or enabled state could not be confirmed.');
+        prepared = true;
+        await request('managers-prepare-restart');
+        census(status.pid);
+        // Unsupported old versions refuse rather than substituting task termination.
+        await request('daemon-stop');
+        state.running = true;
+      } else {
+        census();
+        if (native.instances !== 0) throw new Error('A native service instance exists without a readable listener. Run cotal daemon start and retry setup.');
+      }
+      write(stateFile, state);
+      paused = true;
+      task('disable');
+      if (socket) {
+        committed = true;
+        await request('daemon-stop', true);
+        socket.destroy(); socket = undefined;
+        await waitDead();
+      }
+    } else census();
+    state.phase = 'copying';
+    write(stateFile, state);
+    process.stdout.write('Background service prepared. Setup can replace the files.\n');
+  }
+} catch (error) {
+  const active = error.code === 'SEATS_ACTIVE' ? Number(/holds (\d+) active seat/.exec(error.message)?.[1] ?? 1) : 0;
+  let recovery = '';
+  try {
+    if (prepared && !committed && socket) await request('managers-abort-restart');
+    if (paused && !committed && state.taskEnabled) task('enable');
+    if (!committed && state?.phase === 'preparing') rmSync(stateFile, { force: true });
+    if (committed && mode === 'prepare') { await waitDead(); await finish(true); recovery = ' The previous service was restored.'; }
+  } catch (rollback) { recovery = ` Recovery was not confirmed: ${rollback.message}. Run the installer again.`; }
+  const unsupported = error.code === 'UNKNOWN_OP' ? ' This older service has no graceful stop request. After stopping its agents, run cotal daemon uninstall --yes with the old installed CLI, then run setup again.' : '';
+  outcome(active ? 20 : committed ? 22 : 21, `${active ? `${active} agent(s) are running. Stop them and choose Retry. ` : ''}${error.message}${unsupported}${recovery}`,'refused',active);
+} finally { socket?.destroy(); }

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><link rel="stylesheet" href="/paper.css"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light"><link rel="icon" href="/src/brand.svg" type="image/svg+xml"><title>Cotal</title></head>
+<body>
+  <div class="app loading">
+    <aside class="sidebar">
+      <div class="brand"><img class="brand-mark" src="/src/brand.svg" alt=""><strong>cotal</strong></div>
+      <div class="sidebar-footer"><div class="machine"><p id="machine-name" title="This computer">This computer</p><button id="edit-computer-name" type="button" aria-label="Edit computer name" hidden>Edit</button><form id="computer-name-form" hidden><label class="sr-only" for="computer-name-input">Computer name</label><input id="computer-name-input" autocomplete="off" aria-describedby="computer-name-error"><button type="submit">Save</button><button id="cancel-computer-name" type="button">Cancel</button><span id="computer-name-error" role="alert"></span></form><p class="muted sr-only" id="machine-details">Reading computer information…</p><span id="machine-icon" hidden></span></div><span class="status-pill"><span id="tray-indicator" class="dot"></span><span id="tray-label">Checking connection</span></span><button id="open-settings" class="header-control" type="button" hidden>Settings</button></div>
+    </aside>
+    <main>
+      <ol id="journey" aria-label="Connection steps">
+        <li data-stage="welcome"><span class="step-marker">1</span><span>Welcome</span></li>
+        <li data-stage="sign-in"><span class="step-marker">2</span><span>Sign in</span></li>
+        <li data-stage="connect"><span class="step-marker">3</span><span>Connect</span></li>
+        <li data-stage="finished"><span class="step-marker">4</span><span>Ready</span></li>
+      </ol>
+      <section id="update-banner" class="update-banner" aria-label="Desktop update" hidden><span id="update-banner-copy"></span><button id="update-download" class="text-button" type="button">Open release page</button><button id="update-later" class="text-button" type="button">Later</button></section>
+      <section id="settings-panel" class="settings-card" aria-labelledby="settings-title" hidden>
+        <div class="settings-heading"><h1 id="settings-title" tabindex="-1">Settings</h1><button id="settings-back" class="text-button" type="button" hidden>Back</button></div>
+        <section class="settings-row"><div><h2>This computer</h2><p id="settings-computer"></p><p class="muted">The dashboard uses this name.</p></div><button id="settings-name" class="text-button" type="button">Edit name</button></section>
+        <section class="settings-row"><div><h2>Updates</h2><p id="settings-update-summary" role="status">Update information is unavailable.</p><p id="settings-last-check" class="muted">Not checked yet</p></div><button id="check-updates" class="text-button" type="button">Check now</button><button id="restart-update" class="text-button" type="button" hidden>Restart to update</button></section>
+        <div id="settings-download-row" class="settings-row" hidden><p id="settings-download-copy"></p><button id="settings-download" class="text-button" type="button">Open release page</button></div>
+        <section id="update-preference-row" class="settings-row"><div><p id="update-preference-label">Notify me about updates</p><p id="update-policy" class="muted"></p></div><label class="switch"><input id="update-preference" type="checkbox" aria-labelledby="update-preference-label"><span></span></label></section>
+        <div id="settings-startup"><h2>Startup</h2></div>
+        <section class="settings-row"><div><h2>Account</h2><p id="settings-account">No account information available</p><p id="settings-spaces" class="muted" tabindex="0"></p><div class="account-actions"><button id="settings-signout" class="text-button" type="button">Sign out selected provider</button><button id="settings-disconnect" class="text-button" type="button">Disconnect this computer</button></div><div id="account-confirmation" class="account-confirmation" role="region" aria-labelledby="account-confirm-title" hidden><h3 id="account-confirm-title" tabindex="-1"></h3><p id="account-confirm-copy"></p><ul id="account-confirm-spaces" tabindex="0" aria-label="Spaces to disconnect"></ul><div class="account-actions"><button id="account-confirm" class="text-button" type="button">Confirm</button><button id="account-cancel" class="text-button" type="button">Cancel</button></div></div><p id="account-outcome" class="muted" role="status" tabindex="-1"></p><button id="account-outcome-back" class="text-button" type="button" hidden>Back to Settings</button></div></section>
+        <section class="settings-row"><div><h2>About</h2><p id="settings-versions"></p></div><button id="release-notes" class="text-button" type="button">Release notes</button></section>
+        <p id="settings-message" class="muted" role="status"></p>
+      </section>
+      <section class="connection-card" aria-labelledby="connection-title">
+        <h1 id="loading-title" data-testid="loading-title"><span id="loading-icon" aria-hidden="true"></span>Checking this computer…</h1>
+        <span id="connection-icon" class="connection-icon" aria-hidden="true"></span>
+        <p id="step-caption" class="eyebrow">Let's get started</p>
+        <h1 id="connection-title" tabindex="-1">Welcome to Cotal</h1>
+        <p id="connection-description">Connect this computer to launch agent applications from your space's dashboard. People authorized in the space can launch them as your operating-system user, with those applications' own sign-in and file permissions.</p>
+        <p id="applied-update" class="muted" role="status" hidden></p>
+        <p id="link-context" class="context" hidden></p>
+        <div id="notice-wrap" class="notice-wrap"><div><div id="notice" hidden></div></div></div>
+        <div id="sign-in-panel">
+          <form id="login-form">
+            <div id="custom-host" hidden><label for="provider">Cotal host sign-in URL</label><input id="provider" type="url" required autocomplete="url" aria-describedby="host-help"><p id="host-help" class="muted">Ask the person running your Cotal host for its sign-in URL.</p></div>
+            <div id="login-actions" class="actions"><button id="login" class="button primary" type="submit">Continue with Cotal Cloud</button><button id="other-host" class="text-button" type="button">Use another Cotal host</button></div>
+          </form>
+          <div id="approval" class="approval" hidden><p class="waiting-line" data-testid="waiting-line"><span class="dot in-flight" aria-hidden="true"></span>Waiting for your browser</p><p>Enter this code if your browser asks.</p><div class="approval-terminal"><div class="terminal-bar"><span>Approval code</span><button id="copy-code" data-testid="copy-code" class="text-button" type="button">Copy</button></div><div class="code-row"><strong id="approval-code"></strong><span class="caret" aria-hidden="true"></span></div></div><p class="muted" id="approval-expiry" data-testid="approval-expiry"></p><button id="open-approval" class="button primary" type="button">Open approval page</button><p class="muted">Do not share the approval link or code.</p></div>
+          <p id="service-explanation" class="footnote">Continuing prepares a background service that runs as your user, not an administrator, even after this window closes. Your login stays in that service, never in this app.</p>
+        </div>
+        <div id="space-panel" hidden><label for="space">Space to connect</label><select id="space"><option value="">Choose a space</option></select><div class="actions"><button id="choose-space" class="text-button" type="button">Use this space</button><button id="sync" class="text-button" type="button">Refresh spaces</button></div></div>
+        <div id="connect-panel" hidden><p class="context" id="selected-space"></p><div class="actions"><button id="connect" class="button primary" type="button">Connect this computer</button><button id="change-space" class="text-button" type="button">Cancel</button><button id="retry-login" class="text-button" type="button">Sign in again</button></div></div>
+        <ol id="setup-progress" class="progress" aria-label="Connection progress" hidden></ol>
+        <p id="connected-space" class="connected-space" hidden></p>
+        <div id="connected-panel" hidden><h2 id="spaces-heading">Spaces using this computer</h2><div role="region" aria-label="Connected space list" tabindex="-1" class="connected-spaces-scroll"><ul id="connected-spaces" data-testid="connected-spaces" aria-labelledby="spaces-heading"></ul></div><p id="dashboard-spaces-note" class="muted" hidden>Spaces can also be managed in the dashboard.</p><div id="add-space-panel" data-testid="add-space-panel"></div><section id="running-agents" aria-labelledby="agents-heading"><h2 id="agents-heading">Running on this computer</h2><p id="agents-empty" class="muted">Agents are started from the dashboard.</p><p id="agents-unavailable" class="muted" hidden></p><ul id="agent-list" data-testid="agent-list" aria-labelledby="agents-heading"></ul></section><p id="applications-summary" class="muted"></p><p id="applications-label" class="muted">Agent applications on this computer</p><div id="connected-applications" data-testid="connected-applications" class="application-chips"></div><button id="dashboard" class="button primary" type="button">Open dashboard</button><div class="actions secondary-actions"><button id="disconnect" class="text-button" type="button" hidden>Remove</button><button id="another-space" class="text-button" type="button">Add to another space</button><button id="sign-in-again" class="button primary" type="button">Sign in</button></div></div>
+        <section id="preferences" class="preferences" hidden><div><h2>Open at login</h2><p class="muted">Show Cotal in your menu bar or system tray after you sign in.</p></div><label class="switch"><input id="autostart" type="checkbox" aria-label="Open Cotal at login"><span></span></label></section>
+        <div id="recovery-panel" data-testid="recovery-panel" class="actions" hidden><button id="recover" data-testid="recover" class="button primary" type="button">Try again</button><a id="setup-installer" class="text-button" href="https://github.com/Cotal-AI/Cotal/releases/latest" hidden>Download installer</a></div>
+        <details id="details" hidden><summary>Details</summary><div class="details-content"><div><pre id="refusal-detail"></pre><ol id="setup-lines"></ol></div></div></details>
+        <button id="refresh" class="text-button" type="button" hidden>Refresh status</button>
+      </section>
+      <div id="announcer" data-testid="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <footer><span id="footer-note">You choose when to connect this computer.</span><span class="version" id="version"></span></footer>
+    </main>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body></html>

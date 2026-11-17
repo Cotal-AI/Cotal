@@ -44,7 +44,7 @@ import {
   sessionLedgerKey, assertSessionStateTransition, openSessionRail, encodeSessionFrame, parseSessionFrame,
   epsSubject, epCallerGrantRows, epServeGrantRows,
   SESSION_GRANT_MAX_TTL_MS, SESSION_WINDOW_MAX,
-  type SessionGrant, type SessionLedger, type SessionLedgerRow, type SessionRedemptionHooks,
+  type SessionLedger, type SessionLedgerRow, type SessionRedemptionHooks,
   type SignerAnchor, type AnchorResolver,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";

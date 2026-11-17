@@ -491,13 +491,13 @@ function optionalEntries(path: string): Dirent[] {
   }
 }
 
-export interface CredentialSources {
+interface CredentialSources {
   jcodeHome: string;
   appConfigDir: string;
   externalHome: string;
 }
 
-export interface CredentialMirrorEntry {
+interface CredentialMirrorEntry {
   family: "jcode-home" | "app-config" | "external-static" | "cursor-state" | "external-agent";
   source: string;
   destinationRelative: string;
@@ -646,6 +646,17 @@ export function mirrorJcodeCredentials(home: string, sources = credentialSources
     .map((entry) => ({ entry, values: readCursorState(entry.source, relative(sources.externalHome, entry.source)) }));
   for (const entry of inventory) if (entry.family !== "cursor-state") copyCredentialFile(home, entry.source, entry.destinationRelative);
   for (const { entry, values } of cursorStates) publishCursorState(home, entry.destinationRelative, values);
+}
+
+/** Remove every credential copy this home's mirror can hold, each through the same pinned-parent
+ * unlink as the mirror's own cleanup. Call it only once nothing of the lifecycle that mirrored them
+ * can still read them; the next launch mirrors afresh (#5641). The inventory also names prior
+ * managed destinations, so a copy whose source has since gone is removed too. */
+export function removeJcodeCredentials(home: string, sources = credentialSources()): number {
+  let removed = 0;
+  for (const entry of jcodeCredentialMirrorInventory(home, sources))
+    if (removeCredentialMirror(home, entry.destinationRelative)) removed++;
+  return removed;
 }
 
 export interface ShortSocketHome {

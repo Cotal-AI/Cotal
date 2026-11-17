@@ -1,6 +1,6 @@
 /** Native write diagnostics on a fresh private tmux socket; no model or operator session. */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as tmux from "./dist/driver.js";
@@ -41,7 +41,7 @@ async function waitFor(pred: () => boolean): Promise<boolean> {
   return pred();
 }
 
-const root = mkdtempSync(join(tmpdir(), "tmux-writes-"));
+const root = mkdtempSync(join(tmpdir(), "tmux  writes-"));
 const previous = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE, TMUX_TMPDIR: process.env.TMUX_TMPDIR };
 delete process.env.TMUX;
 delete process.env.TMUX_PANE;
@@ -55,6 +55,7 @@ try {
   native(["-f", "/dev/null", "new-session", "-d", "-s", "fixture-anchor", "-c", root, "/bin/sleep 30"]);
   [socket, server] = native(["display-message", "-p", "#{socket_path}\t#{pid}"]).split("\t");
   check("private server socket belongs to this fixture", socket.startsWith(`${root}/`) && /^\d+$/.test(server));
+  check("private socket path preserves repeated whitespace", socket.includes("tmux  writes-"));
   tmux.ensureSession(session, root);
   tmux.ensureSession(session, root);
   check("ensureSession preserves an existing session", tmux.serverPid() === server);
@@ -87,14 +88,129 @@ try {
   await handle.waitForExit!();
   check("runtime hard stop closes its window", !tmux.windowAliveRef(window));
 
+  for (const action of ["hard", "graceful", "interrupt"] as const) {
+    const seat = runtime.spawn(`moved-${action}`, { command: "/bin/cat", args: [] }, root);
+    const other = runtime.spawn(`other-${action}`, { command: "/bin/cat", args: [] }, root);
+    const seatPane = seat.reference!.id.split(".")[2]!;
+    const otherPane = other.reference!.id.split(".")[2]!;
+    native(["swap-pane", "-d", "-s", seatPane, "-t", otherPane]);
+    if (action === "hard") seat.stop({ graceful: false });
+    else if (action === "graceful") seat.stop();
+    else seat.interrupt();
+    await seat.waitForExit!();
+    if (action === "graceful") await new Promise((r) => setTimeout(r, 1_600));
+    check(`${action} stop follows a moved pane`, seat.status() === "exited");
+    check(`${action} stop leaves the other pane alive and untouched`,
+      other.status() === "running" && !native(["capture-pane", "-p", "-t", otherPane]).includes("/exit"));
+    other.stop({ graceful: false });
+    await other.waitForExit!();
+  }
+
+  const joined = runtime.spawn("joined", { command: "/bin/cat", args: [] }, root);
+  const joinedOther = runtime.spawn("joined-other", { command: "/bin/cat", args: [] }, root);
+  native(["join-pane", "-d", "-s", joined.reference!.id.split(".")[2]!, "-t", joinedOther.reference!.id.split(".")[1]!]);
+  joined.stop({ graceful: false });
+  await joined.waitForExit!();
+  check("hard stop follows a joined pane after its original window disappears", joined.status() === "exited" && joinedOther.status() === "running");
+  joinedOther.stop({ graceful: false });
+  await joinedOther.waitForExit!();
+
+  async function freshServer(): Promise<void> {
+    const prior = server!;
+    if (native(["-S", socket!, "display-message", "-p", "#{pid}"]) !== prior) throw new Error("private server changed; refusing restart");
+    native(["-S", socket!, "kill-server"]);
+    if (!await waitFor(() => {
+      try { process.kill(Number(prior), 0); return false; }
+      catch (err) { return (err as NodeJS.ErrnoException).code === "ESRCH"; }
+    })) throw new Error("the prior private server did not exit");
+    native(["-f", "/dev/null", "new-session", "-d", "-s", session, "-c", root, "/bin/sleep 120"]);
+    [socket, server] = native(["display-message", "-p", "#{socket_path}\t#{pid}"]).split("\t");
+    if (!socket!.startsWith(`${root}/`)) throw new Error("replacement socket escaped the fixture");
+  }
+
+  for (const action of ["hard", "graceful", "interrupt"] as const) {
+    await freshServer();
+    const old = runtime.spawn(`old-${action}`, { command: "/bin/cat", args: [] }, root);
+    const oldRefs = old.reference!.id.split(".");
+    await freshServer();
+    const replacement = runtime.spawn(`replacement-${action}`, { command: "/bin/cat", args: [] }, root);
+    const refs = replacement.reference!.id.split(".");
+    check(`${action} fixture reuses ids on another native server`, refs[0] !== oldRefs[0] && refs[1] === oldRefs[1] && refs[2] === oldRefs[2]);
+    check(`${action} stale status reports the original seat exited`, old.status() === "exited");
+    await old.waitForExit!();
+    check(`${action} stale wait resolves without waiting for the replacement`, replacement.status() === "running");
+    if (action === "hard") old.stop({ graceful: false });
+    else if (action === "graceful") old.stop();
+    else old.interrupt();
+    if (action === "graceful") await new Promise((r) => setTimeout(r, 1_700));
+    check(`${action} stale handle leaves the replacement alive and untouched`,
+      replacement.status() === "running" && !native(["capture-pane", "-p", "-t", refs[2]!]).includes("/exit"));
+    replacement.stop({ graceful: false });
+    await replacement.waitForExit!();
+  }
+
+  // A live server whose socket file was moved aside is not absence: tmux reports the connect failure
+  // it also gives for a never-used path, and creating here would start a second server beside the
+  // seats. The kernel still lists the server at the path it bound, and the check reads that.
+  const moved = `${socket}.moved`;
+  renameSync(socket!, moved);
+  try {
+    const direct = spawnSync("tmux", ["-u", "has-session", "-t", session], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    check("moved socket: native tmux reports a connect failure", direct.status === 1 && direct.stderr.startsWith("error connecting to "));
+    const err = caught(() => tmux.ensureSession(session, root));
+    check("moved socket: ensureSession throws instead of creating",
+      err !== undefined && err.message.startsWith(`tmux: couldn't check session ${session}:`) && err.message.includes(direct.stderr.trim()));
+    check("moved socket: no second server was started at the original path", !existsSync(socket!));
+    check("moved socket: the first server still holds its sessions",
+      native(["-S", moved, "display-message", "-p", "#{pid}"]) === server && native(["-S", moved, "list-sessions", "-F", "#S"]).split("\n").includes(session));
+  } finally {
+    // A failing check may have created a second private server. Stop it before restoring the first socket.
+    if (existsSync(socket!)) {
+      const replacement = spawnSync("tmux", ["-S", socket!, "display-message", "-p", "#{pid}"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      if (replacement.status === 0 && replacement.stdout.trim() !== server) {
+        native(["-S", socket!, "kill-server"]);
+        if (!await waitFor(() => spawnSync("tmux", ["-S", socket!, "display-message", "-p", "#{pid}"], { stdio: "ignore" }).status !== 0))
+          throw new Error("the second private server did not stop");
+      }
+    }
+    renameSync(moved, socket!);
+  }
+  tmux.ensureSession(session, root);
+  check("socket back in place: ensureSession reaches the same server", tmux.serverPid() === server);
+
+  // A path where no server has ever listened gets the same connect failure, and there creating is
+  // right: this is every first spawn on a fresh host. Once that server exits its socket file stays
+  // and tmux says no server is running; creating is right there too.
+  const fresh = join(root, "fresh");
+  mkdirSync(fresh, { mode: 0o700 });
+  process.env.TMUX_TMPDIR = fresh;
+  let freshSocket: string | undefined;
+  try {
+    const never = spawnSync("tmux", ["-u", "has-session", "-t", "first"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    check("never-listened socket: native tmux reports a connect failure", never.status === 1 && never.stderr.startsWith("error connecting to "));
+    check("never-listened socket: ensureSession creates the first server", caught(() => tmux.ensureSession("first", root)) === undefined);
+    const [sock, first] = native(["display-message", "-p", "#{socket_path}\t#{pid}"]).split("\t");
+    freshSocket = sock;
+    check("never-listened socket: the new server lives in the fresh directory", sock!.startsWith(`${fresh}/`) && native(["list-sessions", "-F", "#S"]) === "first");
+    native(["-S", sock!, "kill-server"]);
+    await waitFor(() => spawnSync("tmux", ["-S", sock!, "display-message", "-p", "#{pid}"], { stdio: "ignore" }).status !== 0);
+    const exited = spawnSync("tmux", ["-u", "has-session", "-t", "again"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    check("exited server: its socket file stays and native tmux says no server is running", existsSync(sock!) && exited.status === 1 && exited.stderr.startsWith("no server running on "));
+    check("exited server: ensureSession creates a new server", caught(() => tmux.ensureSession("again", root)) === undefined && tmux.serverPid() !== first);
+  } finally {
+    if (freshSocket !== undefined && spawnSync("tmux", ["-S", freshSocket, "display-message", "-p", "#{pid}"], { stdio: "ignore" }).status === 0)
+      native(["-S", freshSocket, "kill-server"]);
+    process.env.TMUX_TMPDIR = root;
+  }
+
   const unsafe = join(root, "unsafe");
   const socketDir = join(unsafe, `tmux-${process.getuid!()}`);
   mkdirSync(socketDir, { recursive: true, mode: 0o700 });
   chmodSync(socketDir, 0o777);
   process.env.TMUX_TMPDIR = unsafe;
   try {
-    failure("ensureSession", ["new-session", "-d", "-s", "refused", "-x", "200", "-y", "50", "-c", root],
-      () => tmux.ensureSession("refused", root), "create session refused", "unsafe permissions");
+    failure("ensureSession", ["has-session", "-t", "refused"],
+      () => tmux.ensureSession("refused", root), "check session refused", "unsafe permissions");
     const refused = caught(() => new TmuxRuntime("refused").spawn("probe", { command: "/bin/true", args: [] }, root));
     check("runtime SpawnRefused retains the native creation reason", refused instanceof SpawnRefused && refused.message.includes("unsafe permissions"));
   } finally {

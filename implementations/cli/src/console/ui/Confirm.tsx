@@ -1,10 +1,17 @@
 import { useState } from "react";
 import { Box, Text, useInput } from "ink";
 
+/** The name a stop confirmation shows. A missing or whitespace-only name is the agent's id. */
+export function shownKillName(name: string, id: string): string {
+  if (name.trim()) return name;
+  if (id.trim()) return id;
+  return "(unnamed)";
+}
+
 /** A destructive action awaiting confirmation. `kill` is a quick y/n (with `f` for a hard kill);
  *  `deleteSpace` and `purge` (irreversible) require typing the space name, `delchan` the channel name. */
 export type ConfirmTarget =
-  | { kind: "kill"; name: string }
+  | { kind: "kill"; name: string; id: string }
   | { kind: "deleteSpace"; space: string }
   | { kind: "purge"; space: string }
   | { kind: "delchan"; channel: string };
@@ -66,7 +73,7 @@ export function Confirm({
       {target.kind === "kill" ? (
         <Box marginTop={1} flexDirection="column">
           <Text>
-            Stop agent <Text bold>{target.name}</Text> via the manager?
+            Stop agent <Text bold>{shownKillName(target.name, target.id)}</Text> via the manager?
           </Text>
           <Box marginTop={1}>
             <Text dimColor>y = stop (graceful) · f = force-kill · n / Esc = cancel</Text>

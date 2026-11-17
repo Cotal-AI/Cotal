@@ -32,10 +32,18 @@ a scoped credential on the spot. Every bearer also names a **root credential** r
 space's credential ledger, proved live at each connect, so revoking that one credential
 bites at the very next connect. The operator grants access with
 `cotal actor grant <actor> --sub <their id> --full` for the full envelope (all
-channels; scope `spawn,role:default`, so it may spawn and may delegate the default role), or names
+channels; scope `spawn,run,role:default`, so it may spawn, start workflow runs where supported and delegate the default role), or names
 `--scope`, `--allow-subscribe` and `--allow-publish` for a narrow row. A grant with any of the
 three left off and no `--full` is refused.
 No ledger row, no access; there is no allow-by-default.
+
+`cotal login` also records a handle from what the IdP gives: its preferred user name, else the part
+of its email before the `@`, else its name, the first that is a valid chat name. A
+[chat session](cli-messaging.mdx#chat) appears under it unless you choose another name. The email
+itself is never the handle, so other participants do not see it. A login made by an older cotal, or
+one whose IdP gives no valid chat name, has none on record. `cotal login` prints the handle as its
+`Chat name`, or `none`. When you saved a name, it says chat sessions use that one. When you saved
+none and the handle is `none`, it names `--name` and how to save a name.
 
 
 ### Concurrent ledger changes
@@ -143,6 +151,20 @@ Every registration is also bound to the proved account. Its IdP URL must match t
 issuer must match the exact JWT `iss` pin. Its exchange, provisioning, and manager-authority
 endpoints must be same-origin with that IdP. One foreign pin or endpoint refuses the whole
 candidate snapshot.
+
+An entry may carry `"unavailable": "<reason>"` instead of `registration` when the account still
+belongs to the space but the catalog cannot serve it now, for example while an operator holds it:
+
+```json
+{ "id": "space-id", "slug": "held_project", "name": "Held project", "kind": "hosted", "role": "member", "unavailable": "held by an operator" }
+```
+
+The client keeps the registration it already holds for that slug unchanged, records the reason as
+that entry's catalog error, and records nothing for a slug it does not hold. The space is neither
+removed nor deselected, and its siblings in the snapshot are applied as usual. A command that
+targets it refuses with `DEPENDENCY_UNAVAILABLE` and the reason. An entry with both fields or an
+empty reason refuses the whole candidate snapshot. A client from before this field refuses the
+whole snapshot too, so it keeps its prior snapshot as it would after a failed refresh.
 
 The `slug` is the space identity resolved by `--space`, `use`, registry roots, and collisions. The
 `name` is a display label only.
@@ -311,6 +333,12 @@ it reaches nothing the spawner holds, and the spawner's own event channel is sti
 its parent.
 
 An ordinary delegation walk ends at a parentless grant or an admin-scoped ancestor. An admin ancestor is a separate authority root. Ordinary containment does not cross that boundary or inspect ancestors above it.
+
+On a participant manager the issuing host enrolls each helper, and the spawner is whoever asked the
+manager for it. The manager forwards the `spawn` request subject it served. The host has read that
+subject itself, so it takes the caller from what it saw and never from the manager's word, and
+answers each request once. A helper a workflow run spawns has the run's starter as its parent, and
+also stays within what the starter held when the run was admitted.
 
 **Control ops ride your own login**, gated by ledger scope. `spawn` covers launching,
 `ps`, and stop/attach of the agents under **your own owner**: the owner is the

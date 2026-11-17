@@ -56,7 +56,7 @@ const treePath = (w: Pt): string => {
   const c2: Pt = { x: w.x, y: lerp(p0, p1, 0.55).y };
   return `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p1.x} ${p1.y}`;
 };
-const TREE_PATHS = WORKERS.map(treePath);
+const TREE_WIRES = WORKERS.map((at) => ({ d: treePath(at), glow: 0 }));
 
 // Peers, left-to-right once the orchestrator has joined the row.
 const PEERS: Pt[] = [ORCH_PEER, ...WORKERS];
@@ -90,7 +90,12 @@ const E01_PATH = straightPath(E01a, E01b);
 const E12_PATH = straightPath(E12a, E12b);
 const E23_PATH = straightPath(E23a, E23b);
 const E03_PATH = arcPath(E03a, e03Ctrl[0], e03Ctrl[1], E03b);
-const LAT_PATHS = [E01_PATH, E12_PATH, E23_PATH, E03_PATH];
+const LAT_EDGES = [
+  { d: E01_PATH, from: 78, to: 104 },
+  { d: E12_PATH, from: 90, to: 116 },
+  { d: E23_PATH, from: 102, to: 128 },
+  { d: E03_PATH, from: 110, to: 136 },
+];
 
 const e01Pos = (t: number): Pt => lerp(E01a, E01b, t);
 const e12Pos = (t: number): Pt => lerp(E12a, E12b, t);
@@ -109,13 +114,6 @@ const EDGE_ENDS: [number, number][] = [
 // --- beat timing ----------------------------------------------------------------
 
 const DISSOLVE = [30, 75] as const; // orchestrator drops, tree fades, space forms
-// lateral beams, staggered (one per edge)
-const LAT_BEAMS: [number, number][] = [
-  [78, 104],
-  [90, 116],
-  [102, 128],
-  [110, 136],
-];
 
 // soft flash from a beam: rises as it nears the target, then decays.
 const arrival = (frame: number, from: number, to: number): number => {
@@ -137,8 +135,8 @@ export const S2Shift: React.FC = () => {
   const spaceOpacity = fade(frame, DISSOLVE[0] + 8, DISSOLVE[1]);
 
   // --- connect: lateral wires + beams -----------------------------------------
-  const tLat = LAT_BEAMS.map(([f, t]) => prog(frame, f, t));
-  const latArrive = LAT_BEAMS.map(([f, t]) => arrival(frame, f, t));
+  const tLat = LAT_EDGES.map(({ from: f, to: t }) => prog(frame, f, t));
+  const latArrive = LAT_EDGES.map(({ from: f, to: t }) => arrival(frame, f, t));
   // lateral wires fade in just after the space forms, then hold to the end.
   const latStructure = fade(frame, DISSOLVE[1] - 8, DISSOLVE[1] + 6);
 
@@ -158,7 +156,7 @@ export const S2Shift: React.FC = () => {
   );
 
   // lateral wire afterglow per edge.
-  const latGlow = latArrive.map((g) => g * latStructure);
+  const latWires = LAT_EDGES.map(({ d, from, to }) => ({ d, glow: arrival(frame, from, to) * latStructure }));
 
   // captions crossfade.
   const capOne = fade(frame, 18, 32) * (1 - fade(frame, 70, 82));
@@ -182,12 +180,12 @@ export const S2Shift: React.FC = () => {
 
         {/* tree wires (beat: tree) */}
         <div style={{ opacity: treeOpacity }}>
-          <WireLines paths={TREE_PATHS} />
+          <WireLines wires={TREE_WIRES} />
         </div>
 
         {/* lateral peer wires (beat: connect) */}
         <div style={{ opacity: latStructure }}>
-          <WireLines paths={LAT_PATHS} glow={latGlow} />
+          <WireLines wires={latWires} />
         </div>
 
         {/* ripple as the space forms */}
@@ -221,7 +219,7 @@ export const S2Shift: React.FC = () => {
         </div>
 
         {/* lateral beams (beat: connect): peer -> peer, sideways, staggered */}
-        {LAT_PATHS.map((d, i) => (
+        {LAT_EDGES.map(({ d }, i) => (
           <BeamLine
             key={`lat${i}`}
             d={d}

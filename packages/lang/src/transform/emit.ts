@@ -105,17 +105,6 @@ class Emitter {
     return `${this.n.ctx}.${member}(${args})`;
   }
 
-  /**
-   * Reach a member that is SURFACED but not yet in the contract. Empty once `callee` was granted as
-   * member 14, and kept because it is the only route into `TransformMeta.proposed`: a member added
-   * here shows up as measured debt, where one added straight to {@link seam} is caught instead by
-   * the suite's unruled-member check, loudly, but after the fact.
-   */
-  private propose(member: string, args: string): string {
-    this.proposed.add(member);
-    return this.seam(member, args);
-  }
-
   private temp(): string {
     const name = `${this.n.temp}${this.tempTop}`;
     this.tempTop += 1;

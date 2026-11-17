@@ -23,20 +23,18 @@ import {
   RuntimeFault,
   ScopeBranchMissing,
   UnwalkableScope,
-  messageOf,
   InterpreterDefect,
   isStackExhaustion,
 } from "./errors.js";
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
-import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
-import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
-import { NotCrossable, Prng, assertCrossable, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
-import { parseDuration } from "./duration.js";
+import { KeyScope, digest, programHashOf, type PathKind, type ScopeKind } from "./keys.js";
+import { Journal, JournalAppendRejected, RunClock } from "./journal.js";
+import { Prng, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
-import { notifyFactViolation } from "./notify-fact.js";
 import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
 import {
+  agentHandles,
   dispatchPrimitive,
   freeConstructors,
   onceBodyNotCallable,
@@ -51,16 +49,10 @@ import {
   RunReleased,
   RunHeld,
   EffectError,
-  applyCheckpointPolicy,
-  type AgentHandleValue,
   type CancelSignal,
   type RootCancellationSource,
-  type ChannelHandleValue,
-  type ConclaveRequest,
   type EffectContext,
   type EffectHandler,
-  type CheckpointRaw,
-  type EventDescriptor,
 } from "./effects.js";
 
 type AnyNode = Record<string, unknown> & { type: string };
@@ -501,7 +493,9 @@ class Interpreter {
     kind: string,
     asCallee: boolean,
   ): Callable {
-    const m = table[prop];
+    // An own entry only: the tables are ordinary objects, and an inherited name such as
+    // `constructor` would hand the program a host function (#7058).
+    const m = Object.hasOwn(table, prop) ? table[prop] : undefined;
     if (m === undefined) {
       throw new RuntimeFault(
         "L4014",
@@ -1043,7 +1037,7 @@ class Interpreter {
     // resume into a different room. The other three are identified by kind, name and occurrence.
     const subject = spec.hashesSubject
       ? {
-          members: (first as AgentHandleValue[]).map((m) => m.agent),
+          members: agentHandles(first, "argument 1 of `conclave`").map((m) => m.agent),
           channel: (this.option(bag, "channel") as string | undefined) ?? null,
         }
       : undefined;

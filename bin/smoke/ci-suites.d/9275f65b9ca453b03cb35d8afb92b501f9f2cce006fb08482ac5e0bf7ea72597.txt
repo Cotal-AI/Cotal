@@ -1,0 +1,2 @@
+# An agent session is held only while a view is open: one watch per agent, the watch before the read, at most 2,000 events.
+smoke:web-session-store

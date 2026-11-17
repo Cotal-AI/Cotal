@@ -1,17 +1,22 @@
 /**
- * Agent-card host and directory test (no test runner). Starts its own nats-server and drives
- * MeshAgent directly to verify the session's reported connector location:
- *   - `meta.host` and `meta.cwd` travel on the wire to a peer's roster;
- *   - agent-file values are overlaid by `os.hostname()` and the connector's startup directory;
- *   - the other connector-owned meta keys still survive alongside them.
+ * Agent-card `meta.host` test (no test runner) — spins up its OWN nats-server and drives a
+ * MeshAgent directly to verify that a session reports WHICH MACHINE it runs on:
+ *   - `meta.host` and `meta.cwd` travel on the wire to a peer's roster (`meta.host` is this machine's `os.hostname()`, and it travels on the wire (a *peer* reads it
+ *     off the roster, not the agent's own local object);
+ *   - an agent file CANNOT spoof it: a config-supplied `meta.host` is overlaid by the real
+ *     hostname, exactly like `meta.connector`;
+ *   - the other connector-owned meta keys still survive alongside it;
+ *   - `meta["ai.cotal.events"]` says whether the session arms its event plane ("on" with
+ *     COTAL_EVENTS in the environment at construction, "off" without), and an agent file declaring
+ *     it "on" cannot make an unarmed session read "on".
  * Run: pnpm smoke:card-host
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { CotalEndpoint, isReachable, mintLifecycleUid } from "@cotal-ai/core";
+import { CotalEndpoint, eventPrincipalLocation, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -54,6 +59,46 @@ const cfg: AgentConfig = {
 const agent = new MeshAgent(cfg);
 agent.on("error", () => {});
 
+// The card is built when the MeshAgent is constructed, so COTAL_EVENTS is set (or cleared) around
+// the construction only and `process.env` is restored right after it.
+function constructWithEvents(config: AgentConfig, events: boolean): MeshAgent {
+  const had = Object.prototype.hasOwnProperty.call(process.env, "COTAL_EVENTS");
+  const before = process.env.COTAL_EVENTS;
+  if (events) process.env.COTAL_EVENTS = "1";
+  else delete process.env.COTAL_EVENTS;
+  try {
+    const a = new MeshAgent(config);
+    a.on("error", () => {});
+    return a;
+  } finally {
+    if (had) process.env.COTAL_EVENTS = before;
+    else delete process.env.COTAL_EVENTS;
+  }
+}
+
+const armedAgent = constructWithEvents({ ...cfg, name: "Armed", id: "armed_agent", meta: undefined }, true);
+const unarmedAgent = constructWithEvents({ ...cfg, name: "Unarmed", id: "unarmed_agent", meta: undefined }, false);
+// The agent file CLAIMS the plane is armed while the environment says it is not.
+const spoofAgent = constructWithEvents(
+  { ...cfg, name: "Spoof", id: "spoof_agent", meta: { "ai.cotal.events": "on" } },
+  false,
+);
+// Jcode reads COTAL_EVENTS, then deletes every COTAL_ variable, then builds the session.
+// The card must follow the decision it already made, not the scrubbed process environment.
+function constructArmedAfterScrub(config: AgentConfig): MeshAgent {
+  const saved = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_")));
+  for (const key of Object.keys(saved)) delete process.env[key];
+  try {
+    const a = new MeshAgent(config, undefined, { eventsArmed: true, eventsWorkspaceRoot: dir });
+    a.on("error", () => {});
+    return a;
+  } finally {
+    Object.assign(process.env, saved);
+  }
+}
+const scrubbedAgent = constructArmedAfterScrub({ ...cfg, name: "Scrubbed", id: "scrubbed_agent", meta: undefined });
+const requiredAgent = constructArmedAfterScrub({ ...cfg, name: "Required", id: "required_agent", meta: undefined, eventsRequired: true });
+
 // A separate endpoint, so every assertion below reads the card as it arrived OVER THE WIRE.
 const peer = new CotalEndpoint({
   space,
@@ -72,6 +117,18 @@ try {
   await agent.waitUntilConnected(10_000);
   check("agent connected", agent.connected === true);
 
+  for (const extra of [armedAgent, unarmedAgent, spoofAgent, scrubbedAgent, requiredAgent]) {
+    extra.start();
+    await extra.waitUntilConnected(10_000);
+  }
+
+  check("a required-events session binds after all COTAL_ variables are scrubbed", requiredAgent.connected);
+  for (const extra of [scrubbedAgent, requiredAgent]) {
+    const principal = `${extra.ep.principal.owner}.${extra.ep.principal.actor}`;
+    const location = eventPrincipalLocation({ workspaceRoot: dir, space, principal });
+    check(`startup checks the supplied event state root for ${extra === requiredAgent ? "required" : "optional"} events`, existsSync(location.principalDir));
+  }
+
   let seen: Record<string, unknown> | undefined;
   for (let i = 0; i < 50; i++) {
     // Match on the display name: the wire `card.id` is the principal dot-form (`<owner>.<actor>`),
@@ -89,9 +146,33 @@ try {
   check("connector-owned meta survives alongside location", seen?.connector === "claude" && seen?.model === "opus", seen);
   check("agent-file meta the connector does not own is preserved", seen?.custom === "kept", seen);
 
+  const eventsOf = async (name: string): Promise<unknown> => {
+    for (let i = 0; i < 50; i++) {
+      const meta = peer.getRoster().find((p) => p.card.name === name)?.card.meta as Record<string, unknown> | undefined;
+      if (meta?.host) return meta["ai.cotal.events"];
+      await sleep(200);
+    }
+    return undefined;
+  };
+  check("a session with COTAL_EVENTS reads on over the wire", (await eventsOf("Armed")) === "on");
+  check("a session without COTAL_EVENTS reads off over the wire", (await eventsOf("Unarmed")) === "off");
+  check(
+    "an agent file declaring ai.cotal.events on cannot arm an unarmed session",
+    (await eventsOf("Spoof")) === "off",
+  );
+  check(
+    "a session built after COTAL_EVENTS was removed still reads on when the connector already armed it",
+    (await eventsOf("Scrubbed")) === "on",
+  );
+
   console.log(`\n✓ card-host smoke passed (${pass} checks)`);
 } finally {
   await agent.stop?.();
+  await armedAgent.stop?.();
+  await unarmedAgent.stop?.();
+  await spoofAgent.stop?.();
+  await scrubbedAgent.stop?.();
+  await requiredAgent.stop?.();
   await peer.stop?.();
   await killAndAwaitExit(srv);
   rmSync(dir, { recursive: true, force: true });

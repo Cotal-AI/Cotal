@@ -93,9 +93,9 @@ try {
   check("...and the refusal precedes the effect: the tool never reached the mesh agent",
     reached.length === 0, { reached });
 
-  // cotal_inbox is this connector's one override: it drops the spec's own arguments and supplies
-  // `scope` itself. Registered without an `inputSchema` that substitution silently ate whatever the
-  // caller sent, on that tool alone — the seam open at exactly the point nobody looks.
+  // cotal_inbox is this connector's one override: it passes `peek` on and supplies `scope` itself.
+  // Registered without an `inputSchema` that substitution silently ate whatever the caller sent, on
+  // that tool alone — the seam open at exactly the point nobody looks.
   let inboxRefusal: string | undefined;
   let inboxSucceeded = false;
   try {

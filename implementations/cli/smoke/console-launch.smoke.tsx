@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import React from "react";
 import { render } from "ink";
 import type { CotalEndpoint, Presence } from "@cotal-ai/core";
 import { App } from "../src/console/app.js";
@@ -16,6 +15,7 @@ class Observer extends EventEmitter {
   async stop() {}
   getRoster(): Presence[] { return []; }
   tap() {}
+  channelDeliveryClass() { return "live"; }
   async listChannels() { return [{ channel: "general", messages: 0 }]; }
   async channelHistory() { return []; }
   async dmHistory() { return []; }

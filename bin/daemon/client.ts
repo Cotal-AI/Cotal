@@ -1,17 +1,36 @@
 /**
- * The client side of the local daemon endpoint, used by `cotal daemon status`.
+ * The client side of the local daemon endpoint, used by `cotal daemon status` and the other verbs.
  *
- * It refuses before connecting unless the directory and socket pass the same ownership and mode
- * checks the server applies, and refuses after connecting, before writing a single byte, unless
- * the kernel reports the listening peer as this same uid. So a squatter under another uid, or a
- * socket in a loosened directory, never receives a request.
+ * On Linux and macOS it refuses before connecting unless the directory and socket pass the same
+ * ownership and mode checks the server applies. On every platform it refuses after connecting,
+ * before writing a single byte, unless the kernel reports the answering process as this same user
+ * and as the live holder of the daemon's lifetime lock. On Windows the native pipe open reads that
+ * process's identity before Node sees the connection. So a squatter under another user, a process
+ * that is not this daemon, or a socket in a loosened directory never receives a request.
  */
+import { closeSync } from "node:fs";
 import { connect as netConnect, type Socket } from "node:net";
+import { validAccountComputerStatus } from "./account-state.js";
 import { randomUUID } from "node:crypto";
-import { processStartToken } from "@cotal-ai/core";
-import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, assertLinux, checkDir, checkSocket, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
-import { encode, type ConnectCheckResult, type DaemonResponse, type DaemonStatus, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
-import { readLifetimeRecord } from "./lifetime.js";
+import { connectPipe, windowsUserSid, type PipePeer } from "@cotal-ai/seat";
+import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES, EndpointRefusal, adoptPipe, assertSupportedPlatform, checkDir, checkSocket, defaultPeerPid, defaultPeerUid, type DaemonPaths, type PeerPid, type PeerUid } from "./endpoint.js";
+import { encode, type ConnectCheckResult, type DaemonRequest, type DaemonResponse, type DaemonStatus, type HostedManager, type LoginPrompt, type LoginResult, type RegisterResult, type ServiceConnectionResult } from "./protocol.js";
+import { observeLifetimeRecord, processBirth, readLifetimeRecord } from "./lifetime.js";
+import { CommandFailure } from "@cotal-ai/workspace";
+
+/** Read or change shared update preferences, or run the existing cached check without installing. */
+export async function updateViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "update-settings"; auto?: boolean; notify?: boolean } | { op: "update-check" }): Promise<DaemonStatus> {
+  const sock = await openVerified(opts);
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request }));
+    const reply = JSON.parse(await readLine(sock, 15_000)) as DaemonResponse;
+    if (reply.id !== id || "event" in reply) throw new Error("Invalid update control response.");
+    if (!reply.ok) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", reply.error.message, { native: { code: reply.error.code } });
+    if (!("state" in reply.result) || !("version" in reply.result)) throw new Error("Invalid update status response.");
+    return reply.result as DaemonStatus;
+  } finally { sock.destroy(); }
+}
 
 /** Ask the daemon whether it could register with `space`. Nothing is registered either way. */
 export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string }): Promise<
@@ -19,8 +38,8 @@ export async function connectCheckViaDaemon(opts: Pick<QueryOptions, "paths" | "
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "connect-check", space: opts.space }));
-    // The daemon's own network read is bounded by the stock client (30 s); allow a little more.
-    const reply = JSON.parse(await readLine(sock, 35_000)) as DaemonResponse;
+    // A cold readiness check exchanges the IdP token, then reads authority metadata (30 s each).
+    const reply = JSON.parse(await readLine(sock, 65_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the connect check with something else" };
     return { ok: true, result: reply.result as ConnectCheckResult };
@@ -35,8 +54,8 @@ export async function registerViaDaemon(opts: Pick<QueryOptions, "paths" | "peer
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "register", space: opts.space }));
-    // Readiness read plus the stock register call, each bounded by the stock client (30 s).
-    const reply = JSON.parse(await readLine(sock, 65_000)) as DaemonResponse;
+    // Cold readiness has two reads, followed by the stock register call (30 s each).
+    const reply = JSON.parse(await readLine(sock, 95_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("outcome" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the registration with something else" };
     return { ok: true, result: reply.result as RegisterResult };
@@ -49,15 +68,29 @@ export interface ClientCounters {
   bytesWritten: number;
 }
 
+/** Send a bounded machine-control request after authenticating the daemon's live process. */
+export async function managerViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid">, request: { op: "manager-start" | "manager-status"; space: string } | { op: "managers-stop" | "managers-prepare-restart" | "managers-abort-restart" }): Promise<HostedManager | DaemonStatus> {
+  const sock = await openVerified(opts);
+  try {
+    const id = randomUUID().replaceAll("-", "");
+    sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, ...request } as DaemonRequest));
+    // A start may reconcile connectors for up to 120s, then wait for Manager readiness.
+    const reply = JSON.parse(await readLine(sock, request.op === "manager-start" ? 250_000 : 130_000)) as DaemonResponse;
+    if (!reply.ok) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the daemon refused ${request.op}: ${reply.error.code} ${reply.error.message}`, { native: { code: reply.error.code }, remedy: reply.error.remedy ?? (reply.error.code === "UNKNOWN_OP" ? "restart the recorded Cotal daemon user service with this platform's service manager, then retry" : "inspect the daemon's hosting records and retry the operation") });
+    if (reply.id !== id || "event" in reply || !("state" in reply.result)) throw new Error("invalid Manager response");
+    return reply.result as HostedManager | DaemonStatus;
+  } finally { sock.destroy(); }
+}
+
 /** Ask the daemon to connect, disconnect or report its own service connection to `space`. */
 export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> & { readonly space: string; readonly op: "service-connect" | "service-disconnect" | "service-status" }): Promise<
   { readonly ok: true; readonly result: ServiceConnectionResult } | { readonly ok: false; readonly code: string; readonly message: string }> {
   const sock = await openVerified({ ...opts, timeoutMs: 5000 });
   try {
     sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: opts.op, space: opts.space }));
-    // A connect runs the register replay, the first renewal, the broker connection and `ready`, each
-    // bounded by its stock client (30 s); allow for all of them.
-    const reply = JSON.parse(await readLine(sock, 130_000)) as DaemonResponse;
+    // A connect adds cold readiness's token exchange to the register replay, first renewal,
+    // broker connection and `ready` (30 s each); allow for all of them.
+    const reply = JSON.parse(await readLine(sock, 160_000)) as DaemonResponse;
     if (!reply.ok) return { ok: false, code: reply.error.code, message: reply.error.message };
     if ("event" in reply || !("state" in reply.result) || !("space" in reply.result)) return { ok: false, code: "BAD_REPLY", message: "the daemon answered the service request with something else" };
     return { ok: true, result: reply.result as ServiceConnectionResult };
@@ -68,9 +101,11 @@ export async function serviceViaDaemon(opts: Pick<QueryOptions, "paths" | "peerU
 
 export interface QueryOptions {
   readonly paths: DaemonPaths;
-  readonly peerUid: PeerUid;
-  /** Required with an explicit daemon home ({@link DaemonPaths.lock}): the peer's kernel pid, which
-   *  must be the live owner of that home's lifetime lock. */
+  /** Test hook (Linux, macOS): read the peer's kernel uid. Defaults to the native reader. Windows
+   *  reads the peer inside the native pipe open and does not consult it. */
+  readonly peerUid?: PeerUid;
+  /** Test hook (Linux, macOS): read the peer's kernel pid, which must be the live owner of the
+   *  daemon's lifetime lock. Defaults to the native reader; not consulted on Windows. */
   readonly peerPid?: PeerPid;
   readonly uid?: number;
   readonly timeoutMs?: number;
@@ -99,7 +134,8 @@ function connectTo(path: string, timeoutMs: number): Promise<Socket> {
   });
 }
 
-function readLine(sock: Socket, timeoutMs: number): Promise<string> {
+/** Read one newline-terminated reply, refusing one longer than the line limit. */
+export function readLine(sock: Socket, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     let buf = "";
     const t = setTimeout(() => finish(new Error("timed out waiting for the daemon's reply")), timeoutMs);
@@ -125,7 +161,7 @@ function readLine(sock: Socket, timeoutMs: number): Promise<string> {
 
 /** The only replies `queryDaemon` sees: it sends status (or a raw contract probe), never login-start,
  *  so no sign-in event can arrive on its connection. */
-export type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
+type QueryReply = Extract<DaemonResponse, { ok: false }> | { readonly v: DaemonResponse["v"]; readonly id: string | null; readonly ok: true; readonly result: DaemonStatus };
 
 /** Send one request and return the daemon's parsed reply. */
 export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
@@ -134,23 +170,28 @@ export async function queryDaemon(opts: QueryOptions): Promise<QueryReply> {
     const line = opts.rawLine !== undefined ? `${opts.rawLine}\n` : encode({ v: DAEMON_PROTOCOL_VERSION, id: randomUUID().replaceAll("-", ""), op: "status" });
     (opts.counters ?? { bytesWritten: 0 }).bytesWritten += Buffer.byteLength(line, "utf8");
     sock.write(line);
-    const reply = await readLine(sock, opts.timeoutMs ?? 5000);
-    return JSON.parse(reply) as QueryReply;
+    // Status includes parallel hosted-Manager observations, each bounded to fifteen seconds.
+    const reply = await readLine(sock, opts.timeoutMs ?? 20_000);
+    const parsed = JSON.parse(reply) as QueryReply;
+    if (parsed.ok && parsed.result.account !== undefined && !validAccountComputerStatus(parsed.result.account))
+      throw new Error("the daemon returned malformed account computer status");
+    return parsed;
   } finally {
     sock.destroy();
   }
 }
 
 /** Connect only after the directory and socket checks pass, and keep the connection only when the
- *  kernel reports the listener as this same uid. Nothing is written before both. */
-async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid" | "timeoutMs">): Promise<Socket> {
-  assertLinux();
+ *  kernel reports the listener as this same uid and as the holder of the daemon's lifetime lock.
+ *  Nothing is written before all of them. */
+export async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid" | "timeoutMs">): Promise<Socket> {
+  assertSupportedPlatform();
+  if (process.platform === "win32") return openPipe(opts.paths, opts.timeoutMs ?? 5000);
   const uid = opts.uid ?? process.geteuid!();
   const { paths } = opts;
-  if (paths.lock !== undefined && opts.peerPid === undefined) throw new Error("an explicit daemon home needs the peer pid check");
   try {
     if (paths.parent !== undefined) checkDir(paths.parent, uid);
-    checkDir(paths.dir, uid);
+    checkDir(paths.dir!, uid);
     checkSocket(paths.socket, uid);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new EndpointRefusal("NOT_RUNNING", `no daemon endpoint at ${paths.socket}`);
@@ -159,9 +200,11 @@ async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peer
   const sock = await connectTo(paths.socket, opts.timeoutMs ?? 5000);
   let peer: number;
   try {
-    peer = opts.peerUid(sock);
+    peer = (opts.peerUid ?? defaultPeerUid)(sock);
   } catch (e) {
     sock.destroy();
+    if (process.platform === "darwin" && (e as NodeJS.ErrnoException).code === "ENOTCONN")
+      throw new ClosedPeerRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
     throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer credentials: ${(e as Error).message}`);
   }
   if (peer !== uid) {
@@ -172,21 +215,87 @@ async function openVerified(opts: Pick<QueryOptions, "paths" | "peerUid" | "peer
   // lock, the same process (pid and process-start token) that lock's record names. The record is
   // read, never the lock itself, because taking the lock to test it would refuse a legitimate
   // start. The record is written only under the lock and cleared on a clean release.
-  {
-    let pid: number | undefined;
-    try { pid = opts.peerPid!(sock); } catch { pid = undefined; }
-    const owner = readLifetimeRecord(paths.lock);
-    if (pid === undefined || owner === undefined || owner.pid !== pid || owner.start === undefined || processStartToken(pid) !== owner.start) {
+  let pid: number | undefined;
+  try { pid = (opts.peerPid ?? defaultPeerPid)(sock); }
+  catch (e) {
+    if (process.platform === "darwin" && (e as NodeJS.ErrnoException).code === "ENOTCONN") {
       sock.destroy();
-      throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
+      throw new ClosedPeerRefusal("PEER_NOT_LOCK_OWNER", `could not read the daemon's peer credentials: ${(e as Error).message}`);
     }
+    pid = undefined;
+  }
+  if (pid === undefined || !isLockOwner(paths.lock, pid, processBirth(pid))) {
+    sock.destroy();
+    throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`);
   }
   return sock;
+}
+
+/** Whether the lifetime lock at `lock` names process `pid` born at `birth`. */
+function isLockOwner(lock: string, pid: number, birth: string | undefined): boolean {
+  const owner = readLifetimeRecord(lock);
+  return owner !== undefined && owner.pid === pid && owner.start !== undefined && birth === owner.start;
+}
+
+/** The pipe-open steps that read the server's identity. A failure in one means that identity could
+ *  not be established, so nothing may be sent. */
+const IDENTITY_STEPS = new Set(["GetNamedPipeServerProcessId", "OpenProcess", "GetProcessTimes", "OpenProcessToken", "GetTokenInformation", "ConvertSidToStringSidW"]);
+
+/** A Darwin peer closed before kernel identity could be read. No request was sent and it is not absence. */
+export class ClosedPeerRefusal extends EndpointRefusal {
+  constructor(code: "PEER_UID_MISMATCH" | "PEER_NOT_LOCK_OWNER", message: string) { super(code, message); }
+}
+
+/** A refused Windows pipe whose original lifetime read contained zero bytes. It is never writable. */
+export class EmptyLifetimeRefusal extends EndpointRefusal {
+  constructor(message: string, readonly pid: number, readonly birth: string) {
+    super("PEER_NOT_LOCK_OWNER", message);
+  }
+}
+
+/** Shutdown waits may reobserve only the exact previously pinned lifetime, never treat it as absent. */
+export function isStoppingLifetime(error: unknown, owner: { readonly pid: number; readonly start?: string } | undefined): boolean {
+  return error instanceof EmptyLifetimeRefusal && owner?.start !== undefined && owner.start.length > 0
+    && error.pid === owner.pid && error.birth === owner.start;
+}
+
+/** Windows: open the daemon's pipe, which the native side authenticates, and keep it only when its
+ *  server is this user and the holder of the lifetime lock. Nothing is written before both. */
+async function openPipe(paths: DaemonPaths, timeoutMs: number): Promise<Socket> {
+  let peer: PipePeer;
+  try {
+    peer = await connectPipe(paths.socket, timeoutMs);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") throw new EndpointRefusal("NOT_RUNNING", `no daemon answers at ${paths.socket}`);
+    if (err.code === "ETIMEDOUT") throw new Error(`timed out connecting to ${paths.socket}`);
+    // The pipe exists but its DACL does not admit this user: another account's process serves it.
+    if (err.code === "EACCES" && err.syscall === "CreateFileW") throw new EndpointRefusal("PEER_UID_MISMATCH", `${paths.socket} is served by a process that does not admit this user; nothing was sent`);
+    if (err.syscall !== undefined && IDENTITY_STEPS.has(err.syscall)) throw new EndpointRefusal("PEER_UID_MISMATCH", `could not read the daemon's peer identity: ${err.message}`);
+    if (err.syscall === undefined) throw new EndpointRefusal("UNSUPPORTED_PLATFORM", `the daemon pipe needs this platform's native daemon helper: ${err.message}`);
+    throw e;
+  }
+  const refuse = (code: "PEER_UID_MISMATCH" | "PEER_NOT_LOCK_OWNER", message: string): never => {
+    closeSync(peer.fd);
+    throw new EndpointRefusal(code, message);
+  };
+  const own = windowsUserSid();
+  if (peer.user !== own) refuse("PEER_UID_MISMATCH", `the process answering at ${paths.socket} runs as ${peer.user}, not ${own}; nothing was sent`);
+  const observation = observeLifetimeRecord(paths.lock);
+  const owner = observation.record;
+  if (!owner || owner.pid !== peer.pid || owner.start === undefined || peer.birth !== owner.start) {
+    const message = `the process answering at ${paths.socket} is not the daemon holding ${paths.lock}; nothing was sent`;
+    closeSync(peer.fd);
+    if (observation.empty) throw new EmptyLifetimeRefusal(message, peer.pid, peer.birth);
+    throw new EndpointRefusal("PEER_NOT_LOCK_OWNER", message);
+  }
+  return adoptPipe(peer.fd);
 }
 
 export interface LoginOptions extends Pick<QueryOptions, "paths" | "peerUid" | "peerPid" | "uid"> {
   readonly idp: string;
   readonly clientId?: string;
+  readonly discoveryPins?: { url: string; issuer: string; audience: string };
   readonly onPrompt: (prompt: LoginPrompt) => void;
   /** Aborting sends login-cancel for this attempt and waits for the daemon's answer. */
   readonly signal?: AbortSignal;
@@ -232,7 +341,7 @@ export async function loginViaDaemon(opts: LoginOptions): Promise<LoginReply> {
       sock.once("error", (e) => finish(e));
       if (opts.signal?.aborted) return finish(abandoned);
       opts.signal?.addEventListener("abort", onAbort, { once: true });
-      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
+      sock.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op: "login-start", idp: opts.idp, ...(opts.discoveryPins !== undefined ? { discoveryPins: opts.discoveryPins } : {}), ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}) }));
     });
   } finally {
     sock.destroy();

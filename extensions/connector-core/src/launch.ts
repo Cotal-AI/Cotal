@@ -19,6 +19,7 @@
  */
 import {
   eventChannel,
+  type PersonaEndpoint,
   LAUNCH_MATERIAL_ENV,
   parsePrincipalKey,
   principalKey,
@@ -26,6 +27,7 @@ import {
   type ControlEndpoint,
   type LaunchMaterial,
   type McpServerSpec,
+  type UserAuthLaunch,
 } from "@cotal-ai/core";
 import { dirname } from "node:path";
 
@@ -153,16 +155,18 @@ export const OPERATOR_ENV_KEEP = [
  *  BOTH `Path` and `PATH` - a case-duplicate Windows process creation chokes on. Keying off the
  *  source env's actual casing (one entry per lowercased name) forwards each var exactly once.
  *
- *  An `envAllow` name in the `COTAL_` namespace outside {@link OPERATOR_ENV_KEEP} throws. A connector
- *  sets those names per seat and only when the launch has a value, so a forwarded one would stand in
- *  for a role, model or read set this launch never had. */
+ *  An `envAllow` or `mcpKeys` name in the `COTAL_` namespace outside {@link OPERATOR_ENV_KEEP}
+ *  throws. A connector sets those names per seat and only when the launch has a value, so a
+ *  forwarded one would stand in for a role, model or read set this launch never had. */
 export function launchEnv(
   opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
 ): Record<string, string> {
-  for (const k of opts.envAllow ?? []) {
-    const name = k.toUpperCase();
-    if (name.startsWith("COTAL_") && !OPERATOR_ENV_KEEP.some((keep) => keep === name))
-      throw new Error(`spawn.env cannot list "${k}": the launcher sets COTAL_ names for each seat, and only the machine-wide ones such as COTAL_HOME cross from the spawning process`);
+  for (const [source, keys] of [["spawn.env", opts.envAllow], ["MCP environment references", opts.mcpKeys]] as const) {
+    for (const k of keys ?? []) {
+      const name = k.toUpperCase();
+      if (name.startsWith("COTAL_") && !OPERATOR_ENV_KEEP.some((keep) => keep === name))
+        throw new Error(`${source} cannot list "${k}": the launcher sets COTAL_ names for each seat, and only the machine-wide ones such as COTAL_HOME cross from the spawning process`);
+    }
   }
   const env: Record<string, string> = {};
   const sourceKey = new Map<string, string>();
@@ -191,6 +195,7 @@ export function aclEnv(opts: {
   allowSubscribe?: string[];
   allowPublish?: string[];
   capabilities?: string[];
+  endpoints?: PersonaEndpoint[];
 }): Record<string, string> {
   const env: Record<string, string> = {};
   if (opts.subscribe) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
@@ -200,6 +205,9 @@ export function aclEnv(opts: {
   // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
   // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.
   if (opts.capabilities?.length) env.COTAL_CAPABILITIES = opts.capabilities.join(",");
+  // The endpoint commands the seat was handed at launch, as JSON, so the session can say what it holds.
+  // An empty list is written too: the session then reads the launch's answer, not the persona file.
+  if (opts.endpoints !== undefined) env.COTAL_ENDPOINTS = JSON.stringify(opts.endpoints);
   return env;
 }
 
@@ -269,7 +277,8 @@ export function materialEnv(
     token?: string;
     control?: ControlEndpoint;
     eventsRequired?: boolean;
-    userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+    eventPayloads?: boolean;
+    userAuth?: UserAuthLaunch;
   },
   artifacts: string[],
 ): Record<string, string> {
@@ -284,6 +293,7 @@ export function materialEnv(
     material.controlVersion = opts.control.version;
   }
   if (opts.eventsRequired) material.eventsRequired = true;
+  if (opts.eventPayloads === false) material.eventPayloadsWithheld = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
   // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;

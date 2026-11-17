@@ -5,7 +5,8 @@
  * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
  * record it writes and for leaving the selection as it was. An open space must be one the broker
  * serves, so the open broker serves the names that are added and refuses one it does not. A forget
- * removes the space's per-space preferences with it, refuses on a preferences file it cannot read,
+ * removes the space's per-space preferences and the chat sessions the terminal app remembered for it,
+ * counting them, refuses on a preferences file it cannot read,
  * and is partial when it cannot remove them, naming the chmod first when other accounts can write
  * their folder. A forget of a running space names `cotal down`: on a legacy root it says that down
  * drops the record, and for a controller stack, whose down keeps it prepared, it names forget again.
@@ -15,8 +16,8 @@
  * registration an earlier release made under such a name is still headed with it.
  * On Linux, a space started as a controller
  * stack is written as its stack journal and instance records, with nothing launched. A stack journal
- * whose members this home has no record of, with a live manager, stands for a stack running under
- * another Cotal home: create, down and status there name that home, and so do ps and who with
+ * whose members this home has no record of, with a live manager, reports missing member
+ * records: create, down and status name that fact, and so do ps and who with
  * another space selected. A folder path with a control
  * character or a bidirectional formatting mark is refused by create and up before anything is written. A stopped stack whose broker
  * bind does not serve its recorded address refuses up and is started again with the --host it names.
@@ -63,7 +64,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, spaceSegment } = await import("@cotal-ai/workspace");
+const { MANAGER_PIDFILE, cacheLocalProcess, canonicalLocalProcessPath, clearCurrent, extensionsManifestPath, findMesh, findPreparedSpace, getCurrent, meshesDir, preparedSpacesDir, recordMesh, recordPreparedSpace, removeMesh, removePreparedSpace, saveExtensionsManifest, setCurrent, setAdoptedCurrent, readCurrentSelection, spaceSegment } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { processServiceHost, requireProcessIdentity, serviceInstanceStore } = await import("../src/lib/service-instances.js");
 await import("../src/lib/broker-service.js");
@@ -154,8 +155,9 @@ for (let i = 0; i < 50; i++) {
 // An open space must be one the broker serves, so the open broker serves the names added below.
 const SERVED = ["open1", "open3", "open4", "open5"];
 {
-  const { setupSpaceStreams } = await import("@cotal-ai/core");
+  const { setupSpaceStreams, seedChannelRegistry } = await import("@cotal-ai/core");
   for (const space of SERVED) await setupSpaceStreams({ servers: LIVE, space });
+  await seedChannelRegistry({ servers: LIVE, space: "open1", file: { channels: { general: { description: "General" } } } });
 }
 
 const root = projectRoot("proj");
@@ -221,10 +223,22 @@ setCurrent("keep");
   check("the registry holds it", findMesh("open1")?.server === LIVE && findMesh("open1")?.origin === "manual");
   check("the selection is unchanged", getCurrent() === "keep" && r?.space?.current === false, getCurrent());
 
+  const sent = await json(["send", "--space", "open1", "-c", "general", "x"]);
+  check("control: send to an answering registered broker stores the message", sent.status === 0 && sent.env?.outcome === "ok" && sent.env.result?.stored === true, shown(sent));
+
   const again = await json(["space", "add", "open1", "--server", LIVE, "--root", root]);
   check("adding a registered name is CONFLICT, exit 2, naming forget and --force", refused(again, 2, "CONFLICT") && /space forget open1/.test(again.env?.error?.remedy ?? "") && /--force/.test(again.env?.error?.remedy ?? ""), shown(again));
   const replaced = await json(["space", "add", "open1", "--server", DEAD, "--root", root, "--force"]);
   check("--force replaces a registration added by hand, unchecked", replaced.status === 0 && replaced.env?.result.replaced === true && replaced.env.result.verified === false && replaced.env.result.space.check === "not-checked" && findMesh("open1")?.server === DEAD, shown(replaced));
+
+  const beforeSend = registryFiles();
+  const offline = await json(["send", "--space", "open1", "-c", "general", "x"]);
+  check("send to an unreachable registration refuses with space forget in its JSON remedy",
+    refused(offline, 2, "TARGET_UNAVAILABLE") && offline.env?.error?.remedy === "start it where it runs, or `cotal space forget open1` to unregister it", shown(offline));
+  const offlineHuman = await run(["send", "--space", "open1", "-c", "general", "x"]);
+  check("the human refusal names space forget, not legacy removal or local startup, and keeps the registrations",
+    offlineHuman.status === 2 && offlineHuman.stderr.includes("cotal space forget open1") && !offlineHuman.stderr.includes("cotal meshes rm") && !offlineHuman.stderr.includes("cotal up") &&
+      JSON.stringify(registryFiles()) === JSON.stringify(beforeSend), shown(offlineHuman));
 
   recordMesh({ space: "started", server: LIVE, root, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const overUpBare = await json(["space", "add", "started", "--server", LIVE, "--root", root]);
@@ -240,8 +254,8 @@ setCurrent("keep");
   check("a port that takes no connection says so, with the port check as its remedy",
     (dead.env?.error?.message ?? "").endsWith(`nothing accepted a connection at 127.0.0.1:${deadPort}`) && dead.env?.error?.remedy === `check that the mesh is up and listening on port ${deadPort} of 127.0.0.1, or pass --server with the port it listens on; pass --force to add "dead1" unchecked, as for a space that is down right now`, shown(dead));
   const otherScheme = await json(["space", "add", "open", "--server", `tls://127.0.0.1:${brokerPort}`, "--mode", "open", "--root", root]);
-  check("a broker that answers under another scheme is named, with that address as the Next",
-    refused(otherScheme, 2, "TARGET_UNAVAILABLE") && otherScheme.env?.error?.message === `no broker answered at tls://127.0.0.1:${brokerPort}, but one answers at ${LIVE}, without TLS` && otherScheme.env.error.remedy === `run it again with --server ${LIVE}; pass --force to add "open" unchecked, as for a space that is down right now`, shown(otherScheme));
+  check("a TLS-required address refuses a plaintext listener without downgrading",
+    refused(otherScheme, 2, "DEPENDENCY_UNAVAILABLE") && otherScheme.env?.error?.message === `the listener at tls://127.0.0.1:${brokerPort} does not offer the required TLS - check the address and configure TLS on the broker`, shown(otherScheme));
   const unserved = await json(["space", "add", "open", "--server", LIVE, "--mode", "open", "--root", root]);
   check("an open name the broker does not serve is TARGET_NOT_FOUND, exit 2, naming the spaces it serves",
     refused(unserved, 2, "TARGET_NOT_FOUND") && unserved.env?.error?.message === `the broker at ${LIVE} serves no space named "open"; it serves ${SERVED.map((space) => `"${space}"`).join(", ")}` && /--force/.test(unserved.env?.error?.remedy ?? ""), shown(unserved));
@@ -487,12 +501,22 @@ setCurrent("keep");
   for (const [name, key, value] of [["withprefs", "persona", "rev"], ["withprefs", "harness", "opencode"], ["shownprefs", "persona", "rev"], ["badprefs", "persona", "rev"], ["lockedprefs", "persona", "rev"], ["exposedprefs", "persona", "rev"]])
     setUp.push((await json(["config", "set", key!, value!, "--space", name!])).status ?? -1);
   check("five spaces are added and their preferences saved", setUp.every((status) => status === 0), setUp);
+  // The chat sessions the terminal app remembered for a space go with it too.
+  const { mintLifecycleUid } = await import("@cotal-ai/core");
+  const { rememberChatSession, rememberedChatSessions } = await import("@cotal-ai/workspace/chat");
+  const remember = (space: string, n: number) => rememberChatSession({ space, server: LIVE }, { mode: "open", space, principal: `local.lead${n}`, lifecycleUid: mintLifecycleUid(), label: "lead", allowSubscribe: [], allowPublish: [] });
+  remember("withprefs", 1);
+  remember("withprefs", 2);
+  remember("shownprefs", 3);
   const withPrefs = await json(["space", "forget", "withprefs"]);
   check("forget removes the space's preferences, lists each key and value, and keeps another space's",
     withPrefs.status === 0 && JSON.stringify(withPrefs.env?.result.removedPreferences) === JSON.stringify({ persona: "rev", harness: "opencode" }) && saved().withprefs === undefined && saved().shownprefs?.persona === "rev", shown(withPrefs));
+  check("forget removes the chat sessions the terminal app remembered for the space, counts them, and keeps another space's",
+    withPrefs.env?.result.removedChatSessions === 2 && rememberedChatSessions({ space: "withprefs", server: LIVE }).sessions.length === 0 && rememberedChatSessions({ space: "shownprefs", server: LIVE }).sessions.length === 1, shown(withPrefs));
   const shownPrefs = await run(["space", "forget", "shownprefs"]);
   check("the receipt names each removed value and the config set that restores one",
     shownPrefs.status === 0 && shownPrefs.stdout.includes("removed its per-space preferences: persona=rev - `cotal config set <key> <value> --space shownprefs` sets one again"), shown(shownPrefs));
+  check("the receipt says how many remembered chat sessions it removed", shownPrefs.stdout.includes("removed the 1 chat session(s) the terminal app remembered for it"), shown(shownPrefs));
   const prefsText = readFileSync(prefsFile, "utf8");
   writeFileSync(prefsFile, "{");
   const badPrefs = await json(["space", "forget", "badprefs"]);
@@ -553,7 +577,7 @@ if (process.platform === "linux") {
   writeFileSync(awayRecord, String(awayManager.pid), { mode: 0o600 });
   const journal = readFileSync(stackJournalPath(awayRoot), "utf8"), before = registryFiles();
   const otherHome = (r: Awaited<ReturnType<typeof json>>) =>
-    refused(r, 2, "TARGET_UNAVAILABLE") && /another Cotal home/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
+    refused(r, 2, "TARGET_UNAVAILABLE") && /member records.*missing|member records are missing/.test(r.env?.error?.message ?? "") && /COTAL_HOME set to the Cotal home the stack was started under/.test(r.env?.error?.remedy ?? "");
   const unchanged = () => readFileSync(stackJournalPath(awayRoot), "utf8") === journal && JSON.stringify(registryFiles()) === JSON.stringify(before) && awayManager.exitCode === null;
   const create = await json(["space", "create", "away", "--root", awayRoot]);
   check("space create over a stack running under another Cotal home refuses TARGET_UNAVAILABLE with the COTAL_HOME step, and prepares nothing",
@@ -567,18 +591,23 @@ if (process.platform === "linux") {
   {
     const selected = getCurrent();
     recordMesh({ space: "awaysel", server: DEAD, root: home, mode: "open", origin: "manual", ts });
-    setCurrent("awaysel");
+    setAdoptedCurrent("awaysel");
     const read = await json(["ps"], awayRoot), text = await run(["who"], {}, awayRoot);
     if (selected === undefined) clearCurrent(); else setCurrent(selected);
     removeMesh("awaysel");
     check("ps and who there with another space selected still refuse with the COTAL_HOME step, naming no stopped space of this folder",
-      otherHome(read) && text.status === 2 && /another Cotal home/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
+      otherHome(read) && text.status === 2 && /member records.*missing|member records are missing/.test(text.stderr) && !/this folder holds|restart it with `cotal up`/.test(text.stdout + text.stderr) && unchanged(), { ps: shown(read), who: shown(text) });
   }
   // A space this home prepared at the root does not hide the other home.
   recordPreparedSpace({ space: "away", root: awayRoot, ts });
+  const previousSelection = readCurrentSelection();
+  clearCurrent();
   const status = await json(["status"], awayRoot);
+  if (previousSelection) {
+    if (previousSelection.source === "adopted") setAdoptedCurrent(previousSelection.space); else setCurrent(previousSelection.space);
+  }
   check("status there names the other home even when this home prepared a space at the root",
-    status.status === 0 && status.env?.result?.selected?.code === "not-started" && /runs under another Cotal home/.test(status.env.result.selected.message ?? ""), shown(status));
+    status.status === 4 && status.env?.error?.code === "OPERATION_PARTIAL" && status.env?.warnings?.some((warning: { code: string }) => warning.code === "FOLDER_BROKER_UNAVAILABLE") && status.env?.result?.selected?.code === "not-started" && /member records are missing/.test(status.env.result.selected.message ?? ""), { status: status.status, selected: status.env?.result?.selected, warnings: status.env?.warnings, error: status.env?.error });
   removePreparedSpace("away");
   await new Promise((done) => { awayManager.once("exit", done); awayManager.kill("SIGKILL"); });
   rmSync(awayRecord);
@@ -645,13 +674,13 @@ if (process.platform === "linux") {
   const sandbox = recordSmokeSandbox({ root: first, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, first);
   check("with nothing selected, up selects the space it started and says so",
-    up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`selected "selfirst": a command without --space targets it, except in another space's project folder`), shown(up));
+    up.status === 0 && getCurrent() === "selfirst" && up.stdout.includes(`automatically selected "selfirst"`), shown(up));
   assertSmokeSandboxDown(sandbox, ["down", "--yes"], { cwd: first, env: runEnv });
   await run(["down", "--yes"], {}, first);
   const secondSandbox = recordSmokeSandbox({ root: second, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
   const kept = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, second);
   check("with another space selected, up keeps it and says it stays selected outside this folder",
-    kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays selected for commands run outside this folder - \`cotal use selsecond\` to switch`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
+    kept.status === 0 && getCurrent() === "selfirst" && kept.stdout.includes(`"selsecond" up; "selfirst" stays automatically selected outside this folder`) && !kept.stdout.includes(`selected "selsecond"`), shown(kept));
   assertSmokeSandboxDown(secondSandbox, ["down", "--yes"], { cwd: second, env: runEnv });
   const stopped = await run(["down", "--yes"], {}, second);
   check("and down stops it", stopped.status === 0, shown(stopped));
@@ -871,7 +900,9 @@ if (process.platform === "linux") {
   // anything is written.
   // Outside the home folder, whose .cotal up would otherwise refuse to inherit first.
   const { oneLine } = await import("@cotal-ai/core");
-  const outside = realpathSync(mkdtempSync(join(tmpdir(), "cotal-space-registration-odd-")));
+  const outsideBase = process.platform === "linux" ? "/var/tmp" : tmpdir();
+  if (process.platform === "linux") for (const parent of [outsideBase, "/var", "/"]) if (existsSync(join(parent, ".cotal"))) throw new Error(`unsafe fixture ancestor: ${parent}`);
+  const outside = realpathSync(mkdtempSync(join(outsideBase, "cotal-space-registration-odd-")));
   for (const [label, name] of [["a tab", "tab\tfolder"], ["a newline", "line\nfolder"], ["an escape character", "esc\u001bfolder"], ["a delete character", "del\u007ffolder"], ["the bidirectional formatting mark U+202E", "rlo\u202efolder"]]) {
     const odd = join(outside, name);
     mkdirSync(odd);
@@ -972,8 +1003,22 @@ if (process.platform === "linux") {
   const endpoints = await json(["endpoints", "--space", "demo"]);
   check("each of those refusals names the space and its root under target",
     [named, inRoot, endpoints].every((r) => refused(r, 2, "TARGET_UNAVAILABLE") && JSON.stringify(r.env?.target) === JSON.stringify({ space: "demo", root: fresh })), [named, inRoot, endpoints].map((r) => r.env?.target ?? shown(r)));
+  setAdoptedCurrent("demo");
   const selected = await json(["use", "demo"]);
+  check("use promotes the same adopted selection to explicit", selected.status === 0 && readCurrentSelection()?.source === "explicit" && selected.env?.outcome === "ok", shown(selected));
   check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
+  const besidePrepared = await run(["meshes", "add", "beside-prepared", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
+  const stillPrepared = await json(["use"], fresh);
+  check("meshes add preserves an explicitly selected prepared space and does not announce a new default",
+    besidePrepared.status === 0 && findMesh("beside-prepared")?.server === DEAD && !besidePrepared.stdout.includes("it is now the default mesh") &&
+      stillPrepared.env?.result.current === "demo" && stillPrepared.env.result.preparedState === "prepared" && readCurrentSelection()?.source === "explicit",
+    { add: shown(besidePrepared), selection: stillPrepared.env?.result });
+  const preparedTarget = await json(["who"], fresh);
+  check("after registration, commands still refuse the selected prepared space instead of targeting the new entry",
+    refused(preparedTarget, 2, "TARGET_UNAVAILABLE") && preparedTarget.env?.target?.space === "demo", shown(preparedTarget));
+  const removedBesidePrepared = await run(["meshes", "rm", "beside-prepared"]);
+  check("removing that registration preserves the prepared selection",
+    removedBesidePrepared.status === 0 && getCurrent() === "demo" && readCurrentSelection()?.source === "explicit", shown(removedBesidePrepared));
   // The default report says it under Spaces; the recorded-meshes diagnostics say it again under --verbose.
   const status = await run(["status", "--plain"]);
   check("status says the selected space is prepared, not started", status.status === 0 && /Selected space 'demo' is prepared, not started/.test(status.stdout), shown(status));
@@ -1221,6 +1266,19 @@ if (process.platform === "linux") {
   check("...and use reports it as stopped, not as prepared and not started",
     stoppedUse.env?.result.preparedState === "stopped" && stoppedUse.env.result.lastOperation === "`cotal down`, completed"
       && stoppedUseHuman.stdout.includes(`stopped; its last operation, \`cotal down\`, completed - start it again with \`cotal up\` in ${fresh}`) && !/not started/.test(stoppedUseHuman.stdout), { json: stoppedUse.env?.result, human: stoppedUseHuman.stdout });
+  const selectStopped = await json(["use", "demo"], fresh);
+  const besideStopped = await run(["meshes", "add", "beside-stopped", "--server", DEAD, "--root", root, "--mode", "open", "--force"], {}, fresh);
+  const stillStopped = await json(["use"], fresh);
+  check("meshes add preserves an explicitly selected stopped space and does not announce a new default",
+    selectStopped.status === 0 && besideStopped.status === 0 && findMesh("beside-stopped")?.server === DEAD && !besideStopped.stdout.includes("it is now the default mesh") &&
+      stillStopped.env?.result.current === "demo" && stillStopped.env.result.preparedState === "stopped" && readCurrentSelection()?.source === "explicit",
+    { add: shown(besideStopped), selection: stillStopped.env?.result });
+  const stoppedTarget = await json(["who"], fresh);
+  check("after registration, commands still refuse the selected stopped space instead of targeting the new entry",
+    refused(stoppedTarget, 2, "TARGET_UNAVAILABLE") && stoppedTarget.env?.target?.space === "demo", shown(stoppedTarget));
+  const removedBesideStopped = await run(["meshes", "rm", "beside-stopped"]);
+  check("removing that registration preserves the stopped selection",
+    removedBesideStopped.status === 0 && getCurrent() === "demo" && readCurrentSelection()?.source === "explicit", shown(removedBesideStopped));
   // A second bare down of the stopped stack stops nothing: it needs no --yes, writes nothing, and
   // every presentation shows the same no-op.
   const journalBytes = () => readFileSync(stackJournalPath(fresh), "utf8");

@@ -5,7 +5,7 @@
  * the SECURITY warnings. Creation-only by construction — a pre-existing unmanaged channel/agent is
  * classified, never adopted or patched.
  */
-import { subjectMatches, type ChannelConfig, type ChannelRegistryFile, type MembershipSnapshot, type Presence } from "@cotal-ai/core";
+import { durableCovers, subjectMatches, type ChannelConfig, type ChannelRegistryFile, type MembershipSnapshot, type Presence } from "@cotal-ai/core";
 import type { ResolvedChannel } from "./model.js";
 import type { PreparedAgent } from "./prepare.js";
 import type { MeshLedger } from "./ledger.js";
@@ -134,7 +134,7 @@ export function detectUnmanagedActors(
       const actors: UnmanagedActor[] = [];
       for (const m of snapshot.members) {
         if (owned.ids.has(m.id)) continue;
-        const durable = m.durable.includes(channel);
+        const durable = durableCovers(m.durable, channel);
         const live = !durable && m.live.some((pat) => subjectMatches(pat, channel)); // channel-token wildcards (`team.>`)
         if (durable || live) actors.push({ id: m.id, name: nameOf.get(m.id), via: durable ? "durable" : "live" });
       }

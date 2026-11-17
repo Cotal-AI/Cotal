@@ -12,6 +12,7 @@ export const credentialMintFlags = [
   { name: "allow-subscribe", type: "string", value: "<a,b>", description: "agent: channel read ACL; empty means no entries" },
   { name: "allow-publish", type: "string", value: "<a,b>", description: "agent: channel post ACL; empty means no entries" },
   { name: "role", type: "string", value: "<role>", description: "agent: scope its role task queue" },
+  { name: "no-persona", type: "boolean", description: "agent: ignore the label's persona; use only explicit or --identity grants" },
   { name: "provision", type: "boolean", description: "agent: also pre-create this new lifecycle's bind-only inbox and delivery footprint" },
   { name: "expires-in", type: "string", value: "<seconds>", description: "positive integer credential lifetime (fixed profiles default to 86400, 24 hours); never with --expires-at or --no-expiry" },
   { name: "expires-at", type: "string", value: "<unix-seconds>", description: "absolute credential expiry; never with --expires-in or --no-expiry" },
@@ -94,7 +95,7 @@ export function validateCredentialMintArguments(args: ParsedArgs): void {
   if (values.channels !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "--channels belongs to auth mint --endpoint; it was not ignored for a fixed profile");
   const profile = values.profile ?? "agent";
   if (!["agent", "observer", "admin"].includes(String(profile))) throw new CommandFailure("refused", "USAGE_INVALID", "auth mint supports agent, observer or admin; internal service profiles are not exposed");
-  if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
+  if (profile !== "agent" && ["allow-subscribe", "allow-publish", "role", "provision", "no-persona"].some((key) => values[key] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "channel ACL, role and provisioning inputs belong only to the agent profile; a fixed profile was not silently widened");
   if (values["expires-in"] !== undefined && values["expires-at"] !== undefined) throw new CommandFailure("refused", "USAGE_INVALID", "choose --expires-in or --expires-at, not both");
   if (values["no-expiry"] !== undefined && (values["expires-in"] !== undefined || values["expires-at"] !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--no-expiry issues a credential with no expiry, so it takes no --expires-in or --expires-at", { remedy: "pass one of --expires-in, --expires-at or --no-expiry" });
   for (const key of ["expires-in", "expires-at"] as const) if (values[key] !== undefined && (typeof values[key] !== "string" || !/^[0-9]+$/.test(values[key]) || !Number.isSafeInteger(Number(values[key])) || Number(values[key]) < (key === "expires-in" ? 1 : 0))) throw new CommandFailure("refused", "USAGE_INVALID", "credential expiry needs an integer in native seconds; the supplied value was not echoed");

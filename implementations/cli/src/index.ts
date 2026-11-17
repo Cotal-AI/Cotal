@@ -1,9 +1,10 @@
+/** @module index */
 import "./exec-endpoint/service-adapter.js";
 import "./lib/broker-service.js";
 import "./service-unit.js";
 import { registry, type Command } from "@cotal-ai/core";
 import {
-  CommandFailure, credentialMintFlags, jsonFlag, NATS_PIDFILE, plainFlag, presentationOf, serverFlag, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
+  CommandFailure, credentialMintFlags, jsonFlag, NATS_PIDFILE, plainFlag, presentationOf, spaceFlag, targetFlags, validateCredentialMintArguments, validateCredentialRevokeArguments,
   type CredentialAction, type LocalProcess,
 } from "@cotal-ai/workspace";
 import { MANAGER_PROCESS } from "./lib/manager-proc.js";
@@ -112,6 +113,7 @@ const baseCommands: Command[] = [
       { name: "root", flagNames: [], summary: "print the extension root directory", examples: [{ command: "cotal ext root", note: "print the folder extensions are installed in" }], usage: "cotal ext root", reads: true },
       { name: "seed", flagNames: ["repair", "reset", "force"], summary: "reconcile the built-in connectors", examples: [{ command: "cotal ext seed", note: "install or update the built-in connectors" }, { command: "cotal ext seed --repair", note: "recover the seed record from its backup" }], usage: "cotal ext seed [--repair|--reset|--force]" },
       { name: "__update-add", summary: "re-add one extension for a running update", hidden: true },
+      { name: "__stage-verify", summary: "verify one extension in its parent's staged prefix", hidden: true },
     ],
     flags: extFlags,
     outputs: ["json", "plain"],
@@ -160,6 +162,7 @@ const baseCommands: Command[] = [
     group: "Setup",
     summary: "reconcile first-party extensions and check for a coherent cotal-ai upgrade",
     flags: updateFlags,
+    positionals: "[off|on]",
     prepareMeshTarget: false,
     outputs: ["json", "plain"],
     validate: validateUpdateArguments,
@@ -240,7 +243,7 @@ const baseCommands: Command[] = [
       { name: "show", flagNames: ["space", "json", "plain"], summary: "read a saved definition without exposing argument or credential contents", examples: [{ command: "cotal service show <name>", note: "read a saved service definition" }], usage: "cotal service show <name>", reads: true, prepareMeshTarget: false },
       { name: "add", flagNames: ["space", "exec", "cwd", "file", "preset", "json", "plain"], summary: "save your own program (--exec), a preset or a definition file; starts nothing", examples: [{ command: "cotal service add <name> --exec \"<command>\"", note: "save a program as a service" }, { command: "cotal service add <name> --file <definition.json>", note: "save one from a definition file" }], usage: "cotal service add <name> --exec \"<command>\" [--cwd <dir>] | --preset <preset> [<options>] | --file <definition.json>", prepareMeshTarget: false },
       { name: "remove", flagNames: ["space", "instance", "yes", "json", "plain"], aliases: ["rm"], summary: "forget a stopped, unsupervised owned definition", examples: [{ command: "cotal service remove <name>", note: "forget a stopped service" }], usage: "cotal service remove <name> [--instance <full-id>] [--yes]", prepareMeshTarget: false },
-      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground|--dry-run]", prepareMeshTarget: false },
+      { name: "start", flagNames: ["space", "instance", "new-instance", "foreground", "no-open", "dry-run", "json", "plain"], summary: "start a service; a built-in one is saved from its defaults first, and nothing else is started for it", examples: [{ command: "cotal service start <name>", note: "start a service in the background" }, { command: "cotal service start <name> --foreground", note: "run it in this terminal" }], usage: "cotal service start <name> [<preset options>] [--instance <id>|--new-instance] [--foreground|--dry-run]", prepareMeshTarget: false },
       { name: "stop", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "stop the exact owned process through its declared native policy", examples: [{ command: "cotal service stop <name>", note: "stop a service" }, { command: "cotal service stop <name> --dry-run", note: "show what stopping it affects" }], usage: "cotal service stop <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "restart", flagNames: ["space", "instance", "yes", "with-agents", "dry-run", "json", "plain"], summary: "confirm an exact owned stop before one replacement launch", examples: [{ command: "cotal service restart <name>", note: "stop a service, then start it again" }], usage: "cotal service restart <name> [--instance <id>] [--with-agents] [--yes|--dry-run]", prepareMeshTarget: false },
       { name: "status", flagNames: ["space", "instance", "json", "plain"], summary: "read instance identity and process observations without repair", examples: [{ command: "cotal service status <name>", note: "check whether a service runs" }], usage: "cotal service status <name> [--instance <id>]", reads: true, prepareMeshTarget: false },
@@ -294,7 +297,7 @@ const baseCommands: Command[] = [
       { name: "recover", flagNames: ["yes", "dry-run", "json", "plain"], summary: "roll back a stale pre-commit restore, or release an interrupted backup create, under native guards", examples: [{ command: "cotal backup recover <full-attempt-id> --dry-run", note: "preview recovering an interrupted attempt" }, { command: "cotal backup recover <full-attempt-id> --yes", note: "recover it" }], usage: "cotal backup recover <full-attempt-id> [--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "cleanup-fallback", flagNames: ["yes", "dry-run", "discard-history", "json", "plain"], summary: "clean only the unchanged old source of a healthy active restore", examples: [{ command: "cotal backup cleanup-fallback <restore-attempt-id> --dry-run", note: "preview removing the store a restore kept" }, { command: "cotal backup cleanup-fallback <restore-attempt-id> --yes", note: "remove it" }], usage: "cotal backup cleanup-fallback <restore-attempt-id> [--yes|--dry-run] [--discard-history] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "create", flagNames: ["only", "store-dir", "json", "plain"], summary: "create a private artifact from the native stopped preservation cut", examples: [{ command: "cotal backup create <dir>", note: "back up a stopped, preserved space" }, { command: "cotal backup create <dir> --only registry", note: "back up only its registry" }], usage: "cotal backup create <directory> [--only full|registry] [--store-dir <dir>] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
-      { name: "inspect", flagNames: ["json", "plain"], summary: "read manifest and exact file inventory; integrity is not checked", examples: [{ command: "cotal backup inspect <dir>", note: "list a backup's manifest and files" }], usage: "cotal backup inspect <directory> [--json|--plain]", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false },
+      { name: "inspect", flagNames: ["json", "plain"], summary: "read manifest and exact file inventory, and refuse a declared file that is not a regular file; integrity is not checked", examples: [{ command: "cotal backup inspect <dir>", note: "list a backup's manifest and files" }], usage: "cotal backup inspect <directory> [--json|--plain]", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "verify", flagNames: ["json", "plain"], summary: "read and hash files against the manifest; restore is not tested", examples: [{ command: "cotal backup verify <dir>", note: "hash a backup's files against its manifest" }], usage: "cotal backup verify <directory> [--json|--plain]", reads: true, outputs: ["json", "plain"], prepareMeshTarget: false },
       { name: "restore", flagNames: ["only", "store-dir", "accept-missing-source", "json", "plain"], summary: "restore an artifact into this root's stopped preserved cut under the native guards, then resume it", examples: [{ command: "cotal backup restore <dir>", note: "restore a backup into this root" }, { command: "cotal backup restore <dir> --only registry", note: "restore only its registry" }], usage: "cotal backup restore <directory> [--only registry] [--store-dir <dir>] [--accept-missing-source] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
     ],
@@ -359,8 +362,8 @@ const baseCommands: Command[] = [
     name: "space",
     group: "Mesh",
     summary: "inspect and register spaces; preview or confirm exact live deletion impact",
-    usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y]",
-    positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y]]",
+    usage: "cotal space [--json|--plain] | space show [<name>] | space add [<name>] | space create <name> | space forget <name> | space delete <name> [--dry-run|-y] | space export <name> --out <private-file>",
+    positionals: "[show [<name>] | add [<name>] | create <name> | forget <name> | delete <name> [--dry-run|-y] | export <name> --out <private-file>]",
     subcommands: [
       { name: "show", flagNames: ["json", "plain"], summary: "one space in full: broker, mode, root, origin and login; the selected one when no name is given", examples: [{ command: "cotal space show", note: "show the selected space in full" }, { command: "cotal space show <name> --json", note: "one space as a JSON document" }], usage: "cotal space show [<name>] [--json|--plain]", outputs: ["json", "plain"], reads: true },
       {
@@ -370,8 +373,9 @@ const baseCommands: Command[] = [
         usage: "cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] [--allow-unencrypted-overlay] [--force] [-y|--yes] [--json|--plain] | space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]",
         outputs: ["json", "plain"],
       },
-      { name: "create", flagNames: ["root", "json", "plain"], summary: "prepare a space to start here: records its name and root, and `cotal up` in the root starts it", examples: [{ command: "cotal space create <name>", note: "prepare a space in this folder" }, { command: "cotal space create <name> --root <dir>", note: "prepare one in another folder" }], usage: "cotal space create <name> [--root <dir>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "create", flagNames: ["root", "adopt", "json", "plain"], summary: "prepare a space to start here: records its name and root, and `cotal up` in the root starts it", examples: [{ command: "cotal space create <name>", note: "prepare a space in this folder" }, { command: "cotal space create <name> --root <dir>", note: "prepare one in another folder" }], usage: "cotal space create <name> [--root <dir>] [--adopt] [--json|--plain]", outputs: ["json", "plain"] },
       { name: "forget", flagNames: ["json", "plain"], summary: "remove a registration or a prepared space; stops nothing and keeps the root's files", examples: [{ command: "cotal space forget <name>", note: "drop a space from this machine's list" }], usage: "cotal space forget <name> [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "export", flagNames: ["out", "json", "plain"], summary: "write a registered remote user-auth connection bundle to a new private file", examples: [{ command: "cotal space export <name> --out <private-file>", note: "copy connection pins, not sign-in or signing authority" }], usage: "cotal space export <name> --out <private-file> [--json|--plain]", outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
       { name: "delete", flagNames: ["dry-run", "yes", "json", "plain"], summary: "preview native impact or delete the exact space after confirmation; local records stay", examples: [{ command: "cotal space delete <name> --dry-run", note: "show what deleting a space would remove" }, { command: "cotal space delete <name>", note: "delete it after you type its name" }], usage: "cotal space delete <name> [--dry-run] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
     ],
     flags: spaceFlags,
@@ -452,6 +456,8 @@ const baseCommands: Command[] = [
       { name: "token", type: "string", value: "<t>", description: "join token" },
       { name: "lifecycle-uid", type: "string", value: "<uid>", description: "lifecycle uid paired with --creds (minted with the credential at provision time)" },
       { name: "tls", type: "boolean", description: "connect over TLS" },
+      { name: "expires-in", type: "string", value: "<seconds>", description: "static mesh, bare join: end this session's credential after this many seconds; omitted, it has no expiry and ends when you leave" },
+      { name: "expires-at", type: "string", value: "<unix-seconds>", description: "static mesh, bare join: end this session's credential at this time; never with --expires-in" },
     ],
     run: join,
   },
@@ -905,6 +911,9 @@ export { START_TIMEOUT_MS } from "@cotal-ai/workspace/control";
 // The owned systemd user-unit primitives the machine daemon's own install reuses, so there is one
 // mechanism for writing, registering and reading this CLI's units rather than two.
 export { daemonArgv } from "./lib/self-exec.js";
-export { assertSystemdSource, createSystemdSource } from "./lib/service-systemd-files.js";
+export { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource } from "./lib/service-systemd-files.js";
 export { submitSystemdUnitControl, submitSystemdUnitRegistration, systemdUserUnitDirectory } from "./lib/service-systemd.js";
 export { launchAgent } from "./lib/manifest/live.js";
+
+// The machine daemon refreshes the same catalog while retaining its own sign-in session.
+export { prepareCatalogTargets, prepareCatalogMigration, importAccountComputerSpace, validateCatalogSnapshot, type SpaceCatalogSnapshot } from "./commands/sync.js";

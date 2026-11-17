@@ -23,11 +23,10 @@ import { fileURLToPath } from "node:url";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  DEV_OWNER, createSpaceAuth, digestIdToken, epCall, isReachable, listGoalIndex, mintConnectionEvictorCreds, mintCreds,
-  mintLifecycleUid, mintMembershipObserverCreds, newIdentity, recordsBucket, serverConfig, setupSpaceStreams,
-  standaloneConnectOpts, type EpCaller,
+  createSpaceAuth, digestIdToken, epCall, isReachable, listGoalIndex, mintConnectionEvictorCreds, mintCreds,
+  mintMembershipObserverCreds, newIdentity, recordsBucket, serverConfig, setupSpaceStreams, standaloneConnectOpts,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, mintControlInstrument, workspaceSecretStore } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, emitSentinel, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { bootDeliveryDaemon, type DeliveryDaemon } from "./_boot-delivery.js";
@@ -119,9 +118,10 @@ try {
   daemon = await bootDeliveryDaemon({ space, servers, auth, reloadStoreIdentity: workspaceSecretStore(root).identity });
 
   const first = await startHost();
-  const runnerId = newIdentity();
-  const runner: EpCaller = { owner: DEV_OWNER, actor: runnerId.id, uid: mintLifecycleUid() };
-  runnerNc = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, runnerId, "control-caller-admin", { lifecycleUid: runner.uid }), tls: false }), maxReconnectAttempts: 0 });
+  // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
+  // bound reads its evidence and it hands on the helpers' role (SPEC 13.15).
+  const { creds: runnerCreds, epCaller: runner } = await mintControlInstrument({ server: servers, space, tlsRequired: false, auth }, "admin");
+  runnerNc = await connect({ servers, ...standaloneConnectOpts({ creds: runnerCreds, tls: false }), maxReconnectAttempts: 0 });
   // The manager's serve epoch: each restart registers the next one.
   let epoch = 0;
   const call = (command: string, args: Record<string, unknown>, id?: string) =>

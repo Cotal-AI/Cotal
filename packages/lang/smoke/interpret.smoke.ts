@@ -1403,6 +1403,20 @@ sch.deep.x = 2;`;
   ok("the options bag crosses like any input: a checkpoint's schema is frozen at the share (L2031)",
     String((bagCaught as Error)?.message).startsWith("L2031"), String(bagCaught).slice(0, 60));
 
+  // The policy builds the record the program receives AFTER the journal froze the raw outcome, so
+  // the record itself is a second value that crosses. A write to one of its own fields is L2031,
+  // the same as a write into the nested value the share already froze.
+  const statusWrite = `const r = await checkpoint("q", "ok?", { timeout: "1h" });
+r.status = "changed";`;
+  let statusCaught: unknown;
+  try {
+    await run(statusWrite, { runId: "r-frz-status", handler: new SimHandler({ checkpoints: { q: { status: "resolved", value: { inner: "kept" }, by: "sim" } } }) });
+  } catch (e) {
+    statusCaught = e;
+  }
+  ok("a checkpoint result's own field is frozen with the result: assigning status is L2031",
+    String((statusCaught as Error)?.message).startsWith("L2031"), String(statusCaught).slice(0, 60));
+
   const SRC = `const a = await spawn("w", { name: "a" });
 a.agent = "changed";`;
   const first = await run(`const a = await spawn("w", { name: "a" });`, { runId: "r-frz2", handler: new SimHandler({}) });
@@ -1432,11 +1446,12 @@ a.agent = "changed";`;
     }
   }
   const P = `
+let a = null;
 try {
-  const a = await spawn("w", { name: "a" });
+  a = await spawn("w", { name: "a" });
   await sleep("1s", { name: "after" });
 } finally {
-  await notify(["ops"], { decision: "cleanup", outcome: "ran" })
+  await notify([a], { decision: "cleanup", outcome: "ran" })
 }
 `;
   // Pinned up front, like the host-stop cells: a run that halts has no result to take pins from,

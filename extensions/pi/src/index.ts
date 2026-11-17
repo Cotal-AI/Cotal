@@ -1,3 +1,4 @@
+/** @module index */
 import "./connector.js"; // self-registers the "pi" connector
 export { piConnector } from "./connector.js";
 export { default as cotalMeshExtension } from "./extension.js";

@@ -174,7 +174,14 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     throw new Error("pi connector: this Pi version lacks the required custom-message lifecycle API (requires Pi 0.79.10)");
   }
 
-  const config = configFromEnv();
+  const runtimes = runtimeMap();
+  // Managed launches retain these non-secret identity fields after their one-shot material is
+  // scrubbed. Reload must reuse that authenticated runtime before reading launch-only inputs.
+  const retainedKey = process.env.COTAL_SPACE?.trim() && process.env.COTAL_ID?.trim()
+    ? `${process.env.COTAL_SPACE.trim()}\0${process.env.COTAL_ID.trim()}`
+    : undefined;
+  let runtime = retainedKey ? runtimes.get(retainedKey) : undefined;
+  const config = runtime?.config ?? configFromEnv();
   const eventsEnabled = eventPlaneArmed(config);
   if (eventsEnabled) resolveEventsStateRoot(process.env);
   // CLI startup opens/creates/forks the session BEFORE extension factories run, so the first
@@ -188,26 +195,20 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   delete process.env.COTAL_PI_FRESH_SESSION;
   delete process.env.COTAL_PI_EXPECTED_SESSION;
   delete process.env.COTAL_PI_SUPERVISED_CWD;
-  // The socket path rides the env; the control key and version ride the launch material, so a shell
-  // this seat runs cannot pick a control-plane secret out of its own environment. Read BEFORE the scrub
-  // below, and read on every load rather than inside createRuntime: a second load reuses the cached
-  // runtime, but the first one must not find the pointer already gone. That ordering is not a
-  // detail - reversed, it refused every pi launch with the half-pair error `controlFromEnv` throws,
-  // which is the failure that contract is supposed to produce and did.
-  const control = controlFromEnv();
+  // Only a new runtime needs the one-shot control key and version. A reload retains its existing listener.
+  const control = runtime ? undefined : controlFromEnv();
   // Both readers are done, so the pointer to the launch material has none left. Dropping it here is
   // what keeps it out of the environment of every shell command, build and tool this seat runs.
   scrubLaunchMaterial();
   config.connector = "pi";
   const key = runtimeKey(config);
-  const runtimes = runtimeMap();
-  let runtime = runtimes.get(key);
+  runtime ??= runtimes.get(key);
   if (!runtime) {
     runtime = createRuntime(config, control);
     runtimes.set(key, runtime);
   }
   if (eventsEnabled) {
-    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({ log: (line) => console.error(`Pi ${line}`) }));
+    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({ log: (line) => console.error(`Pi ${line}`) }), config.eventPayloadsWithheld);
   }
   runtime.expectedSessionId = expectedSessionId;
   if (startupSessionId) {
@@ -238,15 +239,28 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
     runtime.driver.onSessionStart(asContext(context));
   });
   pi.on("agent_start", async (_event, context) => {
+    runtime.mesh.noteActivity();
     await runtime.events?.start(context.sessionManager.getSessionId(), context.sessionManager.getSessionFile(),
       freshManagedSession || !startupSessionId && !expectedSessionId);
     runtime.driver.onAgentStart(asContext(context));
   });
   pi.on("message_start", (event) => runtime.driver.onMessageStart(event.message));
+  pi.on("message_update", (event) => {
+    const update = event.assistantMessageEvent;
+    if ((update.type === "text_delta" || update.type === "thinking_delta" || update.type === "toolcall_delta") && update.delta.length > 0)
+      runtime.mesh.noteActivity();
+  });
   pi.on("context", (event) => runtime.driver.onContext(event.messages));
   pi.on("after_provider_response", (event) => runtime.driver.onProviderResponse(event.status));
-  pi.on("tool_execution_start", (event) => runtime.driver.onToolStart(event.toolName));
-  pi.on("tool_execution_end", () => runtime.driver.onToolEnd());
+  pi.on("tool_execution_start", (event) => {
+    runtime.mesh.noteActivity();
+    runtime.driver.onToolStart(event.toolName);
+  });
+  pi.on("tool_execution_update", () => runtime.mesh.noteActivity());
+  pi.on("tool_execution_end", () => {
+    runtime.mesh.noteActivity();
+    runtime.driver.onToolEnd();
+  });
   pi.on("session_before_compact", (event) => runtime.driver.onBeforeCompact(event.reason, event.willRetry));
   pi.on("agent_end", (event, context) => runtime.driver.onAgentEnd(event.messages, asContext(context)));
   pi.on("turn_end", (_event, context) => {

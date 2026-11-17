@@ -26,6 +26,9 @@ export type PreflightFailure =
   | "creds-rejected"
   | "open-wants-auth"
   | "stale-auth"
+  /** The listener answered but does not offer the required TLS. Its unauthenticated greeting
+   *  cannot establish mesh identity or justify deleting a registration. */
+  | "tls-unsupported"
   /** A TLS-required NATS listener still greets (INFO.tls_required) but the TLS probe could not
    *  complete the handshake — typically a private CA without `NODE_EXTRA_CA_CERTS`. NEVER a prune
    *  signal: INFO is unauthenticated shape evidence, not peer identity; conservatively keep the
@@ -55,7 +58,7 @@ export type PreflightFailure =
  *  operator-supplied, so a failure there is the user's to diagnose, not a stale-registry signal. */
 export function classifyPreflightFailure(
   source: MeshTarget["source"],
-  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
+  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported",
   hasAuth: boolean,
   inferred = false,
   heldBy?: string,
@@ -63,6 +66,7 @@ export function classifyPreflightFailure(
   // A timeout is never a stale-entry signal, whatever the source: the dial ran out of its own
   // budget, which says nothing about whether the broker is actually gone (#851).
   if (reason === "timeout") return { prune: false, kind: "slow-link" };
+  if (reason === "tls-unsupported") return { prune: false, kind: "tls-unsupported" };
   // `flag-space-override` and `flag-server` are deliberately absent: the probe hit an operator-named
   // endpoint, not the registry-recorded broker, so its failure must not delete the recorded entry.
   const fromRegistry =
@@ -141,8 +145,8 @@ export async function preflightTarget(
   probe = await probeConnect(target.server, { ...auth, timeoutMs: PREFLIGHT_CONFIRM_TIMEOUT_MS });
   if (probe.ok) return { ok: true };
 
-  // TLS-REQUIRED + "unreachable" is often NOT a dead broker. `probeConnect` maps every non-auth,
-  // non-timeout failure (including certificate verification) to `unreachable`. Against a
+  // TLS-REQUIRED + "unreachable" is often NOT a dead broker. Other transport failures,
+  // including certificate verification, can still be `unreachable`. Against a
   // private-CA mesh without `NODE_EXTRA_CA_CERTS`, the TLS handshake fails while the broker is
   // live and still greets with plaintext INFO advertising `tls_required`. Classifying that as
   // unreachable + prune DELETES a healthy tlsRequired registry entry — durable state destroyed on
@@ -233,6 +237,19 @@ const PRUNE_CONFIRM_TIMEOUT_MS = 5_000;
  *  because this probe completes an AUTH HANDSHAKE, not just a TCP+INFO liveness check. Exported so
  *  {@link renderWorkspaceError}'s `slow-link` sentence can name the real budget instead of a copy. */
 export const PREFLIGHT_CONFIRM_TIMEOUT_MS = 8_000;
+
+/** A credential-free broker observation, not proof of a space's identity or access. */
+export type BrokerCheck = "reachable" | "unreachable" | "slow-link" | "broker-stopped";
+
+/** Confirm a missed broker probe without flattening a timeout into a refused connection. */
+export async function brokerCheck(server: string, tlsRequired = false): Promise<BrokerCheck> {
+  const auth = tlsRequired ? { tls: true as const } : {};
+  if (await isReachable(server, auth)) return "reachable";
+  if (stoppedLoopbackListener(server) !== undefined) return "broker-stopped";
+  const probe = await probeConnect(server, { ...auth, timeoutMs: PRUNE_CONFIRM_TIMEOUT_MS });
+  if (probe.ok || probe.reason === "auth-required" || probe.reason === "stale-auth") return "reachable";
+  return probe.reason === "timeout" ? "slow-link" : "unreachable";
+}
 
 /** What one sweep did. `offline` is the entries whose broker is gone but whose record STAYS —
  *  every origin, because a liveness miss is not a deletion. A surface that lists meshes renders

@@ -1,7 +1,7 @@
 ---
 title: Message flow
 description: How presence, routing, durable delivery, and attention determine what peers can observe and receive.
-kind: Concept
+kind: "Concept (informative)"
 audience: everyone
 ---
 
@@ -32,7 +32,8 @@ A watch that has not completed its initial snapshot is also incomplete. A missin
 A frozen agent can keep that status and a fresh heartbeat.
 Reported work events, activity ages, and conditions such as `rate_limit` provide separate evidence about its work.
 They remain absent when the agent application supplies no observation.
-Operator displays use `progress unknown` when they lack an outside progress observation.
+Operator displays use `progress unknown` when they lack an outside progress observation. The web
+dashboard shows `Working` alone: no surface can observe progress yet, so it adds no progress text.
 The workstation classifier can identify a stale outside observation, but current console and web roster paths supply no such observation.
 
 Presence can also describe the process holding the connection, an opaque environment reference, and the peer's attention preferences.
@@ -42,6 +43,8 @@ The [view and write diagnosis reference](embedding-endpoints.mdx#presence-view-a
 The [connector display reference](connector-runtime-reference.mdx#presence-display-and-name-verification) explains how tools report those limits and refuse an unverifiable name.
 
 Agent seats read presence on demand with `CotalEndpoint.readPresence()` rather than watching every heartbeat. Direct Get batches create no consumer. Concurrent reads share one request, and an earlier peer missing from a later read stays visible as offline. A refused read reports an authorization failure and a last-known roster. It never means an empty space. See [presence reads](embedding-endpoints.mdx#on-demand-presence).
+
+Seats read the channel registry the same way, with `CotalEndpoint.readChannels()`. One read at connect fills the boot briefing. `cotal_channels`, `cotal_channel_info`, and every join and leave read again first, so an entry an operator adds or removes later is seen, and a seat holds no consumer on the registry.
 
 Managers, delivery, chat, and dashboard observers retain watches because they act on transitions. An invisible observer completes its initial snapshot immediately when the bucket has no keys.
 
@@ -79,6 +82,20 @@ A subscription can cover a subtree such as `team.>`, while each publication name
 Anycast uses a shared work queue. Requests wait when no worker is online, and competing role consumers share the work.
 Acknowledgement removes a request from that queue. Routing does not establish that the selected worker is idle.
 
+On an authenticated mesh a holder's connector asks the [delivery daemon](delivery-service-reference.mdx#anycast-request-records) to record its take of a role request just before it shows the request to its agent.
+A connector that shows only part of its inbox takes only the requests it shows, so a request left for a later read can still be cancelled.
+A request taken just before the connection drops, or still being taken when it drops, is taken again before it is shown.
+While the connection is down the connector takes nothing, and once it is back it tells the agent about the requests it holds.
+A request waiting for its take keeps its place in the order messages arrived, so the agent sees it where it arrived.
+If an inbox read stops waiting before the take answers, it reports the request as held and still shows messages that need no take.
+That in-flight take does not repeatedly wake empty reads. A late successful take announces the request again when it can be shown; an undecided take follows the existing retry wait.
+When more is waiting than one pi turn holds, pi fits role requests into the turn before channel posts ([pi delivery](pi-connector-reference.mdx#delivery-confirmation)).
+The daemon then sends the sender a notice naming that holder, and a second notice if the holder's ack wait ran out and another holder took the request.
+The sender can read the request's status by the seq its send returned, and can cancel it until a holder takes it. After that the cancel is refused and names the taker.
+A take means the request was about to be shown and says nothing about the work itself.
+Anycast does not follow work to its end; a [workflow run](workflows.mdx) does.
+An open mesh runs no delivery daemon, so anycast there has no notices, status or cancel ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).
+
 A channel mention raises a named peer's priority while keeping the message addressed to the whole channel.
 The wire carries names so that a mention can still match after a reconnect.
 Whether a mention wakes the session depends on its connector and attention settings.
@@ -102,8 +119,9 @@ Retained channel history and durable channel delivery use JetStream too, with di
 
 A stored sequence proves that the broker accepted the publication.
 It does not prove that a recipient read it or completed the work.
-`cotal_dm` reports both the stored sequence and the recipient's roster status at send time.
-That status can change immediately after publication.
+The [CLI send receipt](cli-messaging.mdx#send) includes that sequence.
+`cotal_dm` names the recipient and warns when the recipient is offline or has no roster row.
+Its success text does not show the stored sequence or confirm delivery or wakeup.
 The [send receipt reference](connector-runtime-reference.mdx#send-receipts) describes offline and unrostered recipients.
 
 A DM durable belongs to the recipient's lifecycle.
@@ -141,6 +159,8 @@ Joining and leaving that subscription are self-service operations within the pee
 The [delivery daemon](delivery-daemon.mdx) retains a copy for each current member until acknowledgement, within the space's chat history limit ([channels](channels-and-permissions.mdx#how-long-posts-are-kept)).
 A busy or offline member can receive that copy later.
 Receiving both paths still represents one logical message, so the receiver deduplicates by message ID.
+A member keeps its newest 1000 stored copies unless an operator sets another limit with [`cotal history limit`](cli-messaging.mdx#history). When it returns to a full store, its next `cotal_inbox` reply says earlier copies may have been dropped.
+An agent following a family such as `team.>` gets stored copies of posts on the durable channels under it, as [channel families](channels-and-permissions.mdx#families) describes.
 [SPEC §4](../SPEC.md#4-delivery-modes) defines deduplication, including empty IDs and malformed envelopes.
 
 The space records its default class at creation, and a channel can override it.

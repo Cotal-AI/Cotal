@@ -18,7 +18,7 @@
  * Mutation-proved: delete that grant row and this suite goes red.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
 import { assertScratchHeld, foreignRootFor, killManagerAtRoot, makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -267,7 +267,7 @@ try {
             : `. Nothing was started.`),
       );
     }
-    const down = await cotal(["down", "--with-agents"], 60_000);
+    const down = await cotal(["down", "--yes", "--with-agents"], 60_000);
     // `cotal()` resolves for a timeout, a signal death and a launch failure alike, so an unchecked
     // `await` would read every one of those as a successful stop.
     mustHaveRun(down, "`cotal down`");

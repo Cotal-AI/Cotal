@@ -23,10 +23,17 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { connect, credsAuthenticator } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CHAT_HISTORY_DEFAULT,
   CotalEndpoint,
+  channelBucket,
+  chatStream,
   createSpaceAuth,
+  dialerFor,
+  dmStream,
+  idFromCreds,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -35,13 +42,14 @@ import {
   seedChannelRegistry,
   serverConfig,
   setupSpaceStreams,
+  standaloneConnectOpts,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, clearCurrent, recordMesh, removeMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { clean, nodePty } from "./_console-pty.js";
 import { credentialEnded } from "../src/lib/connect.js";
-import { MAX_BUFFER } from "../src/chat/engine.js";
+import { MAX_BUFFER } from "@cotal-ai/workspace/chat";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -82,7 +90,7 @@ const releaseOpenBroker = teardownOnSignal(openBroker, openStore);
 
 const home = mkdtempSync(join(tmpdir(), "cotal-history-home-"));
 const releaseHome = teardownPathOnSignal(home);
-mkdirSync(join(home, ".cotal"), { recursive: true });
+mkdirSync(join(home, ".cotal"), { recursive: true, mode: 0o700 });
 const xdg = join(home, "xdg");
 mkdirSync(xdg);
 const meshRoot = join(home, "mesh-root");
@@ -242,7 +250,7 @@ try {
     dmsPlain.status === 0 && /DM to erin\s+alice\s+for erin/.test(dmsPlain.stdout) && /DM to bob\s+alice\s+a private note/.test(dmsPlain.stdout), dmsPlain.stdout);
 
   const plain = await run(["history", "general", "--plain"]);
-  check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: 1000 per sender on each channel, posts older than 30d expire; /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+  check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: 1000 per sender on each channel; /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
   const localTime = items[0] ? new Date(items[0].ts).toLocaleTimeString() : "";
   check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
@@ -274,7 +282,7 @@ try {
   const denied = await run(["history", "general", "--json", "--creds", probe, "--space", space, "--server", servers]);
   check("a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page", denied.status === 2 && denied.envelope?.outcome === "refused" && denied.envelope.error?.code === "PERMISSION_DENIED" && denied.envelope.result === null, shown(denied));
   // A credential another space's account issued is rejected, and the refusal names the space its
-  // permissions name. One for this space's name from a foreign account names no other space.
+  // permissions name. One for this registered space from a foreign account names its local identity mismatch.
   const elsewhere = join(home, "elsewhere.creds"), sameName = join(home, "same-name.creds");
   writeFileSync(elsewhere, await mintCreds(await createSpaceAuth("elsewhere"), newIdentity(), "observer"), { mode: 0o600 });
   writeFileSync(sameName, await mintCreds(await createSpaceAuth(space), newIdentity(), "observer"), { mode: 0o600 });
@@ -282,7 +290,9 @@ try {
   check("another space's credential is PERMISSION_DENIED, exit 2, naming the space it is for",
     crossed.status === 2 && crossed.envelope?.error?.code === "PERMISSION_DENIED" && crossed.envelope.error.message.endsWith(`${elsewhere} is a credential for space "elsewhere", not "${space}"`) && (crossed.envelope.target as { credentialSpace?: string } | null)?.credentialSpace === "elsewhere" && (crossed.envelope.error.remedy ?? "").includes(`cotal auth mint <label> --space ${space}`), shown(crossed));
   const foreign = await run(["history", "general", "--json", "--creds", sameName, "--space", space, "--server", servers]);
-  check("a rejected credential naming this space keeps the plain rejection", foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && /^credentials rejected at \S+$/.test(foreign.envelope.error.message), shown(foreign));
+  check("a rejected credential naming this registered space names its different local identity and the same-profile mint",
+    foreign.status === 2 && foreign.envelope?.error?.code === "PERMISSION_DENIED" && foreign.envelope.error.message.includes(`space "${space}" has a different local identity`)
+      && Boolean(foreign.envelope.error.remedy?.includes("cotal auth mint <label> --profile observer --out <new file>")), shown(foreign));
   // With that space registered here at another address, a `--server` at this broker is the mismatch:
   // the next step drops it, and following the first step with `--server` kept says so again.
   const inHome = (f: () => void) => {
@@ -325,7 +335,7 @@ try {
     const byFolder = await run(["history", "general", "--json", "--creds", selectionObserver], meshRoot);
     check("with nothing selected, it reads the space registered for the folder it runs in", byFolder.status === 0 && spaceOf(byFolder) === space, shown(byFolder));
     const prepRoot = join(home, "prep-root");
-    mkdirSync(prepRoot);
+    mkdirSync(prepRoot, { mode: 0o700 });
     const prepared = await run(["space", "create", "histprep"], prepRoot);
     check("control: a space is prepared in another folder", prepared.status === 0, shown(prepared));
     const unstarted = await run(["history", "general", "--json", "--creds", selectionObserver], prepRoot);
@@ -449,12 +459,12 @@ try {
     { membersEnded, stderr: ml.stderr() });
 
   // A credential the broker rejects, as after `reset space` replaced the trust it was minted from.
-  // Given as a file it ends a follow with the one-shot's Next; minted by the follow from the space's
-  // trust, the Next says to run it again.
+  // A raw connection with no file or local trust context keeps the broker's generic guidance;
+  // minted by the follow from the space's trust, the Next says to run it again.
   const rejected = await mintCreds(await createSpaceAuth(space), newIdentity(), "observer");
   const given = await credentialEnded({ server: servers, space, tls: false, creds: rejected });
   const minted = await credentialEnded({ server: servers, space, tls: false, creds: rejected, auth });
-  check("a rejected --creds file ends a follow PERMISSION_DENIED with the one-shot's Next", given?.code === "PERMISSION_DENIED" && given.failure().remedy === foreign.envelope?.error?.remedy, { given: given?.failure(), oneShot: foreign.envelope?.error });
+  check("a rejected raw credential ends a follow PERMISSION_DENIED without claiming a local identity change", given?.code === "PERMISSION_DENIED" && given.failure().message === `credentials rejected at ${servers}` && given.failure().remedy === "check your creds, or the broker wants different auth", given?.failure());
   check("a rejected credential the follow minted ends it PERMISSION_DENIED saying to run it again",
     minted?.code === "PERMISSION_DENIED" && minted.failure().message === given?.failure().message && /run it again/.test(minted.failure().remedy ?? ""), minted?.failure());
 
@@ -471,20 +481,20 @@ try {
   check("a followed line wraps at word boundaries in a 60-column terminal", clean(ttyOut).includes("papa") && ttyLines.every((l) => l.length <= 60) && words.split(" ").every((w) => ttyLines.some((l) => new RegExp(`\\b${w}\\b`).test(l))), ttyLines.slice(-6));
 
   // `--limit` bounds messages, and one message can be close to a megabyte, so a row shows the first
-  // 500 characters and names the cut. `--json` carries the text as it was sent.
+  // 500 code units and names how many it did not show. `--json` carries the text as it was sent.
   const long = `long ${"y".repeat(5000)}`;
   await bob.multicast(long, { channel: "ops" });
   await wait(500);
   const longPlain = await run(["history", "ops", "--limit", "1", "--plain"]);
   const longJson = await run(["history", "ops", "--limit", "1", "--json"]);
-  check("a plain row shows the first 500 characters of a long message and names its size; --json keeps the whole text",
+  check("a plain row shows the first 500 code units of a long message and names the code units not shown; --json keeps the whole text",
     longPlain.status === 0 && longPlain.stdout.includes(`long ${"y".repeat(495)}`) && !longPlain.stdout.includes("y".repeat(496))
-      && longPlain.stdout.includes("cut from 5005 bytes; --json carries the whole text") && texts(longJson)[0] === long,
+      && longPlain.stdout.includes(`${long.length - 500} text code units not shown; --json carries the whole text`) && texts(longJson)[0] === long,
     { plain: longPlain.stdout.slice(-300), json: texts(longJson)[0]?.length });
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
-    const cap = CHAT_HISTORY_DEFAULT.perSender;
+    const cap = CHAT_HISTORY_DEFAULT.perSubject;
     const talker = new CotalEndpoint({ space: openSpace, servers: openServers, card: { name: "carol", kind: "agent" }, channels: ["general"], heartbeatMs: 500 });
     const quiet = new CotalEndpoint({ space: openSpace, servers: openServers, card: { name: "dave", kind: "agent" }, channels: ["general"], heartbeatMs: 500 });
     for (const ep of [talker, quiet]) {
@@ -606,6 +616,91 @@ try {
       { made: shown(made), partial: shown(partial), cleaned: shown(cleaned) });
   }
 
+  // Channel policy labels describe each field's source, including explicit values equal to defaults.
+  {
+    const channel = (...args: string[]) => run(["channel", ...args, "--space", space, "--plain"]);
+    const fields = (stdout: string) => Object.fromEntries([...stdout.matchAll(/^\s+(Replay|Window|Delivery):\s+(.+)$/gm)].map((match) => [match[1], match[2]]));
+    const policyIs = (r: { status: number; stdout: string }, replay: string, window: string, delivery: string) =>
+      r.status === 0 && JSON.stringify(fields(r.stdout)) === JSON.stringify({ Replay: replay, Window: window, Delivery: delivery });
+    const row = (stdout: string, name: string) => stdout.split("\n").find((line) => line.trimStart().startsWith(`#${name} `))?.trim().replace(/\s{2,}/g, "  ");
+    const builtIn = await channel("show", "policy-unregistered");
+    const builtInDefaults = await channel("defaults");
+    check("built-in replay, retained-history window and delivery are marked inherited",
+      policyIs(builtIn, "on - inherited", "retained history - inherited", "durable - inherited")
+        && policyIs(builtInDefaults, "on - inherited", "retained history - inherited", "durable - inherited"), { show: shown(builtIn), defaults: shown(builtInDefaults) });
+    const defaults = await channel("defaults", "--delivery", "live", "--no-replay", "--window", "1h");
+    const created = await channel("set", "policy", "--desc", "Operations");
+    check("control: channel policy defaults and metadata are saved through the CLI", defaults.status === 0 && created.status === 0, { defaults: shown(defaults), created: shown(created) });
+    const inherited = await channel("show", "policy");
+    const listed = await channel();
+    check("channel show marks every inherited policy field with inherited",
+      policyIs(inherited, "off - inherited", "1h - inherited", "live - inherited"), shown(inherited));
+    check("channel list uses inherited for replay and delivery as show does",
+      listed.status === 0 && row(listed.stdout, "policy") === "#policy  Operations  off - inherited  live - inherited", shown(listed));
+    const structured = await run(["channel", "show", "policy", "--space", space, "--json"]);
+    const registry = (structured.envelope?.result as unknown as { registry?: { defaults?: object; channels?: Record<string, object> } })?.registry;
+    check("JSON keeps stored metadata without presentation marks or resolved overrides",
+      structured.status === 0 && JSON.stringify(registry?.channels?.policy) === JSON.stringify({ description: "Operations" })
+        && JSON.stringify(registry?.defaults) === JSON.stringify({ replay: false, replayWindow: "1h", deliveryClass: "live" }), shown(structured));
+    const defaultsCard = await channel("defaults");
+    check("saved channel defaults are explicit and carry no inheritance marks", policyIs(defaultsCard, "off", "1h", "live"), shown(defaultsCard));
+    const missing = await channel("show", "policy-unregistered");
+    check("an unsaved channel marks every field inherited too", policyIs(missing, "off - inherited", "1h - inherited", "live - inherited"), shown(missing));
+    const mixedSet = await channel("set", "policy", "--no-replay");
+    const mixed = await channel("show", "policy");
+    const mixedList = await channel();
+    check("an explicit false equal to the default is unmarked while other fields stay inherited",
+      mixedSet.status === 0 && policyIs(mixed, "off", "1h - inherited", "live - inherited") && mixedList.status === 0
+        && row(mixedList.stdout, "policy") === "#policy  Operations  off  live - inherited", { show: shown(mixed), list: shown(mixedList) });
+    const explicitSet = await channel("set", "policy", "--replay", "--window", "30m", "--delivery", "durable");
+    const explicit = await channel("show", "policy");
+    const explicitList = await channel();
+    check("control: explicit replay, window and delivery overrides carry no inheritance marks",
+      explicitSet.status === 0 && policyIs(explicit, "on", "30m", "durable") && explicitList.status === 0
+        && row(explicitList.stdout, "policy") === "#policy  Operations  on  durable", { show: shown(explicit), list: shown(explicitList) });
+    const sameSet = await channel("set", "policy", "--no-replay", "--window", "1h", "--delivery", "live");
+    const same = await channel("show", "policy");
+    const sameList = await channel();
+    check("explicit settings equal to defaults are still unmarked",
+      sameSet.status === 0 && policyIs(same, "off", "1h", "live") && sameList.status === 0
+        && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
+  }
+
+  // Empty wire IDs are independent deliveries, including after a retained snapshot.
+  {
+    const nc = await connect({ servers: openServers });
+    const publish = async (id: string, text: string) => {
+      nc.publish(`cotal.${openSpace}.chat.local.publisher.audit`, JSON.stringify({
+        id, ts: Date.now(), space: openSpace, from: { id: "local.publisher", name: "publisher" },
+        channel: "audit", parts: [{ kind: "text", text }],
+      }));
+      await nc.flush();
+    };
+    const consoleFeed = follow(["console", "--plain", "--space", openSpace]);
+    let historyFeed: ReturnType<typeof follow> | undefined;
+    try {
+      check("empty IDs: console is watching", await consoleFeed.until((line) => line.includes("watching space")), consoleFeed.stderr());
+      await publish("", "empty-first");
+      await publish("", "empty-second");
+      await publish("unique-third", "nonempty-third");
+      check("console shows both empty-ID deliveries", await consoleFeed.until((line) => line.includes("empty-second")) && consoleFeed.lines.some((line) => line.includes("empty-first")), consoleFeed.lines);
+      historyFeed = follow(["history", "audit", "--follow", "--json", "--space", openSpace]);
+      check("empty IDs: follow snapshot contains both retained deliveries", await historyFeed.until((line) => line.includes('"type":"snapshot"') && line.includes("empty-first") && line.includes("empty-second")), historyFeed.lines);
+      await publish("", "follow-empty-first");
+      await publish("", "follow-empty-second");
+      await publish("unique-fourth", "follow-nonempty");
+      await publish("unique-fourth", "duplicate-nonempty");
+      check("history follow shows consecutive empty-ID events after snapshot", await historyFeed.until((line) => line.includes('"type":"event"') && line.includes("follow-empty-second")) && historyFeed.lines.some((line) => line.includes('"type":"event"') && line.includes("follow-empty-first")), historyFeed.lines);
+      check("nonempty follow ID still deduplicates", await historyFeed.until((line) => line.includes("follow-nonempty")), historyFeed.lines);
+      await wait(300);
+      check("duplicate nonempty ID is not surfaced", !historyFeed.lines.some((line) => line.includes("duplicate-nonempty")) && !consoleFeed.lines.some((line) => line.includes("duplicate-nonempty")), { history: historyFeed.lines, console: consoleFeed.lines });
+    } finally {
+      await killAndAwaitExit(consoleFeed.child);
+      if (historyFeed) await killAndAwaitExit(historyFeed.child);
+      await nc.close();
+    }
+  }
+
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
   {
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
@@ -613,6 +708,201 @@ try {
     check("channel members on an open mesh is UNSUPPORTED, exit 2, naming cotal who", members.status === 2 && members.envelope?.outcome === "refused" && members.envelope?.error?.code === "UNSUPPORTED" && remedy.includes("cotal who"), shown(members));
     const authMembers = await run(["channel", "members", "general", "--space", space, "--json"]);
     check("on the auth mesh it still reads the feed", authMembers.envelope?.command === "channel" && authMembers.envelope?.error?.code !== "UNSUPPORTED", shown(authMembers));
+  }
+
+  // The registry bucket is already gone. Retained chat still makes this a channel the space has,
+  // so remove used to report an unconfirmed change instead of the no-op a missing entry is.
+  {
+    const posted = await run(["send", "-c", "bucketgone", "kept", "--space", space]);
+    const teardown = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await dialerFor(servers)({ servers, ...standaloneConnectOpts({ creds: teardown, tls: false }), maxReconnectAttempts: 0 });
+    let deleted = false;
+    try {
+      const jsm = await jetstreamManager(nc);
+      const bucket = channelBucket(space);
+      for await (const name of jsm.streams.names()) {
+        if (!name.includes(bucket)) continue;
+        await jsm.streams.delete(name);
+        deleted = true;
+      }
+    } finally {
+      await nc.close();
+    }
+    const gone = await run(["channel", "remove", "bucketgone", "--yes", "--space", space, "--json"]);
+    const removed = (gone.envelope?.result as { removed?: boolean } | null | undefined)?.removed;
+    check("removing a channel whose registry bucket is gone is a no-op, not an unconfirmed change",
+      posted.status === 0 && deleted && gone.status === 0 && gone.envelope?.outcome === "no-op" && removed === false, { posted: shown(posted), gone: shown(gone), deleted });
+  }
+  await seedChannelRegistry({ servers, space, creds: provisionerCreds, file: { channels: { general: { replay: true, replayWindow: "24h" } } } });
+
+  // Only the chat stream is gone. Channel history cannot be read. A stored DM must still come back,
+  // and the refusal that says to create every stream again, empty, would delete it. The clear above
+  // purged the earlier note, so this cell stores a new one first.
+  {
+    const keptNote = `dm-after-clear-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, keptNote);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try {
+      await (await jetstreamManager(nc)).streams.delete(chatStream(space));
+    } finally {
+      await nc.close();
+    }
+    const kept = await run(["history", "--dms", "--json"]);
+    const keptText = `${kept.stdout}${kept.stderr}`;
+    check(
+      "history --dms returns a stored DM when only the chat stream is gone, and does not say to create every stream again",
+      kept.status === 4 && kept.envelope?.outcome === "partial" && kept.envelope.warnings.some((w) => w.code === "CHAT_STREAM_ABSENT") && (kept.envelope.result?.items ?? []).some((i) => i.text === keptNote && i.channel === null) && !keptText.includes("create them again"),
+      shown(kept),
+    );
+    const channelGone = await run(["history", "general", "--json"]);
+    check(
+      "channel history still refuses TARGET_UNAVAILABLE when the chat stream is gone",
+      channelGone.status === 2 && channelGone.envelope?.error?.code === "TARGET_UNAVAILABLE" && channelGone.envelope.error.message?.startsWith(`the streams of ${space} are not on its broker`) === true,
+      shown(channelGone),
+    );
+  }
+  // Restore the chat stream removed above so this cell owns its deletion.
+  // Purging a saved channel must still remove the entry when that stream is gone.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const set = await run(["channel", "set", "ops", "--desc", "purge-gone", "--space", space, "--json"]);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.delete(chatStream(space)); }
+    finally { await nc.close(); }
+    const removed = await run(["channel", "remove", "ops", "--purge", "--yes", "--space", space, "--json"]);
+    const show = await run(["channel", "show", "ops", "--space", space, "--json"]);
+    const channels = (show.envelope?.result as { registry?: { channels?: Record<string, unknown> } } | null)?.registry?.channels;
+    const receipt = removed.envelope?.result as { removed?: boolean; purged?: number } | null;
+    check("channel remove --purge removes the saved entry when the chat stream is already gone",
+      set.status === 0 && removed.status === 0 && removed.envelope?.outcome === "ok" && receipt?.removed === true && receipt.purged === 0 && channels?.ops === undefined,
+      { set: shown(set), removed: shown(removed), show: shown(show) });
+  }
+
+  // Start with one stored DM, independent of earlier reads and clears.
+  // clean history must purge it even when the chat stream is gone.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const purgerCreds = await mintCreds(auth, newIdentity(), "purger");
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(purgerCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(purgerCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.purge(dmStream(space)); }
+    finally { await nc.close(); }
+    const note = `clean-dm-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, note);
+    await wait(400);
+    const drop = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(drop)).streams.delete(chatStream(space)); }
+    finally { await drop.close(); }
+    const cleared = await run(["clean", "history", "--force", "--dms"]);
+    const read = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    let dmLeft = -1;
+    try { dmLeft = (await (await jetstreamManager(read)).streams.info(dmStream(space))).state.messages; }
+    finally { await read.close(); }
+    check("clean history purges direct messages when the chat stream is already gone",
+      cleared.status === 0 && cleared.stdout.includes("cleared 0 channel messages") && /1 DM message/.test(cleared.stdout) && dmLeft === 0,
+      { cleared: shown(cleared), dmLeft });
+  }
+
+  // Restore streams and store what this clear needs before deleting either stream.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const note = `clear-dm-${randomUUID().slice(0, 8)}`;
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, note);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const open = async () => connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    const messages = async (name: string) => {
+      const nc = await open();
+      try { return (await (await jetstreamManager(nc)).streams.info(name)).state.messages; }
+      finally { await nc.close(); }
+    };
+    const drop = async (name: string) => {
+      const nc = await open();
+      try { await (await jetstreamManager(nc)).streams.delete(name); }
+      finally { await nc.close(); }
+    };
+    const before = await messages(dmStream(space));
+    await drop(chatStream(space));
+    const chatOnly = await run(["history", "clear", "--yes", "--json"]);
+    const dmKept = await messages(dmStream(space));
+    check("history clear with only the chat stream gone refuses TARGET_NOT_FOUND and leaves direct messages",
+      chatOnly.status === 2 && chatOnly.envelope?.error?.code === "TARGET_NOT_FOUND" && chatOnly.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged" && before > 0 && dmKept === before,
+      { chatOnly: shown(chatOnly), before, dmKept });
+    const cleared = await run(["history", "clear", "--yes", "--dms", "--json"]);
+    const dmAfter = await messages(dmStream(space));
+    const acked = (cleared.envelope?.result as { acknowledged?: { stream: string; purged: number }[] } | null)?.acknowledged ?? [];
+    check("history clear --dms purges the direct messages when the chat stream is gone and names that stream",
+      cleared.status === 0 && cleared.envelope?.outcome === "ok" && cleared.envelope.warnings.some((w) => w.code === "HISTORY_STREAM_ABSENT" && w.message.includes(chatStream(space))) && dmAfter === 0 && acked.some((row) => row.stream === dmStream(space) && row.purged === before),
+      { cleared: shown(cleared), before, dmAfter });
+    await drop(dmStream(space));
+    const none = await run(["history", "clear", "--yes", "--dms", "--json"]);
+    check("history clear --dms refuses TARGET_NOT_FOUND when the chat and direct-message streams are both gone",
+      none.status === 2 && none.envelope?.outcome === "refused" && none.envelope.error?.code === "TARGET_NOT_FOUND" && none.envelope.error.message === "the streams this clear asked for are not on the broker, so nothing was purged",
+      shown(none));
+  }
+
+  // All cells needing stored DMs have finished. Restore both streams for the inverse absence case.
+  {
+    await setupSpaceStreams({ servers, space, creds: provisionerCreds });
+    const keptNote = `dm-stream-${randomUUID().slice(0, 8)}`;
+    await alice.multicast("channel stays", { channel: "general" });
+    await alice.unicast(`${bob.principal.owner}.${bob.principal.actor}`, keptNote);
+    await wait(400);
+    const teardownCreds = await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() });
+    const nc = await connect({
+      servers,
+      authenticator: credsAuthenticator(new TextEncoder().encode(teardownCreds)),
+      inboxPrefix: `_INBOX_${idFromCreds(teardownCreds)}`,
+      maxReconnectAttempts: 0,
+    });
+    try { await (await jetstreamManager(nc)).streams.delete(dmStream(space)); }
+    finally { await nc.close(); }
+    const kept = await run(["history", "--dms", "--json"]);
+    const items = kept.envelope?.result?.items ?? [];
+    check(
+      "history --dms is partial when only the direct-message stream is gone, and channel history remains",
+      kept.status === 4 && kept.envelope?.outcome === "partial" && kept.envelope.warnings.some((w) => w.code === "DM_STREAM_ABSENT") && items.some((i) => i.text === "channel stays" && i.channel === "general") && !items.some((i) => i.text === keptNote),
+      shown(kept),
+    );
+    const general = await run(["history", "general", "--json"]);
+    check(
+      "channel history stays complete when only the direct-message stream is gone",
+      general.status === 0 && general.envelope?.completeness === "complete" && (general.envelope?.result?.items ?? []).some((i) => i.text === "channel stays"),
+      shown(general),
+    );
   }
 } finally {
   for (const ep of endpoints) await ep.stop().catch(() => {});

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { peerLabel } from "@cotal-ai/core/peer-label";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { COMMANDS, meshWord } from "../commands.js";
 import { Modal } from "./Modal.js";
@@ -38,9 +39,11 @@ function suggest(query: string, snap: MeshSnapshot, managed: PsReply | undefined
   const agents = (): Sugg[] => peers
     .filter((p) => p.card.name.toLowerCase().startsWith(q) || p.card.id.toLowerCase().startsWith(q))
     .map((p) => {
-      const duplicate = peers.some((other) => other.card.id !== p.card.id && other.card.name === p.card.name);
-      return { value: "@" + (duplicate ? p.card.id : p.card.name),
-        label: "@" + p.card.name + (duplicate ? ` (${p.card.id.slice(0, 8)})` : ""),
+      const named = p.card.name.trim();
+      const duplicate = named !== "" && peers.some((other) => other.card.id !== p.card.id && other.card.name === p.card.name);
+      const shown = peerLabel({ name: named ? p.card.name : p.card.id });
+      return { value: "@" + (duplicate ? p.card.id : shown),
+        label: "@" + shown + (duplicate ? ` (${p.card.id.slice(0, 8)})` : ""),
         summary: [p.card.role, p.status].filter(Boolean).join(" · "), run: command === "call" };
     });
   const channels = (): Sugg[] => snap.channels

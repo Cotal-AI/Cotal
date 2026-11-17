@@ -8,7 +8,7 @@ import {
   assertValidOwnerToken,
   managedRetirementOpId,
   parseRemoteManagerEnvelope,
-  remoteManagerActors, remoteManagerServePrincipal,
+  remoteManagerActors,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
   type RemoteRunAdmissionRequest,
@@ -31,6 +31,7 @@ import {
   type RunOperatorGrantArgs,
   type RemoteRunAdmissionResult,
   type RunAdmission,
+  type RunDelegation,
   type HostedRunAttempt,
   type IssuedStore,
   type IssuedSourceRef,
@@ -54,8 +55,7 @@ import {
 } from "@cotal-ai/core";
 import { CheckpointNotAmendable, CheckpointNotOpen, openCheckpointToken, settledPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import type { KV } from "@nats-io/kv";
-import { timingSafeEqual } from "node:crypto";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { RunCancelObservations, type RunCancelObservation, type RunCancelClaim } from "./run-cancel-observation.js";
@@ -79,16 +79,7 @@ export async function authorizeRemoteManagerRenewal(args: {
     requestError("requires a renewal operation");
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", "manager-service renewal has no open registration gate");
-  if (gate.principal !== remoteManagerServePrincipal(args.owner, r.instanceId))
-    throw new EpEnvelopeError("permission-denied", "manager-service renewal gate belongs to another owner");
-  if (gate.processEpoch !== r.processEpoch)
-    throw new EpEnvelopeError("conflict", "manager-service renewal processEpoch is stale");
-  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
-    throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registration");
+  await assertCurrentManagerRegistration(r, r.processEpoch, args, "manager-service renewal");
   if (r.operation === "renewRunDriver" && !holdsRunFence(await args.observeRun(r.run!.runId), r))
     throw new EpEnvelopeError("conflict", "manager-service run renewal does not hold the activated run and takeover fence");
 }
@@ -324,7 +315,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   };
 }
 
-export function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissionRequest {
+function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissionRequest {
   const registered = parseRegisteredRunRequest(raw, "manager-run-submission", "manager keyed submission", ["subject"]);
   const subject = (raw as { subject?: unknown }).subject;
   if (typeof subject !== "string") runRequestError("manager keyed submission", "requires observed subject");
@@ -339,6 +330,8 @@ export async function handleRemoteRunSubmission(args: {
   endpoint: string; observeManagerGate: ObserveManagerGate; issued: IssuedStore;
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   takeObserved: (subject: string) => Promise<ObservedRunRequest | undefined>;
+  /** What the ledger grants a principal now, frozen into the admission as what the run hands on. */
+  delegationOf: (owner: string, actor: string) => RunDelegation | undefined;
   registeredCommand: (instanceId: string, revision: number, command: string) => Promise<Pick<EpCommandAuthority, "class" | "inputDigest" | "outputDigest">>;
   withStore: <T>(runId: string, submission: { caller: import("@cotal-ai/core").EpCaller; id: string },
     work: (kv: KV, jsm: import("@nats-io/jetstream").JetStreamManager) => Promise<T>) => Promise<T>;
@@ -370,8 +363,10 @@ export async function handleRemoteRunSubmission(args: {
     if (performance.now() >= observed.submission!.requestEndsAt) throw new EpEnvelopeError("deadline-exceeded", "original observed keyed deadline elapsed");
     if (parsed.command === "run-submission-status") return { winner: false, view: await readRunSubmission({
       jsm, space: r.space, endpoint: args.endpoint, caller: c, submissionId: id, instanceId: r.instanceId, processEpoch: r.processEpoch }) };
+    const delegation = args.delegationOf(c.owner, c.actor);
     const admission: RunAdmission = { version: 1, space: r.space, endpoint: args.endpoint, runId, instanceId: r.instanceId,
-      caller: c, ceiling: resolved.evidence.permissions, provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
+      caller: c, ceiling: resolved.evidence.permissions, provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now(),
+      ...(delegation !== undefined ? { delegation } : {}) };
     return bindAndAdmitRunSubmission({ kv, jsm, admission, submissionId: id, fingerprint: observed.submission!.fingerprint,
       processEpoch: r.processEpoch, deadline: { requestEndsAt: observed.submission!.requestEndsAt,
         ...(resolved.evidence.expiresAt !== undefined ? { authorityExpiresAt: resolved.evidence.expiresAt * 1000 } : {}) },
@@ -394,17 +389,7 @@ async function authenticateRegisteredManager(
 ): Promise<ManagerGate> {
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", `manager-service ${what} is bound to the host-assigned space and account`);
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `manager-service ${what} has no open registration gate`);
-  if (gate.principal !== remoteManagerServePrincipal(args.owner, r.instanceId))
-    throw new EpEnvelopeError("permission-denied", `manager-service ${what} gate belongs to another owner`);
-  if (gate.processEpoch !== r.processEpoch)
-    throw new EpEnvelopeError("conflict", `manager-service ${what} processEpoch is stale`);
-  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
-    throw new EpEnvelopeError("permission-denied", `manager-service ${what} proof does not match the current registration`);
-  return gate;
+  return await assertCurrentManagerRegistration(r, r.processEpoch, args, `manager-service ${what}`);
 }
 
 /**
@@ -427,6 +412,9 @@ export async function admitRemoteRun(args: {
   sourceIsLive: (source: IssuedSourceRef) => Promise<boolean>;
   /** Consumes the one observation of a served request subject. */
   takeObserved: (subject: string) => Promise<ObservedRunRequest | undefined>;
+  /** What the ledger grants a principal now. The admission freezes it as what the run's spawns may
+   *  hand on, so a grant the starter gains later never reaches a helper (SPEC 14.8). */
+  delegationOf: (owner: string, actor: string) => RunDelegation | undefined;
   admissions: KV;
   now?: () => number;
 }): Promise<RemoteRunAdmissionResult> {
@@ -451,11 +439,13 @@ export async function admitRemoteRun(args: {
     throw new EpEnvelopeError("permission-denied", "manager run admission evidence names another issued reference");
   if (!issuedPermitsSubject(resolved.evidence.permissions.publish, r.run.subject))
     throw new EpEnvelopeError("permission-denied", "the caller's issued ceiling does not permit this run-start subject");
+  const delegation = args.delegationOf(caller.owner, caller.actor);
   const admission: RunAdmission = {
     version: 1, space: r.space, endpoint: args.endpoint, runId: r.run.runId, instanceId: r.instanceId,
     caller, ceiling: resolved.evidence.permissions,
     provenance: { kind: "issued", ref, resolvedRevision: resolved.revision },
     admittedAt: (args.now ?? Date.now)(),
+    ...(delegation !== undefined ? { delegation } : {}),
   };
   try {
     const revision = await createRunAdmission(args.admissions, admission);
@@ -671,7 +661,7 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
 /** What a served resume or answer asks the host to issue for: a resume names its run, an answer
  *  the endpoint it answers on, the run and step whose pause it answers, and whether it amends
  *  (SPEC 14.8). */
-export type RunRequestOperation =
+type RunRequestOperation =
   | { command: "run-resume"; runId: string }
   | { command: "run-answer"; endpoint: string; runId: string; stepKey: string; amend: boolean };
 
@@ -789,7 +779,7 @@ async function authorizeServedRunCaller(args: {
 
 /** The registered manager's declaration of a served command at a registration revision: the class
  *  and contract its serving endpoint admits. */
-export type RegisteredRunCommand = (
+type RegisteredRunCommand = (
   instanceId: string,
   registrationRevision: number,
   command: RunRequestOperation["command"],

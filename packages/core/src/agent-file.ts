@@ -15,7 +15,7 @@
  *   variant: high              # optional connector-defined model variant
  *   capabilities: [spawn]  # control-plane capabilities (spawn → may start/despawn others)
  *   agent: jcode           # optional connector/harness pin (flag > file > COTAL_DEFAULT_AGENT > default)
- *   theme: dark            # any unmodelled key is kept verbatim in AgentDef.meta, so a
+ *   theme: dark            # unmodelled, non-reserved scalar keys are kept in AgentDef.meta, so a
  *                          #   connector can read its own launcher hints without core knowing them
  *   ---
  *   <the Markdown body is the persona — an appended system prompt>
@@ -30,9 +30,11 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
-import { writePrivateRecord } from "./secret-fs.js";
+import { createPrivateRecord, writePrivateRecord } from "./secret-fs.js";
 import { utf16Problem } from "./text-encoding.js";
-import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { assertValidChannel, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
+import { assertBoundedOwner } from "./endpoint-subjects.js";
+import { parsePersonaEndpoints, type PersonaEndpoint } from "./persona-endpoints.js";
 
 export interface AgentDef {
   name: string;
@@ -75,6 +77,8 @@ export interface AgentDef {
    *  OpenCode config); a connector with no option surface fails loud. `--opt k=v` on the CLI, a
    *  manifest `launchOptions:`, or a nested `launchOptions:` block here all feed the same bag. */
   launchOptions?: Record<string, unknown>;
+  /** Publish tool arguments and results unless false or withheld by space policy. */
+  eventPayloads?: boolean;
   /** Capabilities this agent may exercise on the control plane (auth mode → minted into the
    *  cred's publish allow-list). `spawn` grants the manager's `spawnCallerCapabilities` ep rows
    *  and `run` the `runCallerCapabilities` rows (the run commands plus the spawn set). Default-deny
@@ -85,14 +89,18 @@ export interface AgentDef {
    *  `--add-dir` / permission flags, OpenCode agent-config keys). Grant it as host-launch authority,
    *  not as a narrow "add a teammate" permission. */
   capabilities?: string[];
+  /** Endpoint commands this agent is handed (SPEC 13.15): `[{ endpoint, commands, instanceId? }]`,
+   *  parsed by {@link parsePersonaEndpoints}. Policy like {@link capabilities}: a spawn is bounded
+   *  against its spawner, an operator instrument is exempt, and omitted or `[]` grants none. */
+  endpoints?: PersonaEndpoint[];
   /** Authenticated id of the agent that first defined this persona via `definePersona` (P6). A
    *  POLICY field, not content: the privileged tier may *redefine* an existing file only if its
    *  `owner` equals the caller; everyone else needs the admin tier. Fail-closed — an ownerless
    *  file (legacy / operator-written) is admin-only, and a caller can never claim ownership of an
    *  existing file. Set once at creation (owner = creator), preserved on every later redefine. */
   owner?: string;
-  /** Frontmatter keys not modelled above, kept verbatim so a connector can read its own launcher
-   *  hints without core knowing about each one. */
+  /** Non-reserved scalar frontmatter keys not modelled above, kept verbatim so a connector can
+   *  read its own launcher hints without core knowing about each one. */
   meta?: Record<string, string>;
   /** Markdown body — the agent's persona / appended system prompt. */
   persona?: string;
@@ -123,7 +131,7 @@ export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
 /** Frontmatter keys {@link AgentDef} models. The parser keeps them out of `meta`, and the writer
  *  refuses a `meta` entry that names one, so a hint can never overwrite a field the file models. */
-const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "capabilities", "owner"]);
+const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "eventPayloads", "capabilities", "endpoints", "owner"]);
 
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
@@ -198,6 +206,12 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
         `agent file ${path}: "${old}" was renamed - use "subscribe"/"allowSubscribe" (read) and "allowPublish" (post)`,
       );
 
+  for (const key of ["cwd", "worktree"])
+    if (key in fm)
+      throw new Error(
+        `agent file ${path}: "${key}" is not supported in frontmatter; the working directory comes from the spawn request (use --cwd)`,
+      );
+
   const subscribe = list("subscribe");
   const allowSubscribe = list("allowSubscribe");
   const allowPublish = list("allowPublish");
@@ -245,6 +259,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
   // Opaque connector-specific launch options — a mapping core never interprets (each connector
   // reads its own keys). A scalar/sequence here is a config error (it must be `key: value` pairs).
+  if (fm.eventPayloads !== undefined && typeof fm.eventPayloads !== "boolean")
+    throw new Error(`agent file ${path}: "eventPayloads" must be a boolean`);
   const launchOptionsRaw = fm["launchOptions"];
   let launchOptions: Record<string, unknown> | undefined;
   if (launchOptionsRaw !== undefined && launchOptionsRaw !== null) {
@@ -273,7 +289,9 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     model,
     variant,
     launchOptions,
+    eventPayloads: fm.eventPayloads as boolean | undefined,
     capabilities: list("capabilities"),
+    endpoints: parsePersonaEndpoints(fm["endpoints"], `agent file ${path}`),
     owner: str("owner"),
     meta: Object.keys(meta).length ? meta : undefined,
     persona: persona || undefined,
@@ -282,10 +300,11 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 
 /** Write an agent definition back to disk in the form {@link loadAgentFile} reads:
  *  the set frontmatter fields followed by the persona body. Round-trips through the
- *  parser; creates parent dirs. The runtime persona-definition path uses this to
+ *  parser and refuses, writing nothing, a file it would not load; creates parent dirs. The runtime persona-definition path uses this to
  *  persist a peer-defined agent as config. The file is written 0o600 and never through a
- *  symlink ({@link writePrivateRecord}). */
-export function saveAgentFile(path: string, def: AgentDef): void {
+ *  symlink ({@link writePrivateRecord}). `createOnly` refuses a name that already exists, a symlink
+ *  included, and leaves it as it was ({@link createPrivateRecord}). */
+export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: boolean } = {}): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
   if (def.kind !== undefined) assertValidKind(def.kind, "saveAgentFile");
@@ -310,6 +329,10 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   // all quoting/escaping (a value with a `:`/`#`/`[`/quote round-trips safely, which the old
   // hand-rolled writer had to special-case). `lineWidth: 0` keeps scalars on one line (no folding).
   const fm: Record<string, unknown> = { name: def.name };
+  if (def.eventPayloads !== undefined) {
+    if (typeof def.eventPayloads !== "boolean") throw new Error('saveAgentFile: "eventPayloads" must be a boolean');
+    fm.eventPayloads = def.eventPayloads;
+  }
   if (def.role) fm.role = def.role;
   if (def.kind) fm.kind = def.kind;
   if (def.description) fm.description = def.description;
@@ -329,15 +352,49 @@ export function saveAgentFile(path: string, def: AgentDef): void {
   if (def.variant) fm.variant = def.variant;
   if (def.launchOptions && Object.keys(def.launchOptions).length) fm.launchOptions = def.launchOptions;
   if (def.capabilities?.length) fm.capabilities = def.capabilities;
+  if (def.endpoints?.length)
+    fm.endpoints = def.endpoints.map((e) => ({ endpoint: e.endpoint, commands: e.commands, ...(e.instanceId !== undefined ? { instanceId: e.instanceId } : {}) }));
   if (def.owner) fm.owner = def.owner;
   if (def.meta) for (const [k, v] of Object.entries(def.meta)) fm[k] = v;
   const frontmatter = stringifyYaml(fm, { lineWidth: 0 }).trimEnd();
   const body = def.persona ? `${def.persona.trim()}\n` : "";
+  const text = `---\n${frontmatter}\n---\n\n${body}`;
+  // A persona that saves must load. A file the reader refuses, such as one whose subscribe entry no
+  // allowSubscribe entry contains, made every later load, spawn and redefine of that name fail.
+  // The message reaches an agent as the reason its definition was refused, so it names the rule the
+  // file broke and not this function or the path of a file that was never written.
+  try {
+    parseAgentFileSource(text, path);
+  } catch (e) {
+    const reason = (e as Error).message;
+    const prefix = `agent file ${path}: `;
+    throw new Error(`it would not load: ${reason.startsWith(prefix) ? reason.slice(prefix.length) : reason}`);
+  }
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writePrivateRecord(path, `---\n${frontmatter}\n---\n\n${body}`);
+  if (opts.createOnly) createPrivateRecord(path, text);
+  else writePrivateRecord(path, text);
 }
 
-/** Content a peer may name on `define-persona`. Policy (`capabilities`, `owner`) has no slot. */
+/** An inline persona (SPEC 13.7): the helper's definition, carried on the spawn instead of read
+ *  from the catalog. `prompt` is the persona body, never the first-turn kickoff. A channel field
+ *  that is omitted and one that is `[]` stay apart, as in a file. `save` also writes a create-only
+ *  catalog copy under the requested name. */
+export interface InlinePersona {
+  prompt: string;
+  role?: string;
+  model?: string;
+  variant?: string;
+  description?: string;
+  subscribe?: string[];
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+  capabilities?: string[];
+  endpoints?: PersonaEndpoint[];
+  save?: boolean;
+}
+
+/** What a peer may name on `define-persona`: content, plus `capabilities` and `endpoints`, which the
+ *  manager bounds against the definer before it writes. `owner` has no slot. */
 export type WirePersonaArgs = {
   name: string;
   /** The principal a fresh file records as its owner; absent, the file is operator-owned. */
@@ -349,6 +406,8 @@ export type WirePersonaArgs = {
   subscribe?: string[];
   allowSubscribe?: string[];
   allowPublish?: string[];
+  capabilities?: string[];
+  endpoints?: PersonaEndpoint[];
 };
 
 /**
@@ -385,7 +444,8 @@ function dropWireDefaultIfScoped(def: AgentDef): void {
 /**
  * Build the AgentDef `definePersona` writes. A leading frontmatter block in `prompt` is parsed
  * and merged: explicit tool arguments win; grants, role, and agent from the prompt survive;
- * `capabilities` and `owner` from the prompt never do. The result is always one frontmatter block
+ * `capabilities`, `endpoints` and `owner` from the prompt never do, and only an explicit
+ * `capabilities` or `endpoints` argument sets that field. The result is always one frontmatter block
  * once {@link saveAgentFile} writes it. On redefine, prompt grants are not applied (the stored
  * file's policy is preserved) except where an explicit tool argument names a field.
  */
@@ -400,6 +460,8 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     if (args.subscribe !== undefined) def.subscribe = args.subscribe;
     if (args.allowSubscribe !== undefined) def.allowSubscribe = args.allowSubscribe;
     if (args.allowPublish !== undefined) def.allowPublish = args.allowPublish;
+    if (args.capabilities !== undefined) def.capabilities = args.capabilities;
+    if (args.endpoints !== undefined) def.endpoints = args.endpoints;
     def.persona = parsed.body;
     dropWireDefaultIfScoped(def);
     return def;
@@ -416,6 +478,8 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     subscribe,
     allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
     allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
+    capabilities: args.capabilities,
+    endpoints: args.endpoints,
     description: fromPrompt?.description,
     tags: fromPrompt?.tags,
     variant: fromPrompt?.variant,
@@ -539,14 +603,31 @@ export function personaCatalogReadable(owner: string | undefined, caller: string
  *  cannot drift: whatever this scheme can PRODUCE, that rule must ACCEPT. */
 const NUMBER_SEPARATOR = "_";
 
+/** The rail bound an actor token must fit, the same bound {@link assertBoundedOwner} enforces. The
+ *  auto-numbering below appends `_<n>` to a base that has already passed the name door, so a base of
+ *  63 or 64 characters would otherwise be numbered into a name the exchange can never serve. */
+const ACTOR_TOKEN_MAX = 64;
+
 /** First free name in the series `base`, `base_2`, `base_3`, … — the first candidate for which
  *  `taken` returns false. The single source of the spawn auto-numbering scheme, shared by the
  *  manager's funnel (checked against its live + reserved slots) and `cotal spawn` (checked against
- *  the live mesh roster), so a colliding name numbers up identically whichever path spawns it. */
-export function firstFreeName(base: string, taken: (name: string) => boolean): string {
+ *  the live mesh roster), so a colliding name numbers up identically whichever path spawns it.
+ *
+ *  `actorBound` caps a numbered candidate at {@link ACTOR_TOKEN_MAX}. Only a user-mode caller passes
+ *  it, because only there is the name the actor: past the bound the exchange can never serve it, so
+ *  the series ends rather than handing one out. Static and open mode key the actor on the minted
+ *  nkey, so a numbered name there has no length to fit and the cap would refuse a spawn that works.
+ *  The requested base is returned even when it is longer, because the name door judges a base on its
+ *  own and this function only resolves collisions. Throws when every candidate that fits is taken. */
+export function firstFreeName(base: string, taken: (name: string) => boolean, opts?: { actorBound?: boolean }): string {
   if (!taken(base)) return base;
   for (let n = 2; ; n++) {
     const candidate = `${base}${NUMBER_SEPARATOR}${n}`;
+    if (opts?.actorBound && candidate.length > ACTOR_TOKEN_MAX)
+      throw new Error(
+        `no free name for ${JSON.stringify(base)} fits the ${ACTOR_TOKEN_MAX}-character actor bound: ` +
+        `numbering it would name an actor the exchange refuses`,
+      );
     if (!taken(candidate)) return candidate;
   }
 }
@@ -557,25 +638,28 @@ export function firstFreeName(base: string, taken: (name: string) => boolean): s
  *  Two constraints, and they are not the same constraint:
  *   - ALWAYS: the name becomes a `.cotal/agents/<name>.md` path, so it must be a bare token and
  *     never a path — this is the traversal guard, and it holds in every mode.
- *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must satisfy the principal
- *     grammar, which is strictly narrower — no `-`. Static/open mode keys the actor on the freshly
- *     minted nkey instead of the name, so the narrow rule does not apply there and an existing
- *     `my-agent` persona keeps spawning across an upgrade.
+ *   - USER MODE ONLY: the name is additionally the mesh ACTOR, so it must be one the exchange can
+ *     serve: the principal grammar (no `-`) AND the 64-character rail bound. Static/open mode keys
+ *     the actor on the freshly minted nkey instead of the name, so the narrow rule does not apply
+ *     there and an existing `my-agent` persona keeps spawning across an upgrade.
  *
- *  The narrow half DELEGATES to {@link assertValidOwnerToken} rather than restating it as a second
- *  regex. A copy of an authority's alphabet drifts silently, and the copy that drifts is the one on
- *  the door nobody is reading — the same reason the persona doors share one ownership predicate.
+ *  The narrow half DELEGATES to {@link assertBoundedOwner}, the validator the exchange's permission
+ *  rows are built through, rather than restating its alphabet or its bound. A copy of an authority's
+ *  rule drifts silently, and the copy that drifts is the one on the door nobody is reading. The door
+ *  and the exchange then refuse the same names, and a name the exchange can never serve is refused
+ *  here, before a spawn enrolls it.
  *  Returns undefined when the name is acceptable, else the refusal to show the caller. */
 export function spawnNameError(name: string, opts: { userMode: boolean }): string | undefined {
   if (!/^[A-Za-z0-9_-]+$/.test(name))
     return `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;
   if (!opts.userMode) return undefined;
   try {
-    assertValidOwnerToken(name);
-  } catch {
+    assertBoundedOwner(name, "actor");
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
     return (
       `name ${JSON.stringify(name)} cannot be a mesh identity in user mode: the name becomes this ` +
-      `agent's actor token, and '-' is reserved as the principal name-form separator - use '_'`
+      `agent's actor token, and the exchange refuses it (${why})`
     );
   }
   return undefined;

@@ -11,7 +11,7 @@ import type { Block, Presentation, Section } from "@cotal-ai/workspace";
 
 const searchFlag = { name: "search", type: "string", value: "<query>", description: "show the sections that best match a query" } as const;
 const refreshFlag = { name: "refresh", type: "boolean", description: "also try the version-pinned copy of the page on docs.cotal.ai" } as const;
-export const docsFlags = [searchFlag, refreshFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+const docsFlags = [searchFlag, refreshFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 const usage = (message: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message);
 

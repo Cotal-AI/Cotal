@@ -43,11 +43,6 @@ import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal } from "@cotal-ai/sm
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const until = async (cond: () => boolean, timeoutMs = 10_000, stepMs = 50): Promise<boolean> => {
-  const deadline = Date.now() + timeoutMs;
-  while (!cond() && Date.now() < deadline) await wait(stepMs);
-  return cond();
-};
 const awaitExit = (proc: ChildProcess, timeoutMs = 4000): Promise<void> =>
   new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
@@ -348,6 +343,55 @@ try {
       "CONTROL: the recovery above is a NEW bind, not the one start() already made",
       bindsBeforeRecovery >= 1 && successfulBinds >= 2,
       { successfulBinds, bindsBeforeRecovery },
+    );
+    await ep.stop();
+  }
+
+  // ══ B2. A REQUEST-SAFE REFRESH of an endpoint dropped at expiry, once its source holds a fresh credential.
+  // No request rides a connection that is being re-established, so the refresh redials at once
+  // instead of refusing and leaving the endpoint dark until its backoff ends. A manager adopting a
+  // renewed supervisor credential after the broker expired the old one relies on this.
+  {
+    const TTL = 4;
+    const id = newIdentity();
+    let reads = 0;
+    let allowRecovery = false;
+    const errors: string[] = [];
+    const source = () => {
+      reads++;
+      if (reads === 1) return mintCreds(auth, id, "supervisor", { expiresInSeconds: TTL });
+      if (!allowRecovery) throw new Error("fixture renewal source offline");
+      return mintCreds(auth, id, "supervisor", { expiresInSeconds: 60 });
+    };
+    const ep = new CotalEndpoint({
+      space, servers: SERVERS, creds: source,
+      card: { id: id.id, name: "supply-refresh-dropped", kind: "endpoint" },
+      consume: false, lifecycleUid: mintLifecycleUid(),
+      registerPresence: false, watchChannels: false, watchPresence: false,
+    });
+    ep.on("error", (e: Error) => errors.push(e.message));
+    // The reestablish loop warns about each refused redial synchronously before it arms its backoff,
+    // so when this resolves no redial is in flight and the refresh below cannot join a stale one.
+    let backoffEntered!: () => void;
+    const inBackoff = new Promise<void>((resolve) => { backoffEntered = resolve; });
+    ep.on("warning", (e: Error) => { if (/^this endpoint.s creds have expired/.test(e.message)) backoffEntered(); });
+    let successfulBinds = 0;
+    ep.on("connection", (s: { connected: boolean }) => { if (s.connected) successfulBinds++; });
+    await ep.start();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refusedRedial = await Promise.race([inBackoff.then(() => true), new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), (TTL + 10) * 1000); })]);
+    clearTimeout(timer);
+    check(
+      "CONTROL: the broker closed the expired connection and the endpoint is re-establishing",
+      refusedRedial && successfulBinds === 1 && errors.some((m) => /mesh connection closed/.test(m)),
+      { refusedRedial, successfulBinds, errors },
+    );
+    allowRecovery = true;
+    const refreshed = await ep.refreshCredsRequestSafe().then(() => "resolved", (e: Error) => e.message);
+    check(
+      "a request-safe refresh of an endpoint re-establishing after expiry redials now instead of refusing",
+      refreshed === "resolved" && successfulBinds === 2,
+      { refreshed, successfulBinds },
     );
     await ep.stop();
   }

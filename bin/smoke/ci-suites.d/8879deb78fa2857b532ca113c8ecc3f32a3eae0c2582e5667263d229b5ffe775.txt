@@ -1,0 +1,2 @@
+# Message bodies render as sanitized Markdown: raw HTML and unsafe links never survive, and links open safely.
+smoke:web-markdown

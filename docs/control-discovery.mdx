@@ -18,6 +18,20 @@ nonce, so the broker polices who is calling in the subject grammar itself. See
 [SPEC §13.2](../SPEC.md#132-grammar) for the grammar and [§13.5](../SPEC.md#135-verbs) for
 the verbs (`call`, `cast`, `watch`, `claim`, `scatter`).
 
+## Journal action coverage
+
+The core journal action rail is public API, but the shipped manager does not use it for
+`spawn` or `launch`. Both commands remain `ephemeral` and accept through `serveSpawnGoal`,
+not through journal submission, decision facts and goal binding. This is an implementation
+limit, not a claim that the journal action contract is available through those commands.
+
+The `ep-journal`, `ep-goaleff`, `ep-epname`, `ep-effects` and `goal-epoch-fence` smoke suites
+exercise the rail's functions and guards with their own inputs. Passing them does not prove
+that a shipped spawn or launch reaches those guards. The `journal-declaration` and
+`journal-model-b` suites separately pin the current command declarations and manager source
+wiring. A green result from those two suites confirms the existing path, not a journal cutover.
+Those source checks do not establish runtime reachability outside the files they inspect.
+
 ## Lifecycle identity
 
 A principal `owner.actor` is a reusable routing alias: a despawn frees the actor name and a
@@ -77,7 +91,8 @@ says so. See [SPEC §13.20](../SPEC.md#1320-registry).
 The manager's `vitals` command reports one invocation-time sample of host CPU count and load,
 available and total memory, and bounded local filesystem capacity. It is untargeted but resolves to
 one exact Manager instance. The separate `manager.vitals` capability is issued only when the actor
-scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. The response contains
+scope contains `machine-vitals`; `spawn`, `run` and `admin` do not imply it. On a static mesh a
+spawner cannot hand it on, because no agent mint carries it. The response contains
 mount points and aggregate byte counts, never device paths, remote endpoints, process data, command
 lines, environment values or persisted history. Unsupported measurement refuses without a partial
 or zero-valued fallback.
@@ -93,6 +108,27 @@ minted beside `spawn` in the operator instruments, which are the caller on a sta
 A runtime that delegates seats outside the manager's host cannot use a host cwd. Its manager
 refuses `resolve-cwd` with `failed-precondition` before any filesystem lookup, with the same
 execution-mode refusal for every path. It returns no host name or canonical path.
+
+## Host directory listing
+
+The manager's `list-dir` command uses `manager.spawn` and the same operator instruments and
+spawn-scoped, instance-pinned manager-caller views as `resolve-cwd`. It is not granted to standing
+agent spawn credentials or workflow placement credentials. A team member cannot obtain a view of
+another member's remote Manager merely by joining the space.
+
+Call `cotal invoke manager list-dir --on <instance> --args '{}'` to start at the Manager user's
+home. Input accepts an absolute `path`, `includeHidden` (default false) and `limit` (default 200,
+maximum 1000). The response contains canonical `path`, nullable `parent`, sorted child
+`directories` with `name` and `symlink`, `truncated`, and platform `roots`. A root has null parent.
+Windows roots list drives whose root can be inspected; unavailable drives are omitted. macOS roots include `/` and `/Volumes`; other hosts return `/`.
+No file names, contents, sizes or timestamps are returned. Hidden means a dot-prefixed name.
+
+A directory symlink is marked without returning its target. Explicitly navigating it returns the
+canonical target path, which the client must display. Broken and non-directory symlinks are omitted.
+A truncated listing contains the first names in locale-independent string order. The caller may
+still type an absolute path that was not listed. The command creates nothing. Missing, relative,
+non-directory and inaccessible paths refuse with `failed-precondition`. Delegated execution refuses
+before any host filesystem lookup, using the same execution-mode refusal as `resolve-cwd`.
 
 ## Spawn input resolution [#agent-selection-and-spawn-inputs]
 
@@ -129,6 +165,8 @@ issuer selection are unchanged. For self-stop, persona definition and direct spa
 seat keeps its class-only credential and accepts only its launching manager's attributed describe
 reply. These commands retain that bind on the class rail, so a sibling refuses before effects and
 the existing bounded split repair asks again. An absent launching manager never selects a replacement.
+Named seat inspection and attachment instead select the holding manager from live presence,
+under the [named read contract](control-lifecycle.mdx#inspecting-a-managed-name).
 The library's `describeService` accepts an optional `instanceId`;
 a pinned describe does not read or populate the endpoint-only class cache.
 `cotal spawn <persona> --detach --on <instance>` and `cotal_spawn(instance: "<instance>")`
@@ -141,11 +179,12 @@ the whole id, because both surfaces take nothing else.
 On a user-auth mesh, manager commands obtain a short-lived `manager-caller` view from the
 exchange. It authorizes one concrete manager instance using the caller's current actor grant and
 the host's registered service records. Discovery and invocation both use that instance's `inst`
-route. This view grants no registry scan or class queue. It adds no command capability except the
-three reads a launch needs: a view whose actor holds `spawn` may call `status`, `models` and
-`resolve-cwd` on that instance, subject to the execution-mode limit above. A `run`-only or no-scope view may not, and `ps` and `slots` stay with
-`admin`. A user mesh's co-located manager answers every owner's view, so its `status` counts only the
-caller's own seats, as `ps` would list them, unless the caller holds `admin`. An absent,
+route. This view grants no registry scan or class queue. It adds four reads for an actor that
+holds `spawn`. The view may call `status`, `models` and `resolve-cwd` on that instance, the reads a
+launch needs, subject to the execution-mode limit above. It may also call `ps` there to list the
+caller's own agents. A `run`-only or no-scope view may not, and `slots` stays with `admin`. A user
+mesh's co-located manager answers every owner's view, so its `status` counts and its `ps` lists only
+the caller's own seats, unless the caller holds `admin`. An absent,
 ambiguous or unauthorized selection refuses before the command is sent. An ambiguous one lists the
 owner's live manager instance ids and names the caller's way to pick one: `--on <instanceId>` for
 the CLI, `--manager-instance <instanceId>` for `cotal agent-bearer --manager-call`, and the
@@ -221,7 +260,9 @@ Cancellation before submission reports `not-executed`. Once submission starts, c
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
 refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
 The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
-before the wait deadline, and late read completions cannot settle an expired observation. Its read
+before the wait deadline, and late read completions cannot settle an expired observation. A result
+read that the broker reports had no responder did not run, so the follower reads again until the
+wait deadline. If no terminal arrives by then, the outcome stays unknown. Its read
 callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
 commands and control connections use that signal. An in-flight dial that finishes after cancellation
 closes without publishing. A local reply-subscription failure prevents publication and is observed
@@ -370,6 +411,11 @@ same freeze; only a definite no-commit abort-reopens and then runs the normal ta
 Once that reopen commits, the registration has completed: a governance slot it then fails to release
 is left behind the live generation, as on a normal registration, and does not fail the restart.
 It does not invent a TTL and it does not start a new freeze over a still-held one.
+
+A registration's own reopen fails in one of two ways, and its `unavailable` error says which. A
+reopen that lost its compare-and-set wrote nothing: a reconciler or newer barrier moved the gate. A
+reopen that threw, such as one whose acknowledgement was lost, has an unknown outcome and may have
+committed. Either way, re-read the gate before retrying.
 
 That residue has a second half, and it is the endpoint governance slot rather than the gate. Every
 registration takes the endpoint-wide slot before it publishes its spec and holds it until its own

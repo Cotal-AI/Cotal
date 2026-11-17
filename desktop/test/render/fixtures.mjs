@@ -1,0 +1,655 @@
+// Only the native boundary is simulated. The built renderer and styles are unchanged.
+import assert from "node:assert/strict";
+export function nativeStub(scenario) {
+  const callbacks = new Map(); let next = 0;
+  const state = { ...scenario, accountRequests: [] };
+  const ok = result => ({ v: 1, event: "result", ok: true, result });
+  const fail = (code, message, native) => ({ v: 1, event: "result", ok: false, error: { code, message, ...(native ? { native: { code: native } } : {}) } });
+  const manager = () => ({ space: "acme-team", state: "answering", instanceId: "machine-1", connectors: [{ agent: "claude", state: "available" }, { agent: "codex", state: "available" }] });
+  window.isTauri = true;
+  window.__renderState = state;
+  window.__emitTauri = (event, payload) => { const id = state.listeners?.[event]; if (id) callbacks.get(id)?.({ event, payload }); };
+  Object.defineProperty(navigator, "clipboard", { value: { writeText: async value => { if (state.copyFailure) throw new Error("Clipboard unavailable"); state.clipboard = value; } }, configurable: true });
+  window.__TAURI_INTERNALS__ = {
+    transformCallback(fn) { callbacks.set(++next, fn); return next; },
+    unregisterCallback(id) { callbacks.delete(id); },
+    async invoke(command, args) {
+      if (command === "app_update_check") {
+        state.appChecks = [...(state.appChecks ?? []), { manual: args?.manual === true }];
+        if (state.nativeCheckError) throw new Error("Native check unavailable");
+        if (state.nativeCheckPending) await new Promise(() => {});
+        return state.appUpdate ?? { phase: "unconfigured" };
+      }
+      if (command === "app_update_receipt") return state.appReceipt;
+      if (command === "app_update_apply") {
+        state.appApplies = [...(state.appApplies ?? []), { explicit: args.explicit }];
+        return state.appUpdate ?? { phase: "unconfigured" };
+      }
+      if (command === "app_update_download") { state.appDownloads = (state.appDownloads ?? 0) + 1; return state.appUpdate = { phase: "ready", version: state.appUpdate.version }; }
+      if (command === "first_paint") { state.paintReports = (state.paintReports ?? 0) + 1; return state.startedHidden ? false : true; }
+      if (command === "plugin:deep-link|get_current") return state.link ? [state.link] : null;
+      if (command === "plugin:event|listen") { state.listeners = state.listeners ?? {}; state.listeners[args.event] = args.handler; return 1; }
+      if (command === "desktop_presence") return { loginEnabled: true, relocationOffer: state.relocationOffer ?? false, pinOffer: state.pinOffer ?? false, pinMessage: state.pinMessage ?? "" };
+      if (command === "set_update_notice") { state.trayUpdate = args.version; return null; }
+      if (command === "open_browser" || command === "set_connection_state" || command.startsWith("plugin:")) return null;
+      if (command !== "daemon_request") throw new Error(`Unexpected native command: ${command}`);
+      const request = args.request; let index = 0;
+      const send = message => callbacks.get(args.onEvent.id)({ message, index: index++ });
+      if (request.op === "about") {
+        if (state.loading) await new Promise(() => {});
+        return ok({ version: "0.156.0", machine: "Davids-MacBook-Pro", platform: state.platform ?? "darwin", arch: state.arch ?? "arm64", memoryBytes: 36 * 1024 ** 3 });
+      }
+      if (request.op === "update-policy") { if (state.policyError) throw new Error("Preference unavailable"); if (request.auto !== undefined) state.autoUpdates = request.auto; return ok({ auto: state.autoUpdates !== false }); }
+      if (request.op === "update-release") return ok({ assets: state.missingAsset ? [] : [{ name: "Cotal_0.161.0_aarch64.dmg", url: "https://github.com/Cotal-AI/Cotal/releases/download/v0.161.0/Cotal_0.161.0_aarch64.dmg" }] });
+      if (request.op === "update-settings") { state.update = { ...state.update, ...(request.auto !== undefined ? { automatic: request.auto } : {}), ...(request.notify !== undefined ? { notify: request.notify } : {}) }; return ok({ update: state.update }); }
+      if (request.op === "update-check") return ok({ update: state.update });
+      if (request.op === "install") {
+        if (state.installWait) await new Promise(() => {});
+        if (state.installNotAnswering) return { v: 1, event: "result", ok: false, error: { code: "DEPENDENCY_UNAVAILABLE", message: "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused", remedy: "choose Check status.", native: { code: "NOT_ANSWERING" } } };
+        state.installed = true; return ok({ installed: true });
+      }
+      if (!state.installed) return fail("NOT_RUNNING", "The daemon is not running. Install its background service first.");
+      if (request.op === "status" && state.offline) return fail(state.offlineCode ?? "UNREACHABLE", "The background service did not answer. Check the host connection before retrying.");
+      if (request.op === "status") { state.statusRequests = (state.statusRequests ?? 0) + 1; return ok({ state: "ready", version: state.version ?? "0.156.0", managers: state.accountAction || state.readyAccountSpaces ? state.account.spaces.filter(row => row.desired).map(row => ({ ...manager(), space: row.space })) : state.connected ? [manager()] : [], ...(state.omitAgents ? {} : { agents: state.agents ?? [] }), ...(state.update ? { update: state.update } : {}), ...(state.account ? { account: state.account } : {}) }); }
+      if (request.op === "spaces" && state.catalogFailure) throw new Error("The space catalog could not be refreshed.");
+      if (request.op === "spaces") return ok({ signedInProviders: state.signedIn ? ["https://cloud.cotal.ai/api/auth"] : [], ...(state.otherProviderFailed && request.refresh ? { refresh: "partial", failedProviders: ["https://hack.cotal.ai/api/auth"] } : {}), spaces: state.catalogSpaces ?? (state.signedIn && !state.empty ? [{ space: "acme-team", label: "Acme team", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_acme", kind: state.personal ? "personal" : "team", role: "owner" }, ...(state.multiple ? [{ space: "research", label: "Research", mode: "user", idp: "https://cloud.cotal.ai/api/auth", catalogId: "sp_research", kind: "team", role: "member" }] : [])] : []) });
+      if (request.op === "name") { if (request.name !== undefined) state.computerName = request.name; return ok({ computer: state.computerName ?? "Davids-MacBook-Pro" }); }
+      if (request.op === "service-status") return ok({ state: state.accountAction && state.account.spaces.some(row => row.space === request.space && row.desired) ? "connected" : state.serviceState ?? "disconnected" });
+      if (request.op === "logout") {
+        state.accountRequests.push({ ...request });
+        if (state.accountAction === "signout-busy") await new Promise(() => {});
+        if (state.accountAction === "signout-refusal") return fail("LOGOUT_FAILED", "The provider refused to revoke this sign-in. Try again.");
+        state.signedIn = false;
+        return ok({ kind: "logout", localLoginCleared: true, serverRevoked: true, removedRegistrations: [], skippedServices: [] });
+      }
+      if (request.op === "service-disconnect") {
+        if (state.accountAction) {
+          state.accountRequests.push({ ...request });
+          if (state.accountAction === "disconnect-busy") await new Promise(() => {});
+          if (state.accountAction === "disconnect-refusal" || (state.accountAction === "disconnect-partial" && request.space === "research")) return fail("LIFECYCLE_BLOCKED", "Active sessions prevent disconnecting this space.", "SEATS_ACTIVE");
+          if (state.accountAction === "disconnect-unknown") return ok({ state: "unknown" });
+          const row = state.account.spaces.find(item => item.space === request.space);
+          if (row) { row.desired = false; row.observed = "removed on this computer"; }
+          state.connected = state.account.spaces.some(item => item.desired);
+        } else state.connected = false;
+        return ok({ state: "disconnected" });
+      }
+      if (request.op === "login") {
+        if (state.loginError) return fail(state.loginError, `Sign-in failed: ${state.loginError}.`);
+        send({ v: 1, event: "login-prompt", prompt: { verificationUriComplete: "https://cloud.cotal.ai/device?user_code=WDJB-MJHT", userCode: "WDJB-MJHT", expiresAt: new Date(Date.now() + (state.expired ? -1000 : 581000)).toISOString() } });
+        if (state.waiting || state.expired) await new Promise(() => {});
+        state.signedIn = true;
+        if (state.accountAfterLogin) state.account = state.accountAfterLogin;
+        return ok({ outcome: "signed-in" });
+      }
+      if (request.op === "setup") {
+        const progress = (step, outcome, detail, extra = {}) => send({ v: 1, event: "setup-progress", line: detail, progress: { step, outcome, detail, ...extra } });
+        progress("install", "ready", "service: background service answers");
+        progress("sign-in", "already-signed-in", "sign-in: already signed in");
+        progress("discover", "registered", "discover: space registered");
+        progress("manager", "running", "service: waiting for hosted Managers to confirm readiness and an idle restart fence");
+        if (state.connecting) {
+          window.__advanceSetup = () => progress("applications", "available", "connectors: available", { applications: ["Claude Code", "Codex"] });
+          await new Promise(() => {});
+        }
+        if (state.setupError) return fail("LIFECYCLE_BLOCKED", `Setup could not proceed: ${state.setupError}. Stop active sessions before retrying.`, state.setupError);
+        progress("applications", state.noApp ? "unavailable" : "available", "connectors: availability checked", { applications: ["Claude Code", "Codex", "Hermes", "Jcode", "OpenCode", "pi"] });
+        if (state.noApp) return fail("DEPENDENCY_UNAVAILABLE", "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again.", "NO_AVAILABLE_CONNECTOR");
+        state.connected = true; return ok({ launchReady: true, manager: manager() });
+      }
+      throw new Error(`Unexpected operation: ${request.op}`);
+    },
+  };
+}
+
+const link = "cotal://connect?idp=https%3A%2F%2Fcloud.cotal.ai%2Fapi%2Fauth&space=sp_acme";
+const signIn = async page => { await page.click("#login"); await page.locator("#connect-panel:not([hidden]), #space-panel:not([hidden]), #recovery-panel:not([hidden])").first().waitFor(); };
+const connect = async page => { await signIn(page); await page.click("#connect"); };
+const update = { channel: "desktop", current: "0.156.0", latest: "0.161.0", lastCheck: "2026-11-11T22:00:00Z", lastResult: "available", automatic: true, notify: true };
+const presenceOffer = id => async page => {
+  assert.equal(await page.locator(`#${id} .actions .button`).count(), 1);
+  assert.equal(await page.locator(`#${id} .actions .text-button`).count(), 1);
+  if (id === "pin-offer") assert.equal(await page.locator("#settings-startup #pin-offer").count(), 1);
+};
+const zoom = factor => async page => {
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ width: Math.round(viewport.width / factor), height: Math.round(viewport.height / factor) });
+};
+const reachable = async page => {
+  assert.ok(await page.locator("#settings-panel").evaluate(el => el.getBoundingClientRect().top >= 0), "card top stays reachable at zoom");
+  await page.locator("#release-notes").scrollIntoViewIfNeeded();
+  assert.ok(await page.locator("#release-notes").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "last Settings action stays reachable at zoom");
+  await page.locator("#settings-title").scrollIntoViewIfNeeded();
+};
+const auditAgents = [{ space: "acme-team", state: "read", agents: Array.from({ length: 12 }, (_, i) => ({ name: `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) }];
+const longAccountSpaces = Array.from({ length: 12 }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, label: `Organization / engineering / projects / ${index + 1} / ${"long-unbroken-label".repeat(5)}`, idp: "https://cloud.cotal.ai/api/auth", mode: "user", kind: "team", role: "owner" }));
+export const scenarios = [
+  { name: 'mac-apply-busy-reason', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0', reason: 'An app operation is still running. Finish it, then choose Restart to update.' } },
+    act: page => page.click('#open-settings'), expect: async page => { assert.match(await page.locator('#settings-update-summary').textContent(), /An app operation is still running/); } },
+  { name: 'mac-apply-visible', state: { installed: true, signedIn: true, connected: true, update, appUpdate: { phase: 'available', version: '0.161.0' } },
+    act: page => page.click('#open-settings'), expect: async page => {
+      assert.equal(await page.locator('#restart-update').isVisible(), true);
+      assert.match(await page.locator('#settings-update-summary').textContent(), /Restart to update/);
+      assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0);
+      await page.click('#restart-update');
+      assert.equal(await page.evaluate(() => window.__renderState.appApplies.at(-1).explicit), true);
+    } },
+
+  ...["available", "current", "failed", "notify-off", "pending", "native-error", "policy-error"].map(mode => ({
+    name: `installer-only-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, nativeCheckPending: mode === "pending", nativeCheckError: mode === "native-error", policyError: mode === "policy-error",
+      update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}), ...(mode === "failed" ? { latest: undefined, lastResult: "check failed" } : {}), notify: mode !== "notify-off" } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#update-preference-label").textContent(), "Notify me about updates");
+      assert.equal(await page.locator("#update-preference").isChecked(), mode !== "notify-off");
+      assert.equal(await page.locator("#update-preference").isEnabled(), true);
+      assert.equal(await page.locator("#settings-update-summary").textContent(), mode === "current" ? "You are up to date." : mode === "failed" ? "The update check failed. Try again." : "Version 0.161.0 is available.");
+      if (!["pending", "native-error", "policy-error"].includes(mode)) assert.match(await page.locator("#update-policy").textContent(), /This build updates through the installer/);
+      if (mode === "notify-off") {
+        await page.check("#update-preference");
+        await page.waitForFunction(() => window.__renderState.update.notify === true);
+        assert.equal(await page.evaluate(() => window.__renderState.autoUpdates), undefined, "notify does not write shared auto");
+      }
+      await page.click("#open-settings");
+      assert.equal(await page.locator("#update-banner").isVisible(), !["current", "failed"].includes(mode));
+    },
+  })),
+  ...["current", "failed"].map(phase => ({
+    name: `app-manual-check-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, autoUpdates: false, appUpdate: { phase, checkedAt: Date.now(), reason: "Network unavailable" }, update },
+    act: async page => { await page.click("#open-settings"); await page.click("#check-updates"); },
+    expect: async page => { assert.deepEqual(await page.evaluate(() => window.__renderState.appChecks), [{ manual: false }, { manual: true }]); },
+  })),
+
+  ...["checking", "current", "downloading", "ready", "preparing", "unconfigured", "failed", "off"].map(phase => ({
+    name: `app-updater-${phase}`,
+    state: { installed: true, signedIn: true, connected: true, autoUpdates: phase !== "off", update,
+      appUpdate: { phase: phase === "off" ? "available" : phase, ...(phase === "preparing" || phase === "unconfigured" || phase === "current" || phase === "checking" ? {} : { version: "0.161.0" }), downloaded: 25, total: 100, ...(phase === "failed" ? { reason: "Signature verification failed" } : {}) } },
+    act: page => page.click("#open-settings"),
+    expect: async page => {
+      assert.equal(await page.locator("#settings-update-summary").getAttribute("data-update-state"), phase === "unconfigured" ? null : phase === "off" ? "available" : phase);
+      assert.equal(await page.locator("#update-preference-label").textContent(), phase === "unconfigured" ? "Notify me about updates" : "Install updates automatically");
+      assert.equal(await page.locator("#update-preference").isChecked(), phase !== "off");
+      if (phase === "off") { assert.match(await page.locator("#settings-update-summary").textContent(), /Automatic updates are off/); assert.equal(await page.evaluate(() => window.__renderState.appDownloads ?? 0), 0); }
+      if (phase === "preparing") {
+        assert.equal(await page.locator("#settings-update-summary").textContent(), "The newest release is still being prepared.");
+        assert.equal(await page.evaluate(() => window.__renderState.trayUpdate ?? null), null);
+        assert.equal(await page.locator("#settings-download-row").isVisible(), false);
+      }
+      if (phase === "unconfigured") {
+        assert.equal(await page.locator("#settings-update-summary").textContent(), "Version 0.161.0 is available.");
+        assert.match(await page.locator("#update-policy").textContent(), /This build updates through the installer/);
+      }
+      if (phase === "failed") assert.match(await page.locator("#settings-update-summary").textContent(), /Signature verification failed/);
+    },
+  })),
+  { name: "connected-short-spaces-padding", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } } },
+  { name: "connected-short-spaces-6", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: 6 }, (_, i) => ({ space: `team-${i + 1}`, desired: true, observed: "connected" })) } }, expect: async page => {
+    const inline = await page.locator('[data-testid="connected-space-row"] > span').evaluateAll(copies => copies.every(copy => {
+      const boxes = [...copy.children].map(child => child.getBoundingClientRect());
+      return Math.max(...boxes.map(box => box.top)) < Math.min(...boxes.map(box => box.bottom));
+    }));
+    assert.ok(inline, "short names, pills and statuses share one line");
+    const heights = await page.locator('[data-testid="connected-space-row"]').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
+    assert.ok(heights.every(height => height < 70), "short names retain natural compact row heights");
+    const fit = await page.locator(".connected-spaces-scroll").evaluate(el => {
+      const rows = [...el.querySelectorAll("li")].map(row => row.getBoundingClientRect().height);
+      const height = el.getBoundingClientRect().height;
+      let used = 0;
+      let count = 0;
+      for (const row of rows) { if (used + row > height + 1) break; used += row; count++; }
+      const panel = el.closest("#connected-panel");
+      const card = el.closest(".connection-card");
+      const capacity = Math.min(220, panel.clientHeight + parseFloat(getComputedStyle(card).maxHeight) - card.getBoundingClientRect().height - (panel.scrollHeight - height));
+      return { height, used, count, next: rows[count] ?? 0, capacity };
+    });
+    if (page.viewportSize().width === 880) assert.ok(fit.count >= 4, "wide short-name list shows at least four whole rows");
+    assert.ok(Math.abs(fit.height - fit.used) <= 1, "list ends on a whole row");
+    assert.ok(fit.count === heights.length || fit.used + fit.next > fit.capacity - 1, "list shows every complete row that fits its budget");
+  } },
+  { name: "header-name-editor", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#edit-computer-name"), expect: async page => {
+    assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true, "finished header Edit opens the Settings row editor");
+  } },
+  { name: "account-manager-starting", state: { installed: true, signedIn: true, connected: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "research", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.locator('[data-space="research"] small').last().textContent(), "Starting", "a space without a ready Manager must not claim Connected");
+  } },
+
+  ...["edit", "invalid", "current"].map(mode => ({
+    name: `audit-settings-name-location-${mode}`, state: { installed: true, signedIn: true, connected: true, update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : {}) } },
+    act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); if (mode === "invalid") { await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+    expect: async page => {
+      assert.equal(await page.locator("#settings-panel #computer-name-form").isVisible(), true);
+      assert.equal(await page.locator("#computer-name-input").evaluate(el => el === document.activeElement), true);
+      if (mode === "invalid") assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+      await page.press("#computer-name-input", "Escape");
+      assert.equal(await page.locator("#computer-name-form").isVisible(), false);
+      assert.equal(await page.locator("#settings-name").evaluate(el => el === document.activeElement), true);
+      assert.equal(await page.locator("#settings-computer").isVisible(), true);
+    },
+  })),
+  ...[false, true].map(missingAsset => ({
+    name: `audit-settings-installer-outcome-${missingAsset ? "missing" : "available"}`, state: { installed: true, signedIn: true, connected: true, missingAsset, update },
+    act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); },
+    expect: async page => {
+      assert.equal(await page.locator("#settings-last-check").textContent(), missingAsset ? "No installer for this platform is on this release. Opening its release page." : "Install the downloaded version, then reopen Cotal.");
+      assert.equal(await page.locator("#settings-last-check").isVisible(), true);
+      assert.equal(await page.locator("#announcer").textContent(), await page.locator("#settings-last-check").textContent());
+    },
+  })),
+  ...["connected-label", "settings-label", "add-space", "approval-copy"].map(mode => ({
+    name: `audit-account-${mode}`,
+    state: mode === "approval-copy" ? { installed: true, signedIn: true, serviceState: "approval-pending" } : { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } },
+    act: async page => {
+      if (mode === "settings-label") await page.click("#open-settings");
+      if (mode === "add-space") await page.click("#another-space");
+    },
+    expect: async page => {
+      if (mode === "connected-label") assert.equal(await page.locator('[data-space="acme-team"] strong').textContent(), "Acme team");
+      if (mode === "settings-label") assert.match(await page.locator("#settings-spaces").textContent(), /Acme team/);
+      if (mode === "add-space") {
+        assert.equal(await page.locator("#space").isVisible(), true);
+        assert.deepEqual(await page.locator("#space option").evaluateAll(options => options.filter(option => option.value).map(option => ({ value: option.value, label: option.textContent }))), [{ value: "acme-team", label: "Acme team" }, { value: "research", label: "Research" }]);
+      }
+      if (mode === "approval-copy") {
+        assert.match(await page.locator("#connection-description").textContent(), /approve this computer/i);
+        assert.doesNotMatch(await page.locator("#connection-description").textContent(), /approve this machine/i);
+      }
+    },
+  })),
+  { name: "audit-settings-name-edit", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-name-invalid", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); await page.fill("#computer-name-input", ""); await page.press("#computer-name-input", "Enter"); } },
+  { name: "audit-settings-current-name-edit", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: "0.156.0" } }, act: async page => { await page.click("#open-settings"); await page.click("#settings-name"); } },
+  { name: "audit-settings-download-click", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-settings-missing-click", state: { installed: true, signedIn: true, connected: true, missingAsset: true, update }, act: async page => { await page.click("#open-settings"); await page.click("#settings-download"); } },
+  { name: "audit-account-several-spaces", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", label: "david@cotal.ai", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "starting" }] } } },
+  { name: "audit-move-offer", state: { installed: true, relocationOffer: true }, expect: presenceOffer("move-offer") },
+  { name: "audit-pin-offer", state: { installed: true, signedIn: true, connected: true, pinOffer: true }, act: page => page.click("#open-settings"), expect: presenceOffer("pin-offer") },
+  { name: "audit-pin-message", state: { installed: true, signedIn: true, connected: true, pinMessage: "Cotal is pinned to your taskbar." }, act: page => page.click("#open-settings"), expect: async page => assert.equal(await page.locator("#settings-startup > #pin-availability").count(), 1) },
+  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-connected`, state: { installed: true, signedIn: true, connected: true, agents: auditAgents }, act: zoom(factor), expect: async page => {
+    await page.locator("#dashboard").scrollIntoViewIfNeeded();
+    assert.ok(await page.locator("#dashboard").evaluate(el => { const box = el.getBoundingClientRect(); const card = el.closest(".connection-card").getBoundingClientRect(); return box.top >= card.top && box.bottom <= card.bottom && box.bottom <= innerHeight; }), "dashboard stays fully reachable inside the connection card");
+  } })),
+  ...[1.25, 1.5].map(factor => ({ name: `audit-zoom-${factor * 100}-settings`, state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#open-settings"); await zoom(factor)(page); }, expect: reachable })),
+
+  { name: "audit-update-banner-agents", state: { installed: true, signedIn: true, connected: true, update, agents: auditAgents } },
+  { name: "audit-account-spaces-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "connected" }] }, agents: auditAgents } },
+  { name: "audit-account-refusal-agents", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }, { space: "research", desired: true, observed: "refusal", lastRefusal: "No available connector in the hosted Manager environment. Install Claude Code or Codex, then check again." }] }, agents: auditAgents } },
+  { name: "audit-agents-unavailable", state: { installed: true, signedIn: true, connected: true, omitAgents: true }, expect: async page => { assert.equal(await page.locator("#applications-summary").isVisible(), false); } },
+
+  ...["signed-out", "pending", "unconnected"].map(mode => ({
+    name: `agents-hidden-${mode}`,
+    state: { installed: true, signedIn: mode !== "signed-out", account: { mode: mode === "signed-out" ? "sign-in-required" : "account", hostSupport: "supported", spaces: mode === "unconnected" ? [] : [{ space: "acme-team", desired: true, observed: mode === "pending" ? "approval-pending" : "starting" }] } },
+    expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), false); assert.equal(await page.locator("#applications-summary").isVisible(), false); },
+  })),
+  ...[12, 30].map(count => ({
+    name: `connected-long-spaces-${count}`,
+    state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: Array.from({ length: count }, (_, index) => ({ space: `team-${index + 1}-${"nested-project-path-".repeat(5)}`, desired: true, observed: "connected" })) } },
+    expect: async page => {
+      assert.equal(await page.locator("#connected-panel").isVisible(), true);
+      assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), count);
+      const visibleRows = await page.locator(".connected-spaces-scroll").evaluate(el => {
+        const bounds = el.getBoundingClientRect();
+        return [...el.querySelectorAll("li")].map(row => { const box = row.getBoundingClientRect(); return { full: box.top >= bounds.top && box.bottom <= bounds.bottom + 1, partial: box.top < bounds.bottom && box.bottom > bounds.bottom + 1 }; });
+      });
+      assert.ok(visibleRows.filter(row => row.full).length >= (page.viewportSize().width === 880 ? 2 : 1), "space list shows whole wrapped rows");
+      assert.equal(visibleRows.some(row => row.partial), false, "space list never slices a row");
+      assert.equal(await page.locator("#spaces-heading").textContent(), `Spaces using this computer (${count})`);
+      assert.ok(await page.locator("footer").evaluate(el => el.getBoundingClientRect().bottom <= innerHeight), "long-space footer stays inside the viewport");
+      assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
+      assert.deepEqual(await page.locator('[data-testid="connected-space-row"] > span > small:last-child').allTextContents(), Array(count).fill("Connected"));
+      assert.equal(await page.locator("#settings-panel").isVisible(), false);
+      const region = page.getByRole("region", { name: "Connected space list", exact: true });
+      assert.equal(await region.getAttribute("tabindex"), "0");
+      const lastRow = page.locator('[data-testid="connected-space-row"]').last();
+      await region.focus();
+      await region.press("End");
+      await page.waitForFunction(() => { const el = document.querySelector(".connected-spaces-scroll"); return el.scrollTop + el.clientHeight >= el.scrollHeight - 2; });
+      await lastRow.scrollIntoViewIfNeeded();
+      const lastButton = lastRow.locator("button").last();
+      await lastButton.focus();
+      assert.equal(await lastButton.evaluate(el => el === document.activeElement), true);
+      assert.equal(await lastButton.evaluate(el => { const row = el.getBoundingClientRect(); const bounds = el.closest(".connected-spaces-scroll").getBoundingClientRect(); return row.top >= bounds.top && row.bottom <= bounds.bottom; }), true);
+      await region.evaluate(el => { el.scrollTop = 0; });
+      assert.equal(await page.locator("#dashboard").isVisible(), true);
+      await page.click("#open-settings", { timeout: 5000 });
+      assert.equal(await page.locator("#settings-panel").isVisible(), true);
+      assert.equal(await page.locator("#open-settings").textContent(), "Back");
+      await page.click("#open-settings", { timeout: 5000 });
+      assert.equal(await page.locator("#connected-panel").isVisible(), true);
+    },
+  })),
+  ...["none", "one", "many", "unreadable", "long", "spaces"].map(mode => ({
+    name: `agents-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, agents: mode === "none" ? [] : mode === "unreadable" ? [{ space: "acme-team", state: "unreadable" }] :
+      ["acme-team", ...(mode === "spaces" ? ["research"] : [])].map(space => ({ space, state: "read", agents: Array.from({ length: mode === "many" ? 12 : 1 }, (_, i) => ({ name: mode === "long" ? "writer-with-a-very-long-agent-name-".repeat(3) : `writer-${i + 1}`, application: "codex", model: "gpt-model", cwd: mode === "long" ? `/projects/${"long-folder/".repeat(20)}work` : "/projects/cotal", startedAt: "2026-11-11T20:00:00.000Z", state: "running" })) })) },
+    expect: async page => { assert.equal(await page.locator("#running-agents").isVisible(), true); if (mode === "unreadable") assert.match(await page.locator("#agents-unavailable").textContent(), /Could not read/); else assert.equal(await page.locator(".agent-row").count(), mode === "none" ? 0 : mode === "many" ? 12 : mode === "spaces" ? 2 : 1); },
+  })),
+  { name: "account-disconnect-long-confirmation", state: { installed: true, signedIn: true, connected: true, accountAction: "disconnect-confirmation", catalogSpaces: longAccountSpaces, account: { idpUrl: "https://cloud.cotal.ai/api/auth", mode: "account", hostSupport: "supported", spaces: [{ space: longAccountSpaces[0].space, desired: true, observed: "connected" }] } }, act: async page => {
+    await page.click("#open-settings");
+    await page.evaluate(spaces => {
+      window.__renderState.catalogSpaces = spaces;
+      window.__renderState.account.spaces = spaces.map(({ space }) => ({ space, desired: true, observed: "connected" }));
+    }, longAccountSpaces);
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="connected-space-row"]').length === 12, null, { timeout: 6000 });
+    await page.click("#settings-disconnect");
+    await page.locator("#account-confirmation:not([hidden])").waitFor();
+  }, expect: async page => {
+    assert.equal(await page.locator("#account-confirm-spaces li").count(), 12);
+    assert.match(await page.locator("#account-confirm-spaces li").first().textContent(), /Organization \/ engineering \/ projects/);
+    const bounds = await page.locator("#account-confirm-spaces").evaluate(el => ({ height: el.clientHeight, scroll: el.scrollHeight, right: el.getBoundingClientRect().right, width: window.innerWidth }));
+    assert.ok(bounds.height <= 100);
+    assert.ok(bounds.scroll > bounds.height, "long lists remain scrollable");
+    assert.ok(bounds.right <= bounds.width, "pathlike names stay within the window");
+    assert.equal(await page.locator("#account-confirm").isVisible(), true);
+    assert.equal(await page.locator("#account-cancel").isVisible(), true);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
+  } },
+  { name: "account-signedout-connected", state: { installed: true, signedIn: false, connected: true, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "stale-account-owner", mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, act: page => page.click("#open-settings"), expect: async page => {
+    assert.equal(await page.locator("#settings-signout").isDisabled(), true);
+    assert.equal(await page.locator("#settings-disconnect").isEnabled(), true);
+    assert.equal(await page.evaluate(() => window.__renderState.connected), true);
+    assert.deepEqual(await page.evaluate(() => window.__renderState.accountRequests), []);
+  } },
+  ...["signout", "disconnect"].flatMap(action => (action === "signout" ? ["confirmation", "cancel", "success", "refusal", "outcome-back", "busy"] : ["confirmation", "cancel", "success", "refusal", "partial", "unknown", "busy"]).map(mode => ({
+    name: `account-${action}-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, multiple: true, accountAction: `${action}-${mode}`, account: { idpUrl: "https://cloud.cotal.ai/api/auth", sub: "account-owner", mode: "account", hostSupport: "supported", spaces: ["acme-team", "research"].map(space => ({ space, desired: true, observed: "connected" })) } },
+    act: async page => {
+      await page.click("#open-settings");
+      await page.click(`#settings-${action}`);
+      await page.locator("#account-confirmation:not([hidden])").waitFor();
+      if (mode === "confirmation") return;
+      if (mode === "cancel") await page.click("#account-cancel");
+      else {
+        await page.click("#account-confirm");
+        if (mode === "busy") await page.waitForFunction(() => window.__renderState.accountRequests.length === 1);
+        else {
+          await page.locator("#account-confirmation").waitFor({ state: "hidden" });
+          await page.locator("#account-outcome:not([hidden])").waitFor();
+          if (mode === "outcome-back") await page.click("#account-outcome-back");
+        }
+      }
+    },
+    expect: async page => {
+      const snapshot = await page.evaluate(() => ({ requests: window.__renderState.accountRequests, connected: window.__renderState.connected, signedIn: window.__renderState.signedIn, spaces: window.__renderState.account.spaces }));
+      if (mode === "confirmation" || mode === "cancel") {
+        assert.deepEqual(snapshot.requests, []);
+        assert.equal(snapshot.connected, true);
+        assert.equal(snapshot.signedIn, true);
+        assert.equal(await page.locator("#account-confirmation").isVisible(), mode === "confirmation");
+        if (mode === "confirmation") {
+          assert.equal(await page.locator("#account-confirm-title").textContent(), action === "signout" ? "Sign out of Cotal Cloud, cloud.cotal.ai?" : "Disconnect this computer from Cotal Cloud, cloud.cotal.ai?");
+          assert.equal(await page.locator("#account-confirm-copy").textContent(), action === "signout" ? "Existing connections keep running. Disconnect this computer first if you also want to stop its connections. Only this provider will be signed out." : "Stop the following spaces one by one. This does not remove this computer from the dashboard, uninstall the service, revoke provider authority or erase retained renewal records. Disconnect before signing out if you want both.");
+          assert.equal(await page.locator("#account-cancel").evaluate(el => el === document.activeElement), true);
+          if (action === "disconnect") {
+            assert.match(await page.locator("#account-confirm-spaces").textContent(), /acme-team/);
+            assert.match(await page.locator("#account-confirm-spaces").textContent(), /research/);
+          }
+        } else assert.equal(await page.locator(`#settings-${action}`).evaluate(el => el === document.activeElement), true);
+        return;
+      }
+      assert.equal(snapshot.requests[0].op, action === "signout" ? "logout" : "service-disconnect");
+      if (mode === "busy") {
+        assert.equal(snapshot.requests.length, 1);
+        assert.equal(snapshot.connected, true);
+        assert.equal(await page.locator("#account-confirm").isDisabled(), true);
+        assert.equal(await page.locator("#account-cancel").isDisabled(), true);
+        return;
+      }
+      if (mode === "outcome-back") {
+        assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), false);
+        for (const id of ["settings-name", "check-updates", "update-preference", "autostart", "settings-signout", "settings-disconnect", "settings-versions", "release-notes"]) {
+          const geometry = await page.locator(`#${id}`).evaluate(el => { const rect = el.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom, right: rect.right, height: window.innerHeight, width: window.innerWidth }; });
+          assert.equal(await page.locator(`#${id}`).isVisible(), true);
+          assert.ok(geometry.top >= 0 && geometry.bottom <= geometry.height && geometry.right <= geometry.width, `${id} fully restored within viewport`);
+        }
+        assert.equal(await page.locator("#settings-title").evaluate(el => el === document.activeElement), true);
+        assert.equal(await page.locator("#account-outcome-back").isVisible(), false);
+        assert.equal(snapshot.connected, true);
+        return;
+      }
+      assert.equal(await page.locator("#settings-panel").evaluate(el => el.classList.contains("account-outcome-view")), true);
+      assert.equal(await page.locator("#account-outcome-back").isVisible(), true);
+      assert.equal(await page.locator("#settings-versions").isVisible(), false);
+      const outcome = (await page.locator("#account-outcome").textContent()).trim();
+      assert.ok(outcome, "completed actions always describe their outcome");
+      if (action === "signout") {
+        assert.equal(snapshot.requests.length, 1);
+        assert.equal(snapshot.requests[0].idp, "https://cloud.cotal.ai/api/auth");
+        assert.equal(snapshot.connected, true, "signing out does not disconnect the computer");
+        assert.equal(snapshot.signedIn, mode !== "success");
+        assert.equal(outcome, mode === "success" ? "Signed out of Cotal Cloud, cloud.cotal.ai. Existing connections keep running." : "Sign-out: The provider refused to revoke this sign-in. Try again.");
+      } else {
+        assert.deepEqual(snapshot.requests.map(request => request.space), ["acme-team", "research"]);
+        assert.match(outcome, /Acme team/);
+        assert.match(outcome, /Research/);
+        assert.equal(snapshot.connected, mode !== "success");
+        assert.deepEqual(snapshot.spaces.map(space => space.desired), mode === "success" ? [false, false] : mode === "partial" ? [false, true] : [true, true]);
+        assert.equal(snapshot.signedIn, true, "disconnecting does not sign out");
+        if (mode === "refusal" || mode === "partial") {
+          for (const space of mode === "partial" ? ["Research"] : ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: Active sessions prevent disconnecting this space.`));
+          if (mode === "partial") assert.ok(outcome.includes("Acme team: disconnected, confirmed by refresh."));
+        }
+        if (mode === "success") for (const space of ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: disconnected, confirmed by refresh.`));
+        if (mode === "unknown") for (const space of ["Acme team", "Research"]) assert.ok(outcome.includes(`${space}: Disconnect not confirmed (unknown).`));
+      }
+    },
+  }))),
+  ...["available", "missing", "current", "failed", "off", "linux", "windows", "toggle-off", "toggle-on", "check"].map(mode => ({
+    name: `settings-${mode}`,
+    state: { installed: true, signedIn: true, connected: true, missingAsset: mode === "missing", platform: mode === "linux" ? "linux" : mode === "windows" ? "win32" : "darwin", update: { ...update, ...(mode === "current" ? { latest: "0.156.0" } : mode === "failed" ? { latest: undefined, lastResult: "check failed" } : mode === "off" || mode === "toggle-on" ? { notify: false } : {}) } },
+    act: async page => { await page.click("#open-settings"); if (mode.startsWith("toggle-")) await page.click("#update-preference"); if (mode === "check") await page.click("#check-updates"); },
+    expect: async page => { assert.equal(await page.locator("#settings-panel").isVisible(), true); assert.equal(await page.locator("#autostart").isVisible(), true); },
+  })),
+  { name: "update-available", state: { installed: true, signedIn: true, connected: true, update }, expect: async page => { assert.match(await page.locator("#update-banner").textContent(), /0.161.0/); } },
+  { name: "update-later", state: { installed: true, signedIn: true, connected: true, update }, act: async page => { await page.click("#update-later"); }, expect: async page => { assert.equal(await page.locator("#update-banner").isVisible(), false); } },
+  { name: "update-onboarding", state: { installed: true, update }, expect: async page => { assert.equal(await page.locator("#update-banner").isVisible(), false); } },
+  ...["view", "edit", "save", "cancel", "invalid", "long", "settings"].map(mode => ({
+    name: `computer-name-${mode}`, state: { installed: true, signedIn: mode === "settings", connected: mode === "settings" },
+    act: async page => {
+      if (mode !== "settings") await signIn(page);
+      if (mode === "view") return;
+      await page.click("#edit-computer-name");
+      if (mode === "edit" || mode === "settings") return;
+      await page.fill("#computer-name-input", mode === "invalid" ? "" : mode === "long" ? "Very long computer name ".repeat(5) : "My named computer");
+      if (mode === "cancel") await page.press("#computer-name-input", "Escape");
+      else await page.press("#computer-name-input", "Enter");
+    },
+    expect: async page => {
+      if (mode === "invalid") {
+        assert.match(await page.locator("#computer-name-error").textContent(), /1 to 128/);
+        assert.ok(await page.locator(".machine").evaluate(el => parseFloat(getComputedStyle(el).borderRadius) < 100), "Connect editor must not be a pill");
+      }
+      if (mode === "save") assert.equal(await page.locator("#machine-name").textContent(), "My named computer");
+      if (mode === "cancel") assert.equal(await page.locator("#machine-name").textContent(), "Davids-MacBook-Pro");
+      if (mode === "long") assert.equal(await page.locator("#machine-name").getAttribute("title"), ("Very long computer name ".repeat(5)).trim());
+    },
+  })),
+  { name: "other-provider-notice", state: { installed: true, otherProviderFailed: true }, act: signIn, expect: async page => {
+    assert.equal(await page.locator("#recovery-panel").isVisible(), false);
+    assert.match(await page.locator("#notice").textContent(), /Spaces from hack\.cotal\.ai could not be refreshed/);
+  } },
+  { name: "account-live-list", state: { installed: true, signedIn: true, connected: true, multiple: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    assert.equal(await page.locator("#another-space").textContent(), "Add to another space");
+    await page.evaluate(() => window.__renderState.account.spaces.push({ space: "research", desired: true, observed: "connecting" }));
+    await page.locator('[data-space="research"]').waitFor({ timeout: 6000 });
+    await page.evaluate(() => window.__renderState.account.spaces.pop());
+    await page.locator('[data-space="research"]').waitFor({ state: "detached", timeout: 6000 });
+  } },
+  { name: "account-first-sign-in", state: { accountAfterLogin: { mode: "account", hostSupport: "supported", spaces: [] } }, act: async page => { await page.click("#login"); await page.locator("#connected-panel:not([hidden])").waitFor(); }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
+    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+  } },
+  { name: "account-ready", state: { installed: true, signedIn: true, account: { mode: "account", hostSupport: "supported", spaces: [] } }, expect: async page => {
+    assert.equal(await page.locator("#another-space").textContent(), "Add a space");
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected to your account");
+    assert.equal(await page.locator("#tray-label").textContent(), "Ready");
+    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "check");
+    assert.equal(await page.locator("#dashboard").isVisible(), true);
+    assert.equal(await page.locator("#dashboard-spaces-note").isVisible(), false);
+    assert.equal(await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor), "rgb(95, 168, 102)");
+  } },
+  ...["connected", "starting", "approval-pending", "removed on this computer", "refusal", "sign-in-required"].map(observed => ({
+    name: `account-${observed.replaceAll(" ", "-")}`,
+    state: { installed: true, signedIn: true, connected: observed === "connected", account: { mode: observed === "sign-in-required" ? observed : "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed, ...(observed === "refusal" ? { lastRefusal: "Ask the space owner to approve this computer." } : {}) }] } },
+    expect: async page => {
+      assert.equal(await page.locator("#connected-panel").isVisible(), true);
+      assert.equal(await page.locator("#sign-in-again").isVisible(), observed === "sign-in-required");
+      const pill = observed === "connected" ? "Connected" : observed === "sign-in-required" ? "Sign in required" : observed === "removed on this computer" ? "Ready" : observed === "refusal" ? "Needs attention" : "Starting";
+      assert.equal(await page.locator("#tray-label").textContent(), pill);
+      const dot = await page.locator("#tray-indicator").evaluate(el => getComputedStyle(el).backgroundColor);
+      assert.equal(dot, ["sign-in-required", "refusal"].includes(observed) ? "rgb(224, 98, 90)" : observed === "connected" || observed === "removed on this computer" ? "rgb(95, 168, 102)" : "rgb(229, 185, 78)");
+      if (observed === "refusal") {
+        assert.equal(await page.locator("#connection-title").textContent(), "Connection needs attention");
+        assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "warning");
+        assert.equal(await page.locator("#connection-icon").getAttribute("data-tone"), "error");
+      }
+      if (observed === "sign-in-required") {
+        assert.equal(await page.locator("#connection-title").textContent(), "Sign in to keep this computer connected");
+        assert.equal(await page.locator("#sign-in-again").textContent(), "Sign in");
+        assert.equal(await page.locator("#sign-in-again").evaluate(el => el.classList.contains("primary")), true);
+      }
+    },
+  })),
+  { name: "loading", state: { loading: true }, expect: async page => {
+    assert.equal(await page.locator("#tray-label").textContent(), "Checking connection");
+    assert.equal(await page.locator("#loading-icon .icon-spinner").count(), 1);
+    assert.ok(await page.locator(".connection-card").evaluate(el => el.getBoundingClientRect().height) < 100);
+  } },
+  { name: "welcome", state: {} },
+  { name: "four-steps", state: {}, expect: async page => assert.equal(await page.locator('#journey li').count(), 4) },
+  { name: "link", state: { link } },
+  { name: "custom-host", state: {}, act: page => page.click("#other-host") },
+  { name: "waiting", state: { waiting: true }, act: page => page.click("#login") },
+  { name: "signed-in", state: {}, act: signIn },
+  { name: "spaces", state: { multiple: true }, act: signIn },
+  { name: "personal", state: { multiple: true, personal: true }, act: signIn },
+  { name: "add-space", state: { installed: true, signedIn: true, connected: true, multiple: true }, act: async page => { await page.click('#another-space'); await page.selectOption('#space', 'research'); } },
+  { name: "connecting", state: { connecting: true }, act: connect },
+  { name: "ready", state: {}, act: connect },
+  { name: "later-open", state: { installed: true, signedIn: true, connected: true }, expect: async page => assert.equal(await page.locator("#journey").isVisible(), false) },
+  { name: "no-application", state: { noApp: true }, act: connect },
+  { name: "sessions-active", state: { setupError: "SEATS_ACTIVE" }, act: connect },
+  { name: "expired", state: { expired: true }, act: page => page.click("#login"), expect: async page => assert.equal(await page.locator("#recover .icon-spinner").count(), 0) },
+  { name: "declined", state: { loginError: "DENIED" }, act: page => page.click("#login") },
+  { name: "offline", state: { installed: true, signedIn: true, offline: true } },
+  { name: "service-not-answering", state: { installNotAnswering: true }, act: signIn, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "The background service has not started");
+    assert.equal(await page.locator("#connection-description").textContent(), "Cotal asked the background service on this computer to start, and it has not answered. Details shows the reason it gave, if it gave one.");
+    assert.equal(await page.locator("#recover").textContent(), "Check status");
+    assert.equal(await page.locator("#refusal-detail").textContent(), "Cotal asked the background service on this computer to start, and it did not answer within 15 seconds. It refused to start: the native daemon source names another installation; startup refused\nNext: choose Check status.");
+  } },
+  { name: "no-spaces", state: { empty: true }, act: signIn },
+  { name: "connected-and-pending", state: { installed: true, signedIn: true, connected: true, multiple: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected");
+    assert.equal(await page.locator('[data-testid="connected-space-row"]').count(), 2);
+  } },
+  { name: "approval-pending", state: { installed: true, signedIn: true, serviceState: "approval-pending" }, expect: async page => {
+    assert.equal(await page.locator("#refresh").isVisible(), true);
+    assert.equal(await page.locator("#refresh").textContent(), "Check approval");
+    assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval");
+    assert.equal(await page.locator("#connection-icon").getAttribute("data-icon"), "clock");
+    assert.equal(await page.locator("#dashboard").isVisible(), false);
+    assert.equal(await page.locator("#applications-label").isVisible(), false);
+    assert.match(await page.locator("#connected-spaces").textContent(), /Waiting for owner approval/);
+    assert.equal(await page.locator(".connection-card.has-refusal").count(), 0);
+  } },
+  { name: "approval-refresh", state: { installed: true, signedIn: true, serviceState: "approval-pending" }, act: async page => {
+    await page.evaluate(() => { window.__renderState.connected = true; window.__renderState.serviceState = "connected"; });
+    await page.click("#refresh");
+    await page.waitForFunction(() => document.querySelector("#connection-title").textContent === "This computer is connected");
+  }, expect: async page => { assert.equal(await page.locator("#refresh").isVisible(), false); assert.equal(await page.locator("#dashboard").isVisible(), true); } },
+  { name: "version-mismatch", state: { installed: true, signedIn: true, version: "old" } },
+  { name: "progress-done", state: { connecting: true }, prepare: connect, act: page => page.evaluate(() => window.__advanceSetup()) },
+  { name: "disconnected", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#connected-spaces button"), expect: async page => { assert.equal(await page.locator("#notice").isVisible(), false); assert.equal(await page.locator("#spaces-heading").isVisible(), false); assert.equal(await page.locator(".connected-spaces-scroll").isVisible(), false); assert.equal(await page.locator("#another-space").textContent(), "Add a space"); } },
+  { name: "notice", state: { waiting: true, copyFailure: true }, prepare: page => page.click("#login"), act: page => page.click("#copy-code") },
+  { name: "details-open", state: { noApp: true }, prepare: connect, act: page => page.locator("#details summary").click() },
+  { name: "audit-service-install", state: { installWait: true }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Preparing your sign-in"); assert.match(await page.locator("#notice").textContent(), /Preparing the background service/); } },
+  { name: "audit-credential-expired", state: { loginError: "CREDENTIAL_EXPIRED" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Sign in again"); assert.equal(await page.locator("#recover").textContent(), "Sign in again"); } },
+  { name: "audit-unreachable", state: { loginError: "UNREACHABLE" }, act: page => page.click("#login"), expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "We cannot reach your connection"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
+  { name: "audit-approval-refusal", state: { installed: true, offline: true, offlineCode: "APPROVAL_PENDING" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "Waiting for owner approval"); assert.equal(await page.locator("#recover").textContent(), "Check approval"); } },
+  { name: "audit-default-refusal", state: { installed: true, offline: true, offlineCode: "OPERATION_FAILED" }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This operation could not finish"); assert.equal(await page.locator("#recover").textContent(), "Try again"); } },
+  { name: "audit-close-explained", state: { installed: true, signedIn: true, connected: true }, act: page => page.evaluate(() => window.__emitTauri("desktop-close-explained", "Cotal stays in your system tray. Open it from the tray or menu bar. Quit app leaves the background service running.")), expect: async page => { assert.match(await page.locator("#notice").textContent(), /Cotal stays in your system tray/); } },
+  { name: "audit-settings-npm-linux", state: { installed: true, signedIn: true, connected: true, platform: "linux", update: { ...update, channel: "npm", latest: "0.156.0", lastResult: "up to date" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#update-preference-label").textContent(), "Install updates automatically"); } },
+  { name: "audit-settings-unchecked", state: { installed: true, signedIn: true, connected: true, update: { ...update, latest: undefined, lastCheck: undefined, lastResult: "none" } }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-last-check").textContent(), "Not checked yet"); } },
+  { name: "audit-settings-unavailable", state: { installed: true, signedIn: true, connected: true }, act: page => page.click("#open-settings"), expect: async page => { assert.equal(await page.locator("#settings-update-summary").textContent(), "Update information is unavailable."); } },
+  { name: "audit-app-found-later", state: { noApp: true }, prepare: connect, act: async page => { await page.evaluate(() => { window.__renderState.noApp = false; }); await page.click("#recover"); }, expect: async page => { assert.equal(await page.locator("#connection-title").textContent(), "This computer is connected"); assert.equal(await page.locator("#recovery-panel").isVisible(), false); } },
+  { name: "hidden-status-cadence", state: { installed: true, signedIn: true, connected: true, readyAccountSpaces: true, account: { mode: "account", hostSupport: "supported", spaces: [{ space: "acme-team", desired: true, observed: "connected" }] } }, expect: async page => {
+    await page.evaluate(() => window.__emitTauri("desktop-hidden", null));
+    const afterHide = await page.evaluate(() => window.__renderState.statusRequests);
+    await page.waitForTimeout(1500);
+    assert.equal(await page.evaluate(() => window.__renderState.statusRequests), afterHide, "hidden window does not run the 1 s status poll");
+    await page.evaluate(() => window.__emitTauri("desktop-tray-open", null));
+    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterHide);
+    const afterTray = await page.evaluate(() => window.__renderState.statusRequests);
+    await page.evaluate(() => window.__emitTauri("desktop-shown", null));
+    await page.waitForFunction(prev => window.__renderState.statusRequests === prev + 1, afterTray);
+  } },
+];
+
+// Audit regressions use the same real UI entry points as the original fixtures.
+const auditCase = (source, name, expect) => {
+  const original = scenarios.find(scenario => scenario.name === source);
+  assert.ok(original, `audit fixture exists: ${source}`);
+  scenarios.push({ ...original, name, expect: async page => {
+    if (original.expect) await original.expect(page);
+    await expect(page);
+  } });
+};
+for (const source of ["settings-available", "settings-missing", "audit-pin-offer", "audit-pin-message"]) {
+  auditCase(source, `audit-e1-${source}`, async page => {
+    const geometry = await page.locator("#settings-panel").evaluate(card => {
+      const about = document.querySelector("#settings-versions").closest(".settings-row");
+      const box = card.getBoundingClientRect();
+      const row = about.getBoundingClientRect();
+      return { scroll: card.scrollHeight - card.clientHeight, scrollTop: card.scrollTop,
+        contained: row.top >= box.top + card.clientTop && row.bottom <= box.top + card.clientTop + card.clientHeight };
+    });
+    console.log(`E1 ${source}: ${JSON.stringify(geometry)}`);
+    assert.deepEqual(geometry, { scroll: 0, scrollTop: 0, contained: true }, "E1: About is fully inside Settings without internal scrolling at 100% zoom");
+  });
+}
+auditCase("audit-pin-message", "audit-e4-pin-message-order", async page => {
+  const renders = [];
+  for (let render = 0; render < 3; render++) {
+    renders.push(await page.locator("#settings-startup").evaluate(startup => {
+      const preferences = startup.querySelector("#preferences");
+      const message = startup.querySelector("#pin-availability");
+      return !!preferences && !!message && !!(preferences.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)
+        && preferences.getBoundingClientRect().bottom <= message.getBoundingClientRect().top;
+    }));
+    await page.click("#check-updates");
+    await page.waitForFunction(() => !document.querySelector("#check-updates").disabled);
+  }
+  console.log(`E4 startup order: ${JSON.stringify(renders)}`);
+  assert.deepEqual(renders, [true, true, true], "E4: Open at login precedes the pin message across repeated Settings renders");
+});
+auditCase("audit-move-offer", "audit-e4-move-offer-spacing", async page => {
+  const spacing = await page.locator("#move-offer").evaluate(offer => {
+    const style = getComputedStyle(offer);
+    const explanation = document.querySelector("#service-explanation").getBoundingClientRect();
+    return { margin: parseFloat(style.marginTop), divider: parseFloat(style.borderTopWidth),
+      gap: offer.getBoundingClientRect().top - explanation.bottom };
+  });
+  assert.ok(spacing.margin >= 16 && spacing.divider >= 2 && spacing.gap >= 16,
+    `E4: move offer has a top divider and breathing room: ${JSON.stringify(spacing)}`);
+});
+auditCase("account-signout-outcome-back", "audit-e5-post-signout-labels", async page => {
+  const copy = await page.locator("#settings-spaces").textContent();
+  console.log(`E5 post-signout Settings: ${copy}`);
+  assert.match(copy, /Acme team/, "E5: Settings retains Acme team after sign-out");
+  assert.match(copy, /Research/, "E5: Settings retains Research after sign-out");
+  assert.doesNotMatch(copy, /acme-team|research/, "E5: Settings does not fall back to raw slugs");
+  await page.click("#open-settings");
+  assert.deepEqual(await page.locator('[data-testid="connected-space-row"] strong').allTextContents(),
+    ["Acme team", "Research"], "E5: Connected view retains labels after sign-out");
+});
+for (const outcome of ["success", "partial", "refusal", "unknown"]) {
+  auditCase(`account-disconnect-${outcome}`, `audit-e5-disconnect-${outcome}-labels`, async page => {
+    const copy = await page.locator("#account-outcome").textContent();
+    console.log(`E5 disconnect ${outcome}: ${copy}`);
+    assert.match(copy, /Acme team:/, `E5: ${outcome} outcome names Acme team`);
+    assert.match(copy, /Research:/, `E5: ${outcome} outcome names Research`);
+    assert.doesNotMatch(copy, /(?:acme-team|research):/, `E5: ${outcome} outcome does not use raw slug labels`);
+  });
+}

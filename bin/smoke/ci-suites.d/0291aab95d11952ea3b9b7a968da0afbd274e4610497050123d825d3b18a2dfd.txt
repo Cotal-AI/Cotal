@@ -1,0 +1,2 @@
+# Load reports require successful child completion and retain failed output privately.
+smoke:callout-load-result

@@ -38,7 +38,7 @@ import {
   type ControllerStop,
   type MaintenanceErrorCode,
   type MaintenanceLock,
-  type RestoreListenerProof,
+  type ListenerProof,
 } from "../src/maintenance.js";
 
 let passed = 0;
@@ -194,7 +194,7 @@ console.log("committed manager relaunch row and active admission");
   const brokerLaunch = randomUUID();
   requestControllerMemberStart(p.lock, { role: "broker", instanceId: broker.instanceId, priorLaunchRequestId: broker.launchRequestId });
   settleControllerMemberStart(p.lock, "broker", brokerLaunch, "running");
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     kind: "controller", attemptId, serverName: `${attemptId}-n`, serverNonce: "n",
     processOwner: { pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id: `controller-broker-${brokerLaunch}` },
     serverEndpoint: server, target: bound.restore.target!,

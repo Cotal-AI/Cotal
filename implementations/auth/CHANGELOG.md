@@ -1,5 +1,1593 @@
 # @cotal-ai/auth
 
+## 0.166.1
+
+### Patch Changes
+
+- Updated dependencies [04338d1]
+- Updated dependencies [1eed7a4]
+- Updated dependencies [eaaafc4]
+- Updated dependencies [eaffa0a]
+- Updated dependencies [ef7e5c4]
+- Updated dependencies [d4eee72]
+- Updated dependencies [2708bfd]
+- Updated dependencies [3fb9ae2]
+  - @cotal-ai/workspace@0.166.1
+  - @cotal-ai/core@0.166.1
+  - @cotal-ai/lang@0.166.1
+
+## 0.166.0
+
+### Minor Changes
+
+- eb012be: Withdraw harness permission requests, released in 0.165.0. A Claude Code connector no longer holds a permission prompt for its owner to answer from another session, so Claude Code's own dialog is the only way to answer one. This removes the `perm` answer subject, the `cotal_permissions_<space>` bucket and its readers, the `@cotal-ai/core/permissions` export, the `request` field on a presence condition and `permissionRequests` on a Manager `status.connectors` row. The Manager cluster advances to revision 51. A space set up on 0.165 keeps the bucket, which this release neither reads nor writes.
+
+### Patch Changes
+
+- cb88e19: Keep auth implementation helpers private and remove an unused managed-actor revoke wrapper without changing the published package exports.
+- cc7a9af: Remove an unused auth smoke probe that still expected Mesh manifests to deploy through spawn --file, keeping the maintained user-mode teardown suite as coverage.
+- Updated dependencies [3bebc51]
+- Updated dependencies [126e7e5]
+- Updated dependencies [af1cfe4]
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [2947faa]
+- Updated dependencies [a1093f9]
+- Updated dependencies [3d2ef16]
+- Updated dependencies [2e6753b]
+- Updated dependencies [3b09cff]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/workspace@0.166.0
+  - @cotal-ai/core@0.166.0
+  - @cotal-ai/lang@0.166.0
+
+## 0.165.4
+
+### Patch Changes
+
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [5413861]
+- Updated dependencies [d5ecb99]
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/lang@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- Updated dependencies [3b68b85]
+  - @cotal-ai/lang@0.165.3
+  - @cotal-ai/core@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- Updated dependencies [f419ba9]
+- Updated dependencies [54b892f]
+- Updated dependencies [9edbf60]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/lang@0.165.2
+  - @cotal-ai/workspace@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/lang@0.165.1
+
+## 0.165.0
+
+### Minor Changes
+
+- 8325513: The owner of a Claude agent launched in a permission mode that asks can now approve or deny its permission prompts from another session, while Claude's own dialog keeps working.
+  
+  The first answer applies, and a denial's note reaches Claude as the reason. The connector holds each prompt on Claude's `PermissionRequest` hook and keeps one record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates and a restore recreates empty. An owner's interactive principal reads the records by binding its own lifecycle's `perm_` pull consumer, which a provisioner opens with `CotalEndpoint.openPermissionReader`; no principal can create a consumer on the bucket. Answers ride the new `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>` rail to the one process that holds the prompt, and only the owner's interactive principals may publish there, so no agent's credential can answer its own prompt or a sibling's. A Yes at the terminal settles only prompts of the scope that ran it, so a background subagent's prompt survives the main thread's turn. `CotalEndpoint` gains `openPermissionHolder`, `openPermissionReader`, `watchPermissions` and `answerPermission`, and the `approval` presence condition can name the held prompt in `request`. Every Manager `status.connectors` row now reports `permissionRequests`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. A static mint refuses to mark a credential interactive, and on an open mesh prompts stay with the terminal. See SPEC §8.2.
+
+### Patch Changes
+
+- 155234c: Pin `@nats-io/nkeys` to 2.0.3. Its 2.1.0 release no longer exposes the module the credential signer imports, so every fresh install and every update crashed at start with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [2896d81]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/lang@0.165.0
+
+## 0.164.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/lang@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/lang@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+  - @cotal-ai/lang@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/lang@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+  - @cotal-ai/lang@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/lang@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/lang@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/lang@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/lang@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- cf93466: Expose native connection custody for a standalone auth authority plane. Hosts can compare tracked server/connection IDs with the broker's account census and await terminal connection closure, without receiving credentials or raw connection objects from that inventory.
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/lang@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+  - @cotal-ai/lang@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- 1c18181: Keep remote Manager registrations protected while their registration executor is connected.
+  
+  Host reconciliation now requires complete liveness evidence that both the target's serving principal and its separate registration executor are gone before changing its credential family or reopening its gate. The executor identity comes from the target gate, including for cross-owner recovery. Abandoned registrations remain recoverable, and incomplete evidence refuses recovery.
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+  - @cotal-ai/lang@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- 9905ad2: Sign in through an issuer-authorized product discovery name.
+  
+  `cotal login <name>` and daemon sign-in or setup with `--idp <name>` resolve the provider's HTTPS root document and require the issuer's own root to endorse the name with `discoveryNames`. The roots must agree on issuer and audience. The typed root may use its own HTTPS auth origin or the issuer root's complete IdP URL, and other third-origin URLs are refused before approval. Login proofs retain the typed root's pins. Saved accounts and catalog origin checks keep using the resolved IdP URL. Cloud defaults and explicit account migration keep their current behavior.
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+  - @cotal-ai/lang@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- 250cff2: Expired migration approvals now name the migration command and the saved old auth URL to retry. Ordinary sign-in guidance is unchanged.
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/lang@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- d779cec: Move fresh Cloud sign-ins to cotal.cloud and support deliberate migration of existing account registrations with fresh approval.
+  
+  The old issuer must endorse the new native origin. Migration checks the same issuer, subject, audience and catalog spaces before replacing registrations. Existing service sessions and native authority records retain their saved endpoints, and upgrading alone leaves legacy registrations unchanged.
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+  - @cotal-ai/lang@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/lang@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+  - @cotal-ai/lang@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+  - @cotal-ai/lang@0.164.1
+
+## 0.164.0
+
+### Minor Changes
+
+- 471b464: Publish bounded tool inputs and results to permitted event readers and show them in interactive console details and dashboard Work turns.
+  
+  Payloads use a separate owner-scoped rail. Owners and space admins can read them by default, while another owner needs an explicit concrete event-channel grant. Cotal tool payloads are excluded. Use `--no-event-payloads` or a persona's `eventPayloads: false` to retain names and times without publishing inputs or results. The credential grant enforces withholding. The Manager cluster advances to revision 49 for the optional boolean `spawn.eventPayloads` input.
+  
+  Full backups retain payload frames and their owner-scoped subjects. Registry-only restores leave payloads empty. New backups use format v3, and restore continues to accept the exact v1 and v2 inventories. A space without the payload stream keeps publishing tool names and times and reports that payloads are unavailable until its broker setup is upgraded.
+
+### Patch Changes
+
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+  - @cotal-ai/lang@0.164.0
+
+## 0.163.5
+
+### Patch Changes
+
+- 23e3171: Manager service sign-ins now accept configuration paths protected by a proven user private group. Discovery reuses the protected-path ownership and ACL checks on pinned physical entries. When proof is unavailable, the skipped-service report offers a mode change or installation of the ACL utility without changing the service store.
+- aa9d3c8: Agents launched on a second computer use a numbered name when that computer cannot continue the requested name's retained transcript.
+  
+  The manager and connector share the acknowledged transcript startup check. Unreadable state or retained counts refuse the launch before provisioning, and pinned names are never silently renamed. Supervisor credentials can read CHAT subject counts for this check without reading message bodies. On older hosts that deny this metadata read, the manager logs the permission gap and leaves the agent's existing startup check in charge. Delegated runtimes are unchanged.
+- Updated dependencies [a1cef07]
+- Updated dependencies [23e3171]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+  - @cotal-ai/workspace@0.163.5
+  - @cotal-ai/lang@0.163.5
+
+## 0.163.4
+
+### Patch Changes
+
+- 9222e04: Reduce active broker resources for channel-less agents and derived membership. The membership feed is now Memory-backed with explicit privileged legacy conversion, while empty channel read ACLs omit the DLV durable and its bind grants without changing DM or File-backed lease state. Chat adapters pass the resolved read ACL, chat admission reads back only provisioned durables, and an unexpected denied bind still refuses startup.
+- 4f982d6: A sign-out whose discovered-space cleanup fails after the cached login was removed reports the login as cleared again. It had started to report that local cleanup was not confirmed. The daemon also declares the skipped Manager services list that its sign-out result already carries.
+- 6903567: Signing in refreshes matching Manager service sign-ins on the same machine with the same approval. Service stores are checked for ownership, provider and account before their private session is updated, and sign-in reports the services it refreshed. Services with local overrides or unprovable stores are skipped with recovery guidance without interrupting account sign-in or local logout.
+- d9a44bd: Skipped Manager service sign-ins now print the command that opens the service log containing its sign-in instructions.
+- Updated dependencies [9222e04]
+- Updated dependencies [6903567]
+- Updated dependencies [7ca7580]
+- Updated dependencies [a8775ea]
+  - @cotal-ai/core@0.163.4
+  - @cotal-ai/workspace@0.163.4
+  - @cotal-ai/lang@0.163.4
+
+## 0.163.3
+
+### Patch Changes
+
+- 0d10441: The issued-profile census models the anycast records bucket and treats a publish of one key as not covering that stream. The smoke runs in the CI suite.
+- Updated dependencies [6f00d97]
+- Updated dependencies [cc11f40]
+  - @cotal-ai/lang@0.163.3
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/workspace@0.163.3
+
+## 0.163.2
+
+### Patch Changes
+
+- 7c965d7: Hosted auth planes can persist callout account claim transitions and renew callout credentials without changing account or user identities. The auth store now validates claim authority continuity and atomically stores same-key callout and sentinel generations.
+- 4e65a2a: Fresh CLI guidance points to Cotal Cloud sign-in when no space is known.
+  Correct sign-in help and empty-space guidance, avoid connector installation during login, and point status at the shipped default launch without warnings about nonexistent folder personas. Keep multiline seed refusals readable while preserving permission checks and local broker alternatives.
+- 7c11c40: Refused or expired sign-ins now tell you how to sign in again, including when a space catalog refuses your session. Recovery uses `cotal login` for Cotal Cloud and names `--idp` only for another provider.
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+  - @cotal-ai/lang@0.163.2
+
+## 0.163.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.163.1
+  - @cotal-ai/lang@0.163.1
+  - @cotal-ai/workspace@0.163.1
+
+## 0.163.0
+
+### Minor Changes
+
+- 94985e3: Selections made with `cotal use` now apply in every folder, overriding the folder's running space.
+  
+  Automatically adopted selections preserve running-project targeting. Older selection pointers are treated as explicit until cleared. Native foreground spawn prints its target and uses this terminal without asking again, while detached launches still require a Manager choice when no default exists.
+
+### Patch Changes
+
+- ef6651a: Signing in as a different account at the same provider now deletes the previous account's discovered-space credential files along with their registrations.
+  This applies to `cotal login` and to the default daemon's `cotal daemon login` and `setup`. Only the sentinel file each discovered registration kept in its catalog folder is deleted, and never one reached through a symbolic link below the account's catalog folder; manual registrations and their files stay. A file that cannot be deleted is named and the run exits 4 (`OPERATION_PARTIAL`) after signing in; `daemon login` JSON lists such files in `credentialsKept`, and the desktop app keeps the new sign-in while showing the same files and cleanup. A separate `--daemon-home` still never changes the shared registry or its credentials.
+- f8801fc: Sign in to Cotal Cloud from the terminal without knowing its provider URL.
+  
+  Default fresh sign-in to Cotal Cloud, add the same --cloud shorthand to account and daemon sign-in, select a personal or sole space after approval, and open approval in a browser when a desktop terminal supports it. Keep custom providers and printed approval instructions available.
+- d1b321c: Hosted manager reads refuse promptly when their authorization dependencies stall.
+  One five-second budget covers token acquisition, the authority request and response-body
+  completion. Pending HTTP work is aborted without cancelling other callers' token reads,
+  and no stale authorization is reused.
+- Updated dependencies [ef6651a]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/core@0.163.0
+  - @cotal-ai/lang@0.163.0
+
+## 0.162.0
+
+### Minor Changes
+
+- 1207cf2: Include workflow permission in the default scope of a full actor grant so it can delegate the shipped default persona. Explicit scopes and existing grants remain unchanged.
+
+### Patch Changes
+
+- Updated dependencies [21f573f]
+- Updated dependencies [03b2e19]
+- Updated dependencies [74e192c]
+- Updated dependencies [55a5cc8]
+  - @cotal-ai/core@0.162.0
+  - @cotal-ai/workspace@0.162.0
+  - @cotal-ai/lang@0.162.0
+
+## 0.161.1
+
+### Patch Changes
+
+- c732226: Keep hosted Manager registration cleanup recoverable after a local space is removed. Save the original authority and instance identity without copying credentials, retain pending and unknown outcomes across restarts and uninstall, and never automatically repeat an unconfirmed removal.
+- Updated dependencies [fa2aece]
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/workspace@0.161.1
+  - @cotal-ai/lang@0.161.1
+
+## 0.161.0
+
+### Patch Changes
+
+- b003fb5: Disconnecting or uninstalling the daemon now removes its local service credentials and identity records.
+  
+  Disconnect removes the selected connection's resume intent, private service store, registration request and identity after closing the responder and renewal source. Uninstall removes those records for every space under lifetime exclusion. Removal failures exit non-zero and keep the installation receipt for retry. These commands do not revoke remote authority, and their output names dashboard removal for that action.
+  
+  Sign-out output now explains that an already connected daemon continues on its own service proof and names local disconnect and dashboard removal as the ways to end it. Reconnecting after explicit disconnect requires a new registration and approval.
+- c24b2e8: Token reads that remain rate-limited now expose the provider's retry timing in a typed error.
+  `IdpRateLimitedError` carries HTTP status 429 and an optional `retryAfterSeconds` from the final
+  response, without adding retries or inventing a delay when neither retry header is usable.
+- a8373df: Computers report CPU, memory, home-volume storage and uptime through the daemon's account heartbeat and local status.
+- @cotal-ai/core@0.161.0
+  - @cotal-ai/lang@0.161.0
+  - @cotal-ai/workspace@0.161.0
+
+## 0.160.8
+
+### Patch Changes
+
+- 68a9ac5: Add confirmed sign-out and disconnect controls to desktop Settings.
+  
+  Sign-out shares the CLI's provider-session revocation and local sign-in cleanup while leaving existing computer connections running. Disconnect uses the existing per-space operations and reports incomplete outcomes without claiming credential erasure or remote revocation.
+- Updated dependencies [c7c509c]
+  - @cotal-ai/core@0.160.8
+  - @cotal-ai/workspace@0.160.8
+  - @cotal-ai/lang@0.160.8
+
+## 0.160.7
+
+### Patch Changes
+
+- 7551eb9: The daemon's account computer registration now lists the Managers the computer hosts, so the account host can show a Manager under the name you gave the computer.
+- Updated dependencies [c0f7b08]
+  - @cotal-ai/workspace@0.160.7
+  - @cotal-ai/core@0.160.7
+  - @cotal-ai/lang@0.160.7
+
+## 0.160.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.6
+  - @cotal-ai/lang@0.160.6
+  - @cotal-ai/workspace@0.160.6
+
+## 0.160.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.5
+  - @cotal-ai/lang@0.160.5
+  - @cotal-ai/workspace@0.160.5
+
+## 0.160.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.4
+  - @cotal-ai/lang@0.160.4
+  - @cotal-ai/workspace@0.160.4
+
+## 0.160.3
+
+### Patch Changes
+
+- 0cbf6e4: Connection teardown no longer hangs when the broker closes a connection during its drain.
+  Use the shared `drainAndClose` helper to end the drain wait on terminal closure or a short grace period, then close the connection.
+- Updated dependencies [0cbf6e4]
+- Updated dependencies [94313d0]
+  - @cotal-ai/core@0.160.3
+  - @cotal-ai/workspace@0.160.3
+  - @cotal-ai/lang@0.160.3
+
+## 0.160.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.2
+  - @cotal-ai/lang@0.160.2
+  - @cotal-ai/workspace@0.160.2
+
+## 0.160.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.1
+  - @cotal-ai/lang@0.160.1
+  - @cotal-ai/workspace@0.160.1
+
+## 0.160.0
+
+### Patch Changes
+
+- Updated dependencies [27135c6]
+- Updated dependencies [409fbe8]
+  - @cotal-ai/workspace@0.160.0
+  - @cotal-ai/core@0.160.0
+  - @cotal-ai/lang@0.160.0
+
+## 0.159.1
+
+### Patch Changes
+
+- Updated dependencies [c43b597]
+  - @cotal-ai/workspace@0.159.1
+  - @cotal-ai/core@0.159.1
+  - @cotal-ai/lang@0.159.1
+
+## 0.159.0
+
+### Patch Changes
+
+- Updated dependencies [b6abf6c]
+  - @cotal-ai/core@0.159.0
+  - @cotal-ai/workspace@0.159.0
+  - @cotal-ai/lang@0.159.0
+
+## 0.158.1
+
+### Patch Changes
+
+- Updated dependencies [884b619]
+  - @cotal-ai/core@0.158.1
+  - @cotal-ai/workspace@0.158.1
+  - @cotal-ai/lang@0.158.1
+
+## 0.158.0
+
+### Minor Changes
+
+- f7f5cc6: Remove departed Manager registrations in user-auth spaces through the governing auth service.
+  
+  The command verifies the account that registered the Manager and reuses the static path's broker-absence and revision guards. The embedded authority also provides a trusted space-operator door for hosted computer removal. Census hints name the command, and hosts without the operation refuse without borrowing a local signer.
+
+### Patch Changes
+
+- Updated dependencies [8962134]
+- Updated dependencies [f7f5cc6]
+  - @cotal-ai/workspace@0.158.0
+  - @cotal-ai/core@0.158.0
+  - @cotal-ai/lang@0.158.0
+
+## 0.157.9
+
+### Patch Changes
+
+- e3438f8: Auth service restarts no longer wait for the full history of connection receipts before opening HTTP listeners. Native receipt cleanup continues in bounded background batches, keeps service evidence, fences on corrupt evidence and stops between store operations when the service closes.
+- @cotal-ai/core@0.157.9
+  - @cotal-ai/lang@0.157.9
+  - @cotal-ai/workspace@0.157.9
+
+## 0.157.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.8
+  - @cotal-ai/lang@0.157.8
+  - @cotal-ai/workspace@0.157.8
+
+## 0.157.7
+
+### Patch Changes
+
+- 43a8973: Cotal update waits through short hosting outages before checking running Manager continuity.
+  Remote credential exchanges retry timeouts and HTTP 5xx responses within a shared two-minute budget, while HTTP 4xx denials still fail without retry. An exhausted wait names the host and asks you to run the update again without re-registering the space.
+- f93e549: Retrying a managed launch after an enrollment or bearer preflight failure no longer loses the agent name.
+  
+  Participant managers retain the unlaunched enrollment's token and request identity in their secret store and replay them for the same caller and persona authority. Each retry carries fresh observed-spawn authorization so an uncommitted attempt can recover after the earlier observation expires. Changed authority is refused with a recovery message instead of replacing the pending token.
+- 4246cca: Connect a headless computer to your account with one setup command, refresh its agent applications on rerun, and show recovery guidance when none are available.
+- @cotal-ai/core@0.157.7
+  - @cotal-ai/lang@0.157.7
+  - @cotal-ai/workspace@0.157.7
+
+## 0.157.6
+
+### Patch Changes
+
+- Updated dependencies [4ad09f7]
+- Updated dependencies [ca6f40b]
+  - @cotal-ai/core@0.157.6
+  - @cotal-ai/workspace@0.157.6
+  - @cotal-ai/lang@0.157.6
+
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- 53c4fea: Keep this computer's space connections synchronized with account dashboard choices.
+- Updated dependencies [a722365]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+  - @cotal-ai/lang@0.157.5
+
+## 0.157.4
+
+### Patch Changes
+
+- 560f0b3: Connect computers to signed-in accounts and reconcile dashboard space bindings through the machine daemon.
+- @cotal-ai/core@0.157.4
+  - @cotal-ai/lang@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
+## 0.157.3
+
+### Patch Changes
+
+- 8ad8b1b: Retry a rate-limited IdP token read once when its advertised delay fits the original timeout. Honor Retry-After and X-Retry-After without replaying Manager startup, authority preparation or any other operation that consumes the proof.
+- @cotal-ai/core@0.157.3
+  - @cotal-ai/lang@0.157.3
+  - @cotal-ai/workspace@0.157.3
+
+## 0.157.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.2
+  - @cotal-ai/lang@0.157.2
+  - @cotal-ai/workspace@0.157.2
+
+## 0.157.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.1
+  - @cotal-ai/lang@0.157.1
+  - @cotal-ai/workspace@0.157.1
+
+## 0.157.0
+
+### Patch Changes
+
+- Updated dependencies [df601ae]
+- Updated dependencies [3bd9391]
+  - @cotal-ai/core@0.157.0
+  - @cotal-ai/workspace@0.157.0
+  - @cotal-ai/lang@0.157.0
+
+## 0.156.0
+
+### Patch Changes
+
+- 80b1c38: Daemon disconnect and graceful shutdown cancel pending service HTTP requests instead of waiting for network timeouts.
+  
+  Cancellation reaches startup metadata, registration, credential and ready requests, including sign-in proof acquisition. Explicit disconnect still forgets resume intent, while shutdown preserves it.
+- ccc9d7e: Daemon service connections now report locally expired credentials instead of an unreachable space or broker.
+  The renewal source preserves a fixed expiry classification, and the daemon reports `LIFECYCLE_BLOCKED`
+  with native code `CREDENTIAL_EXPIRED` and a clock-check remedy. A newly returned sign-in proof
+  already expired by the local clock uses the same diagnosis before any space request. Expiry checks
+  and request replay stay unchanged.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [f167bea]
+- Updated dependencies [ccc9d7e]
+- Updated dependencies [b814b95]
+  - @cotal-ai/core@0.156.0
+  - @cotal-ai/workspace@0.156.0
+  - @cotal-ai/lang@0.156.0
+
+## 0.155.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.155.2
+  - @cotal-ai/lang@0.155.2
+  - @cotal-ai/workspace@0.155.2
+
+## 0.155.1
+
+### Patch Changes
+
+- 6fb9f63: Daemon sign-in now reports an initial device-authorization refusal without suggesting a session was saved.
+  It exits 2 with guidance to check the provider auth base URL and client ID. Failures that may occur after persistence keep their warning.
+- Updated dependencies [435b339]
+- Updated dependencies [c43bcd9]
+  - @cotal-ai/workspace@0.155.1
+  - @cotal-ai/core@0.155.1
+  - @cotal-ai/lang@0.155.1
+
+## 0.155.0
+
+### Patch Changes
+
+- a9260af: The machine daemon now reports a malformed IdP timeout setting before it starts.
+  It uses the same timeout validation as direct sign-in, so an invalid
+  `COTAL_IDP_TIMEOUT_MS` no longer appears as a provider refusal during daemon sign-in.
+  The setting accepts whole milliseconds from 1 to 2147483647, preventing fractional
+  values from failing inside a request and oversized delays from becoming a 1ms timeout.
+- 53dd69c: Daemon sign-in and space refresh now identify damaged local caches and explain how to recover.
+  Sign-in checks both caches before requesting device approval or saving a replacement session.
+  Malformed provider keys and session records receive the same cache recovery guidance.
+- Updated dependencies [fb752e3]
+- Updated dependencies [b0bfafa]
+- Updated dependencies [43cbaa0]
+  - @cotal-ai/core@0.155.0
+  - @cotal-ai/workspace@0.155.0
+  - @cotal-ai/lang@0.155.0
+
+## 0.154.0
+
+### Minor Changes
+
+- 488646a: Daemon setup makes a computer ready to launch agents from its space.
+  The machine daemon supervises a stock Manager per space, resumes it after restart, and reports
+  launch-readiness separately from machine-service approval. Setup re-probes the pinned Manager on
+  reruns and reports its identity at `manager.instanceId`, while top-level `instanceId` remains the
+  machine-service registration. Use `--no-manager` for connection-only setup; `--wait` requires it.
+  Hosted status includes observation time, exit and stop diagnostics, and bounded private rotating logs.
+  Setup restarts a mismatched daemon through its recorded native service. Installed npm replacement
+  verifies the new entry before releasing the daemon to its recorded supervisor. `cotal update`
+  checks hosted custody and waits for hosted Manager readiness to return. Self-update also reloads
+  a mismatched default daemon from the same installation when it hosts no Managers.
+  Setup and update never restart a service pinned to another installation. Setup reuses compatible
+  hosting operations or names both installations and the reinstall choices. Update reports the
+  other daemon's installation and version after reconciling its own installation.
+  Update reports and skips hosted records without a live child, and gives a disconnect remedy for
+  live custody that cannot be confirmed. Native restart failures retain their cause and name
+  `cotal daemon start`; a failed rollback no longer hides the primary failure.
+  Update keeps its ordinary continuity checks when Linux has no runtime directory for a daemon.
+  New native jobs mark their launch, and generation activation verifies that marker against the
+  recorded same-install source before exiting for the supervisor.
+  Setup reports unsupported machine-service registration with the same state as service status and
+  preserves the provider session check in its sign-in step.
+  Setup requires an available connector in the hosted Manager's fresh status before reporting launch-ready,
+  and allows time for daemon reconciliation before Manager readiness.
+  Setup validates usage without installing or reconciling connector packages in the invoking shell.
+  The daemon reconciles stock connectors in its own environment before hosting and prepares the
+  default persona in the Manager's own catalog. A bare npm upgrade prepares idle Managers and
+  restarts first. The new daemon refuses stale connectors with a repair command and backed-off
+  retry, so the old generation never reopens launches after a partial shared-store reconciliation.
+  Uninstall removes only per-space hosting records and works with the default daemon home's lock file.
+  Corrupt hosting records refuse only their space and setup repairs them after readiness succeeds.
+  Periodic liveness uses the parent IPC channel without auth callouts and never restarts for the
+  daemon's own authority outage. Fresh pinned status probes withdraw stale readiness. Child recovery
+  requires repeated IPC misses and an empty-seat preservation fence. Stopped status retains the
+  Manager identity and observation, and daemon sign-in refusals consistently name daemon login.
+  Pending upgrades count seats without fencing admission, back off activation attempts, and show the
+  installed version and waiting cause in status. Foreground daemons stay running after replacement.
+  Endpoint limit refusals stop parsing immediately and allow already accepted finite replies a bounded
+  flush before closing the connection.
+
+### Patch Changes
+
+- 71dbfad: Expose an optional non-secret store-failure classification in service renewal state. Report damaged daemon ready and renewal records as local-state conflicts rather than remote outages, preserving records and request IDs for deliberate recovery.
+- Updated dependencies [221cab0]
+- Updated dependencies [71dbfad]
+- Updated dependencies [ed8962e]
+- Updated dependencies [27c1356]
+- Updated dependencies [f579412]
+- Updated dependencies [05bb3d3]
+- Updated dependencies [f45357d]
+  - @cotal-ai/lang@0.154.0
+  - @cotal-ai/core@0.154.0
+  - @cotal-ai/workspace@0.154.0
+
+## 0.153.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/lang@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/lang@0.153.0
+
+## 0.152.0
+
+### Patch Changes
+
+- 1f4700a: Use the selected daemon home's sign-in for service registration and activation. Authority and renewal calls carry an explicit provider-session directory, so a separate daemon cannot borrow the default home's account; callers that omit the directory keep their existing behavior.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/lang@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [c854313]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/core@0.151.3
+  - @cotal-ai/lang@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+  - @cotal-ai/lang@0.151.2
+
+## 0.151.1
+
+### Patch Changes
+
+- f84069e: The docs site now has a TypeScript reference for every published package, generated from source. Each of these packages' entry files gains a `@module index` comment so the reference names the main import path `index` instead of leaving it blank. The published code is otherwise unchanged.
+- Updated dependencies [dd3d984]
+- Updated dependencies [f84069e]
+  - @cotal-ai/workspace@0.151.1
+  - @cotal-ai/core@0.151.1
+  - @cotal-ai/lang@0.151.1
+
+## 0.151.0
+
+### Patch Changes
+
+- c986cc1: Host permission-scoped endpoint discovery inside the auth service with explicit registry opt-in.
+  
+  The builtin auth-service preset accepts `--registry`; multi-space auth manifests enable it per entry. Embedders supply `registryService` through the same auth lifecycle. Signing authority stays in auth, reader and serving credentials stay separate, serving renewal uses the native issuance fence, and restart recovery retains the original instance and native gate operation. The registry is disabled by default and stops with its auth plane.
+- dacb515: `cotal login` no longer warns that chat refuses when you have saved a chat name, and a refused chat name now names the remedy the surface you use offers. When no handle is recorded and no name is saved, `cotal login` names both `--name` and `cotal config set name`; with a saved name it says chat sessions use it. `resolveChatName` now requires the caller's own `remedy` option, so `cotal chat` still offers `--name` and the terminal app offers Change your name (ctrl+p). A sign-in with no handle on record now also lists that remedy.
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6e67bbf]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+  - @cotal-ai/lang@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- Updated dependencies [8e2ba65]
+- Updated dependencies [8ff39d3]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/lang@0.150.0
+  - @cotal-ai/workspace@0.150.0
+
+## 0.149.0
+
+### Minor Changes
+
+- 2d497ad: `createManagerInstanceIdentity` and `createAuthInstanceIdentity` take a function that returns the identity, and call it only when the root has no record. A caller that already holds an identity passes it back from that function. The manager and the auth service no longer read the record themselves before asking for one.
+
+### Patch Changes
+
+- 7068f2b: Batch workflow inventory record reads so a few hundred completed runs do not require separate reads for every record. Preserve dotted endpoint names, program validation, deleted-record handling and unreadable revocation reporting. Only list credentials gain the records Direct Get permission; single-run reads and checkpoint answers keep their existing permissions.
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+  - @cotal-ai/lang@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/lang@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+  - @cotal-ai/lang@0.148.1
+  - @cotal-ai/workspace@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+  - @cotal-ai/workspace@0.148.0
+  - @cotal-ai/lang@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/lang@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+  - @cotal-ai/lang@0.147.7
+  - @cotal-ai/workspace@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/lang@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/lang@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- c733b63: Let remote manager boot scans skip cleared goal-index entries so a terminal goal does not prevent reconciliation of remaining live goals. Keep purged entries and malformed live rows as errors.
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+  - @cotal-ai/lang@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+  - @cotal-ai/lang@0.147.3
+  - @cotal-ai/workspace@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- 30d8538: An @mention at the end of a sentence, such as `thanks @ops-lead.`, now reaches the person it names. `mentionsIn` ends each name on a letter, digit or `_`, because a chat name cannot end in `.` or `-`, so `cotal send`, `cotal chat`, the console and the dashboard no longer store the mention as `ops-lead.`. When a chat session's default name breaks the chat name rule, such as an OS login of `John Doe`, the refusal prints on its own and names `--name` and `cotal config set name`, and for a handle an older cotal recorded, signing in again. `cotal login` prints the chat name it recorded, or `none` with how to save one.
+- ecd837e: Avoid checking alias custody twice within one root-credential validation pass. The existing later root mapping check, explicit descendant alias check, and independent pre-sign and post-sign authority reads remain in place.
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+  - @cotal-ai/workspace@0.147.2
+  - @cotal-ai/lang@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/lang@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
+## 0.147.0
+
+### Minor Changes
+
+- b8b0ff4: `cotal chat` opens a session under one stable name that agents can mention, with no random suffix. Without `--name`, it takes the new `name` preference (`cotal config set name <name>`), else your handle on a user-auth space, else your OS login on an open or static space. Every chat name is 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_`, so an `@name` reaches it. Breaking: `--name` no longer accepts a name outside that rule, such as one with a space or an `@`. `cotal login` now records a handle, the IdP's preferred user name, else its email's local part, else its name, the first that is a valid chat name, and `userStatus` returns it as `login.name`. The email is never the handle, so it does not appear in the roster. A user-auth sign-in made by an older cotal, or one whose IdP gives no valid chat name, has no handle on record, so `cotal chat` refuses with `AUTH_REQUIRED` until you sign in again or save a name. Once a `name` preference is saved, an older cotal refuses every preferences read with `defaults has an unknown key "name"` until it is upgraded or this version removes the name with `cotal config unset name`. The workspace exports `resolveChatName`, `chatNameProblem`, `nameInUse` and `nameInUseText`, and a second session under a name in use is warned with both ways to change it.
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+  - @cotal-ai/lang@0.147.0
+
+## 0.146.0
+
+### Patch Changes
+
+- Updated dependencies [d312807]
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+- Updated dependencies [e3cfcdb]
+  - @cotal-ai/workspace@0.146.0
+  - @cotal-ai/core@0.146.0
+  - @cotal-ai/lang@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- 4887f2e: A user-mode `cotal chat` session connects again. Since endpoint caller grants were added, the callout looked up a chat session as an actor grant when resolving its endpoint caller rights, found none and denied the connect, so every user-mode chat session was admitted but failed with `Authorization Violation`. The callout now mints a chat principal no endpoint capability without that lookup, as the spec states, and the chat arm stays its connect authority.
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/lang@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/lang@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/lang@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
+## 0.143.0
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+  - @cotal-ai/workspace@0.143.0
+  - @cotal-ai/lang@0.143.0
+
+## 0.142.0
+
+### Patch Changes
+
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/core@0.142.0
+  - @cotal-ai/lang@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+  - @cotal-ai/lang@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- Updated dependencies [392b738]
+  - @cotal-ai/workspace@0.141.10
+  - @cotal-ai/core@0.141.10
+  - @cotal-ai/lang@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- Updated dependencies [8d5f0d5]
+- Updated dependencies [f6ec096]
+  - @cotal-ai/core@0.141.9
+  - @cotal-ai/workspace@0.141.9
+  - @cotal-ai/lang@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+  - @cotal-ai/workspace@0.141.8
+  - @cotal-ai/lang@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+  - @cotal-ai/lang@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+  - @cotal-ai/lang@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.5
+  - @cotal-ai/lang@0.141.5
+  - @cotal-ai/workspace@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/core@0.141.4
+  - @cotal-ai/lang@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+  - @cotal-ai/workspace@0.141.3
+  - @cotal-ai/lang@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- 2eee225: Remote manager activation and renewal now identify their service contract by its closure digest. Command authority and serving descriptors agree with the registered core grant instead of naming only the root document. Permission rows and the manager command set are unchanged.
+- @cotal-ai/core@0.141.2
+  - @cotal-ai/lang@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
+## 0.141.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.1
+  - @cotal-ai/lang@0.141.1
+  - @cotal-ai/workspace@0.141.1
+
+## 0.141.0
+
+### Minor Changes
+
+- bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
+  
+  A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
+  
+  A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
+  
+  Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
+
+### Patch Changes
+
+- Updated dependencies [bacabd0]
+  - @cotal-ai/core@0.141.0
+  - @cotal-ai/lang@0.141.0
+  - @cotal-ai/workspace@0.141.0
+
+## 0.140.8
+
+### Patch Changes
+
+- Updated dependencies [e477c34]
+  - @cotal-ai/core@0.140.8
+  - @cotal-ai/workspace@0.140.8
+  - @cotal-ai/lang@0.140.8
+
+## 0.140.7
+
+### Patch Changes
+
+- Updated dependencies [ee13146]
+  - @cotal-ai/core@0.140.7
+  - @cotal-ai/workspace@0.140.7
+  - @cotal-ai/lang@0.140.7
+
+## 0.140.6
+
+### Patch Changes
+
+- Updated dependencies [b415c78]
+  - @cotal-ai/core@0.140.6
+  - @cotal-ai/workspace@0.140.6
+  - @cotal-ai/lang@0.140.6
+
+## 0.140.5
+
+### Patch Changes
+
+- Updated dependencies [bcdf7b6]
+  - @cotal-ai/core@0.140.5
+  - @cotal-ai/workspace@0.140.5
+  - @cotal-ai/lang@0.140.5
+
+## 0.140.4
+
+### Patch Changes
+
+- Updated dependencies [293f937]
+  - @cotal-ai/core@0.140.4
+  - @cotal-ai/workspace@0.140.4
+  - @cotal-ai/lang@0.140.4
+
+## 0.140.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.3
+  - @cotal-ai/lang@0.140.3
+  - @cotal-ai/workspace@0.140.3
+
+## 0.140.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.2
+  - @cotal-ai/lang@0.140.2
+  - @cotal-ai/workspace@0.140.2
+
+## 0.140.1
+
+### Patch Changes
+
+- 94c1948: A failed auth-service start now logs an authority-plane close failure through its diagnostic sink while preserving the original startup error. A refused or unreachable plane-claim release is no longer silently discarded.
+- @cotal-ai/core@0.140.1
+  - @cotal-ai/lang@0.140.1
+  - @cotal-ai/workspace@0.140.1
+
+## 0.140.0
+
+### Patch Changes
+
+- 63a7621: The auth package's option types now take the data account as `ServiceKeys["dataAccount"]` instead of restating `{ pub: string; signingSeed: string }` across its consumers, so a change to what the auth service holds of the data account reaches every declaration that receives it. No runtime change.
+- Updated dependencies [485bbfe]
+- Updated dependencies [4da6cf5]
+  - @cotal-ai/core@0.140.0
+  - @cotal-ai/workspace@0.140.0
+  - @cotal-ai/lang@0.140.0
+
+## 0.139.1
+
+### Patch Changes
+
+- Updated dependencies [644f6eb]
+  - @cotal-ai/core@0.139.1
+  - @cotal-ai/workspace@0.139.1
+  - @cotal-ai/lang@0.139.1
+
+## 0.139.0
+
+### Patch Changes
+
+- Updated dependencies [c3d4af4]
+  - @cotal-ai/core@0.139.0
+  - @cotal-ai/workspace@0.139.0
+  - @cotal-ai/lang@0.139.0
+
+## 0.138.2
+
+### Patch Changes
+
+- Updated dependencies [a2fba68]
+  - @cotal-ai/workspace@0.138.2
+  - @cotal-ai/core@0.138.2
+  - @cotal-ai/lang@0.138.2
+
+## 0.138.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.138.1
+  - @cotal-ai/lang@0.138.1
+  - @cotal-ai/workspace@0.138.1
+
+## 0.138.0
+
+### Patch Changes
+
+- Updated dependencies [534382c]
+- Updated dependencies [85f288b]
+- Updated dependencies [3473992]
+- Updated dependencies [789c904]
+  - @cotal-ai/core@0.138.0
+  - @cotal-ai/workspace@0.138.0
+  - @cotal-ai/lang@0.138.0
+
+## 0.137.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.137.0
+  - @cotal-ai/lang@0.137.0
+  - @cotal-ai/workspace@0.137.0
+
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/lang@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/lang@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/lang@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+  - @cotal-ai/lang@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- 5da69bf: The manager-service `retire` arm now checks the manager gate with the same shared check as every other manager door. It refuses with the same codes in the same order, and its message for a gate held by another principal now uses the same wording as the other doors.
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/lang@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- 3bbf33c: Every manager door now refuses a manager gate through one current-registration check, so it uses the same order and codes everywhere. Before, the delegated user intent doors checked the gate's principal before its open state, so a frozen gate held by another owner was refused there as `permission-denied` and as `failed-precondition` at every other door. The manager-service `renew` arm now compares the registration proof in constant time. The refusal messages now name each door the same way.
+- @cotal-ai/core@0.136.3
+  - @cotal-ai/lang@0.136.3
+  - @cotal-ai/workspace@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.2
+  - @cotal-ai/lang@0.136.2
+  - @cotal-ai/workspace@0.136.2
+
+## 0.136.1
+
+### Patch Changes
+
+- Updated dependencies [102c2aa]
+  - @cotal-ai/lang@0.136.1
+  - @cotal-ai/core@0.136.1
+  - @cotal-ai/workspace@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+  - @cotal-ai/workspace@0.136.0
+  - @cotal-ai/lang@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+  - @cotal-ai/workspace@0.135.21
+  - @cotal-ai/lang@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- Updated dependencies [d90d949]
+  - @cotal-ai/lang@0.135.20
+  - @cotal-ai/core@0.135.20
+  - @cotal-ai/workspace@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- Updated dependencies [0fa57f9]
+  - @cotal-ai/lang@0.135.19
+  - @cotal-ai/core@0.135.19
+  - @cotal-ai/workspace@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/lang@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- Updated dependencies [55e8d0b]
+  - @cotal-ai/workspace@0.135.17
+  - @cotal-ai/core@0.135.17
+  - @cotal-ai/lang@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.16
+  - @cotal-ai/lang@0.135.16
+  - @cotal-ai/workspace@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/lang@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/lang@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- 6eed69f: Retiring a chat session or preparing a managed agent's retirement now removes every durable membership row of that lifecycle. Previously only rows on concrete channel names in the grant were removed. A row on a channel family (`review.>`), or on a channel that only a wildcard grants, stayed until a later post reached the delivery reader. The auth service now does what the manager's teardown does: it narrows the lifecycle's read-ACL row to no reads, reads the delivery daemon's `lifecycleMemberships` inventory, and deletes those rows along with the granted ones. If the inventory cannot be read, the named rows are still removed and the step fails, so its retry removes the rest. A chat session's retirement still completes and leaves the remainder to compaction. A managed agent's prepare-retirement keeps its grant until a retry succeeds.
+- @cotal-ai/core@0.135.13
+  - @cotal-ai/lang@0.135.13
+  - @cotal-ai/workspace@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+  - @cotal-ai/lang@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+  - @cotal-ai/lang@0.135.11
+  - @cotal-ai/workspace@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- 985dbc5: A broker refusal of an endpoint call no longer tells a caller that was just granted that it holds no grant. The broker fixes a connection's permissions when it authenticates, so a grant made while the caller is connected reaches only its next connection. Every refusal (describe, call, cast and liveness probe) now says either no grant covers the call, or it was granted after the connection authenticated and the caller should reconnect and retry. `cotal service-endpoint grant` also says that a connection the grantee opened before the grant must reconnect before it can use the new commands.
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+  - @cotal-ai/workspace@0.135.10
+  - @cotal-ai/lang@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/lang@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+  - @cotal-ai/workspace@0.135.8
+  - @cotal-ai/lang@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- 7b513e1: Refuse a hosted auth start when the stored and legacy instance identities have different public serve keys, even if their instance ids and seeds agree. Preserve both records on that refusal.
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+  - @cotal-ai/lang@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+  - @cotal-ai/lang@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/lang@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/lang@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/lang@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/lang@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+  - @cotal-ai/lang@0.135.1
+
+## 0.135.0
+
+### Patch Changes
+
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+  - @cotal-ai/lang@0.135.0
+
 ## 0.134.0
 
 ### Minor Changes

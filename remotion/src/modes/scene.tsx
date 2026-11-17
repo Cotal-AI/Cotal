@@ -28,6 +28,8 @@ export const MODE_PEERS = [
   { name: "carol", at: { x: 700, y: 410 }, status: "idle" },
   { name: "dave", at: { x: 700, y: 580 }, status: "working" },
 ] as const;
+// The card middle: on alice's row, halfway to the peer column.
+export const MODE_MIDDLE: Pt = { x: (MODE_ALICE.at.x + MODE_PEERS[0].at.x) / 2, y: MODE_ALICE.at.y };
 
 // --- palette (cool cream + gold + ink) -----------------------------------------
 
@@ -290,20 +292,22 @@ export function fanWire(from: Pt, to: Pt): [Pt, Pt, Pt, Pt] {
   return [from, { x: from.x + 60, y: from.y }, { x: to.x - 90, y: to.y }, { x: to.x - 54, y: to.y }];
 }
 
-// Resting hairlines, plus an optional gold "afterglow" that lingers on a wire
-// once a message has just traversed it (glow 0..1 per path), fading back to ink.
-export const Wires: React.FC<{ paths: string[]; glow?: number[] }> = ({ paths, glow = [] }) => (
+export type Wire = { d: string; glow: number };
+
+// Resting hairlines and gold afterglow (0..1 per wire, with explicit 0 for resting).
+
+export const Wires: React.FC<{ wires: readonly Wire[] }> = ({ wires }) => (
   <svg style={{ position: "absolute", inset: 0 }} width="100%" height="100%">
-    {paths.map((d, i) => (
+    {wires.map(({ d }, i) => (
       <path key={`r${i}`} d={d} stroke={INK.line} strokeOpacity={0.95} strokeWidth={2} fill="none" />
     ))}
-    {paths.map((d, i) =>
-      (glow[i] ?? 0) > 0.01 ? (
+    {wires.map(({ d, glow }, i) =>
+      glow > 0.01 ? (
         <path
           key={`g${i}`}
           d={d}
           stroke={GOLD}
-          strokeOpacity={0.55 * (glow[i] ?? 0)}
+          strokeOpacity={0.55 * glow}
           strokeWidth={2}
           fill="none"
         />

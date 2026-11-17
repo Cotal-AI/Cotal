@@ -57,24 +57,25 @@ import {
   HOSTS, Held, S1_REQUEST_TIMEOUT_MS, bounded, context, endpoint, held, leader, message, openServiceCustodyHost, readyAfter, readyBefore, scopeCovers, write,
   type Ctx, type EndpointClass, type EndpointRow, type HostInternals, type ServiceCustodyHost, type ServiceWriteScope,
 } from "./service-write.js";
+import type { ServiceKeys } from "./store.js";
 
 /** Original authority limit of one approve, refuse or register, from its admission. */
-export const S2A_OPERATION_TTL_MS = 600_000;
+const S2A_OPERATION_TTL_MS = 600_000;
 /** Per-invocation limit for reads, bookkeeping, settlement and native cancellation, and the
  *  longest window an invocation's effect credential may cover. */
 export const S2A_INVOCATION_MS = SERVICE_HOST_INVOCATION_MS;
 /** A proposal's canonical lifetime (canon:203). */
-export const S2A_PROPOSAL_LIFETIME_MS = 86_400_000;
-export const S2A_MAX_PENDING = 256;
-export const S2A_MAX_PENDING_PER_OWNER = 32;
-export const S2A_MAX_PROPOSAL_BYTES = 256 * 1024;
+const S2A_PROPOSAL_LIFETIME_MS = 86_400_000;
+const S2A_MAX_PENDING = 256;
+const S2A_MAX_PENDING_PER_OWNER = 32;
+const S2A_MAX_PROPOSAL_BYTES = 256 * 1024;
 /** Fresh decisions after a CAS loss before a step holds. */
-export const S2A_MAX_REDECIDE = 4;
+const S2A_MAX_REDECIDE = 4;
 /** Serving request intents one instance keeps (SPEC 13.1): never pruned or reused in this cut. */
 export const S3_MAX_INTENTS_PER_INSTANCE = 64;
 /** Index entries one service instance may ever hold: every caller grant written for it, active,
  *  revoking or orphaned by a grant attempt refused after its index write. Nothing is pruned. */
-export const S3_MAX_CALLER_GRANTS_PER_INSTANCE = 256;
+const S3_MAX_CALLER_GRANTS_PER_INSTANCE = 256;
 
 /** The space's service host admission row: `open` while the auth service admits service endpoints. */
 export const ADMISSION_KEY = "svchost.admission";
@@ -447,7 +448,7 @@ export function parseServiceAdmissionRecord(raw: unknown): Admission {
 
 /** Every caller grant one service instance ever indexed, sorted by grantee uid then grant id. Only appended. */
 interface CallerIndex { v: 1; kind: "service-caller-grant-index"; entries: Array<{ granteeUid: string; grantId: string }> }
-export function parseServiceCallerIndexRecord(raw: unknown): CallerIndex {
+function parseServiceCallerIndexRecord(raw: unknown): CallerIndex {
   const o = closed(raw, ["v", "kind", "entries"]);
   if (o.v !== 1 || o.kind !== "service-caller-grant-index") bad("unknown version or kind");
   if (!Array.isArray(o.entries) || o.entries.length > S3_MAX_CALLER_GRANTS_PER_INSTANCE) bad("invalid caller grant index");
@@ -463,7 +464,7 @@ interface CutoffMarker {
   v: 1; kind: "service-cutoff-marker"; accountPublicKey: string; space: string; operationId: string;
   target: { kind: "caller-grant"; grantee: ServicePrincipal; grantId: string; endpoint: string; instanceId: string }; authorityDigest: string;
 }
-export function parseServiceCutoffMarkerRecord(raw: unknown): CutoffMarker {
+function parseServiceCutoffMarkerRecord(raw: unknown): CutoffMarker {
   const o = closed(raw, ["v", "kind", "accountPublicKey", "space", "operationId", "target", "authorityDigest"]);
   if (o.v !== 1 || o.kind !== "service-cutoff-marker") bad("unknown version or kind");
   const t = closed(o.target, ["kind", "grantee", "grantId", "endpoint", "instanceId"]); pick(t.kind, ["caller-grant"]);
@@ -486,7 +487,7 @@ export function serviceMarkerCeilSeconds(raw: unknown): number | undefined {
   return at / 1000 + (m[7] !== undefined && /[1-9]/.test(m[7]) ? 1 : 0);
 }
 /** The canonical cutoff deadline after the marker's time: ceil(T) + 60 + 2*5 + 1 seconds. */
-export const SERVICE_CUTOFF_MARGIN_S = 71;
+const SERVICE_CUTOFF_MARGIN_S = 71;
 
 // ---- keyed reads and writes ---------------------------------------------------------------------
 
@@ -600,7 +601,7 @@ async function retryDebt(ctx: Ctx, op: Op, registerRequestIdOf: (proposalId: str
 // ---- engine -------------------------------------------------------------------------------------
 
 /** What discovery located for one invocation before its effect connection opens. */
-export interface ServiceHostScopeTarget {
+interface ServiceHostScopeTarget {
   operation: "startup" | "register" | "decide" | "revoke" | "name-bind" | "serve" | "caller-grant" | "caller-revoke";
   operationId: string | null;
   proposalId: string | null;
@@ -683,7 +684,7 @@ function serveRecordKeys(t: ServiceHostScopeTarget): { writes: string[]; reads: 
   return { writes: [], reads: [] };
 }
 /** What one invocation's effect credential may read by Direct Get and publish to the contract store. */
-export function serviceHostScopeReads(t: ServiceHostScopeTarget): ServiceHostEffectReads {
+function serviceHostScopeReads(t: ServiceHostScopeTarget): ServiceHostEffectReads {
   const contract = t.operation === "serve" && t.serve === "register" ? [...(t.contract ?? [])] : [];
   return Object.freeze({ records: Object.freeze([...new Set(serveRecordKeys(t).reads)]), contract: Object.freeze([...new Set(contract)]) });
 }
@@ -698,7 +699,7 @@ export interface ServiceHostEffect { registry: LifecycleRegistry; gone: Promise<
  *  `scope.keys`, never reconnects or renews, and expires at `scope.deadlineMs` rounded up to the
  *  whole second. The registry over it is the effect registry. */
 export async function openServiceHostEffect(
-  opts: { server: string; space: string; dataAccount: { pub: string; signingSeed: string }; log: (line: string) => void; onConnection?: (nc: NatsConnection, label: string) => void },
+  opts: { server: string; space: string; dataAccount: ServiceKeys["dataAccount"]; log: (line: string) => void; onConnection?: (nc: NatsConnection, label: string) => void },
   scope: Pick<ServiceHostEffectScope, "keys" | "deadlineMs"> & { reads?: ServiceHostEffectReads },
 ): Promise<ServiceHostEffect> {
   const client = await openAuthorityClient({
@@ -750,12 +751,12 @@ export type ServiceServeResult =
   /** Unread, unknown or inconsistent: the request may be bound, and its identity must be kept. */
   | { state: "unavailable"; detail: string };
 /** One status query by a verified reader: an IdP owner, or a service proof's witness. */
-export interface ServiceStatusQuery {
+interface ServiceStatusQuery {
   owner: string; endpoint: string; instanceId: string;
   reader: { kind: "owner" } | { kind: "service"; witness: ServiceRegistrationWitness };
   target: { kind: "instance" } | { kind: "operation"; operation: ServiceServeOperation; engineRequestId: string };
 }
-export type ServiceStatusAnswer =
+type ServiceStatusAnswer =
   | { kind: "status"; status: ServiceAuthorityStatus }
   /** A register with no intent: its proposal-phase operation record answers. */
   | { kind: "proposal-phase" }
@@ -763,14 +764,14 @@ export type ServiceStatusAnswer =
   | { kind: "denied"; reason: "permission-denied" }
   | { kind: "not-found" }
   | { kind: "unavailable"; detail: string };
-export interface ServiceRegisterRequest {
+interface ServiceRegisterRequest {
   v: 1; kind: "service-endpoint-host"; requestId: string; operation: "register";
   input: { owner: string; endpoint: string; instanceId: string; clusterDigests: string[]; commands: Command[];
     /** The public request this admission serves, so a changed public body under one key is a conflict. */
     publicRequest?: { requestId: string; requestDigest: string } };
   granter: { kind: "owner"; owner: string };
 }
-export type ServiceRegisterResult = { v: 1; kind: "service-endpoint-host"; operation: "register"; requestId: string; space: string; accountPublicKey: string } & (
+type ServiceRegisterResult = { v: 1; kind: "service-endpoint-host"; operation: "register"; requestId: string; space: string; accountPublicKey: string } & (
   | { state: "registered"; outcome: ServiceHostOutcome; operationId: string; proposalId: string; proposalDigest: string; revision: number; expiresAtMs: number; debt?: ServiceHostDebt[] }
   | Arms);
 type Arms =
@@ -807,7 +808,7 @@ export interface ServiceHostOperations {
 
 /** The current state of one assignment. `pending-root` has no approval on its endpoint gate yet;
  *  `revoking` has a bound cancel identity. `unavailable` is a failed or inconsistent read, never absence. */
-export type ServiceAssignmentState =
+type ServiceAssignmentState =
   | { state: "absent" } | { state: "unavailable" }
   | { state: "pending-root"; proposalId: string; assignmentDigest: string }
   | { state: "approved"; proposalId: string; assignmentDigest: string; approvalDigest: string; registrationRequestId: string | null }
@@ -832,7 +833,7 @@ export function serviceRegisterHostRequest(r: { owner: string; endpoint: string;
 }
 
 /** Structural admission of the internal register request. */
-export function parseServiceRegisterRequest(raw: unknown): ServiceRegisterRequest {
+function parseServiceRegisterRequest(raw: unknown): ServiceRegisterRequest {
   let o: Rec, input: Rec, g: Rec;
   try {
     o = closed(raw, ["v", "kind", "requestId", "operation", "input", "granter"]);

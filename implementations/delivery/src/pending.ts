@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * `cotal deliver pending <name>` — an operator inspection read over one recipient's DM durable.
  * Never starts the daemon. Answers exactly the question issue #417 asks after a suspected drop:
@@ -11,6 +12,7 @@ import {
   dmDurable,
   dmStream,
   isConsumerNotFound,
+  isStreamNotFound,
   parsePrincipalKey,
   parseSubject,
   peerLabel,
@@ -24,7 +26,18 @@ import {
 import { connectOrExit } from "@cotal-ai/workspace";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 
-type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string; json?: boolean };
+type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string };
+
+/** The trailing `label=` on a candidate line. A blank name is not one: the line already prints the
+ *  subject principal as `from=`, and a role still follows that principal. A card with neither a name
+ *  nor a role adds no label. */
+export function pendingCandidateLabel(name: unknown, role: unknown, sender: string): string {
+  if (typeof name !== "string") return "";
+  const named = name.trim() ? name : undefined;
+  const roleText = typeof role === "string" && role.trim() ? role : undefined;
+  if (!named && !roleText) return "";
+  return `  label=${peerLabel({ name: named ?? sender, ...(roleText ? { role: roleText } : {}) })}`;
+}
 
 /** A short presence watch, the shape `send.ts` polls: an `offline` card still counts as a resolved
  *  peer (the recipient may be dead, that is exactly what this verb exists to inspect). */
@@ -44,6 +57,11 @@ function notFound(name: string, space: string): never {
 
 function notFoundDurable(durable: string, space: string): never {
   console.error(`✗ not-found: no DM durable "${durable}" in space ${space}`);
+  process.exit(1);
+}
+
+function streamGone(space: string): never {
+  console.error(`✗ not-found: space ${space} has no DM stream, so nothing was read`);
   process.exit(1);
 }
 
@@ -125,9 +143,15 @@ export async function runPending(args: ParsedArgs): Promise<void> {
         if (values.durable) notFoundDurable(durable, space);
         notFound(name, space);
       }
+      if (isStreamNotFound(e)) streamGone(space);
       throw e;
     }
-    const streamInfo = await jsm.streams.info(stream);
+    let streamInfo: Awaited<ReturnType<typeof jsm.streams.info>>;
+    try { streamInfo = await jsm.streams.info(stream); }
+    catch (e) {
+      if (isStreamNotFound(e)) streamGone(space);
+      throw e;
+    }
     const frontier = Math.max(0, (info.config.opt_start_seq ?? 1) - 1);
     const facts = {
       durable,
@@ -141,18 +165,14 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       max_msgs_per_subject: streamInfo.config.max_msgs_per_subject,
       discard: streamInfo.config.discard,
     };
-    if (values.json) {
-      console.log(JSON.stringify(facts));
-    } else {
-      console.log(durable);
-      console.log(`pending ${facts.pending}`);
-      console.log(`ack-pending ${facts.ackPending}`);
-      console.log(`delivered ${facts.delivered}`);
-      console.log(`ack-floor ${facts.ackFloor}`);
-      console.log(`created ${facts.created}`);
-      console.log(`frontier ${facts.frontier}`);
-      console.log(`max_age ${facts.max_age} max_msgs_per_subject ${facts.max_msgs_per_subject} discard ${facts.discard}`);
-    }
+    console.log(durable);
+    console.log(`pending ${facts.pending}`);
+    console.log(`ack-pending ${facts.ackPending}`);
+    console.log(`delivered ${facts.delivered}`);
+    console.log(`ack-floor ${facts.ackFloor}`);
+    console.log(`created ${facts.created}`);
+    console.log(`frontier ${facts.frontier}`);
+    console.log(`max_age ${facts.max_age} max_msgs_per_subject ${facts.max_msgs_per_subject} discard ${facts.discard}`);
 
     // Bounded read of recent candidate ids from the ack floor - an ephemeral ordered consumer,
     // never acked, never durable. Not proof of a hole: it names what is there, nothing more.
@@ -175,18 +195,13 @@ export async function runPending(args: ParsedArgs): Promise<void> {
           try {
             for await (const m of iter) {
               const body = JSON.parse(new TextDecoder().decode(m.data)) as { id: string; from?: Partial<EndpointRef>; ts: number };
-              if (values.json) {
-                // Keep the legacy --json output unchanged, including its candidate lines.
-                console.log(`  ${body.id}  from=${String(body.from)}  ts=${body.ts}`);
-              } else {
-                // `from=` is the sender principal the broker bound into the stored subject. The card is
-                // the sender's own claim, so its name and role print last, as a label and nothing more.
-                const sender = parseSubject(m.subject)?.sender;
-                if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
-                const card = body.from;
-                const label = typeof card?.name === "string" ? `  label=${peerLabel({ name: card.name, role: typeof card.role === "string" ? card.role : undefined })}` : "";
-                console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
-              }
+              // `from=` is the sender principal the broker bound into the stored subject. The card is
+              // the sender's own claim, so its name and role print last, as a label and nothing more.
+              const sender = parseSubject(m.subject)?.sender;
+              if (!sender) throw new Error(`unparseable DM subject ${m.subject}`);
+              const card = body.from;
+              const label = pendingCandidateLabel(card?.name, card?.role, sender);
+              console.log(`  ${body.id}  from=${sender}  ts=${body.ts}${label}`);
               seen++;
               if (seen >= pendingCandidates) break;
             }
@@ -199,6 +214,6 @@ export async function runPending(args: ParsedArgs): Promise<void> {
       }
     }
   } finally {
-    await nc.drain();
+    await drainAndClose(nc);
   }
 }

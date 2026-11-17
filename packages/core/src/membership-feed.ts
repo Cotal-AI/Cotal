@@ -1,3 +1,5 @@
+import { drainAndClose } from "./connection-cleanup.js";
+import { watchNativeConnection, type NativeConnectionBinding } from "./native-connection.js";
 /**
  * Authoritative channel-membership feed — the broker-sourced "who is subscribed to each channel"
  * the graph view draws (incl. silent readers and `live` channels that keep no enumerable roster).
@@ -40,12 +42,23 @@ import {
   accountDisconnectSubject,
   channelFromChatSubscription,
   principalFromConnz,
+  isChannelFamily,
+  subjectMatches,
 } from "./subjects.js";
 import { openMembersRegistry, listMembers } from "./members.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { withDeadline } from "./deadline.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
 import type { ChannelMembership } from "./types.js";
+
+/** Whether a feed record's `durable` list covers `channel`: the channel's own row, or a family row
+ *  above it (`team.>`, #5404). A family stores copies only for the durable-class channels under it, so
+ *  a display that knows `channel` is live-class passes `familyStores` false. A removal safeguard leaves
+ *  it true and counts a family follower on every channel under the family. Display-only, like the feed. */
+export function durableCovers(durable: readonly string[], channel: string, familyStores = true): boolean {
+  return durable.some((row) => row === channel || (familyStores && isChannelFamily(row) && subjectMatches(row, channel)));
+}
 
 export interface MembershipFeedOpts {
   servers: string;
@@ -96,10 +109,28 @@ export interface MembershipFeedHandle {
    *  preflight, the deadline elapses, or a closed conn B cannot be revived on the proven cache.
    *  Symmetric with the endpoint's {@link CotalEndpoint.reloadCreds}. */
   reloadRwCreds(expected?: string): Promise<{ identity: string; iat?: number; exp?: number }>;
+  /** The native binding of the feed's data-account connection (conn B), for a host that compares
+   *  the account's connections with a native census. Conn A is in the system account and has no
+   *  place in that comparison. A stopped feed whose conn B closed reports none. Throws while conn B
+   *  is down or redialing, while an rw credential transaction runs (its proof opens a second
+   *  data-account connection, and its adoption redials conn B), and while a stop has not closed
+   *  conn B. */
+  nativeDataConnections(): NativeConnectionBinding[];
   stop(): Promise<void>;
 }
 
 const enc = (s: string) => new TextEncoder().encode(s);
+
+function missingFeedStore(space: string, cause: unknown): Error {
+  return new Error(`membership store KV_${membershipBucket(space)} is missing; the feed cannot rebuild until the host restores it. ` +
+    `From the deployment's project root, run \`cotal up --space ${space}\`. ` +
+    "Embedded hosts must call reconcileSpaceMemoryBuckets with provisioner authority after broker restart or wake; membership-rw cannot create streams.", { cause });
+}
+
+async function requireFeedStore(kv: KV, space: string): Promise<void> {
+  try { await kv.status(); }
+  catch (error) { if (isStreamNotFound(error)) throw missingFeedStore(space, error); throw error; }
+}
 
 /** The disposable-preflight connect bound for the rw-cred adoption proof — mirrors the endpoint's: a
  *  rogue/unreachable candidate must resolve fast, well under the manager's delivery-admin request bound. */
@@ -160,7 +191,7 @@ export async function startMembershipFeed(opts: MembershipFeedOpts): Promise<Mem
     return await startFeed(opts, opened);
   } catch (err) {
     // `allSettled`: a drain that itself fails must not replace the startup error the caller needs.
-    await Promise.allSettled(opened.map((c) => c.drain()));
+    await Promise.allSettled(opened.map((c) => drainAndClose(c)));
     throw err;
   }
 }
@@ -270,6 +301,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // miss connections.
   let connBDown = false;
   let connBDrops = 0;
+  let connBNative = watchNativeConnection(connB, "membership conn B");
   const watchConnB = (nc: NatsConnection): void => {
     void (async () => {
       for await (const s of nc.status()) {
@@ -282,6 +314,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
 
   const kvm = new Kvm(connB);
   let feedKv: KV = await kvm.open(membershipBucket(space));
+  await requireFeedStore(feedKv, space); // Bind is lazy; refuse missing storage before arming timers.
   let membersKv: KV = await openMembersRegistry(connB, space);
 
   // ---- conn B standing renewal (D5 class-2): the 75% timer + the explicit reload, both proven ----
@@ -302,8 +335,13 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
   // an explicit reload is proving B and then reporting B adopted. Runs `fn` after any in-flight txn
   // settles, whatever its outcome; the internal chain never rejects.
   let rwTxn: Promise<unknown> = Promise.resolve();
+  let rwTxnsRunning = 0;
   const runRwTxn = <T,>(fn: () => Promise<T>): Promise<T> => {
-    const next = rwTxn.then(fn, fn);
+    const counted = async (): Promise<T> => {
+      rwTxnsRunning++;
+      try { return await fn(); } finally { rwTxnsRunning--; }
+    };
+    const next = rwTxn.then(counted, counted);
     rwTxn = next.then(() => undefined, () => undefined);
     return next;
   };
@@ -369,6 +407,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     try {
       const nextKvm = new Kvm(next);
       const nextFeed = await nextKvm.open(membershipBucket(space));
+      await requireFeedStore(nextFeed, space);
       const nextMembers = await openMembersRegistry(next, space);
       connB = next;
       feedKv = nextFeed;
@@ -376,14 +415,15 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       connB.closed().then((err) => { if (err) log(`conn B (data) closed: ${err.message}`); });
       connBDown = false;
       watchConnB(connB);
+      connBNative = watchNativeConnection(connB, "membership conn B");
       // Assign first so a concurrent stop() drains THIS connection rather than the already-closed
       // predecessor. If stop already ran, drain the fresh dial here.
       if (rwStopped) {
-        await connB.drain().catch(() => {});
+        await drainAndClose(connB).catch(() => {});
         return;
       }
     } catch (e) {
-      await next.drain().catch(() => {});
+      await drainAndClose(next).catch(() => {});
       throw new Error(`reloadRwCreds: could not rebind the feed on the fresh rw connection: ${(e as Error).message}`);
     }
   };
@@ -454,7 +494,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     connA = next;
     connA.closed().then((err) => { if (err) log(`conn A (system) closed: ${err.message}`); });
     if (rwStopped) {
-      await connA.drain().catch(() => {});
+      await drainAndClose(connA).catch(() => {});
       return;
     }
     bindTriggers();
@@ -521,6 +561,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     const serversSeen = new Set<string>(); // distinct responders across the whole sweep
     let gotReply = false, exhausted = false, seenSelf = false;
     const dropsBefore = connBDrops;
+    const downBefore = connBDown;
     for (let page = 0; page < MAX_PAGES; page++) {
       const offset = page * pageLimit;
       const replies = await connzRound(offset);
@@ -559,7 +600,7 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // of multi-broker support — a conscious deferral, not a single-server bake-in.
     // A sweep that ran while conn B itself was down (its own reconnect) is still incomplete, but it
     // missed nothing: conn B's return emits a CONNECT event, which polls again.
-    if (gotReply && exhausted && !seenSelf && !connBDown && connBDrops === dropsBefore)
+    if (gotReply && exhausted && !seenSelf && !downBefore && !connBDown && connBDrops === dropsBefore)
       log(`CONNZ sweep omitted our own rw connection - treating as incomplete (keeping last membership)`);
     // NO-SILENT-DEGRADATION (socrates): in a real cluster the conn-B floor only proves conn B's OWN server
     // answered — a DIFFERENT silent server would still pass `complete` yet under-report its agents. Until
@@ -603,7 +644,11 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
     // quiet poll bumps no revision and wakes no watcher. Feed-wide freshness rides the heartbeat key below.
     const existing = new Set<string>();
     const current = new Map<string, ChannelMembership>();
-    for (const e of await liveKvEntries(feedKv)) {
+    const entries = await liveKvEntries(feedKv).catch(error => {
+      if (isStreamNotFound(error)) throw missingFeedStore(space, error);
+      throw error;
+    });
+    for (const e of entries) {
       if (e.key === MEMBERSHIP_FEED_KEY) continue;
       existing.add(e.key);
       try {
@@ -688,6 +733,14 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       });
       return { identity: rwSelfId, iat, exp };
     },
+    nativeDataConnections() {
+      if (rwTxnsRunning > 0) throw new Error("membership conn B has no settled native binding: an rw credential transaction is in flight");
+      if (rwStopped) {
+        if (!connB.isClosed()) throw new Error("membership conn B has no settled native binding: the feed stopped but conn B has not closed");
+        return [];
+      }
+      return [connBNative.binding()];
+    },
     async stop() {
       stopped = true;
       rwStopped = true;
@@ -704,19 +757,15 @@ async function startFeed(opts: MembershipFeedOpts, opened: NatsConnection[]): Pr
       // free: it reads as a leak to whoever greps the log next, and it has already cost one
       // investigation. A teardown must not invent evidence.
       //
-      // Unbounded on purpose, and stated rather than hidden: a `reconcile()` that never settles hangs
-      // `stop()`. The drain below is already unbounded in exactly the same way, so this adds no new class
-      // of risk, and a timeout here would silently resume tearing down underneath a live poll, which is
-      // the behaviour being removed. `inFlight` never rejects (the poll catches internally), so no
+      // A `reconcile()` that never settles still hangs `stop()`: a timeout here would tear down
+      // underneath a live poll. Connection draining below has a separate, bounded grace period.
+      // `inFlight` never rejects (the poll catches internally), so no
       // `.catch` is needed to keep `stop()` from throwing.
       await inFlight;
       // A refresh already past its stop fence may be opening a replacement conn A or conn B; wait it
       // out so the drain below sees the connection that is actually live. Both chains never reject.
       await Promise.allSettled([obsTxn, rwTxn]);
-      await Promise.allSettled([connA.drain(), connB.drain()]);
-      // A disconnected drain can reject without closing its reconnect loop. Stop owns both
-      // connections even when the broker is gone; neither may reappear after stop resolves.
-      await Promise.all([connA.close(), connB.close()]);
+      await Promise.all([drainAndClose(connA), drainAndClose(connB)]);
     },
   };
 }

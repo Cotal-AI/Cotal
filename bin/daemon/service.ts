@@ -2,9 +2,9 @@
  * The daemon's own service connection to a space (A2c): its registered `ai.cotal.machine` instance,
  * connected as a stock service and accepted by the space as ready.
  *
- * - The witness comes from replaying the daemon's persisted register request unchanged
- *   (`daemonWitness`): no new key, no new registration, no changed body. Without a register request
- *   nothing is sent.
+ * - The witness comes from the stored service renewal proof, or before activation from replaying
+ *   the daemon's persisted register request unchanged (`daemonWitness`). Without a register request
+ *   nothing is sent. A human sign-in is not needed while the service proof remains current.
  * - The credentials come from the stock renewal source (`AuthProvider.serviceEndpointRenewal`) over
  *   the daemon's private store in the machine home. Only the renewal and ready records live there;
  *   the source's other reads (the space's sentinel) come from the space's own workspace store, which
@@ -18,10 +18,12 @@
  *   only after the broker is back and the space answers a fresh `ready`.
  *
  * A connection that reached `connected` records that intent at
- * `<COTAL_HOME>/daemon/<space segment>/service-connect.json`, and `service-disconnect` removes it.
+ * `<COTAL_HOME>/daemon/<space segment>/service-connect.json`. `service-disconnect` removes it and
+ * the connection's renewal store, registration request and identity after shutting down the source.
  * A restarted daemon reads those records and connects each space again, so the connections it held
  * before a crash come back without anyone running `service-connect`. Only a connection the space
- * accepted is recorded, so a refused space is not retried on every start.
+ * accepted is recorded, so a refused space is not retried on every start. An unavailable resume
+ * retries with bounded backoff until dependencies recover; other refusals stop the retry.
  *
  * The stock guest seam verifies each pulled credential against the registered authority's issuer
  * and keys and this daemon's embedded closure. Each opened transport binds the existing void
@@ -30,29 +32,52 @@
  * or provider text leaves this module; every message is fixed text.
  */
 import { join } from "node:path";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
   CotalEndpoint, authorizeGuestServeGrant, compileContract, resolveAuthProvider, serveAuthenticityOf, serveEndpoint,
-  ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
+  ServiceAccessNotYetValidError, ServiceAuthorityTransportError, serviceWitnessDigest, VOID_SCHEMA,
   type EpServeGrant, type EpServeHandle, type SecretStore, type ServiceEndpointRenewal, type ServiceRegistrationWitness,
 } from "@cotal-ai/core";
 import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
-import { FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness } from "./register.js";
+import { codeSpan, FsSecretStore, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DAEMON_REGISTRATION, daemonRegisterFile, daemonWitness, registerDaemon } from "./register.js";
+import { ACCOUNT_MISMATCH_MESSAGE } from "./connect.js";
 import type { RegisterResult, ServiceConnectionResult, ServiceConnectionState } from "./protocol.js";
+import { daemonCommandCopy } from "./guidance.js";
+import { removeServiceRecords } from "./service-records.js";
+
+/** Map registration outcomes consistently for setup and service status. */
+export function fromRegister(r: RegisterResult): ServiceConnectionState {
+  switch (r.outcome) {
+    case "approval-required": case "pending": return "approval-pending";
+    case "refused": return "reason" in r ? "refused" : "unavailable";
+    case "not-signed-in": return "not-signed-in";
+    case "not-registered": return "not-registered";
+    case "not-user-auth": case "unsupported-by-space": return "unsupported";
+    case "account-mismatch": return "account-mismatch";
+    case "conflict": return "conflict";
+    case "local-state-error": return "local-state-error";
+    case "credential-expired": return "credential-expired";
+    default: return "unavailable";
+  }
+}
 
 const SENTENCE: Record<ServiceConnectionState, string> = {
-  "not-requested": "this daemon has not requested registration with this space; run `cotal daemon register --space <s>` first",
+  "not-requested": "this daemon has not requested registration with this space",
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
-  "not-signed-in": "this machine is not signed in to the space's provider; run `cotal daemon login --idp <url>`",
+  "not-signed-in": "this machine is not signed in to the space's provider",
   unsupported: "the space's auth service does not host service endpoints, so the daemon cannot connect to it",
   "approval-pending": "the space owner has not approved this daemon yet, or the space is still registering it; nothing is connected",
   refused: "the space refused this daemon's registration; nothing is connected",
+  "account-mismatch": ACCOUNT_MISMATCH_MESSAGE,
   conflict: "this daemon's registration does not match what the space holds; nothing is connected",
   connecting: "the daemon is connecting to the space; it is not connected yet",
   connected: "connected: the broker accepted this daemon's service connection and the space accepted it as ready",
   unavailable: "the space or its broker could not be reached; nothing is connected, and connecting again retries the same requests",
+  "credential-not-yet-valid": "the space returned a service credential that is not yet valid according to this machine's clock; check this machine's and the space authority's clocks, then connect again; nothing is connected",
+  "credential-expired": "the space returned a service credential that is expired according to this machine's clock; check this machine's and the space authority's clocks, then connect again; nothing is connected",
+  "local-state-error": "the daemon could not use its local service records; inspect its identity, registration, ready and renewal records and their permissions, and restore the original record if damaged; nothing is connected",
   ended: "the space ended this daemon's service authority; nothing is connected, and connecting again will not reconnect it",
   disconnected: "not connected",
 };
@@ -99,10 +124,13 @@ async function readyRequestId(store: SecretStore, witness: ServiceRegistrationWi
 }
 
 interface Live {
+  abort: AbortController;
   state: ServiceConnectionState;
   reason?: string;
+  remedy?: string;
   instanceId?: string;
   source?: ServiceEndpointRenewal;
+  sourceClosing?: Promise<void>;
   endpoint?: CotalEndpoint;
   serving: Set<EpServeHandle>;
   flush?: () => Promise<void>;
@@ -112,12 +140,14 @@ interface Live {
 }
 
 export interface ServiceConnections {
+  /** Register without connecting, retaining the outcome for offline status. */
+  register(space: string): Promise<RegisterResult>;
   connect(space: string): Promise<ServiceConnectionResult>;
   disconnect(space: string): Promise<ServiceConnectionResult>;
   status(space: string): ServiceConnectionResult;
   /** Connect every space with a recorded intent. Resolves with the spaces that reached `connected`. */
   resume(): Promise<readonly string[]>;
-  /** Close every connection, source and endpoint. Used at daemon shutdown. */
+  /** Cancel retries and close every connection, source and endpoint. Used at daemon shutdown. */
   close(): Promise<void>;
 }
 
@@ -138,15 +168,26 @@ function intentSpace(path: string): string | undefined {
   return daemonConnectIntentFile(r.space, join(path, "..", "..", "..")) === path ? r.space : undefined;
 }
 
+/** Whether this daemon already recorded a successful per-space connection. */
+function hasDaemonConnectIntent(space: string, home: string): boolean {
+  return intentSpace(daemonConnectIntentFile(space, home)) === space;
+}
+
 export function createServiceConnections(home: string = homeCotalDir()): ServiceConnections {
   const live = new Map<string, Live>();
   const queue = new Map<string, Promise<unknown>>();
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
+  const disconnecting = new Set<string>();
+  const registering = new Map<string, AbortController>();
   let closed = false;
 
   const result = (space: string): ServiceConnectionResult => {
     const l = live.get(space);
-    const state = l?.state ?? "disconnected";
+    const state = l?.state ?? (existsSync(daemonRegisterFile(space, home)) ? "disconnected" : "not-requested");
+    const remedy = state === "not-requested" ? `run ${codeSpan(daemonCommandCopy("register", home, [["--space", space]]))} first`
+      : state === "not-signed-in" ? l?.remedy : undefined;
     return { space, state, message: SENTENCE[state], ...(l?.instanceId ? { instanceId: l.instanceId } : {}),
+      ...(remedy !== undefined ? { remedy } : {}),
       ...(state === "ended" && l?.reason ? { reason: l.reason } : {}) };
   };
   /** One operation per space at a time: concurrent connects share the outcome of the first. */
@@ -159,58 +200,63 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   /** State changes from endpoint callbacks between awaits; read it fresh. */
   const stateOf = (l: Live): ServiceConnectionState => l.state;
 
+  function cancel(l: Live): void {
+    l.abort.abort();
+    // Source close aborts its own credential pull. Retain that first close promise, because
+    // a second close may return before the first one's pull has settled.
+    l.sourceClosing ??= l.source?.close().catch(() => {});
+  }
+
   async function teardown(l: Live): Promise<void> {
     l.closing ??= (async () => {
-      const ep = l.endpoint, src = l.source;
+      const ep = l.endpoint;
+      cancel(l);
       l.endpoint = undefined; l.source = undefined; l.brokerUp = false; l.flush = undefined;
       const drains = [...l.serving].map((handle) => handle.stop().catch(() => {}));
       await ep?.stop().catch(() => {});
       await Promise.all(drains);
       l.serving.clear();
-      await src?.close().catch(() => {});
+      await l.sourceClosing;
+      await l.readying;
     })();
     await l.closing;
     l.closing = undefined;
   }
 
-  const fromRegister = (r: RegisterResult): ServiceConnectionState => {
-    switch (r.outcome) {
-      case "approval-required": case "pending": return "approval-pending";
-      case "refused": return "reason" in r ? "refused" : "unavailable";
-      case "not-signed-in": return "not-signed-in";
-      case "not-registered": return "not-registered";
-      case "not-user-auth": case "unsupported-by-space": return "unsupported";
-      case "account-mismatch": case "conflict": return "conflict";
-      default: return "unavailable";
-    }
-  };
-
   /** Ask the space to accept this witness as ready, on a fresh access bearer from the source, under
    *  one persisted ready request per witness. Sets `connected` only if the broker is still up. */
   async function ready(l: Live, space: string, witness: ServiceRegistrationWitness, store: SecretStore, dir: string): Promise<void> {
+    const signal = l.abort.signal;
+    signal.throwIfAborted();
     const provider = resolveAuthProvider();
     const flush = l.flush;
     if (!flush) { l.state = "unavailable"; return; }
     await flush();
+    signal.throwIfAborted();
     const requestId = await readyRequestId(store, witness);
-    if (requestId === undefined) { l.state = "unavailable"; return; }
+    if (requestId === undefined) { l.state = "local-state-error"; return; }
     let token: string;
     try { token = await l.source!.bearer(); } catch { return sourceFailed(l); }
     let answer;
     try {
       answer = (await provider.serviceEndpointAuthority!({ store, dir, request: { v: 1, kind: "service-endpoint-authority", operation: "ready", requestId,
         space, accountPublicKey: witness.accountPublicKey, endpoint: witness.endpoint, instanceId: witness.instanceId, witness },
-        proof: { kind: "service-access", token } })).result;
+        proof: { kind: "service-access", token }, signal })).result;
     } catch (e) {
       if (!(e instanceof ServiceAuthorityTransportError)) { /* a local failure: no claim */ }
       l.state = "unavailable";
       return;
     }
-    if (answer.state === "ready") { l.state = l.brokerUp && l.endpoint && l.flush === flush && l.serving.size > 0 ? "connected" : "connecting"; return; }
+    if (answer.state === "ready") {
+      if (l.brokerUp && l.endpoint && l.flush === flush && l.serving.size > 0) l.state = "connected";
+      else if (l.state !== "unavailable") l.state = "connecting";
+      return;
+    }
     if (answer.state === "denied" && answer.reason === "rate-limited") { l.state = "unavailable"; return; }
     l.state = "ended";
     l.reason = answer.state === "denied" && ENDED.has(answer.reason) ? answer.reason : "unrecognized";
-    await teardown(l);
+    // Do not await teardown from inside the ready promise it must settle.
+    setImmediate(() => void teardown(l));
   }
 
   /** Start a `ready` for the current broker connection, at most one at a time. Never rejects: a
@@ -222,14 +268,17 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
     return l.readying;
   }
 
-  function sourceFailed(l: Live): void {
+  function sourceFailed(l: Live, error?: unknown): void {
     const s = l.source?.state();
-    if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
+    if (error instanceof ServiceAccessNotYetValidError) l.state = "credential-not-yet-valid";
+    else if (s?.state === "ended") { l.state = "ended"; l.reason = ENDED.has(s.reason) ? s.reason : "unrecognized"; }
+    else if (s?.state === "unavailable" && s.cause === "store") l.state = "local-state-error";
+    else if (s?.state === "unavailable" && s.cause === "credential-expired") l.state = "credential-expired";
     else l.state = "unavailable";
   }
 
   /** Any throw inside a connect leaves nothing running: the endpoint and source are torn down and
-   *  the answer is a fixed `unavailable`. */
+   *  the answer is a fixed failure classification. */
   async function connectOnce(space: string): Promise<ServiceConnectionResult> {
     try { return await connectInner(space); } catch {
       const l = live.get(space);
@@ -239,38 +288,45 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
   }
 
   async function connectInner(space: string): Promise<ServiceConnectionResult> {
-    if (closed) return { space, state: "disconnected", message: SENTENCE.disconnected };
+    if (closed || disconnecting.has(space)) return { space, state: "disconnected", message: SENTENCE.disconnected };
     const current = live.get(space);
     if (current?.state === "ended") return result(space);
     if (current?.endpoint && current.state === "connected") return result(space);
     if (current) await teardown(current);
-    const l: Live = current ?? { state: "connecting", brokerUp: false, serving: new Set() };
-    l.state = "connecting"; l.reason = undefined;
+    if (closed || disconnecting.has(space)) return { space, state: "disconnected", message: SENTENCE.disconnected };
+    // Keep the last dependency failure visible while retrying it, until a new outcome is known.
+    const l: Live = { abort: new AbortController(), state: current?.state === "unavailable" ? "unavailable" : "connecting", brokerUp: false, serving: new Set() };
+    const signal = l.abort.signal;
     live.set(space, l);
 
     if (!existsSync(daemonRegisterFile(space, home))) { l.state = "not-requested"; return result(space); }
     const entry = findMesh(space);
     if (!entry || entry.mode !== "user" || !entry.userAuth) { l.state = entry ? "unsupported" : "not-registered"; return result(space); }
-    const w = await daemonWitness(space, home);
-    if ("outcome" in w) { l.state = fromRegister(w); return result(space); }
+    const w = await daemonWitness(space, home, signal);
+    signal.throwIfAborted();
+    if ("outcome" in w) { l.state = fromRegister(w); l.remedy = "remedy" in w ? w.remedy : undefined; return result(space); }
     const witness = w.witness;
     l.instanceId = witness.instanceId;
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointRenewal || !provider.serviceEndpointAuthority || !provider.serviceEndpointInfo) { l.state = "unsupported"; return result(space); }
     const store = daemonServiceStore(home, space, workspaceSecretStore(entry.root));
     const dir = userAuthStateDir(entry.root, space, { readOnly: true });
-    const source = provider.serviceEndpointRenewal({ store, dir, witness });
+    const source = provider.serviceEndpointRenewal({ store, dir, sessionDir: home, witness });
     l.source = source;
     let grant: EpServeGrant;
     const pull = async () => {
+      signal.throwIfAborted();
       const credential = await source.credential();
-      const info = await provider.serviceEndpointInfo!({ store, dir, space });
+      signal.throwIfAborted();
+      const info = await provider.serviceEndpointInfo!({ store, dir, space, signal });
+      signal.throwIfAborted();
       if (info.accountPublicKey !== witness.accountPublicKey) throw new Error("the service authority account changed");
       grant = await authorizeGuestServeGrant({ accountPublicKey: witness.accountPublicKey, result: credential,
         registration: DAEMON_REGISTRATION, authenticity: serveAuthenticityOf(info) });
       return credential.accessBearer;
     };
-    try { await pull(); } catch { sourceFailed(l); await teardown(l); return result(space); }
+    try { await pull(); } catch (e) { sourceFailed(l, e); await teardown(l); return result(space); }
+    signal.throwIfAborted();
 
     const onEnd = () => {
       // The source ends inside the endpoint's own refresh: tear down after that call returns.
@@ -280,13 +336,14 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       space, servers: entry.server, sentinelCreds: source.sentinelCreds!,
       bearer: async () => { try { return await pull(); } finally { onEnd(); } },
       onConnection: (nc) => {
-        if (l.endpoint !== endpoint) return;
+        if (signal.aborted || l.endpoint !== endpoint) return;
         const contract = compileContract({ root: VOID_SCHEMA });
         const handle = serveEndpoint(nc, space, grant, [{ command: "machine-status", contract: { input: contract, output: contract }, handler: () => null }], { public: true });
         l.serving.add(handle);
         l.flush = () => nc.flush();
         void nc.closed().then(() => handle.stop()).catch(() => {}).finally(() => { l.serving.delete(handle); });
       },
+      overlapOnConnectionRenewal: true,
       card: { name: "cotal-daemon", kind: "endpoint", owner: witness.principal.owner, actor: witness.principal.actor },
       channels: [], registerPresence: false, watchPresence: false, watchChannels: false, consume: false,
     });
@@ -308,38 +365,98 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
       if (l.state !== "ended") void readyOnce(l, space, witness, store, dir);
     });
     l.endpoint = endpoint;
-    try { await endpoint.start(); } catch { if (stateOf(l) !== "ended") l.state = "unavailable"; await teardown(l); return result(space); }
+    try { await endpoint.start(); } catch (e) { if (stateOf(l) !== "ended") sourceFailed(l, e); await teardown(l); return result(space); }
+    signal.throwIfAborted();
     l.brokerUp = true;
     await readyOnce(l, space, witness, store, dir);
     const after = stateOf(l);
-    if (after !== "connected" && after !== "ended") { await teardown(l); }
+    if (after !== "connected" && after !== "ended") {
+      // There is no surviving endpoint to reconnect a broker lost during startup's ready call.
+      if (after === "connecting") l.state = "unavailable";
+      await teardown(l);
+    }
     return result(space);
   }
 
-  /** Record or forget this space's connect intent. A store failure never changes the connection's
+  /** Record this space's connect intent. A store failure never changes the connection's
    *  own reported state: it is reported as a resume that will not happen, not as a failed connect. */
   const remember = (space: string): void => {
     const path = daemonConnectIntentFile(space, home);
     mkSecretDir(join(path, ".."));
     writeSecretFile(path, `${JSON.stringify({ v: 1, space })}\n`);
   };
-  const forget = (space: string): void => {
-    rmSync(daemonConnectIntentFile(space, home), { force: true });
+  const cancelRetry = (space: string): void => {
+    clearTimeout(retries.get(space));
+    retries.delete(space);
   };
+  /** Retry only remembered intent and only an unavailable attempt. Ten one-second retries cover
+   *  short startup outages before exponential backoff. Recheck inside the per-space queue so a
+   *  timer already queued when disconnect runs cannot restore a forgotten connection. */
+  async function connectRemembered(space: string, delay = 1000, fastRetries = 10): Promise<ServiceConnectionResult> {
+    if (closed || !hasDaemonConnectIntent(space, home)) return result(space);
+    cancelRetry(space);
+    const r = await connectOnce(space);
+    if (!closed && !disconnecting.has(space) && r.state === "unavailable") {
+      const timer = setTimeout(() => {
+        retries.delete(space);
+        void serial(space, () => connectRemembered(space, fastRetries > 1 ? 1000 : Math.min(delay * 2, 30_000), Math.max(0, fastRetries - 1)));
+      }, delay);
+      timer.unref();
+      retries.set(space, timer);
+    }
+    return r;
+  }
 
   return {
+    register: (space) => serial(space, async () => {
+      if (closed || disconnecting.has(space)) return { outcome: "refused", space,
+        message: "the daemon is stopping or disconnecting this space; no registration request was sent" };
+      const abort = new AbortController();
+      registering.set(space, abort);
+      try {
+        const r = await registerDaemon(space, home, abort.signal);
+        const current = live.get(space);
+        // Registration alone cannot replace a live transport's state or revive ended authority.
+        if (!abort.signal.aborted && !closed && !current?.endpoint && current?.state !== "ended") {
+          live.set(space, { abort: new AbortController(), state: r.outcome === "registered" ? "disconnected" : fromRegister(r),
+            brokerUp: false, serving: new Set(), ...("remedy" in r ? { remedy: r.remedy } : {}) });
+        }
+        return r;
+      } finally {
+        registering.delete(space);
+      }
+    }),
     connect: (space) => serial(space, async () => {
-      const r = await connectOnce(space);
+      cancelRetry(space);
+      const r = hasDaemonConnectIntent(space, home) ? await connectRemembered(space) : await connectOnce(space);
       if (r.state === "connected") { try { remember(space); } catch { /* the connection is up either way */ } }
       return r;
     }),
-    disconnect: (space) => serial(space, async () => {
-      const l = live.get(space);
-      if (l) { await teardown(l); live.delete(space); }
-      // A disconnect is explicit, so it must outlive a restart: forget the intent before answering.
-      forget(space);
-      return { space, state: "disconnected", message: SENTENCE.disconnected };
-    }),
+    async disconnect(space) {
+      cancelRetry(space);
+      // Cancellation must happen outside the queue: its head may be awaiting this space.
+      disconnecting.add(space);
+      registering.get(space)?.abort();
+      const current = live.get(space);
+      if (current) cancel(current);
+      return serial(space, async () => {
+        try {
+          cancelRetry(space);
+          const l = live.get(space);
+          if (l) { await teardown(l); live.delete(space); }
+          let removedRecords: string[];
+          try { removedRecords = removeServiceRecords(home, space); }
+          catch {
+            live.set(space, { abort: new AbortController(), state: "local-state-error", brokerUp: false, serving: new Set() });
+            return { ...result(space), message: "the connection is closed, but removing its local service records failed; some records may remain. Repair their permissions and retry service-disconnect; the remote record may remain until you remove the computer in the dashboard" };
+          }
+          return { space, state: "disconnected", removedRecords,
+            message: `not connected; removed local service records: ${removedRecords.length ? removedRecords.join(", ") : "none remained"}. The remote record may remain; remove the computer in the dashboard to revoke its authority` };
+        } finally {
+          disconnecting.delete(space);
+        }
+      });
+    },
     status: (space) => result(space),
     async resume() {
       let entries: string[];
@@ -349,11 +466,15 @@ export function createServiceConnections(home: string = homeCotalDir()): Service
         const space = intentSpace(join(home, "daemon", entry, "service-connect.json"));
         if (space !== undefined) spaces.push(space);
       }
-      const settled = await Promise.all(spaces.map((space) => serial(space, () => connectOnce(space))));
+      const settled = await Promise.all(spaces.map((space) => serial(space, () => connectRemembered(space))));
       return settled.filter((r) => r.state === "connected").map((r) => r.space);
     },
     async close() {
       closed = true;
+      for (const space of retries.keys()) cancelRetry(space);
+      for (const abort of registering.values()) abort.abort();
+      for (const l of live.values()) cancel(l);
+      await Promise.all([...queue.values()]);
       await Promise.all([...live.values()].map((l) => teardown(l)));
       live.clear();
     },

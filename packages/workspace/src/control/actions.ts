@@ -11,7 +11,7 @@
 import { assertValidChannel, clearChannel, isConcreteChannel } from "@cotal-ai/core";
 import { connectOrThrow, userViewAuth, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
-import { askManager, scatterManager, START_TIMEOUT_MS, type ControlClient, type ManagerReply } from "./manager.js";
+import { askManager, scatterManager, START_TIMEOUT_MS, type ControlClient, type ManagerPin, type ManagerReply } from "./manager.js";
 import { locateSeat, seatMissRefusal, seatNotFoundMessage } from "./seat.js";
 
 /** The console's control coordinates: the same `ConnectFlags` triple the CLI's control commands
@@ -27,6 +27,9 @@ const OPS = {
   // false miss. Located and pinned like `stop`.
   status: { profile: "control-caller-privileged", targeted: true },
   start: { profile: "control-caller-privileged", targeted: false, timeoutMs: START_TIMEOUT_MS },
+  // What a spawn form offers: the manager's applications and their model catalogs.
+  managerStatus: { profile: "control-caller-privileged", targeted: false },
+  models: { profile: "control-caller-privileged", targeted: false },
   purge: { profile: "control-caller-admin", targeted: false },
   stop: { profile: "control-caller-admin", targeted: true },
 } as const;
@@ -66,30 +69,34 @@ export interface ManagedRow {
   uptimeMs: number;
   mesh: string;
   model?: string;
+  /** The run this row reports. A seat restarted under the same name gets a new one. */
+  lifecycleUid: string;
 }
 
 /** One control call. A targeted op names its seat in `args.name`; the alias is resolved to the
  *  incarnation triple inside `askManager` (the manager's `inspect` read), so the wire never carries
- *  a name as a target. Reach is `owner` on a user mesh (the bearer's one path; the manager decides
- *  by ledger scope) and `any` on a static or open mesh (the admin instrument's cross-agent row). */
-export async function control(client: ControlClient, ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>): Promise<ManagerReply> {
+ *  a name as a target. `expectedTarget` pins a targeted op to the run the caller selected: when the
+ *  name now resolves to another run, nothing is sent. Reach is `owner` on a user mesh (the bearer's
+ *  one path; the manager decides by ledger scope) and `any` on a static or open mesh (the admin
+ *  instrument's cross-agent row). */
+export async function control(client: ControlClient, ctx: ControlCtx, op: ControlOp, args?: Record<string, unknown>, opts: Pick<ManagerPin, "expectedTarget"> = {}): Promise<ManagerReply> {
   const spec = OPS[op];
   try {
-    let on: string | undefined;
+    let pin: ManagerPin = {};
     if (spec.targeted) {
       const name = String(args?.name ?? "").trim();
       if (!name) return { ok: false, error: `${op} requires a name` };
       const loc = await locateSeat(client, ctx, name, { onRefusal: "throw" });
       if (loc.kind === "absent") return { ok: false, error: seatNotFoundMessage(loc, name) };
       if (loc.kind === "several") return { ok: false, error: seatMissRefusal(name, `cotal ${op}`, loc) };
-      if (loc.kind === "pin") on = loc.instanceId;
+      if (loc.kind === "pin") pin = { instanceId: loc.instanceId, expectedSeat: loc.expectedSeat };
     }
-    const t = await resolveControlTarget(ctx, spec.profile, on, { onRefusal: "throw" });
+    const t = await resolveControlTarget(ctx, spec.profile, pin.instanceId, { onRefusal: "throw" });
     const reach = t.auth.bearer ? "owner" : "any";
     const timeoutMs = "timeoutMs" in spec ? spec.timeoutMs : undefined;
     // `args` goes through as given: a void-input command is refused by the manager's schema when it
     // is handed `{}` instead of nothing, so no default is filled in here.
-    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { instanceId: on } : undefined);
+    return await askManager(client, t.space, t.server, op, args, t.auth, reach, timeoutMs, spec.targeted ? { ...pin, expectedTarget: opts.expectedTarget } : undefined);
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
@@ -195,9 +202,12 @@ export function createManagedPoller(
     },
   };
 }
-export async function controlPs(client: ControlClient, ctx: ControlCtx): Promise<PsReply> {
+
+/** The `ps` read across the space's managers. `readOnly` resolves and connects without sweeping or
+ *  pruning the local registry, for a caller that polls and must leave it as it found it. */
+export async function controlPs(client: ControlClient, ctx: ControlCtx, opts: { readOnly?: boolean } = {}): Promise<PsReply> {
   try {
-    const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw" });
+    const t = await resolveControlTarget(ctx, "control-caller-privileged", undefined, { onRefusal: "throw", readOnly: opts.readOnly });
     if (t.auth.bearer) {
       const r = await askManager(client, t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
       if (!r.ok) return { ok: false, error: r.error ?? "error" };

@@ -1,0 +1,16 @@
+{
+  "command": "pnpm smoke:web-console-auth",
+  "suite": [
+    "implementations/web/smoke/console-auth.smoke.ts"
+  ],
+  "mutations": [
+    {
+      "name": "the launch-link exchange stops redirecting a client asset path to itself, so a link opened on an asset lands the session on another page",
+      "file": "implementations/web/src/web.ts",
+      "find": "        location: path,\n",
+      "replace": "        location: path.startsWith(\"/assets/\") ? \"/\" : path,\n",
+      "expectRed": "an exchange on /assets/index.js sets the cookie and redirects THERE",
+      "cell": "an exchange on /assets/index.js sets the cookie and redirects THERE (the printed launch URL is \"/\")"
+    }
+  ]
+}

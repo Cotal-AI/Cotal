@@ -12,7 +12,7 @@
  */
 
 /** The route fields this description reads; a subset of the SDK's `ModelRouteInfo`. */
-export interface RouteInfo {
+interface RouteInfo {
   model: string;
   provider: string;
   api_method?: string;

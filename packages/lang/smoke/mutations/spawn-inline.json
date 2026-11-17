@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "packages/lang/smoke/options.smoke.ts"
+  ],
+  "guard": "An inline persona as spawn's first argument reaches the handler whole, is hashed whole so editing any field of it on a resumed run diverges, and a malformed record, one that also names a catalog persona or carries a field an inline persona has no slot for, is refused as L3049 before anything is journalled.",
+  "command": "pnpm smoke:lang-options",
+  "completionMarker": "ok the refusal is CATCHABLE by the program, as a record carrying the code",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/spawn-inline.json",
+  "why": [
+    "options.smoke's `ok` throws on the first failure, so a killed mutant never reaches the summary line; the completion marker is the last line printed before the inline section.",
+    "L1 drops the definition from the hash, L2 drops it from the handler's request, L3 accepts a record that names both a catalog persona and a prompt, and L4 accepts a field an inline persona has no slot for."
+  ],
+  "mutations": [
+    {
+      "name": "L1 the definition is not hashed",
+      "file": "packages/lang/src/perform.ts",
+      "find": "          ...(inline !== undefined ? { inline } : {}),\n        },",
+      "replace": "        },",
+      "expectRed": "its input hash is the catalog projection plus the definition, byte for byte",
+      "cell": "its input hash is the catalog projection plus the definition, byte for byte"
+    },
+    {
+      "name": "L2 the definition is not forwarded",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        ...(inline !== undefined ? { inline } : {}),\n        ...(inline === undefined && model !== undefined ? { model } : {}),",
+      "replace": "        ...(inline === undefined && model !== undefined ? { model } : {}),",
+      "expectRed": "an inline spawn forwards its definition whole",
+      "cell": "an inline spawn forwards its definition whole"
+    },
+    {
+      "name": "L3 a record naming both a catalog persona and a prompt is accepted",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  if (\"persona\" in r) refuse(",
+      "replace": "  if (false) refuse(",
+      "expectRed": "a malformed inline persona is refused as L3049, naming what is wrong",
+      "cell": "a malformed inline persona is refused as L3049, naming what is wrong"
+    },
+    {
+      "name": "L4 an unknown field is accepted",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  if (unknown.length) refuse(",
+      "replace": "  if (false) refuse(",
+      "expectRed": "a malformed inline persona is refused as L3049, naming what is wrong",
+      "cell": "a malformed inline persona is refused as L3049, naming what is wrong"
+    }
+  ]
+}

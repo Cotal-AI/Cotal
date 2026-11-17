@@ -35,9 +35,8 @@ import {
   SOURCE_ROOT,
   RECORD_KINDS,
   recordSpecKey,
-  createRecordEntry,
-  updateRecordEntry,
   runActivationSagaAtUid,
+  kvLifecycleTransport,
   resumeActivationSaga,
   gateObserve,
   gateFreeze,
@@ -53,7 +52,7 @@ import type { KV } from "@nats-io/kv";
 
 const enc = new TextEncoder();
 
-export interface StaticLifecycleAuditSpec {
+interface StaticLifecycleAuditSpec {
   v: 1; principal: string; alias: string; lifecycleUid: string;
   managerInstance: string; managerProcessUid: string; retirementOpId: string;
   broker: Pick<EvictionResult, "kicked" | "remaining" | "scanComplete" | "verifiedGone">;
@@ -273,15 +272,7 @@ async function evictAndAudit(
  *  `withLifecycleExecutor`). Mirrors the auth implementation's sealed `transportOf` — a
  *  transport carries no sequencing decisions of its own. */
 export function staticLifecycleTransport(recordsKv: KV, authKv: KV): LifecycleStateTransport {
-  const entryOf = (e: { value: Uint8Array; revision: number; operation: string } | null): LifecycleKvEntry | undefined =>
-    e === null ? undefined : { value: e.value, revision: e.revision, operation: e.operation };
-  return {
-    getRecord: async (key) => entryOf(await recordsKv.get(key)),
-    createRecord: (key, value) => createRecordEntry(recordsKv, key, value),
-    updateRecord: (key, value, rev) => updateRecordEntry(recordsKv, key, value, rev),
-    getAuth: async (key) => entryOf(await authKv.get(key)),
-    putAuth: (key, payload, rev) => authKv.put(key, payload, { previousSeq: rev }),
-  };
+  return kvLifecycleTransport(recordsKv, authKv);
 }
 
 function slotOf(key: string, entry: LifecycleKvEntry): { row: StaticManagedSlotRow; revision: number } {

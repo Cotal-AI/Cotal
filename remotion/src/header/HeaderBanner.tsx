@@ -1,6 +1,6 @@
 // HeaderBanner — "Wordmark + lateral pulse": a minimal persistent banner for the
 // README header slot (replaces header.gif). Cream/gold brand language, restraint.
-// 1280x340 @ 30fps, 180-frame seamless loop (three 60-frame beats).
+// 1280x340 @ 30fps, seamless loop of three 60-frame beats.
 //
 // Left  — the "cotal" wordmark + a tiny gold triangle-of-dots mark + tagline.
 //         Stays fully visible the entire time.
@@ -30,7 +30,7 @@ import {
   type Pt,
 } from "./shared";
 
-const DURATION = 180;
+export const HEADER_BANNER_DURATION = 180;
 
 // --- layout (comp coordinate space: 1280x340) -----------------------------------
 
@@ -120,7 +120,7 @@ const Mark: React.FC<{ size: number }> = ({ size: s }) => {
 
 export const HeaderBanner: React.FC = () => {
   const frame = useCurrentFrame();
-  const env = loopEnvelope(frame, DURATION, 8);
+  const env = loopEnvelope(frame, HEADER_BANNER_DURATION, 8);
 
   // beats: [start, end); active pulse runs prog(start+6, end-6).
   const inBeat1 = frame < 60;

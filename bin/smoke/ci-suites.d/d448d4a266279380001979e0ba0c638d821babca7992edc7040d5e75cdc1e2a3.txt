@@ -1,0 +1,3 @@
+# A supervised seat a successor manager restarts stays supervised when it joins after its readiness
+# window: the record counts the restart and its next crash restarts it in place (#4144).
+smoke:supervise-crash-late-join

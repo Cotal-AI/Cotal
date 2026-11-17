@@ -32,6 +32,12 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.
 const src = readFileSync(SRC, "utf8");
 const count = (needle: string): number => src.split(needle).length - 1;
 
+const coverageDoc = readFileSync(join(dirname(SRC), "..", "..", "..", "docs", "control-discovery.mdx"), "utf8");
+c("the discovery reference distinguishes function coverage from a shipped journal action path",
+  coverageDoc.includes("## Journal action coverage")
+    && coverageDoc.includes("Passing them does not prove")
+    && coverageDoc.includes("not a journal cutover"));
+console.log("\nCoverage scope: source wiring only, not a shipped journal action path. See docs/control-discovery.mdx#journal-action-coverage.");
 console.log("\n── the span this suite reads, asserted rather than assumed ──");
 // Every cell below is a count over this text. A file that moved, or an anchor that was renamed,
 // would make the counts trivially zero and several claims vacuously true.
@@ -58,11 +64,32 @@ c("WRONG-TODAY: the chokepoint itself still exists",
 pending("both commands accept through the journal rail (submission → decision fact → goal bind) and serveSpawnGoal is DELETED");
 
 console.log("\n── WRONG-TODAY (2/2): the reconcile index is written and filtered by the Model-B accept path ──");
-// TWO sites, not one: the spawn/launch chokepoint and the turn relay's serve path both write the
-// row from a live manager's memory. The count pins both so a third such writer is noticed, and
-// the flip has to move both.
-c("WRONG-TODAY: the manager's own serve paths write the goalidx row (`recordGoalIndex`): spawn and turn",
-  count("await recordGoalIndex(") === 2, { sites: count("await recordGoalIndex(") });
+// Three paths write from a live manager's memory: spawn/launch, the turn relay, and
+// the once task accepted inside spawn. Pin each writer and its index-before-bind ordering,
+// as well as the total, so a missing path cannot be hidden by a duplicate elsewhere.
+const methodBody = (name: string): string => {
+  const start = src.indexOf(`private async ${name}(`);
+  const end = src.indexOf("\n  private ", start + 1);
+  return start < 0 || end < 0 ? "" : src.slice(start, end);
+};
+for (const [name, writer] of [
+  ["serveSpawnGoal", "recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, owner: agentTriple.owner"],
+  ["serveTurnGoal", "recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, owner: t.owner"],
+  ["acceptOnceTurn", "recordGoalIndex(gw.ctx, ref, o.executor.lifecycleUid, { name: seat.name, owner: seat.owner"],
+] as const) {
+  const body = methodBody(name);
+  const index = body.indexOf("await recordGoalIndex(");
+  const bind = body.indexOf("await bindGoal(");
+  c(`WRONG-TODAY: ${name} writes its own goalidx acceptance before binding`,
+    body.includes(writer) && body.split("await recordGoalIndex(").length - 1 === 1
+      && index >= 0 && bind > index,
+    { bytes: body.length, index, bind });
+}
+c("WRONG-TODAY: spawn accepts the once task through acceptOnceTurn",
+  methodBody("serveSpawnGoal").includes("await this.acceptOnceTurn({ spawnRef: ref, fingerprint, command: ctx.subject.command, executor, acceptedAt, ...task })")
+    && count("this.acceptOnceTurn(") === 1);
+c("WRONG-TODAY: only spawn, turn, and once-task acceptance write goalidx",
+  count("await recordGoalIndex(") === 3, { sites: count("await recordGoalIndex(") });
 // The sweep's skip reads two in-memory maps now (the turn relay keeps its own twin); both are the
 // same Model-B dependence on a live incarnation's memory, and both go when the flip lands.
 c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances` (and its turn twin), IN-MEMORY maps the serve paths fill",

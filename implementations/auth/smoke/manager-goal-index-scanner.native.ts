@@ -5,8 +5,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
-import { JetStreamApiCodes, JetStreamApiError, jetstreamManager } from "@nats-io/jetstream";
-import { createEndpointStreams, createSpaceAuth, isReachable, meetsBrokerFloor, mintLifecycleUid, newIdentity, recordAtomicKey, RECORD_KINDS, recordsBucket, recordsKvStreamName, serverConfig } from "@cotal-ai/core";
+import { JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { headers } from "@nats-io/transport-node";
+import { actionContext, clearGoalIndex, createEndpointStreams, createSpaceAuth, isReachable, meetsBrokerFloor, mintLifecycleUid, recordAtomicKey, recordGoalIndex, RECORD_KINDS, recordsBucket, recordsKvStreamName, serverConfig } from "@cotal-ai/core";
 import { openAuthorityClient } from "../src/authority-client.js";
 import { openRecordsScannerCandidate } from "../src/records-scanner.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
@@ -49,15 +50,18 @@ try {
     v: 1 as const, endpoint: "manager", owner: rowOwner, actor: "cli", uid: mintLifecycleUid(), goalId, iid: mintLifecycleUid(),
   });
   const key = (r: ReturnType<typeof row>) => recordAtomicKey(RECORD_KINDS.goalidx, [r.endpoint, r.owner, r.actor, r.uid, r.goalId]);
+  const ref = (r: ReturnType<typeof row>) => ({ endpoint: r.endpoint, caller: { owner: r.owner, actor: r.actor, uid: r.uid }, goalId: r.goalId });
+  const ctx = await actionContext(fixture.nc, space);
   const own = row(owner);
   const foreign = row(foreignOwner);
-  await kv.create(key(own), enc.encode(JSON.stringify(own)));
+  await recordGoalIndex(ctx, ref(own), own.iid);
   await kv.create(key(foreign), enc.encode(JSON.stringify(foreign)));
   const malformedForeignKey = recordAtomicKey(RECORD_KINDS.goalidx, ["manager", foreignOwner, "cli", mintLifecycleUid(), `goal${mintLifecycleUid()}`]);
   await kv.create(malformedForeignKey, enc.encode("not-json"));
 
   let guardChecks = 0;
   let shapeObserved = false;
+  let afterCreate: (() => Promise<void>) | undefined;
   candidate = await openRecordsScannerCandidate({
     server: servers, space, dataAccount: auth.account, log: () => {},
     probe: { afterManagerGoalIndexCreate: async () => {
@@ -65,6 +69,7 @@ try {
       shapeObserved = info.config.filter_subject === `$KV.${recordsBucket(space)}.goalidx.manager.${owner}.>` &&
         info.config.deliver_subject === undefined && info.config.durable_name === undefined &&
         info.config.ack_policy === "none" && info.config.deliver_policy === "last_per_subject";
+      await afterCreate?.();
     } },
   });
   const scanner = candidate.activate({ assertHeld: async () => { guardChecks++; } });
@@ -79,19 +84,51 @@ try {
   catch (error) { cleaned = error instanceof JetStreamApiError && error.code === JetStreamApiCodes.ConsumerNotFound; }
   check("host scan consumer is cleaned after the scan", cleaned);
 
-  const mismatchedRow = row(owner);
-  const mismatchKey = recordAtomicKey(RECORD_KINDS.goalidx, ["manager", owner, mismatchedRow.actor, mismatchedRow.uid, `goal${mintLifecycleUid()}`]);
+  const corruptOwner = `u_${"c".repeat(26)}`;
+  const mismatchedRow = row(corruptOwner);
+  const mismatchKey = recordAtomicKey(RECORD_KINDS.goalidx, ["manager", corruptOwner, mismatchedRow.actor, mismatchedRow.uid, `goal${mintLifecycleUid()}`]);
   await kv.create(mismatchKey, enc.encode(JSON.stringify(mismatchedRow)));
   let mismatchMessage = "";
-  try { await scanner.scanManagerGoalIndex(owner); } catch (error) { mismatchMessage = (error as Error).message; }
+  try { await scanner.scanManagerGoalIndex(corruptOwner); } catch (error) { mismatchMessage = (error as Error).message; }
   check("own key/body mismatch fails named", /body qualifiers .* do not match key/.test(mismatchMessage), mismatchMessage);
-  await kv.delete(mismatchKey);
+  await kv.put(mismatchKey, enc.encode("not-json"));
+  let malformed = "";
+  try { await scanner.scanManagerGoalIndex(corruptOwner); } catch (error) { malformed = (error as Error).message; }
+  check("malformed live row still fails named", /does not decode as JSON/.test(malformed), malformed);
+  // Records forbid rollup. Inject only the corrupt operation header without changing that policy.
+  const corrupt = headers();
+  corrupt.set("KV-Operation", "PURGE");
+  await jetstream(fixture.nc).publish(`$KV.${recordsBucket(space)}.${mismatchKey}`, new Uint8Array(), { headers: corrupt });
   let marker = "";
-  try { await scanner.scanManagerGoalIndex(owner); } catch (error) { marker = (error as Error).message; }
-  check("own DEL marker fails named", /carries a DEL marker/.test(marker), marker);
+  try { await scanner.scanManagerGoalIndex(corruptOwner); } catch (error) { marker = (error as Error).message; }
+  check("own PURGE marker still fails named", /carries a PURGE marker/.test(marker), marker);
+
+  const cleared = row(owner);
+  await recordGoalIndex(ctx, ref(cleared), cleared.iid);
+  await clearGoalIndex(ctx, ref(cleared));
+  check("native goal-index clear writes a DEL marker", (await kv.get(key(cleared)))?.operation === "DEL");
+  const scanEquals = async (name: string, expected: unknown) => {
+    let result: unknown;
+    let error: unknown;
+    try { result = await scanner.scanManagerGoalIndex(owner); } catch (e) { error = e; }
+    check(name, error === undefined && JSON.stringify(result) === JSON.stringify(expected), error ?? result);
+  };
+  await scanEquals("a cleared goal does not prevent the boot scan returning a live predecessor", [own]);
+
+  const concurrent = row(owner);
+  await recordGoalIndex(ctx, ref(concurrent), concurrent.iid);
+  afterCreate = async () => { await clearGoalIndex(ctx, ref(concurrent)); };
+  await scanEquals("a goal cleared during the scan is omitted while the live predecessor remains", [own]);
+  afterCreate = undefined;
+  await clearGoalIndex(ctx, ref(own));
+  await scanEquals("an owner with only cleared goals has an empty index", []);
+  cleaned = false;
+  try { await jsm.consumers.info(recordsKvStreamName(space), "cotal-manager-goalidx-scan"); }
+  catch (error) { cleaned = error instanceof JetStreamApiError && error.code === JetStreamApiCodes.ConsumerNotFound; }
+  check("host scan consumer is cleaned after terminal and concurrent clears", cleaned);
 
   await scanner.close();
-  check("every native scanner cell ran", passed + failed === 7, { passed, failed });
+  check("every native scanner cell ran", passed + failed === 13, { passed, failed });
   console.log(`manager goal-index scanner native: ${passed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 } finally {

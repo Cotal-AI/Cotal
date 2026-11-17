@@ -1,0 +1,311 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/anycast-take-gate-auth.smoke.ts"
+  ],
+  "command": "pnpm smoke:anycast-take-gate:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=90",
+  "mutations": [
+    {
+      "name": "a role request skips its take and lands in the inbox at once",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this.gated.push(pending);",
+      "replace": "this.inbox.push(pending);",
+      "expectRed": "1f a read before the take does not show it",
+      "cell": "1f a read before the take does not show it"
+    },
+    {
+      "name": "a take refused with a drop keeps the copy it refused",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (outcome.drop) {\n      this.dropGated(p);\n      return;\n    }",
+      "replace": "    if (outcome.drop) {\n      return;\n    }",
+      "expectRed": "2c and drops its copy",
+      "cell": "2c and drops its copy"
+    },
+    {
+      "name": "a notice-shaped DM from any sender is read as the daemon's notice",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);",
+      "replace": "this.ingest(m, delivery, meta, true);",
+      "expectRed": "4a it arrives as a DM from its real sender",
+      "cell": "4a it arrives as a DM from its real sender"
+    },
+    {
+      "name": "status by seq on an open mesh is asked anyway",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (!isAuthed(config))\n            return err(\"This is an open mesh",
+      "replace": "          if (false)\n            return err(\"This is an open mesh",
+      "expectRed": "3g on an open mesh status is refused, naming why",
+      "cell": "3g on an open mesh status is refused, naming why"
+    },
+    {
+      "name": "the read takes every request in its preview instead of the ones its reply carries",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return picked;",
+      "replace": "      chosen = new Set(picked.map((i) => i.recvKey));\n      return p;",
+      "expectRed": "6c the requests it left still read waiting",
+      "cell": "6c the requests it left still read waiting",
+      "note": "The read takes every request in the preview instead of the ones its reply carries, so two requests it never showed can no longer be cancelled."
+    },
+    {
+      "name": "a refused take keeps its room, so the request behind it is not carried",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (!missed.length || showable) break;",
+      "replace": "    break;",
+      "expectRed": "6e the next read carries the one still waiting and never the cancelled one",
+      "cell": "6e the next read carries the one still waiting and never the cancelled one",
+      "note": "A refused take no longer frees its room, so a read whose first choice was cancelled carries nothing although the request behind it fits."
+    },
+    {
+      "name": "the take ignores the host's choice and takes every held request in scope",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      .filter((p) => keys.has(p.item.recvKey) && this.mayOffer(p))",
+      "replace": "      .filter((p) => this.mayOffer(p))",
+      "expectRed": "6c the requests it left still read waiting",
+      "cell": "6c the requests it left still read waiting",
+      "note": "The take ignores the host's choice and takes every held request in scope."
+    },
+    {
+      "name": "a request taken before a link drop stays showable while the link is down",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        for (const p of this.inbox.filter((x) => x.take && !this.inFlightIds.has(x.item.recvKey))) this.regate(p);",
+      "replace": "        void 0;",
+      "expectRed": "7b when the link drops it is held again, not shown",
+      "cell": "7b when the link drops it is held again, not shown",
+      "note": "A request taken before the drop stays showable while the link is down, though this reader cannot vouch for its copy."
+    },
+    {
+      "name": "an exact drain hands back a held request that was never taken",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey) && p.takenOnce);",
+      "replace": "    const regated = this.gated.filter((p) => wanted.has(p.item.recvKey));",
+      "expectRed": "8a the drain returns nothing for it",
+      "cell": "8a the drain returns nothing for it",
+      "note": "An exact drain hands back and acks a held request that was never taken or shown, so its sender loses the cancel and its status never reads taken."
+    },
+    {
+      "name": "a waiting request's status stops naming the role's holder online now",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "            const holders = status.state === \"waiting\" ? await agent.roleHolders(status.role) : undefined;",
+      "replace": "            const holders = undefined;",
+      "expectRed": "9a a waiting request's status names the role's holder online now, by name and id",
+      "cell": "9a a waiting request's status names the role's holder online now, by name and id",
+      "note": "A waiting request's status stops reading the roster, so it can no longer say who holds the role now."
+    },
+    {
+      "name": "a failed roster read renders as no holder online",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (holders === undefined) return `holders unknown ${when}: the presence view was not current`;",
+      "replace": "  if (holders === undefined) holders = [];",
+      "expectRed": "9c a failed roster read reads unknown, not empty",
+      "cell": "9c a failed roster read reads unknown, not empty",
+      "note": "A roster read that failed renders as no holder online, a claim the read never made."
+    },
+    {
+      "name": "a take the read waits on is announced as a new arrival",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
+      "replace": "      this.emit(\"incoming\", p.item);",
+      "expectRed": "10b a read that waits on the take shows the request and announces it no more",
+      "cell": "10b a read that waits on the take shows the request and announces it no more",
+      "note": "A take the read waits on is announced as a new arrival, so a read that shows the request announces it again (10b, and 1h for the first read). 10c no longer catches it: the gateway holds a connection while it is read, so an arrival during the read is signalled only if something is still unread when the read ends, and that read emptied the inbox."
+    },
+    {
+      "name": "a take that answers after its read gave up is admitted silently",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
+      "replace": "      if (false) this.emit(\"incoming\", p.item);",
+      "expectRed": "10e a take that lands after its read stopped waiting is announced as an arrival",
+      "cell": "10e a take that lands after its read stopped waiting is announced as an arrival",
+      "note": "A take that answers after its read gave up is admitted silently, so no host hears that the request may be shown now."
+    },
+    {
+      "name": "the pending list leaves out held role requests",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const held = scope === \"pull-only\" ? [] : this.gated;\n    return [...this.inbox.filter((p) => this.inScope(p, scope)), ...held].map((p) => p.item);",
+      "replace": "    return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);",
+      "expectRed": "10d the pending list a notice counts names a held request that a read cannot see yet",
+      "cell": "10d the pending list a notice counts names a held request that a read cannot see yet",
+      "note": "The pending list leaves out held role requests, so a notice that counts it reads none of them."
+    },
+    {
+      "name": "an answer that crossed a link drop is treated as the new link's",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "replace": "",
+      "expectRed": "11c no held reason is reported for it",
+      "cell": "11c no held reason is reported for it",
+      "note": "An answer that crossed a link drop is treated as the new link's. The take that ended with the old connection reads as a daemon that did not answer, so the request is held with that reason and no read may ask again until the retry delay."
+    },
+    {
+      "name": "a take that ends after the link is back announces nothing",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "replace": "    if (this.transportDrops !== drops) {\n      return;\n    }\n",
+      "expectRed": "18d with no read since the reconnect, the old take ending announces the request once more",
+      "cell": "18d with no read since the reconnect, the old take ending announces the request once more",
+      "note": "A take still out when the link came back, with no read since, ends without telling the host, so a host that waits for an announcement never reads the request until the broker redelivers it."
+    },
+    {
+      "name": "a take that ended with the link is announced while the link is still down",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      if (this._transportConnected) this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "replace": "    if (this.transportDrops !== drops) {\n      if (p.takingDrops !== drops) return;\n      this.emit(\"incoming\", p.item);\n      return;\n    }\n",
+      "expectRed": "11b the request is announced again, so its host reads it once more",
+      "cell": "11b the request is announced again, so its host reads it once more",
+      "note": "The request is announced while the link is still down as well as at the reconnect, so a host that reads on each announcement reads during the drop for nothing."
+    },
+    {
+      "name": "a request held through the retry wait counts toward a wake",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;",
+      "replace": "    const held = this.gated.filter((p) => !skip?.(p.item)).length;",
+      "expectRed": "13b while the retry is waited out it counts toward no wake",
+      "note": "A request held through the retry wait counts toward a wake, so a host is woken for a read that can take nothing until the wait ends.",
+      "cell": "13b while the retry is waited out it counts toward no wake"
+    },
+    {
+      "name": "a copy whose ack wait ran out still counts toward a wake",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.dropLapsedTakes();\n    const held = this.mayAskTakes()",
+      "replace": "    const held = this.mayAskTakes()",
+      "expectRed": "14a once its ack wait ran out it counts toward no wake",
+      "note": "A copy whose ack wait ran out still counts toward a wake until a read drops it, so a host is woken for a request it no longer holds.",
+      "cell": "14a once its ack wait ran out it counts toward no wake"
+    },
+    {
+      "name": "a read whose caller went away still takes what it chose",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "round < READ_TAKE_ROUNDS && !signal?.aborted; round++",
+      "replace": "round < READ_TAKE_ROUNDS; round++",
+      "expectRed": "15a the request that read would have shown still reads waiting",
+      "note": "A read whose caller went away still takes what it chose, so a request is recorded as shown to nobody.",
+      "cell": "15a the request that read would have shown still reads waiting"
+    },
+    {
+      "name": "the held note is read before the take",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const { warning, signal, ...render } = opts;",
+      "replace": "  const { signal, ...render } = opts;\n  const frozen = opts.warning();\n  const warning = () => frozen;",
+      "expectRed": "16a a read that shows a DM names the request its take left held",
+      "note": "The note is read before the take, when nothing was held yet, so a reply that shows a DM says nothing of the request the take left held.",
+      "cell": "16a a read that shows a DM names the request its take left held"
+    },
+    {
+      "name": "the focus read's empty answer carries no connection note read after the take",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        const connectionWarning = inboxConnectionWarning(agent);\n        const warning = focusWarning();",
+      "replace": "        const connectionWarning = \"\";\n        const warning = focusWarning();",
+      "expectRed": "16b in focus mode a read whose take left it held says so, not that the inbox is empty",
+      "note": "The focus read's empty answer uses no note read after the take, as it did when the note was read before it, so a held request reads as an empty inbox.",
+      "cell": "16b in focus mode a read whose take left it held says so, not that the inbox is empty"
+    },
+    {
+      "name": "an undecided take ends the read with nothing chosen in its place",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (undecided.size) showable = new Set(agent.peekInbox(scope).map((i) => i.recvKey));",
+      "replace": "    if (undecided.size) break;",
+      "expectRed": "17a the reply carries the channel post and not the request",
+      "note": "A take left undecided ends the read with nothing chosen in its place, so the channel post that fits waits for another read.",
+      "cell": "17a the reply carries the channel post and not the request"
+    },
+    {
+      "name": "a read after a reconnect waits on the old link's take",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "(p.taking !== undefined && p.takingDrops === this.transportDrops ? p.taking : this.startTake(p))",
+      "replace": "(p.taking ?? this.startTake(p))",
+      "expectRed": "18a a read after the reconnect asks for the take again rather than waiting on the old link's",
+      "note": "A read after an in-place reconnect waits on the take the old link sent, which the daemon may never answer, instead of asking again.",
+      "cell": "18a a read after the reconnect asks for the take again rather than waiting on the old link's"
+    },
+    {
+      "name": "the old link's take ending announces the request while a newer take is asked",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (p.takingDrops !== drops) return;\n",
+      "replace": "",
+      "expectRed": "18b the old take ending announces nothing while the new one is still asked",
+      "note": "The old link's take ending announces the request again while the take a later read asked for is still waiting, so a host is woken for it twice.",
+      "cell": "18b the old take ending announces nothing while the new one is still asked"
+    },
+    {
+      "name": "the old take ending clears the newer take a read started",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (p.taking === run) p.taking = undefined;",
+      "replace": "      p.taking = undefined;",
+      "expectRed": "18c and a read then waits on the new take rather than asking a third time",
+      "note": "The old take ending clears the newer take a read started, so the next read asks a third time instead of waiting on it.",
+      "cell": "18c and a read then waits on the new take rather than asking a third time"
+    },
+    {
+      "name": "an inbox read is not held, and clears the latch before it reads",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        const result = spec.name === \"cotal_inbox\" ? await holdFor(c, run) : await run();",
+      "replace": "        if (spec.name === \"cotal_inbox\") signalled.delete(c.agent);\n        const result = await run();",
+      "expectRed": "20a a DM that a queued read shows leaves the next DM signalled",
+      "note": "As before the fix: a DM that arrives while the read is queued behind one waiting on a take is signalled, the read then shows it, and the latch stays set over an empty inbox, so the next DM is never signalled.",
+      "cell": "20a a DM that a queued read shows leaves the next DM signalled"
+    },
+    {
+      "name": "the last hold ends without checking what arrived during it",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (left === 0 && missed.delete(c.agent)) checks.get(c.agent)?.();\n",
+      "replace": "",
+      "expectRed": "20b a DM that arrives after the read chose is signalled once the read returns, not during it",
+      "note": "A DM that arrived after the read chose what it shows stays buffered with nothing signalled for it until another message arrives.",
+      "cell": "20b a DM that arrives after the read chose is signalled once the read returns, not during it"
+    },
+    {
+      "name": "a reply chosen again from what needs no take still offers a request never asked",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": " && (!showable || showable.has(i.recvKey))",
+      "replace": "",
+      "expectRed": "17c a read whose take is undecided names nothing of the request behind it that it never asked",
+      "note": "The read chose again from what needs no take after the first request's take stayed undecided, so the request behind it, never asked, is named as too large to carry.",
+      "cell": "17c a read whose take is undecided names nothing of the request behind it that it never asked"
+    },
+    {
+      "name": "a held request is offered to a read while the link is down",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return this._transportConnected && (!this.heldTake || Date.now() >= this.heldTake.retryAt);",
+      "replace": "    return !this.heldTake || Date.now() >= this.heldTake.retryAt;",
+      "expectRed": "21a while the link is down a read is offered no held request, and none wakes",
+      "cell": "21a while the link is down a read is offered no held request, and none wakes",
+      "note": "A read during the drop chooses the request, its take returns at once without asking, and a host that reads whenever one is offered reads it again with no turn of the event loop between."
+    },
+    {
+      "name": "a request whose take is out is offered to a read while the link is down",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return (p.taking !== undefined && this._transportConnected) || this.mayAskTakes();",
+      "replace": "    return p.taking !== undefined || this.mayAskTakes();",
+      "expectRed": "11h while the link is down a read is offered no request whose take was out when it dropped",
+      "cell": "11h while the link is down a read is offered no request whose take was out when it dropped",
+      "note": "A take out when the link dropped cannot admit the request until the link is back, so a read offered it then chooses it and shows nothing."
+    },
+    {
+      "name": "the reconnect announces no held request",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        for (const p of this.gated) if (p.taking === undefined) this.emit(\"incoming\", p.item);\n",
+      "replace": "",
+      "expectRed": "21b once the link is back the held request is announced again",
+      "cell": "21b once the link is back the held request is announced again",
+      "note": "A request a read could not be offered while the link was down is never announced, so a host that waits for an announcement never reads it."
+    },
+    {
+      "name": "the preview lists held requests after everything shown",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "].sort((a, b) => a.arrival - b.arrival).map((p) => p.item);",
+      "replace": "].map((p) => p.item);",
+      "expectRed": "22a the preview offers the request ahead of the chatter that arrived after it",
+      "cell": "22a the preview offers the request ahead of the chatter that arrived after it",
+      "note": "A role request that arrived before chatter is offered after it, so a host that shows the head of its preview leaves the request behind the chatter."
+    },
+    {
+      "name": "a taken request joins the end of the inbox",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    while (at > 0 && this.inbox[at - 1]!.arrival > pending.arrival) at--;\n",
+      "replace": "",
+      "expectRed": "22b once taken it is shown in that place",
+      "cell": "22b once taken it is shown in that place",
+      "note": "A request taken after chatter arrived is shown after that chatter rather than where it arrived."
+    }
+  ]
+}

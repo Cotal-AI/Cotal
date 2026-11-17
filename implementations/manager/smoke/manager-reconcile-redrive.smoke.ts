@@ -11,7 +11,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
@@ -87,7 +87,7 @@ const conf = join(root, "server.conf");
 const managerInstanceId = mintLifecycleUid();
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(root), auth);
-createManagerInstanceIdentity(root, space, { instanceId: managerInstanceId, serveIdentity: newIdentity() });
+createManagerInstanceIdentity(root, space, () => ({ instanceId: managerInstanceId, serveIdentity: newIdentity() }));
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: brokerStore, host: "127.0.0.1" }));
 const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 teardownOnSignal(broker, conf);
@@ -325,7 +325,7 @@ try {
   const shutdownInstanceId = mintLifecycleUid();
   mkdirSync(join(shutdownRoot, ".cotal", "agents"), { recursive: true });
   saveSpaceAuth(authDir(shutdownRoot), auth);
-  createManagerInstanceIdentity(shutdownRoot, space, { instanceId: shutdownInstanceId, serveIdentity: newIdentity() });
+  createManagerInstanceIdentity(shutdownRoot, space, () => ({ instanceId: shutdownInstanceId, serveIdentity: newIdentity() }));
   await writeOrphan("shutdown-first", false, shutdownInstanceId, shutdownRoot);
   await writeOrphan("shutdown-last", false, shutdownInstanceId, shutdownRoot);
   let shutdownFirstEntered = false;

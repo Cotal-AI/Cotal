@@ -31,6 +31,7 @@
  * Run: pnpm smoke:cli-entry
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -77,6 +78,11 @@ function cotal(args: string[], prepare?: (cotalHome: string) => void, extraEnv: 
   const cotalHome = join(root, "home");
   cleanup.push(root, cfg);
   mkdirSync(cotalHome, { recursive: true });
+  // Catalog commands resolve a prepared space's project without starting a broker.
+  if (args[0] === "persona" || args[0] === "personas") {
+    mkdirSync(join(cotalHome, "prepared"), { recursive: true });
+    writeFileSync(join(cotalHome, "prepared", `${spaceSegment("entry")}.json`), JSON.stringify({ space: "entry", root, ts: "2026-10-23T00:00:00.000Z" }));
+  }
   prepare?.(cotalHome);
   const sandbox = recordSmokeSandbox({ root, cotalHome, xdgConfigHome: cfg });
   const options = {
@@ -403,6 +409,9 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     const env = { LC_ALL: "", LC_CTYPE: "", LANG: "", ...set };
     const named = Object.entries(set).map(([key, value]) => `${key}=${value}`).join(" ") || "no locale variable";
     const help = cotal(["help"], undefined, env);
+    const entry = cotal([], undefined, env);
+    check(`under ${named} bare entry uses the locale's send placeholder`,
+      entry.status === 0 && entry.stdout.includes(`cotal send -t <name> "${ascii ? "..." : "…"}"`) && nonAscii.test(entry.stdout) === !ascii, shown(entry));
     const error = cotal(["nope"], undefined, env);
     check(`under ${named} help and an error are ${ascii ? "ASCII" : "drawn with UTF-8 marks"}`,
       help.status === 0 && error.status === 1 && nonAscii.test(help.stdout + error.stderr) === !ascii && error.stderr.startsWith(ascii ? "Request refused\n  unknown command: nope" : "✗ unknown command: nope"), { help: help.stdout.slice(0, 200), error: shown(error) });
@@ -430,6 +439,34 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
     writeFileSync(join(home, "..", ".cotal", "agents", "x.md"), "---\nname: x\n---\nhi\n");
   };
+  for (const [sub, words, flags] of [
+    ["list", ["x"], []],
+    ["show", ["x", "y"], []],
+    ["edit", ["x", "y"], []],
+    ["new", ["x", "y"], ["--prompt", "Instructions", "--subscribe", "", "--force"]],
+    ["rm", ["x", "y"], ["--force"]],
+  ] as const) {
+    let file = "";
+    const r = cotal(["personas", sub, ...words, ...flags], (home) => {
+      persona(home);
+      file = join(home, "..", ".cotal", "agents", "x.md");
+    }, noSeed);
+    check(`personas ${sub} refuses surplus names before changing the catalog`,
+      r.status === 1 && r.stderr.includes("usage: cotal personas") &&
+        existsSync(file) && readFileSync(file, "utf8") === "---\nname: x\n---\nhi\n" &&
+        readdirSync(join(file, "..")).join() === "x.md", shown(r));
+  }
+  let createdFile = "";
+  const created = cotal(["personas", "new", "valid", "--prompt", "Instructions", "--subscribe", ""], (home) => {
+    createdFile = join(home, "..", ".cotal", "agents", "valid.md");
+  }, noSeed);
+  check("control: personas new still creates one named persona", created.status === 0 && existsSync(createdFile), shown(created));
+  let removedFile = "";
+  const removed = cotal(["personas", "rm", "x", "--force"], (home) => {
+    persona(home);
+    removedFile = join(home, "..", ".cotal", "agents", "x.md");
+  }, noSeed);
+  check("control: personas rm still removes one named persona", removed.status === 0 && !existsSync(removedFile), shown(removed));
   const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
   const edited = cotal(["personas", "edit", "x"], persona, editor);
   check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
@@ -674,6 +711,21 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     check(`cotal ${argv.join(" ")} refuses control characters`,
       r.status === 1 && r.stderr.includes(`${argv[3]} takes a label without control characters`) && !raw.test(r.stdout + r.stderr), shown(r));
   }
+  // `personas new` refuses a role `spawn --role` would refuse, as `persona create` does, and writes
+  // nothing: no new persona, and a persona it would replace with --force stays as it was.
+  for (const [name, role] of [["broken", "bad.role"], ["x", "bad role"], ["x", "bad#role"]] as const) {
+    let agents = "";
+    const r = cotal(["personas", "new", name, "--prompt", "body", "--subscribe", "", "--role", role, ...(name === "x" ? ["--force"] : [])], (home) => { persona(home); agents = join(home, "..", ".cotal", "agents"); }, noSeed);
+    check(`personas new ${name} --role ${JSON.stringify(role)} is refused naming the NATS-safe token rule, and nothing is written`,
+      r.status === 1 && r.stderr.includes(`--role: invalid role "${role}": must be a single NATS-safe token ([A-Za-z0-9_-])`) && !r.stdout.includes("spawn it") &&
+        readdirSync(agents).join() === "x.md" && readFileSync(join(agents, "x.md"), "utf8") === "---\nname: x\n---\nhi\n", { ...shown(r), files: readdirSync(agents) });
+  }
+  {
+    let file = "";
+    const r = cotal(["personas", "new", "x", "--prompt", "body", "--subscribe", "", "--role", "re-view_er1", "--force"], (home) => { persona(home); file = join(home, "..", ".cotal", "agents", "x.md"); }, noSeed);
+    check("control: personas new --force with a valid role saves it and suggests the launch with that role",
+      r.status === 0 && r.stdout.includes("spawn it:  `cotal spawn x --role re-view_er1`") && readFileSync(file, "utf8").includes("role: re-view_er1"), shown(r));
+  }
   // A channel refusal quotes the value with its control characters escaped.
   for (const flag of ["--subscribe", "--allow-subscribe", "--allow-publish"]) {
     const r = cotal(["persona", "create", "q", "--prompt", "body", ...(flag === "--subscribe" ? [] : ["--subscribe", ""]), flag, `v${E}`], persona, noSeed);
@@ -904,6 +956,50 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   const envelope = (() => { try { return JSON.parse(json.stdout) as { target?: { file?: string }; error?: { code?: string; remedy?: string } }; } catch { return undefined; } })();
   check("team check --json of a folder gives USAGE_INVALID with the folder as target.file and the Next",
     json.status === 1 && envelope?.error?.code === "USAGE_INVALID" && envelope.target?.file === dir && envelope.error.remedy === "name the manifest file in it, such as its cotal.yaml", shown(json));
+}
+
+// A retained teardown ledger uses the manifest source hash, without reading launch-time personas.
+{
+  let ledgerPath = "", ledgerBefore = "";
+  const prepare = (home: string, ledger: boolean): void => {
+    const root = dirname(home), file = join(root, "old.yaml");
+    mkdirSync(join(root, ".cotal", "manifests"), { recursive: true });
+    mkdirSync(join(home, "meshes"), { recursive: true });
+    writeFileSync(join(home, "meshes", `${spaceSegment("retiredledger")}.json`), JSON.stringify({
+      space: "retiredledger", server: "nats://127.0.0.1:1", root, mode: "open", origin: "up", ts: "2026-11-09T00:00:00.000Z",
+    }));
+    const source = "apiVersion: cotal/v1\nkind: Mesh\nspace: retiredledger\nagent: claude\nagents:\n  worker: ./removed-persona.md\nchannels: {}\n";
+    writeFileSync(file, source);
+    if (ledger) {
+      ledgerPath = join(root, ".cotal", "manifests", "oldrun.json");
+      ledgerBefore = JSON.stringify({ apiVersion: "cotal-ledger/v1", kind: "MeshLedger", runId: "oldrun",
+        space: "retiredledger", server: "nats://127.0.0.1:1", manifestPath: file,
+        manifestHash: createHash("sha256").update(source).digest("hex").slice(0, 16), teardownMode: "ledger-scoped",
+        created: { channels: ["oldchannel"], agents: [] } });
+      writeFileSync(ledgerPath, ledgerBefore);
+    }
+  };
+  for (const run of [[], ["--run", "oldrun"]]) {
+    const r = cotal(["down", "-f", "old.yaml", "--dry-run", ...run], (home) => prepare(home, true), noSeed);
+    check(`ledger dry-run ${run.length ? "by explicit run" : "by source hash"} needs no launch persona`,
+      r.status === 0 && r.stdout.includes("Would remove (dry run)") && r.stdout.includes("#oldchannel")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
+  }
+  for (const format of ["--json", "--plain"]) {
+    const r = cotal(["down", "-f", "old.yaml", "--dry-run", format], (home) => prepare(home, true), noSeed);
+    check(`ledger preview retains its ${format} refusal without loading personas`,
+      r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && !(r.stdout + r.stderr).includes("SCHEMA_INVALID")
+        && readFileSync(ledgerPath, "utf8") === ledgerBefore, shown(r));
+  }
+  for (const format of [[], ["--json"], ["--plain"]]) {
+    const r = cotal(["down", "-f", "old.yaml", ...format], (home) => prepare(home, false), noSeed);
+    check(`file-form apply ${format[0] ?? "text"} names the recorded stack's stop without inventing a run ID`,
+      r.status === 2 && (r.stdout + r.stderr).includes("UNSUPPORTED") && (r.stdout + r.stderr).includes("no run ID is needed")
+        && !(r.stdout + r.stderr).includes("--run <id>"), shown(r));
+  }
+  const noLedger = cotal(["down", "-f", "old.yaml", "--dry-run", "--json"], (home) => prepare(home, false), noSeed);
+  check("no-ledger recorded-stack preview still validates the manifest's persona",
+    noLedger.status === 1 && noLedger.stdout.includes("SCHEMA_INVALID") && noLedger.stdout.includes("removed-persona.md"), shown(noLedger));
 }
 
 // ── Every alias is its command: same help, same refusal ───────────────────────────────────────────

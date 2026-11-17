@@ -53,6 +53,7 @@ import {
   aclKey,
   membersBucket,
   memberKey,
+  permissionsFor,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -431,10 +432,19 @@ try {
 
       await dnc.close().catch(() => {});
     }
-    let wildcardRefused = false;
-    try { await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["team.>"] } }); }
-    catch { wildcardRefused = true; }
-    check("MEMBERS: a wildcard member channel is refused at mint (no prefix-wide grant)", wildcardRefused);
+    let wildcardRefused = 0;
+    for (const pattern of [">", "team.*", "team.*.>"]) {
+      try { await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: [pattern] } }); }
+      catch { wildcardRefused++; }
+    }
+    check("MEMBERS: a wildcard member channel that is not a family is refused at mint (no prefix-wide grant)", wildcardRefused === 3);
+    // A family row (#5404) is one exact key: its `>` is `=` there, so its grants name that key alone.
+    const minter = newIdentity().id;
+    const familyGrants = ((permissionsFor("deprovisioner", space, { owner: DEV_OWNER, actor: minter, connId: minter },
+      { deprovisionTarget: { principal: agent.id, lifecycleUid: uidE, memberChannels: ["team.>"] } }) as { pub?: { allow?: string[] } }).pub?.allow ?? [])
+      .filter((g) => g.includes(`${membersBucket(space)}.`));
+    check("MEMBERS: a family member channel mints only its exact = key, with no wildcard token",
+      familyGrants.length === 2 && familyGrants.every((g) => g.endsWith(memberKey("team.>", who, uidE)) && !g.split(".").some((t) => t === ">" || t === "*")), familyGrants);
   }
   // Coordinator audit: concurrent callers use the shipped teardown and real target-pinned grants.
   const auditProv = new CotalEndpoint({

@@ -11,7 +11,7 @@
  * and is kept as offline.
  */
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
@@ -50,6 +50,7 @@ let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let removeMesh!: typeof import("@cotal-ai/workspace").removeMesh;
 let resolveMeshTarget!: typeof import("@cotal-ai/workspace").resolveMeshTarget;
 let saveSpaceAuth!: typeof import("@cotal-ai/workspace").saveSpaceAuth;
+let setAdoptedCurrent!: typeof import("@cotal-ai/workspace").setAdoptedCurrent;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let spawnComplete!: typeof import("../src/commands/spawn.js").spawnComplete;
 let spaceCompletion!: typeof import("../src/lib/completion.js").spaceCompletion;
@@ -74,6 +75,7 @@ try {
     resolveMeshTarget,
     saveSpaceAuth,
     setCurrent,
+    setAdoptedCurrent,
   } = await import("@cotal-ai/workspace"));
   ({ checkEnrollmentBundle, enrollmentInput, runBearerPreflight, scrubEnrollmentEnv, spawnComplete, spawnPersona } = await import("../src/commands/spawn.js"));
   ({ listPersonas } = await import("../src/lib/personas.js"));
@@ -219,8 +221,8 @@ try {
     String(dangling),
   );
   // Inside a project whose root has its own space, that space is the target over the selection.
-  const inOwn = resolveMeshTarget(projA);
-  check("inside a project with its own space, that space is the target over a dangling selection", inOwn.source === "local-recorded" && inOwn.space === "teamA", inOwn);
+  assert.throws(() => resolveMeshTarget(projA), (e: unknown) => isWorkspaceTargetError(e) && e.code === "unknown-space" && e.details.selected === true);
+  check("dangling explicit selection refuses in another project too", true);
   clearCurrent();
 
   // 2 meshes, no current → ambiguous: error names both spaces AND their roots.
@@ -253,12 +255,23 @@ try {
   const sub = join(projA, "nested", "dir");
   mkdirSync(sub, { recursive: true });
   const selected = resolveMeshTarget(sub);
-  check("inside another space's project, its own space wins over the selection", selected.source === "local-recorded" && selected.root === projA && selected.space === "teamA", selected);
+  check("inside another space's project, explicit selection wins", selected.source === "current" && selected.root === projB && selected.space === "teamB", selected);
+  check("older readers see a bare name after an explicit selection", readFileSync(join(home, "current-mesh"), "utf8").trim() === "teamB");
+  setAdoptedCurrent("teamB");
+  check("older readers see a bare name after an adopted selection", readFileSync(join(home, "current-mesh"), "utf8").trim() === "teamB");
+  check("adopted selection leaves another running project's space as target", resolveMeshTarget(sub).space === "teamA");
+  writeFileSync(join(home, "current-mesh.adopted"), "teamA");
+  check("a stale adoption marker for another space is ignored", resolveMeshTarget(sub).space === "teamB");
+  rmSync(join(home, "current-mesh.adopted"));
+  writeFileSync(join(home, "current-mesh"), "teamB");
+  check("legacy bare pointer is explicit in another project", resolveMeshTarget(sub).space === "teamB");
   const explicitFromLocal = resolveMeshTarget(sub, { space: "teamB" });
   check("--space overrides inside another space's project", explicitFromLocal.source === "flag-space" && explicitFromLocal.root === projB, explicitFromLocal);
 
   // With no selected current mesh, a genuine local project remains the fallback.
+  setAdoptedCurrent("teamB");
   clearCurrent();
+  check("clear removes both the pointer and adoption marker", !existsSync(join(home, "current-mesh")) && !existsSync(join(home, "current-mesh.adopted")));
   const local = resolveMeshTarget(sub);
   check("without current, local project uses its recorded mesh", local.source === "local-recorded" && local.root === projA, local);
 

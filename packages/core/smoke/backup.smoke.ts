@@ -8,6 +8,7 @@ import {
 import {
   CREDENTIAL_LIFETIMES,
   admissionBucket,
+  anycastBucket,
   backupProfilePermissions,
   canonicalBackupStreamConfig,
   chatStream,
@@ -20,11 +21,11 @@ import {
   dmStream,
   downloadStreamSnapshot,
   endpointPlaneStreamNames,
+  eventPayloadStream,
   fanoutDurableConfig,
   inboxReaderConfig,
   inboxStream,
   mintLifecycleUid,
-  principalKey,
   recordsKvStreamName,
   restoreProfilePermissions,
   spaceBackupInventory,
@@ -41,7 +42,14 @@ const space = "backup_smoke";
 const connId = "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const inventory = spaceBackupInventory(space);
 
-assert.equal(inventory.full.length, 11);
+assert.equal(inventory.full.length, 12);
+assert.ok(inventory.backedUp.some((stream) => stream.name === eventPayloadStream(space) && stream.class === "messages"));
+assert.ok(!inventory.registry.includes(eventPayloadStream(space)));
+assert.deepEqual(canonicalBackupStreamConfig(space, eventPayloadStream(space)), {
+  ...canonicalBackupStreamConfig(space, chatStream(space)),
+  name: eventPayloadStream(space),
+  subjects: [`cotal.${space}.evp.>`],
+});
 const endpointStreams = endpointPlaneStreamNames(space);
 assert.equal(endpointStreams.length, 15);
 assert.equal(new Set(endpointStreams).size, 15);
@@ -49,15 +57,18 @@ assert.equal(new Set(endpointStreams).size, 15);
 // records store and the run admission store (SPEC 14.8), which together resume a run.
 const workflowStreams = inventory.backedUp.filter((stream) => stream.class === "workflow").map((stream) => stream.name);
 assert.deepEqual(workflowStreams, [wfjStreamName(space), recordsKvStreamName(space), `KV_${admissionBucket(space)}`]);
+// The anycast request records (SPEC 8.1) are control state as well: a row is keyed by the TASK
+// stream's creation time, which a restore changes, so the daemon recreates the bucket empty.
 assert.deepEqual(
   inventory.excluded.filter((stream) => stream.class === "control").map((stream) => stream.name).sort(),
-  endpointStreams.filter((name) => !workflowStreams.includes(name)).sort(),
+  [...endpointStreams.filter((name) => !workflowStreams.includes(name)), `KV_${anycastBucket(space)}`].sort(),
 );
-// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources. The
-// artifact object store keeps its own class because pin extends lifetime, not durability; endpoint
-// state is recreated empty after restore rather than misrepresented as derived or transient data.
-// The issued-authority stores (SPEC 13.15) stay excluded and come back empty.
-assert.equal(inventory.excluded.length, 17);
+// The five legacy exclusions remain alongside twelve nonportable endpoint/control resources and the
+// anycast request records. The artifact object store keeps its own class because pin extends
+// lifetime, not durability; endpoint state is recreated empty after restore rather than
+// misrepresented as derived or transient data. The issued-authority stores (SPEC 13.15) stay
+// excluded and come back empty.
+assert.equal(inventory.excluded.length, 18);
 // Comparator mechanics ONLY: the list below is synthesized from the inventory itself, so this line
 // can never fail for a family the inventory lost or never knew. That is the #643 circularity; the claim
 // it used to carry (that the inventory agrees with a real broker) is proved by the GATED live
@@ -68,18 +79,17 @@ assert.throws(
   () => validateSpaceBackupInventory(space, [...inventory.full, ...inventory.excluded.map((s) => s.name), "FOREIGN"]),
   /unexpected.*FOREIGN/,
 );
-// At rest (a stopped store on a fresh broker, what backup reads) the memory-backed presence bucket
-// (#1356) is gone, and that alone must not refuse. A file-backed one an older cotal left is accepted
-// too. Live, presence stays required, and at rest every OTHER stream stays exact.
-const presence = inventory.excluded.filter((s) => s.class === "transient").map((s) => s.name);
-assert.deepEqual(presence, [`KV_cotal_presence_${space}`]);
-const withoutPresence = [...inventory.full, ...inventory.excluded.map((s) => s.name)].filter((n) => !presence.includes(n));
-assert.deepEqual(validateSpaceBackupInventory(space, withoutPresence, { atRest: true }), inventory);
-assert.deepEqual(validateSpaceBackupInventory(space, [...withoutPresence, ...presence], { atRest: true }), inventory);
-assert.throws(() => validateSpaceBackupInventory(space, withoutPresence), /missing \[KV_cotal_presence_backup_smoke\]/);
+// At rest, Memory-backed presence and derived membership are gone. File-backed copies left by an
+// older Cotal remain accepted. Live, both are required, and every File stream stays exact.
+const memory = inventory.excluded.filter((s) => s.class === "transient" || s.class === "derived").map((s) => s.name);
+assert.deepEqual(memory.sort(), [`KV_cotal_membership_${space}`, `KV_cotal_presence_${space}`]);
+const withoutMemory = [...inventory.full, ...inventory.excluded.map((s) => s.name)].filter((n) => !memory.includes(n));
+assert.deepEqual(validateSpaceBackupInventory(space, withoutMemory, { atRest: true }), inventory);
+assert.deepEqual(validateSpaceBackupInventory(space, [...withoutMemory, ...memory], { atRest: true }), inventory);
+assert.throws(() => validateSpaceBackupInventory(space, withoutMemory), /missing \[KV_cotal_membership_backup_smoke, KV_cotal_presence_backup_smoke\]/);
 assert.throws(() => validateSpaceBackupInventory(space, inventory.full, { atRest: true }), /missing/);
 assert.throws(
-  () => validateSpaceBackupInventory(space, [...withoutPresence, "FOREIGN"], { atRest: true }),
+  () => validateSpaceBackupInventory(space, [...withoutMemory, "FOREIGN"], { atRest: true }),
   /unexpected.*FOREIGN/,
 );
 

@@ -88,7 +88,7 @@ saveSpaceAuth(authDir(workspaceRoot), auth);
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "echo.md"), "---\nname: echo\nrole: worker\n---\n");
 // SET BEFORE recordMesh: the registry is written under COTAL_HOME, and this suite must never touch ~/.cotal.
 process.env.COTAL_HOME = home;
-mkdirSync(home, { recursive: true });
+mkdirSync(home, { recursive: true, mode: 0o700 });
 const broker = await bootBroker(auth, dir);
 recordMesh({ space, server: broker.servers, root: workspaceRoot, mode: "auth", ts: new Date().toISOString() });
 

@@ -16,6 +16,7 @@ import {
   ORIENTATION_BOOTSTRAP,
   REPLY_ETIQUETTE,
   REPLY_GUIDANCE,
+  TOOL_STEER,
   WORKFLOW_STEER,
   type BriefingHarness,
 } from "../src/index.js";
@@ -49,8 +50,59 @@ cell("the identity line omits the role when there is none", () => {
 
 cell("every harness carries the shared paragraphs", () => {
   for (const [h, text] of all)
-    for (const p of [ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
+    for (const p of [ORIENTATION_BOOTSTRAP, TOOL_STEER, MESH_FIRST_STEER, WORKFLOW_STEER, CHANNEL_GUIDANCE, REPLY_GUIDANCE, ATTENTION_GUIDANCE])
       assert.ok(text.includes(p), `${h} lacks: ${p.slice(0, 50)}`);
+});
+
+cell("every harness tells agents to use their tools and not the cotal command line", () => {
+  for (const [h, text] of all) {
+    assert.ok(text.includes(TOOL_STEER), `${h}: missing TOOL_STEER`);
+    assert.ok(text.includes("Use your cotal_* tools for work on the mesh."), `${h}: missing tool guidance`);
+    assert.ok(text.includes("Don't run the `cotal` command line unless the user says you may."), `${h}: missing CLI guidance`);
+    assert.ok(text.includes("If no tool gives you what you need, tell the user what's missing."), `${h}: missing tell-user guidance`);
+  }
+});
+
+cell("the workflow steer points agents at cotal_run and not cotal run start", () => {
+  assert.ok(WORKFLOW_STEER.includes("driven with `cotal_run`"), WORKFLOW_STEER);
+  assert.ok(!WORKFLOW_STEER.includes("cotal run start"), WORKFLOW_STEER);
+  for (const [h, text] of all) {
+    assert.ok(text.includes("driven with `cotal_run`"), `${h}: missing cotal_run in workflow steer`);
+    assert.ok(!text.includes("cotal run start"), `${h}: still contains cotal run start`);
+  }
+});
+
+// Claude Code loads a tool's description only after picking the tool by name, so this sentence is
+// what an agent reads before it chooses between a post and a DM.
+cell("the channel guidance sends a status for a peer to the shared channel with a mention", () => {
+  assert.ok(
+    CHANNEL_GUIDANCE.includes("When you are asked to tell a peer about shared work, such as a status or a result, post it on the channel you share and mention that peer there."),
+    CHANNEL_GUIDANCE,
+  );
+  assert.ok(CHANNEL_GUIDANCE.includes("Use cotal_dm only for something one peer alone needs"), CHANNEL_GUIDANCE);
+});
+
+cell("the briefing says a live post misses an agent that is away, and where once works", () => {
+  assert.ok(CHANNEL_GUIDANCE.includes("on a live channel, one that is disconnected or busy then misses it, unless the post mentions it by a name only it has and it may read the channel."), CHANNEL_GUIDANCE);
+  assert.ok(MESH_FIRST_STEER.includes("starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends."), MESH_FIRST_STEER);
+});
+
+cell("every harness states channel retention defaults and operator control", () => {
+  for (const [h, text] of all) {
+    assert.ok(text.includes("no age limit and 1000 posts per sender per channel"), `${h}: missing retention defaults`);
+    assert.ok(text.includes("an operator can change those limits with cotal history limit"), `${h}: missing operator control`);
+    assert.ok(text.includes("older posts may no longer be available"), `${h}: missing history limitation`);
+  }
+});
+
+// #6246: David's sentence, as written, right after the sentence on what wakes an agent. The
+// second sentence 0.157.6 shipped is gone: a covering family still delivers the channel's posts, and a
+// mention on a live channel still reaches the agent.
+cell("every harness tells the agent to leave a channel when its task is finished", () => {
+  const sentence =
+    "A post wakes an idle agent unless it set dnd or focus or made the channel quiet. " +
+    "Leave a channel with cotal_leave when its task is finished or your part is done. @mention a peer only when";
+  for (const [h, text] of all) assert.ok(text.includes(sentence) && !text.includes("Its posts then stop waking you"), h);
 });
 
 cell("every harness carries the reply etiquette", () => {
@@ -85,7 +137,7 @@ cell("the gateway briefing leaves the arrival sentence out", () => {
 cell("the paragraphs split cleanly on blank lines, so a harness that takes a list gets whole paragraphs", () => {
   for (const [h, text] of all) {
     const parts = text.split("\n\n");
-    assert.equal(parts.length, 9, h);
+    assert.equal(parts.length, 10, h);
     assert.ok(parts.every((p) => p.length > 0 && p.trim() === p), h);
   }
 });

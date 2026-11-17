@@ -1,9 +1,7 @@
 /**
  * Two seats, kill one custodian, the other seat still reads and writes.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
 import { adoptSeatSync, launchSeat } from "../src/index.js";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 

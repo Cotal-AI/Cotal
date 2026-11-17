@@ -35,6 +35,7 @@ import {
   type IssuedSubjectPermissions,
 } from "./issued-authority.js";
 import { chatSubject, token } from "./subjects.js";
+import { isStreamNotFound } from "./jetstream-missing.js";
 
 export function admissionBucket(space: string): string {
   return `cotal_admission_${token(space)}`;
@@ -55,6 +56,14 @@ export type RunAdmissionProvenance =
   | { readonly kind: "issued"; readonly ref: IssuedAuthorityRef; readonly resolvedRevision: number }
   | { readonly kind: "operator"; readonly by: string; readonly reason: string };
 
+/** What a user-auth run's starter could hand on when the run was admitted: its ledger row's scope
+ *  and channel lists, as the issuing host read them (§14.8). */
+export interface RunDelegation {
+  readonly scope: readonly string[];
+  readonly allowSubscribe: readonly string[];
+  readonly allowPublish: readonly string[];
+}
+
 export interface RunAdmission {
   readonly version: 1;
   readonly space: string;
@@ -69,6 +78,15 @@ export interface RunAdmission {
   readonly ceiling: IssuedSubjectPermissions;
   readonly provenance: RunAdmissionProvenance;
   readonly admittedAt: number;
+  /** Present when the starter was an operator instrument or held the admin set at admission
+   *  (SPEC 13.15): the run's spawns are exempt from the spawn bound, as the starter's own are.
+   *  Absent, every spawn the run makes is bounded by `ceiling`. An instrument's evidence expires
+   *  minutes after issue, so a long run could not tell this later. */
+  readonly spawnExempt?: true;
+  /** On a user-auth space, the starter's grant as admitted. Every spawn the run makes is bounded by
+   *  it together with the starter's current ledger row, so a grant the starter gains later is never
+   *  handed on. The issuing host writes it; a static admission carries none. */
+  readonly delegation?: RunDelegation;
 }
 
 export interface RunRevocation {
@@ -113,12 +131,22 @@ function provenanceSnapshot(value: unknown): RunAdmissionProvenance {
   throw new Error("unsupported admission provenance");
 }
 
+function delegationSnapshot(value: unknown): RunDelegation {
+  const raw = closed(value, ["scope", "allowSubscribe", "allowPublish"], "admission delegation");
+  const list = (v: unknown): readonly string[] => {
+    if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw new Error("admission delegation lists must be arrays of strings");
+    return Object.freeze([...v as string[]]);
+  };
+  return Object.freeze({ scope: list(raw.scope), allowSubscribe: list(raw.allowSubscribe), allowPublish: list(raw.allowPublish) });
+}
+
 /** Validate a record at the consuming boundary: closed schema, version, coordinates. */
 export function admissionSnapshot(value: unknown): RunAdmission {
-  const raw = closed(value, ["version", "space", "endpoint", "runId", "instanceId", "caller", "ceiling", "provenance", "admittedAt"], "run admission");
+  const raw = closed(value, ["version", "space", "endpoint", "runId", "instanceId", "caller", "ceiling", "provenance", "admittedAt", "spawnExempt", "delegation"], "run admission");
   if (raw.version !== 1) throw new Error(`unsupported run admission version ${String(raw.version)}`);
   if (typeof raw.space !== "string" || typeof raw.endpoint !== "string" || typeof raw.runId !== "string" || typeof raw.instanceId !== "string"
-    || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0)
+    || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0
+    || (raw.spawnExempt !== undefined && raw.spawnExempt !== true))
     throw new Error("run admission is malformed");
   assertIssuedSpace(raw.space);
   endpointToken(raw.endpoint);
@@ -133,6 +161,8 @@ export function admissionSnapshot(value: unknown): RunAdmission {
   return Object.freeze({
     version: 1, space: raw.space, endpoint: raw.endpoint, runId: raw.runId, instanceId: raw.instanceId,
     caller, ceiling: readIssuedSubjectPermissions(raw.ceiling), provenance, admittedAt: raw.admittedAt,
+    ...(raw.spawnExempt === true ? { spawnExempt: true as const } : {}),
+    ...(raw.delegation !== undefined ? { delegation: delegationSnapshot(raw.delegation) } : {}),
   });
 }
 
@@ -314,8 +344,9 @@ export function admissionStoreDefinition(space: string) {
   };
 }
 
-/** Create-or-verify the admission store: `allow_direct=false`, file, no eviction. */
-export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, space: string): Promise<void> {
+/** Create-or-verify the admission store with its immutable policy in the single native CREATE.
+ * The KV argument is retained for existing callers; initialization requires no UPDATE authority. */
+export async function ensureAdmissionStore(jsm: JetStreamManager, _kvm: Kvm, space: string): Promise<void> {
   const definition = admissionStoreDefinition(space);
   const bucket = definition.bucket;
   const stream = `KV_${bucket}`;
@@ -327,11 +358,14 @@ export async function ensureAdmissionStore(jsm: JetStreamManager, kvm: Kvm, spac
   // replacement leaves no marker for the deletion-marker read to catch. The three immutability
   // flags close rollup, message delete and purge; write-once closes the rest, so the admission a
   // host reads is the one that was admitted, and each run and each marker still gets its one write.
-  const shape = definition.hardenAfterCreate;
-  if (await jsm.streams.info(stream).catch(() => undefined) === undefined) {
-    await kvm.create(bucket, definition.createOptions);
-    const created = (await jsm.streams.info(stream)).config;
-    await jsm.streams.update(stream, { ...created, ...shape });
+  const existing = await jsm.streams.info(stream).catch(error => {
+    if (!isStreamNotFound(error)) throw error;
+    return undefined;
+  });
+  if (existing === undefined) {
+    // Resource definitions collect admission inputs too; load them after module initialization.
+    const { spaceResourceCreationConfig } = await import("./space-resource-definitions.js");
+    await jsm.streams.add(spaceResourceCreationConfig({ kind: "kv", stream, ...definition, verification: "admission" }));
   }
   const cfg = (await jsm.streams.info(stream)).config;
   assertAdmissionStoreConfig(cfg, space);

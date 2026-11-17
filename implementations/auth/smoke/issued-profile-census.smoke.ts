@@ -8,7 +8,7 @@ import { join, dirname } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
+import { createSpaceAuth, serverConfig, isReachable, patternCovers } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
@@ -29,6 +29,16 @@ const enc = (s: string) => new TextEncoder().encode(s);
 const space = "issuedcensus";
 let fixtures!: ProfileFixture[];
 await check("profile and view producers cover their declared sets", async () => { fixtures = await profileFixtures(space); });
+await check("transcript name checks grant CHAT metadata only to supervisor duties", async () => {
+  const grant = `$JS.API.STREAM.INFO.CHAT_${space}`;
+  for (const fixture of fixtures.filter((row) => row.profile === "supervisor" || row.profile === "remote-manager")) {
+    const permissions = fixture.permissions as { pub?: { allow?: string[] }; sub?: { allow?: string[] } };
+    const allowed = permissions.pub?.allow ?? [];
+    const supervisor = fixture.profile === "supervisor" || fixture.variant === "server";
+    assert.equal(allowed.includes(grant), supervisor, `${fixture.profile}:${fixture.variant}`);
+    assert(!allowed.some((row) => row.startsWith(`$JS.API.STREAM.MSG.GET.CHAT_${space}`) || row.startsWith(`$JS.API.CONSUMER.CREATE.CHAT_${space}`)), "the count grant must not add CHAT body reads");
+  }
+});
 const auth = await createSpaceAuth(space);
 const port = await pickFreePort(), server = `nats://127.0.0.1:${port}`;
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -226,14 +236,20 @@ try {
     assert.deepEqual(importers.map((f) => f.slice(root.length)), []);
   });
 
-  await check("no current profile can request its own server view", async () => {
-    // Discovery needs `$SYS.REQ.USER.INFO`. If some profile already had it, adding it would not be
-    // part of the issuance change; this pins that it is.
-    // Positive control first: an emptiness result from a detector that finds nothing is worthless.
+  await check("only provisioner and teardown hold the server-view grant", async () => {
+    // These trusted profiles query their connection's account before native impact reads.
+    // Keep the holder set closed without granting discovery to peer-held profiles.
     assert.equal(holdsServerView({ pub: { allow: ["$SYS.REQ.USER.INFO"] } }), true);
     assert.equal(holdsServerView({ pub: { allow: [">"] } }), true);
     assert.equal(holdsServerView({ pub: { allow: ["cotal.x.>"] } }), false);
-    assert.deepEqual(fixtures.filter((f) => holdsServerView(f.permissions)).map((f) => `${f.profile}/${f.variant}`), []);
+    const holders = fixtures.filter((f) => holdsServerView(f.permissions));
+    assert.deepEqual(holders.map((f) => `${f.profile}/${f.variant}`).sort(), ["provisioner/default", "teardown/default"]);
+    for (const holder of holders) {
+      assert.ok(TRUSTED_PROFILES.includes(holder.profile));
+      assert.equal(PEER_HELD_PROFILES.includes(holder.profile), false);
+      const allow = (holder.permissions.pub as { allow: string[] }).allow;
+      assert.deepEqual(allow.filter((row) => patternCovers(row, "$SYS.REQ.USER.INFO")), ["$SYS.REQ.USER.INFO"]);
+    }
   });
 
   await check("the issued rail is spelled only by core's endpoint subject and grant builders", async () => {

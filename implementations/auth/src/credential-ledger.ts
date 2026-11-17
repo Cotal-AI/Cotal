@@ -66,9 +66,7 @@ import {
   assertHolderPrincipal,
   assertSourceChain,
   parseSourceMember,
-  SOURCE_ROOT,
   credRowKey,
-  epcredRowKey,
   parseLedgerRow,
   createRowByteIdempotent,
   markLedgerRowRevoked,
@@ -104,7 +102,7 @@ const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafe
 // live in the shared core grammar (imported above); only the auth-internal families remain here.
 
 /** The per-ancestor lineage index key `bysrc.<issuerKeyId>.<id>.<lifecycleUid>.<credentialId>`. */
-export function bysrcKey(issuerKeyId: string, id: string, lifecycleUid: string, credentialId: string): string {
+function bysrcKey(issuerKeyId: string, id: string, lifecycleUid: string, credentialId: string): string {
   return `bysrc.${assertKeySegment(issuerKeyId, "issuerKeyId")}.${assertKeySegment(id, "handle id")}.${assertLifecycleToken(lifecycleUid)}.${assertCredentialIdTail(credentialId, "credentialId")}`;
 }
 /** The per-handle source gate key `srcgate.<issuerKeyId>.<id>`. */
@@ -130,7 +128,7 @@ export { createRowByteIdempotent, markLedgerRowRevoked };
 
 /** A per-handle source gate: `open` mints, `frozen` is the revocation fence (terminal for a
  *  revoked handle — a source gate never reopens; SPEC 13.1). */
-export interface SourceGateRow {
+interface SourceGateRow {
   issuerKeyId: string;
   id: string;
   state: "open" | "frozen";
@@ -352,7 +350,7 @@ export async function finalizeAgentMint(reg: LifecycleRegistry, staged: StagedAg
 // ---- point-in-time family enumeration (the barrier's read) -------------------------------------
 
 /** One enumerated ledger row (its key, parsed value, and store revision). */
-export interface EnumeratedRow {
+interface EnumeratedRow {
   key: string;
   row: CredentialLedgerRow;
   revision: number;
@@ -391,7 +389,7 @@ export async function enumerateAgentFamily(reg: LifecycleRegistry, lifecycleUid:
  *  live at `stage.session.<sid>.<c|s>` and are not operations). `owner`/`actor` name the alias
  *  the op belongs to: the boot resume reads that alias's lifecycle head to decide owed-ness
  *  across the cross-object invariant (gate AND head, SPEC 13.1). */
-export interface OperationIntentRef {
+interface OperationIntentRef {
   opId: string;
   kind: "takeover" | "retirement";
   lifecycleUid: string;
@@ -471,7 +469,7 @@ export interface TakeoverDeps {
 
 /** The durable takeover intent at `stage.<opId>` — captured BEFORE the freeze, so a crashed
  *  barrier resumes the SAME operation from the SAME coordinates ({@link resumeAgentTakeover}). */
-export interface TakeoverIntent {
+interface TakeoverIntent {
   kind: "takeover";
   lifecycleUid: string;
   owner: string;
@@ -504,7 +502,7 @@ function parseTakeoverIntent(raw: Uint8Array, key: string): TakeoverIntent {
 }
 
 /** The barrier's outcome (durable facts, re-readable on resume). */
-export interface TakeoverResult {
+interface TakeoverResult {
   opId: string;
   lifecycleUid: string;
   /** The successor's fenced epoch (fromEpoch + 1). */

@@ -1,5 +1,5 @@
 import { assertUserAuthInfo, findMesh, recordMesh, type MeshEntry, type UserAuthInfo } from "./mesh-registry.js";
-import { isLoopbackHost } from "./join-target.js";
+import { isCredentialTransportUrl } from "@cotal-ai/core/loopback";
 import type { RefusalCode } from "./output.js";
 
 /** A rule's verdict: the value it produced, or the operator-facing sentence explaining the refusal
@@ -17,7 +17,7 @@ export interface UserBundle {
    *  bundle without `endpoints.url`, so the type carries what the check proved. */
   userAuth: UserAuthInfo & { endpoints: NonNullable<UserAuthInfo["endpoints"]> & { url: string } };
   /** Closed registration policy. No other key or value is accepted. */
-  policy?: { events: "required" };
+  policy?: { events?: "required"; eventPayloads?: "withheld" };
   /** The sentinel creds blob. IN THE BUNDLE ONLY — registration lands it in a 0600 file under
    *  the entry's root and records the PATH; the registry document never carries the blob. */
   sentinelCreds: string;
@@ -68,11 +68,15 @@ export function checkBundleDocument(parsed: unknown): Check<UserBundle> {
     if (value === null || typeof value !== "object" || Array.isArray(value))
       return bad("✗ the user-auth bundle policy must be an object with exactly policy.events = \"required\"");
     const fields = Object.keys(value as Record<string, unknown>);
-    const extra = fields.find((key) => key !== "events");
+    const extra = fields.find((key) => key !== "events" && key !== "eventPayloads");
     if (extra) return bad(`✗ the user-auth bundle policy has unsupported field \"policy.${extra}\"`);
-    if ((value as { events?: unknown }).events !== "required")
-      return bad('✗ the user-auth bundle policy.events must be exactly "required"');
-    policy = { events: "required" };
+    const p = value as { events?: unknown; eventPayloads?: unknown };
+    if (p.events !== undefined && p.events !== "required")
+      return bad('✗ the user-auth bundle policy.events must be "required"');
+    if (p.eventPayloads !== undefined && p.eventPayloads !== "withheld")
+      return bad('✗ the user-auth bundle policy.eventPayloads must be "withheld"');
+    if (fields.length === 0) return bad("✗ the user-auth bundle policy is empty");
+    policy = { ...(p.events === "required" ? { events: "required" as const } : {}), ...(p.eventPayloads === "withheld" ? { eventPayloads: "withheld" as const } : {}) };
   }
   let userAuth: UserAuthInfo;
   try {
@@ -120,16 +124,11 @@ export class PinnedFetchRefused extends Error {
 }
 
 export function assertPinnedFetchUrl(u: URL, what: string): string | undefined {
-  if (u.protocol === "https:") return undefined;
-  // The loopback exception is decided by PARSING the host as an address, never by how the text
-  // begins: `/^127\./` also matched `127.evil.com`, `127.0.0.1.nip.io` and `127.com`, which anyone
-  // can register, and it missed real spellings like `0177.0.0.1`. `isLoopbackHost` is the one
-  // authority for the question, canonicalization included. A name that does not parse as an IP is
-  // a NAME and gets no exception, however it starts — `localhost` included, since a hosts entry or
-  // a poisoned lookup can point it anywhere.
-  if (u.protocol === "http:" && isLoopbackHost(u.hostname)) return undefined;
+  if (isCredentialTransportUrl(u)) return undefined;
   // Name the ACTUAL rule. "must be https://" alone misleads the developer whose local flow used
   // http://localhost: it blames the scheme, when the same scheme on 127.0.0.1 would have passed.
+  // A name that does not parse as an IP is a NAME and gets no exception, however it starts —
+  // `localhost` included, since a hosts entry or a poisoned lookup can point it anywhere.
   return (
     `${what} must be https:// (got ${u.protocol}//) - the pins this registration adopts cannot be fetched over a channel the network can rewrite` +
     (u.protocol === "http:"

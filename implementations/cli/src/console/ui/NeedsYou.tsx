@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { presenceText, type Presence } from "@cotal-ai/core";
+import { consoleLabel } from "../label.js";
 import { activityAge } from "../../ui.js";
 import { factRow, statusLine } from "./Roster.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts } from "./theme.js";
@@ -74,7 +75,7 @@ export function NeedsYou({
       ) : (
         visible.map((p, i) => {
           const selected = isFocused && start + i === selClamped;
-          const label = peerLabel(p.card);
+          const label = consoleLabel(p.card);
           return (
             <Box key={p.card.id} flexDirection="column" flexShrink={0}>
               {selected ? (

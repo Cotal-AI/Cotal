@@ -1,0 +1,2 @@
+# The states of mock section B: skeleton rows until the first reads land, the stale marker's second line, the partial banner, the retry, the rail's disabled items and last places, the panel's Tab stop and the Agents row mark.
+smoke:web-states

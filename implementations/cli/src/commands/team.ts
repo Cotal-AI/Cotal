@@ -1,13 +1,13 @@
 import { basename, join, resolve } from "node:path";
-import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
-import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, plainFlag, presentationOf, readMaintenanceJournal, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
+import { CotalEndpoint, DEFAULT_SERVER, isReachable, realDirNoSymlink, subjectMatches, durableCovers, type ChannelDefaults, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { assertSingleSpaceBroker, recordOperationSpace, authDir, CommandFailure, oneLine, credentialRefusalMessage, brokerAddressForDisplay, canonicalRoot, connectOrThrow, findMesh, findPreparedSpace, preparedSpaceAt, jsonFlag, loadMeshes, localMeshesForRoot, nearbyMeshManifest, plainFlag, presentationOf, readMaintenanceJournal, shellPath, spaceFlag, userViewAuth, writeResult, type Report } from "@cotal-ai/workspace";
 import { personaCatalog } from "../lib/persona-files.js";
 import { formatIssue, loadManifest, ManifestError, type PreparedManifest } from "../lib/manifest/index.js";
 import { UnusableFile } from "../lib/unusable-file.js";
 import { findLedgerByRun, listLedgerFiles, type MeshLedger } from "../lib/manifest/ledger.js";
 import { findFreshTeamAttempt, findFreshTeamSummary, freshTeamAttemptSettled, freshTeamSummaryRecordedElsewhere, listFreshTeamAttempts, listFreshTeamSummaries, type FreshTeamSummary } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, findAdditiveTeamAttempt, listAdditiveTeamAttempts, removedAdditiveDeploymentIds, stoppedAttemptEffects, type AdditiveTeamAttempt } from "../lib/team-additive-attempt.js";
-import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
+import { completedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { cardsWithoutLiveDelivery, inspectTeamDeployment, LIVE_DELIVERY_REMEDY, readOwnedChannelRevisions } from "../lib/team-deploy-inspection.js";
 import { managerRecordState } from "../lib/manager-proc.js";
 import { authModeText, teamText } from "../lib/team-text.js";
@@ -31,7 +31,6 @@ export type TeamValues = FlagValues<typeof teamFlags>;
 /** Completion reads the local space selection and its ledger directory, never the broker.
  *  An unreadable record cannot become a suggested target or trigger a provider. */
 export function teamComplete(argv: string[]): CompletionResult {
-  const flag = completingFlagValue(argv, teamFlags);
   if (argv.at(-1)?.startsWith("-")) return { items: teamFlags.map((item) => ({ value: `--${item.name}`, description: item.description })), directive: "nofiles" };
   const positionals = positionalsForCompletion(argv, teamFlags);
   if (positionals.length <= 1) return { items: ["show", "check", "boot", "deploy", "remove"].map((value) => ({ value })), directive: "nofiles" };
@@ -294,12 +293,16 @@ export async function team(args: ParsedArgs): Promise<void> {
   const unsettledAdditiveAttempts = allAdditiveAttempts.filter((attempt) => !returnedIds.has(attempt.deploymentId))
     .map((attempt) => ({ deploymentId: attempt.deploymentId, space: attempt.space, root: attempt.root, server: brokerAddressForDisplay(attempt.server) ?? "not displayable", createdAt: attempt.createdAt, recordedState: "unsettled-additive-attempt" as const }));
   const warnings = [...records.refused, ...fresh.refused, ...attempts.refused, ...additiveAttempts.refused].map(({ path }) => ({ code: "DEPLOYMENT_RECORD_UNREADABLE", message: "A local deployment record could not be read or validated; it was not reset.", target: { path } }));
+  const manifest = nearbyMeshManifest(process.cwd(), catalog.root);
+  const checkNext = manifest
+    ? { command: `cotal t check ${shellPath(manifest.path)} --graph`, description: `Read ${shellPath(manifest.path)}, which declares ${shellPath(manifest.space)}` }
+    : { command: "cotal t check <file> --graph", description: "Read the resolved manifest and its access edges offline" };
   writeResult(presentationOf(values), { command: "team", target: catalog, result: { kind: "team-deployments", scope: "selected-root fresh summaries/attempts and additive ledgers/attempts; historical completeness unknown", items, unsettledAttempts, unsettledAdditiveAttempts }, completeness: "partial", warnings }, (result): Report => ({ sections: [
     { title: "Recorded teams", blocks: [{ kind: "fields", rows: [["Space", catalog.space], ["Root", catalog.root], ["Scope", "fresh summaries, additive ledgers and returned agent/channel receipts; historical completeness unknown"]] }, result.items.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "kind", label: "Kind" }, { key: "state", label: "Recorded state" }, { key: "next", label: "Next" }, { key: "agents", label: "Agent records" }, { key: "channels", label: "Channel records" }], rows: result.items.slice(0, 100).map((row) => ({ id: row.deploymentId, kind: teamText(row.kind), state: teamText(row.recordedState), next: teamText(row.nextAction), agents: String(row.agents.length), channels: String(row.channels.length) })) } : { kind: "lines", lines: ["No readable fresh summaries or additive ledgers for this selected space."] }, ...(result.items.length > 100 ? [{ kind: "lines" as const, lines: ["Additional deployment records are in JSON."] }] : []), { kind: "lines", lines: [{ text: "Older fresh boots may have no summary. A record is not current live state or removal authority; native observations are still needed.", tone: "waiting" }] }] },
     { title: "Unsettled fresh boot attempts", blocks: [result.unsettledAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "broker", label: "Recorded broker" }, { key: "time", label: "Intent recorded" }], rows: result.unsettledAttempts.slice(0, 100).map((row) => ({ id: row.deploymentId, space: row.space, broker: row.server, time: row.createdAt })) } : { kind: "lines", lines: ["No unsettled readable fresh boot attempts in the selected space."] }, { kind: "lines", lines: [...(result.unsettledAttempts.length > 100 ? ["Additional attempts are in JSON."] : []), "An intent without a matching returned summary may have started a broker. Inspect its exact run; do not retry or stop by inference."] }] },
     { title: "Unsettled additive attempts", blocks: [result.unsettledAdditiveAttempts.length ? { kind: "table", columns: [{ key: "id", label: "Deployment" }, { key: "space", label: "Space" }, { key: "broker", label: "Recorded broker" }, { key: "time", label: "Intent recorded" }], rows: result.unsettledAdditiveAttempts.slice(0, 100).map((row) => ({ id: row.deploymentId, space: row.space, broker: row.server, time: row.createdAt })) } : { kind: "lines", lines: ["No readable additive attempts in the selected space."] }, { kind: "lines", lines: [...(result.unsettledAdditiveAttempts.length > 100 ? ["Additional attempts are in JSON."] : []), "An intent names a request, not resources created. Its native outcome remains unknown until a guarded receipt reconciles it."] }] },
     { blocks: [{ kind: "lines", lines: ["The available local records do not establish a complete historical or live team inventory. An unsettled fresh or additive attempt is not proof that no native effect occurred."] }] },
-    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal t show <deployment-id>", description: "Inspect recorded ownership or an unsettled boot attempt without changing anything" }, { command: "cotal t check <file> --graph", description: "Read the resolved manifest and its access edges offline" }] }] },
+    { title: "Next", blocks: [{ kind: "commands", items: [{ command: "cotal t show <deployment-id>", description: "Inspect recorded ownership or an unsettled boot attempt without changing anything" }, checkNext] }] },
   ] }));
 }
 
@@ -393,7 +396,7 @@ async function nativeRemovalImpact(root: string, ledger: MeshLedger) {
     try { members = await ep.readMembership(); }
     catch { membershipWarning = "The derived membership feed could not be read; channel observers and live readers are unknown."; }
     const ownedIds = new Set(ledger.created.agents.map((agent) => agent.id));
-    const channels = revisions.map(({ name, revision }) => ({ name, observedRevision: revision, otherMembersObserved: members ? members.members.filter((row) => !ownedIds.has(row.id) && (row.durable.includes(name) || row.live.some((pattern) => subjectMatches(pattern, name)))).map((row) => row.id) : null }));
+    const channels = revisions.map(({ name, revision }) => ({ name, observedRevision: revision, otherMembersObserved: members ? members.members.filter((row) => !ownedIds.has(row.id) && (durableCovers(row.durable, name) || row.live.some((pattern) => subjectMatches(pattern, name)))).map((row) => row.id) : null }));
     return { managerPs: "answered" as const, agents, channels, channelRegistry: ledger.created.channels.length ? "scoped-native-read" as const : "no-owned-channels" as const, membershipFeed: members ? "display-only-observed" as const : "unavailable" as const, membershipObservedAt: members?.asOf ?? null, membershipWarning };
   } catch (error) {
     if (error instanceof CommandFailure) throw error;

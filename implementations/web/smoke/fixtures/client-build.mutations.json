@@ -1,0 +1,225 @@
+{
+  "command": "pnpm smoke:web-client-build",
+  "suite": [
+    "implementations/web/smoke/client-build.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "the manifest stops reading the module ids of the bundled chunks",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "          if (p) found.set(p.name, p.root);",
+      "replace": "          void p;",
+      "expectRed": "bundle-licenses.json names react, react-dom, the Inter font, marked, DOMPurify and the three d3 modules",
+      "cell": "bundle-licenses.json names react, react-dom, the Inter font, marked, DOMPurify and the three d3 modules",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the manifest is no longer sorted by package",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": ".sort((a, b) => (a.package < b.package ? -1 : a.package > b.package ? 1 : 0))",
+      "replace": ".sort((a, b) => (a.package < b.package ? 1 : a.package > b.package ? -1 : 0))",
+      "expectRed": "bundle-licenses.json is sorted by package",
+      "cell": "bundle-licenses.json is sorted by package",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the build writes its files outside /assets/",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "assetsDir: \"assets\",",
+      "replace": "assetsDir: \"static\",",
+      "expectRed": "every asset other than the theme boot script sits under /assets/",
+      "cell": "every asset other than the theme boot script sits under /assets/",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the art seam loads the characters file through a computed specifier, which the bundler cannot follow, so the build ships no characters chunk and the first avatar fails in the browser",
+      "file": "implementations/web/client/src/art/index.ts",
+      "find": "await import(\"./characters.js\");",
+      "replace": "await import(/* @vite-ignore */ [\"./characters\", \"js\"].join(\".\"));",
+      "expectRed": "the built scripts carry the character art the avatars draw",
+      "cell": "the built scripts carry the character art the avatars draw",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the build no longer puts the theme boot script in the page, so the first paint is in the system palette",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "plugins: [tailwindcss(), react(), bundleLicenses(), themeBoot()],",
+      "replace": "plugins: [tailwindcss(), react(), bundleLicenses()],",
+      "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the theme boot script goes at the end of the body, after the stylesheet has painted",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "injectTo: \"head-prepend\"",
+      "replace": "injectTo: \"body\"",
+      "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the theme boot script is deferred, so it runs after the stylesheet has painted",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "attrs: { src: \"/theme-boot.js\" },",
+      "replace": "attrs: { src: \"/theme-boot.js\", defer: true },",
+      "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the theme boot script is inlined, which a script-src self policy would block",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "attrs: { src: \"/theme-boot.js\" },",
+      "replace": "children: \"void 0;\",",
+      "expectRed": "the page carries no inline script",
+      "cell": "the page carries no inline script",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot ignores a saved dark theme",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "if (saved === \"light\" || saved === \"dark\" || saved === \"system\") theme = saved;",
+      "replace": "if (saved === \"light\" || saved === \"system\") theme = saved;",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot reads a key the Settings menu does not write",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "storage().getItem(\"cotal.theme\")",
+      "replace": "storage().getItem(\"cotal-theme\")",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot lets a storage failure through, so blocked storage throws before the root element is marked",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "  } catch {\n",
+      "replace": "  } catch (e) {\n    throw e;\n",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot marks an attribute the stylesheet does not read",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "root.setAttribute(\"data-theme\", theme);",
+      "replace": "root.setAttribute(\"data-mode\", theme);",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the built script reads the session storage, where the Settings menu saves nothing",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "(() => localStorage, document.documentElement)",
+      "replace": "(() => sessionStorage, document.documentElement)",
+      "expectRed": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "cell": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the built script marks the body instead of the root element the stylesheet reads",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "(() => localStorage, document.documentElement)",
+      "replace": "(() => localStorage, document.body)",
+      "expectRed": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "cell": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "Tailwind brings its preflight reset in, restyling the existing screens",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "@import \"tailwindcss/theme.css\" layer(theme);\n",
+      "replace": "@import \"tailwindcss/theme.css\" layer(theme);\n@import \"tailwindcss/preflight.css\" layer(base);\n",
+      "expectRed": "the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
+      "cell": "the stylesheet carries no Tailwind preflight: no ::file-selector-button and no reset rule on *, ::after, ::before, ::backdrop",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the [data-slot] border reset is written unlayered, so it beats every Tailwind border utility",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "@layer base { :where([data-slot], [data-slot] *) { border: 0 solid var(--border); } }",
+      "replace": ":where([data-slot], [data-slot] *) { border: 0 solid var(--border); }",
+      "expectRed": "the [data-slot] border reset sits inside @layer base",
+      "cell": "the [data-slot] border reset sits inside @layer base",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the [data-slot] reset drops its colour, so Trace's nested rule draws in the text colour",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "{ border: 0 solid var(--border); }",
+      "replace": "{ border: 0 solid; }",
+      "expectRed": "the [data-slot] border reset draws shadcn borders in our border colour",
+      "cell": "the [data-slot] border reset draws shadcn borders in our border colour",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the dark variant loses its system arm, so Night on first load gets the light shadcn styles",
+      "file": "implementations/web/client/src/styles/shadcn.css",
+      "find": "  @media (prefers-color-scheme: dark) {\n    &:where(:root:not([data-theme=\"light\"]), :root:not([data-theme=\"light\"]) *) { @slot; }\n  }\n",
+      "replace": "",
+      "expectRed": "a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
+      "cell": "a dark: utility from a shadcn file is emitted under [data-theme=dark] and inside @media (prefers-color-scheme: dark)",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the vendored list is emptied, so the copied shadcn source ships without its license",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "const VENDORED: Licensed[] = [{ package: \"shadcn/ui\", version: \"4.22.1\", license: \"MIT\" }];",
+      "replace": "const VENDORED: Licensed[] = [];",
+      "expectRed": "bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
+      "cell": "bundle-licenses.json lists shadcn/ui with MIT and 4.22.1",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the CSS-only list is emptied, so Tailwind generated CSS ships without its license",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "const CSS_ONLY = [\"tailwindcss\"];",
+      "replace": "const CSS_ONLY: string[] = [];",
+      "expectRed": "bundle-licenses.json lists tailwindcss with its own version and license",
+      "cell": "bundle-licenses.json lists tailwindcss with its own version and license",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "highlight.ts imports Shiki's core statically, so every page load downloads the highlighter",
+      "file": "implementations/web/client/src/lib/highlight.ts",
+      "find": "const loadShiki = () => Promise.all([import(\"shiki/core\"), import(\"shiki/engine/javascript\")]);",
+      "replace": "import * as shikiCore from \"shiki/core\";\nconst loadShiki = () => Promise.all([Promise.resolve(shikiCore), import(\"shiki/engine/javascript\")]);",
+      "expectRed": "no first-load chunk holds Shiki, and a lazy chunk does",
+      "cell": "no first-load chunk holds Shiki, and a lazy chunk does",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the Radix packages are left out of the licenses, so bundled primitives ship without their license",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "          if (p) found.set(p.name, p.root);",
+      "replace": "          if (p && !p.name.startsWith(\"@radix-ui/\")) found.set(p.name, p.root);",
+      "expectRed": "bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled",
+      "cell": "bundle-licenses.json lists class-variance-authority, clsx, tailwind-merge and the Radix packages now bundled",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "ToolLine imports the failed-call tooltip statically, so Radix's tooltip and floating-ui load with every page",
+      "file": "implementations/web/client/src/ui/work/ToolLine.tsx",
+      "find": "const FailedTip = lazy(() => import(\"./FailedTip.tsx\"));",
+      "replace": "import FailedTipNow from \"./FailedTip.tsx\";\nconst FailedTip = FailedTipNow;",
+      "expectRed": "no first-load chunk holds the tooltip, and a lazy chunk does",
+      "cell": "no first-load chunk holds the tooltip, and a lazy chunk does",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the peek imports the agent page, so the page and its Tabs load with every page",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "import { useSession } from \"../agent/work.ts\";",
+      "replace": "import { useSession } from \"../agent/work.ts\";\nimport { AgentPage } from \"../views/AgentPage.tsx\";\n(globalThis as { agentPage?: unknown }).agentPage = AgentPage;",
+      "expectRed": "no first-load chunk holds the agent page's tabs, and a lazy chunk does",
+      "cell": "no first-load chunk holds the agent page's tabs, and a lazy chunk does",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    }
+  ]
+}

@@ -15,7 +15,7 @@
  *
  * Run: pnpm smoke:lang-migrate
  */
-import { run, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "../src/interpret.js";
+import { run, ScopeBranchMissing, UnwalkableScope } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import { WALKER_LANGUAGE_VERSION } from "../src/pins.js";

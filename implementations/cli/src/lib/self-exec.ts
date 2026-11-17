@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
-import { cliPackageRoot, entryScript } from "../seed/paths.js";
+import { cmdSpawnSpec, logicalExecutionEntry, resolveOnPath } from "@cotal-ai/workspace";
+import { cliPackageRoot, entryScript, seedWriterKind } from "../seed/paths.js";
+import { shellWord } from "./endpoint-errors.js";
 
 /** Is this process running the CLI's own entry? Decided on the RESOLVED file, never on its name.
  *
@@ -76,7 +77,8 @@ export const DAEMON_NODE_FLAGS: readonly string[] = ["--max-semi-space-size=1"];
  *  still wins. */
 export function daemonArgv(): string[] {
   const [node, ...self] = selfArgv();
-  return [node!, ...DAEMON_NODE_FLAGS, ...self];
+  const logical = logicalExecutionEntry();
+  return [node!, ...DAEMON_NODE_FLAGS, ...self.slice(0, -1), logical ?? self.at(-1)!];
 }
 
 /** True when launched via `npx` — the package is unpacked under `~/.npm/_npx/<hash>/…`. */
@@ -165,11 +167,21 @@ function isEphemeralNpxBin(dir: string): boolean {
   return /[/\\]_npx[/\\]/.test(dir);
 }
 
-/** The copy-paste command prefix for user-facing hints: `cotal` when it's on PATH, `npx cotal-ai`
- *  for an npx run, `pnpm cotal` in a dev clone. (Display only — re-execs use {@link selfArgv}.) */
+/** The copy-paste command prefix for user-facing hints: prefer PATH or npx, then the installed
+ *  entry under this Node runtime. A dev clone uses pnpm. Re-execs use {@link selfArgv}. */
 export function displayCmd(): string {
   if (cotalOnPath()) return "cotal";
   if (isNpx()) return "npx cotal-ai";
+  if (runsCliEntry() && seedWriterKind() === "released") {
+    const command = [process.execPath, entryScript()].map(shellWord).join(" ");
+    if (process.platform !== "win32" && process.env.COTAL_LAUNCHER === "1") {
+      const prefix = process.env.npm_config_prefix;
+      if (!prefix) throw new Error("the installer launcher did not provide its npm prefix");
+      // Match install.sh's pinned runtime and install destination without copying the whole PATH.
+      return `PATH=${shellWord(join(prefix, "nodebin"))}:"$PATH" npm_config_prefix=${shellWord(prefix)} COTAL_LAUNCHER=1 ${command}`;
+    }
+    return command;
+  }
   return "pnpm cotal";
 }
 

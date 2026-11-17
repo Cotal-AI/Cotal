@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * The manager's SESSION PLANE: offer mint + redeem ENFORCEMENT + PTY-bridge
  * standup. Each live session serves on its OWN short-lived connection under its OWN per-session
@@ -276,7 +277,7 @@ export class ManagerSessionPlane {
     this.#live.delete(sessionId);
     this.#registry.remove(sessionId);
     if (live) {
-      try { await live.nc.drain(); } catch { try { live.nc.close(); } catch { /* already gone */ } }
+      try { await drainAndClose(live.nc); } catch { /* already gone */ }
     }
     await this.#collect(sessionId, state);
   }

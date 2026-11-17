@@ -1,6 +1,5 @@
 /**
- * Cotal brand palette for the terminal setup flow. Colors match the web dashboard
- * (implementations/cli/src/web/index.html): brand blue #58a6ff, success green #3fb950.
+ * Cotal brand palette for the terminal setup flow: brand blue #58a6ff, success green #3fb950.
  *
  * Rendering gates (same as the rest of the CLI's color story):
  *   - `colorEnabled()` is false            → plain text, no ANSI (no TTY, NO_COLOR, FORCE_COLOR=0)
@@ -65,6 +64,9 @@ const WORDMARK = String.raw`
 /** First-run splash: brand wordmark + tagline + rule. No-op detail when ANSI is off
  *  still prints the plain wordmark so piped logs stay legible. */
 export function splash(): void {
-  const rule = "─".repeat(Math.min(44, (process.stdout.columns ?? 80) - 2));
+  // A terminal that has not been sized reports 0. `??` leaves that in place, and repeat of a negative count throws.
+  const reported = process.stdout.columns;
+  const columns = reported !== undefined && reported > 2 ? reported : 80;
+  const rule = "─".repeat(Math.min(44, columns - 2));
   process.stdout.write(`${brand(WORDMARK)}\n\n   ${dim("the web for agents")}\n  ${brand(rule)}\n\n`);
 }

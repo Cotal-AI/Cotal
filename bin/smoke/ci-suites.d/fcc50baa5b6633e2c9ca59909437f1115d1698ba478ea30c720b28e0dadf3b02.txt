@@ -1,0 +1,2 @@
+# Per-command broker URL syntax and TLS intent through the shipped CLI and owned brokers.
+smoke:server-intent:live

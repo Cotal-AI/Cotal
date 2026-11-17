@@ -11,7 +11,7 @@
  * bucket). The KEY GRAMMAR + row parsers stay in `lifecycle-state.ts`; this module is the CAS
  * operations over them.
  */
-import { walkKvLatest } from "./kv-scan.js";
+import { liveKvEntries, walkKvLatest } from "./kv-scan.js";
 import { contractDigest } from "./canonical.js";
 import { parseServiceRegistrationIdentity, serviceGateApprovalLive } from "./service-gate.js";
 import type { KV } from "@nats-io/kv";
@@ -462,11 +462,11 @@ export function endpointRegistrationBarrier(
       }
       const rows: import("./endpoint-service.js").EpServeLedgerRow[] = [];
       const prefix = `${epcredFamilyPrefix(endpoint, instanceId)}.`;
-      for await (const rowKey of await kv.keys(`${prefix}>`)) {
-        if (!rowKey.startsWith(prefix)) continue;
-        const entry = await kv.get(rowKey);
-        if (!entry || entry.operation !== "PUT") continue; // a DEL marker is corruption elsewhere; enumeration skips
-        const led = parseLedgerRow(entry.value, rowKey);
+      // Read the retained family in one complete value pass, not one round trip per historical
+      // credential. The shared scanner collapses revisions/tombstones and refuses partial reads.
+      for (const entry of await liveKvEntries(kv, `${prefix}>`)) {
+        if (!entry.key.startsWith(prefix)) continue;
+        const led = parseLedgerRow(entry.value, entry.key);
         // Reconstruct the EpServeLedgerRow the barrier consumers need: revoke keys by credentialId,
         // evict by holderPrincipal, the revoke loop reads state. The gate-coordinate fields and the
         // ordinary holder nkey are not persisted. Service rows retain their authenticated user

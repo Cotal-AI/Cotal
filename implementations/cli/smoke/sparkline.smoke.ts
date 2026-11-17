@@ -37,6 +37,7 @@ class StubEndpoint extends EventEmitter {
   async stop() {}
   getRoster() { return []; }
   tap(cb: (subject: string, msg: CotalMessage) => void) { this.tapCb = cb; }
+  channelDeliveryClass() { return "live"; }
   async listChannels() { return [{ channel: "general", messages: 0 }]; }
   async dmHistory() { return []; }
   async channelHistory() { return []; }

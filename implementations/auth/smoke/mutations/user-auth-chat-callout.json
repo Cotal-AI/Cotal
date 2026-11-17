@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "implementations/auth/smoke/user-auth-launch.smoke.ts"
+  ],
+  "guard": "A user-mode chat session connects: the callout mints a chat principal no endpoint capability and never resolves it as an actor grant.",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:user-auth-launch:live",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/user-auth-chat-callout.json",
+  "why": [
+    "A chat session's row lives in its own space and is never an actor grant, so no caller policy can name it. Resolving its endpoint caller rights through the actor ledger finds no grant and denies the connect, after admission has already succeeded."
+  ],
+  "mutations": [
+    {
+      "name": "C1 the callout resolves a chat principal's endpoint caller rights as an actor grant",
+      "file": "implementations/auth/src/callout-authority.ts",
+      "find": "      if (chat.isChatPrincipal(t.owner, t.act.actor)) return { capabilities: [] };\n",
+      "replace": "",
+      "expectRed": "a user-mode `cotal chat --stdio` session connects as its own chat principal",
+      "cell": "a user-mode `cotal chat --stdio` session connects as its own chat principal",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

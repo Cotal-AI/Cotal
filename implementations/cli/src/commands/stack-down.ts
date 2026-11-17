@@ -11,14 +11,16 @@ import { dirname } from "node:path";
 import * as prompts from "../lib/prompts.js";
 import { CotalEndpoint, DEFAULT_SPACE, deliveryLeaseHolderFor, mintCreds, newIdentity, type ParsedArgs } from "@cotal-ai/core";
 import {
-  CommandFailure, ConfirmationRequired, canonicalRoot, deliveryCredsKey, findMesh, getSpaceAuth, homeCotalDir, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, stackHomeRemedy, stackRunsUnderOtherHome, workspaceSecretStore, writeResult,
+  CommandFailure, ConfirmationRequired, assertRecordIdentity, canonicalRoot, commandIsCotalSupervisor, deliveryCredsKey, findMesh, getSpaceAuth, isCommandFailure, isConnectRefusal, oneLine, presentationOf, processStopped, readBrokerPolicy, readNatsInfoGreeting, readProcessCommand, recordMesh, recordOperationSpace, recordPreparedSpace, releaseMaintenanceLock, removeMesh, removeMeshesByRoot, renderReport, resolveMeshTarget, workspaceSecretStore, writeResult,
   type MaintenanceLock, type MeshEntry, type OutputWarning, type Presentation, type Report, type ServiceAdapterKernelStopPlan, type ServiceAdapterStopAbandonment, type ServiceAdapterStopPlan,
 } from "@cotal-ai/workspace";
 import { brokerLaunchAt } from "../lib/broker-service.js";
-import { fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite } from "../lib/broker-store-health.js";
+import { brokerStoreWrite, fullStoreStopRefusal, jetStreamDisabled, jetStreamDisabledRefusal, readStoredBytes, recordedStore, storeFull, storeRefusedWrite, storeWriteError, storeWriteFailedRefusal } from "../lib/broker-store-health.js";
 import { yesRequired } from "../lib/confirmation-required.js";
 import { noticeOnInterrupt } from "../lib/interrupt-notice.js";
+import { releaseDeadForegroundHold } from "../lib/foreground-hold.js";
 import { shellWord } from "../lib/endpoint-errors.js";
+import { stackStoreWarnings } from "../lib/store-identity.js";
 import { canPrompt } from "./meshes-wizard.js";
 import { nativeImpactView } from "./service-actions.js";
 import { serviceDefinitionStore, type ServiceDefinitionSnapshot } from "../lib/service-definitions.js";
@@ -28,6 +30,7 @@ import { abandonLaunchRemedy, abandonRemedy, abandonRetainedStackStop, abandonUn
 import { readStackRuns } from "../lib/stack-runs.js";
 import { refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { localProcessSurface } from "../ext-loader.js";
+import { lostRecordsStackDown, stackRecordsLost } from "./stack-lost-records.js";
 
 const STOP_ORDER: readonly StackRole[] = ["manager", "delivery", "auth", "broker"];
 
@@ -133,8 +136,7 @@ function readMembers(journal: StackJournal): Member[] {
 /** A live manager's agent impact is read through the broker on an authenticated stack. When the
  *  stack's broker is gone that read cannot succeed, so the refusal names the command that brings
  *  the broker back while keeping the live manager. A broker whose process runs but sends no
- *  greeting, as a suspended one does, is named with its pid; the broker stops last, so it is not
- *  signalled here. */
+ *  greeting is named with its pid; the broker stops last, so no stop signal is sent here. */
 async function managerImpact(journal: StackJournal, members: readonly Member[], manager: Member, withAgents: boolean): Promise<ServiceAdapterStopPlan | undefined> {
   try { return await prepareNativeServiceStop(manager.definition, manager.instance, withAgents); }
   catch (caught) {
@@ -146,6 +148,13 @@ async function managerImpact(journal: StackJournal, members: readonly Member[], 
     // Nothing was submitted: the stop's credential could not be recorded on a broker without JetStream.
     const disabled = jetStreamDisabled(journal.root, journal.space);
     if (disabled && !(isCommandFailure(caught) && caught.outcome !== "unknown")) throw disabledJetStreamStop(journal, manager, disabled);
+    // A failed issuance may time out or return the broker's native store error. An explicit error
+    // must match the current broker log before it gains that log's recovery guidance.
+    if ((caught as { name?: unknown } | undefined)?.name === "TimeoutError" || (isCommandFailure(caught) && caught.outcome === "unknown") || storeWriteError(caught)) {
+      const write = brokerStoreWrite(journal.root, journal.space);
+      if (write.state === "write-failed" && (!storeWriteError(caught) || write.cause === caught.message))
+        throw storeWriteFailedRefusal(write, journal.root, journal.space, "the manager's stop", caught, "no member was stopped", { root: journal.root, space: journal.space, manager: manager.instance.name }, manager.instance.record.value.process?.pid);
+    }
     // The read connects through the broker, so a gone broker surfaces as the connect refusal.
     const error = isConnectRefusal(caught) ? caught.failure() : caught;
     const broker = members.find((member) => member.role === "broker" && member.live);
@@ -206,6 +215,9 @@ function alreadyStopped(journal: StackJournal, members: readonly Member[]): bool
  *  it found nothing running. */
 export function nothingRunning(presentation: Presentation, target: { root: string; space?: string; server?: string }, withAgents: boolean, warnings: readonly OutputWarning[] = [], preview = false): void {
   // A root that names no space resolves to the default one, as `resolveSpace` answers.
+  // A killed foreground holder leaves its record, and a stopped stack has no holder. A preview
+  // removes nothing.
+  if (!preview) releaseDeadForegroundHold(target.root);
   const remaining = recordedProcessesUnder(target.root, [target.space ?? DEFAULT_SPACE]);
   if (remaining.length) {
     const lines = remaining.map(recordedProcessLine);
@@ -289,12 +301,33 @@ function planView(journal: StackJournal, members: readonly Member[], withAgents:
   ] }] };
 }
 
+/** The retired instance id is gone because a later up replaced it. Missing-record recovery
+ *  refuses every journaled replacement, so it must not run when the replacement's own record
+ *  matches this operation. The normal stop adopts that record. A record that does not match,
+ *  or another missing member, stays on the recovery route. */
+function recordedReplacementSupersedesLostRecords(snapshot: StackJournalSnapshot): boolean {
+  const pending = snapshot.journal.members.filter((row) => row.replacement !== undefined && row.instanceId !== null);
+  if (pending.length === 0) return false;
+  let adopted: StackJournal;
+  try { adopted = withSettledMembers(snapshot.journal, undefined); }
+  catch (error) { if (isCommandFailure(error)) return false; throw error; }
+  const store = serviceInstanceStore(snapshot.journal.space);
+  for (const row of pending) {
+    const next = adopted.members.find((member) => member.role === row.role);
+    if (!next || next.instanceId === null || next.instanceId === row.instanceId) return false;
+    if (store.read(next.instanceId) === undefined) return false;
+  }
+  return !stackRecordsLost({ ...snapshot, journal: adopted });
+}
+
 export async function stackDown(rootInput: string, values: ParsedArgs["values"]): Promise<void> {
   // It refuses --preserve-state on a controller root, so only a bare stop continues.
   validateStackDownArguments(rootInput, values);
   const presentation = presentationOf(values), interactive = canPrompt() && presentation !== "json";
   const withAgents = values["with-agents"] === true;
   const root = canonicalRoot(rootInput);
+  const recorded = readStackJournal(root);
+  if (recorded && stackRecordsLost(recorded) && !recordedReplacementSupersedesLostRecords(recorded)) return lostRecordsStackDown(root, values);
   // The preview reads without the lock and writes nothing. The real stop holds the root's
   // maintenance lock from its first read to its last write, so no other whole-stack operation runs.
   if (values["dry-run"] === true) return await previewStackStop(root, values, presentation, withAgents);
@@ -348,7 +381,6 @@ function stopTarget(root: string, values: ParsedArgs["values"]) {
     });
   }
   recordOperationSpace(journal0.space);
-  if (stackRunsUnderOtherHome(root, journal0)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "this root's controller stack runs under another Cotal home; this one holds no record of its members, so no member was stopped", { target: { root, space: journal0.space, cotalHome: homeCotalDir() }, remedy: stackHomeRemedy() });
   if (stackOperationUnsettled(journal0) && journal0.operation.kind !== "up" && journal0.operation.kind !== "down")
     throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "an earlier preserve or resume on this root has no settled outcome; it is decided by its own maintenance attempt and no member was stopped", { target: { root, operation: journal0.operation }, remedy: `inspect the root's maintenance attempt and the stack's members with \`cotal service --space ${journal0.space}\`` });
   const settlement = previewStackSettlement(journal0);
@@ -365,7 +397,7 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
   const stopped = alreadyStopped(journal0, members);
   if (stopped || stackNeverStarted(journal0)) {
     await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
-    return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, [], true);
+    return nothingRunning(presentation, target, stopped && withAgents && !journal0.operation.withAgents, stackStoreWarnings(journal0), true);
   }
   // A preview reports what would refuse the real stop instead of refusing itself.
   let blocked: CommandFailure | undefined, restore: string | undefined, stranded: ReturnType<typeof strandedRegistration>;
@@ -383,8 +415,8 @@ async function previewStackStop(root: string, values: ParsedArgs["values"], pres
     if (disabled) blocked = disabledJetStreamStop(journal0, manager, disabled);
     else if (full) blocked = fullStoreStop(journal0, manager, full);
   }
-  const warnings = blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
-    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))];
+  const warnings = [...stackStoreWarnings(journal0), ...(blocked ? [{ code: blocked.code, target: blocked.target, message: `the real stop would refuse: ${blocked.message}${blocked.remedy ? `; ${blocked.remedy}` : ""}` }]
+    : [...stranded ? [strandedNotice(journal0, stranded.previous, true)] : [], ...localRecords(root, journal0.space).filter((row) => row.state !== "live").map((row) => staleWarning(root, row, true))])];
   // A preview that changes nothing succeeds. It is partial only in what it read: no provider and
   // no manager impact, which the real stop reads and confirms before any signal.
   writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop-preview", ...target, withAgents, members: members.map((member) => ({ role: member.role, definition: member.definition.name, instanceId: member.instance.name, process: member.live ? "running" : "gone" })), settlesOperation: settlement ?? null, blockedBy: blocked?.detail() ?? null, nativeImpactChecked: false, dryRun: true, signalled: false, admittedRestore: restore ?? null }, completeness: "partial", warnings }, () => {
@@ -432,20 +464,18 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     ...(launch ? [{ code: "LAUNCH_ABANDONED", target: { ...instanceProjection(launch.row), role: launch.role }, message: `the ${launch.role} launch ${launch.row.name} was recorded failed: the up that started it exited before it recorded a process. A process that launch started without recording it is not excluded, and this down does not stop it` }] : []),
   ];
   const { previous, journal0, settlement, members, target } = stopTarget(root, values);
+  const storeWarnings = stackStoreWarnings(journal0);
   // The completed down that stopped the stack also stopped its agents when it took --with-agents, so
   // a repeat has nothing left to stop. A stack that never started has no agents either.
   if (alreadyStopped(journal0, members) || stackNeverStarted(journal0)) {
     // A controller stack with no recorded member can still have a manager or delivery daemon whose
     // pidfile was moved. Its lease is the evidence, read before this stop reports nothing running.
     await refuseLiveUnrecordedDaemons(localProcessSurface(), { root, space: journal0.space });
-    if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
-    return nothingRunning(presentation, target, false, abandonWarnings);
+    if (alreadyStopped(journal0, members)) return nothingRunning(presentation, target, withAgents && !journal0.operation.withAgents, [...storeWarnings, ...abandonWarnings, ...await readinessAddressSurvivors(journal0.space)]);
+    return nothingRunning(presentation, target, false, [...storeWarnings, ...abandonWarnings]);
   }
-  // A stopped broker takes connections and never answers, so every read through it would wait out
-  // its budget and the broker's own stop would wait on a signal it cannot act on.
   const broker = members.find((member) => member.role === "broker" && member.live);
   const brokerPid = broker?.instance.record.value.process?.pid;
-  if (brokerPid !== undefined && processStopped(brokerPid)) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `the stack's broker, pid ${brokerPid}, is stopped, so it accepts connections at ${journal0.server} and never answers; no member was stopped`, { target: { ...target, broker: broker!.instance.name, pid: brokerPid }, remedy: `resume it with kill -CONT ${brokerPid} and run \`cotal down\` again` });
   const admittedRestore = scopeRefusals(journal0);
   assertJournalWritable(root, values);
   assertServiceRecordsWritable(root, journal0.space, values);
@@ -463,10 +493,29 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
   // while its dependants run; it is recomputed after they stop and refuses on any change then.
   const manager = members.find((member) => member.role === "manager" && member.live);
   try {
+    if (!manager && withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    // Resume the exact owned broker before reads through it. This is not its stop: manager impact
+    // and the broker's final dependant scope still pass their normal guards, and SIGTERM stays last.
+    if (broker && brokerPid !== undefined && processStopped(brokerPid)) {
+      if (!values.yes) {
+        const answer = await prompts.confirm({ message: `Resume ${oneLine(journal0.space)}'s suspended broker, pid ${brokerPid}, to review and stop its controller stack?`, initialValue: false });
+        if (prompts.isCancel(answer) || !answer) {
+          putBack();
+          writeResult(presentation, { command: "down", target, result: { kind: "controller-stack-stop", ...target, cancelled: true, members: journal0.members }, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "no member was resumed or stopped" }] }, () => planView(journal0, members, withAgents, settlement));
+          return;
+        }
+      }
+      const pin = broker.instance.record.value.process!;
+      const role = readProcessCommand(brokerPid);
+      if (!brokerLaunchAt(journal0.space, broker.instance.name, broker.instance.record.value.launchRequestId, root, journal0.server) || role.kind !== "command" || commandIsCotalSupervisor(role.command) || assertRecordIdentity(pin).kind !== "match")
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the suspended broker's exact launch, process identity or role could not be re-established; no signal was sent", { target: instanceProjection(broker.instance) });
+      try { process.kill(brokerPid, "SIGCONT"); }
+      catch { throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the suspended broker could not be resumed; no member was stopped", { target: instanceProjection(broker.instance) }); }
+    }
     if (manager) {
       manager.native = await managerImpact(journal0, members, manager, withAgents);
       if (!manager.native) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the manager's native agent impact could not be established; no member was stopped", { target: instanceProjection(manager.instance) });
-    } else if (withAgents) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "--with-agents needs the stack's live manager and its native impact; no member was stopped", { target });
+    }
     if (!values.yes) {
       // What the prompt asks to confirm. The receipt names the mesh, so the plan does not.
       if (presentation !== "json") {
@@ -574,8 +623,11 @@ async function applyStackStop(root: string, values: ParsedArgs["values"], presen
     try { cleared = removeStaleLocalRecords(root, journal.space); }
     catch (error) { failure = new CommandFailure("partial", "OPERATION_PARTIAL", `every member stopped, but a stale process record under the root was not removed (${(error as Error).message})`, { target, changed, remedy: "inspect the process records under the root's .cotal; nothing was retried" }); }
   }
+  // A foreground holder that was killed leaves its record, and a stopped stack has no holder.
+  if (!failure) releaseDeadForegroundHold(root);
   settle(failure ? (failure.outcome === "unknown" ? "unknown" : failure.outcome === "partial" ? "partial" : failure.outcome === "failed" ? "failed" : "refused") : "completed");
   const warnings: OutputWarning[] = [
+    ...storeWarnings,
     ...(settled || abandoned || stranded || cleared.length ? [
       ...abandonWarnings,
       ...(settled ? [{ code: "OPERATION_SETTLED", target: { ...target, operation: settled.operation.id }, message: stackSettlementNotice(settled) }] : []),

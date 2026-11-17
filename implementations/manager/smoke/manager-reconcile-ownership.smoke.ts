@@ -35,7 +35,6 @@ import {
   type AgentHandle,
   type LaunchSpec,
   type Presence,
-  type StaticManagedSlotRow,
 } from "@cotal-ai/core";
 import { staticLifecycleTransport, readStaticSlot, activateStaticLifecycle, casStaticSlot } from "../src/static-lifecycle.js";
 import { bootBroker } from "./_boot-broker.js";

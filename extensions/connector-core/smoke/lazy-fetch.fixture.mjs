@@ -6,7 +6,7 @@ const { createServer } = createRequire(import.meta.url)("node:http");
 import { submitFeedback } from "../dist/feedback.js";
 
 const undici = () => process.moduleLoadList.filter((name) => /undici/.test(name)).length;
-const server = createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "fixture-1" }))); });
+const server = createServer((req, res) => { req.resume(); req.on("end", () => res.writeHead(202, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, id: "fixture-1", published: true }))); });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const before = undici();
 const result = await submitFeedback({ origin: "agent", type: "other", summary: "fixture", source: "smoke" }, { url: `http://127.0.0.1:${server.address().port}/`, email: "smoke@example.invalid" });

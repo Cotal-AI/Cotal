@@ -381,7 +381,7 @@ try {
   check("...and it names the subject the credential lacked, so the remedy is readable off the error",
     (noPin.detail ?? "").includes(`.ep.inst.manager.${IID1}.describe.`), noPin.detail?.slice(0, 260));
   check("...and says the responder may be healthy (the wrong conclusion is the expensive one)",
-    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /grant is what is missing/.test(noPin.detail ?? ""),
+    /REFUSED BY THE BROKER/.test(noPin.detail ?? "") && /no grant covers it, or it was granted after this connection authenticated/.test(noPin.detail ?? ""),
     noPin.detail?.slice(0, 260));
 
   // ---- 5. THE WATCH RELEASES ITSELF ------------------------------------------------------------
@@ -735,11 +735,10 @@ try {
       check("the manager record is cached again (the seed below copies it)", mgrRecord !== undefined);
       if (mgrRecord) cache.set(third, { ...mgrRecord, responder: { ...mgrRecord.responder, instanceId: ghost } });
       let thirdThrew: unknown;
-      let thirdReturned: unknown;
       const thirdDescribes = reqs(third, "describe");
       const thirdPsBefore = totalRuns("ps");
       try {
-        thirdReturned = await ep.invokeService(third, "ps");
+        await ep.invokeService(third, "ps");
       } catch (e) { thirdThrew = e; }
       // RE-CUT, AND THE CONDITION THAT MOVED IT IS WHICH LAYER READS THE ENDPOINT KEY. This asserted
       // the responder-answered marker, because the ALLOWLIST was what stood between "surface" and

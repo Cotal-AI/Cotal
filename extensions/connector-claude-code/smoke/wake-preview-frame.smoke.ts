@@ -107,6 +107,11 @@ try {
       assert.equal(feed.notifyApproval("reader-session", { ...notice, status: "denied" }), true);
       for (let i = 0; i < 100 && !out.includes("\n"); i++) await new Promise((r) => setTimeout(r, 50));
       assert.equal(out, `${approvalEvent({ ...notice, status: "denied" })}\n`, `the reader printed the decision line and nothing else: ${JSON.stringify(out)} / stderr ${JSON.stringify(err)}`);
+      assert.equal(feed.notifyApproval("reader-session", { ...notice, status: "refused" }), true);
+      const expected = `${approvalEvent({ ...notice, status: "denied" })}\n${approvalEvent({ ...notice, status: "refused" })}\n`;
+      for (let i = 0; i < 100 && out !== expected; i++) await new Promise((r) => setTimeout(r, 50));
+      assert.equal(out, expected, "the shipped monitor prints the fixed policy-refusal event");
+      assert.deepEqual(approvalFrame({ approval: { ...notice, status: "refused" } }), { ...notice, status: "refused" });
     } finally { monitor.kill(); }
   });
 

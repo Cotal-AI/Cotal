@@ -118,8 +118,9 @@ async function rejection(call: Promise<unknown>): Promise<{ code?: string; messa
   }
 }
 
-/** A bare down run from `root`, with what it printed, the exit code it set and its refusal. */
-async function bareDownIn(root: string, values: Record<string, string | boolean> = {}) {
+/** Run owned stop fixtures with scripted consent by default. Explicit values retain refusal and
+ *  preview coverage. Capture output, exit code and refusal from the root. */
+async function bareDownIn(root: string, values: Record<string, string | boolean> = { yes: true }) {
   let out = "";
   const log = console.log, write = process.stdout.write, exitCode = process.exitCode, cwd = process.cwd();
   process.exitCode = undefined;
@@ -233,7 +234,7 @@ async function stopPlantedManager(
     process.chdir(root);
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
     console.log = (...args: unknown[]) => { output += `${args.join(" ")}\n`; };
-    try { await run(target === "manager" ? ["manager"] : [], withAgents ? { "with-agents": true } : {}); }
+    try { await run(target === "manager" ? ["manager"] : [], { yes: true, ...(withAgents ? { "with-agents": true } : {}) }); }
     catch (error) { warning += `${(error as Error).message}\n`; }
   } finally {
     console.error = originalError;
@@ -326,7 +327,7 @@ try {
   const current = await rejection(run(["web"]));
   await sleep(200); // a SIGTERM sent before the refusal would have ended the child by now
   check("current mesh: `down web` refuses TARGET_NOT_FOUND and names the web extension and its start",
-    current?.code === "TARGET_NOT_FOUND" && current.remedy?.includes("cotal ext add @cotal-ai/web") === true && current.remedy.includes("cotal service start web --creds <file>"), current && { message: current.message, remedy: current.remedy });
+    current?.code === "TARGET_NOT_FOUND" && current.remedy?.includes("cotal ext add @cotal-ai/web") === true && current.remedy.includes("cotal service start web"), current && { message: current.message, remedy: current.remedy });
   check("current mesh: the legacy dashboard is not signalled and keeps its web.pid", alive(meshA.child.pid!) && existsSync(meshA.pidPath));
   check("current mesh: the OTHER mesh's dashboard is untouched", alive(meshB.child.pid!) && existsSync(meshB.pidPath));
 
@@ -508,7 +509,7 @@ try {
   try {
     console.error = (...args: unknown[]) => { unownedErr += `${args.join(" ")}\n`; };
     process.exit = ((code?: number) => { unownedCode = code ?? 0; throw new Error(`exit ${unownedCode}`); }) as typeof process.exit;
-    try { await run([]); } catch (error) {
+    try { await run([], { yes: true }); } catch (error) {
       if (!String((error as Error).message).startsWith("exit ")) throw error;
     }
   } finally {
@@ -584,7 +585,7 @@ try {
     console.error = (...args: unknown[]) => { mixedErr += `${args.join(" ")}\n`; };
     console.log = (...args: unknown[]) => { mixedOut += `${args.join(" ")}\n`; };
     process.exit = ((code?: number) => { mixedCode = code ?? 0; throw new Error(`exit ${mixedCode}`); }) as typeof process.exit;
-    try { await run([]); } catch (error) {
+    try { await run([], { yes: true }); } catch (error) {
       if (!String((error as Error).message).startsWith("exit ")) throw error;
     }
   } finally {

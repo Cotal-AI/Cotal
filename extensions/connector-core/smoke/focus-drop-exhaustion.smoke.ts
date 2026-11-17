@@ -26,6 +26,7 @@ agent.on("mention-wake", (item: InboxItem) => wakes.push(item));
 const specs = cotalToolSpecs(cfg);
 const inbox = specs.find(s => s.name === "cotal_inbox")!;
 const status = specs.find(s => s.name === "cotal_connection_status")!;
+const reconnect = specs.find(s => s.name === "cotal_reconnect")!;
 let passed = 0;
 function check(name: string, condition: boolean): void { assert.ok(condition, name); passed++; console.log(`  ✓ ${name}`); }
 async function until(name: string, condition: () => boolean): Promise<void> { const end = Date.now() + 15000; while (!condition()) { if (Date.now() > end) throw new Error(name); await new Promise(r => setTimeout(r, 25)); } }
@@ -33,8 +34,9 @@ try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await seedChannelRegistry({ servers, space: cfg.space, file: { defaults: { replay: true }, channels: {} } });
   await pub.start();
-  agent.start();
-  await agent.waitUntilConnected();
+  await agent.start();
+  const healthyReconnect = await reconnect.run(agent, cfg, {});
+  check("healthy reconnect keeps its success response", !healthyReconnect.isError && healthyReconnect.text === "Reconnected ✓ (Otto@focusdrop)" && agent.connectionState === "ready");
   check("healthy status has no channel degradation", !JSON.parse((await status.run(agent, cfg, {})).text).channelDeliveryIssue);
   await agent.setAttention("focus");
   // Retain a known muted decision before exhaustion so a later mode toggle cannot revive it.
@@ -42,6 +44,10 @@ try {
   for (const channel of channels.slice(0, 6)) for (let i = 0; i < 900; i++) await pub.multicast(`backlog-${channel}-${i}`, { channel });
   await until("drop tracking exhaustion", () => agent.channelDeliveryIssue !== undefined);
   check("exhaustion is derived from real live traffic", agent.connectionState === "degraded");
+  const exhaustedReconnect = await reconnect.run(agent, cfg, {});
+  check("reconnect reports transport recovery without claiming session recovery", !exhaustedReconnect.isError && exhaustedReconnect.text.startsWith("Transport reconnected (") && exhaustedReconnect.text.includes("session remains degraded"));
+  check("reconnect names persistent suppression and the required restart", exhaustedReconnect.text.includes(agent.channelDeliveryIssue!) && exhaustedReconnect.text.includes("Restart this session to restore ambient channel delivery"));
+  check("reconnect explains directed delivery remains available", exhaustedReconnect.text.includes("Direct messages and anycast remain available") && exhaustedReconnect.text.includes("non-historical mentions on unmuted channels wake to pull their buffered body"));
   const warning = await inbox.run(agent, cfg, { scope: "pull-only" });
   check("inbox reports exhausted drop tracking", warning.text.includes("Channel drop tracking exhausted"));
   const snapshot = JSON.parse((await status.run(agent, cfg, {})).text);

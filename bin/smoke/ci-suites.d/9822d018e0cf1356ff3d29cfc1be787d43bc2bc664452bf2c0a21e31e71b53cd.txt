@@ -1,0 +1,2 @@
+# CLI signal cancellation through a foreground daemon and isolated device provider.
+smoke:daemon-login-signals

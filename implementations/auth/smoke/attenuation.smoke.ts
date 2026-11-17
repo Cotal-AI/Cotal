@@ -106,6 +106,39 @@ try {
     }),
     "scope [admin] beyond [spawn]",
   );
+  // `run` carries the whole spawn set, so a run holder hands on `spawn`; the converse stays refused.
+  grantActor(dir, { owner: OWNER, actor: "runner", scope: ["run"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  let fromRun: { scope: string[] } | undefined, fromRunError: unknown;
+  try {
+    fromRun = grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "runkid", scope: ["spawn"], parent: `${OWNER}.runner`,
+      allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    });
+  } catch (e) {
+    fromRunError = e;
+  }
+  check("scope [spawn] delegates within a [run] spawner (run carries the spawn set)", fromRun?.scope.includes("spawn") === true, fromRunError);
+  rejects(
+    "scope [run] is refused under a [spawn] spawner",
+    () => grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "runspy", scope: ["run"], parent: CLI,
+      allowSubscribe: ["general"], allowPublish: ["general"], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    }),
+    "scope [run] beyond [spawn]",
+  );
+  // The ledger's vocabulary stays open: a parent-held token outside the static agent set delegates.
+  grantActor(dir, { owner: OWNER, actor: "opsparent", scope: ["spawn", "supervise", "machine-vitals"], allowSubscribe: ["general"], allowPublish: ["general"] });
+  let opsKid: { scope: string[] } | undefined, opsError: unknown;
+  try {
+    opsKid = grantManagedActor(dir, { custody: { kind: "foreground" },
+      owner: OWNER, actor: "opskid", scope: ["supervise", "machine-vitals"], parent: `${OWNER}.opsparent`,
+      allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash, lifecycleUid: mintLifecycleUid(),
+    });
+  } catch (e) {
+    opsError = e;
+  }
+  check("a parent-held token outside the static agent set delegates (supervise, machine-vitals)",
+    opsKid?.scope.includes("supervise") === true && opsKid.scope.includes("machine-vitals"), opsError);
   rejects(
     "a cross-owner delegation is refused (agents live under their spawner's owner)",
     () => grantManagedActor(dir, { custody: { kind: "foreground" },

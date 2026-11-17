@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { readFileSync, statSync, type Stats } from "node:fs";
+import { hostname, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
   DEFAULT_SPACE,
@@ -34,6 +36,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { brokerAddressForDisplay } from "./broker-display.js";
+import { tlsIntent } from "./broker-url.js";
 import { c, paintFor } from "./colors.js";
 import { findCotalRoot, getSpaceAuth, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { agentGrants, grantMintFlags } from "./agent-grants.js";
@@ -74,6 +77,9 @@ export interface ConnectOpts {
   mint?: Pick<MintOpts, "runDriver" | "runMediator" | "runOperator" | "runAdmitter">;
   /** Stable actor for a one-shot operator sender. Does not replace an explicit credential or user bearer. */
   operatorActor?: string;
+  /** A hosted run command asks for the static-auth operator actor. It is derived only once this
+   *  connect has selected that instrument mint, never for an open mesh, a signed-in user, or a raw credential. */
+  staticOperator?: boolean;
   /** A read must not sweep or prune the local registry as a hidden prelude. */
   readOnly?: boolean;
 }
@@ -275,7 +281,7 @@ type BearerClaims = { sub?: unknown; act?: { actor?: unknown; lifecycleUid?: unk
  *  requires the principal pinned at construction, and the caller triple (1c.2c: the v0.4 ep-rail
  *  subjects the callout-minted rows pin) needs the ledger lifecycle claim too — the bearer is the
  *  one authoritative place all three live. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
+export function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
   try {
     const mid = bearer.split(".")[1];
     if (!mid) throw new Error("not a compact JWS");
@@ -425,6 +431,7 @@ export function preflightCode(failure: PreflightFailure): RefusalCode {
     case "creds-rejected":
       return "PERMISSION_DENIED";
     case "tls-trust":
+    case "tls-unsupported":
       return "DEPENDENCY_UNAVAILABLE";
     case "address-held":
       return "CONFLICT";
@@ -509,9 +516,11 @@ export async function mintControlInstrument(
   target: Pick<MeshTarget, "server" | "space" | "tlsRequired"> & { readonly auth: SpaceAuth },
   tier: "privileged" | "admin",
   instanceId?: string | string[],
+  actor?: string,
 ): Promise<{ creds: string; epCaller: IssuedCaller }> {
   const identity = newIdentity();
   const uid = mintLifecycleUid();
+  const principalActor = actor ?? identity.id;
   const profile = tier === "admin" ? "control-caller-admin" : "control-caller-privileged";
   // The instrument's expiry is its generation's horizon, so it is fixed before either exists.
   const expiresAt = Math.floor(Date.now() / 1000) + credentialLifetime(profile).defaultTtlSeconds!;
@@ -519,6 +528,7 @@ export async function mintControlInstrument(
   const pinned = instanceId !== undefined ? instancePinnedInstrumentCapabilities(tier, instanceId) : undefined;
   const creds = await withIssuerSession({ servers: target.server, space: target.space, auth: target.auth, tls: target.tlsRequired }, (s) =>
     mintCreds(target.auth, identity, profile, {
+      ...(actor !== undefined ? { principal: { owner: DEV_OWNER, actor } } : {}),
       lifecycleUid: uid,
       expiresAt,
       ...(pinned ? { endpointCapabilities: pinned } : {}),
@@ -526,7 +536,21 @@ export async function mintControlInstrument(
       issuance: { mode: "issue", store: s.store, accepted: s.accepted, sources: [] },
     }),
   );
-  return { creds, epCaller: { owner: DEV_OWNER, actor: identity.id, uid, generation: issued.generation } as IssuedCaller };
+  return { creds, epCaller: { owner: DEV_OWNER, actor: principalActor, uid, generation: issued.generation } as IssuedCaller };
+}
+
+/** The actor a static-auth operator's hosted run commands share. It is derived from the OS login
+ *  and host, and it fits the 64-character caller-token bound. The connection key and lifecycle stay
+ *  fresh for each command. An empty OS login or host throws, because there is then no actor to record. */
+export function staticOperatorActor(): string {
+  const login = userInfo().username.trim();
+  const host = hostname().trim();
+  if (!login || !host)
+    throw new Error("the operator actor cannot be derived: the OS login or host is empty");
+  const actor = `cli_${createHash("sha256").update(`${login}@${host}`).digest("hex").slice(0, 60)}`;
+  if (!/^[A-Za-z0-9_]{1,64}$/.test(actor))
+    throw new Error("the operator actor is not a caller token");
+  return actor;
 }
 
 /** The space {@link connectOrThrow} connects `flags` to, read from local records only, with no probe
@@ -580,11 +604,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         { code: "TARGET_NOT_FOUND", ...(named ? { target: { space } } : {}) },
       );
     const creds = readCredsFile(flags.creds);
-    // A broker taken from the space's record keeps its recorded TLS requirement. With `--server` the
-    // connect is off-registry: no recorded TLS intent to inherit. It stays non-strict, and that is a
-    // real (documented) gap rather than a safe default - a `--creds` connect to a TLS broker still
-    // upgrades, but is downgradeable.
-    const tls = recorded?.tlsRequired === true;
+    // Keep recorded TLS policy, or require the transport the explicit URL names.
+    const tls = tlsIntent(server, recorded?.tlsRequired === true);
     try {
       await reachableOrThrow(server, { creds, ...(tls ? { tls } : {}) });
     } catch (e) {
@@ -598,12 +619,19 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       const elsewhere = flags.server !== undefined && ownerMesh !== undefined && ownerMesh.server !== server ? brokerAddressForDisplay(ownerMesh.server) ?? "its registered broker" : undefined;
       if (owner === space) {
         if (elsewhere === undefined) {
-          const revokedAt = await recordedRevocation(space, creds);
-          if (revokedAt === undefined) throw e;
-          // The account here records the revocation, so the refusal says so instead of "check your creds".
+          const rejection = await recordedCredentialRejection(space, creds);
+          if (rejection === undefined) throw e;
           const claims = credsClaims(creds);
-          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(revokedAt * 1000).toISOString()} with auth revoke-credential`;
           const mint = claims.name === "agent" ? `mint a new key with the grants it held: \`cotal auth mint <label>${grantMintFlags(agentGrants(claims.nats ?? {}, space))} --out <new file>\`` : `mint a new key: \`cotal auth mint <label>${typeof claims.name === "string" ? ` --profile ${claims.name}` : ""} --out <new file>\``;
+          if (rejection.kind === "other-account") {
+            // A local account says nothing about an unrelated broker with the same space name.
+            if (ownerMesh?.mode !== "auth" || ownerMesh.server !== server) throw e;
+            const message = `credentials rejected at ${at}: space "${space}" has a different local identity from the one that issued ${flags.creds}, as after reset space and a new up`;
+            const remedy = `the old credential cannot authenticate to this identity; from ${ownerMesh.root}, ${mint}`;
+            throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
+          }
+          // The account here records the revocation, so the refusal says so instead of "check your creds".
+          const message = `credentials rejected at ${at}: the key ${claims.sub} in ${flags.creds} was revoked at ${new Date(rejection.at * 1000).toISOString()} with auth revoke-credential`;
           const remedy = `a revoked key is not signed again; ${mint}`;
           throw new ConnectRefusal(`✗ ${message}`, `  ${remedy}`, { cause: e, code: "PERMISSION_DENIED", parts: { message, remedy }, target: { space, path: flags.creds } });
         }
@@ -633,19 +661,11 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
         undefined,
         { code: "TARGET_NOT_FOUND" },
       );
-    // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
-    // is no intent to honour. Non-strict, same documented gap as `--creds`.
-    await reachableOrThrow(flags.server, {});
-    return { server: flags.server, space: flags.space, tls: false };
+    const tls = tlsIntent(flags.server, false);
+    await reachableOrThrow(flags.server, { tls });
+    return { server: flags.server, space: flags.space, tls };
   }
-  let target: MeshTarget;
-  if (opts.readOnly) {
-    try { target = resolveMeshTarget(process.cwd(), { server: flags.server, space: flags.space, offline: flags.offline, readOnly: true }); }
-    catch (e) {
-      if (isWorkspaceTargetError(e)) throw workspaceRefusal({ kind: "target", error: e }, { cause: e, kind: e.code === "no-meshes" || e.code === "unknown-space" || e.code === "not-started" ? "transient" : "permanent", code: targetErrorCode(e.code) });
-      throw e;
-    }
-  } else target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline });
+  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space, offline: flags.offline, readOnly: opts.readOnly });
   return connectTargetOrThrow(target, role, opts);
 }
 
@@ -713,8 +733,10 @@ export async function connectTargetOrThrow(target: MeshTarget, role: Profile, op
       // The issuer dial waits out its own budget on a stopped broker, so the preflight names it first.
       if (stoppedLoopbackListener(target.server) !== undefined) await preflightOrThrow(target, undefined, opts.readOnly === true);
       try {
+        // The OS login is read here, after this connect has selected the static instrument mint.
+        const operatorActor = opts.staticOperator === true ? staticOperatorActor() : opts.operatorActor;
         ({ creds, epCaller } = await mintControlInstrument({ server: target.server, space: target.space, tlsRequired: target.tlsRequired, auth: target.auth },
-          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId));
+          role === "control-caller-admin" ? "admin" : "privileged", opts.instanceId, operatorActor));
       } catch (e) {
         // The issuer dial is now the first thing on this path to touch the broker. A mesh that
         // is not there must still be reported in the preflight's classified words (and prune the
@@ -914,6 +936,13 @@ export function spaceInCreds(creds: string): string | undefined {
  *  of the revocation, in seconds. The broker refuses a credential issued at or before it. Undefined
  *  when the account is not here, the credential is another account's, or its key is not revoked. */
 export async function recordedRevocation(space: string, creds: string): Promise<number | undefined> {
+  const rejection = await recordedCredentialRejection(space, creds);
+  return rejection?.kind === "revoked" ? rejection.at : undefined;
+}
+
+/** The local account's reason for rejecting this credential, when its trust can be read. This is
+ *  diagnostic metadata only; the connect path consults it after the broker has refused the file. */
+async function recordedCredentialRejection(space: string, creds: string): Promise<{ kind: "other-account" } | { kind: "revoked"; at: number } | undefined> {
   let auth: SpaceAuth | undefined, claims: ReturnType<typeof credsClaims>;
   // An account record this cannot read leaves the caller's own answer standing, such as the
   // broker's refusal.
@@ -921,9 +950,10 @@ export async function recordedRevocation(space: string, creds: string): Promise<
     auth = await getSpaceAuth(workspaceSecretStore(findMesh(space)?.root ?? findCotalRoot()), space);
     claims = credsClaims(creds);
   } catch { return undefined; }
-  if (!auth || claims.sub === undefined || (claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub) return undefined;
+  if (!auth || claims.sub === undefined) return undefined;
+  if ((claims.nats?.issuer_account ?? claims.iss) !== auth.account.pub) return { kind: "other-account" };
   const at = accountRevocations(auth.account.jwt)[claims.sub];
-  return at !== undefined && (claims.iat === undefined || claims.iat <= at) ? at : undefined;
+  return at !== undefined && (claims.iat === undefined || claims.iat <= at) ? { kind: "revoked", at } : undefined;
 }
 
 /** {@link readCredsFile} with the exiting disposition. */
@@ -955,7 +985,7 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
-    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
+    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "tls-unsupported" ? "DEPENDENCY_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
   throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code });
 }
 
@@ -975,9 +1005,10 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  The selection and this project's registration pick the target without it. A caller that already swept
  *  for these flags passes its `offline` set instead, so one resolve chain reads one liveness
  *  verdict. A named `--space` is resolved + preflighted directly, so the sweep cannot hide a
- *  dead-recorded mesh the operator is recovering with a live `--server` override. */
+ *  dead-recorded mesh the operator is recovering with a live `--server` override. A `readOnly`
+ *  resolve takes no sweep and keeps a stale entry. */
 export async function resolveTargetOrThrow(flags: ResolveFlags): Promise<MeshTarget> {
-  const offline = flags.offline ?? (resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
+  const offline = flags.offline ?? (!flags.readOnly && resolveReadsLiveness(process.cwd(), flags) ? (await pruneStaleMeshes(flags.server)).offline : []);
   let target: MeshTarget;
   try {
     target = resolveMeshTarget(process.cwd(), { ...flags, offline });

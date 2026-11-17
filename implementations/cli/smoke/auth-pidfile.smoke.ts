@@ -6,17 +6,19 @@
  * could misread), a live holder is yielded to, a provably dead holder's stale slot is reclaimed
  * exactly once, an EMPTY slot (impossible to produce under the protocol; a pre-protocol crash
  * shape) is reclaimed once rather than wedging forever, and GARBLED content is NEVER stolen.
- * It also proves a start the re-exec guard refuses (#1629) touches no pid record at all.
- * Broker-free.
+ * It also proves a start the re-exec guard refuses (#1629) touches no pid record at all, and that
+ * a readiness failure keeps its reason and names the record its wait read (#3715). Broker-free.
  *
  * Run: pnpm smoke:auth-pidfile
+ * An optional module path after the script selects a built or installed auth-proc.js for upgrade checks.
  */
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthPrepared } from "@cotal-ai/core";
-import { authServiceUp, claimAuthPidSlot, ensureAuthService, stopAuthService } from "../src/lib/auth-proc.js";
+import { canonicalLocalProcessPath, localProcessPath } from "@cotal-ai/workspace";
+const { AUTH_PROCESS, authServiceUp, claimAuthPidSlot, ensureAuthService, stopAuthService }: typeof import("../src/lib/auth-proc.js") = await import(process.argv[2] ?? "../src/lib/auth-proc.js");
 
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
@@ -117,6 +119,91 @@ try {
   check("CONTROL: a slot this process does claim reads as a running auth service",
     held !== undefined && "fd" in held && authServiceUp(SPACE));
   if (held !== undefined && "fd" in held) closeSync(held.fd);
+
+  // 7. #3715: a readiness failure names the record the wait read, resolved once. The service reads
+  //    as running (the canonical record names this live process), so nothing is launched and the
+  //    provider's ready() is the only step. What it does to the records before it rejects must not
+  //    change the reason the caller sees, nor which file the message names.
+  const REASON = "probe: the provider never became ready";
+  const notReady = async (before: () => void): Promise<string> => {
+    writeFileSync(PID_FILE, String(process.pid));
+    const failing: AuthPrepared = {
+      extraAccounts: [],
+      publicAuth: {},
+      service: { command: "auth-service", ready: async () => { before(); throw new Error(REASON); } },
+    };
+    try {
+      await ensureAuthService({ space: SPACE, server: "nats://127.0.0.1:1", stateDir: tmp, prepared: failing });
+      return "ensureAuthService returned";
+    } catch (e) {
+      return (e as Error).message;
+    } finally {
+      rmSync(PID_FILE, { force: true });
+      rmSync(LEGACY_FILE, { force: true });
+    }
+  };
+  const named = (message: string, file: string) => message.includes(`the daemon's pid is recorded at ${file},`);
+  const plain = await notReady(() => {});
+  check("CONTROL: a readiness failure carries the provider's reason and names the record it read",
+    plain.startsWith(REASON) && named(plain, PID_FILE), plain);
+  const beside = await notReady(() => writeFileSync(LEGACY_FILE, String(process.pid)));
+  check("a pre-hex record written beside it during the wait does not replace the readiness reason",
+    beside.startsWith(REASON) && named(beside, PID_FILE), beside);
+  const moved = await notReady(() => { writeFileSync(LEGACY_FILE, readFileSync(PID_FILE, "utf8")); rmSync(PID_FILE); });
+  check("a record moved to the pre-hex name during the wait is still named as the file the wait read",
+    moved.startsWith(REASON) && named(moved, PID_FILE) && !moved.includes(LEGACY_FILE), moved);
+
+  // 8. The start-side reader follows the registered record's shared rules, including listing errors.
+  const context = { root: tmp, space: SPACE };
+  const refused = (read: () => unknown): NodeJS.ErrnoException | undefined => {
+    try { read(); } catch (e) { return e as NodeJS.ErrnoException; }
+    return undefined;
+  };
+  writeFileSync(PID_FILE, String(process.pid));
+  check("the canonical auth claim uses the registered process template",
+    canonicalLocalProcessPath(AUTH_PROCESS.pidFile, context) === PID_FILE && authServiceUp(SPACE));
+  writeFileSync(LEGACY_FILE, String(process.pid));
+  rmSync(PID_FILE);
+  check("the start-side reader admits the same live pre-hex record as the shared resolver",
+    authServiceUp(SPACE) && localProcessPath(AUTH_PROCESS.pidFile, context) === LEGACY_FILE);
+  writeFileSync(PID_FILE, String(process.pid));
+  const sharedAmbiguity = refused(() => localProcessPath(AUTH_PROCESS.pidFile, context));
+  const startAmbiguity = refused(() => authServiceUp(SPACE));
+  check("both spellings receive the same shared ambiguity refusal on the start side",
+    sharedAmbiguity !== undefined && startAmbiguity?.message === sharedAmbiguity.message && sharedAmbiguity.message.includes("ambiguous process record"),
+    { shared: sharedAmbiguity?.message, start: startAmbiguity?.message });
+  rmSync(LEGACY_FILE);
+  check("removing the pre-hex duplicate restores the canonical read", authServiceUp(SPACE));
+
+  const permissionChecks = process.platform !== "win32" && process.getuid?.() !== 0;
+  if (permissionChecks) {
+    const dir = join(tmp, ".cotal");
+    chmodSync(dir, 0o300); // known files remain readable, but the directory cannot be listed
+    try {
+      const listing = refused(() => readdirSync(dir));
+      check("permission control: the real directory listing is refused with EACCES", listing?.code === "EACCES", listing?.message);
+      const shared = refused(() => localProcessPath(AUTH_PROCESS.pidFile, context));
+      const startRead = refused(() => authServiceUp(SPACE));
+      check("the start-side reader preserves the shared EACCES refusal instead of inferring absence",
+        shared?.code === "EACCES" && startRead?.code === shared.code && startRead?.path === dir,
+        { shared: shared?.message, start: startRead?.message });
+      let called = 0;
+      let readinessError: NodeJS.ErrnoException | undefined;
+      const readiness: AuthPrepared = {
+        extraAccounts: [], publicAuth: {},
+        service: { command: "auth-service", ready: async () => { called++; return {}; } },
+      };
+      try { await ensureAuthService({ space: SPACE, server: "nats://127.0.0.1:1", stateDir: tmp, prepared: readiness }); }
+      catch (e) { readinessError = e as NodeJS.ErrnoException; }
+      check("ensureAuthService refuses the unreadable record inventory before asking the provider",
+        readinessError?.code === "EACCES" && called === 0, { error: readinessError?.message, called });
+    } finally { chmodSync(dir, 0o700); }
+  } else {
+    console.log("  skipped: three directory-permission checks require a non-root POSIX account");
+  }
+  check("restoring directory access preserves the live canonical record",
+    authServiceUp(SPACE) && readFileSync(PID_FILE, "utf8") === String(process.pid));
+  check("every auth pidfile cell ran", pass + fail === (permissionChecks ? 30 : 27), pass + fail);
 } finally {
   process.chdir(prevCwd);
   rmSync(tmp, { recursive: true, force: true });

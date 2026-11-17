@@ -1,7 +1,7 @@
 ---
 title: Connectors
 description: Choose an agent application and connect its sessions to a Cotal mesh.
-kind: Guide
+kind: "Guide (informative)"
 audience: operators
 ---
 
@@ -12,15 +12,17 @@ Every connector hands its agent the same [briefing](agent-briefing.mdx) when the
 Choose the application you already use, then follow its guide.
 Each guide lists the connector's requirements and supported features.
 
+For an application that only supports stdio MCP, see [MCP-only hosts](connect-mcp.mdx).
+
 <Cards>
   <Card title="Claude Code" href="connect-claude.mdx">
     Connect Claude Code through its installed plugin. Supports session forks and shared MCP tools.
   </Card>
   <Card title="OpenCode" href="connect-opencode.mdx">
-    Connect OpenCode through its native plugin runtime. Supports OpenCode 1.x and 2.x with different event settings.
+    Connect OpenCode through its native plugin runtime. Supports OpenCode 1.x and 2.x.
   </Card>
   <Card title="Codex" href="connect-codex.mdx">
-    Connect a Codex app-server session. Directed peer messages can steer connector-started turns.
+    Connect a Codex app-server session, or your own Codex conversation through the Cotal plugin. Directed peer messages can steer connector-started turns.
   </Card>
   <Card title="Hermes" href="connect-hermes.mdx">
     Connect the Hermes gateway on Unix. Each inbound message starts a fresh agent.
@@ -35,14 +37,14 @@ Each guide lists the connector's requirements and supported features.
 
 ## Compare support
 
-| Connector | Maturity | Resume a session with `--resume` | Share selected MCP tools with `--share-tools` |
-|---|---|---|---|
-| Claude Code | Stable | Forks the source session | Supported |
-| OpenCode | Beta | Unsupported | Unsupported. Inherits the user's MCP servers. |
-| Codex | Beta | Unsupported | Unsupported. Uses an isolated `CODEX_HOME`. |
-| Hermes | Alpha | Forks the source session | Unsupported |
-| Jcode | Beta | Forks the source session | Unsupported. Uses private MCP configuration. |
-| pi | Alpha | Forks the source session | Unsupported |
+| Connector | Maturity | Resume a session with `--resume` | Share selected MCP tools with `--share-tools` | List models with `cotal models` |
+|---|---|---|---|---|
+| Claude Code | Stable | Forks the source session | Supported | Models the Claude login can use |
+| OpenCode | Beta | Unsupported | Unsupported. Inherits the user's MCP servers. | Models and variants on 1.x and 2.x |
+| Codex | Beta | Unsupported | Unsupported. Uses an isolated `CODEX_HOME`. | Models and reasoning efforts |
+| Hermes | Alpha | Forks the source session | Unsupported | Unsupported |
+| Jcode | Beta | Forks the source session | Unsupported. Uses private MCP configuration. | Models declared in the Jcode configuration |
+| pi | Alpha | Forks the source session | Unsupported | Models of providers pi holds credentials for |
 
 An unsupported option fails the launch. Cotal does not silently ignore it.
 For containers, see the current [deployment limits](deploy.mdx).
@@ -52,7 +54,7 @@ For containers, see the current [deployment limits](deploy.mdx).
 | Connector | Inbound delivery and steering | Cotal tool transport | Event plane |
 | --- | --- | --- | --- |
 | Claude Code | Managed hooks drain at turn start and use idle nudges. Personal native sessions also deliver at supported busy boundaries. | stdio MCP | Supported |
-| OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | OpenCode 1.x; 2.x needs `--no-events` |
+| OpenCode | Injects a turn. No mid-turn steering. | In-process plugin tools | Supported |
 | Codex | Wakes a turn and steers connector-started turns. External turns defer automatic delivery. | Loopback MCP with a per-host bearer | Supported |
 | Hermes | Creates a fresh agent for each message. | Unix socket in a private directory, with a token derived from the control key | Unsupported; requires `--no-events` |
 | Jcode | Injects a Harness turn; directed messages steer its live session. | stdio MCP bridge relayed over a private Unix socket | Supported |

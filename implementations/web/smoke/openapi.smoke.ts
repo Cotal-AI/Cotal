@@ -81,7 +81,7 @@ try {
   const cookie = exchange.headers.get('set-cookie')?.split(';')[0];
   assert(cookie);
   assert(cookie.startsWith('cotal_web_session='));
-  assert(exchange.headers.get('set-cookie')?.includes('HttpOnly; SameSite=Strict'));
+  assert(exchange.headers.get('set-cookie')?.includes('HttpOnly; SameSite=Lax'));
   const spent = await fetch(launchUrl, { redirect: 'manual' });
   assert.equal(spent.status, 401);
   conforms(responseSchema('/api/roster', 401), await spent.json());
@@ -100,7 +100,7 @@ try {
   assert.equal(deletion.status, 403, 'Native dashboard cannot acquire channel purge authority');
   conforms(responseSchema('/api/channel/delete', 403, 'post'), await deletion.json());
   for (const path of Object.keys(spec.paths).filter((path) => path !== '/feed' && path !== '/api/meta' && spec.paths[path].get)) {
-    const response = await fetch(base + path.replace('{channel}', 'general'), { headers });
+    const response = await fetch(base + path.replace('{channel}', 'general').replace('{agent}', encodeURIComponent(seed!.card.id)), { headers });
     assert.equal(response.status, 200, `${path}: ${response.status}`);
     const body = await response.json();
     conforms(responseSchema(path, 200), body);
@@ -131,9 +131,15 @@ try {
   const events = new Set<string>();
   const timeout = setTimeout(() => streamAbort.abort(), 10_000);
   await seed.multicast('live-contract', { channel: 'general' });
-  // A permitted publisher can send JSON that is not a wire message. The observer
-  // forwards it; the HTTP description must not claim it validated that payload.
+  // The tap enforces the subject's sender and drops a message whose parts cannot be read (#7060),
+  // but does not validate the rest of the wire message. Send a senderless frame and a sender-matched
+  // frame with no parts first, then a sender-matched partial payload with readable parts on the same
+  // subject. Seeing the last bounds both refusal checks without waiting for frames the tap must drop.
   const rawSubject = chatSubject(space, 'local', 'raw_json', 'general');
+  const senderless = JSON.stringify({ probe: 'senderless' });
+  const partless = JSON.stringify({ from: { id: 'local.raw_json' }, probe: 'partless' });
+  const rawMessage = { from: { id: 'local.raw_json' }, parts: [{ kind: 'text', text: 'partial-message' }], probe: 'partial-message' };
+  const rawPayload = JSON.stringify(rawMessage);
   await new Promise<void>((resolve, reject) => {
     const socket = connectTcp(brokerPort, '127.0.0.1');
     socket.setTimeout(5000, () => socket.destroy(new Error('Raw test publish timed out')));
@@ -144,7 +150,11 @@ try {
       if (reply.includes('-ERR')) { socket.destroy(); reject(new Error('Raw test publish refused')); }
       if (reply.includes('PONG')) { socket.end(); resolve(); }
     });
-    socket.once('connect', () => socket.write('CONNECT {}\r\nPUB ' + rawSubject + ' 2\r\n{}\r\nPING\r\n'));
+    socket.once('connect', () => socket.write(
+      `CONNECT {}\r\nPUB ${rawSubject} ${Buffer.byteLength(senderless)}\r\n${senderless}\r\n` +
+      `PUB ${rawSubject} ${Buffer.byteLength(partless)}\r\n${partless}\r\n` +
+      `PUB ${rawSubject} ${Buffer.byteLength(rawPayload)}\r\n${rawPayload}\r\nPING\r\n`,
+    ));
   });
   let sawRaw = false;
   try {
@@ -162,7 +172,14 @@ try {
         assert(schema, `Undocumented SSE event ${name}`);
         const value = JSON.parse(data);
         conforms(schema, value);
-        if (name === 'message' && JSON.stringify(value.msg) === '{}') sawRaw = true;
+        if (name === 'message') {
+          assert(value.msg?.probe !== 'senderless', 'The tap must drop the frame without its subject sender');
+          assert(value.msg?.probe !== 'partless', 'The tap must drop the frame whose parts cannot be read');
+          if (value.msg?.probe === rawMessage.probe) {
+            assert.deepEqual(value.msg, { ...rawMessage, channel: 'general' });
+            sawRaw = true;
+          }
+        }
         events.add(name);
       }
     }

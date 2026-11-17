@@ -30,12 +30,13 @@ import { Kvm } from "@nats-io/kv";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, standaloneConnectOpts,
   replayRunJournal, openRecordsBucket, readRunRecord, admissionBucket, revocationKey, recordsBucket, listRunMigrations,
-  revokeRunAdmission,
+  revokeRunAdmission, recordAtomicKey, recordStatusKey, RECORD_KINDS, mintLifecycleUid, EpEnvelopeError,
 } from "@cotal-ai/core";
 import { authDir, exitCode, isCommandFailure, recordMesh, saveSpaceAuth } from "@cotal-ai/workspace";
 import { CATALOG, type JournalEntry } from "@cotal-ai/lang";
 import { runWorkflow, journalOutcomeOf, journalStepRow } from "../src/index.js";
 import { printRunDetail } from "../src/workflow-views.js";
+import { cotalLangRunHost } from "../src/run-host.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -90,12 +91,12 @@ const journal = (runId: string) => asOperator(runId, async ({ nc, takeoverId }) 
 /** A revocation marker written RAW, under the same one-shot `run-admitter` profile `revoke` mints.
  *  The exported writer validates what it writes, so a marker the reader cannot read has to be
  *  created past it. The marker key is create-only and never removed (SPEC 14.8), so it stays. */
-const writeMarker = async (runId: string, value: unknown): Promise<void> => {
-  const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint: EP, runId } });
+const writeMarker = async (runId: string, value: unknown, endpoint = EP): Promise<void> => {
+  const creds = await mintCreds(auth, newIdentity(), "run-admitter", { runAdmitter: { endpoint, runId } });
   const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
     const kv = await new Kvm(nc).open(admissionBucket(SPACE));
-    await kv.create(revocationKey(EP, runId), new TextEncoder().encode(JSON.stringify(value)));
+    await kv.create(revocationKey(endpoint, runId), new TextEncoder().encode(JSON.stringify(value)));
   } finally { await nc.drain().catch(() => {}); }
 };
 // The registered mesh the command resolves: this space's trust material under a scratch root.
@@ -145,13 +146,14 @@ const envelopeOf = async (positionals: string[], values: Record<string, string> 
   try { await wf(positionals, { json: true, ...values }); } finally { process.stdout.write = write; }
   try { return JSON.parse(chunks.join("")); } catch { return undefined; }
 };
-type JournalRowJson = { step?: string; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
-type RunRowJson = { runId?: string; state?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
+type JournalRowJson = { step?: string; schema?: unknown; answer?: { value?: unknown; by?: unknown; artifact?: unknown; answerId?: unknown; at?: unknown } };
+type RunRowJson = { runId?: string; endpoint?: string; state?: string; programHash?: string; revoked?: { by?: string; reason?: string }; revocationUnreadable?: string };
 
 const PURE = join(sd, "pure.cotal.js");
 writeFileSync(PURE, 'const xs = [1, 2, 3];\nlog("doubled", xs.map((x) => x * 2));\n');
 const CHECKPOINT = join(sd, "checkpoint.cotal.js");
-writeFileSync(CHECKPOINT, 'const d = await checkpoint("approve", "Ship it?");\nlog("resolved", d.status);\n');
+const CHECKPOINT_SCHEMA = { choice: "string", count: "number" };
+writeFileSync(CHECKPOINT, `const d = await checkpoint("approve", "Ship it?", { schema: ${JSON.stringify(CHECKPOINT_SCHEMA)} });\nlog("resolved", d.status);\n`);
 const RACE = join(sd, "race.cotal.js");
 writeFileSync(RACE, 'const r = await race({\n  eins: () => checkpoint("eins", "First?"),\n  zwei: () => checkpoint("zwei", "Second?"),\n}, { name: "doppel" });\nlog("won", r.index);\n');
 const ASKING = join(sd, "asking.cotal.js");
@@ -264,6 +266,16 @@ let P = "";
   c("a non-pause step cannot expose answer-shaped result fields",
     ordinary.answer === undefined,
     ordinary);
+  const pending = { ...base, state: "pending", status: undefined } as JournalEntry;
+  for (const schema of [{}, { nested: { type: "string" } }, null, false]) {
+    const row = journalStepRow(1, { ...pending, external: { asks: "Which?", schema } });
+    c(`an open checkpoint preserves the recorded schema ${JSON.stringify(schema)}`,
+      Object.hasOwn(row, "schema") && JSON.stringify(row.schema) === JSON.stringify(schema));
+  }
+  c("a legacy pending checkpoint without a recorded schema invents none",
+    !Object.hasOwn(journalStepRow(1, { ...pending, external: { asks: "Which?" } }), "schema"));
+  c("an open hold does not borrow the earlier attempt's schema",
+    !Object.hasOwn(journalStepRow(1, { ...pending, external: { asks: "Old?", schema: CHECKPOINT_SCHEMA }, hold: { asks: "New?" } }), "schema"));
 }
 
 // ── 4) resume: a completed run replays to the same completion ────────────────────────────────
@@ -305,6 +317,11 @@ let P = "";
   c("the journal render shows an open pause's question under the step an answer is addressed by",
     rendered("/checkpoint:approve#0", "pending") && captured().includes("Needs an answer") && rendered("/checkpoint:approve#0", "Ship it?"),
     lines().filter((l) => l.includes("checkpoint") || l.includes("Ship it")).join(" | "));
+  c("the open checkpoint prints its schema as JSON beside its step",
+    captured().includes(`Schema for /checkpoint:approve#0: ${JSON.stringify(CHECKPOINT_SCHEMA)}`));
+  const openView = (await envelopeOf(["journal", cid]))?.result as { view?: { journal?: JournalRowJson[] } } | undefined;
+  c("show --json carries the checkpoint's recorded schema",
+    JSON.stringify(openView?.view?.journal?.filter((r) => r.step === "/checkpoint:approve#0").at(-1)?.schema) === JSON.stringify(CHECKPOINT_SCHEMA));
   // A THROW here must fail the cell rather than kill the suite: the holder-bound presenter is the
   // load-bearing part of `answer`, and a suite that dies names no claim.
   // Its receipt is the hosted path's, read here as the envelope `--json` writes to stdout.
@@ -336,7 +353,7 @@ let P = "";
   // The pause's earlier pending rows stay in the journal, so only its last row may decide whether
   // it still needs an answer.
   c("a settled pause is no longer listed as needing an answer, and Next offers no answer",
-    !captured().includes("Needs an answer") && !captured().includes("cotal r answer"),
+    !captured().includes("Needs an answer") && !captured().includes("cotal r answer") && !captured().includes("Schema for"),
     lines().filter((l) => l.includes("Needs an answer") || l.includes("r answer")).join(" | "));
   c("the text render shows the accepted value, answerer and artifact on the pause's answered line",
     lines().some((l) => l.includes("/checkpoint:approve#0") && l.includes("answered") && l.includes('"yes"') && l.includes("smoke") && l.includes("artifact://run-command")),
@@ -347,7 +364,7 @@ let P = "";
     ?.find((r) => r.step === "/checkpoint:approve#0" && r.answer !== undefined);
   c("show --json carries the accepted value, answerer, artifact, answer id and time on the settled pause",
     settled?.answer?.value === "yes" && settled.answer.by === "smoke" && settled.answer.artifact === "artifact://run-command"
-      && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number",
+      && typeof settled.answer.answerId === "string" && typeof settled.answer.at === "number" && !Object.hasOwn(settled, "schema"),
     settled ?? shown);
   // A long value is cut in the table, so one answer cannot widen every row to its own width.
   const long = "z".repeat(1000);
@@ -782,8 +799,9 @@ let P = "";
   c("an admissible edit prints the report and exits 0",
     migrated === undefined && process.exitCode === undefined && captured().includes("admissible"),
     { err: migrated instanceof Error ? migrated.message.slice(0, 120) : "", exit: process.exitCode, out: captured().slice(0, 200) });
-  c("the report says the walk's count and the hash it would move to",
-    /accounts for \d+ journal row/.test(captured()) && /moves to sha256:[0-9a-f]/.test(captured()), captured().split("\n").slice(0, 2).join(" | "));
+  c("the report says the walk's count and identifies the unchanged program",
+    /accounts for \d+ journal row/.test(captured()) && /program unchanged:.*sha256:[0-9a-f]/.test(captured())
+      && captured().includes("already completed (terminal)") && !captured().includes("moves to"), captured());
   c("and the one line that names what a commit would file, and that this filed nothing",
     captured().includes("a commit would file this report") && captured().includes("filed nothing"), captured().split("\n").at(-1) ?? "");
   // THE STORE READS EMPTY: the check decides, it does not file. Read back through the same core
@@ -849,9 +867,138 @@ let P = "";
   }
 }
 
+// ── 14) batched listing preserves dotted endpoint names and their revocation markers ─────────
+{
+  const endpoint = "acme.example.runs";
+  reset();
+  await wf(["start"], { file: PURE, endpoint });
+  const rid = startedId() ?? "";
+  const detail = (await envelopeOf(["show", rid], { endpoint }))?.result as { view?: { endpoint?: string; programHash?: string; status?: { state?: string } } } | undefined;
+  c("a dotted-endpoint run starts and completes through the command",
+    rid !== "" && detail?.view?.endpoint === endpoint && detail.view.status?.state === "completed", detail);
+  const all = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
+  const row = all?.items?.find((r) => r.runId === rid);
+  c("batched ps reports the dotted endpoint name and the recorded program hash",
+    row?.endpoint === endpoint && row.state === "completed" && typeof row.programHash === "string"
+      && row.programHash === detail?.view?.programHash, row);
+  const filtered = (await envelopeOf(["ps"], { endpoint }))?.result as { items?: RunRowJson[] } | undefined;
+  c("ps filters dotted endpoints by their name rather than their wire token",
+    filtered?.items?.length === 1 && filtered.items[0]?.runId === rid, filtered);
+
+  reset();
+  await wf(["revoke", rid], { endpoint, by: "smoke-operator", reason: "dotted endpoint control" });
+  const revoked = (await envelopeOf(["ps"]))?.result as { items?: RunRowJson[] } | undefined;
+  const marker = revoked?.items?.find((r) => r.runId === rid);
+  c("batched ps joins a dotted endpoint's revocation without changing its completed state",
+    marker?.endpoint === endpoint && marker.state === "completed" && marker.revoked?.by === "smoke-operator"
+      && marker.revoked.reason === "dotted endpoint control", marker);
+  const revokedFilter = (await envelopeOf(["ps"], { endpoint }))?.result as { items?: RunRowJson[] } | undefined;
+  c("the dotted endpoint filter retains the matching revocation marker",
+    revokedFilter?.items?.length === 1 && revokedFilter.items[0]?.revoked?.reason === "dotted endpoint control", revokedFilter);
+
+  reset();
+  await wf(["start"], { file: PURE, endpoint });
+  const unreadId = startedId() ?? "";
+  await writeMarker(unreadId, { version: 2, runId: unreadId, by: "smoke-operator", reason: "newer marker", revokedAt: Date.now() }, endpoint);
+  reset();
+  const unread = await envelopeOf(["ps"], { endpoint });
+  const unreadRow = (unread?.result as { items?: RunRowJson[] } | undefined)?.items?.find((r) => r.runId === unreadId);
+  c("a malformed dotted-endpoint marker remains an unread revocation and a partial result",
+    unreadId !== "" && unreadRow?.endpoint === endpoint && unreadRow.state === "completed"
+      && unreadRow.revocationUnreadable?.includes("run revocation is malformed") === true && process.exitCode === 4
+      && unread?.warnings?.some((w) => w.code === "REVOCATION_NOT_CHECKED" && w.target?.run === unreadId) === true, unread);
+  const other = (await envelopeOf(["ps"], { endpoint: EP }))?.result as { items?: RunRowJson[] } | undefined;
+  c("the manager endpoint filter excludes both dotted-endpoint runs",
+    !!other?.items?.some((r) => r.runId === P) && other.items.every((r) => r.runId !== rid && r.runId !== unreadId), other);
+}
+
+// ── 15) batching preserves record validation, deleted values and failed marker reads ─────────
+{
+  const endpoint = "batchvalidation";
+  reset();
+  await wf(["start"], { file: PURE, endpoint });
+  const runId = startedId() ?? "";
+  const pin = { endpoint, runId, takeoverId: "validation", instanceId: "i".repeat(26), epoch: 1 };
+  const creds = await mintCreds(auth, newIdentity(), "run-mediator", { runMediator: pin });
+  const nc = await connect({ servers, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const kv = await openRecordsBucket(nc, SPACE);
+    const programKey = recordAtomicKey(RECORD_KINDS.program, [endpoint, runId]);
+    const statusKey = recordStatusKey(RECORD_KINDS.run, [endpoint, runId]);
+    const program = (await kv.get(programKey))!;
+    const status = (await kv.get(statusKey))!;
+    const valid = (await envelopeOf(["ps"], { endpoint }))?.result as { items?: RunRowJson[] } | undefined;
+    c("the validation fixture is a completed listed run with a readable program",
+      valid?.items?.length === 1 && valid.items[0]?.runId === runId && valid.items[0]?.state === "completed" && typeof valid.items[0]?.programHash === "string", valid);
+    const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    await kv.put(programKey, encode({ ...program.json<Record<string, unknown>>(), unexpected: true }));
+    const invalidProgram = await wf(["ps"], { endpoint }).then(() => undefined, (e: Error) => e);
+    c("batched ps still refuses unknown fields in a stored program", invalidProgram?.message.includes("unknown field") === true, invalidProgram?.message);
+    await kv.put(programKey, program.value);
+
+    await kv.put(statusKey, encode({ ...status.json<Record<string, unknown>>(), observedSpecRevision: "invalid" }));
+    const invalidStatus = await wf(["ps"], { endpoint }).then(() => undefined, (e: Error) => e);
+    c("batched ps still refuses an invalid observed spec revision", invalidStatus?.message.includes("observedSpecRevision") === true, invalidStatus?.message);
+    await kv.put(statusKey, status.value);
+
+    await kv.delete(programKey);
+    const deletedProgram = await envelopeOf(["ps"], { endpoint }).catch((e: Error) => e);
+    const withoutProgram = (!(deletedProgram instanceof Error) ? deletedProgram?.result : undefined) as { items?: RunRowJson[] } | undefined;
+    c("batched ps treats a deleted program as absent instead of decoding its tombstone",
+      withoutProgram?.items?.length === 1 && withoutProgram.items[0]?.runId === runId && withoutProgram.items[0]?.programHash === undefined,
+      deletedProgram instanceof Error ? deletedProgram.message : withoutProgram);
+    await kv.put(programKey, program.value);
+
+    await kv.delete(statusKey);
+    const deletedStatus = await envelopeOf(["ps"], { endpoint }).catch((e: Error) => e);
+    const withoutStatus = (!(deletedStatus instanceof Error) ? deletedStatus?.result : undefined) as { items?: RunRowJson[] } | undefined;
+    c("batched ps retains a spec whose status was deleted without inventing a state",
+      withoutStatus?.items?.length === 1 && withoutStatus.items[0]?.runId === runId && withoutStatus.items[0]?.state === undefined,
+      deletedStatus instanceof Error ? deletedStatus.message : withoutStatus);
+    await kv.put(statusKey, status.value);
+  } finally { await nc.drain().catch(() => nc.close()); }
+
+  const listCreds = await mintCreds(auth, newIdentity(), "run-operator", { runOperator: { endpoint: EP, takeoverId: "batch-list" } });
+  const reader = await connect({ servers, ...standaloneConnectOpts({ creds: listCreds, tls: false }), maxReconnectAttempts: 0 });
+  try {
+    const planes = { nc: reader, js: jetstream(reader), jsm: await jetstreamManager(reader), kv: await openRecordsBucket(reader, SPACE), space: SPACE };
+    const before = reader.stats().outMsgs;
+    const rows = await cotalLangRunHost.list(planes, {});
+    const requests = reader.stats().outMsgs - before;
+    c("batched listing uses fewer requests than run rows with the existing revocation controls",
+      rows.length > 5 && requests < rows.length, { rows: rows.length, requests });
+  } finally { await reader.drain().catch(() => reader.close()); }
+
+  // A named-run read has the same point-read access as an older issuer's list credential, but
+  // lacks the batch grant introduced in 0.149.0. The broker, not a mock, refuses that publish.
+  await asOperator(P, async ({ nc }) => {
+    const planes = { nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv: await openRecordsBucket(nc, SPACE), space: SPACE };
+    c("CONTROL: the credential without the batch grant can still read the recorded run",
+      (await readRunRecord(planes.kv, EP, P))?.status?.value.state === "completed");
+    const denied = await cotalLangRunHost.list(planes, {}).then(() => undefined, (e: unknown) => e);
+    c("a denied batched list is a failed precondition instead of an internal broker error",
+      denied instanceof EpEnvelopeError && denied.code === "failed-precondition", String(denied));
+    c("the refusal names the missing grant, auth-service upgrade and responsible operator",
+      denied instanceof Error && denied.message.includes(`$JS.API.DIRECT.GET.KV_${recordsBucket(SPACE)}`)
+        && denied.message.includes("space operator") && denied.message.includes("auth service to 0.149.0 or later")
+        && denied.message.includes("Upgrading only the manager"), String(denied));
+  });
+
+  // Remove only this fixture's admission store, after all tests that drive a run have ended.
+  const teardown = await connect({ servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "teardown", { lifecycleUid: mintLifecycleUid() }), tls: false }), maxReconnectAttempts: 0 });
+  try { await (await jetstreamManager(teardown)).streams.delete(`KV_${admissionBucket(SPACE)}`); }
+  finally { await teardown.drain().catch(() => teardown.close()); }
+  reset();
+  const unavailable = await envelopeOf(["ps"], { endpoint }).catch((e: Error) => e);
+  const unavailableRows = (!(unavailable instanceof Error) ? unavailable?.result : undefined) as { items?: RunRowJson[] } | undefined;
+  c("an unavailable admission store leaves listed rows explicitly unread and exits partial",
+    unavailableRows?.items?.length === 1 && typeof unavailableRows.items[0]?.revocationUnreadable === "string" && process.exitCode === 4,
+    unavailable instanceof Error ? unavailable.message : unavailableRows);
+}
+
 // The sentinel: a skipped block above would exit green while running fewer cells than the suite
 // declares, and a count is the only reader that can see that.
-const DECLARED = 95;
+const DECLARED = 120;
 if (ok + fail !== DECLARED) {
   fail += 1;
   console.error(`  ✗ FAIL: the suite declares ${DECLARED} cells but ran ${ok + fail - 1}`);

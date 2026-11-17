@@ -77,6 +77,8 @@ try {
     ["row", null], ["card", { ...row, card: [] }],
     ["card.id", { ...row, card: { ...row.card, id: "foreign" } }],
     ["card.name", { ...row, card: { ...row.card, name: 1 } }],
+    ["card.name", { ...row, card: { ...row.card, name: "" } }],
+    ["card.name", { ...row, card: { ...row.card, name: " \n\t" } }],
     ["card.role", { ...row, card: { ...row.card, role: {} } }],
     ["ts", { ...row, ts: Infinity }], ["activity", { ...row, activity: [] }],
     ["attention", { ...row, attention: {} }], ["condition", { ...row, condition: null }],
@@ -93,6 +95,13 @@ try {
   let preconnectError: unknown;
   try { await disconnected.setActivity({ invalid: true } as never); } catch (caught) { preconnectError = caught; }
   check("setters validate even before a presence bucket is bound", preconnectError instanceof TypeError && preconnectError.message.includes("activity"));
+  const blankKey = "local.blank";
+  await kv.put(blankKey, JSON.stringify({ card: { id: blankKey, name: "" }, status: "idle", ts: Date.now() }));
+  const spaceKey = "local.blank-space";
+  await kv.put(spaceKey, JSON.stringify({ card: { id: spaceKey, name: " \n\t" }, status: "idle", ts: Date.now() }));
+  const roster = await reader.readPresence();
+  check("the roster reader drops a stored row whose card.name is empty", roster.find((p) => p.card.id === blankKey) === undefined);
+  check("the roster reader drops a stored row whose card.name is blank", roster.find((p) => p.card.id === spaceKey) === undefined);
 } finally {
   await writer?.stop(); await reader?.stop(); await nc?.close();
   await killAndAwaitExit(broker); rmSync(directory, { recursive: true, force: true }); release();

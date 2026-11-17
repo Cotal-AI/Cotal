@@ -57,7 +57,7 @@ import {
   type TerminalFrame,
 } from "../src/session/index.js";
 import { launchEnv } from "@cotal-ai/connector-core"; // dev-only smoke import: the OS env allow-list a real connector supplies
-import { meshSessionTransport } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import: the real CLI caller consumer
+import { meshSessionTransport } from "../../../packages/workspace/src/attach/attach-client.js"; // source import: the mesh transport `cotal attach` and the console attach through
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // A portable pty echo child: it pipes stdin straight back to stdout, so a keystroke the caller
@@ -251,9 +251,7 @@ await ncServing.flush();
 
 // Caller side: a raw rail (the CLI/console client does this over the mesh transport).
 const received: Buffer[] = [];
-let callerEnd: string | undefined;
 let dropNotice = 0;
-let callerClosed = false;
 const callerRail = openSessionRail({
   nc: ncCaller,
   grant: liveOffer,
@@ -261,10 +259,9 @@ const callerRail = openSessionRail({
   onData: (data) => {
     const p = decodeTerminalFrame(data);
     if (p.k === "data") received.push(Buffer.from(p.b, "base64"));
-    else if (p.k === "end") callerEnd = p.reason;
     else if (p.k === "drop") dropNotice += p.bytes;
   },
-  onClose: () => { callerClosed = true; },
+  onClose: () => {},
 });
 await ncCaller.flush(); // caller `out` sub live before `ready` triggers the serving backlog replay
 

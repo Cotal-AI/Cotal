@@ -1,0 +1,3 @@
+# OpenCode's native prompt takes a role request held for its take and carries it, and the end of
+# that turn acks it. Mutation-proofed - extensions/connector-opencode/smoke/mutations/native-prompt-take-auth.json.
+smoke:opencode-native-prompt-take:auth

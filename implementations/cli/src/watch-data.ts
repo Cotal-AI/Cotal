@@ -19,6 +19,11 @@ export function observedText(text: string): { text: string; omittedCodeUnits: nu
   return { text: shown, omittedCodeUnits: text.length - shown.length };
 }
 
+/** A name or activity that is safe to show. Blank text prints as nothing, or as a line break. */
+function shown(value: string | undefined, fallback: string): string {
+  return value !== undefined && value.trim() ? value : fallback;
+}
+
 /** A line's 24-hour local time. */
 function feedTime(ts: number | string): string {
   const date = new Date(ts);
@@ -31,12 +36,20 @@ export function scriptLine(ts: number | string, sender: string, destination: str
   return oneLine(`${feedTime(ts)}  ${sender}  ${destination}  ${text}`);
 }
 
+/** The `cotal history` read whose JSON document carries a cut message's whole text. A text or plain
+ *  history row cuts again, so the line names the read that does not. */
+export function wholeTextRead(entry: { channel?: string; events?: boolean; delivery?: string }): string {
+  if (entry.channel && !entry.events) return `\`cotal history ${entry.channel} --json\``;
+  if (entry.delivery === "unicast") return "`cotal history --dms --json`";
+  return "";
+}
+
 /** One feed entry as a line. Text past {@link WATCH_TEXT_LIMIT} is cut, and the line says how much
- *  was not shown and which `cotal history` read shows it whole. A stream row whose text was already
+ *  was not shown and which `cotal history` read carries the whole text. A stream row whose text was already
  *  cut carries that count as `omittedCodeUnits`. */
 export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): string {
   const time = feedTime(entry.ts);
-  const sender = entry.from.name || entry.from.id;
+  const sender = shown(entry.from.name, entry.from.id);
   const destination = entry.channel ? `#${entry.channel}` : entry.toService ? `role ${entry.toService}` : `DM to ${entry.toIds?.join(", ") || "not attributed"}`;
   const body = observedText(entry.text);
   if (entry.events) {
@@ -46,19 +59,19 @@ export function feedLine(entry: FeedEntry & { omittedCodeUnits?: number }): stri
     } catch { /* A non-JSON event remains attributed text. */ }
   }
   const notShown = body.omittedCodeUnits + (entry.omittedCodeUnits ?? 0);
-  const whole = entry.channel && !entry.events ? `; \`cotal history ${entry.channel}\` shows it whole` : entry.delivery === "unicast" ? "; `cotal history --dms` shows it whole" : "";
-  return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole}]` : ""}`);
+  const whole = wholeTextRead(entry);
+  return scriptLine(entry.ts, sender, destination, `${body.text}${notShown ? ` [${notShown} text code units not shown${whole ? `; ${whole} carries the whole text` : ""}]` : ""}`);
 }
 
 /** Read views use facts already normalized by MeshView, without inferring task or membership state. */
 export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report {
   const hint = "This observer's snapshot, not a complete history or proof of task completion.";
   if (filter === "roster" || filter === "waiting") {
-    const rows = filter === "waiting" ? snapshot.signals.waiting : snapshot.agents;
-    return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Agent roster", blocks: [rows.length ? {
-      kind: "table", columns: [{ key: "name", label: "Agent" }, { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
-      rows: rows.map((row) => ({ name: row.card.name, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: row.activity || "not reported", id: row.card.id })),
-    } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No agents in this observer snapshot."] },
+    const rows = filter === "waiting" ? snapshot.signals.waiting : [...snapshot.agents, ...snapshot.endpoints];
+    return { sections: [{ title: filter === "waiting" ? "Reported waiting" : "Participant roster", blocks: [rows.length ? {
+      kind: "table", columns: [{ key: "name", label: filter === "roster" ? "Participant" : "Agent" }, ...(filter === "roster" ? [{ key: "kind", label: "Kind" }] : []), { key: "role", label: "Role" }, { key: "state", label: "Reported state" }, { key: "activity", label: "Reported activity" }, { key: "id", label: "Identity" }],
+      rows: rows.map((row) => ({ name: shown(row.card.name, row.card.id), kind: row.card.kind, role: row.card.role ?? "none", state: { text: row.status === "working" ? "working · progress unknown" : row.status, tone: row.status === "waiting" ? "waiting" : "hint" }, activity: shown(row.activity, "not reported"), id: row.card.id })),
+    } : { kind: "lines", lines: [filter === "waiting" ? "No waiting report in this observer snapshot." : "No participants in this observer snapshot."] },
     { kind: "lines", lines: [{ text: filter === "waiting" ? "Presence carries heartbeat time, not how long a task has waited. No blocked-duration estimate is made." : hint, tone: "hint" }] }] }] };
   }
   if (filter === "channels") return { sections: [{ title: "Observed channels", blocks: [snapshot.channels.length ? {
@@ -67,10 +80,10 @@ export function watchReport(snapshot: MeshSnapshot, filter: WatchFilter): Report
   } : { kind: "lines", lines: ["No channels in the current observer model."] }, { kind: "lines", lines: [{ text: "Counts come from MeshView's broker reads and this observer's arrivals. Retention may cap a count; arrivals are not a complete history count.", tone: "hint" }] }] }] };
   if (filter === "topology") {
     const feed = snapshot.membership.snapshot;
-    const names = new Map([...snapshot.agents, ...snapshot.endpoints].map((row) => [row.card.id, row.card.name]));
+    const names = new Map([...snapshot.agents, ...snapshot.endpoints].map((row) => [row.card.id, shown(row.card.name, "")]));
     return { sections: [{ title: "Observed subscription topology", blocks: [
       { kind: "fields", rows: [["Membership poll", feed?.asOf === undefined ? "not established" : new Date(feed.asOf).toISOString()], ["Latest membership read", snapshot.membership.unreadable ? "failed; last snapshot retained" : feed?.asOf === undefined ? "not established" : "snapshot available"]] },
-      feed?.members.length ? { kind: "table", columns: [{ key: "name", label: "Participant" }, { key: "id", label: "Identity" }, { key: "live", label: "Observed live patterns" }, { key: "durable", label: "Durable channels" }], rows: feed.members.map((row) => ({ name: names.get(row.id) ?? "name not observed", id: row.id, live: row.live.join(", ") || "none recorded", durable: row.durable.join(", ") || "none recorded" })) } : { kind: "lines", lines: [feed?.asOf === undefined ? "Membership is not established; an empty graph cannot be inferred." : "No member rows in the last successful membership snapshot."] },
+      feed?.members.length ? { kind: "table", columns: [{ key: "name", label: "Participant" }, { key: "id", label: "Identity" }, { key: "live", label: "Observed live patterns" }, { key: "durable", label: "Durable channels" }], rows: feed.members.map((row) => ({ name: names.get(row.id) || "name not observed", id: row.id, live: row.live.join(", ") || "none recorded", durable: row.durable.join(", ") || "none recorded" })) } : { kind: "lines", lines: [feed?.asOf === undefined ? "Membership is not established; an empty graph cannot be inferred." : "No member rows in the last successful membership snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived subscription patterns and durable membership, not authorization grants, task dependencies or agent success. Wildcards remain patterns rather than invented edges.", tone: "hint" }] },
     ] }] };
   }

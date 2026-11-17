@@ -198,7 +198,7 @@ try {
     const requests: Array<[string, Record<string, unknown> | undefined, EpVerbTarget?]> = [
       ["spawn", { name: "witness", agent: "local-none-witness" }],
       ["launch", { runId: "owned", name: "witness", spec: { apiVersion: "cotal-launch/v1", space, runId: "owned", agents: [{ name: "witness", agent: "local-none-witness", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "owned" }] } }],
-      ["resolve-cwd", { cwd: root }], ["resolve-agent", { name: "witness" }],
+      ["resolve-cwd", { cwd: root }], ["list-dir", { path: root }], ["list-dir", {}], ["resolve-agent", { name: "witness" }],
       ["run-start", { source: "log(1);" }], ["run-resume", { runId: "owned" }],
       ["run-answer", { runId: "owned", stepKey: "pause", value: "owned" }, { mode: "self" }],
       ["run-answer", { runId: "owned", stepKey: "pause", value: "owned", amend: true }, { mode: "self" }],
@@ -345,7 +345,9 @@ try {
   check("local primary does not add admin to spawn/run scope", reader.status === 200 && JSON.stringify(readerClaims.act.scope) === JSON.stringify(["spawn", "run"]));
   const perms = permissionsFor("manager-caller", space, { owner, actor: "reader", connId: newIdentity().id, lifecycleUid: readerClaims.act.lifecycleUid },
     { capabilities: ["spawn", "run"], managerInstanceId: local.instanceId, lifecycleUid: readerClaims.act.lifecycleUid }) as { pub: { allow: string[] } };
-  check("shipped policy still grants no ps or slots to spawn/run", !perms.pub.allow.some(row => /\.(ps|slots)\./.test(row)));
+  const psRows = perms.pub.allow.filter(row => /\.ps\./.test(row));
+  check("shipped policy grants spawn/run ps only on the pinned instance and no slots",
+    psRows.length > 0 && psRows.every(row => row.includes(`.inst.manager.${local.instanceId}.ps.`)) && !perms.pub.allow.some(row => /\.slots\./.test(row)));
   stage = "local-refusal";
   const identityPath = join(root, ".cotal", spaceSegment(space), "manager-instance.json");
   renameSync(identityPath, identityPath + ".held");
@@ -382,7 +384,7 @@ try {
   await new Promise<void>(r => idp.close(() => r()));
   check("owned child PID/start/cwd generations exited", children.every(x => { try { const now = identity(x.pid); return now.start !== x.start || now.cwd !== x.cwd; } catch (error) { return ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? ""); } }));
   check("owned broker and listener ports closed", (await Promise.all([port, issuerPort, exchangePort, ...ports].filter(Boolean).map(gone))).every(Boolean));
-  if (checks.every(x => x.ok)) assert.equal(checks.length, 73, "all named NONE, CLI, selection, scope and cleanup cells ran");
+  if (checks.every(x => x.ok)) assert.equal(checks.length, 75, "all named NONE, CLI, selection, scope and cleanup cells ran");
   if (process.env.FIXTURE_OUT) writeFileSync(join(process.env.FIXTURE_OUT, `local-none-custody.${process.pid}.json`), JSON.stringify({ root, fixture: identity(process.pid), children, ports: [port, issuerPort, exchangePort, ...ports].filter(Boolean), managerClosed, stage, checks }, null, 2) + "\n", { mode: 0o600 });
   if (managerClosed && checks.every(x => x.ok) && existsSync(root)) rmSync(root, { recursive: true });
   const failed = checks.filter(x => !x.ok).length;

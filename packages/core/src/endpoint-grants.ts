@@ -215,11 +215,9 @@ export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"
  *  the feature is for. Measured: no profile carried a `turn` row at all until it joined this set,
  *  so a run on an auth mesh had its every turn submit dropped at the broker. */
 export const OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"] as const);
-/** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
- *  persona writes (`define-persona` / `remove-persona`, caller-scoped by the pinned triple), per-agent status read
- *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`), and the
- *  persona-catalog reads (`list-personas` / `show-persona`). These ride the v0.3 privileged tier
- *  today; minting them with `spawn` keeps that tier's surface 1:1. */
+/** Untargeted manager endpoint additions for the `spawn` capability: persona writes, persona-catalog
+ *  reads, per-agent inspection, and goal outcome reads. Each command's responder enforces its
+ *  caller scope. */
 export const SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "remove-persona", "inspect", "list-personas", "show-persona", "goal-result"] as const);
 /** The `run` capability's commands (SPEC 14.3): the manager-hosted workflow-run surface. The
  *  writes start a run, take one over and answer its open pause, and the keyed pair starts a run
@@ -244,9 +242,10 @@ export const MANAGER_VITALS_COMMAND = "vitals" as const;
 
 /** The manager endpoint's read commands (`manager.read` class). */
 export const MANAGER_READ_COMMANDS = Object.freeze(["status", "ps", "slots", "inspect", "models", "list-personas", "show-persona", "goal-result"] as const);
-/** The manager endpoint's admin-class commands (`manager.admin`): capability-only + untargeted -
- *  the broker grant (who holds the row) IS the boundary; minted ONLY into operator instruments,
- *  NEVER an agent/spawn profile (the ratified 1c pin). */
+/** The manager endpoint's admin-class commands (`manager.admin`): capability-only and untargeted.
+ *  The broker grant (who holds the row) is the boundary. These rows are minted into the operator
+ *  instruments and into a credential that holds the `admin` capability, and never into the
+ *  baseline, `spawn`, or `run` sets. */
 export const MANAGER_ADMIN_COMMANDS = Object.freeze([
   "purge", "launch",
   "resume-preserved", "commit-resume", "finalize-resume",
@@ -413,6 +412,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
     // it. The standing agent `spawn` set still does not: it reaches every manager in the space
     // through the class rail, and this instrument is pinned and one-shot.
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "resolve-cwd" },
+    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "list-dir" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "define-persona" },
     { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "remove-persona" },
     ...CHAT_SESSION_SNAP.map((command) => ({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, command })),
@@ -525,8 +525,9 @@ export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: str
  *   - class rail: `"ep.one.<endpoint>.<command>.> <queue>"` — QUEUE-QUALIFIED ONLY (the NATS
  *     `subject queue` grant form): no credential can plain-subscribe the class rail, which is
  *     what keeps per-request nonces visible only to the queue-selected instance;
- *   - scatter rail: `ep.all.<endpoint>.<command>.>` plain;
- *   - instance rail: `ep.inst.<endpoint>.<instanceId>.<command>.>` exact.
+ *   - scatter rail: `ep.all.<endpoint>.<command>.>` with per-instance incarnation distribution;
+ *   - instance rail: `ep.inst.<endpoint>.<instanceId>.<command>.>` with the same distribution.
+ *  These unqualified grants permit native queue groups without changing subscription authority.
  *  The epoch is deliberately absent from serve subscriptions (§13.1's barrier is the fence). */
 export function epServeSubscribeRows(space: string, endpoint: string, instanceId: string, command: string): string[] {
   const e = endpointToken(endpoint);

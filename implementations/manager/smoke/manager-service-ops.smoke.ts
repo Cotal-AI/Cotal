@@ -96,8 +96,9 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
+// No role: the suite's caller holds no issued evidence, so it hands on no role (SPEC 13.15).
 for (const n of ["w1", "w2", "w3", "wp1", "wp2", "wpmissing", "m6pin", "wroute"])
-  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
@@ -595,7 +596,7 @@ try {
     // --model override) must surface that model in the row - the manager folds def.model into the
     // launch record just as it folds def.variant. Before the fix, launch.model stayed undefined and
     // ps reported the model ABSENT while the connector ran the seat on the persona's model.
-    writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nrole: worker\nmodel: persona-m\n---\n`);
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nmodel: persona-m\n---\n`);
     const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot, events: false });
     const psP = await A.call("ps");
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
@@ -605,7 +606,7 @@ try {
     // reports any parser refusal without the file's contents, so the reply names only the file and the
     // selector class; the native parser, run on the same bytes, shows the model rule is the refusal.
     const emodelPath = join(workspaceRoot, ".cotal", "agents", "emodel.md");
-    writeFileSync(emodelPath, `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    writeFileSync(emodelPath, `---\nname: emodel\nmodel: "   "\n---\n`);
     let parserRefusal = "";
     try { loadAgentFile(emodelPath); } catch (e) { parserRefusal = (e as Error).message; }
     const rE = await A.call("spawn", { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
@@ -696,13 +697,49 @@ try {
       rStatic.reply.ok === true && existsSync(staticPath) && loadAgentFile(staticPath).owner === undefined, rStatic.reply);
     const rStaticAgain = await A.call("define-persona", { name: "epstatic", persona: "Again." });
     check("so the same caller's redefine refuses as operator-owned",
-      rStaticAgain.reply.ok === false && String(rStaticAgain.reply.error?.message ?? "").includes("operator-owned"), rStaticAgain.reply);
+      rStaticAgain.reply.ok === false && rStaticAgain.reply.error?.code === "permission-denied" &&
+        rStaticAgain.reply.error.outcome === "not-executed" &&
+        rStaticAgain.reply.error.details?.some((detail) => detail.kind === "ai.cotal.persona-ownership-refused" && detail.operatorOwned === true) === true &&
+        String(rStaticAgain.reply.error.message).includes("operator-owned"), rStaticAgain.reply);
+    check("the refused redefine preserves the saved persona", loadAgentFile(staticPath).persona === "Static body.");
     const rStaticShow = await A.call("show-persona", { name: "epstatic" });
     check("and its show-persona is not-found", rStaticShow.reply.ok === false && rStaticShow.reply.error?.code === "not-found", rStaticShow.reply);
 
+    const omitted = loadAgentFile(staticPath);
+    check("omitted persona model, role and agent stay absent",
+      omitted.model === undefined && omitted.role === undefined && omitted.agent === undefined);
+    const pins = { model: "vendor/model", role: "reviewer", agent: "e2e-stub" };
+    const valid = await A.call("define-persona", { name: "epvalidpins", persona: "Explicit pins.", ...pins });
+    const validPath = join(workspaceRoot, ".cotal", "agents", "epvalidpins.md");
+    check("nonblank persona pins are accepted", valid.reply.ok === true && existsSync(validPath), valid.reply);
+    const savedPins = existsSync(validPath) ? loadAgentFile(validPath) : undefined;
+    for (const field of ["model", "role", "agent"] as const) {
+      check(`the explicit persona ${field} is preserved`, savedPins?.[field] === pins[field], savedPins?.[field]);
+      for (const [index, value] of ["", "   ", "\t\n", "  ", null, 7].entries()) {
+        const name = `epblank-${field}-${index}`;
+        const path = join(workspaceRoot, ".cotal", "agents", `${name}.md`);
+        let refusal: string | undefined;
+        try {
+          const reply = (await A.call("define-persona", { name, persona: "Invalid pin probe.", [field]: value })).reply;
+          if (!reply.ok) refusal = `${reply.error?.code}: ${reply.error?.message}`;
+        } catch (error) {
+          if (!(error instanceof EpEnvelopeError)) throw error;
+          refusal = `${error.code}: ${error.message}`;
+        }
+        check(`persona ${field} ${JSON.stringify(value)} is bad-request naming the field`,
+          refusal?.startsWith("bad-request:") === true && refusal.includes(`/${field}`), refusal);
+        check(`refused persona ${field} ${JSON.stringify(value)} writes no file`, !existsSync(path),
+          existsSync(path) ? { savedValue: loadAgentFile(path)[field] } : undefined);
+      }
+    }
+
     // One of the manager's own seats keeps its principal for its life, so what it defines is its own.
+    // Started by the composition root with A as its spawner: A holds no issued evidence, so a spawn
+    // A sends hands on no grant (SPEC 13.15), and this seat needs `spawn` to define. A still stops it
+    // below as its own child.
     saveAgentFile(join(workspaceRoot, ".cotal", "agents", "seatdef.md"), { name: "seatdef", persona: "A seat that defines.", subscribe: [], capabilities: ["spawn"] });
-    await spawnLive(A.call, { name: "seatdef", agent: "e2e-stub", cwd: repoRoot, events: false });
+    const seatdefStart = await M.startAgent({ name: "seatdef", agent: "e2e-stub", cwd: repoRoot, events: false }, A.principal);
+    if (!seatdefStart.ok) throw new Error(`seatdef did not start: ${JSON.stringify(seatdefStart)}`);
     const seatdef = M.agents.get("seatdef")!;
     const seatCreds = seatdef.secretPaths?.creds ?? agentLifecycleSecretFilePaths(workspaceRoot, space, "seatdef", String(seatdef.lifecycleUid)).creds;
     const seatNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: readFileSync(seatCreds, "utf8"), tls: false }), maxReconnectAttempts: 0 });
@@ -760,6 +797,22 @@ try {
     check("a malformed leading frontmatter block is refused by name",
       rBad.reply.ok === false && String(rBad.reply.error?.message ?? rBad.reply.error ?? "").includes("prompt-frontmatter")
       && !existsSync(join(workspaceRoot, ".cotal", "agents", "epbadfm.md")), rBad.reply);
+    // A persona that saves must load. The reader refuses a subscribe entry that no allowSubscribe entry
+    // contains, so the writer refuses it before anything reaches the disk.
+    const rWide = await A.call("define-persona", { name: "epwide", persona: "Reads a family.", subscribe: ["perm.>"], allowSubscribe: ["perm.*"] });
+    check("a definition whose family is wider than every read entry is refused and nothing is written",
+      rWide.reply.ok === false && String(rWide.reply.error?.message ?? "").includes('subscribe "perm.>" is not within allowSubscribe [perm.*]')
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epwide.md")), rWide.reply);
+    const rOutside = await A.call("define-persona", { name: "epoutside", persona: "Reads a channel.", subscribe: ["other"], allowSubscribe: ["perm.*"] });
+    check("so is one whose channel is outside every read entry",
+      rOutside.reply.ok === false && String(rOutside.reply.error?.message ?? "").includes('subscribe "other" is not within allowSubscribe [perm.*]')
+      && !existsSync(join(workspaceRoot, ".cotal", "agents", "epoutside.md")), rOutside.reply);
+    const narrowPath = join(workspaceRoot, ".cotal", "agents", "epnarrow.md");
+    const rNarrow = await A.call("define-persona", { name: "epnarrow", persona: "Reads one level.", subscribe: ["perm.a"], allowSubscribe: ["perm.*"] });
+    const rWiden = await A.call("define-persona", { name: "epnarrow", persona: "Widened.", subscribe: ["perm.>"] });
+    const narrowLoad = (() => { try { return loadAgentFile(narrowPath).persona; } catch (e) { return (e as Error).message; } })();
+    check("a redefine that reads past the stored allowSubscribe is refused, and the file still loads as it was",
+      rNarrow.reply.ok === true && rWiden.reply.ok === false && narrowLoad === "Reads one level.", { rNarrow: rNarrow.reply, rWiden: rWiden.reply, narrowLoad });
 
     const rDefB = await B.call("define-persona", { name: "eppersona", persona: "takeover" });
     check("a FOREIGN redefine refuses (ownership preserved through the ep door)",
@@ -798,7 +851,11 @@ try {
     const rRemoveB = await B.call("remove-persona", { name: "eppersona" });
     check("a foreign remove-persona refuses without deleting the definition",
       rRemoveB.reply.ok === false && rRemoveB.reply.error?.code === "permission-denied" && existsSync(eppPath), rRemoveB.reply);
-    const { row: runningFromPersona } = await spawnLive(A.call, { name: "eppersona", agent: "e2e-stub", cwd: repoRoot, events: false });
+    // The operator widened this persona to read `general`, which A's unissued credential cannot hand
+    // on (SPEC 13.15), so the composition root starts it with A as its spawner.
+    const eppStart = await M.startAgent({ name: "eppersona", agent: "e2e-stub", cwd: repoRoot, events: false }, A.principal);
+    if (!eppStart.ok) throw new Error(`eppersona did not start: ${JSON.stringify(eppStart)}`);
+    const runningFromPersona = eppStart.data as { name: string; id: string; lifecycleUid: string };
     const rRemove = await A.call("remove-persona", { name: "eppersona" });
     const rListAfterRemove = await A.call("list-personas");
     const afterRemove = ((rListAfterRemove.reply.data as { personas?: Array<{ name: string }> })?.personas) ?? [];

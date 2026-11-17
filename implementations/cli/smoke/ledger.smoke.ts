@@ -5,7 +5,7 @@
  * cred paths are DERIVED from the known auth root (never stored), findLedgerByHash fails-not-guesses,
  * and the core no-follow delete helpers refuse symlinks. Run with: pnpm smoke:ledger
  */
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, symlinkSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {

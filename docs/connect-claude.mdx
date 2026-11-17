@@ -1,7 +1,7 @@
 ---
 title: "Connect Claude"
 description: "Connect Claude Code to a mesh, launch an agent, and choose how it receives messages and tools."
-kind: Guide
+kind: "Guide (informative)"
 audience: "operators"
 ---
 
@@ -56,6 +56,13 @@ that conversation on its own: the plugin's server follows the pending request an
 tells the conversation to finish the connection, or that you denied it or let it expire. In Claude
 Desktop chat, which runs no native module, ask Claude to retry the connection. Confirm the resulting
 connection with `cotal_orientation` and check that its space is the one you intended.
+
+If the space refuses a connection after approval, the native plugin reports the refusal and stops
+polling. This is separate from your denial. The conversation reads the saved reason without sending
+another connection request. The space's plan policy determines which agents count toward its limit.
+An offline identity may still be resumable. The refusal can link to agent management and plan comparison; it never starts a purchase.
+A terminal refusal permits a fresh request after capacity changes. An unconfirmed outcome keeps its
+recovery record, so replacing a name cannot abandon an identity that may already exist.
 
 If Claude displays a success notification but its connector settings still offer Connect or report
 unfinished setup, do not treat the notification as proof of a working connection. Reopen the
@@ -145,6 +152,10 @@ When channels are blocked, mesh tools and hook-based inbox delivery still work d
 An incoming message cannot wake an idle managed session.
 Check Claude's startup notice before leaving the agent unattended.
 A connected MCP server does not prove that channel wake works.
+A managed launch whose startup showed no development-channels prompt says so: the `cotal spawn`
+receipt carries a `STARTUP_NOTICE` warning, the `cotal_spawn` result ends with the notice, and
+`cotal ps` marks the seat with `no idle wake` (`--wide` and `--json` carry the clause). A `once`
+launch of such a seat is refused instead.
 
 </Callout>
 
@@ -197,7 +208,10 @@ cotal spawn --harness claude --model sonnet
 ```
 
 `--model` overrides the persona's model pin.
-The Claude connector exposes no model catalog and rejects `--variant`.
+To list the models your Claude login can use, run `cotal models --harness claude`.
+The connector asks your own `claude` without sending a prompt.
+A logged-out `claude` reports `claude is not logged in; run claude to log in`.
+The Claude connector rejects `--variant`.
 It also rejects `provider/model` names used by other connectors, except Bedrock inference-profile ARNs.
 Choose the corresponding connector for another provider's model.
 
@@ -247,6 +261,9 @@ To carry a transcript from this host to a selected manager, use:
 ```bash
 cotal spawn --harness claude --resume <session-id> --detach --on <instance>
 ```
+
+The transcript carry and transfer authorization use the space and broker already selected for the launch.
+They do not select another mesh or repeat the registry liveness scan.
 
 Before carrying a session:
 
@@ -312,13 +329,13 @@ See [Connection guards](claude-connector-reference.mdx#connection-guards) for ho
 
 ## Connect a session you opened [#sessions-cotal-did-not-launch]
 
-A session you open yourself can join only a remote signed-in space whose authority supports conversation approval.
-A local mesh started by `cotal up` uses `cotal spawn` instead.
-After setup, reopen Claude and ask it to call `cotal_connect` with a name.
-Open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
+A session you open yourself can join an open or static mesh this computer runs with `cotal up`, or a remote signed-in space whose authority supports conversation approval.
+After setup, reopen Claude and ask it to call `cotal_connect` with a name, and with `space` to choose a registered mesh.
+On an open or static local mesh the conversation connects at once, with the channels, role and capabilities of that mesh's default persona, or the part of them it asks for.
+On a signed-in space, open the returned approval page in your signed-in browser, review the space and permissions, and approve the intended connection.
 A pending request has not joined the mesh.
 
-In a supported Code host, the installed native hooks module follows the decision and tells the conversation to finish connecting.
+In a supported Code host, the installed native hooks module binds the conversation's own session first, and follows a pending decision to tell the conversation to finish connecting.
 It can deliver complete short messages at idle or supported busy boundaries. Larger messages retain a preview and the inbox path.
 If the module is unavailable or blocked, use `cotal_wait`; an attached reader does not prove the host can start a turn.
 

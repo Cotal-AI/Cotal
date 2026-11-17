@@ -10,9 +10,9 @@
  *    reported by reset and repair, which still succeed, and `ext remove` then drops its entry
  *  - corrupt manifest → `--reset` quarantines + rebuilds; connectors still on disk → `--repair` rebuilds
  *  - truncated authority never resurrects a removed connector (backup union)
- *  - operator-pinned official entry not auto-refreshed on upgrade (source-aware); semver fail-loud
+ *  - operator-installed official entry reconciled to running generation on upgrade; semver fail-loud
  *  - a forged `COTAL_EXT_SEEDING` gets no seed-child treatment
- *  - an ambiguous (pending, dead-parent) child marker is fail-loud
+ *  - stale pending children recover, while live or unprovable identities block
  *  - concurrent first boots do not collide or falsely report "interrupted"
  *  - the binary invoked through a bin SYMLINK (how every global install runs) still resolves its
  *    generation and payloads
@@ -26,7 +26,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { runFiles, emitSentinel } from "@cotal-ai/smoke-kit";
-import { existsSync, mkdirSync, writeFileSync, dirname, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, check, cotal, freshCfg, writeJson, track, counts, cleanupScenario } from "./seed-cases/harness.js";
+import { existsSync, mkdirSync, writeFileSync, dirname, posix, win32, defaultAgentType, isPathSpec, seedGeneration, seedStorePath, stageSeedPayload, check, freshCfg, writeJson, track, counts, cleanupScenario } from "./seed-cases/harness.js";
 
 try {
   // ── defaultAgentType (unit) ──────────────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 84 : 130;
+    const expected = process.platform === "win32" ? 102 : 151;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });

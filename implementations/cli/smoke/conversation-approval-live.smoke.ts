@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,9 +21,10 @@ process.env.COTAL_HOME = home;
 const { canonicalJson, conversationSelection, eventChannel, mintLifecycleUid } = await import("@cotal-ai/core");
 const { recordMesh, resolveTargetOrThrow } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/auth");
-const { saveIdpSession } = await import("../../auth/src/login.js");
+const { saveIdpSession, deleteIdpSession } = await import("../../auth/src/login.js");
 const { provisionUserApp, retireUserApp } = await import("../src/lib/app-user-identity.js");
 const { appIdentity } = await import("../src/commands/app-identity.js");
+const { remoteUserEntry } = await import("../src/commands/meshes-add.js");
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1",
   "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", join(home, "server.key"), "-out", join(home, "server.crt")], { stdio: "ignore" });
@@ -32,10 +33,14 @@ setDefaultCACertificates([...rootCertificates, ca]);
 const key = readFileSync(join(home, "server.key"));
 const SPACE = "approval_fixture", owner = "u_approval_fixture";
 type Selection = { channels: { channel: string; access: string }[]; role: string | null; capabilities: string[] };
-type Approval = { id: string; url: string; expiresAt: string; state: "pending" | "approved" | "denied" | "expired" | "issued";
-  digest: string; proposed: Selection | null; approved?: Selection; decidedAt?: string; material?: Record<string, any> };
+type Approval = { id: string; url: string; expiresAt: string; state: "pending" | "approved" | "denied" | "expired" | "issued" | "refused";
+  digest: string; proposed: Selection | null; approved?: Selection; decidedAt?: string; material?: Record<string, any>; refusal?: Record<string, unknown> };
 let base = "", advertise: "v1" | "absent" | "old" = "v1", tamper = "";
 let authenticated = 0, issued = 0, deletes = 0;
+let failure: { status: number; body: unknown } | undefined;
+const capAnswer = (requestId: string) => ({ v: 1, requestId, status: "refused", error: "agent-cap", cap: "agents",
+  message: "server prose is not a display contract", tier: "team", limit: 50, current: 75,
+  upgradeUrl: `${base}/pricing`, agentsUrl: `${base}/agents?space=fixture-id&status=offline` });
 const posts: Record<string, any>[] = [];
 const approvals = new Map<string, Approval>();
 const base32 = (n: number) => Array.from(randomBytes(n), (byte) => "abcdefghijklmnopqrstuvwxyz234567"[byte % 32]).join("");
@@ -47,8 +52,8 @@ const contractGrant = (actor: string, s: Selection | null | undefined) => s
       allowPublish: [eventChannel({ owner, actor }), ...s.channels.filter((c) => c.access === "read-post").map((c) => c.channel)], subscribe: [], endpoints: [] }
   : { scope: [], role: null, allowSubscribe: [], allowPublish: [eventChannel({ owner, actor })], subscribe: [] };
 const bundle = () => ({ space: SPACE, server: "nats://127.0.0.1:1", tlsRequired: false,
-  userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/s/${SPACE}` } },
-  policy: { events: "required" }, sentinelCreds: "fixture-sentinel",
+  userAuth: { provider: "cotal", idp: { url: `${base}/idp`, issuer: `${base}/idp`, audience: "cotal-cli" }, endpoints: { url: `${base}/registration/${SPACE}` } },
+  policy: { events: "required" as const }, sentinelCreds: "fixture-sentinel",
   cloudCapabilities: { conversationIdentity: { version: 1, url: `${base}/api/spaces/${SPACE}/conversation-identities` },
     conversationIdentitySelection: { version: 1 },
     ...(advertise === "absent" ? {} : { connectionApproval: { version: advertise === "old" ? 2 : 1 } }) },
@@ -61,9 +66,14 @@ const decide = (requestId: string, decision: { approve: Selection } | "deny" | "
   else if (decision === "expire") a.state = "expired";
   else Object.assign(a, { state: "approved", approved: decision.approve, decidedAt: new Date().toISOString() });
 };
+let originalRegistration: ReturnType<typeof bundle> | undefined;
+let movedRegistration: ReturnType<typeof bundle> | undefined;
+let enforceNames = false, terminalNameRefusals = true;
+const retiredActors = new Set<string>();
 const server = createServer({ key, cert: ca }, async (req, res) => {
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-  if (req.url === `/s/${SPACE}/.well-known/cotal-mesh`) return send(200, bundle());
+  if (req.url === `/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, originalRegistration ?? bundle());
+  if (req.url === `/moved/registration/${SPACE}/.well-known/cotal-mesh`) return send(200, movedRegistration);
   authenticated++;
   assert.equal(req.headers.authorization, "Bearer isolated-fixture-human-session");
   if (req.method === "POST") {
@@ -75,10 +85,19 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     const digest = canonicalJson(body);
     let a = approvals.get(body.requestId);
     if (a && a.digest !== digest) return send(409, { error: "requestId reused with a different request" });
+    const taken = enforceNames && [...approvals.values()].some((previous) => previous.material &&
+      JSON.parse(previous.digest).label.toLowerCase() === body.label.toLowerCase() && !retiredActors.has(previous.material.actor));
+    const terminal = terminalNameRefusals && req.headers["cotal-conversation-refusals"] === "1";
     if (!a) {
+      if (taken && !terminal) return send(409, { error: "name-taken", reason: "server-secret-canary", agentsUrl: "https://foreign.example/secret" });
       const id = base32(26);
       a = { id, url: `${base}/approve/${id}`, expiresAt: new Date(Date.now() + 600_000).toISOString(), state: "pending", digest, proposed: body.selection ?? null };
       approvals.set(body.requestId, a);
+    }
+    if (taken && (a.state === "pending" || a.state === "approved")) {
+      if (!terminal) return send(409, { error: "name-taken" });
+      a.state = "refused";
+      a.refusal = { v: 1, requestId: body.requestId, status: "refused", error: "name-taken" };
     }
     if (a.state === "pending") {
       const answer = { v: 1, requestId: body.requestId, status: "pending", approval: { id: a.id, url: a.url, expiresAt: a.expiresAt }, proposed: a.proposed };
@@ -90,11 +109,20 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     }
     if (a.state === "denied") return send(403, tamper === "loose-deny" ? { status: "denied", note: "x" } : { status: "denied" });
     if (a.state === "expired") return send(410, { status: "expired" });
+    if (failure) return send(failure.status, failure.body);
+    if (tamper === "legacy-cap" && a.state === "approved") return send(409, {
+      error: "you already have 50 agents enrolled, which is the per-person limit in this space. Revoke one you are not using and try again.",
+    });
+    if ((tamper === "agent-cap" || tamper === "agent-cap-no-upgrade") && a.state === "approved") {
+      a.state = "refused";
+      a.refusal = { ...capAnswer(body.requestId), ...(tamper === "agent-cap-no-upgrade" ? { upgradeUrl: null } : {}) };
+    }
+    if (a.state === "refused") return send(409, a.refusal);
     let status = 200;
     if (a.state === "approved") {
       const actor = `pa_${base32(26)}`, lifecycleUid = mintLifecycleUid();
       a.material = { v: 1, requestId: body.requestId, space: SPACE, owner, actor, lifecycleUid, grant: contractGrant(actor, a.approved),
-        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: `${base}/s/${SPACE}`,
+        policy: { events: "required" }, sentinelCreds: "fixture-sentinel", exchangeUrl: movedRegistration?.userAuth.endpoints.url ?? `${base}/registration/${SPACE}`,
         retire: { url: `${base}/api/spaces/${SPACE}/conversation-identities/${actor}?lifecycleUid=${lifecycleUid}` },
         approval: { id: a.id, decidedAt: a.decidedAt, approved: a.approved } };
       a.state = "issued";
@@ -115,6 +143,7 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     deletes++;
     const exact = [...approvals.values()].find((a) => a.material?.retire.url === `${base}${req.url}`);
     assert(exact, "retirement must name one issued lifecycle");
+    retiredActors.add(exact.material!.actor);
     return send(200, { v: 1, actor: exact.material!.actor, lifecycleUid: exact.material!.lifecycleUid, phase: "terminal", complete: true });
   }
   send(404, {});
@@ -133,10 +162,10 @@ async function cli(values: Record<string, unknown>): Promise<{ code: number; out
   return { code, out, reply: JSON.parse(out) };
 }
 /** The real `cotal` binary in a child, through the dispatcher's strict flag parse. */
-const cotal = (args: string[]) => new Promise<{ code: number; out: string }>((resolve) =>
+const cotal = (args: string[]) => new Promise<{ code: number; out: string; signal: string | null; err: string }>((resolve) =>
   execFile(process.execPath, ["--import", "tsx", "bin/cotal.ts", ...args],
     { cwd: fileURLToPath(new URL("../../../", import.meta.url)), env: { ...process.env, NODE_EXTRA_CA_CERTS: join(home, "server.crt") } },
-    (error, stdout) => resolve({ code: error ? Number(error.code) : 0, out: stdout })));
+    (error, stdout, stderr) => resolve({ code: error ? Number(error.code ?? 1) : 0, out: stdout, signal: error?.signal ?? null, err: stderr })));
 const identities = () => existsSync(join(home, "app-identities")) ? readdirSync(join(home, "app-identities")).filter((n) => /^[a-f0-9]{64}$/.test(n)) : [];
 const pendingOf = async (p: ReturnType<typeof provisionUserApp>) => {
   const r = await p;
@@ -173,10 +202,10 @@ try {
     });
   }
   advertise = "v1";
-  await check("an open mesh refuses an app identity instead of opening one", async () => {
+  await check("an open mesh opens no app identity for a caller with no native session", async () => {
     const r = await cli({ name: "open_app", space: "open_fixture" });
     assert.equal(r.code, 1);
-    assert.match(r.reply.error, /no human approval for app conversations, so no identity was opened/);
+    assert.match(r.reply.error, /needs its native session identity before connecting/);
     assert.equal(r.reply.env, undefined);
   });
 
@@ -203,8 +232,8 @@ try {
   });
   await check("the connector's --require-approval passes the CLI's own parser and the request still waits for the person", async () => {
     const r = await cotal(["app-identity", "provision", "--name", "fence", "--space", SPACE, "--session", "session-fence", "--events", "--require-approval"]);
-    assert.equal(r.code, 1);
-    assert.equal(r.out.split("\n").filter(Boolean).length, 1);
+    assert.equal(r.code, 1, `child exit signal=${r.signal}; stderr=${r.err}`);
+    assert.equal(r.out.split("\n").filter(Boolean).length, 1, `child exit signal=${r.signal}; stderr=${r.err}`);
     const reply = JSON.parse(r.out);
     assert.equal(reply.pending, true);
     assert.equal(approvals.get(reply.requestId)?.state, "pending");
@@ -375,7 +404,332 @@ try {
     assert(!existsSync(approved.retire.dir) && !existsSync(plain.retire.dir));
     assert.equal(deletes, 2);
   });
-  assert.equal(assertions, 31);
+  const savedFor = (requestId: string) => identities().map((d) => join(home, "app-identities", d, "identity.json"))
+    .find((f) => JSON.parse(readFileSync(f, "utf8")).requestId === requestId)!;
+  await check("a legacy cap refusal explains the limit, stops polling, and retains unknown recovery state", async () => {
+    const p = await pendingOf(provisionUserApp(target, "quota", "session-quota", true));
+    decide(p.requestId, { approve: EMPTY });
+    const file = savedFor(p.requestId), original = JSON.parse(readFileSync(file, "utf8"));
+    tamper = "legacy-cap";
+    const r = await cli({ name: "quota", space: SPACE, session: "session-quota", events: true });
+    assert.match(r.reply.error, /per-person limit of 50 enrolled agents/);
+    assert.equal(r.reply.retryable, false);
+    assert.equal(r.reply.refused, undefined, "a legacy body does not prove terminal no-issuance");
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).token, original.token);
+    await assert.rejects(retireUserApp(dirname(file)), /per-person limit of 50/);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).state, "retiring");
+    tamper = "agent-cap";
+    const next = await pendingOf(provisionUserApp(target, "replacement", "session-quota", true));
+    tamper = "";
+    assert.notEqual(next.requestId, p.requestId, "terminal recovery releases the stuck name for a fresh request");
+    assert.equal(approvals.get(p.requestId)?.state, "refused");
+    assert.equal(approvals.get(next.requestId)?.state, "pending");
+  });
+  await check("a terminal cap refusal reports usage and upgrade actions without any secret or server prose", async () => {
+    const p = await pendingOf(provisionUserApp(target, "capped", "session-capped", true));
+    decide(p.requestId, { approve: EMPTY });
+    const file = savedFor(p.requestId), original = JSON.parse(readFileSync(file, "utf8")), before = issued;
+    tamper = "agent-cap";
+    const r = await cli({ name: "capped", space: SPACE, session: "session-capped", events: true });
+    tamper = "";
+    assert.equal(r.code, 1);
+    assert.equal(r.reply.refused, "refused");
+    assert.match(r.reply.error, /75 agents counted.*per-person limit is 50/);
+    assert(r.reply.error.includes(`${base}/pricing`));
+    assert(r.reply.error.includes(`${base}/agents?space=fixture-id&status=offline`));
+    assert.match(r.reply.error, /Offline agents may still be resumable/);
+    for (const secret of [original.token, "fixture-sentinel", home, "server prose is not a display contract"]) assert(!r.out.includes(secret));
+    assert(!existsSync(file), "a request-bound terminal refusal safely removes the unissued secret");
+    assert.equal(issued, before);
+    const next = await pendingOf(provisionUserApp(target, "capped", "session-capped", true));
+    assert.notEqual(next.requestId, p.requestId);
+  });
+  await check("an authority can offer agent management without an inapplicable upgrade", async () => {
+    const p = await pendingOf(provisionUserApp(target, "managed", "session-managed", true));
+    decide(p.requestId, { approve: EMPTY });
+    tamper = "agent-cap-no-upgrade";
+    const r = await cli({ name: "managed", space: SPACE, session: "session-managed", events: true });
+    tamper = "";
+    assert.equal(r.reply.refused, "refused");
+    assert(r.reply.error.includes(`${base}/agents?space=fixture-id&status=offline`));
+    assert(!r.reply.error.includes("upgrade"));
+  });
+  await check("unbound or malformed cap answers never discard state, leak server fields, or invite an automatic retry", async () => {
+    const invalid: Record<string, unknown>[] = [
+      { v: 2 }, { requestId: "another-request" }, { status: "pending" }, { error: "another-code" }, { cap: "seats" },
+      { limit: 0 }, { limit: -1 }, { limit: 1.5 }, { limit: Number.MAX_SAFE_INTEGER + 1 }, { current: 49 }, { current: null },
+      { upgradeUrl: undefined }, { upgradeUrl: `http://127.0.0.1/pricing` }, { upgradeUrl: "https://foreign.example/pricing" },
+      { agentsUrl: `${base}/agents#fragment` }, { agentsUrl: `https://user:password@127.0.0.1/agents` },
+      { agentsUrl: "javascript:alert(1)" }, { agentsUrl: `${base}/agents\n` }, { sentinelCreds: "server-secret-canary" },
+    ];
+    for (const [n, patch] of invalid.entries()) {
+      const session = `session-bad-cap-${n}`;
+      const p = await pendingOf(provisionUserApp(target, "bad", session, true));
+      decide(p.requestId, { approve: EMPTY });
+      const file = savedFor(p.requestId), original = JSON.parse(readFileSync(file, "utf8"));
+      failure = { status: 409, body: { ...capAnswer(p.requestId), ...patch, message: "server-secret-canary", tier: "server-secret-canary" } };
+      const r = await cli({ name: "bad", space: SPACE, session, events: true });
+      failure = undefined;
+      assert.match(r.reply.error, /HTTP 409; its original request was retained/);
+      assert.equal(r.reply.retryable, false);
+      assert.equal(r.reply.refused, undefined);
+      assert(!r.out.includes("server-secret-canary"));
+      assert.equal(JSON.parse(readFileSync(file, "utf8")).token, original.token);
+    }
+  });
+  await check("recognized cap answers ignore display prose and tier strings", async () => {
+    const p = await pendingOf(provisionUserApp(target, "safe", "session-safe-cap", true));
+    decide(p.requestId, { approve: EMPTY });
+    failure = { status: 409, body: { ...capAnswer(p.requestId), message: "server-secret-canary", tier: "server-secret-canary" } };
+    const r = await cli({ name: "safe", space: SPACE, session: "session-safe-cap", events: true });
+    failure = undefined;
+    assert.equal(r.reply.refused, "refused");
+    assert(!r.out.includes("server-secret-canary"));
+  });
+  await check("an already-issued identity cannot be discarded by a later cap answer", async () => {
+    const p = await pendingOf(provisionUserApp(target, "kept", "session-issued-cap", true));
+    decide(p.requestId, { approve: EMPTY });
+    const c = await connected(provisionUserApp(target, "kept", "session-issued-cap", true));
+    failure = { status: 409, body: capAnswer(p.requestId) };
+    const r = await cli({ name: "kept", space: SPACE, session: "session-issued-cap", events: true });
+    failure = undefined;
+    assert.equal(r.reply.refused, undefined);
+    assert.equal(r.reply.retryable, false);
+    assert(existsSync(c.retire.dir));
+    await retireUserApp(c.retire.dir);
+  });
+  await check("transient HTTP failures keep the request retryable without echoing an arbitrary body", async () => {
+    const p = await pendingOf(provisionUserApp(target, "transient", "session-transient", true));
+    decide(p.requestId, { approve: EMPTY });
+    for (const status of [408, 425, 429, 500, 503]) {
+      failure = { status, body: { error: "server-secret-canary" } };
+      const r = await cli({ name: "transient", space: SPACE, session: "session-transient", events: true });
+      assert.equal(r.reply.retryable, true);
+      assert(!r.out.includes("server-secret-canary"));
+      assert(savedFor(p.requestId));
+    }
+    failure = undefined;
+  });
+  await check("an opted-in terminal name refusal releases the request, stays refused on replay, and permits another name", async () => {
+    const p = await pendingOf(provisionUserApp(target, "held-name", "session-name-holder", true));
+    decide(p.requestId, { approve: EMPTY });
+    const holder = await connected(provisionUserApp(target, "held-name", "session-name-holder", true));
+    enforceNames = true;
+    const refused = await cli({ name: "HELD-NAME", space: SPACE, session: "session-name-replacement", events: true });
+    const body = posts.at(-1)!;
+    assert.equal(refused.reply.refused, "refused");
+    assert.match(refused.reply.error, /name is already held/);
+    assert.equal(savedFor(body.requestId), undefined);
+    assert(!refused.out.includes("server-secret-canary"));
+    const command = ["app-identity", "provision", "--require-approval", "--space", SPACE,
+      "--session", "session-command-name", "--events", "--name"];
+    const commandRefused = await cotal([...command, "held-name"]);
+    assert.equal(commandRefused.code, 1);
+    assert.equal(JSON.parse(commandRefused.out).refused, "refused");
+    const commandNext = await cotal([...command, "unused-command-name"]);
+    assert.equal(commandNext.code, 1);
+    assert.equal(JSON.parse(commandNext.out).pending, true, "the registered CLI command also reaches fresh approval");
+    await retireUserApp(holder.retire.dir);
+    const replay = await fetch(`${base}/api/spaces/${SPACE}/conversation-identities`, { method: "POST",
+      headers: { authorization: "Bearer isolated-fixture-human-session", "content-type": "application/json", "Cotal-Conversation-Refusals": "1" }, body: JSON.stringify(body) });
+    assert.equal(replay.status, 409);
+    assert.deepEqual(await replay.json(), { v: 1, requestId: body.requestId, status: "refused", error: "name-taken" });
+    const next = await pendingOf(provisionUserApp(target, "unused-name", "session-name-replacement", true));
+    assert.notEqual(next.requestId, body.requestId);
+    decide(next.requestId, { approve: EMPTY });
+    const connection = await connected(provisionUserApp(target, "unused-name", "session-name-replacement", true));
+    await retireUserApp(connection.retire.dir);
+    enforceNames = false;
+  });
+  for (const state of ["creating", "retiring"] as const) {
+    await check(`a legacy ${state} name conflict recovers through a terminal refusal before requesting another name`, async () => {
+      const session = `session-legacy-name-${state}`;
+      const p = await pendingOf(provisionUserApp(target, `held-${state}`, `holder-${state}`, true));
+      decide(p.requestId, { approve: EMPTY });
+      const holder = await connected(provisionUserApp(target, `held-${state}`, `holder-${state}`, true));
+      enforceNames = true;
+      terminalNameRefusals = false;
+      const refused = await cli({ name: `held-${state}`, space: SPACE, session, events: true });
+      const oldRequest = posts.at(-1)!.requestId;
+      assert.equal(refused.reply.refused, undefined);
+      assert.match(refused.reply.error, /name is already held/);
+      assert(!refused.out.includes("server-secret-canary") && !refused.out.includes("foreign.example"));
+      assert(savedFor(oldRequest));
+      if (state === "retiring") {
+        const blocked = await cli({ name: `next-${state}`, space: SPACE, session, events: true });
+        assert.equal(blocked.reply.pending, undefined);
+        assert.equal(JSON.parse(readFileSync(savedFor(oldRequest)!, "utf8")).state, "retiring");
+      }
+      terminalNameRefusals = true;
+      const next = await pendingOf(provisionUserApp(target, `next-${state}`, session, true));
+      assert.notEqual(next.requestId, oldRequest);
+      assert.equal(savedFor(oldRequest), undefined);
+      assert.equal(approvals.get(oldRequest)!.state, "refused");
+      decide(next.requestId, { approve: EMPTY });
+      const connection = await connected(provisionUserApp(target, `next-${state}`, session, true));
+      await retireUserApp(connection.retire.dir);
+      await retireUserApp(holder.retire.dir);
+      enforceNames = false;
+    });
+  }
+  await check("malformed or unbound terminal name answers preserve recovery state without exposing server text", async () => {
+    const p = await pendingOf(provisionUserApp(target, "name-invalid", "session-name-invalid", true));
+    decide(p.requestId, { approve: EMPTY });
+    const answer = { v: 1, requestId: p.requestId, status: "refused", error: "name-taken" };
+    for (const body of [{ ...answer, v: 2 }, { ...answer, requestId: "another-request" }, { ...answer, status: "pending" },
+      { ...answer, error: "another-error" }, { ...answer, reason: "server-secret-canary" }, [answer], { ...answer, v: "1" }]) {
+      failure = { status: 409, body };
+      const refused = await cli({ name: "name-invalid", space: SPACE, session: "session-name-invalid", events: true });
+      assert.equal(refused.reply.refused, undefined);
+      assert.equal(refused.reply.retryable, false);
+      assert(!refused.out.includes("server-secret-canary"));
+      assert(savedFor(p.requestId));
+    }
+    failure = undefined;
+    await retireUserApp(dirname(savedFor(p.requestId)!));
+  });
+  await check("a terminal name answer cannot discard an already-issued identity", async () => {
+    const p = await pendingOf(provisionUserApp(target, "issued-name", "session-issued-name", true));
+    decide(p.requestId, { approve: EMPTY });
+    const connection = await connected(provisionUserApp(target, "issued-name", "session-issued-name", true));
+    failure = { status: 409, body: { v: 1, requestId: p.requestId, status: "refused", error: "name-taken" } };
+    const refused = await cli({ name: "issued-name", space: SPACE, session: "session-issued-name", events: true });
+    failure = undefined;
+    assert.equal(refused.reply.refused, undefined);
+    assert(existsSync(join(connection.retire.dir, "identity.json")));
+    await retireUserApp(connection.retire.dir);
+  });
+  await check("a name taken after approval becomes a terminal refusal without issuing a second identity", async () => {
+    const waiting = await pendingOf(provisionUserApp(target, "approval-race-name", "session-name-race", true));
+    const p = await pendingOf(provisionUserApp(target, "approval-race-name", "session-name-race-holder", true));
+    decide(p.requestId, { approve: EMPTY });
+    const holder = await connected(provisionUserApp(target, "approval-race-name", "session-name-race-holder", true));
+    decide(waiting.requestId, { approve: EMPTY });
+    const before = issued;
+    enforceNames = true;
+    const refused = await cli({ name: "approval-race-name", space: SPACE, session: "session-name-race", events: true });
+    assert.equal(refused.reply.refused, "refused");
+    assert.equal(issued, before);
+    assert.equal(savedFor(waiting.requestId), undefined);
+    await retireUserApp(holder.retire.dir);
+    enforceNames = false;
+  });
+  await check("a legacy retiring identity recovers matching original pins and reconnects under the same name", async () => {
+    recordMesh(remoteUserEntry(SPACE, target.server, target.root, bundle(), false, false));
+    const registeredTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(registeredTarget.userAuth?.remote, true);
+    assert(registeredTarget.userAuth?.sentinelCredsPath);
+    const session = "session-moved";
+    const p = await pendingOf(provisionUserApp(registeredTarget, "moved", session, true));
+    decide(p.requestId, { approve: EMPTY });
+    const c = await connected(provisionUserApp(registeredTarget, "moved", session, true));
+    const file = join(c.retire.dir, "identity.json");
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
+    record.state = "retiring";
+    writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    const moved = bundle();
+    moved.server = "nats://127.0.0.1:2";
+    moved.userAuth.idp.url = `${base}/moved-idp`;
+    moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
+    movedRegistration = moved;
+    recordMesh(remoteUserEntry(SPACE, moved.server, target.root, moved, false, false));
+    saveIdpSession(home, moved.userAuth.idp.url, { token: "isolated-fixture-human-session", sub: "isolated-human", expiresAt: Math.floor(Date.now() / 1000) + 600 });
+    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    assert.equal(nextTarget.userAuth?.remote, true);
+    assert(nextTarget.userAuth?.sentinelCredsPath);
+    const before = deletes;
+    const next = await pendingOf(provisionUserApp(nextTarget, "moved", session, true));
+    assert.equal(deletes, before + 1);
+    assert.notEqual(next.requestId, p.requestId);
+    decide(next.requestId, { approve: EMPTY });
+    const reconnected = await connected(provisionUserApp(nextTarget, "moved", session, true));
+    assert.equal(reconnected.env.COTAL_SERVERS, moved.server);
+    assert.notEqual(reconnected.env.COTAL_ACTOR, c.env.COTAL_ACTOR);
+    movedRegistration = undefined;
+    enforceNames = false;
+    assert.notEqual(JSON.parse(readFileSync(file, "utf8")).token, record.token);
+    recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+      userAuth: target.userAuth, policy: target.policy });
+  });
+  for (const changedPin of ["addresses", "issuer", "audience", "no-material"] as const) {
+    await check(`a legacy retiring record with changed ${changedPin} is preserved without authenticated retirement`, async () => {
+      const session = `session-legacy-${changedPin}`;
+      const p = await pendingOf(provisionUserApp(target, "legacy", session, true));
+      decide(p.requestId, { approve: EMPTY });
+      await connected(provisionUserApp(target, "legacy", session, true));
+      const file = savedFor(p.requestId), record = JSON.parse(readFileSync(file, "utf8"));
+      delete record.retirementTarget;
+      if (changedPin === "no-material") delete record.remote.material;
+      record.state = "retiring";
+      writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+      const moved = bundle();
+      moved.server = "nats://127.0.0.1:2";
+      moved.userAuth.idp.url = `${base}/moved-idp`;
+      moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
+      if (changedPin === "issuer") moved.userAuth.idp.issuer = `${base}/different-issuer`;
+      if (changedPin === "audience") moved.userAuth.idp.audience = "different-audience";
+      movedRegistration = moved;
+      recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+        userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+      originalRegistration = bundle();
+      if (changedPin === "addresses") originalRegistration.server = "nats://127.0.0.1:3";
+      if (changedPin === "issuer") originalRegistration.userAuth.idp.issuer = `${base}/different-issuer`;
+      if (changedPin === "audience") originalRegistration.userAuth.idp.audience = "different-audience";
+      const before = authenticated, beforeDeletes = deletes;
+      const next = await pendingOf(provisionUserApp(await resolveTargetOrThrow({ space: SPACE }), "legacy", session, true));
+      assert.equal(authenticated, before + 1, "only the fresh request is authenticated");
+      assert.equal(deletes, beforeDeletes);
+      assert.notEqual(next.requestId, p.requestId);
+      const preserved = join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json");
+      assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
+      originalRegistration = undefined;
+      movedRegistration = undefined;
+      recordMesh({ space: SPACE, server: target.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+        userAuth: target.userAuth, policy: target.policy });
+    });
+  }
+  await check("a terminal name refusal after set-aside permits fresh approval and keeps the original recovery record", async () => {
+    const session = "session-missing-login";
+    const p = await pendingOf(provisionUserApp(target, "moved", session, true));
+    decide(p.requestId, { approve: EMPTY });
+    const c = await connected(provisionUserApp(target, "moved", session, true));
+    const file = join(c.retire.dir, "identity.json"), record = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(Object.keys(record.retirementTarget).sort(), ["root", "server", "space", "tlsRequired", "userAuth"]);
+    delete record.retirementTarget;
+    enforceNames = true;
+    record.state = "retiring";
+    writeFileSync(file, JSON.stringify(record), { mode: 0o600 });
+    const moved = bundle();
+    moved.server = "nats://127.0.0.1:2";
+    moved.userAuth.idp.url = `${base}/moved-idp`;
+    moved.userAuth.endpoints.url = `${base}/moved/registration/${SPACE}`;
+    movedRegistration = moved;
+    recordMesh({ space: SPACE, server: moved.server, root: target.root, mode: "user", origin: "manual", ts: new Date().toISOString(),
+      userAuth: moved.userAuth, policy: moved.policy as { events: "required" } });
+    deleteIdpSession(home, `${base}/idp`);
+    const before = deletes;
+    const unreadable = join(home, "app-identities", "unconfirmed-000-unreadable");
+    mkdirSync(unreadable, { mode: 0o700 });
+    writeFileSync(join(unreadable, "identity.json"), "not JSON", { mode: 0o600 });
+    const refused = await cli({ name: "moved", space: SPACE, session, events: true });
+    assert.equal(refused.code, 1);
+    assert.equal(refused.reply.refused, "refused");
+    assert.match(refused.reply.error, /name is already held/);
+    assert.equal(deletes, before, "no retirement credential goes to the replacement");
+    const preserved = join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json");
+    assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
+    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    const next = await pendingOf(provisionUserApp(nextTarget, "another-name", session, true));
+    decide(next.requestId, { approve: EMPTY });
+    const connection = await connected(provisionUserApp(nextTarget, "another-name", session, true));
+    assert.equal(connection.env.COTAL_SERVERS, moved.server);
+    assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
+    enforceNames = false;
+  });
+  assert.equal(assertions, 50);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));

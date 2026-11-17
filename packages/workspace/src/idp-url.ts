@@ -1,4 +1,4 @@
-import { isLoopbackLiteral } from "@cotal-ai/core/loopback";
+import { isCredentialTransportUrl } from "@cotal-ai/core/loopback";
 
 /** The shared IdP base-URL verdict. Callers own their diagnostics and normalization. */
 export type IdpUrlCheck =
@@ -15,7 +15,7 @@ export function checkIdpUrl(value: string): IdpUrlCheck {
   } catch {
     return { ok: false, reason: "invalid-url" };
   }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
+  if (!isCredentialTransportUrl(url))
     return { ok: false, reason: "scheme" };
   if (url.search || url.hash) return { ok: false, reason: "query-or-fragment" };
   if (url.username || url.password) return { ok: false, reason: "credentials", host: url.host };

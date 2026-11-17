@@ -48,7 +48,14 @@ already knows it needs, so the person approves one request. Only the
 person's decision in the authority's authenticated UI is consent. The approved selection may differ
 from the proposal and must stay within their current authority. The empty approved selection still
 includes direct-message send and receive and own activity publication; disclose these before
-approval. A model flag, API bearer or ordinary tool approval cannot approve the request. Unsupported
+approval. A model flag, API bearer or ordinary tool approval cannot approve the request. An HTTP
+endpoint served with `approvalResume` cannot wake its client, so `cotal_connect` holds the call
+while the request is pending and asks the host again every 2 seconds with that same approval. A
+decision in that time returns the connected result. The hold lasts `approvalHoldSeconds`, by
+default `waitSeconds` less 25 seconds, which leaves the rest of the bound for the connect that
+follows an approval. Past the hold the pending result says a later call with the same
+`approval_id` waits again and does not start another request. A stdio server returns the pending
+result at once unless its embedder sets `approvalHoldSeconds`. Unsupported
 approval paths refuse before issuing a grant. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation and durable connection records
@@ -92,8 +99,10 @@ listening. The streams default to the process's own, and stdout then carries onl
 
 An embedder whose client can be woken passes `wake`, to `serveGatewayStdio` or in the options of
 `registerCotalGatewayTools`. The gateway calls `wake.signal(connection, preview)` when a connection
-gets something that would end a `cotal_wait` while no wait holds it. A true result means a reader
-heard the signal, not that it received complete message content. The preview never consumes mail.
+gets something that would end a `cotal_wait` while no wait or inbox read holds it. Something that
+arrives during a wait or a read and is still unread when it returns is signalled once then. A true
+result means a reader heard the signal, not that it received complete message content. The preview
+never consumes mail.
 `cotal_connect` adds `wake.listening(connection)` to its reply. An embedder delivering full content
 can return false from `wake.inboxNotice(connection)` to omit competing inbox-read advice from other
 tool results. Notification-only clients retain that advice.
@@ -172,8 +181,9 @@ compiles no code: the host passes validators it generated at build time with
 takes each cluster document with its recorded digest and schema roots, recomputes every digest and
 refuses a mismatch or a missing root before writing anything. It supports single-document closures
 only, so a command whose closure spans several documents refuses. The generated module imports
-Ajv's runtime helpers (`ajv/dist/runtime/*.js`), so the host's bundler must resolve `ajv` from
-where the host writes that module.
+`@cotal-ai/core/contract-validator` and prepares its fixed schemas with the same interpreter as Node.
+The host's bundler must resolve this entry from where it writes the module. Neither the module nor
+the interpreter generates code at runtime.
 
 ### Selected Manager caller
 
@@ -187,10 +197,10 @@ bearer's space, principal, lifecycle and instance are checked before anything is
 describe is pinned to that instance. The view carries only the commands the person's ledger scope
 grants. `spawn`, for example, carries `spawn`, `despawn`, `inspect`, the persona commands
 (`define-persona`, `remove-persona`, `list-personas`, `show-persona`) and
-`goal-result`, plus the launch reads `status`, `models` and `resolve-cwd` on that one instance,
-while operator reads such as `ps` and `slots` come only with `admin`; the broker
-refuses a command the view does not carry. The connection never reconnects on its own; `reopen`
-acquires again and re-checks every pin.
+`goal-result`, plus the reads `status`, `models`, `resolve-cwd` and `ps` on that one instance.
+That `ps` lists only the person's own agents. Operator reads such as `slots` come only with
+`admin`, and the broker refuses a command the view does not carry. The connection never reconnects
+on its own; `reopen` acquires again and re-checks every pin.
 
 ### Goal outcomes
 

@@ -166,7 +166,7 @@ try {
   process.exitCode = 1;
 } finally {
   if (bystander?.pid) try { process.kill(bystander.pid, "SIGKILL"); } catch { /* already gone */ }
-  try { runSync(["down"]); } catch { /* best effort */ }
+  try { runSync(["down", "--yes"]); } catch { /* best effort */ }
   await sleep(500);
   // Every runtime record this root holds, matched by shape (space-keyed and the older root-scoped
   // spelling), as the sibling probe does.

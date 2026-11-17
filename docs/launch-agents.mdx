@@ -20,6 +20,9 @@ cotal spawn
 ```
 
 A bare spawn runs the default persona in this terminal. `--foreground` explicitly keeps that path.
+A catalog with no default persona, such as a Cloud space's before anything prepared it, gets the
+shipped one written on that first spawn, and the launch says so. A persona you named or saved as a
+preference is still refused when it is missing. `--dry-run` writes nothing and says the launch would.
 `--detach` launches through a manager and returns after the agent joins.
 `--on <instance>` launches through that manager and attaches this terminal when its runtime streams a terminal.
 The built-in `pty` runtime streams one; tmux, cmux, Orca, and Herdr provide their own terminal surfaces.
@@ -69,8 +72,9 @@ Follow the connector guide for [Claude](connect-claude.mdx), [OpenCode](connect-
 `--model` overrides the persona file's `model:` pin.
 Claude accepts aliases such as `opus` and `sonnet`, or a full model ID.
 OpenCode uses `provider/model`.
-For connectors with a catalog, run `cotal models --harness opencode` to inspect model IDs and variants.
-Select one with `--model provider/model --variant high`.
+To inspect a connector's model IDs and variants, run `cotal models --harness <connector>`.
+Every connector except Hermes lists a catalog.
+For OpenCode, select one with `--model provider/model --variant high`.
 
 A spawned Claude Code agent loads Cotal's tools, Claude's native MCP sources, and declared sharing overrides.
 Use `--share-tools none` for Cotal alone or `--share-tools a,b` for named declared servers.
@@ -97,6 +101,13 @@ To use an extension runtime, install its provider and select it when configuring
 For example, `cotal ext add @cotal-ai/orca` installs the Orca provider.
 Other providers include `@cotal-ai/tmux`, `@cotal-ai/cmux`, and `@cotal-ai/herdr`.
 Runtime names come from the registry. A missing provider or application is refused rather than replaced with another runtime.
+
+The tmux runtime opens each seat in its own window of the space's `cotal-<space>` session.
+When a launch creates that session, Cotal closes the shell window tmux opens it with, so the session ends with its last seat, and tmux's server exits when it holds no other session.
+A session that was already there keeps its other windows.
+
+On Linux, a moved socket belonging to a live tmux server makes the session check fail, even when its path contains repeated whitespace.
+Cotal leaves that server's sessions in place.
 
 <Callout type="warn" title="Stopping the manager stops its pty seats">
 

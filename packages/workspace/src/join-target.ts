@@ -354,6 +354,12 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
   const port = url.port || String(ws ? (url.protocol === "wss:" ? 443 : 80) : DEFAULT_PORT);
   const path = ws && url.pathname !== "/" ? url.pathname : "";
   const server = `${url.protocol}//${url.hostname}:${port}${path}`;
+  if (policy.tlsRequired && url.protocol === "ws:")
+    throw new JoinRefusal(
+      "unprotected-target",
+      "TLS is required but ws:// is plaintext",
+      `use wss://${url.hostname}${url.port ? `:${url.port}` : ""}${path}`,
+    );
 
   // Loopback is the one class that needs no transport guarantee: nothing leaves the machine, so
   // there is nothing on a wire for anyone to sit on.
@@ -404,7 +410,7 @@ export function classifyJoinTarget(raw: string, policy: DialPolicy): JoinTarget 
       "unprotected-target",
       `${JSON.stringify(raw)} refused: ${host} is ${literal ? "a public address" : "a host name"}, and a machine that registers a mesh sends its agent credentials to that broker, so the connection must require TLS.\n` +
         `  TLS checks the broker's certificate and host name, so whoever answers the ${literal ? "dial" : "lookup or the dial"} cannot pose as the broker. Without TLS, only a loopback literal (127.0.0.0/8, ::1), or a private-overlay literal (100.64.0.0/10, fd7a:115c:a1e0::/48) with --allow-unencrypted-overlay, may be registered.`,
-      secure ? `use ${secure}//${url.hostname}${url.port ? `:${url.port}` : ""}${path}, or pass --tls` : "pass --tls to require TLS on the connection",
+      secure ? `use ${secure}//${url.hostname}${url.port ? `:${url.port}` : ""}${path}${url.protocol === "nats:" ? ", or pass --tls" : ""}` : "pass --tls to require TLS on the connection",
     );
   }
   throw new JoinRefusal(

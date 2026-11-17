@@ -1,5 +1,1455 @@
 # @cotal-ai/runtime
 
+## 0.166.1
+
+### Patch Changes
+
+- Updated dependencies [04338d1]
+- Updated dependencies [1eed7a4]
+- Updated dependencies [eaaafc4]
+- Updated dependencies [eaffa0a]
+- Updated dependencies [ef7e5c4]
+- Updated dependencies [d4eee72]
+- Updated dependencies [2708bfd]
+- Updated dependencies [3fb9ae2]
+  - @cotal-ai/workspace@0.166.1
+  - @cotal-ai/core@0.166.1
+  - @cotal-ai/lang@0.166.1
+
+## 0.166.0
+
+### Patch Changes
+
+- 459d5be: Keep file-local delivery and workflow runtime helpers private without changing package entrypoints or runtime behavior.
+- Updated dependencies [3bebc51]
+- Updated dependencies [126e7e5]
+- Updated dependencies [af1cfe4]
+- Updated dependencies [18b3348]
+- Updated dependencies [38ce17f]
+- Updated dependencies [2947faa]
+- Updated dependencies [a1093f9]
+- Updated dependencies [3d2ef16]
+- Updated dependencies [2e6753b]
+- Updated dependencies [3b09cff]
+- Updated dependencies [6446895]
+- Updated dependencies [eb012be]
+  - @cotal-ai/workspace@0.166.0
+  - @cotal-ai/core@0.166.0
+  - @cotal-ai/lang@0.166.0
+
+## 0.165.4
+
+### Patch Changes
+
+- Updated dependencies [16d0381]
+- Updated dependencies [20ed7a7]
+- Updated dependencies [5413861]
+- Updated dependencies [d5ecb99]
+  - @cotal-ai/core@0.165.4
+  - @cotal-ai/workspace@0.165.4
+  - @cotal-ai/lang@0.165.4
+
+## 0.165.3
+
+### Patch Changes
+
+- 3b68b85: Preserve the tested element in workflow filter, find and findLast results when a predicate replaces or removes it.
+- Updated dependencies [3b68b85]
+  - @cotal-ai/lang@0.165.3
+  - @cotal-ai/core@0.165.3
+  - @cotal-ai/workspace@0.165.3
+
+## 0.165.2
+
+### Patch Changes
+
+- Updated dependencies [f419ba9]
+- Updated dependencies [54b892f]
+- Updated dependencies [9edbf60]
+- Updated dependencies [c040eec]
+  - @cotal-ai/core@0.165.2
+  - @cotal-ai/lang@0.165.2
+  - @cotal-ai/workspace@0.165.2
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+- Updated dependencies [78aa32d]
+  - @cotal-ai/core@0.165.1
+  - @cotal-ai/workspace@0.165.1
+  - @cotal-ai/lang@0.165.1
+
+## 0.165.0
+
+### Patch Changes
+
+- Updated dependencies [6c77c15]
+- Updated dependencies [8325513]
+- Updated dependencies [e3777e8]
+- Updated dependencies [0fa02a8]
+- Updated dependencies [71c39a3]
+- Updated dependencies [18d2cda]
+- Updated dependencies [155234c]
+- Updated dependencies [100ea17]
+- Updated dependencies [9eb591d]
+- Updated dependencies [ab8290f]
+- Updated dependencies [2896d81]
+  - @cotal-ai/core@0.165.0
+  - @cotal-ai/workspace@0.165.0
+  - @cotal-ai/lang@0.165.0
+
+## 0.164.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.18
+  - @cotal-ai/lang@0.164.18
+  - @cotal-ai/workspace@0.164.18
+
+## 0.164.17
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.17
+  - @cotal-ai/lang@0.164.17
+  - @cotal-ai/workspace@0.164.17
+
+## 0.164.16
+
+### Patch Changes
+
+- Updated dependencies [e433bee]
+- Updated dependencies [f305af8]
+  - @cotal-ai/workspace@0.164.16
+  - @cotal-ai/core@0.164.16
+  - @cotal-ai/lang@0.164.16
+
+## 0.164.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.15
+  - @cotal-ai/lang@0.164.15
+  - @cotal-ai/workspace@0.164.15
+
+## 0.164.14
+
+### Patch Changes
+
+- Updated dependencies [517000a]
+  - @cotal-ai/workspace@0.164.14
+  - @cotal-ai/core@0.164.14
+  - @cotal-ai/lang@0.164.14
+
+## 0.164.13
+
+### Patch Changes
+
+- Updated dependencies [e2c838e]
+  - @cotal-ai/workspace@0.164.13
+  - @cotal-ai/core@0.164.13
+  - @cotal-ai/lang@0.164.13
+
+## 0.164.12
+
+### Patch Changes
+
+- Updated dependencies [4bc2211]
+  - @cotal-ai/workspace@0.164.12
+  - @cotal-ai/core@0.164.12
+  - @cotal-ai/lang@0.164.12
+
+## 0.164.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.11
+  - @cotal-ai/lang@0.164.11
+  - @cotal-ai/workspace@0.164.11
+
+## 0.164.10
+
+### Patch Changes
+
+- Updated dependencies [2a4d8fa]
+- Updated dependencies [1ad9989]
+  - @cotal-ai/core@0.164.10
+  - @cotal-ai/workspace@0.164.10
+  - @cotal-ai/lang@0.164.10
+
+## 0.164.9
+
+### Patch Changes
+
+- Updated dependencies [3664f96]
+- Updated dependencies [35db3ae]
+- Updated dependencies [a926514]
+  - @cotal-ai/core@0.164.9
+  - @cotal-ai/workspace@0.164.9
+  - @cotal-ai/lang@0.164.9
+
+## 0.164.8
+
+### Patch Changes
+
+- Updated dependencies [c2db3ac]
+  - @cotal-ai/workspace@0.164.8
+  - @cotal-ai/core@0.164.8
+  - @cotal-ai/lang@0.164.8
+
+## 0.164.7
+
+### Patch Changes
+
+- Updated dependencies [38947c4]
+- Updated dependencies [1c18181]
+  - @cotal-ai/workspace@0.164.7
+  - @cotal-ai/core@0.164.7
+  - @cotal-ai/lang@0.164.7
+
+## 0.164.6
+
+### Patch Changes
+
+- Updated dependencies [9905ad2]
+- Updated dependencies [50d24a9]
+- Updated dependencies [b86b5c5]
+  - @cotal-ai/workspace@0.164.6
+  - @cotal-ai/core@0.164.6
+  - @cotal-ai/lang@0.164.6
+
+## 0.164.5
+
+### Patch Changes
+
+- 14e9268: `cotal run start` no longer says a start was refused when its reply was lost. If the request reached the manager but no reply came back before the deadline, the CLI printed "Request refused" and `TARGET_UNAVAILABLE`, though the manager had recorded and completed the run, so a retry started a second run. A `start`, `resume`, `answer` or `amend` whose request went out and drew no reply is now `OPERATION_UNKNOWN`, exit 3, with the advice to read the run or list the runs before running it again. A `cotal run` list or `cotal run show` in the same situation now fails with `OPERATION_FAILED`, exit 5, and no longer suggests restarting a manager that had just answered. A manager that did not answer before the request was sent, or that the broker found no subscriber for, is still `TARGET_UNAVAILABLE`.
+- @cotal-ai/core@0.164.5
+  - @cotal-ai/lang@0.164.5
+  - @cotal-ai/workspace@0.164.5
+
+## 0.164.4
+
+### Patch Changes
+
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [e61e70d]
+- Updated dependencies [d779cec]
+  - @cotal-ai/core@0.164.4
+  - @cotal-ai/workspace@0.164.4
+  - @cotal-ai/lang@0.164.4
+
+## 0.164.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.164.3
+  - @cotal-ai/lang@0.164.3
+  - @cotal-ai/workspace@0.164.3
+
+## 0.164.2
+
+### Patch Changes
+
+- Updated dependencies [ad89bcd]
+  - @cotal-ai/workspace@0.164.2
+  - @cotal-ai/core@0.164.2
+  - @cotal-ai/lang@0.164.2
+
+## 0.164.1
+
+### Patch Changes
+
+- Updated dependencies [30c1f57]
+- Updated dependencies [45a4655]
+  - @cotal-ai/core@0.164.1
+  - @cotal-ai/workspace@0.164.1
+  - @cotal-ai/lang@0.164.1
+
+## 0.164.0
+
+### Patch Changes
+
+- Updated dependencies [471b464]
+- Updated dependencies [f01f90a]
+- Updated dependencies [471b464]
+- Updated dependencies [b16460a]
+  - @cotal-ai/core@0.164.0
+  - @cotal-ai/workspace@0.164.0
+  - @cotal-ai/lang@0.164.0
+
+## 0.163.5
+
+### Patch Changes
+
+- Updated dependencies [a1cef07]
+- Updated dependencies [23e3171]
+- Updated dependencies [aa9d3c8]
+  - @cotal-ai/core@0.163.5
+  - @cotal-ai/workspace@0.163.5
+  - @cotal-ai/lang@0.163.5
+
+## 0.163.4
+
+### Patch Changes
+
+- Updated dependencies [9222e04]
+- Updated dependencies [6903567]
+- Updated dependencies [7ca7580]
+- Updated dependencies [a8775ea]
+  - @cotal-ai/core@0.163.4
+  - @cotal-ai/workspace@0.163.4
+  - @cotal-ai/lang@0.163.4
+
+## 0.163.3
+
+### Patch Changes
+
+- Updated dependencies [6f00d97]
+- Updated dependencies [cc11f40]
+  - @cotal-ai/lang@0.163.3
+  - @cotal-ai/core@0.163.3
+  - @cotal-ai/workspace@0.163.3
+
+## 0.163.2
+
+### Patch Changes
+
+- Updated dependencies [4e65a2a]
+- Updated dependencies [5712551]
+- Updated dependencies [7c965d7]
+- Updated dependencies [7c11c40]
+  - @cotal-ai/workspace@0.163.2
+  - @cotal-ai/core@0.163.2
+  - @cotal-ai/lang@0.163.2
+
+## 0.163.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.163.1
+  - @cotal-ai/lang@0.163.1
+  - @cotal-ai/workspace@0.163.1
+
+## 0.163.0
+
+### Patch Changes
+
+- Updated dependencies [ef6651a]
+- Updated dependencies [f8801fc]
+- Updated dependencies [94985e3]
+  - @cotal-ai/workspace@0.163.0
+  - @cotal-ai/core@0.163.0
+  - @cotal-ai/lang@0.163.0
+
+## 0.162.0
+
+### Patch Changes
+
+- 28ac475: Completed workflow programs keep their outcome when seat cleanup cannot be confirmed.
+  Retry unanswered lifecycle-pinned despawns within a bounded budget, attempt the remaining seats,
+  and name unconfirmed releases in the host log for manual cleanup.
+- Updated dependencies [21f573f]
+- Updated dependencies [03b2e19]
+- Updated dependencies [74e192c]
+- Updated dependencies [55a5cc8]
+  - @cotal-ai/core@0.162.0
+  - @cotal-ai/workspace@0.162.0
+  - @cotal-ai/lang@0.162.0
+
+## 0.161.1
+
+### Patch Changes
+
+- Updated dependencies [fa2aece]
+  - @cotal-ai/core@0.161.1
+  - @cotal-ai/workspace@0.161.1
+  - @cotal-ai/lang@0.161.1
+
+## 0.161.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.161.0
+  - @cotal-ai/lang@0.161.0
+  - @cotal-ai/workspace@0.161.0
+
+## 0.160.8
+
+### Patch Changes
+
+- Updated dependencies [c7c509c]
+  - @cotal-ai/core@0.160.8
+  - @cotal-ai/workspace@0.160.8
+  - @cotal-ai/lang@0.160.8
+
+## 0.160.7
+
+### Patch Changes
+
+- Updated dependencies [c0f7b08]
+  - @cotal-ai/workspace@0.160.7
+  - @cotal-ai/core@0.160.7
+  - @cotal-ai/lang@0.160.7
+
+## 0.160.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.6
+  - @cotal-ai/lang@0.160.6
+  - @cotal-ai/workspace@0.160.6
+
+## 0.160.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.5
+  - @cotal-ai/lang@0.160.5
+  - @cotal-ai/workspace@0.160.5
+
+## 0.160.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.4
+  - @cotal-ai/lang@0.160.4
+  - @cotal-ai/workspace@0.160.4
+
+## 0.160.3
+
+### Patch Changes
+
+- 0cbf6e4: Connection teardown no longer hangs when the broker closes a connection during its drain.
+  Use the shared `drainAndClose` helper to end the drain wait on terminal closure or a short grace period, then close the connection.
+- Updated dependencies [0cbf6e4]
+- Updated dependencies [94313d0]
+  - @cotal-ai/core@0.160.3
+  - @cotal-ai/workspace@0.160.3
+  - @cotal-ai/lang@0.160.3
+
+## 0.160.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.2
+  - @cotal-ai/lang@0.160.2
+  - @cotal-ai/workspace@0.160.2
+
+## 0.160.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.160.1
+  - @cotal-ai/lang@0.160.1
+  - @cotal-ai/workspace@0.160.1
+
+## 0.160.0
+
+### Patch Changes
+
+- Updated dependencies [27135c6]
+- Updated dependencies [409fbe8]
+  - @cotal-ai/workspace@0.160.0
+  - @cotal-ai/core@0.160.0
+  - @cotal-ai/lang@0.160.0
+
+## 0.159.1
+
+### Patch Changes
+
+- Updated dependencies [c43b597]
+  - @cotal-ai/workspace@0.159.1
+  - @cotal-ai/core@0.159.1
+  - @cotal-ai/lang@0.159.1
+
+## 0.159.0
+
+### Patch Changes
+
+- Updated dependencies [b6abf6c]
+  - @cotal-ai/core@0.159.0
+  - @cotal-ai/workspace@0.159.0
+  - @cotal-ai/lang@0.159.0
+
+## 0.158.1
+
+### Patch Changes
+
+- Updated dependencies [884b619]
+  - @cotal-ai/core@0.158.1
+  - @cotal-ai/workspace@0.158.1
+  - @cotal-ai/lang@0.158.1
+
+## 0.158.0
+
+### Patch Changes
+
+- Updated dependencies [8962134]
+- Updated dependencies [f7f5cc6]
+  - @cotal-ai/workspace@0.158.0
+  - @cotal-ai/core@0.158.0
+  - @cotal-ai/lang@0.158.0
+
+## 0.157.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.9
+  - @cotal-ai/lang@0.157.9
+  - @cotal-ai/workspace@0.157.9
+
+## 0.157.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.8
+  - @cotal-ai/lang@0.157.8
+  - @cotal-ai/workspace@0.157.8
+
+## 0.157.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.7
+  - @cotal-ai/lang@0.157.7
+  - @cotal-ai/workspace@0.157.7
+
+## 0.157.6
+
+### Patch Changes
+
+- Updated dependencies [4ad09f7]
+- Updated dependencies [ca6f40b]
+  - @cotal-ai/core@0.157.6
+  - @cotal-ai/workspace@0.157.6
+  - @cotal-ai/lang@0.157.6
+
+## 0.157.5
+
+### Patch Changes
+
+- a722365: Enable unused-local checks in the shared TypeScript configuration and remove unused imports and declarations from source and smoke tests. Preserve initialization, validation and build-time inbox compatibility checks.
+- Updated dependencies [a722365]
+  - @cotal-ai/core@0.157.5
+  - @cotal-ai/workspace@0.157.5
+  - @cotal-ai/lang@0.157.5
+
+## 0.157.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.4
+  - @cotal-ai/lang@0.157.4
+  - @cotal-ai/workspace@0.157.4
+
+## 0.157.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.3
+  - @cotal-ai/lang@0.157.3
+  - @cotal-ai/workspace@0.157.3
+
+## 0.157.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.2
+  - @cotal-ai/lang@0.157.2
+  - @cotal-ai/workspace@0.157.2
+
+## 0.157.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.157.1
+  - @cotal-ai/lang@0.157.1
+  - @cotal-ai/workspace@0.157.1
+
+## 0.157.0
+
+### Patch Changes
+
+- Updated dependencies [df601ae]
+- Updated dependencies [3bd9391]
+  - @cotal-ai/core@0.157.0
+  - @cotal-ai/workspace@0.157.0
+  - @cotal-ai/lang@0.157.0
+
+## 0.156.0
+
+### Patch Changes
+
+- 8b0bdf7: Run listing now names the missing auth-service grant and tells the space operator how to restore it. Managers from 0.149.0 require the space's auth service to be upgraded to 0.149.0 or later first, because it issues the batched records-read grant. A denial of that grant returns failed-precondition without falling back to per-run reads. After upgrading the auth service, retry the list to obtain a fresh per-call credential.
+- b814b95: Workflow turns survive a transient timeout while waiting for an agent's yield.
+  Result, deadline and presence reads use bounded timeout and host-starvation retries with
+  diagnostics naming the read. A turn that fails on a read withdraws its relay before returning, so
+  the agent cannot later receive a misleading successful yield acknowledgement.
+- Updated dependencies [24bf62a]
+- Updated dependencies [80b1c38]
+- Updated dependencies [f167bea]
+- Updated dependencies [ccc9d7e]
+- Updated dependencies [b814b95]
+  - @cotal-ai/core@0.156.0
+  - @cotal-ai/workspace@0.156.0
+  - @cotal-ai/lang@0.156.0
+
+## 0.155.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.155.2
+  - @cotal-ai/lang@0.155.2
+  - @cotal-ai/workspace@0.155.2
+
+## 0.155.1
+
+### Patch Changes
+
+- Updated dependencies [435b339]
+- Updated dependencies [c43bcd9]
+  - @cotal-ai/workspace@0.155.1
+  - @cotal-ai/core@0.155.1
+  - @cotal-ai/lang@0.155.1
+
+## 0.155.0
+
+### Patch Changes
+
+- Updated dependencies [fb752e3]
+- Updated dependencies [b0bfafa]
+- Updated dependencies [43cbaa0]
+  - @cotal-ai/core@0.155.0
+  - @cotal-ai/workspace@0.155.0
+  - @cotal-ai/lang@0.155.0
+
+## 0.154.0
+
+### Patch Changes
+
+- 221cab0: Workflow agent arguments now report a handle requirement instead of an internal error when given an agent name.
+  The refusal names the argument and directs authors to the value returned by spawn or participant before an effect is dispatched.
+- Updated dependencies [221cab0]
+- Updated dependencies [71dbfad]
+- Updated dependencies [ed8962e]
+- Updated dependencies [27c1356]
+- Updated dependencies [f579412]
+- Updated dependencies [05bb3d3]
+- Updated dependencies [f45357d]
+  - @cotal-ai/lang@0.154.0
+  - @cotal-ai/core@0.154.0
+  - @cotal-ai/workspace@0.154.0
+
+## 0.153.1
+
+### Patch Changes
+
+- 058a3e6: Run checks now identify unchanged programs, show both hashes for edits, and name terminal runs.
+  The read-only comparison no longer implies that it moves a run to another program or makes a completed or failed run resumable.
+- @cotal-ai/core@0.153.1
+  - @cotal-ai/lang@0.153.1
+  - @cotal-ai/workspace@0.153.1
+
+## 0.153.0
+
+### Patch Changes
+
+- d7888be: Hosted runs record their final status after a broker outage instead of remaining marked as running after the driver releases them. The manager retains the attempt while retrying the status write, including when NATS returns before JetStream, stops recovery when its connection closes, and never overwrites a successor's status.
+- 3d2e1f4: Simulation results files now report their path, cause and next step when they cannot be read or parsed, and accept a leading UTF-8 byte-order mark.
+  
+  The results-file reader shares the program reader's regular-file checks and keeps rejecting invalid UTF-8 before simulation.
+- Updated dependencies [b4eba66]
+- Updated dependencies [8d15e70]
+- Updated dependencies [7aaa5bf]
+- Updated dependencies [9bdc7f4]
+  - @cotal-ai/workspace@0.153.0
+  - @cotal-ai/core@0.153.0
+  - @cotal-ai/lang@0.153.0
+
+## 0.152.0
+
+### Minor Changes
+
+- d26134d: Workflow commands now require a regular source file and promptly refuse devices, FIFOs and sockets with their kind named.
+  Symlinks to regular files still work. Pipe and process substitution inputs, including pipes with a writer, must be saved to a regular file first.
+
+### Patch Changes
+
+- 4bd669c: Show an open checkpoint's declared schema in workflow status views.
+  Record it with the question and include it in both text and JSON output, without validating checkpoint answers against it.
+- 4b75e8b: Refuse simulation results files that are not valid UTF-8 instead of silently replacing their bytes.
+  The refusal names the handler file and asks for UTF-8 text before any simulation runs.
+- Updated dependencies [4bd669c]
+- Updated dependencies [1f4700a]
+- Updated dependencies [1fec76f]
+  - @cotal-ai/core@0.152.0
+  - @cotal-ai/workspace@0.152.0
+  - @cotal-ai/lang@0.152.0
+
+## 0.151.3
+
+### Patch Changes
+
+- Updated dependencies [6b64880]
+- Updated dependencies [35ddf95]
+- Updated dependencies [c854313]
+- Updated dependencies [15b04d7]
+- Updated dependencies [97e0466]
+  - @cotal-ai/workspace@0.151.3
+  - @cotal-ai/core@0.151.3
+  - @cotal-ai/lang@0.151.3
+
+## 0.151.2
+
+### Patch Changes
+
+- Updated dependencies [0adb23c]
+  - @cotal-ai/workspace@0.151.2
+  - @cotal-ai/core@0.151.2
+  - @cotal-ai/lang@0.151.2
+
+## 0.151.1
+
+### Patch Changes
+
+- dd3d984: Hosted workflow answers from the same OS login and host on a static-auth mesh now record one operator.
+  
+  The run command's control instrument keeps that actor across commands. Each command still mints a fresh credential and lifecycle. The OS login is read only after a static-auth instrument mint is selected. Signed-in users, managed seats, explicit credentials, and open meshes do not use it.
+- Updated dependencies [dd3d984]
+- Updated dependencies [f84069e]
+  - @cotal-ai/workspace@0.151.1
+  - @cotal-ai/core@0.151.1
+  - @cotal-ai/lang@0.151.1
+
+## 0.151.0
+
+### Minor Changes
+
+- 87e1810: A migration commit ends pending orphan pauses before recording the migration.
+  
+  `MigrateOrphan` now includes its journal state, and callers supplying a `commitMigration` handler must provide `endPause` beside `discharge`. Pass the run's `MeshHandler` and journal entries so removed pending steps can release their timers and wait consumers. Missing cleanup custody or a failed cleanup refuses the commit before it records success. Settled orphans are not ended again.
+
+### Patch Changes
+
+- Updated dependencies [c986cc1]
+- Updated dependencies [dacb515]
+- Updated dependencies [143a69e]
+- Updated dependencies [38f5bb2]
+- Updated dependencies [7350dcc]
+- Updated dependencies [6e67bbf]
+- Updated dependencies [e7cb990]
+- Updated dependencies [6661f53]
+  - @cotal-ai/core@0.151.0
+  - @cotal-ai/workspace@0.151.0
+  - @cotal-ai/lang@0.151.0
+
+## 0.150.0
+
+### Patch Changes
+
+- Updated dependencies [8e2ba65]
+- Updated dependencies [8ff39d3]
+  - @cotal-ai/core@0.150.0
+  - @cotal-ai/lang@0.150.0
+  - @cotal-ai/workspace@0.150.0
+
+## 0.149.0
+
+### Patch Changes
+
+- 7068f2b: Batch workflow inventory record reads so a few hundred completed runs do not require separate reads for every record. Preserve dotted endpoint names, program validation, deleted-record handling and unreadable revocation reporting. Only list credentials gain the records Direct Get permission; single-run reads and checkpoint answers keep their existing permissions.
+- Updated dependencies [7068f2b]
+- Updated dependencies [2d497ad]
+- Updated dependencies [441ed3b]
+- Updated dependencies [dd76ef4]
+  - @cotal-ai/core@0.149.0
+  - @cotal-ai/workspace@0.149.0
+  - @cotal-ai/lang@0.149.0
+
+## 0.148.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.2
+  - @cotal-ai/lang@0.148.2
+  - @cotal-ai/workspace@0.148.2
+
+## 0.148.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.148.1
+  - @cotal-ai/lang@0.148.1
+  - @cotal-ai/workspace@0.148.1
+
+## 0.148.0
+
+### Patch Changes
+
+- Updated dependencies [c8cf718]
+  - @cotal-ai/core@0.148.0
+  - @cotal-ai/workspace@0.148.0
+  - @cotal-ai/lang@0.148.0
+
+## 0.147.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.8
+  - @cotal-ai/lang@0.147.8
+  - @cotal-ai/workspace@0.147.8
+
+## 0.147.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.7
+  - @cotal-ai/lang@0.147.7
+  - @cotal-ai/workspace@0.147.7
+
+## 0.147.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.6
+  - @cotal-ai/lang@0.147.6
+  - @cotal-ai/workspace@0.147.6
+
+## 0.147.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.5
+  - @cotal-ai/lang@0.147.5
+  - @cotal-ai/workspace@0.147.5
+
+## 0.147.4
+
+### Patch Changes
+
+- Updated dependencies [49e8694]
+  - @cotal-ai/core@0.147.4
+  - @cotal-ai/workspace@0.147.4
+  - @cotal-ai/lang@0.147.4
+
+## 0.147.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.3
+  - @cotal-ai/lang@0.147.3
+  - @cotal-ai/workspace@0.147.3
+
+## 0.147.2
+
+### Patch Changes
+
+- Updated dependencies [30d8538]
+  - @cotal-ai/core@0.147.2
+  - @cotal-ai/workspace@0.147.2
+  - @cotal-ai/lang@0.147.2
+
+## 0.147.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.147.1
+  - @cotal-ai/lang@0.147.1
+  - @cotal-ai/workspace@0.147.1
+
+## 0.147.0
+
+### Patch Changes
+
+- Updated dependencies [b8b0ff4]
+  - @cotal-ai/core@0.147.0
+  - @cotal-ai/workspace@0.147.0
+  - @cotal-ai/lang@0.147.0
+
+## 0.146.0
+
+### Patch Changes
+
+- Updated dependencies [d312807]
+- Updated dependencies [4536cfe]
+- Updated dependencies [6cd9b65]
+- Updated dependencies [e3cfcdb]
+  - @cotal-ai/workspace@0.146.0
+  - @cotal-ai/core@0.146.0
+  - @cotal-ai/lang@0.146.0
+
+## 0.145.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.145.1
+  - @cotal-ai/lang@0.145.1
+  - @cotal-ai/workspace@0.145.1
+
+## 0.145.0
+
+### Patch Changes
+
+- Updated dependencies [d7b0be0]
+  - @cotal-ai/core@0.145.0
+  - @cotal-ai/workspace@0.145.0
+  - @cotal-ai/lang@0.145.0
+
+## 0.144.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.144.0
+  - @cotal-ai/lang@0.144.0
+  - @cotal-ai/workspace@0.144.0
+
+## 0.143.0
+
+### Patch Changes
+
+- Updated dependencies [3651b42]
+  - @cotal-ai/core@0.143.0
+  - @cotal-ai/workspace@0.143.0
+  - @cotal-ai/lang@0.143.0
+
+## 0.142.0
+
+### Patch Changes
+
+- 32f93ed: Make `EndpointReply` a union on `ok`. Failed replies require an error; successful replies cannot carry one. TypeScript callers must construct the matching reply arm and narrow `ok` before using a required error. Interfaces that extended `EndpointReply` must use a type intersection instead.
+  
+  Keep acceptance data on local failed goal-follow results. The wire parser still rejects failed replies carrying data or missing their error. Narrowed readers no longer need fallback text for missing errors.
+- Updated dependencies [3ad82f7]
+- Updated dependencies [e16b8d9]
+- Updated dependencies [32f93ed]
+  - @cotal-ai/workspace@0.142.0
+  - @cotal-ai/core@0.142.0
+  - @cotal-ai/lang@0.142.0
+
+## 0.141.11
+
+### Patch Changes
+
+- d389b22: A pause-plane deadline is recognized by the NATS client's TimeoutError class, so an error that only carries that name is no longer retried and then failed as a late reply.
+- Updated dependencies [d389b22]
+- Updated dependencies [28b2628]
+  - @cotal-ai/core@0.141.11
+  - @cotal-ai/workspace@0.141.11
+  - @cotal-ai/lang@0.141.11
+
+## 0.141.10
+
+### Patch Changes
+
+- Updated dependencies [392b738]
+  - @cotal-ai/workspace@0.141.10
+  - @cotal-ai/core@0.141.10
+  - @cotal-ai/lang@0.141.10
+
+## 0.141.9
+
+### Patch Changes
+
+- Updated dependencies [8d5f0d5]
+- Updated dependencies [f6ec096]
+  - @cotal-ai/core@0.141.9
+  - @cotal-ai/workspace@0.141.9
+  - @cotal-ai/lang@0.141.9
+
+## 0.141.8
+
+### Patch Changes
+
+- Updated dependencies [29b229c]
+  - @cotal-ai/core@0.141.8
+  - @cotal-ai/workspace@0.141.8
+  - @cotal-ai/lang@0.141.8
+
+## 0.141.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.7
+  - @cotal-ai/lang@0.141.7
+  - @cotal-ai/workspace@0.141.7
+
+## 0.141.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.6
+  - @cotal-ai/lang@0.141.6
+  - @cotal-ai/workspace@0.141.6
+
+## 0.141.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.5
+  - @cotal-ai/lang@0.141.5
+  - @cotal-ai/workspace@0.141.5
+
+## 0.141.4
+
+### Patch Changes
+
+- Updated dependencies [d53d362]
+  - @cotal-ai/workspace@0.141.4
+  - @cotal-ai/core@0.141.4
+  - @cotal-ai/lang@0.141.4
+
+## 0.141.3
+
+### Patch Changes
+
+- Updated dependencies [a77ee62]
+  - @cotal-ai/core@0.141.3
+  - @cotal-ai/workspace@0.141.3
+  - @cotal-ai/lang@0.141.3
+
+## 0.141.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.2
+  - @cotal-ai/lang@0.141.2
+  - @cotal-ai/workspace@0.141.2
+
+## 0.141.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.141.1
+  - @cotal-ai/lang@0.141.1
+  - @cotal-ai/workspace@0.141.1
+
+## 0.141.0
+
+### Minor Changes
+
+- bacabd0: An agent can define its helper on the spawn itself. `cotal_spawn` takes a `persona` record (the persona prompt, role, model, variant, description, channels and capabilities) next to `name`, and the helper runs from a private snapshot of it. `persona.save: true` also writes a catalog copy under that name, owned by the spawner. A cotal-lang program does the same with `spawn({ name, prompt, ... }, opts)`, and the run journal records the definition and its digest, so a resume never submits another one. `cotal_persona` takes `capabilities` and says how a saved persona is removed.
+  
+  A helper never gets more than its spawner holds. On a static mesh every spawn is measured against the spawner's issued evidence: each channel, the role and each capability token it does not hold is refused by name, and a spawner whose evidence does not resolve hands on nothing. Operator commands and admin agents are exempt. A workflow run's spawns are bounded by what its starter held when the run was admitted, on its host and on any other static manager its spawn reaches, which reads the run's admission. A `cotal run start --local` run's helpers get only channels within the `--admit-read` and `--admit-publish` ceiling. The static agent mint now grants task-queue rows for each `role:<r>` capability, so a spawner hands on a role it was given either way. On a participant manager the issuing host makes the agent that asked for a helper its ledger parent, taking the caller from the spawn request it observed, and a run's helper is parented to the run's starter and also bounded by the grant its admission recorded. A run revoked mid-step starts no further helper, and a persona a run saves is owned by its starter. The loopback `verify-enrollment` door a host platform asks decides the same parent and bound and answers `parent`, and a retry of the same enrollment gets the same answer.
+  
+  A seat started by foreground `cotal spawn`, or a bare `cotal join`, on a static mesh is now issued against its own lifecycle. Its credential has no expiry unless `--expires-in` or `--expires-at` is passed, is never renewed, and is retired when the seat leaves cleanly.
+  
+  Breaking: a static spawner that hands its helpers channels, capabilities or a role it does not hold is refused, an older issuing host refuses the new enrollment field, an older manager refuses a run's spawn, which now names its run, an older reader refuses an admission carrying `spawnExempt` or `delegation`, and an enrollment retry is refused when its read set is not its grant's, which is the case for a grant an older host wrote for a helper that named only a subscribe set. See UPGRADING.
+
+### Patch Changes
+
+- Updated dependencies [bacabd0]
+  - @cotal-ai/core@0.141.0
+  - @cotal-ai/lang@0.141.0
+  - @cotal-ai/workspace@0.141.0
+
+## 0.140.8
+
+### Patch Changes
+
+- Updated dependencies [e477c34]
+  - @cotal-ai/core@0.140.8
+  - @cotal-ai/workspace@0.140.8
+  - @cotal-ai/lang@0.140.8
+
+## 0.140.7
+
+### Patch Changes
+
+- Updated dependencies [ee13146]
+  - @cotal-ai/core@0.140.7
+  - @cotal-ai/workspace@0.140.7
+  - @cotal-ai/lang@0.140.7
+
+## 0.140.6
+
+### Patch Changes
+
+- Updated dependencies [b415c78]
+  - @cotal-ai/core@0.140.6
+  - @cotal-ai/workspace@0.140.6
+  - @cotal-ai/lang@0.140.6
+
+## 0.140.5
+
+### Patch Changes
+
+- Updated dependencies [bcdf7b6]
+  - @cotal-ai/core@0.140.5
+  - @cotal-ai/workspace@0.140.5
+  - @cotal-ai/lang@0.140.5
+
+## 0.140.4
+
+### Patch Changes
+
+- Updated dependencies [293f937]
+  - @cotal-ai/core@0.140.4
+  - @cotal-ai/workspace@0.140.4
+  - @cotal-ai/lang@0.140.4
+
+## 0.140.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.3
+  - @cotal-ai/lang@0.140.3
+  - @cotal-ai/workspace@0.140.3
+
+## 0.140.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.2
+  - @cotal-ai/lang@0.140.2
+  - @cotal-ai/workspace@0.140.2
+
+## 0.140.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.140.1
+  - @cotal-ai/lang@0.140.1
+  - @cotal-ai/workspace@0.140.1
+
+## 0.140.0
+
+### Patch Changes
+
+- Updated dependencies [485bbfe]
+- Updated dependencies [4da6cf5]
+  - @cotal-ai/core@0.140.0
+  - @cotal-ai/workspace@0.140.0
+  - @cotal-ai/lang@0.140.0
+
+## 0.139.1
+
+### Patch Changes
+
+- Updated dependencies [644f6eb]
+  - @cotal-ai/core@0.139.1
+  - @cotal-ai/workspace@0.139.1
+  - @cotal-ai/lang@0.139.1
+
+## 0.139.0
+
+### Patch Changes
+
+- Updated dependencies [c3d4af4]
+  - @cotal-ai/core@0.139.0
+  - @cotal-ai/workspace@0.139.0
+  - @cotal-ai/lang@0.139.0
+
+## 0.138.2
+
+### Patch Changes
+
+- Updated dependencies [a2fba68]
+  - @cotal-ai/workspace@0.138.2
+  - @cotal-ai/core@0.138.2
+  - @cotal-ai/lang@0.138.2
+
+## 0.138.1
+
+### Patch Changes
+
+- @cotal-ai/core@0.138.1
+  - @cotal-ai/lang@0.138.1
+  - @cotal-ai/workspace@0.138.1
+
+## 0.138.0
+
+### Patch Changes
+
+- Updated dependencies [534382c]
+- Updated dependencies [85f288b]
+- Updated dependencies [3473992]
+- Updated dependencies [789c904]
+  - @cotal-ai/core@0.138.0
+  - @cotal-ai/workspace@0.138.0
+  - @cotal-ai/lang@0.138.0
+
+## 0.137.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.137.0
+  - @cotal-ai/lang@0.137.0
+  - @cotal-ai/workspace@0.137.0
+
+## 0.136.8
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.8
+  - @cotal-ai/lang@0.136.8
+  - @cotal-ai/workspace@0.136.8
+
+## 0.136.7
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.7
+  - @cotal-ai/lang@0.136.7
+  - @cotal-ai/workspace@0.136.7
+
+## 0.136.6
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.6
+  - @cotal-ai/lang@0.136.6
+  - @cotal-ai/workspace@0.136.6
+
+## 0.136.5
+
+### Patch Changes
+
+- Updated dependencies [e8003ed]
+  - @cotal-ai/core@0.136.5
+  - @cotal-ai/workspace@0.136.5
+  - @cotal-ai/lang@0.136.5
+
+## 0.136.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.4
+  - @cotal-ai/lang@0.136.4
+  - @cotal-ai/workspace@0.136.4
+
+## 0.136.3
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.3
+  - @cotal-ai/lang@0.136.3
+  - @cotal-ai/workspace@0.136.3
+
+## 0.136.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.136.2
+  - @cotal-ai/lang@0.136.2
+  - @cotal-ai/workspace@0.136.2
+
+## 0.136.1
+
+### Patch Changes
+
+- Updated dependencies [102c2aa]
+  - @cotal-ai/lang@0.136.1
+  - @cotal-ai/core@0.136.1
+  - @cotal-ai/workspace@0.136.1
+
+## 0.136.0
+
+### Patch Changes
+
+- Updated dependencies [f5251ae]
+  - @cotal-ai/core@0.136.0
+  - @cotal-ai/workspace@0.136.0
+  - @cotal-ai/lang@0.136.0
+
+## 0.135.21
+
+### Patch Changes
+
+- Updated dependencies [a259571]
+  - @cotal-ai/core@0.135.21
+  - @cotal-ai/workspace@0.135.21
+  - @cotal-ai/lang@0.135.21
+
+## 0.135.20
+
+### Patch Changes
+
+- Updated dependencies [d90d949]
+  - @cotal-ai/lang@0.135.20
+  - @cotal-ai/core@0.135.20
+  - @cotal-ai/workspace@0.135.20
+
+## 0.135.19
+
+### Patch Changes
+
+- Updated dependencies [0fa57f9]
+  - @cotal-ai/lang@0.135.19
+  - @cotal-ai/core@0.135.19
+  - @cotal-ai/workspace@0.135.19
+
+## 0.135.18
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.18
+  - @cotal-ai/lang@0.135.18
+  - @cotal-ai/workspace@0.135.18
+
+## 0.135.17
+
+### Patch Changes
+
+- 55e8d0b: A `cotal run` from a managed seat with no `--space` now probes the recorded brokers once. Before, the seat resolve swept the registry, and when it did not apply (an open mesh, or a seat whose own space was down) the operator resolve swept it again, so each record that did not answer was probed twice and the two resolves could judge different registry states. `resolveSeatControlTarget` now reads a sweep its caller hands in, and the new `sweepForSeatResolve` takes that sweep once when the seat resolve would.
+- Updated dependencies [55e8d0b]
+  - @cotal-ai/workspace@0.135.17
+  - @cotal-ai/core@0.135.17
+  - @cotal-ai/lang@0.135.17
+
+## 0.135.16
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.16
+  - @cotal-ai/lang@0.135.16
+  - @cotal-ai/workspace@0.135.16
+
+## 0.135.15
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.15
+  - @cotal-ai/lang@0.135.15
+  - @cotal-ai/workspace@0.135.15
+
+## 0.135.14
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.14
+  - @cotal-ai/lang@0.135.14
+  - @cotal-ai/workspace@0.135.14
+
+## 0.135.13
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.13
+  - @cotal-ai/lang@0.135.13
+  - @cotal-ai/workspace@0.135.13
+
+## 0.135.12
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.12
+  - @cotal-ai/lang@0.135.12
+  - @cotal-ai/workspace@0.135.12
+
+## 0.135.11
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.11
+  - @cotal-ai/lang@0.135.11
+  - @cotal-ai/workspace@0.135.11
+
+## 0.135.10
+
+### Patch Changes
+
+- Updated dependencies [985dbc5]
+  - @cotal-ai/core@0.135.10
+  - @cotal-ai/workspace@0.135.10
+  - @cotal-ai/lang@0.135.10
+
+## 0.135.9
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.9
+  - @cotal-ai/lang@0.135.9
+  - @cotal-ai/workspace@0.135.9
+
+## 0.135.8
+
+### Patch Changes
+
+- Updated dependencies [0c09e47]
+  - @cotal-ai/core@0.135.8
+  - @cotal-ai/workspace@0.135.8
+  - @cotal-ai/lang@0.135.8
+
+## 0.135.7
+
+### Patch Changes
+
+- Updated dependencies [bb263b1]
+  - @cotal-ai/core@0.135.7
+  - @cotal-ai/workspace@0.135.7
+  - @cotal-ai/lang@0.135.7
+
+## 0.135.6
+
+### Patch Changes
+
+- Updated dependencies [65311dd]
+  - @cotal-ai/core@0.135.6
+  - @cotal-ai/workspace@0.135.6
+  - @cotal-ai/lang@0.135.6
+
+## 0.135.5
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.5
+  - @cotal-ai/lang@0.135.5
+  - @cotal-ai/workspace@0.135.5
+
+## 0.135.4
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.4
+  - @cotal-ai/lang@0.135.4
+  - @cotal-ai/workspace@0.135.4
+
+## 0.135.3
+
+### Patch Changes
+
+- acf4453: The full `cotal run` list answers from a manager that reaches its broker over a slow link. Before, the manager read every run's record, revocation marker and program one broker round trip at a time. With about 90 runs and 60 ms round trips, that ran past the 25 s budget, and the list failed with `deadline-exceeded`. Rows are now read eight at a time, and each run's marker and program are read together. The same list answers in about 9 s and carries the same rows.
+- @cotal-ai/core@0.135.3
+  - @cotal-ai/lang@0.135.3
+  - @cotal-ai/workspace@0.135.3
+
+## 0.135.2
+
+### Patch Changes
+
+- @cotal-ai/core@0.135.2
+  - @cotal-ai/lang@0.135.2
+  - @cotal-ai/workspace@0.135.2
+
+## 0.135.1
+
+### Patch Changes
+
+- Updated dependencies [b3b4bf1]
+  - @cotal-ai/workspace@0.135.1
+  - @cotal-ai/core@0.135.1
+  - @cotal-ai/lang@0.135.1
+
+## 0.135.0
+
+### Patch Changes
+
+- Updated dependencies [a35249d]
+- Updated dependencies [21f937e]
+- Updated dependencies [67e439b]
+- Updated dependencies [e56dc31]
+- Updated dependencies [1d8d6c5]
+- Updated dependencies [a1e7bc6]
+- Updated dependencies [b1462d3]
+- Updated dependencies [e7fbeb8]
+  - @cotal-ai/core@0.135.0
+  - @cotal-ai/workspace@0.135.0
+  - @cotal-ai/lang@0.135.0
+
 ## 0.134.0
 
 ### Patch Changes

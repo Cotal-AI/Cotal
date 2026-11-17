@@ -710,8 +710,8 @@
     {
       "name": "the host reaches for a default worker entry when none is given",
       "file": "packages/lang/src/engine/worker.ts",
-      "find": "      : new Worker(options.entry, { workerData: { request, stop } });",
-      "replace": "      : new Worker(options.entry ?? new URL(\"./worker-entry.js\", import.meta.url), { workerData: { request, stop } });",
+      "find": "      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion } });",
+      "replace": "      : new Worker(options.entry ?? new URL(\"./worker-entry.js\", import.meta.url), { workerData: { request, stop, hostPackageVersion } });",
       "expectRed": "a request with NO entry starts no thread at all",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "a request with NO entry starts no thread at all",

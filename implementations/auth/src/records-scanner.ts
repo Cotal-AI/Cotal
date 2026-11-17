@@ -54,6 +54,7 @@ import { openAuthorityClient, type AuthorityClient } from "./authority-client.js
 import { drainLiteralConsumer, type LiteralConsumerProbe } from "./literal-consumer.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The ONE literal consumer name every obligation scan over the records stream reuses (the grant
  *  pins exactly this token; separate from the auth-ledger scanner's — fact-5, one name per stream).
@@ -89,7 +90,7 @@ function assertObligFilter(filter: string): string {
  *  {@link enumerateObligationRows}) can treat a DEL/PURGE marker as corruption. SEAM NOTE: consumed
  *  ONLY by that parse layer, which turns each entry into a closed parsed obligation row BEFORE
  *  anything leaves; it is never placed on a barrier/mediator dependency (those receive parsed rows). */
-export interface RawRecordsEntry {
+interface RawRecordsEntry {
   key: string;
   data: Uint8Array;
   seq: number;
@@ -145,7 +146,7 @@ export interface RecordsScannerCandidate {
 export async function openRecordsScannerCandidate(opts: {
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
   /** SMOKE-ONLY scanner observation hooks. Production leaves this absent. */
@@ -190,7 +191,7 @@ export function makeRecordsScannerOverConnection(nc: NatsConnection, space: stri
 /** SMOKE-ONLY probes. Never set in production. `afterCreate` and `afterFirstFetch` are the
  *  obligation scan's two race windows; the goal-index pair are the same two windows of the manager
  *  goal-index scan. */
-export interface RecordsScannerProbe extends LiteralConsumerProbe {
+interface RecordsScannerProbe extends LiteralConsumerProbe {
   afterManagerGoalIndexCreate?: () => Promise<void>;
   afterManagerGoalIndexFirstFetch?: () => Promise<void>;
 }
@@ -224,6 +225,8 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
     const out: GoalIndexEntry[] = [];
     for (const [subject, row] of latest) {
       const key = subject.slice(keyPrefixLen);
+      // clearGoalIndex deletes settled or withdrawn entries; only live goals need reconciliation.
+      if (row.op === "DEL") continue;
       if (row.op !== undefined)
         throw new EpEnvelopeError("failed-precondition", `manager goal-index entry ${key} carries a ${row.op} marker; a deletion is never a live index row`);
       let raw: unknown;

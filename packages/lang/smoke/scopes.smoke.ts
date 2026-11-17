@@ -685,6 +685,39 @@ log(r.index);
   ok("and the race resolves as the live run did", JSON.stringify(logged) === '[["reached"],["fast"]]', logged);
 }
 
+{
+  // A scope that dispatches is refused inside `once` (L4028) by its `dispatches` trait, before its
+  // entry begins. The body arrives through a parameter, so the validator's L2033 cannot see it and the
+  // run's own refusal is what this cell grades; the validator control comes first.
+  const IN_ONCE = `
+const a = await spawn("a", { name: "a" });
+async function inside(body) {
+  return await once(body, { name: "o" });
+}
+await inside(async () => await conclave([a], async (ch) => 1, { name: "c" }));
+`;
+  let staticError: unknown;
+  try {
+    validate(IN_ONCE);
+  } catch (e) {
+    staticError = e;
+  }
+  ok("a conclave reached inside once through a parameter passes the validator", staticError === undefined,
+    String(staticError).slice(0, 120));
+  const { handler, calls } = watching(new SimHandler({}));
+  const j = new Journal({ run: "c-once" });
+  let caught: unknown;
+  try {
+    await run(IN_ONCE, { runId: "c-once", journal: j, handler });
+  } catch (e) {
+    caught = e;
+  }
+  ok("and the run refuses it with L4028", (caught as { code?: string })?.code === "L4028", String(caught).slice(0, 120));
+  ok("before its entry begins, so the room is never opened",
+    calls.length === 0 && !j.entries().some((e) => e.kind === "conclave"),
+    { calls, entries: j.entries().map((e) => e.kind) });
+}
+
 // ---- 7) a race arm that FAILS is still a settle ------------------------------------------------
 
 {
@@ -1348,6 +1381,92 @@ log("win", r.index, r.value);
   ok("(8) and the other arm's entry settles ok, not cancelled",
     other !== undefined && other.state === "settled" && (other as { status?: string }).status === "ok",
     other === undefined ? "no other-arm entry" : { state: other.state, status: (other as { status?: string }).status });
+}
+
+// #3224: a scope's value is the frozen copy its record carries, live as on resume. Freezing the
+// value in place froze a record a branch returned from OUTSIDE the scope for the rest of the live
+// run, while a resume, which never runs the branch, left it writable: a write after the scope read
+// L2031 live and succeeded on resume, and the effect depending on it diverged (L5001).
+{
+  const P = `
+const a = await spawn("a")
+const rec = { n: 1 }
+const r = await parallel({ x: async () => rec }, { name: "p" })
+let out = "unset"
+try { rec.n = 2; out = "wrote" } catch (w) { out = w.code === "L2031" ? "frozen" : "threw" }
+let viaResult = "unset"
+try { r.x.n = 3; viaResult = "wrote" } catch (w) { viaResult = w.code === "L2031" ? "frozen" : "threw" }
+await notify([a], { decision: "d", outcome: out })
+log("outer", out, viaResult)
+`;
+  const runId = "r-scope-copy";
+  const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+  const j = new Journal({ run: runId });
+  logged.length = 0;
+  await run(P, { runId, pins, journal: j, handler: new SimHandler({}), onLog: sink });
+  const live = logged.find((l) => l[0] === "outer");
+  ok("a record a branch returns from outside the scope stays writable after it, live",
+    live?.[1] === "wrote", live);
+  ok("while the scope's own value is still frozen, live", live?.[2] === "frozen", live);
+  for (const [form, entries] of [["as recorded", j.entries()], ["JSON round-tripped", JSON.parse(JSON.stringify(j.entries())) as JournalEntry[]]] as const) {
+    logged.length = 0;
+    let threw: unknown;
+    try {
+      await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: new SimHandler({}), onLog: sink });
+    } catch (e) { threw = e; }
+    const replayed = logged.find((l) => l[0] === "outer");
+    ok(`and the resume of unchanged source (entries ${form}) completes, reading the same`,
+      threw === undefined && JSON.stringify(replayed) === JSON.stringify(live),
+      { threw: (threw as Error)?.message?.slice(0, 120), replayed, live });
+  }
+}
+
+// #3215: an `Error` that fails a scope is caught as `{ code: "L4000", kind: "host" }` live, so the
+// record carries that kind and a resume binds the same. Recorded as `scope-fault`, the resume bound
+// a different kind and the `notify` carrying it diverged (L5001), for a refused branch value and for
+// a plain throw from the scope's own dispatch alike.
+{
+  const caughtKind = (scope: string): string => `
+const a = await spawn("a")
+const b = await spawn("b")
+let seen = null
+try { await ${scope} } catch (e) { seen = e }
+log("caught", seen)
+await notify([a], { decision: "d", outcome: seen.kind })
+`;
+  const plainThrow = (): EffectHandler => {
+    const h = Object.create(new SimHandler({})) as EffectHandler;
+    h.openConclave = async () => { throw new Error("plain handler boom"); };
+    return h;
+  };
+  const cases = [
+    ["a branch value the crossing rule refuses", caughtKind('parallel({ x: async () => () => 1 }, { name: "p" })'), () => new SimHandler({})],
+    ["a plain throw from the scope's own dispatch", caughtKind('conclave([a, b], () => 1, { name: "c" })'), plainThrow],
+  ] as const;
+  for (const [name, P, handler] of cases) {
+    const runId = "r-scope-host";
+    const pins = resolvePins({ runId }, 0, WALKER_LANGUAGE_VERSION);
+    const j = new Journal({ run: runId });
+    logged.length = 0;
+    await run(P, { runId, pins, journal: j, handler: handler(), onLog: sink });
+    const live = logged.find((l) => l[0] === "caught");
+    const scope = j.entries().find((e) => e.kind === "parallel" || e.kind === "conclave");
+    ok(`${name}: the live catch binds L4000 host, and the scope records that kind`,
+      (live?.[1] as { kind?: string })?.kind === "host" && (live?.[1] as { code?: string })?.code === "L4000"
+        && scope?.error?.code === "L4000" && scope?.error?.kind === "host",
+      { live, recorded: scope?.error });
+    for (const [form, entries] of [["as recorded", j.entries()], ["JSON round-tripped", JSON.parse(JSON.stringify(j.entries())) as JournalEntry[]]] as const) {
+      logged.length = 0;
+      let threw: unknown;
+      try {
+        await resume(P, new Journal({ run: runId, entries }), { runId, pins, handler: handler(), onLog: sink });
+      } catch (e) { threw = e; }
+      const replayed = logged.find((l) => l[0] === "caught");
+      ok(`${name}: the resume of unchanged source (entries ${form}) binds the same and completes`,
+        threw === undefined && JSON.stringify(replayed) === JSON.stringify(live),
+        { threw: (threw as Error)?.message?.slice(0, 120), replayed, live });
+    }
+  }
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);

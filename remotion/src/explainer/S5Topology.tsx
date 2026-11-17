@@ -132,37 +132,39 @@ export const S5Topology: React.FC = () => {
   const e_bc = edge(bob, carol);
   const e_cd = edge(carol, dave);
   const e_da = edge(dave, alice);
-  const p1Paths = [e_ab.d, e_bc.d, e_cd.d, e_da.d];
   // two beams travel the ring (ab, cd) to show it working
   const t_p1a = prog(frame, 6, 26);
   const t_p1b = prog(frame, 12, 32);
-  const p1Glow = [arrival(frame, 6, 26), 0, arrival(frame, 12, 32), 0].map((g) => g * s1);
+  const p1Wires = [
+    { d: e_ab.d, glow: arrival(frame, 6, 26) * s1 },
+    { d: e_bc.d, glow: 0 },
+    { d: e_cd.d, glow: arrival(frame, 12, 32) * s1 },
+    { d: e_da.d, glow: 0 },
+  ];
 
   // --- phase 2: supervised — manager (alice) down to each of the row ---------
   const e_a_b = edge(alice, bob);
   const e_a_c = edge(alice, carol);
   const e_a_d = edge(alice, dave);
-  const p2Paths = [e_a_b.d, e_a_c.d, e_a_d.d];
   // staggered down-beams
   const t_p2 = [prog(frame, 48, 66), prog(frame, 54, 72), prog(frame, 60, 76)];
-  const p2Glow = [
-    arrival(frame, 48, 66),
-    arrival(frame, 54, 72),
-    arrival(frame, 60, 76),
-  ].map((g) => g * s2);
+  const p2Wires = [
+    { d: e_a_b.d, glow: arrival(frame, 48, 66) * s2 },
+    { d: e_a_c.d, glow: arrival(frame, 54, 72) * s2 },
+    { d: e_a_d.d, glow: arrival(frame, 60, 76) * s2 },
+  ];
 
   // --- phase 3: hierarchical — alice->bob, bob->carol, bob->dave -------------
   const h_ab = edge(alice, bob);
   const h_bc = edge(bob, carol);
   const h_bd = edge(bob, dave);
-  const p3Paths = [h_ab.d, h_bc.d, h_bd.d];
   // beam flows down the chain: root->middle, then middle->each leaf
   const t_p3 = [prog(frame, 84, 98), prog(frame, 98, 110), prog(frame, 102, 113)];
-  const p3Glow = [
-    arrival(frame, 84, 98),
-    arrival(frame, 98, 110),
-    arrival(frame, 102, 113),
-  ].map((g) => g * s3);
+  const p3Wires = [
+    { d: h_ab.d, glow: arrival(frame, 84, 98) * s3 },
+    { d: h_bc.d, glow: arrival(frame, 98, 110) * s3 },
+    { d: h_bd.d, glow: arrival(frame, 102, 113) * s3 },
+  ];
 
   // --- phase 4: hybrid — manager alice over bob/carol; bob-carol peer; dave --
   const y_ab = edge(alice, bob);
@@ -170,17 +172,16 @@ export const S5Topology: React.FC = () => {
   const y_ad = edge(alice, dave);
   const y_bd = edge(bob, dave, 26); // lateral peer link (bowed)
   const y_cd = edge(carol, dave, -26); // lateral peer link (bowed)
-  const p4Paths = [y_ab.d, y_ac.d, y_ad.d, y_bd.d, y_cd.d];
   // a managed beam down + a lateral peer beam, to show the mix working
   const t_p4mgr = prog(frame, 122, 138);
   const t_p4lat = prog(frame, 130, 146);
-  const p4Glow = [
-    arrival(frame, 122, 138),
-    arrival(frame, 122, 138) * 0.6,
-    0,
-    arrival(frame, 130, 146),
-    arrival(frame, 130, 146) * 0.7,
-  ].map((g) => g * s4);
+  const p4Wires = [
+    { d: y_ab.d, glow: arrival(frame, 122, 138) * s4 },
+    { d: y_ac.d, glow: (arrival(frame, 122, 138) * 0.6) * s4 },
+    { d: y_ad.d, glow: 0 },
+    { d: y_bd.d, glow: arrival(frame, 130, 146) * s4 },
+    { d: y_cd.d, glow: (arrival(frame, 130, 146) * 0.7) * s4 },
+  ];
 
   // --- per-agent flash: max of any arriving beam touching that node ----------
   const aliceFlash = Math.max(
@@ -229,19 +230,19 @@ export const S5Topology: React.FC = () => {
       <div style={{ position: "absolute", inset: 0, opacity: rootOpacity }}>
         {/* phase 1 wires: peer-to-peer */}
         <div style={{ opacity: s1 }}>
-          <WireLines paths={p1Paths} glow={p1Glow} />
+          <WireLines wires={p1Wires} />
         </div>
         {/* phase 2 wires: supervised */}
         <div style={{ opacity: s2 }}>
-          <WireLines paths={p2Paths} glow={p2Glow} />
+          <WireLines wires={p2Wires} />
         </div>
         {/* phase 3 wires: hierarchical */}
         <div style={{ opacity: s3 }}>
-          <WireLines paths={p3Paths} glow={p3Glow} />
+          <WireLines wires={p3Wires} />
         </div>
         {/* phase 4 wires: hybrid */}
         <div style={{ opacity: s4 }}>
-          <WireLines paths={p4Paths} glow={p4Glow} />
+          <WireLines wires={p4Wires} />
         </div>
 
         {/* agents (same four, gliding between layouts) */}

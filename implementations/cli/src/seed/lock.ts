@@ -102,8 +102,8 @@ export function clearCursor(): void {
 /**
  * A seed child's liveness marker. The PARENT records `pending` BEFORE it spawns (so the window never
  * opens ownerless); the CHILD upgrades it to `live` with its own PID + start token as its first act;
- * the parent clears it after the child exits. A `pending` marker whose parent has died is the ambiguous
- * window — the child may or may not have started — and is resolved fail-loud, never by guessing.
+ * the parent clears it after the child exits. The reconcile lock proves pending custody. After
+ * that lock is gone, a short publication grace lets an already-authenticated child publish live.
  */
 export type ChildMarker =
   | { readonly state: "pending"; readonly parentPid: number; readonly nonce: string; readonly ts: number }
@@ -117,6 +117,9 @@ export function writePendingChildMarker(nonce: string): void {
 
 /** Child: upgrade the parent's pending marker to a live one carrying this child's identity. */
 export function markSeedChildLive(nonce: string, parentPid: number): void {
+  const pending = readJsonFile<ChildMarker>(reconcileChildPath());
+  if (pending?.state !== "pending" || pending.nonce !== nonce || pending.parentPid !== parentPid)
+    throw new Error("the connector seed pending marker was cleared or replaced before child publication");
   writeJsonAtomic(reconcileChildPath(), {
     state: "live",
     childPid: process.pid,
@@ -133,32 +136,38 @@ export function clearChildMarker(): void {
 
 export type SeedChildStatus =
   | { readonly kind: "none" }
+  | { readonly kind: "stale" }
   | { readonly kind: "live"; readonly pid: number }
   | { readonly kind: "ambiguous"; readonly path: string };
 
-/** The state of any recorded seed child, for the orphan-vs-repair decision. A `live` child (its parent
- *  SIGKILL'd mid-install → orphan) must not be raced. A `pending` marker whose parent is gone, or a
- *  corrupt marker, is `ambiguous` (cannot tell "never spawned" from "child delayed") and is resolved
- *  fail-loud. A dead/recycled child is `none` (safe to proceed). */
+/** Pending custody follows the process-pinned reconcile lock, including for released markers.
+ * After custody ends, wait out the publication grace and reread in case the child published live. */
 export function seedChildStatus(): SeedChildStatus {
   const path = reconcileChildPath();
   let marker: ChildMarker | undefined;
   try {
     marker = readJsonFile<ChildMarker>(path);
   } catch {
-    return { kind: "ambiguous", path }; // corrupt marker — never silently ignore
+    return { kind: "ambiguous", path };
   }
   if (!marker) return { kind: "none" };
+  if (!Number.isInteger(marker.parentPid) || marker.parentPid <= 0 ||
+      typeof marker.nonce !== "string" || !marker.nonce) return { kind: "ambiguous", path };
   if (marker.state === "live") {
-    if (typeof marker.childPid !== "number") return { kind: "ambiguous", path };
+    if (!Number.isInteger(marker.childPid) || marker.childPid <= 0) return { kind: "ambiguous", path };
     return pidAliveMatching(marker.childPid, marker.childStart) ? { kind: "live", pid: marker.childPid } : { kind: "none" };
   }
-  if (marker.state === "pending" && typeof marker.parentPid === "number") {
-    // Parent still alive ⇒ a reconcile is starting (the caller waits on the lock); parent gone ⇒ the
-    // ambiguous SIGKILL/delayed-start window.
-    return pidAliveMatching(marker.parentPid, undefined) ? { kind: "live", pid: marker.parentPid } : { kind: "ambiguous", path };
+  if (marker.state !== "pending" || !Number.isFinite(marker.ts) || marker.ts < 0)
+    return { kind: "ambiguous", path };
+  const lock = inspectLock(reconcileLockPath());
+  if (lock.state === "active" && lock.owner.pid === marker.parentPid && lock.owner.nonce === marker.nonce)
+    return { kind: "live", pid: marker.parentPid };
+  const remaining = Math.min(10000, marker.ts + 10000 - Date.now());
+  if (remaining > 0) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, remaining);
+    return seedChildStatus();
   }
-  return { kind: "ambiguous", path };
+  return { kind: "stale" };
 }
 
 function pidAliveMatching(pid: number, start: string | undefined): boolean {

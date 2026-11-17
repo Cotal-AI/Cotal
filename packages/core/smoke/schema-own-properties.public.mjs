@@ -25,7 +25,7 @@ const receipt = {
   publicEntry: import.meta.resolve('@cotal-ai/core'),
   corpusSha256: createHash('sha256').update(bytes).digest('hex'),
   assertions: [], cells: [], observations: [], ordinary: [], skips: [], setupErrors: [],
-  qualification: 'Partial own-member repair only. Full normative gate stays red until all twenty are repaired.',
+  qualification: 'All twenty retained normative cases and boundary controls use the shipped public compiler.',
 };
 const clone = value => JSON.parse(JSON.stringify(value));
 function errorInfo(error) {
@@ -110,8 +110,8 @@ control('ordinary errors and boundary behavior', () => {
     check('controls', `ordinary verdict ${json}`, actual, expected);
     receipt.ordinary.push({ json, actual, errors: clone(compiled.validate.errors ?? null) });
   }
-  check('controls', 'genuine Ajv schema metadata', Object.hasOwn(compiled.validate, 'schema'), true);
-  check('controls', 'genuine Ajv schemaEnv metadata', Object.hasOwn(compiled.validate, 'schemaEnv'), true);
+  check('controls', 'backend-neutral schema metadata', Object.hasOwn(compiled.validate, 'schema'), true);
+  check('controls', 'no fabricated Ajv schemaEnv metadata', Object.hasOwn(compiled.validate, 'schemaEnv'), false);
   for (const [name, code, invoke] of [
     ['args', 'bad-request', () => Core.assertArgsValid(compiled.validate, { value: 5 })],
     ['output', 'internal', () => Core.assertOutputValid(compiled.validate, { value: 5 })],

@@ -71,7 +71,14 @@ type UngatedExemption = { reason: string; recheckBy: string };
 // manifest suite does.
 // 16 → 17 on 2026-11-01: the auth-oracle-order suite takes an installed npm prefix and an evidence
 // directory as arguments, which no CI job supplies.
-const EXPECTED_EXEMPTIONS = 17;
+// The personal Codex native suite also needs an installed Codex CLI; its model is local and scripted.
+// The personal Codex local-mesh suite needs the same Codex CLI.
+// 20 → 21 on 2026-11-13: the deleted-manager-entry fixture runs a self-contained installed cotal-ai
+// directory and an approved nats-server named by two variables, which no CI job supplies.
+// 21 → 22 on 2026-11-17: the seed-child suite takes two packed closures and a new private root as
+// arguments, which no CI job supplies.
+// 22 → 23 on 2026-11-17: the retained-reads suite takes three packed closures and a new private root.
+const EXPECTED_EXEMPTIONS = 23;
 const standing = (reason: string): UngatedExemption => ({ reason, recheckBy: "2026-11-30" });
 /** Each BROKEN backup entry below names its issue, commit and failed assertion, with a review
  *  date tied to that investigated debt. Premise
@@ -86,10 +93,16 @@ const UNGATED: Record<string, UngatedExemption> = {
   "smoke:orca:live": standing("drives the public orca CLI"),
   "smoke:orca-e2e:live": standing("drives the public orca CLI"), "smoke:pi": standing("needs a pi install"), "smoke:codex-live": standing("needs a logged-in codex CLI"),
   "smoke:codex-tui-live": standing("needs a codex TUI session"),
+  "smoke:personal-codex-native:live": standing("needs an installed codex CLI with native plugins and thread queue APIs; uses an isolated home and a local scripted model"),
+  "smoke:personal-codex-local:live": standing("needs an installed codex CLI with native plugins and thread queue APIs; uses an isolated home, local meshes and a local scripted model"),
   "smoke:jcode-live": standing("needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)"),
   "smoke:down-manifest-usermode:live": standing("needs a claude CLI on PATH to boot a real connector child"),
   "smoke:claude-plugin-refresh:live": standing("drives the real claude CLI on PATH against a scratch Claude config"),
+  "smoke:claude-registration-home:live": standing("drives the real claude CLI against isolated profiles and Cotal homes"),
   "smoke:auth-oracle-order:live": standing("takes an installed npm prefix and a new evidence directory as arguments"),
+  "smoke:seed-child:live": standing("takes a source pack, a target pack and a new private root as arguments"),
+  "smoke:retained-reads:live": standing("takes three normal packed closures and a new private root as arguments"),
+  "smoke:deleted-manager-entry": standing("needs an installed cotal-ai directory and an approved nats-server (COTAL_DELETED_MANAGER_INSTALL, COTAL_DELETED_MANAGER_BROKER)"),
   "smoke:backup-usermode:live": brokenExemption("BROKEN: red; cause unconfirmed (measured on a host with a live stack); #1285; already-red so it cannot enter CI"),
   // These four are #643's to fix (backup live coverage that can fail), not an inventory mystery.
   "smoke:backup-perms:live": brokenExemption("BROKEN: red on CI at 2850a5a2e (backup-live.smoke.ts:125 zero-delivery New consumer preserves its creation frontier, 1 !== 2); #643; already-red so it cannot enter CI"),

@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, readFileSync, rmSync } from "node:fs";
-import { relative } from "node:path";
+import { closeSync, fstatSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_SERVER, openPrivateAppend, writePrivateRecord } from "@cotal-ai/core";
 import { daemonArgv } from "./self-exec.js";
+import { entryScript } from "../seed/paths.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
@@ -18,6 +19,7 @@ import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
 import { seedBeforeLaunch } from "../seed/launch.js";
+import { lastLoggedLine, type LogStart } from "./private-log.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -137,18 +139,121 @@ export function managerUp(space: string = folderSpace(), root: string = cotalRoo
   return managerLiveness(space, root) === "alive";
 }
 
-/** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
- *  records its pid under whatever folder it was started from, so no one root's record can rule it
- *  out; the process table can. One whose argv names no space serves what its folder or environment
- *  selects, so it counts, and a process table that cannot be listed proves nothing. */
-export function supervisorMayServe(space: string): boolean {
-  const ps = spawnSync("ps", ["-A", "-ww", "-o", "args="], { encoding: "utf8" });
-  if (ps.error || ps.status !== 0) return true;
-  return ps.stdout.split("\n").some((command) => {
-    if (!commandIsCotalSupervisor(command)) return false;
+/** Whether a live `cotal supervise` process that loaded this install may be serving `space`.
+ *  A supervisor records its pid under whatever folder it was started from, so no one root's record
+ *  can rule it out; the process table can. Replacing this install interrupts a supervisor only when
+ *  one of its arguments resolves to this process's own CLI entry. A node binary, a loader, and any
+ *  other absolute argument are not that entry. A foreign user counts only with a proven same entry.
+ *  A same-user unresolved entry refuses unless a different mount namespace proves it foreign.
+ *  One whose argv names no space serves what its
+ *  environment or folder selects: a service unit sets `COTAL_SPACE` and passes no `--space`, so that
+ *  variable names the space it serves, and one it reads for another space is not a manager of this one.
+ *  A supervisor whose environment cannot be read or names no space counts, and a process table that
+ *  cannot be listed proves nothing. */
+export function supervisorMayServe(space: string, installedEntry?: string): boolean {
+  const ps = spawnSync("ps", ["-A", "-ww", "-o", "pid=,uid=,args="], { encoding: "utf8" });
+  if (ps.error || ps.status !== 0) throw new Error("local Manager continuity cannot be established: the process table could not be listed; restore process inspection before retrying");
+  const entry = installedEntry === undefined ? thisCliEntry() : realpathSync(installedEntry);
+  return ps.stdout.split("\n").some((line) => {
+    const row = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!row || !commandIsCotalSupervisor(row[3]!)) return false;
+    const pid = Number(row[1]), uid = Number(row[2]), command = row[3]!;
     const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
-    return named === undefined || named === space;
+    if (named !== undefined && named !== space) return false;
+    let argv: string | string[] = command;
+    if (process.platform === "linux") {
+      // ps flattens argv, so a path containing spaces must come from the kernel's boundaries.
+      try { argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"); }
+      catch { argv = []; }
+    }
+    const scope = supervisorInstallScope(pid, uid, argv, entry);
+    if (scope === "foreign") return false;
+    const selected = named ?? environmentSpace(pid);
+    if (selected !== undefined && selected !== space) return false;
+    if (scope === "unknown") throw new Error(`local Manager continuity cannot be established: supervise pid ${pid}, user ${uid} has no proven CLI entry for this installation; inspect this process, then stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; no Manager instance was guessed`);
+    return true;
   });
+}
+
+/** This process's CLI entry, or undefined when that file cannot be resolved. Without it the scan
+ *  cannot tell installs apart, so every supervisor of the space still counts. */
+function thisCliEntry(): string | undefined {
+  try {
+    return realpathSync(entryScript());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Attribute a supervisor using its absolute entry, numeric owner and mount namespace.
+ * A different namespace alone cannot exclude a bind-mounted installation. */
+export function supervisorInstallScope(pid: number, uid: number, command: string | readonly string[], entry: string | undefined): "local" | "foreign" | "unknown" {
+  let other = false;
+  for (const word of typeof command === "string" ? command.trim().split(/\s+/) : command) {
+    if (!isAbsolute(word)) continue;
+    let resolved: string;
+    try {
+      resolved = realpathSync(word);
+    } catch {
+      continue;
+    }
+    if (resolved === entry) return "local";
+    if (isCliEntry(resolved)) other = true;
+  }
+  // A sudo supervisor can load this user's installation. UID alone cannot exclude that case.
+  if (process.getuid && uid !== process.getuid()) return "foreign";
+  if (other) return "foreign";
+  if (process.platform === "linux") {
+    try {
+      if (readlinkSync(`/proc/${pid}/ns/mnt`) !== readlinkSync("/proc/self/ns/mnt")) return "foreign";
+    } catch { /* An unreadable namespace is not proof of another installation. */ }
+  }
+  return "unknown";
+}
+
+/** The kernel-reported effective UID, unlike proc directory ownership which changes with dumpability. */
+export function supervisorProcessUid(pid: number): number {
+  const value = /^Uid:\s+\d+\s+(\d+)\s+/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+  if (value === undefined) throw new Error(`cannot read numeric user for supervise pid ${pid}`);
+  return Number(value);
+}
+
+/** Whether `path` is a CLI entry file: `cotal.js` under a package declaring that bin, or `cotal.ts`
+ *  under the checkout package that ships `bin/cotal.ts`. A node binary and a loader are neither. */
+export function isCliEntry(path: string): boolean {
+  const name = basename(path);
+  if (name !== "cotal.js" && name !== "cotal.ts") return false;
+  for (let dir = dirname(path); ; dir = dirname(dir)) {
+    let pkg: { name?: unknown; bin?: { cotal?: unknown } | string };
+    try {
+      pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as typeof pkg;
+    } catch {
+      if (dirname(dir) === dir) return false;
+      continue;
+    }
+    if (name === "cotal.ts") {
+      if (pkg.name === "cotal-monorepo" && path === join(dir, "bin", "cotal.ts")) return true;
+      if (dirname(dir) === dir) return false;
+      continue;
+    }
+    const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.cotal;
+    return typeof bin === "string" && basename(bin) === name;
+  }
+}
+
+/** The `COTAL_SPACE` a process was started with, read from its environment; undefined when the
+ *  environment is unreadable (another user's process, or no procfs) or names no space. */
+function environmentSpace(pid: number): string | undefined {
+  let environ: string;
+  try {
+    environ = readFileSync(`/proc/${pid}/environ`, "latin1");
+  } catch {
+    return undefined;
+  }
+  for (const entry of environ.split("\0")) {
+    if (entry.startsWith("COTAL_SPACE=")) return entry.slice("COTAL_SPACE=".length) || undefined;
+  }
+  return undefined;
 }
 
 
@@ -196,6 +301,7 @@ export type ManagerStartOpts = {
 
 export function startManagerDetached(
   o: ManagerStartOpts = {},
+  onLogStart?: (start: LogStart) => void,
 ): number {
   const space = o.space ?? folderSpace();
   // BEFORE ANY RECORD OR LOG IS TOUCHED. `selfArgv` refuses when this process was not started from
@@ -240,8 +346,14 @@ export function startManagerDetached(
   ];
   // This is an INTERNAL child re-exec: the `up`/`spawn` that reached here already ran the first-run
   // connector seed, so the manager skips it on boot (a direct `cotal supervise` still seeds).
-  const child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
-  closeSync(fd);
+  let child: ReturnType<typeof spawn>;
+  try {
+    if (onLogStart) {
+      const info = fstatSync(fd);
+      onLogStart({ offset: info.size, dev: info.dev, ino: info.ino });
+    }
+    child = spawn(node, args, { detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" } });
+  } finally { closeSync(fd); }
   child.unref();
   // CANONICAL path, never a pre-upgrade one: a start that kept writing the root-scoped name would
   // keep minting the very records this change ends.
@@ -305,7 +417,7 @@ export function assertManagerRecordReplaceable(
  *  record publishes its own capability, which says nothing about the started process, so losing the
  *  record refuses. No deadline: the manager bounds its own boot waits (the delivery-admin one alone
  *  runs to a minute), so a deadline here could only misreport a slow boot. */
-async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { pid: number }): Promise<void> {
+async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { pid: number }, logStart?: LogStart): Promise<void> {
   const manager = `the manager started for space "${space}" (pid ${started.pid})`;
   if (!("token" in started))
     throw new Error(`cannot read the start identity of ${manager}, so its readiness cannot be told apart from another manager's. Its log is ${managerLogPath(space)}`);
@@ -317,8 +429,12 @@ async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { 
       // Not published for the started process yet, or the record names another one: decided below.
     }
     const identity = assertRecordIdentity(started).kind;
-    if (identity === "gone" || identity === "mismatch")
-      throw new Error(`${manager} exited before it came up. It logged its reason to ${managerLogPath(space)}`);
+    if (identity === "gone" || identity === "mismatch") {
+      const recorded = parsePid(readPidfile(PID_PATH(space)) ?? "");
+      const reason = logStart && (recorded === undefined || recorded === started.pid)
+        ? lastLoggedLine(managerLogPath(space), logStart.offset, logStart) : undefined;
+      throw new Error(`${manager} exited before it came up.${reason ? `\n${reason}` : ""}\nIt logged its reason to ${managerLogPath(space)}`);
+    }
     if (parsePid(readPidfile(PID_PATH(space)) ?? "") !== started.pid)
       throw new Error(`${manager} lost ${PID_PATH(space)} to another process before it came up, so it is not the manager serving the space. Its log is ${managerLogPath(space)}`);
     await sleep(200);
@@ -339,8 +455,9 @@ export async function ensureManager(
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(space, root, seams); // refuses on unknown / unattributable, reports foreign
   await seedBeforeLaunch();
-  const pid = startManagerDetached(o);
-  await awaitManagerUp(space, identityRecord(pid));
+  let logStart: LogStart | undefined;
+  const pid = startManagerDetached(o, (start) => { logStart = start; });
+  await awaitManagerUp(space, identityRecord(pid), logStart);
   return { running: true, started: true, pid };
 }
 

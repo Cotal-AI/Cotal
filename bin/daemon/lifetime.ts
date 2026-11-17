@@ -1,14 +1,16 @@
 /**
  * The daemon's lifetime lock, and the socket generation it correlates with.
  *
- * `serve` holds an exclusive `flock(2)` on `<state>/daemon.lock` for as long as it runs. The
- * kernel owns that lock's lifetime: it is released when the last descriptor referring to it
- * closes, which includes every way the process can die. A daemon killed with SIGKILL, or taken by
+ * `serve` holds an exclusive kernel lock on `<state>/daemon.lock` for as long as it runs: `flock(2)`
+ * on Linux and macOS, `LockFileEx` on one byte past the record on Windows. The kernel owns that
+ * lock's lifetime: it is released when the last descriptor referring to it closes, which includes
+ * every way the process can die. A daemon killed with SIGKILL, or taken by
  * the OOM killer, therefore leaves no lock behind, and the next `serve` learns its predecessor is
  * gone from the kernel's own refusal to hold the lock twice, not from a recorded pid it has to
  * judge alive or dead.
  *
- * That is what makes stale-socket recovery safe. A unix socket's inode outlives its listener, so
+ * That is what makes stale-socket recovery safe on Linux and macOS. (A Windows pipe name needs no
+ * recovery: it exists only while a process holds an instance of it.) A unix socket's inode outlives its listener, so
  * a crash leaves a published socket nobody is bound to, and a probe-then-unlink of it races with
  * another starter publishing a live one. Holding the lock removes the race: publishing requires the
  * lock, so while this process holds it nobody else can put a socket at the path. The one socket it
@@ -18,6 +20,8 @@
  *
  * The record is written through the locked descriptor, so it is always the record of the file this
  * process locked. It carries no secret: a pid, its start token, a start time and an inode number.
+ * The start token is the kernel's own start time for that pid ({@link processBirth}), so a reused
+ * pid never matches it.
  *
  * Two different questions use the two different facts. "May I serve?" is a liveness question, and
  * the kernel answers it by holding the lock for at most one process. "Is the process answering
@@ -29,22 +33,42 @@ import { closeSync, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync,
 import { constants } from "node:fs";
 import { createConnection } from "node:net";
 import { processStartToken } from "@cotal-ai/core";
-import { flockExclusiveNb } from "@cotal-ai/seat";
-import { codeSpan, shellPath } from "@cotal-ai/workspace";
+import { lockExclusiveNb, processStartTime } from "@cotal-ai/seat";
+import { codeSpan, shellPath, win32ProcessBinding } from "@cotal-ai/workspace";
 import { EndpointRefusal } from "./endpoint.js";
 
 /** The socket a holder published, identified by the inode it is, not by its path alone. */
-export interface SocketGeneration {
+interface SocketGeneration {
   readonly path: string;
   readonly dev: number;
   readonly ino: number;
 }
 
-/** What a holder writes through its locked descriptor. `socket` is absent until it publishes one. */
-export interface LockRecord {
+/**
+ * The kernel's start token for process `pid`, so a pid reused by a later process never matches:
+ * `/proc/<pid>/stat` starttime on Linux, the process table's start time on macOS, the creation
+ * time of the process object on Windows (the same value the native pipe open reads for its peer).
+ * Undefined when there is no such process.
+ */
+export function processBirth(pid: number): string | undefined {
+  if (process.platform === "linux") return processStartToken(pid);
+  const token = processStartTime(pid);
+  if (token === undefined || process.platform !== "win32") return token;
+  let pin;
+  try {
+    pin = win32ProcessBinding().pinProcess(pid);
+    return pin.exited() || pin.token !== token ? undefined : token;
+  } catch (error) {
+    if (error instanceof Error && /\(Windows error (?:5|87)\)/.test(error.message)) return undefined;
+    throw error;
+  } finally { pin?.close(); }
+}
+
+/** What a holder writes through the locked descriptor. `socket` is absent until it publishes one. */
+interface LockRecord {
   readonly v: 1;
   readonly pid: number;
-  /** The holder's `/proc` process-start token, so a client can tell its pid from a reused one. */
+  /** The holder's {@link processBirth} token, so a client can tell its pid from a reused one. */
   readonly start?: string;
   readonly startedAt: string;
   readonly socket?: SocketGeneration;
@@ -53,10 +77,13 @@ export interface LockRecord {
 export interface HeldLifetime {
   /** The record the previous holder left, when it is readable and well-formed. */
   readonly previous: LockRecord | undefined;
+  /** Stop preserving a predecessor whose socket was rejected, removed or already absent. */
+  discardPrevious(): void;
   /** Record the socket this daemon is about to publish, before it publishes it. */
   publishing(generation: SocketGeneration): void;
-  /** Clear the record and close the descriptor, which releases the lock. Idempotent. */
-  release(): void;
+  /** Clear the record and release the lock. A failed start may restore its unconsumed predecessor
+   *  before closing the descriptor. Idempotent. */
+  release(opts?: { preservePrevious?: boolean }): void;
 }
 
 function parse(raw: string): LockRecord | undefined {
@@ -72,13 +99,28 @@ function parse(raw: string): LockRecord | undefined {
   return { v: 1, pid: r.pid, ...start, startedAt: r.startedAt, socket: { path: s.path, dev: s.dev, ino: s.ino } };
 }
 
+/** One original record read. Only zero bytes establish an empty lifetime record. */
+export function observeLifetimeRecord(path: string): { readonly empty: boolean; readonly record?: LockRecord } {
+  try {
+    const raw = readFileSync(path, "utf8");
+    return raw.length === 0 ? { empty: true } : { empty: false, record: parse(raw) };
+  } catch { return { empty: false }; }
+}
+
 /** The record at `path`, for a client deciding whether the process answering a socket is its
  *  holder. Undefined when there is none, when it is unreadable, or when it is not one of ours. */
 export function readLifetimeRecord(path: string): LockRecord | undefined {
+  return observeLifetimeRecord(path).record;
+}
+
+/** Exclude new starters during uninstall without writing or clearing the holder's record. */
+export function excludeLifetime(path: string): { release(): void } {
+  const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
   try {
-    const raw = readFileSync(path, "utf8");
-    return raw.trim() ? parse(raw) : undefined;
-  } catch { return undefined; }
+    if (!lockExclusiveNb(fd)) throw new EndpointRefusal("LOCK_HELD", "the daemon lifetime is still held; uninstall retained its source and receipt");
+  } catch (error) { closeSync(fd); throw error; }
+  let released = false;
+  return { release() { if (!released) { released = true; closeSync(fd); } } };
 }
 
 /**
@@ -89,7 +131,7 @@ export function holdLifetime(path: string): HeldLifetime {
   const fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600);
   let held: boolean;
   try {
-    held = flockExclusiveNb(fd);
+    held = lockExclusiveNb(fd);
   } catch (e) {
     closeSync(fd);
     throw e;
@@ -113,9 +155,10 @@ export function holdLifetime(path: string): HeldLifetime {
   } catch { /* an unreadable record names no generation, so nothing is recovered */ }
 
   const startedAt = new Date().toISOString();
-  const token = processStartToken(process.pid);
+  const token = processBirth(process.pid);
   const identity = { v: 1 as const, pid: process.pid, ...(token !== undefined ? { start: token } : {}), startedAt };
   let released = false;
+  let recoverable = previous;
   const write = (record: LockRecord): void => {
     const bytes = `${JSON.stringify(record)}\n`;
     ftruncateSync(fd, 0);
@@ -124,16 +167,24 @@ export function holdLifetime(path: string): HeldLifetime {
   write(identity);
   return {
     previous,
+    discardPrevious() {
+      recoverable = undefined;
+    },
     publishing(generation) {
+      recoverable = undefined;
       write({ ...identity, socket: generation });
     },
-    release() {
+    release(opts = {}) {
       if (released) return;
       released = true;
-      // Clearing the record first means a clean exit leaves no generation to recover, so a later
-      // socket at the path can only ever be another daemon's and is refused rather than removed.
-      try { ftruncateSync(fd, 0); } catch { /* the close below still releases the lock */ }
-      closeSync(fd);
+      // A startup preflight failure has not consumed the dead socket. Keep its evidence under
+      // the lock so another attempt can recover it. Clean shutdown still leaves no generation.
+      try {
+        if (opts.preservePrevious && recoverable?.socket) write(recoverable);
+        else {
+          try { ftruncateSync(fd, 0); } catch { /* closing still releases the lock */ }
+        }
+      } finally { closeSync(fd); }
     },
   };
 }
@@ -188,12 +239,12 @@ export async function claimSocketPath(path: string, previous: SocketGeneration |
       `${path} has the device and inode numbers this daemon home's last daemon published, but a connect to it failed with ${outcome}, so it is not that daemon's dead socket; nothing was removed`,
     );
   }
-  // A refused start clears the record as a clean stop does, so a socket that one refused is not
-  // compared with anything the next time.
+  // A rejected socket claim clears the record as a clean stop does, so the next attempt does
+  // not reuse evidence that failed this check.
   throw new EndpointRefusal(
     "ALREADY_RUNNING",
     previous
       ? `${path} already exists (uid ${st.uid}) and is not the socket this daemon home's last daemon published; nothing was removed`
-      : `${path} already exists (uid ${st.uid}), and this daemon home's lock record names no socket to compare it with: a clean stop clears that record, and so does a refused serve; nothing was removed`,
+      : `${path} already exists (uid ${st.uid}), and this daemon home's lock record names no socket to compare it with: a clean stop or a refused socket check clears that record; nothing was removed`,
   );
 }

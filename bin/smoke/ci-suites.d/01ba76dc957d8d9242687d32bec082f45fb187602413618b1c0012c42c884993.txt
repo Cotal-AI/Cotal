@@ -1,0 +1,2 @@
+# The auth-service preset refuses an unprepared hosting root before saving, with user-auth setup guidance.
+smoke:auth-service-prerequisite

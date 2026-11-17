@@ -1,0 +1,72 @@
+/* Tailwind for the client: the shadcn/ui parts in ui/shadcn, which the shadcn CLI writes, and the
+   layout classes their callers pass. Imported after tokens.css and before app.css. Only Tailwind's
+   theme and utilities come in; its preflight reset does not, so app.css keeps its own base.
+   tw-animate-css and shadcn/tailwind.css come in as a default shadcn project imports them: the
+   enter and exit animations, the data-* state variants, and the shimmer and scroll-fade utilities.
+   Utilities are generated from every source file under client/src, and app.css stays unlayered, so
+   on any clash our rule wins over a Tailwind utility. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@source "..";
+
+/* Without preflight, Tailwind's border utilities set a width on a style of none, so shadcn borders
+   would vanish. This scoped reset gives the parts a solid style in our border colour, as shadcn's own
+   base does. Without the colour, a border with no colour class takes the text colour. It sits in the
+   base layer so Tailwind's own border utilities still win over it. */
+@layer base { :where([data-slot], [data-slot] *) { border: 0 solid var(--border); } }
+/* Preflight also strips a link's colour and underline. Without that, a part drawn as a link (a Button
+   with asChild over an <a>) takes the browser's link blue and underline. The variant's own colour and
+   the link variant's hover underline are utilities, so they still win. */
+@layer base { a[data-slot] { color: inherit; text-decoration: inherit; } }
+/* Preflight also zeroes the browser's margins and padding, drops list markers, and makes form fields
+   take the page's font. Without that, a Sidebar menu (a <ul>) indents its items 40px past the icon
+   rail with a bullet each, a Sheet's title keeps a heading's margins, and the composer's textarea is
+   monospace. Scoped to the parts themselves, so Markdown lists inside a Bubble keep their markers. */
+@layer base {
+  :where([data-slot]) { margin: 0; padding: 0; }
+  :where(ul[data-slot], ol[data-slot]) { list-style: none; }
+  :where(input[data-slot], textarea[data-slot], select[data-slot]) { font: inherit; color: inherit; letter-spacing: inherit; }
+}
+
+/* shadcn's colour names, radii and fonts onto ours. tokens.css sets each shadcn name from one of our
+   tokens on :root, so Night follows from its own blocks. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-destructive: var(--destructive);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --font-sans: var(--body);
+  --font-mono: var(--mono);
+  /* Rhea's rounded-2xl buttons, badges and tabs land on our 9px. */
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 9px;
+}
+
+/* dark: is shadcn's own variant, on the .dark class tokens.css switches Night on. */
+@custom-variant dark (&:is(.dark *));

@@ -1,0 +1,2 @@
+# Two overlapping launches of one OpenCode agent name: one is refused, one serve runs on its database (#3040).
+smoke:opencode-launch-claim

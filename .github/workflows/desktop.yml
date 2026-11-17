@@ -1,0 +1,448 @@
+name: Desktop apps
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      real_service:
+        description: 'Install and remove an isolated per-user daemon service on disposable Linux/macOS/Windows runners'
+        type: boolean
+        default: false
+      updater_compile:
+        description: 'Compile configured and no-key updater branches with a disposable test key on macOS and Windows'
+        type: boolean
+        default: false
+      updater_apply:
+        description: 'Run debug Mac and Windows app updates with real native services and an occupied fixture PTY'
+        type: boolean
+        default: false
+      updater_fixture_head:
+        description: 'Immutable reviewed source head containing the shared real-seat fixture'
+        type: string
+        default: ''
+  schedule:
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'bin/cotal.ts'
+      - 'bin/daemon/**'
+      - 'bin/smoke/daemon-install-*.smoke.*'
+      - 'packages/seat/**'
+      - 'packages/workspace/native/**'
+      - '.github/workflows/desktop.yml'
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir desktop exec playwright-core install --with-deps chromium
+      - run: pnpm --dir desktop test:render
+      - name: Verify desktop motion
+        run: pnpm --dir desktop test:render
+        env:
+          MOTION: '1'
+          CASES: waiting,signed-in,spaces,connecting,ready,no-application,declined,progress-done,notice,details-open
+          SHOTS: test/render/artifacts/motion
+      - name: Upload desktop renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-render
+          path: desktop/test/render/artifacts
+          if-no-files-found: error
+          retention-days: 7
+  native-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            bundles: deb,rpm
+          - os: macos-15
+            bundles: app,dmg
+          - os: macos-15-intel
+            bundles: app,dmg
+          - os: windows-2022
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux webview and tray build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: pnpm install --frozen-lockfile
+      - name: Build the stock Windows identity bindings
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          if not exist "%VSWHERE%" exit /b 1
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+      - name: Build the stock macOS identity bindings
+        if: runner.os == 'macOS'
+        run: node packages/workspace/scripts/build-native.mjs
+      - run: pnpm --workspace-concurrency=1 --filter cotal-ai... build
+      - name: Build the daemon host primitives
+        if: runner.os != 'Windows'
+        run: pnpm --filter @cotal-ai/seat build:native
+      - name: Build the daemon host primitives in the MSVC developer environment
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - run: pnpm smoke:daemon-transport
+      - run: pnpm --dir desktop test
+      - run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --lib
+      - run: pnpm smoke:daemon-install-native
+      - name: Prepare the disposable Linux user manager
+        if: inputs.real_service && runner.os == 'Linux'
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(id -u)" -ne 0
+          test "$USER" = "$(id -un)"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          systemctl --user show-environment > /dev/null
+          test "$(loginctl show-user "$USER" --property=Linger --value)" = yes
+          printf 'XDG_RUNTIME_DIR=%s\nDBUS_SESSION_BUS_ADDRESS=%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+      - name: Verify the real per-user daemon service
+        if: inputs.real_service
+        env:
+          COTAL_TEST_REAL_SERVICE: '1'
+        run: node bin/smoke/daemon-install-real.smoke.mjs
+      - name: Upload the real service result
+        if: always() && inputs.real_service
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-service-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
+          retention-days: 7
+      - run: pnpm --filter cotal-ai seeded-connectors
+      - run: pnpm --dir desktop prepare:runtime
+      - run: pnpm --dir desktop check:runtime
+      - name: Compile configured and no-key updater branches
+        if: inputs.updater_compile && runner.os != 'Linux'
+        shell: pwsh
+        run: ./desktop/scripts/check-updater-native.ps1
+      - name: Upload updater native compiler evidence
+        if: always() && inputs.updater_compile && runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-updater-native-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/desktop-updater-native/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Check notarization credential selection
+        shell: pwsh
+        run: ./desktop/scripts/check-notarization.ps1
+      - name: Prepare release signing
+        id: signing
+        shell: pwsh
+        env:
+          RELEASE_BUILD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+          APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_CONTENT: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY_CONTENT || '' }}
+          WINDOWS_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CERTIFICATE || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          WINDOWS_TIMESTAMP_URL: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_TIMESTAMP_URL || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          'signed=false' >> $env:GITHUB_OUTPUT
+          if ($env:RELEASE_BUILD -ne 'true') { exit 0 }
+          if ($env:RUNNER_OS -eq 'macOS') {
+            $cert = @($env:APPLE_CERTIFICATE, $env:APPLE_CERTIFICATE_PASSWORD, $env:APPLE_SIGNING_IDENTITY)
+            $appleId = @($env:APPLE_ID, $env:APPLE_PASSWORD, $env:APPLE_TEAM_ID)
+            $api = @($env:APPLE_API_ISSUER, $env:APPLE_API_KEY, $env:APPLE_API_KEY_CONTENT)
+            $present = @($cert + $appleId + $api | Where-Object { $_ })
+            if ($present.Count -eq 0) { Write-Output 'No macOS signing secrets: unsigned validation packages.'; exit 0 }
+            if (@($cert | Where-Object { $_ }).Count -ne 3) { throw 'Incomplete macOS signing certificate configuration.' }
+            $idCount = @($appleId | Where-Object { $_ }).Count
+            $apiCount = @($api | Where-Object { $_ }).Count
+            if (($idCount -ne 0 -and $idCount -ne 3) -or ($apiCount -ne 0 -and $apiCount -ne 3) -or ($idCount + $apiCount -ne 3)) { throw 'Configure one complete notarization credential set.' }
+            if ($apiCount -eq 3) {
+              $keyPath = Join-Path $env:RUNNER_TEMP 'cotal-notary-key.p8'
+              [IO.File]::WriteAllText($keyPath, $env:APPLE_API_KEY_CONTENT)
+              & chmod 600 $keyPath
+              if ($LASTEXITCODE -ne 0) { throw 'Could not protect notarization key.' }
+              "APPLE_API_KEY_PATH=$keyPath" >> $env:GITHUB_ENV
+            }
+            'signed=true' >> $env:GITHUB_OUTPUT
+          } elseif ($env:RUNNER_OS -eq 'Windows') {
+            $values = @($env:WINDOWS_CERTIFICATE, $env:WINDOWS_CERTIFICATE_PASSWORD, $env:WINDOWS_TIMESTAMP_URL)
+            $count = @($values | Where-Object { $_ }).Count
+            if ($count -eq 0) { Write-Output 'No Windows signing secrets: unsigned validation packages.'; exit 0 }
+            if ($count -ne 3) { throw 'Incomplete Windows signing certificate configuration.' }
+            $pfx = Join-Path $env:RUNNER_TEMP 'cotal-signing.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            try {
+              $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force)
+              if (-not $cert.HasPrivateKey) { throw 'The signing certificate has no private key.' }
+              "WINDOWS_SIGNING_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+              $config = @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = 'sha256'; timestampUrl = $env:WINDOWS_TIMESTAMP_URL } } }
+              $path = Join-Path $env:RUNNER_TEMP 'cotal-signing.json'
+              $config | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 $path
+              "WINDOWS_SIGNING_CONFIG=$path" >> $env:GITHUB_ENV
+            } finally { Remove-Item -LiteralPath $pfx }
+            'signed=true' >> $env:GITHUB_OUTPUT
+          }
+      - name: Build desktop packages
+        shell: pwsh
+        env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+          SIGNED_BUILD: ${{ steps.signing.outputs.signed }}
+          APPLE_CERTIFICATE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_API_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SIGNED_BUILD -ne 'true') {
+            Get-ChildItem Env:APPLE_* | Remove-Item
+            Write-Output 'Building unsigned validation packages.'
+          } else { Write-Output 'Building signed release packages.' }
+          $args = @('--dir', 'desktop', 'exec', 'tauri', 'build', '--bundles', '${{ matrix.bundles }}')
+          if ($env:WINDOWS_SIGNING_CONFIG) { $args += @('--config', $env:WINDOWS_SIGNING_CONFIG) }
+          if ($env:RUNNER_OS -eq 'macOS' -and $env:SIGNED_BUILD -ne 'true') {
+            # Without a certificate the bundle is signed ad hoc. A linker-signed binary alone leaves the
+            # bundle's resources unsealed, and macOS reports a downloaded copy as damaged.
+            $adhoc = Join-Path $env:RUNNER_TEMP 'cotal-adhoc-signing.json'
+            '{"bundle":{"macOS":{"signingIdentity":"-"}}}' | Set-Content -Encoding utf8 $adhoc
+            $args += @('--config', $adhoc)
+          }
+          & pnpm @args
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
+          & pnpm --dir desktop check:size
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop bundle size budget exceeded.' }
+      - name: Verify compiled updater release inputs
+        run: node desktop/scripts/check-updater-release.mjs
+      - name: Verify the macOS bundle signature seals the whole app
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          app=$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          [ -n "$app" ] || { echo 'no built app bundle'; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Sealed Resources version=' "$RUNNER_TEMP/codesign.txt"
+          grep -q '^Info.plist entries=' "$RUNNER_TEMP/codesign.txt"
+          # The same check on a copy carrying the download quarantine mark, as a browser leaves it.
+          copy="$RUNNER_TEMP/quarantined/$(basename "$app")"
+          mkdir -p "$RUNNER_TEMP/quarantined" && cp -R "$app" "$copy"
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Browser;" "$copy"
+          codesign --verify --deep --strict "$copy"
+      - name: Run the bundled Node under the signature the app ships with
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          app=$(find desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)
+          node="$app/Contents/MacOS/cotal-node"
+          runtime="$app/Contents/Resources/runtime"
+          codesign -d --verbose=2 "$node" 2>&1 | grep '^CodeDirectory'
+          codesign -d --entitlements - "$node" 2>&1 | grep -q 'com.apple.security.cs.allow-jit'
+          # The hardened runtime refuses V8's executable memory and the bundled native addons unless
+          # the signature carries the entitlements for them. Node then dies before it runs a line.
+          "$node" -e 'console.log(process.version)'
+          "$node" "$runtime/dist/cotal.js" --version
+          find "$runtime/node_modules" -name '*.node' -print0 | xargs -0 -n 1 "$node" -e 'require(require("node:path").resolve(process.argv[1]))'
+      - name: Remove temporary signing material
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:APPLE_API_KEY_PATH -and (Test-Path -LiteralPath $env:APPLE_API_KEY_PATH)) { Remove-Item -LiteralPath $env:APPLE_API_KEY_PATH }
+          if ($env:WINDOWS_SIGNING_CONFIG -and (Test-Path -LiteralPath $env:WINDOWS_SIGNING_CONFIG)) { Remove-Item -LiteralPath $env:WINDOWS_SIGNING_CONFIG }
+          if ($env:WINDOWS_SIGNING_THUMBPRINT) { Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:WINDOWS_SIGNING_THUMBPRINT" }
+      - name: Upload built desktop packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-validation-${{ runner.os }}-${{ runner.arch }}
+          path: desktop/src-tauri/target/release/bundle/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify macOS window-scoped Dock presence, focus and reopen
+        if: runner.os == 'macOS'
+        run: bash desktop/scripts/check-presence-macos.sh
+      - name: Verify installed Windows shortcuts and taskbar presence
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/scripts/check-presence-windows.ps1
+      - name: Verify Linux launcher packaging
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-presence"
+          deb=$(find desktop/src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
+          rpm=$(find desktop/src-tauri/target/release/bundle/rpm -name '*.rpm' -print -quit)
+          dpkg-deb --contents "$deb" | tee "$RUNNER_TEMP/desktop-presence/deb-files.txt"
+          rpm -qlp "$rpm" | tee "$RUNNER_TEMP/desktop-presence/rpm-files.txt"
+          for manifest in "$RUNNER_TEMP/desktop-presence/"*-files.txt; do
+            grep -E 'share/applications/.*\.desktop' "$manifest"
+            grep -E 'share/icons/.*\.png' "$manifest"
+          done
+      - name: Upload native presence evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-presence-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/desktop-presence/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stage release installers
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            desktop/src-tauri/target/release/bundle/**/*.dmg
+            desktop/src-tauri/target/release/bundle/**/*.deb
+            desktop/src-tauri/target/release/bundle/**/*.rpm
+            desktop/src-tauri/target/release/bundle/**/*.msi
+            desktop/src-tauri/target/release/bundle/**/*.exe
+          if-no-files-found: error
+          retention-days: 7
+  updater-arm:
+    if: inputs.updater_apply
+    uses: ./.github/workflows/desktop-mac-updater.yml
+    with:
+      runner: macos-15
+      mode: explicit
+      fixture_head: ${{ inputs.updater_fixture_head }}
+  updater-followup:
+    if: inputs.updater_apply
+    needs: updater-arm
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: macos-15
+            mode: hidden
+          - runner: macos-15-intel
+            mode: explicit
+    uses: ./.github/workflows/desktop-mac-updater.yml
+    with:
+      runner: ${{ matrix.runner }}
+      mode: ${{ matrix.mode }}
+      fixture_head: ${{ inputs.updater_fixture_head }}
+  updater-windows:
+    if: inputs.updater_apply
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Build Windows native bindings and debug N, N+1 and N+2 NSIS bundles
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+          call pnpm --workspace-concurrency=3 --filter cotal-ai... build
+          if errorlevel 1 exit /b 1
+          call pnpm exec node desktop/test/win-updater-build.mjs
+          if errorlevel 1 exit /b 1
+      - name: Install fixture broker
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $version='2.12.2'
+          $zip=Join-Path $env:RUNNER_TEMP 'nats.zip'
+          Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $zip
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
+          (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
+      - name: Exercise 2-hop native Windows app update, Scheduled Task service and real occupied PTY
+        run: pnpm exec tsx desktop/test/win-updater-proof.mjs
+      - name: Upload Windows native updater acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-updater-windows-2022
+          path: |
+            ${{ runner.temp }}/win-updater-build/*.log
+            ${{ runner.temp }}/win-updater-build/build-result.json
+            ${{ runner.temp }}/win-updater-result/
+          if-no-files-found: error
+          retention-days: 7
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: native-build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-release-*
+          path: installers
+      - name: Attach installers to the version release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes 'Desktop installer validation packages. Check each platform signature before distribution.'
+          fi
+          mapfile -d '' packages < <(find installers -type f -print0)
+          test "${#packages[@]}" -gt 0
+          gh release upload "$TAG" "${packages[@]}"

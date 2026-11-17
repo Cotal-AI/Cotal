@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { drainAndClose } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
@@ -420,7 +421,7 @@ async function snapshotStream(
     await write.catch(() => {});
     throw error;
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
@@ -684,7 +685,7 @@ async function createBackup(args: ParsedArgs, observed: BackupObservation): Prom
     try {
       ({ checkpoints } = await collectInventory(inspect, ready.space, selected, held));
     } finally {
-      await inspect.drain().catch(() => {});
+      await drainAndClose(inspect).catch(() => {});
     }
     if (process.env.COTAL_SMOKE_FAIL_BACKUP_STAGE === "initiation")
       throw new Error("smoke-injected failure at snapshot initiation");

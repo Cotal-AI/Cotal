@@ -15,6 +15,7 @@ import {
   Labels,
   lerp,
   MODE_ALICE,
+  MODE_MIDDLE,
   MODE_PEERS,
   prog,
   Ripple,
@@ -24,7 +25,7 @@ import {
   type Pt,
 } from "./scene";
 
-const PILL: Pt = { x: 400, y: 410 };
+const PILL = MODE_MIDDLE;
 
 // The pill's label takes the smallest card text size, which leaves the wires
 // on either side room to read.
@@ -69,7 +70,7 @@ export const ModeMulticast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[IN_PATH, ...OUT_PATHS]} glow={[inGlow, ...OUT_PATHS.map(() => flash)]} />
+      <Wires wires={[{ d: IN_PATH, glow: inGlow }, ...OUT_PATHS.map((d) => ({ d, glow: flash }))]} />
       <Ripple at={PILL} p={prog(frame, T.fanStart - 2, T.fanStart + 30)} />
       <Ripple at={PILL} p={prog(frame, T.fanStart + 8, T.fanStart + 42)} />
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />

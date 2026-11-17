@@ -1,0 +1,2 @@
+# Against a broker: only a watching feed receives an agent's frames, unwatch stops them, and the events route pages, refuses and answers a broker refusal.
+smoke:web-agent-session-live

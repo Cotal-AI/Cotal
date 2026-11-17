@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
+import { presenceText, type Presence } from "@cotal-ai/core";
+import { consoleLabel } from "../label.js";
 import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts, wrapPieces, type FactRow, type Piece } from "./theme.js";
 import { useListCursor } from "./useListCursor.js";
@@ -47,7 +48,7 @@ function headRows(p: Presence, tag: string | undefined, width: number): FactRow[
   const since = activityAge(p).trimStart();
   return wrapPieces(
     [
-      piece("", peerLabel(p.card), false),
+      piece("", consoleLabel(p.card), false),
       ...(tag ? [piece(" ", tag)] : []),
       ...(activity ? [piece("  ", activity)] : []),
       ...(since ? [piece(" ", since)] : []),

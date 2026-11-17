@@ -11,17 +11,44 @@ import { terminalWidth, untilInputEnds, wrapWords } from "@cotal-ai/workspace";
 
 export * from "@clack/prompts";
 
+/** Columns a prompt lays out for. A terminal that has not been sized reports 0, and clack treats that
+ *  as a real width, so a question is drawn one letter per line. Below 3 columns there is no room for
+ *  a mark and a word, so the layout uses 80, the same stand-in a missing count uses. */
+export function promptColumns(columns: number | undefined): number {
+  return columns !== undefined && columns > 2 ? columns : 80;
+}
+
+/** `output` as clack should read it. A sized terminal is passed through. One that reports no usable
+ *  width still receives every write, and reports {@link promptColumns} for its column count. */
+function promptStream(output: Writable | undefined): Writable {
+  const stream = output ?? process.stdout;
+  const reported = (stream as { columns?: number }).columns;
+  if (reported !== undefined && reported > 2) return stream;
+  return new Proxy(stream, {
+    get(target, prop, receiver) {
+      if (prop === "columns") return promptColumns(reported);
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/** A note on the prompt stream, so a zero-column terminal does not stack it one letter per line. */
+export function note(message = "", title = "", opts?: Parameters<typeof clack.note>[2]): void {
+  clack.note(message, title, { ...opts, output: promptStream(opts?.output) });
+}
+
 /** A yes-or-no question. One that defaults to No is answered by typing: `y` or `yes`, in any case,
  *  then Enter confirms it, and Enter alone or any other text keeps No. Clack's toggle took stray
  *  text as Yes, because `h`, `j`, `k` and `l` move its selection and a `y` inside a word submits
  *  it, so "ok" and Enter confirmed a purge. One that defaults to Yes keeps clack's toggle. */
 export async function confirm(opts: ConfirmOptions): Promise<boolean | symbol> {
-  if (opts.initialValue !== false) return untilInputEnds((signal) => clack.confirm({ ...opts, signal }), opts.input);
+  if (opts.initialValue !== false) return untilInputEnds((signal) => clack.confirm({ ...opts, output: promptStream(opts.output), signal }), opts.input);
   const answer = await untilInputEnds((signal) => clack.text({
     message: titleLines(opts.message, opts.output),
     placeholder: "type y to confirm; Enter keeps No",
     input: opts.input,
-    output: opts.output,
+    output: promptStream(opts.output),
     signal,
   }), opts.input);
   return typeof answer === "symbol" ? answer : typeof answer === "string" && /^y(es)?$/i.test(answer.trim());
@@ -30,7 +57,7 @@ export async function confirm(opts: ConfirmOptions): Promise<boolean | symbol> {
 /** `message` as a text prompt's title on `output`, which clack does not wrap: broken at spaces to
  *  fit beside clack's three-column mark, with each continuation line under clack's bar. */
 function titleLines(message: string, output: Writable | undefined): string {
-  const columns = ((output ?? process.stdout) as { columns?: number }).columns ?? 80;
+  const columns = promptColumns(((output ?? process.stdout) as { columns?: number }).columns);
   return message.split("\n").flatMap((line) => wrapWords(line, columns - 3)).join(`\n${styleText("gray", clack.S_BAR)}  `);
 }
 
@@ -38,7 +65,7 @@ function titleLines(message: string, output: Writable | undefined): string {
  *  with each continuation line under the message, past clack's closing mark. */
 function errorLines(message: string | Error | undefined, output: Writable | undefined): string | Error | undefined {
   if (typeof message !== "string") return message;
-  const columns = ((output ?? process.stdout) as { columns?: number }).columns ?? 80;
+  const columns = promptColumns(((output ?? process.stdout) as { columns?: number }).columns);
   return message.split("\n").flatMap((line) => wrapWords(line, columns - 3)).join("\n   ");
 }
 
@@ -58,13 +85,14 @@ export const text = (opts: TextOptions) => {
   return untilInputEnds((signal) => clack.text({
     ...opts,
     message: titleLines(opts.message, opts.output),
+    output: promptStream(opts.output),
     ...(typeof validate === "function" ? { validate: (value: string | undefined) => errorLines(validate(value), opts.output) } : {}),
     signal,
   }), opts.input);
 };
-export const password = (opts: PasswordOptions) => untilInputEnds((signal) => clack.password({ ...opts, signal }), opts.input);
-export const select = <Value>(opts: SelectOptions<Value>) => untilInputEnds((signal) => clack.select({ ...opts, signal }), opts.input);
-export const multiselect = <Value>(opts: MultiSelectOptions<Value>) => untilInputEnds((signal) => clack.multiselect({ ...opts, signal }), opts.input);
+export const password = (opts: PasswordOptions) => untilInputEnds((signal) => clack.password({ ...opts, output: promptStream(opts.output), signal }), opts.input);
+export const select = <Value>(opts: SelectOptions<Value>) => untilInputEnds((signal) => clack.select({ ...opts, output: promptStream(opts.output), signal }), opts.input);
+export const multiselect = <Value>(opts: MultiSelectOptions<Value>) => untilInputEnds((signal) => clack.multiselect({ ...opts, output: promptStream(opts.output), signal }), opts.input);
 
 /** One line typed in answer to `query`, written to stderr, or undefined when the input ends or
  *  closes first, or Ctrl-D on an empty line or Ctrl-C cancels it. A line the input end cut off

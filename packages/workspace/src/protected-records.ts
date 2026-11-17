@@ -7,7 +7,8 @@ import { CommandFailure, isCommandFailure } from "./output.js";
 import { homeCotalDir } from "./cotal-home.js";
 import { spaceKey } from "./auth-paths.js";
 
-export const LOCAL_INPUT_LIMIT = 256 * 1024;
+import { LOCAL_INPUT_LIMIT, localRecordAccess, readLocalRecordSource, requireLocalRecordAccess, unsearchableFolder, shellPath, type LocalRecordAccess } from "./local-record-source.js";
+export { LOCAL_INPUT_LIMIT, localRecordAccess, readLocalRecordSource, unsearchableFolder, shellPath, type LocalRecordAccess } from "./local-record-source.js";
 const RECORD_LIMIT = LOCAL_INPUT_LIMIT + 8192;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -19,33 +20,9 @@ export function localRecordName(name: string): string {
   return name;
 }
 
-/**
- * How local records are protected. `posix` checks the owner and the mode and refuses links, and
- * opens without following a link or blocking. `windows-acl` is the model Cotal already uses for
- * private files on Windows: a private file or directory gets an access list for this user, SYSTEM
- * and Administrators when Cotal creates it (core `hardenPrivate`). Windows has no POSIX owner or
- * mode, so that model checks neither and does not refuse a link.
- */
-export type LocalRecordAccess = "posix" | "windows-acl";
-
-/** The model for `platform`, or undefined when a POSIX host lacks the owner id or the no-follow
- *  and nonblocking opens the POSIX checks need. It is the one place the platform is decided;
- *  `platform` is a parameter so a suite can select the Windows model off Windows. */
-export function localRecordAccess(platform: NodeJS.Platform = process.platform): LocalRecordAccess | undefined {
-  if (platform === "win32") return "windows-acl";
-  return process.getuid !== undefined && constants.O_NOFOLLOW !== undefined && constants.O_NONBLOCK !== undefined ? "posix" : undefined;
-}
-
 /** Whether this platform has a protection model for local records. */
 export function protectedFileAccessAvailable(): boolean {
   return localRecordAccess() !== undefined;
-}
-
-/** This platform's model, refusing where there is none. */
-function requireLocalRecordAccess(): LocalRecordAccess {
-  const access = localRecordAccess();
-  if (!access) throw new CommandFailure("refused", "UNSUPPORTED", "protected workstation file access is not available on this platform in this author preview; no weaker file access was substituted");
-  return access;
 }
 
 export function assertProtectedFileAccess(): void {
@@ -92,20 +69,6 @@ export function prepareCotalHomeForWrite(): void {
   mkSecretDir(home);
 }
 
-/** The first folder on the way to `path` that this account may not search, or undefined. Such a
- *  folder hides every entry below it, whatever their own modes are. */
-export function unsearchableFolder(path: string): string | undefined {
-  const folders: string[] = [];
-  for (let dir = dirname(resolve(path)); ; dir = dirname(dir)) {
-    folders.unshift(dir);
-    if (dirname(dir) === dir) break;
-  }
-  for (const dir of folders) {
-    try { accessSync(dir, constants.X_OK); } catch { return dir; }
-  }
-  return undefined;
-}
-
 /** A permission error reading the record store at `path`, as the refusal that names the folder
  *  withholding it, the first one above `path` this account may not search or else `path` itself, with
  *  the chmod that gives it back. Only EACCES and EPERM; any other error is returned as it is. */
@@ -131,39 +94,6 @@ function storeLock(path: string, label: string) {
     if (!bits) throw error;
     throw new CommandFailure("refused", "PERMISSION_DENIED", `${folder} cannot be written by this account (${code}), so no saved local record in it was locked or written`, { target: { path: folder }, remedy: `make it writable by you, for example with chmod u+${bits} ${shellPath(folder)}` });
   }
-}
-
-/** Establish a regular descriptor, then read only bounded bytes. POSIX opens nonblocking and
- *  without following a link, and checks a private file's owner and mode; Windows does neither. */
-export function readLocalRecordSource(path: string, limit = LOCAL_INPUT_LIMIT, privateFile = false): Buffer | undefined {
-  const access = requireLocalRecordAccess();
-  const posix = access === "posix";
-  let fd: number;
-  try { fd = openSync(path, posix ? constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK : constants.O_RDONLY); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return undefined;
-    // Permission is named with the folder that withholds it, which is often not the file itself.
-    if (code === "EACCES" || code === "EPERM") {
-      const folder = unsearchableFolder(path);
-      throw new CommandFailure("refused", "PERMISSION_DENIED", folder ? `${folder} cannot be read by this account (${code}), so ${path} was not read` : `${path} cannot be read by this account (${code})`, { target: { path, ...(folder ? { folder } : {}) }, remedy: folder ? `make it readable by you, for example with chmod u+rx ${shellPath(folder)}` : `make it readable by you, for example with chmod u+r ${shellPath(path)}` });
-    }
-    throw new CommandFailure("refused", "PERMISSION_DENIED", posix ? `the local record source ${path} could not be opened without following links` : `the local record source ${path} could not be opened`, { target: { path } });
-  }
-  try {
-    const before = fstatSync(fd);
-    if (!before.isFile()) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input must be a regular file", { target: { path } });
-    if (privateFile && posix && (before.uid !== process.getuid!() || (before.mode & 0o077) !== 0)) throw new CommandFailure("refused", "PERMISSION_DENIED", `the saved local record ${path} is not owned and private`, { target: { path } });
-    if (before.size > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });
-    const bytes = Buffer.alloc(limit + 1);
-    let length = 0;
-    while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
-    const after = fstatSync(fd);
-    if (length > limit) throw new CommandFailure("refused", "SCHEMA_INVALID", "local record input exceeds its byte limit", { target: { path } });
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
-      throw new CommandFailure("refused", "CONFLICT", "the local record source changed while it was read", { target: { path } });
-    return bytes.subarray(0, length);
-  } finally { closeSync(fd); }
 }
 
 export function localRecordObject(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -285,12 +215,13 @@ export function protectedPathPolicy(accounts: AccountDatabase, extendedAcl: (pat
 }
 
 /** Runs a system read from PATH with a 2 second limit and a 4 MiB output limit. Proving a group
- *  takes up to three `getent` reads, and each group-writable path one `getfacl` read. */
-function boundedRead(label: string, command: "getent" | "getfacl", args: readonly string[]): string {
+ *  takes up to three `getent` reads, and each group-writable path a `getfacl` read or, when
+ *  getfacl is absent, a Python extended-attribute read. */
+function boundedRead(label: string, command: "getent" | "getfacl" | "python3", args: readonly string[]): string {
   if (process.platform !== "linux") throw new Error("it is checked only on Linux");
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  if (code === "ENOENT") throw new Error(`${command} is not installed`);
+  if (code === "ENOENT") throw Object.assign(new Error(`${command} is not installed`), { code });
   if (code === "ETIMEDOUT") throw new Error(`${label} timed out`);
   if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string") throw new Error(`${label} failed or exceeded its output limit`);
   return result.stdout;
@@ -322,16 +253,22 @@ const systemAccounts: AccountDatabase = {
   group: (gid) => boundedRead("getent group", "getent", ["group", String(gid)]),
   users: () => boundedRead("getent passwd", "getent", ["passwd"]),
 };
-const systemAcl = (path: string) => boundedRead("getfacl", "getfacl", ["--skip-base", "--absolute-names", "--", path]);
+/** Read ACL presence without getfacl, retaining the same fail-closed bounded system read. */
+function pythonAcl(path: string): string {
+  return boundedRead("python3 ACL read", "python3", ["-I", "-c", "import os,sys; attrs=os.listxattr(sys.argv[1], follow_symlinks=False); sys.stdout.write('extended ACL' if any(a in attrs for a in ('system.posix_acl_access', 'system.posix_acl_default')) else '')", path]);
+}
+const systemAcl = (path: string): string => {
+  try { return boundedRead("getfacl", "getfacl", ["--skip-base", "--absolute-names", "--", path]); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return pythonAcl(path);
+  }
+};
 
 let processPolicy: ProtectedPathPolicy | undefined;
 const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathPolicy(systemAccounts, systemAcl, process.getuid!());
 
 type EntryStat = Pick<Stats, "uid" | "gid" | "mode" | "isDirectory" | "isSymbolicLink">;
-
-/** `path` as one POSIX shell word, quoted when a shell would split or expand it, so a remedy that
- *  names it can be pasted. */
-export const shellPath = (path: string) => /^[A-Za-z0-9_./+-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`;
 
 /** One entry another local account could replace or write, and the kind of change that fixes it. */
 type ProtectionGap = { path: string; reason: string; fix: "physical" | "o-w" | "g-w" | "go-w" | "g-w-or-acl" };
@@ -383,6 +320,19 @@ function physicalRemedy(gaps: readonly ProtectionGap[], checked: string | undefi
     try { physical = realpathSync.native(checked); } catch { physical = undefined; }
   }
   return physical === undefined ? "use a physical path owned by you or root, without symlinks" : `use the physical path ${shellPath(physical)}`;
+}
+
+/** Why another local account could replace or write an existing entry, and the chmod mode that
+ *  fixes it when one does. The rule is {@link protectionGap}: a group-writable entry is accepted
+ *  when its group is the caller's proven user private group and it has no extended ACL. A symlink,
+ *  a foreign owner and world write are never accepted. A root-owned sticky directory is accepted
+ *  only as an ancestor. The Windows model has no POSIX owner or mode, so it reports nothing. */
+export function localWriterGap(path: string, stat: EntryStat, ancestor = false): { reason: string; chmod?: string } | undefined {
+  if (localRecordAccess() === "windows-acl") return undefined;
+  const gap = protectionGap(path, stat, { ancestor });
+  if (!gap) return undefined;
+  const chmod = gap.fix === "physical" ? undefined : gap.fix === "g-w-or-acl" ? "g-w" : gap.fix;
+  return { reason: gap.reason, ...(chmod ? { chmod } : {}) };
 }
 
 /** Refuse an existing entry that another local account could replace or write; see

@@ -510,7 +510,61 @@ const SEAMS: Seam[] = [
   // `tlsRequired`, and five smoke-side calls: core/smoke/chat-history-limit four and
   // cli/smoke/history-limit one. Each smoke-side call dials a plaintext loopback broker its suite
   // starts and states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 364, untypecheckedSites: 282 },
+  // 364/282 -> 371/289: the once-task smokes add two Jcode calls (df46417125), two manager
+  // restart calls (d9776d84b1), and three manager spawn calls (048d2cb41e). Each dials its suite's
+  // plaintext loopback broker and states `tls: false`.
+  // 371/289 -> 372/290: the run-ps latency smoke's caller dials its suite's plaintext loopback
+  // broker and states `tls: false`.
+  // 372/290 -> 382/299. The inline persona and hosted helper bound add ten. The core issuer
+  // session's lifecycle-executor connection passes the caller's resolved tls. The nine smoke calls
+  // dial the plaintext loopback broker their suite starts and state `tls: false`: in
+  // bin/smoke/run-host-live a caller pinned to the run's host, an admin caller, an admission
+  // reader and a run-admitter writing an admission as an earlier release wrote it; in
+  // auth/smoke/managed-run-issuance an admission reader; in cli/smoke/foreground-issuance-live the
+  // foreground seat; and in manager/smoke/spawn-grant-door the spawner, a rival and a definer.
+  // 382/299 -> 386/303: auth/smoke/retire-member-rows, manager/smoke/supervise-crash-late-join
+  // and core/smoke/delete-space-auth each add one call. core/smoke/chat-history-limit also has
+  // a fifth call for its unstamped delivery-copy writer. All four dial their suite's plaintext
+  // loopback broker and state `tls: false`.
+  // 386/303 -> 390/307: persona endpoints add four smoke calls. manager/smoke/spawn-inline-persona
+  // connects a helper's credential, manager/smoke/persona-endpoints-served connects each credential
+  // it probes and a copy that the despawn evicts, and bin/smoke/run-host-live connects the starter
+  // issued again with a command it gained after admission. All dial the plaintext loopback broker
+  // their suite starts and state `tls: false`.
+  // 390/307 -> 400/314: main landed ten calls without booking them: auth/smoke/registry-host two,
+  // cli/smoke/app-identity-live and core/smoke/endpoint-family-scan one each,
+  // runtime/smoke/run-command three, and manager/src/manager.ts three. All ten state `tls: false`.
+  // 400/314 -> 402/316: main landed two more calls without booking them: bin/smoke/daemon-service-connect
+  // and delivery/smoke/deliver-pending-sender add one each. Both state `tls: false`.
+  // 402/316 -> 414/326: connection-cleanup adds four smoke calls, daemon-service-connect
+  // three, and remote-registration-close/expiry/maintenance one each. endpoint-deregister
+  // adds two authority calls. All twelve explicitly state `tls: false`.
+  // 414/326 -> 432/344: credential renewal and request continuity (#6455, 55a5cc880) add twelve
+  // smoke calls across authority-issued-serve (1), renewal-duty-requests (5),
+  // renewal-mint-contention (1), renewal-request-continuity (4) and request-safe-reconnect (1);
+  // renewal retirement bound (6acb10958) adds three in renewal-retirement-bound; late caller grant
+  // recovery (21f573f44) adds two in endpoint-publish-denial; and named read owner resolution
+  // (#6474, 03b2e195c) adds one in named-read-owner. All eighteen dial their suite's plaintext
+  // loopback broker and state `tls: false`.
+  // 432/344 -> 438/348: #6554 adds two stream setup/conversion connections and four smoke
+  // connections in conditional-dlv-chat (1), conditional-dlv (1), and membership-store-no-reserve (2).
+  // Each states its transport decision explicitly. Bundled sidecars are counted separately below.
+  // 438/348 -> 439/349: admission-store-atomic adds one owned fixture connection with tls: false.
+  // 439/349 -> 440/350: the missing DM stream case adds one in delivery/smoke/deliver-pending-sender.
+  // It states `tls: false`.
+  // 440/350 -> 444/354: four event-payload smoke connections:
+  // foreground-issuance-live adds an admin reader, managed-event-payloads adds an observer,
+  // event-payload-legacy provisions a broker without the payload stream, and backup-event-payload
+  // reads the fixture's native stream. Each explicitly states `tls: false` for its local broker.
+  // 444/354 -> 448/357: book four existing calls. bin/daemon/manager.ts carries the
+  // resolved TLS decision on each auth arm. Three smoke calls state `tls: false` for their
+  // local brokers: history-read's teardown, gate-reconcile-auth's registration executor,
+  // and remote-registration-expiry's liveness observer.
+  // 448/357 -> 449/358: reconnect-missing-inbox-auth adds its target-pinned teardown connection,
+  // which states `tls: false` for the suite's loopback broker.
+  // 451/359 -> 452/360: agui-egress-acl-auth adds its payload-rail subscriber connection, which
+  // states `tls: false` for the suite's loopback broker.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 452, untypecheckedSites: 360 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

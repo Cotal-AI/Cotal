@@ -21,7 +21,7 @@ import {
   markRestoreActive, moveSamePathRestoreSource, prepareAlternateRestore, prepareSamePathRestore, readMaintenanceJournal, readPreservationPrepareIntent, recordMesh, recordPreservationManagerCommit,
   recordRestoreManagerCommit, recordRestoreReconfiguration, releaseMaintenanceLock, requestControllerMemberStart, serviceMetadataDigest,
   settleControllerMemberStart, writeMaintenanceResumeDocument, writeRestoreCommitIntent,
-  type ControllerReconfiguration, type ControllerStop, type MaintenanceLock, type RestoreListenerProof,
+  type ControllerReconfiguration, type ControllerStop, type MaintenanceLock, type ListenerProof,
 } from "@cotal-ai/workspace";
 import { serviceAction } from "../src/commands/service-actions.js";
 import "../src/lib/broker-service.js";
@@ -112,7 +112,7 @@ function activeRestore(name: string): { root: string; space: string; attemptId: 
   const brokerLaunch = randomUUID(), managerLaunch = randomUUID();
   requestControllerMemberStart(lock, { role: "broker", instanceId: broker!.instanceId, priorLaunchRequestId: broker!.launchRequestId });
   settleControllerMemberStart(lock, "broker", brokerLaunch, "running");
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     kind: "controller", attemptId, serverName: `${attemptId}-n`, serverNonce: "n",
     processOwner: { pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id: `controller-broker-${brokerLaunch}` },
     serverEndpoint: server, target: bound.restore.target!,

@@ -1,0 +1,3 @@
+# The stored-copy notice: once the endpoint says the store was full, the next cotal_inbox reply
+# carries one line in either attention mode. No broker.
+smoke:stored-copies-notice

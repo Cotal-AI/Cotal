@@ -9,7 +9,7 @@
  * divergence the differential suite could only find program-by-program.
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
-import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
+import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type JournalKind, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError, type JournalEntry, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
@@ -29,6 +29,7 @@ import {
   type EffectContext,
   type CheckpointRaw,
   type EventDescriptor,
+  type InlineSpawnDefinition,
   type ParticipantRequest,
 } from "./effects.js";
 import type { RunOptions } from "./interpret.js";
@@ -56,6 +57,22 @@ export interface EffectFrame {
 
 export function option(bag: unknown, key: string): unknown {
   return bag === null || typeof bag !== "object" ? undefined : (bag as Record<string, unknown>)[key];
+}
+
+/** Check the handle's value shape. The host still enforces ownership and lifecycle identity. */
+function agentHandle(value: unknown, where: string): AgentHandleValue {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const r = value as Record<string, unknown>;
+    if (typeof r.agent === "string" && r.agent.length > 0 && typeof r.persona === "string"
+      && (r.kind === undefined || r.kind === "spawned" || r.kind === "participant")) return value as AgentHandleValue;
+  }
+  throw new RuntimeFault("L3050", `${where} requires an agent handle returned by \`spawn\` or \`participant\`, not an agent name or another value. Pass the returned handle instead.`);
+}
+
+/** Validate a list before a scope or effect projects its members into journal identity. */
+export function agentHandles(value: unknown, where: string): AgentHandleValue[] {
+  if (!Array.isArray(value)) throw new RuntimeFault("L3050", `${where} requires an array of agent handles returned by \`spawn\` or \`participant\`. Pass the returned handles instead of agent names.`);
+  return value.map((member, i) => agentHandle(member, `${where}[${i}]`));
 }
 
 /**
@@ -90,6 +107,65 @@ function isPlacementPair(v: unknown): v is { endpoint: string; instanceId: strin
  * record is shown with the keys it actually carried, because the commonest case is a pair with one
  * half missing and the author needs to see which half.
  */
+const INLINE_STRINGS = ["role", "model", "variant", "description"] as const;
+const INLINE_LISTS = ["subscribe", "allowSubscribe", "allowPublish", "capabilities"] as const;
+const INLINE_KEYS: readonly string[] = ["name", "prompt", ...INLINE_STRINGS, ...INLINE_LISTS, "endpoints", "save"];
+const ENDPOINT_KEYS: readonly string[] = ["endpoint", "commands", "instanceId"];
+
+/**
+ * The inline persona a `spawn`'s first argument carries, or `undefined` for a catalog spawn (§6.1).
+ * A record with `prompt` is inline; a record with `persona` names the catalog. The record is closed
+ * and checked here, before the step key is minted, so a malformed definition is never hashed or
+ * journalled. The copy holds only the keys the program wrote, so omitting a list and writing `[]`
+ * stay different definitions, as they are to the manager.
+ */
+function inlineDefinition(subject: unknown): InlineSpawnDefinition | undefined {
+  if (subject === null || typeof subject !== "object" || Array.isArray(subject) || !("prompt" in subject)) return undefined;
+  const r = subject as Record<string, unknown>;
+  const refuse = (why: string): never => {
+    throw new RuntimeFault("L3049", `spawn's inline persona ${why}`);
+  };
+  if ("persona" in r) refuse("also names a catalog persona: a record with `prompt` defines the helper and a record with `persona` names a saved one, so pass one or the other");
+  const unknown = Object.keys(r).filter((k) => !INLINE_KEYS.includes(k));
+  if (unknown.length) refuse(`carries ${unknown.map((k) => `\`${k}\``).join(", ")}, which an inline persona has no field for; its fields are ${INLINE_KEYS.join(", ")}`);
+  const nonBlank = (v: unknown): boolean => typeof v === "string" && v.trim() !== "";
+  if (!nonBlank(r.name)) refuse("names no helper: `name` must be a non-empty string");
+  if (!nonBlank(r.prompt)) refuse("has no prompt: `prompt` must be a non-empty string, the helper's persona body");
+  const out: Record<string, unknown> = { name: r.name, prompt: r.prompt };
+  for (const k of INLINE_STRINGS) {
+    if (r[k] === undefined) continue;
+    if (!nonBlank(r[k])) refuse(`\`${k}\` must be a non-empty string when present`);
+    out[k] = r[k];
+  }
+  for (const k of INLINE_LISTS) {
+    if (r[k] === undefined) continue;
+    if (!Array.isArray(r[k]) || !(r[k] as unknown[]).every((c) => typeof c === "string"))
+      refuse(`\`${k}\` must be a list of strings when present`);
+    out[k] = [...(r[k] as string[])];
+  }
+  // The shape only: the manager reads the names (reserved commands, single-label endpoints) and
+  // bounds each command against the run, as it does for a persona file.
+  if (r.endpoints !== undefined) {
+    if (!Array.isArray(r.endpoints)) refuse("`endpoints` must be a list of { endpoint, commands, instanceId? } entries when present");
+    out.endpoints = (r.endpoints as unknown[]).map((e) => {
+      if (e === null || typeof e !== "object" || Array.isArray(e)) refuse("`endpoints` entries must be records of endpoint, commands and an optional instanceId");
+      const entry = e as Record<string, unknown>;
+      const extra = Object.keys(entry).filter((k) => !ENDPOINT_KEYS.includes(k));
+      if (extra.length) refuse(`\`endpoints\` entry carries ${extra.map((k) => `\`${k}\``).join(", ")}; an entry takes ${ENDPOINT_KEYS.join(", ")}`);
+      if (!nonBlank(entry.endpoint)) refuse("`endpoints` entry needs a non-empty `endpoint` string");
+      if (!Array.isArray(entry.commands) || entry.commands.length === 0 || !(entry.commands as unknown[]).every(nonBlank))
+        refuse(`\`endpoints\` entry for ${entry.endpoint as string} needs a non-empty \`commands\` list of strings`);
+      if (entry.instanceId !== undefined && !nonBlank(entry.instanceId)) refuse(`\`endpoints\` entry for ${entry.endpoint as string}: \`instanceId\` must be a non-empty string when present`);
+      return { endpoint: entry.endpoint, commands: [...(entry.commands as string[])], ...(entry.instanceId !== undefined ? { instanceId: entry.instanceId } : {}) };
+    });
+  }
+  if (r.save !== undefined) {
+    if (typeof r.save !== "boolean") refuse("`save` must be true or false when present");
+    out.save = r.save;
+  }
+  return deepFreeze(out) as unknown as InlineSpawnDefinition;
+}
+
 function describePlacement(v: unknown): string {
   if (v === null) return "null";
   if (Array.isArray(v)) return `an array (${JSON.stringify(v)}); placement is a record, not a positional pair`;
@@ -169,10 +245,11 @@ function recordableError(e: EffectError, kind: string): { readonly error: EntryE
 }
 
 /**
- * L4028: an effect kind `once` does not admit (spec/cotal-lang.md §7.8), refused before its entry
- * begins, so no handler method is called and a resume reaches the same refusal.
+ * L4028: an effect kind `once` does not admit, or a scope that dispatches (spec/cotal-lang.md §7.8),
+ * refused before its entry begins, so no handler method is called and a resume reaches the same
+ * refusal.
  */
-function notHoldable(kind: EffectKind, path: readonly ScopeFrame[]): RuntimeFault {
+function notHoldable(kind: JournalKind, path: readonly ScopeFrame[]): RuntimeFault {
   return new RuntimeFault(
     "L4028",
     `\`${kind}\` runs inside \`once\` at ${scopePathString(path)}, and \`once\` admits only \`ask\`: a resume could not hold any other kind without dispatching it again or losing run state it builds. Move the \`${kind}\` outside the \`once\` that wraps the write.`,
@@ -701,6 +778,8 @@ async function observeUntil(
 export async function dispatchPrimitive(host: EffectHost, name: string, args: unknown[], frame: Frame): Promise<unknown> {
   const spec = PRIMITIVES[name];
   if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
+  if (name === "ask" || name === "turn" || name === "monitor") agentHandle(args[0], `argument 1 of \`${name}\``);
+  if (name === "notify") agentHandles(args[0], "argument 1 of `notify`");
   // Every argument crosses the effect boundary: it is hashed, recorded, or handed to the handler,
   // and a value with no canonical form can be none of those. Refused HERE, before any entry is
   // written, with the argument named: `undefined`, a non-finite number and an opaque object are
@@ -763,7 +842,8 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // handler was never told which model to run. This was missed by an audit that exercised
       // only the string form, which is the same defect one level up.
       const spawnSubject = args[0];
-      const named = typeof spawnSubject === "string" ? spawnSubject : option(spawnSubject, "persona");
+      const inline = inlineDefinition(spawnSubject);
+      const named = typeof spawnSubject === "string" ? spawnSubject : inline?.name ?? option(spawnSubject, "persona");
       // `String(undefined)` is the literal persona "undefined", and it was reaching the input hash,
       // the step name and the handler. A missing persona is `undefined` crossing an effect
       // boundary, which is what L3041 names.
@@ -801,6 +881,8 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
         );
       const model = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "model") as string | undefined);
       const variant = typeof spawnSubject === "string" ? undefined : (option(spawnSubject, "variant") as string | undefined);
+      // `inline` already holds the definition's model and variant, so `req.model` and `req.variant`
+      // stay what a catalog spawn's overrides are: absent for an inline one.
       // Every accepted option is forwarded, including the four that are policy rather than
       // identity. Dropping them here would be silent: the validator accepts `permits`, so an
       // author who writes a budget gets no error and no budget. They are deliberately absent
@@ -808,8 +890,9 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       // recorded fact, so they are reapplied from current source on resume rather than hashed.
       const req = {
         persona,
-        ...(model !== undefined ? { model } : {}),
-        ...(variant !== undefined ? { variant } : {}),
+        ...(inline !== undefined ? { inline } : {}),
+        ...(inline === undefined && model !== undefined ? { model } : {}),
+        ...(inline === undefined && variant !== undefined ? { variant } : {}),
         ...(option(bag, "cwd") !== undefined ? { cwd: option(bag, "cwd") as string } : {}),
         // The VALIDATED value, not a second `option()` read cast into the pair type. The cast was
         // the whole defect: it asserted the shape the projection then relied on, and TypeScript
@@ -858,6 +941,9 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
           worktree: req.worktree ?? null,
           role: req.role ?? null,
           join: (req.join ?? []).map((c) => c.channel),
+          // An inline persona IS the identity, so the whole definition is hashed. A catalog spawn
+          // adds no key, so its recorded hash is unchanged.
+          ...(inline !== undefined ? { inline } : {}),
         },
         async (ctx) => ({ ...await handler.spawn(req, ctx), kind: "spawned" as const }),
         frame,
@@ -1165,7 +1251,7 @@ export function freeConstructors(run: RunIdentity): ReadonlyArray<readonly [stri
   return [
     ["channel", (a) => deepFreeze({ channel: a[0] as string })],
     ["run", () => deepFreeze({ id: run.runId, programHash: run.programHash, startedAt: run.startedAt })],
-    ["replied", (a) => deepFreeze({ event: "replied", agent: (a[0] as AgentHandleValue).agent })],
+    ["replied", (a) => deepFreeze({ event: "replied", agent: agentHandle(a[0], "argument 1 of `replied`").agent })],
     [
       "message",
       (a) => {
@@ -1174,13 +1260,13 @@ export function freeConstructors(run: RunIdentity): ReadonlyArray<readonly [stri
         return deepFreeze({
           event: "message",
           channel: ch,
-          ...(opts.from !== undefined ? { from: (opts.from as AgentHandleValue).agent } : {}),
+          ...(opts.from !== undefined ? { from: agentHandle(opts.from, "`from` of `message`").agent } : {}),
           ...(opts.matches !== undefined ? { matches: opts.matches as string } : {}),
         });
       },
     ],
     ["idle", (a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })],
-    ["down", (a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })],
+    ["down", (a) => deepFreeze({ event: "down", agent: agentHandle(a[0], "argument 1 of `down`").agent })],
   ];
 }
 
@@ -1359,8 +1445,8 @@ export async function performScope(
   /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
   branchDigest?: (losers: readonly string[]) => string | undefined,
 ): Promise<unknown> {
-  if (scopeKey.kind === "conclave" && atMostOnce(scopeKey.scope)) throw notHoldable("conclave", scopeKey.scope);
   const dispatches = scopeTraits(scopeKey.kind)?.dispatches === true;
+  if (dispatches && atMostOnce(scopeKey.scope)) throw notHoldable(scopeKey.kind, scopeKey.scope);
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }
@@ -1550,6 +1636,11 @@ export async function performScope(
     // ran out of stack is a fact about the host, so recording it would replay as a catchable
     // `L4000` on a host with more stack, where the same branch succeeds.
     if (isStackExhaustion(reason)) throw reason;
+    // NOR IS THE COMPILED ENGINE'S OWN FAULT (#3215). An `EngineFault` is an emitter mistake the
+    // engine refuses uncatchably, so recording it would hand a resume a catchable failure where the
+    // live run unwound. Matched by name, as the engine's own uncatchable check matches it, because
+    // the class lives on the engine's side of this module.
+    if (reason instanceof Error && reason.name === "EngineFault") throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1576,16 +1667,20 @@ export async function performScope(
     // A VALUE THE PROGRAM THREW IS RECORDED WHOLE (#2845). A replay delivers nothing but this
     // record, and it used to deliver the generic fault where the live run had rethrown the value, so
     // a resumed `catch` bound `{ code: "L4000", ... }` where the live one bound `"failure"`, and a
-    // program branching on it diverged. An `Error` is never the program's (it cannot construct one)
-    // and is still rethrown as itself: some classes that reach here unwind the run (the compiled
-    // engine's `EngineFault`), and an `EffectError` built from the record would make them catchable.
+    // program branching on it diverged.
+    //
+    // ANY OTHER `Error` IS RECORDED AS THE `host` FAULT A `catch` BINDS FOR IT LIVE (#3215). It is
+    // never the program's (it cannot construct one), so it is rethrown as itself and both engines'
+    // `toProgramError` deliver it as `{ code: "L4000", kind: "host", message }`. Recorded as
+    // `scope-fault`, the replay bound a different kind than the live run had, and a program
+    // branching on it diverged on the resume of unchanged source.
     const err: EntryError =
       reason instanceof EffectError
         ? recordableError(reason, "scope-fault").error
         : reason instanceof RuntimeFault
           ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
           : reason instanceof Error
-            ? { code: "L4000", kind: "scope-fault", message: messageOf(reason) }
+            ? { code: "L4000", kind: "host", message: messageOf(reason) }
             : thrownError(reason);
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too, and a conclave that closed says so even when its body failed.
@@ -1619,29 +1714,34 @@ export async function performScope(
   // branches already ran has done work the world can see, and leaving its entry pending invites a
   // resume to run those branches a second time. The facts the success settle would have carried
   // travel with the failure, because a cancel intent this scope issued is owed whether or not its
-  // value could be written.
+  // value could be written. The kind is `host`, the one a `catch` binds for the `NotCrossable` live.
   try {
     assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`, scopeKey.kind);
   } catch (e) {
     if (!(e instanceof NotCrossable)) throw e;
     await host.journal.settle(
       scopeKey,
-      { status: "failed", error: { code: "L4000", kind: "scope-fault", message: e.message } },
+      { status: "failed", error: { code: "L4000", kind: "host", message: e.message } },
       frame.clock.now(),
       settledFacts,
     );
     throw e;
   }
 
+  // A COPY, for the thrown value's reason (`thrownError`): freezing the value itself would freeze a
+  // record a branch returned from outside the scope for the rest of the live run, where a resume,
+  // which never runs the branch, leaves it writable (#3224). The live run gets the copy its record
+  // carries, in the journal's own encoding, so it reads exactly what a replay hands back.
+  const value = outcome.value === undefined ? undefined : deepFreeze(JSON.parse(JSON.stringify(outcome.value)));
   await host.journal.settle(
     scopeKey,
-    { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+    { status: "ok", result: { branches: outcome.branches, value } },
     // The joined branch clock, for the same reason as the failure path above: this is the value
     // `now()` answers after the scope, and the stamp replay hands back must be that value.
     frame.clock.now(),
     settledFacts,
   );
-  return outcome.value;
+  return value;
 }
 
 /**

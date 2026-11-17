@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -39,7 +39,6 @@ if (SUBCOMMAND === "auth-service" || SUBCOMMAND === "agent-bearer") {
 }
 
 const {
-  CotalEndpoint,
   authorizeServeGrant,
   contractArtifactCanonicalBytes,
   contractStoreContext,
@@ -435,7 +434,7 @@ try {
   // 1. Platform-Local Manager identity (registered in KV to test routing between local and remote)
   const localManagerInstanceId = mintLifecycleUid();
   const localServe = newIdentity();
-  createManagerInstanceIdentity(serverRoot, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  createManagerInstanceIdentity(serverRoot, SPACE, () => ({ instanceId: localManagerInstanceId, serveIdentity: localServe }));
 
   // Publish manager service contract schema to EPC stream using endpoint-serve-executor
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", {

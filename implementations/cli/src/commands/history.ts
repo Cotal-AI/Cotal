@@ -21,16 +21,16 @@ import {
   type Report,
   recordOperationSpace,
   spaceStreamsExpected,
+  shownTime,
+  concreteChannelProblem,
 } from "@cotal-ai/workspace";
 import { credentialEnded } from "../lib/connect.js";
-import { shownTime } from "../lib/shown-time.js";
 import { c } from "../ui.js";
 import { historyClear } from "./history-clear.js";
-import { historyLimit, historyLimitRequest } from "./history-limit.js";
+import { HISTORY_LIMIT_FLAGS, historyLimit, historyLimitRequest } from "./history-limit.js";
 import { declaredFrom } from "./send.js";
 import { completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listDeclaredChannels } from "../lib/personas.js";
-import { concreteChannelProblem } from "../lib/concrete-channel.js";
 import { streamsAbsent } from "../lib/space-streams.js";
 import { brokerStoreWrite, storeDamageNotice } from "../lib/broker-store-health.js";
 import { scriptLine } from "../watch-data.js";
@@ -44,13 +44,17 @@ const limitFlag = { name: "limit", type: "string", value: "<n>", description: "h
 const fromFlag = { name: "from", type: "string", value: "<name>", description: "keep messages from this sender name or id (filters the window)" } as const;
 const grepFlag = { name: "grep", type: "string", value: "<text>", description: "keep messages whose text contains this, case-insensitive (filters the window)" } as const;
 const followFlag = { name: "follow", type: "boolean", description: "keep listening and print each new message (NDJSON with --json)" } as const;
-const maxAgeFlag = { name: "max-age", type: "string", value: "<age>", description: "limit: delete a channel post once it is older than this, such as 30d or 12h (at least 2m)" } as const;
-const perSenderFlag = { name: "per-sender", type: "string", value: "<n>", description: "limit: keep this many of each sender's newest posts on each channel" } as const;
-export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, maxAgeFlag, perSenderFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
+const maxAgeFlag = { name: "max-age", type: "string", value: "<age|none>", description: "limit: delete a channel post once it is older than this, such as 30d or 12h (at least 2m), or none" } as const;
+const perSenderFlag = { name: "per-sender", type: "string", value: "<n|none>", description: "limit: keep this many of each sender's newest posts on each channel, or none" } as const;
+const inboxMaxAgeFlag = { name: "inbox-max-age", type: "string", value: "<age|none>", description: "limit: delete an agent's stored copy of a channel post once it is older than this (at least 2h), or none" } as const;
+const inboxPerAgentFlag = { name: "inbox-per-agent", type: "string", value: "<n|none>", description: "limit: keep this many of each agent's newest stored copies, or none" } as const;
+const dmMaxAgeFlag = { name: "dm-max-age", type: "string", value: "<age|none>", description: "limit: delete a DM once it is older than this (at least 2m), or none" } as const;
+const dmPerSenderFlag = { name: "dm-per-sender", type: "string", value: "<n|none>", description: "limit: keep this many of each sender's newest DMs to each agent, or none" } as const;
+export const historyFlags = [...targetFlags, dmsFlag, forceFlag, yesFlag, dryRunFlag, sinceFlag, limitFlag, fromFlag, grepFlag, followFlag, maxAgeFlag, perSenderFlag, inboxMaxAgeFlag, inboxPerAgentFlag, dmMaxAgeFlag, dmPerSenderFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
 export const historySubcommands = [
   { name: "clear", flagNames: ["space", "server", "creds", "dms", "yes", "dry-run", "json", "plain"], summary: "confirm and purge all retained channel history in the space it targets", examples: [{ command: "cotal history clear --dry-run", note: "show what clearing history would delete" }, { command: "cotal history clear --yes", note: "delete the retained channel history" }], usage: "cotal history clear [--dms] [-y|--yes|--dry-run] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
-  { name: "limit", flagNames: ["space", "max-age", "per-sender", "yes", "json", "plain"], summary: "set how long the space keeps channel posts, by age and per sender; run it from the space root on the broker host", examples: [{ command: "cotal history limit --max-age 7d", note: "delete channel posts once they are a week old" }, { command: "cotal history limit --per-sender 500 --yes", note: "keep each sender's newest 500 posts on each channel, without a prompt" }], usage: "cotal history limit [--max-age <age>] [--per-sender <n>] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
+  { name: "limit", flagNames: ["space", "max-age", "per-sender", "inbox-max-age", "inbox-per-agent", "dm-max-age", "dm-per-sender", "yes", "json", "plain"], summary: "show or set how long the space keeps channel posts, stored copies and DMs, by age and count; run it from the space root on the broker host", examples: [{ command: "cotal history limit --per-sender 500 --yes", note: "keep each sender's newest 500 posts without prompting" }, { command: "cotal history limit --inbox-per-agent 5000", note: "keep each agent's newest 5000 stored copies" }, { command: "cotal history limit --dm-max-age 90d", note: "delete DMs once they are 90 days old" }], usage: "cotal history limit [--max-age <age|none>] [--per-sender <n|none>] [--inbox-max-age <age|none>] [--inbox-per-agent <n|none>] [--dm-max-age <age|none>] [--dm-per-sender <n|none>] [-y|--yes] [--json|--plain]", outputs: ["json", "plain"], prepareMeshTarget: false },
 ] as const satisfies readonly Subcommand[];
 
 /** Complete the subcommands and the channels the target space's personas declare, as `send -c` offers, then
@@ -67,18 +71,17 @@ const MAX_LIMIT = 1000;
 /** How many message ids a follow remembers to drop duplicates: a re-tap after a reconnect and the
  *  snapshot both overlap the live feed. */
 const SEEN_IDS = 10_000;
-/** How many characters of a message a text or plain row shows. */
+/** How many code units of a message a text or plain row shows. */
 const ROW_TEXT = 500;
 
-/** A message's text as a row shows it: whole up to `ROW_TEXT` characters, else cut there and marked
- *  with its size, since `--limit` bounds messages and one message can be close to a megabyte. */
+/** A message's text as a row shows it: whole up to `ROW_TEXT` code units, else cut there and marked
+ *  with the code units not shown. `--limit` bounds messages, and one message can be close to a megabyte.
+ *  `--json` carries the text as it was sent. The count is code units, the same measure `watch` uses. */
 function rowText(text: string): string {
-  let head = "", count = 0;
-  for (const char of text) {
-    if (count++ === ROW_TEXT) return `${head}… (cut from ${Buffer.byteLength(text)} bytes; --json carries the whole text)`;
-    head += char;
-  }
-  return text;
+  if (text.length <= ROW_TEXT) return text;
+  let head = text.slice(0, ROW_TEXT);
+  if (/[\uD800-\uDBFF]/u.test(head.at(-1)!)) head = head.slice(0, -1);
+  return `${head}… (${text.length - head.length} text code units not shown; --json carries the whole text)`;
 }
 /** How long a `--dms` read waits for the roster that names DM recipients before it shows principals. */
 const ROSTER_MS = 2_000;
@@ -168,6 +171,11 @@ function parseSince(raw: string | undefined, now: number): Since | undefined {
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
 }
 
+/** The name a history row shows. A blank payload name is not a sender. */
+export function historySender(name: string, id: string): string {
+  return name.trim() ? name : id;
+}
+
 function itemOf(msg: CotalMessage, where: { seq?: number; channel?: string }): HistoryItem {
   return {
     seq: where.seq ?? null,
@@ -237,16 +245,16 @@ export function validateHistoryArguments(args: ParsedArgs): void {
   if (args.positionals[0] === "clear") {
     if (args.positionals.length !== 1) throw usage("history clear takes no channel; it clears all retained channel history in the space it targets");
     if ((["since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history clear accepts no read-window or follow flags; use a separate history read");
-    if (values["max-age"] !== undefined || values["per-sender"] !== undefined) throw usage("--max-age and --per-sender belong to history limit");
+    if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
     return;
   }
   if (args.positionals[0] === "limit") {
     if (args.positionals.length !== 1) throw usage("history limit takes no channel; one limit holds for every channel in the space");
-    if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only --max-age, --per-sender, --yes, --space and an output flag; it reaches the broker from the space root");
+    if ((["server", "creds", "dms", "dry-run", "since", "limit", "from", "grep", "follow"] as const).some((flag) => values[flag] !== undefined)) throw usage("history limit takes only its limit flags, --yes, --space and an output flag; it reaches the broker from the space root");
     historyLimitRequest(values);
     return;
   }
-  if (values["max-age"] !== undefined || values["per-sender"] !== undefined) throw usage("--max-age and --per-sender belong to history limit");
+  if (HISTORY_LIMIT_FLAGS.some((flag) => values[flag] !== undefined)) throw usage("the limit flags such as --max-age belong to history limit");
   if (values.yes !== undefined || values["dry-run"] !== undefined) throw usage("--yes belongs to history clear and history limit, and --dry-run to history clear");
   if (args.positionals.length > 1) throw usage("history reads one channel at a time");
   if (args.positionals[0] !== undefined && values.dms) throw usage("name a channel or request --dms, not both");
@@ -320,7 +328,8 @@ export async function history(args: ParsedArgs): Promise<void> {
       : undefined;
     const completeness = partial ? "partial" : "complete";
     if (v.dms) await ep.waitForPresenceSnapshot(ROSTER_MS);
-    const names = new Map([...ep.getRoster().map((p) => [p.card.id, p.card.name] as const), ...result.items.map((item) => [item.from.id, item.from.name] as const)]);
+    const names = new Map(ep.getRoster().filter((p) => p.card.name.trim()).map((p) => [p.card.id, p.card.name] as const));
+    for (const item of result.items) if (item.from.name.trim()) names.set(item.from.id, item.from.name);
     if (live && presentation === "json") {
       // A follow's snapshot is its first record, and the exit says what `writeResult` would have.
       writeStreamRecord(streamRecord("history", "snapshot", target, { ...result, completeness, warnings }));
@@ -394,6 +403,13 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       const merged = [...read, ...dms].sort((a, b) => a.ts.localeCompare(b.ts));
       if (dms.length === req.limit || merged.length > req.limit) olderRetained = true;
       read = merged.slice(-req.limit);
+      // An absent stream reads as no messages. That is a missing read, not an empty history.
+      try {
+        if (!(await ep.dmStreamPresent()))
+          warnings.push({ code: "DM_STREAM_ABSENT", target: req.target, message: `the direct-message stream of ${conn.space} is not on its broker, so direct messages are not shown` });
+      } catch (e) {
+        warnings.push({ code: "DM_STREAM_UNREAD", target: req.target, message: `the direct-message stream could not be read, so whether it is present is unknown: ${(e as Error).message}` });
+      }
     }
   } else {
     // Use this connection's broker-confined channel grant, not the delivery ACL mirror that human
@@ -435,7 +451,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     const held = await ep.chatRetention();
     chat = held.stream;
     lastSeq = held.lastSeq;
-    const names = new Map(read.map((item) => [item.from.id, item.from.name]));
+    const names = new Map(read.filter((item) => item.from.name.trim()).map((item) => [item.from.id, item.from.name]));
     retention = {
       perSender: held.perSender,
       maxAgeMs: held.maxAgeMs,
@@ -450,8 +466,18 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
     warnings.push({ code: "RETENTION_UNREAD", target: req.target, message: `the chat stream's retention could not be read, so gaps it left are unknown: ${(e as Error).message}` });
   }
 
-  // A missing chat stream means they were removed from a space whose streams `cotal up` created.
-  if (chat === false && spaceStreamsExpected(conn.space, conn.mode)) throw streamsAbsent(conn);
+  // A missing chat stream means channel history is gone. Direct messages are on their own stream.
+  // A --dms read that already holds one must keep it: refusing here discards that message and tells
+  // the operator to create every stream again, empty, which deletes the direct messages still stored.
+  if (chat === false && spaceStreamsExpected(conn.space, conn.mode)) {
+    const keptDirect = req.dms && read.some((item) => item.channel === null);
+    if (!keptDirect) throw streamsAbsent(conn);
+    warnings.push({
+      code: "CHAT_STREAM_ABSENT",
+      target: req.target,
+      message: `the chat stream of ${conn.space} is not on its broker, so channel history is not shown. Direct messages that are still stored are included`,
+    });
+  }
   // A bare number past the newest sequence names no message; it is most often a year.
   if (req.since?.kind === "seq" && lastSeq !== undefined && req.since.seq > lastSeq)
     throw new CommandFailure("refused", "USAGE_INVALID", `--since ${req.since.input} is past the chat stream's newest sequence, ${lastSeq}, so it names no message`, { target: req.target, remedy: `give a sequence up to ${lastSeq}, or write a date in full, such as ${yearShaped(req.since.input) ? req.since.input : new Date().getFullYear()}-01-01` });
@@ -534,8 +560,9 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
 
   return {
     async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, names: Map<string, string>, stopped: () => boolean): Promise<void> {
-      const seen = new Set(snapshot.map((item) => item.id));
+      const seen = new Set(snapshot.map((item) => item.id).filter((id) => id !== ""));
       const remember = (id: string) => {
+        if (!id) return;
         seen.add(id);
         if (seen.size > SEEN_IDS) seen.delete(seen.values().next().value!);
       };
@@ -571,7 +598,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
           } else if (entry.item) {
             if (seen.has(entry.item.id) || !match(entry.item)) continue;
             remember(entry.item.id);
-            names.set(entry.item.from.id, entry.item.from.name);
+            if (entry.item.from.name.trim()) names.set(entry.item.from.id, entry.item.from.name);
             // The live feed is the broker's delivery, which carries no stream sequence, so an event has
             // no `seq`. The snapshot's items carry theirs.
             const { seq: _seq, ...event } = entry.item;
@@ -603,15 +630,16 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
 }
 
 /** A DM row shows its recipient's name when the roster or a message read so far from that principal
- *  carries it, else the principal. */
-function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
+ *  carries one that is not only whitespace, else the principal. */
+export function where(item: HistoryItem, names: ReadonlyMap<string, string>): string {
   if (item.channel !== null) return `#${item.channel}`;
-  return `DM to ${item.to === null ? "?" : names.get(item.to) ?? item.to}`;
+  const named = item.to === null ? undefined : names.get(item.to);
+  return `DM to ${named && named.trim() ? named : item.to ?? "?"}`;
 }
 
 /** A followed message, in the line `watch --plain` writes after its `[space]` prefix. */
-function followLine(item: HistoryItem): string {
-  return scriptLine(item.ts, item.from.name || item.from.id, item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "not attributed"}`, item.text);
+export function followLine(item: HistoryItem): string {
+  return scriptLine(item.ts, historySender(item.from.name, item.from.id), item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "not attributed"}`, item.text);
 }
 
 function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string, string>, since: Since | undefined, follow = false): Report {
@@ -654,7 +682,7 @@ function historyView(r: HistoryResult, space: string, names: ReadonlyMap<string,
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: item.from.name, text: rowText(item.text) })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item, names), from: historySender(item.from.name, item.from.id), text: rowText(item.text) })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },

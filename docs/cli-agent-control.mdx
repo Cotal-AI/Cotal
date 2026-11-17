@@ -22,7 +22,7 @@ cotal attach [<name>] [--on <instance>] [--no-reconnect] [--space <s>]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
-| `<name>` / `--name <n>` | none | Managed agent to stop or attach, named positionally or with `--name`. `stop` needs one unless `--self` is given. `attach` without one lists your agents to choose from on a terminal, and refuses `USAGE_INVALID` where it cannot ask |
+| `<name>` / `--name <n>` | none | Managed agent to stop or attach, named positionally or with `--name`. `stop` needs one unless `--self` is given. `attach` without one lists your agents to choose from on a terminal, and refuses `USAGE_INVALID` where it cannot ask. A name that is missing or only whitespace is shown as that agent's id |
 | `--self` (`stop`) | off | Stop only the verified managed seat running this command (see [Stopping an agent](#stopping-an-agent)) |
 | `--force` (`stop`) | off | Request the native hard despawn (`graceful:false`); it does not bypass authority |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. On a user-auth mesh it also takes a manager's name, its host, or the `<host>/<runtime>` an unnamed manager shows as (its runtime alone when its presence names no host), when only one of your live managers matches it; otherwise it refuses as `TARGET_AMBIGUOUS` or `TARGET_NOT_FOUND`, lists your live managers and gives the command again on each. On a static or open mesh a manager's presence does not carry its instance id, so a name is refused as `USAGE_INVALID` and the Next asks for the instance id. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
@@ -49,9 +49,10 @@ once it has exited, `ps` gives the refusal above.
 
 On any other static or open space, such as a legacy stack started with `--no-manager`, a manager
 registry that lists no live manager makes `ps` refuse `TARGET_UNAVAILABLE`, exit 2: no manager is
-registered, so none was asked. It used to fail `OPERATION_FAILED`, exit 5. `cotal status <agent>`
-and the `attach` picker read the same list and refuse the same way. The refusal does not show that
-no manager process runs, because a manager that is still starting or cannot register is not listed.
+registered, so none was asked. It used to fail `OPERATION_FAILED`, exit 5. The `attach` picker
+reads that list and refuses the same way. Named `cotal status <agent>` instead resolves the live
+peer's holding manager, as the [agent view reference](cli-agent-views.mdx#named-agent-status) describes.
+The refusal does not show that no manager process runs, because a manager that is still starting or cannot register is not listed.
 The registry's own answer stays under `error.cause`. A registry that could not be read is reported
 as it was.
 
@@ -65,6 +66,14 @@ command.
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
+
+The stock auth provider gives each hosted manager admin-authorization decision a single
+5-second dependency budget, covering IdP token acquisition, the authority POST and its complete
+response body. If that budget expires, the manager refuses with `unavailable` and outcome
+`not-executed`, before the control caller's 10-second invocation deadline. It aborts the pending
+HTTP work without cancelling another caller's token fetch. Authorization is still checked fresh
+on every call. A slow or unreachable authority never permits stale authorization or an
+owner-filtered substitute for the refused read.
 
 `ps` shows the instance id `--on` takes for each manager that answered, with or without agents. One
 manager is listed under `Manager` as its `instance`, and with several each gets a `manager <id>`
@@ -82,7 +91,7 @@ with several of your managers live, the host is the one each manager's presence 
 
 ### Seat JSON envelope
 
-The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
+The human `ps` report is presentation text and is not a stable parsing target. A seat or presence name that is only whitespace is shown as the id there. Scripts use `--json`,
 one envelope whose `result` is:
 
 | Field | Meaning |
@@ -203,8 +212,13 @@ pid.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a
-static/open mesh both verbs first ask every registered instance which one hosts the named seat, then
-address that instance directly. This happens by default; you do not need `--on`. When every instance
+static/open mesh these verbs use the live peer's holding-manager hint when it exists. If no live
+peer matches, they read each registered manager's live seat list, as `ps` does, then address the
+manager that holds the name. A running process can be stopped, attached or typed into before it
+joins the mesh, including when `ps` reports `join degraded`. `--on` reads the named manager's own
+seat when no live peer matches. Both paths retain the selected lifecycle and the manager's authority
+checks. A live peer with an invalid or missing holding-manager hint still refuses.
+This happens by default; you do not need `--on`. When every instance
 answers and none hosts the name, `stop`, `attach` and `input` refuse `TARGET_NOT_FOUND` (exit 2)
 before anything is sent, as they do with `--on`, naming the managers that answered, with `cotal ps`
 as Next. When an instance did not answer for itself, the seat may run there, so they refuse
@@ -224,7 +238,7 @@ and any other caller's selection must be unique. Discovery and the command use t
 The caller gains no registry read or scatter permission. An absent, ambiguous or unauthorized
 selection refuses before sending the command. With several of your managers live, the refusal lists
 each one on its own row with its name, instance id, host, activity and the time its process started.
-A manager started without a name is listed as `<host>/<runtime>`. A manager started by a cotal
+A manager started without a name is listed as `<host>/<runtime>`. A name that is missing or only whitespace is listed the same way, and with no host or runtime the list uses the manager's id. A manager started by a cotal
 before 0.100.0 puts no host in its presence, so its host reads
 `not reported (started by an older cotal)` and it is listed by its runtime, such as `tmux`.
 Restarting it with the current cotal shows its host. Its Next gives your command again with `--on`
@@ -357,7 +371,7 @@ Each reconnect also hands the abandoned session back to the manager, over the fi
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
 time. If that message never gets a link, the attach says so when it ends. The live-session ceiling
 defaults to 64 concurrent sessions (`--max-sessions`); the browser console opens one session per
-pane, so a dashboard over a large mesh should size for agents × panes. Hitting the ceiling refuses
+pane, so a dashboard over a large mesh should size for agents × panes. A pane whose agent name is missing or only whitespace is labelled with that agent's id. Hitting the ceiling refuses
 before a credential is minted and names `--max-sessions`.
 
 
@@ -485,8 +499,8 @@ answer deadline. They then refuse `TARGET_UNAVAILABLE` too, since nothing was se
 **This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
 anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
 not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
-needs the `admin` scope, the same scope [`ps`](#managed-seats) already needs there. The reason is
-that a write into a terminal is control of whatever is running in it, and on a user-auth mesh the
+needs the `admin` scope. The reason is that a write into a terminal is control of whatever is
+running in it, and on a user-auth mesh the
 own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
 could otherwise type into a sibling it never started. Seat locality is still resolved for you.
 
@@ -547,6 +561,17 @@ because the agent is not running or the caller may not control it, its reply car
 `not-executed`. The CLI reports `refused` with exit 2, names the agent and prints the manager's
 reason on one line. A failure after an effect may have started, such as a terminal write the
 runtime rejected, stays `unknown` with exit 3, still shows the manager's reason, and is not retried.
+
+On Windows, stopping a `pty` seat pins its launched root process and takes an operating-system
+snapshot of the descendant subtree that exists when the stop is requested, before any cooperative
+shutdown grace. Every member of that cohort is pinned by its process handle and creation time. If
+a member disappears during capture or its identity is ambiguous, the stop refuses. After the grace
+window, any member that is still running is terminated through its retained handle, independent of
+terminal output. The stop succeeds only after every captured process has exited and the PTY has
+reported its exit; otherwise the manager reports outcome `unknown` (exit 3), keeps the seat's slot
+and never logs `seat reaped:`. This covers the process tree that exists at stop time; descendants
+that detached or were reparented earlier, and children created after the snapshot, are outside that
+claim.
 
 
 ### Managed restart policy

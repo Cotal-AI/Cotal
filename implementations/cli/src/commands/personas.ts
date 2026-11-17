@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
-  loadAgentFile,
+  assertValidRole,
   oneLine,
   personaDir,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
-import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
+import { cachedPreferences, CommandFailure, resolvePreference, parseCommaList, recordOperationSpace, renderReport, targetFlags, terminalWidth, wrapWords } from "@cotal-ai/workspace";
+import { assertLabels, commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, reservedPersonaName, serializePersona, validatePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { catalogFolderProblem, catalogReadRefusal, listPersonaNames, readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -45,6 +45,10 @@ const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export async function personas(args: ParsedArgs): Promise<void> {
   const positionals = args.positionals;
+  const sub = positionals[0] ?? "list";
+  if (positionals.length > (sub === "list" ? 1 : 2)) {
+    throw new CommandFailure("refused", "USAGE_INVALID", "usage: cotal personas [list | show <name> | edit <name> | new <name> | rm <name>]");
+  }
   const values = args.values as { role?: string; model?: string; prompt?: string; from?: string; subscribe?: string; verbose?: boolean; force?: boolean; running?: boolean; space?: string; server?: string; creds?: string };
 
   switch (positionals[0] ?? "list") {
@@ -211,6 +215,8 @@ function show(name: string | undefined, values: { space?: string; server?: strin
  *  then the saved one), validate a private draft, then compare and commit through the shared local writer. */
 async function edit(name: string | undefined, values: { space?: string; server?: string }): Promise<void> {
   if (!name) return usage();
+  if (!resolvePreference("editor", { preferences: cachedPreferences() }).value)
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no editor is set", { remedy: "set VISUAL or EDITOR, or run `cotal config set editor vim`" });
   const catalog = personaCatalog(values);
   const edit = await editPersona(personaPath(catalog.root, name), name, catalog);
   if (edit.action === "saved") console.log(c.green(`✓ saved "${name}"`));
@@ -262,6 +268,13 @@ async function create(name: string | undefined, v: { role?: string; model?: stri
     process.exit(1);
   }
   const subscribe = parseCommaList(v.subscribe);
+  // A role is the address `spawn --role` launches under, so a role spawn would refuse is refused here,
+  // as `persona create` refuses it, before anything is written. Control characters are refused first.
+  if (v.role !== undefined) {
+    assertLabels({ role: v.role });
+    try { assertValidRole(v.role); }
+    catch (error) { throw new CommandFailure("refused", "USAGE_INVALID", `--role: ${oneLine((error as Error).message)}`); }
+  }
 
   const bytes = await serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
   commitPersona(path, expected, bytes);

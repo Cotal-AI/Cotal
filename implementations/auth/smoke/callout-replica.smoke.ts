@@ -179,7 +179,7 @@ if (process.argv[2] === "__daemon-auth-service") {
         if (!line) return reject(new Error(`load child exited ${code} with no result`));
         resolve(JSON.parse(line.slice("RESULT ".length)) as LoadResult);
       });
-      child.stdin!.end(JSON.stringify({ mode: "churn", servers, sentinelCreds, bearers, connectTimeoutMs: 10_000, ratePerSec: RATE, seconds }));
+      child.stdin!.end(JSON.stringify({ mode: "churn", clientSigning: "nats", servers, sentinelCreds, bearers, connectTimeoutMs: 10_000, ratePerSec: RATE, seconds }));
     })]);
     const latencies = results.flatMap((r) => r.latencies).sort((a, b) => a - b);
     const pct = (p: number) => latencies.length ? Math.round(latencies[Math.min(latencies.length - 1, Math.ceil((p / 100) * latencies.length) - 1)]) : NaN;

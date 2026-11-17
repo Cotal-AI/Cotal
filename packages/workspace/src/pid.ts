@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { nativeWin32CreationToken } from "./win32-process.js";
 import { darwinProcessBinding, type DarwinProcessBinding } from "./darwin-process.js";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
 import { createPrivateRecord, writePrivateRecord } from "@cotal-ai/core";
 import { acquireLock, processStartToken as posixStartToken } from "./advisory-lock.js";
 import { probeLiveness, type LivenessProbe } from "./liveness.js";
@@ -206,6 +206,37 @@ export function readProcessCommand(pid: number): ProcessCommand {
   if (r.status === 0 && out !== "") return { kind: "command", command: out };
   if (r.status === 1) return { kind: "gone" }; // ps exits 1 when no process matches
   return { kind: "unreadable", why: `ps exited ${String(r.status)}${out ? `: ${out}` : ""}` };
+}
+
+/**
+ * The live processes of this account, other than this one, whose command line contains `token`.
+ * Only the pids are returned. Linux reads `/proc`, and other POSIX hosts list `ps -U <uid>`. A
+ * command line of this account that cannot be read, or a host with no source, is `unreadable`, so a
+ * caller never takes "could not look" for "none runs".
+ */
+export function processesNaming(token: string): { kind: "pids"; pids: number[] } | { kind: "unreadable"; why: string } {
+  if (process.platform === "win32" || !process.getuid) return { kind: "unreadable", why: "no process-argv source on win32" };
+  const uid = process.getuid();
+  const pids: number[] = [];
+  if (process.platform === "linux") {
+    for (const entry of readdirSync("/proc")) {
+      const pid = parsePid(entry);
+      if (pid === undefined || pid === process.pid) continue;
+      try { if (statSync(`/proc/${pid}`).uid !== uid) continue; } catch { continue; }
+      const command = readProcessCommand(pid);
+      if (command.kind === "unreadable") return { kind: "unreadable", why: command.why };
+      if (command.kind === "command" && command.command.includes(token)) pids.push(pid);
+    }
+    return { kind: "pids", pids };
+  }
+  const r = spawnSync("ps", ["-U", String(uid), "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error || r.status !== 0) return { kind: "unreadable", why: r.error ? `ps: ${r.error.message}` : `ps exited ${String(r.status)}` };
+  for (const line of (r.stdout ?? "").split("\n")) {
+    const match = /^\s*(\d+)\s(.*)$/.exec(line);
+    const pid = match ? parsePid(match[1]!) : undefined;
+    if (pid !== undefined && pid !== process.pid && match![2]!.includes(token)) pids.push(pid);
+  }
+  return { kind: "pids", pids };
 }
 
 /**

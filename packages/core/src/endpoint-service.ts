@@ -15,6 +15,7 @@ import { parseServiceConnectionBinding, serviceGateApprovalLive, type ServiceCon
 import type { KV } from "@nats-io/kv";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import { spacePrefix, principalKey } from "./subjects.js";
+import { isContractDigest } from "./canonical.js";
 import {
   endpointToken, assertBoundedOwner, assertLifecycleToken, assertCommandToken, assertPoolToken,
   type EpAuthzMode,
@@ -28,7 +29,7 @@ import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TR
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { isCanonicalEd25519PublicCoordinate } from "./remote-service-authority.js";
-import type { ServiceAuthorityInfo, ServiceAuthorityResult, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
+import type { ServiceAuthorityInfo, ServiceIssuerKey, ServiceRegistration, ServiceRegistrationWitness } from "./remote-service-authority.js"; // type-only: the runtime graph stays authority → service
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
@@ -114,7 +115,6 @@ export function parseActivationPolicy(raw: unknown): VirtualActivationPolicy {
 const STATE_TOKEN = /^[a-z][a-z0-9-]{0,31}$/;
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const wireInt = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
 
 function svcFail(what: string): never {
   throw new EpEnvelopeError("internal", `service record does not validate: ${what}`);
@@ -134,7 +134,7 @@ export function parseServiceSpec(raw: unknown, key: { endpoint: string }): Servi
     svcFail(`owner: ${(e as Error).message}`);
   }
   if (o.endpointType !== undefined && typeof o.endpointType !== "string") svcFail("endpointType");
-  if (!Array.isArray(o.clusterDigests) || o.clusterDigests.length === 0 || !o.clusterDigests.every(isDigest))
+  if (!Array.isArray(o.clusterDigests) || o.clusterDigests.length === 0 || !o.clusterDigests.every(isContractDigest))
     svcFail("clusterDigests must be a non-empty array of sha256 digests");
   if (!isRec(o.protocol) || o.protocol.v !== 1) svcFail("protocol.v");
   if (o.activation !== undefined) parseActivationPolicy(o.activation); // closed schema, capacity REQUIRED (§13.6)
@@ -601,7 +601,19 @@ export async function registerServiceInstance(
   let progressRevision: number | null = null;
   try {
     const family = await args.barrier.enumerate();
-    for (const row of family) if (row.state === "active") await args.barrier.revoke(row);
+    // Independent row CASes overlap so historical renewals do not cost two serial round trips
+    // apiece. Drain the whole bounded batch, including synchronous throws, before any refusal
+    // or eviction. A failed batch leaves completed revocations durable and the gate frozen.
+    const active = family.filter((row) => row.state === "active");
+    let revoked = family.length - active.length;
+    args.barrier.onRevocationProgress?.({ revoked, total: family.length });
+    const revokeConcurrency = 16;
+    for (let i = 0; i < active.length; i += revokeConcurrency) {
+      const results = await Promise.allSettled(active.slice(i, i + revokeConcurrency).map(async (row) => args.barrier.revoke(row)));
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+      revoked += results.length;
+      args.barrier.onRevocationProgress?.({ revoked, total: family.length });
+    }
     const holders = [...new Set(family.map((row) => row.holderPrincipal))].sort();
     const opId = args.barrier.operationId ?? obs.op?.opId;
     let progress: EndpointRepairCursor | undefined;
@@ -696,14 +708,16 @@ export async function registerServiceInstance(
   }
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
-  // may reopen; a lost CAS means a reconciler/newer barrier superseded us → leave frozen.
+  // may reopen; a lost CAS means a reconciler/newer barrier superseded us and moved the gate.
   const processEpoch = successorProcessEpoch(obs);
+  let reopened: boolean;
   try {
-    if (!(await args.barrier.reopen(token, successorAt(newRev, processEpoch))))
-      throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
+    reopened = await args.barrier.reopen(token, successorAt(newRev, processEpoch));
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
+  if (!reopened)
+    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen lost its freeze token (a reconciler or newer barrier superseded this one), so this registration reopened nothing; re-read the gate and re-decide (SPEC 13.1)`);
   await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation);
   if (args.barrier.progress && progressRevision !== null) {
     try { await args.barrier.progress.clear(progressRevision); }
@@ -990,18 +1004,19 @@ async function releaseHeldGovernance(kv: KV, endpoint: string, instanceId: strin
 }
 
 /** Reopen a barrier-frozen gate (token-pinned) after a registration aborted before any spec write
- *  or revoke — the gate returns to `open` at the given successor. A lost or failed reopen leaves
- *  the gate frozen for reconciliation and is surfaced with the aborting cause attached (§13.1:
- *  fail closed, never a silently stuck gate). */
+ *  or revoke — the gate returns to `open` at the given successor. A lost CAS means a newer barrier
+ *  moved the gate and nothing was reopened; a reopen that throws may have committed. Either is
+ *  surfaced with the aborting cause attached (§13.1: fail closed, never a silently stuck gate). */
 async function reopenGateAfterAbort(barrier: EpIssuanceBarrier, token: number, successor: EpGateSuccessor, cause: unknown): Promise<void> {
+  let e: EpEnvelopeError;
   try {
     if (await barrier.reopen(token, successor)) return;
-    throw new Error("the reopen CAS lost its freeze token");
+    e = new EpEnvelopeError("unavailable", "registration aborted and the reopen lost its freeze token (a reconciler or newer barrier superseded this one), so this registration reopened nothing; re-read the gate and re-decide (SPEC 13.1)");
   } catch (err) {
-    const e = new EpEnvelopeError("unavailable", `registration aborted and the issuance gate could not be reopened; it is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
-    (e as Error & { cause?: unknown }).cause = cause;
-    throw e;
+    e = new EpEnvelopeError("unavailable", `registration aborted and the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
+  (e as Error & { cause?: unknown }).cause = cause;
+  throw e;
 }
 
 /** Write an instance's status with the FULL §13.9 writer fence. `epoch` is the
@@ -1747,6 +1762,15 @@ const SERVICE_ACCESS_BEARER_VER = 1;
 /** Clock tolerance on `iat` and `nbf` only; expiry is refused at the original second (SPEC 13.9). */
 const SERVICE_ACCESS_CLOCK_TOLERANCE_SEC = 5;
 
+/** A signed service access bearer whose issue time exceeds this process's clock tolerance.
+ *  Carries no bearer material; the refusal remains permission-denied. */
+export class ServiceAccessNotYetValidError extends EpEnvelopeError {
+  constructor() {
+    super("permission-denied", "the access bearer is issued in the future; an unverified bearer binds no serve grant (SPEC 13.9)");
+    this.name = "ServiceAccessNotYetValidError";
+  }
+}
+
 // A declared `never` return narrows the control flow after each call; an inferred arrow does not.
 function refuseBearer(why: string): never {
   throw new EpEnvelopeError("permission-denied", `the access bearer ${why}; an unverified bearer binds no serve grant (SPEC 13.9)`);
@@ -1796,7 +1820,7 @@ function verifyServiceAccessBearer(bearer: string, witness: ServiceRegistrationW
   if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(nbf) || !Number.isSafeInteger(exp) || (iat as number) < 0
     || nbf !== iat || (exp as number) <= (iat as number) || (exp as number) - (iat as number) > SERVICE_ACCESS_TTL_SECONDS)
     refuseBearer("lifetime is not the fixed service access lifetime");
-  if ((iat as number) > now + SERVICE_ACCESS_CLOCK_TOLERANCE_SEC) refuseBearer("is issued in the future");
+  if ((iat as number) > now + SERVICE_ACCESS_CLOCK_TOLERANCE_SEC) throw new ServiceAccessNotYetValidError();
   if ((exp as number) <= now) refuseBearer("has expired");
   if (!act || !service || act.view !== "service-endpoint" || service.duty !== "serve" || act.owner !== payload!.sub
     || act.actor !== witness.principal.actor || act.lifecycleUid !== witness.principal.lifecycleUid
@@ -2072,6 +2096,9 @@ export interface EpIssuanceBarrier {
   enumerate: () => Promise<EpServeLedgerRow[]> | EpServeLedgerRow[];
   /** Flip one enumerated row `active`→`revoked` (§13.1: enforce revocation on the ledger). */
   revoke: (row: EpServeLedgerRow) => Promise<void> | void;
+  /** Report retained rows already revoked and each fully settled successful revocation batch.
+   *  This observation does not replace durable rows or verified-holder progress. */
+  onRevocationProgress?: (progress: { revoked: number; total: number }) => void;
   /** VERIFIED cluster-wide eviction of revoked holder principals (§13.1): enforce the revocation
    *  on every server, evict the principals' live connections, and RE-SCAN — answering, per holder
    *  in input order, `true` only when that principal is verified GONE. FAIL-CLOSED: a `false` (or a
@@ -2230,16 +2257,33 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     try { await gate.revoke(row); return undefined; }
     catch (err) { return (err as Error)?.message ?? String(err); }
   };
-  let won: boolean;
-  try {
-    won = await gate.commit(obs.revision);
-  } catch (err) {
-    const revokeFailed = await revokeStaged();
-    throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a serve credential (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+  // Session siblings and standing serve mints touch the same gate without changing its authority.
+  // A revision loss alone is contention, not a takeover. Compare the whole original observation
+  // before retrying, so a freeze/reopen or any changed coordinate still refuses the staged mint.
+  const withoutRevision = (g: EpGateState): string =>
+    JSON.stringify(Object.entries(g).filter(([key]) => key !== "revision").sort(([a], [b]) => (a < b ? -1 : 1)));
+  const pinnedTo = withoutRevision(obs);
+  let pin = obs.revision;
+  let won = false;
+  for (let attempt = 0; attempt < 64; attempt++) {
+    let current: EpGateState | null;
+    try {
+      won = await gate.commit(pin);
+      if (won) break;
+      current = await gate.observe();
+    } catch (err) {
+      const revokeFailed = await revokeStaged();
+      throw new EpEnvelopeError("unavailable", `the issuance-gate CAS failed; refusing to release a serve credential (SPEC 13.1): ${(err as Error)?.message ?? String(err)}${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    }
+    if (current === null || withoutRevision(current) !== pinnedTo) {
+      const revokeFailed = await revokeStaged();
+      throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    }
+    pin = current.revision;
   }
   if (!won) {
     const revokeFailed = await revokeStaged();
-    throw new EpEnvelopeError("expired", `the issuance gate advanced during mint (a takeover, re-registration, or name transfer won the serialization on ${snap.endpoint}/${snap.instanceId}); this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
+    throw new EpEnvelopeError("unavailable", `the issuance gate stayed contended across every retry; this mint released nothing (SPEC 13.1)${revokeFailed ? `; ALSO the staged-row revoke failed and the row needs barrier reconciliation: ${revokeFailed}` : ""}`);
   }
   if (obs.authorityFamily === "service") {
     try { await gate.verifyServiceIssuance!(row, obs); }

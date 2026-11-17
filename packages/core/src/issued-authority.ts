@@ -37,7 +37,7 @@ import { assertGeneration, callerTokens, type EpCaller } from "./endpoint-subjec
 export { assertGeneration, isIssuedCaller, EP_RAIL_V1, type IssuedCaller } from "./endpoint-subjects.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
 import { subjectMatches, token } from "./subjects.js";
-import { acceptedBucket, acceptedKey, assertIssuedSpace, closed, issuedCallerOfToken, readAcceptedRow, refSnapshot, type IssuedAuthorityRef } from "./issued-accepted.js";
+import { acceptedBucket, acceptedKey, assertIssuedSpace, closed, issuedCallerOfToken, refSnapshot, type IssuedAuthorityRef } from "./issued-accepted.js";
 export { acceptedBucket, acceptedKey, assertIssuedSpace, issuedCallerOfToken, readAcceptedRow } from "./issued-accepted.js";
 export type { IssuedAuthorityRef } from "./issued-accepted.js";
 

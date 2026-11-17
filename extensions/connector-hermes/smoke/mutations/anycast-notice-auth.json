@@ -1,0 +1,45 @@
+{
+  "suite": [
+    "extensions/connector-hermes/smoke/anycast-notice-auth.smoke.ts"
+  ],
+  "guard": "The delivery daemon's notice reaches a Hermes seat marked as one: the sidecar labels it as the daemon's notice, runs it in a chat of its own, and sends a turn's answer to it nowhere",
+  "command": "pnpm smoke:hermes-anycast-notice:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=6",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/anycast-notice-auth.json",
+  "assembles": [
+    "extensions/connector-hermes/plugin/cotal"
+  ],
+  "why": [
+    "Launch copies the plugin into the seat's Hermes home. The suite copies it the same way and the",
+    "probe runs that copy, so a mutation of the plugin's Python is what the probe loads."
+  ],
+  "mutations": [
+    {
+      "name": "the bridge leaves the notice mark off what it pushes",
+      "file": "extensions/connector-hermes/src/bridge.ts",
+      "find": "    notice: i.notice,\n",
+      "replace": "",
+      "expectRed": "1a the bridge pushes the notice marked as one",
+      "note": "The sidecar cannot tell the daemon's notice from a DM, so it frames it as one from the daemon and answers into a DM that has no peer.",
+      "cell": "1a the bridge pushes the notice marked as one"
+    },
+    {
+      "name": "framing labels a notice as a DM",
+      "file": "extensions/connector-hermes/plugin/cotal/framing.py",
+      "find": "    if msg.get(\"notice\") == \"anycast\":\n        return f\"[anycast notice from the delivery daemon] {history}{body_safe(msg.get('text'))}\"\n",
+      "replace": "",
+      "expectRed": "1c the sidecar labels it the delivery daemon's notice, not a peer's DM",
+      "note": "The notice is framed as a DM from a peer named delivery, which a model reads as someone to answer.",
+      "cell": "1c the sidecar labels it the delivery daemon's notice, not a peer's DM"
+    },
+    {
+      "name": "the adapter runs a notice in a DM with the daemon",
+      "file": "extensions/connector-hermes/plugin/cotal/adapter.py",
+      "find": "        elif msg.get(\"notice\") == \"anycast\":\n            chat_id, chat_name = NOTICE_CHAT, \"anycast notices\"\n",
+      "replace": "",
+      "expectRed": "1d it runs in the notice chat, not a DM with the daemon",
+      "note": "The notice runs in a DM chat keyed by the daemon's id, so a turn's reply is sent to a sender that is no peer and fails.",
+      "cell": "1d it runs in the notice chat, not a DM with the daemon"
+    }
+  ]
+}

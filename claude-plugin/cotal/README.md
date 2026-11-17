@@ -9,7 +9,10 @@ This directory is generated at each release by `scripts/materialize-claude-plugi
 
 ## What it installs
 
-- One stdio MCP server, `node dist/mcp.cjs`, which provides the `cotal_*` tools.
+- One stdio MCP server, `node dist/mcp.cjs`, which provides the `cotal_*` tools. `cotal setup` also
+  registers the same server as the user-scope MCP entry `cotal` in Claude Code's own configuration
+  (`claude mcp add --scope user`): Claude Code binds the wake channel of a session Cotal launches
+  only to a server its configuration declares, and a plain session runs one process for both.
 - One native hooks module, which reads local wake notifications and starts a Cotal-attributed turn
   when a message arrives in a supported Code session.
 - 9 lifecycle hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolBatch`,

@@ -7,6 +7,59 @@ audience: operators
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
+## Sign in to Cotal Cloud
+
+Run `cotal login`. With no known provider, it signs in to Cotal Cloud in a terminal
+or a pipe. Use `cotal login --cloud` to select Cloud explicitly. Approve the printed link and code.
+A supported desktop session opens the link in your browser. Use `--no-browser` to open it
+elsewhere. Piped output does not open a browser.
+
+For another host, use `cotal login --idp <auth base URL>`. Fresh Cloud sign-ins use
+`https://cotal.cloud/api/auth`. The origins `https://cotal.cloud` and
+`https://cloud.cotal.ai` select their own `/api/auth` paths. Other provider URLs are
+used as written, without trying alternate auth paths.
+
+An upgrade leaves existing Cloud registrations on their saved address. To move a
+registered account deliberately, run:
+
+```bash
+cotal login --migrate-from https://cloud.cotal.ai/api/auth
+```
+
+The old issuer's root discovery document must endorse the new HTTPS origin with
+`nativeMigration: { version: 1, origin: "https://cotal.cloud" }`. The client reads
+complete pins from the new root and requests fresh device approval there. It checks
+the same issuer, subject, audience and catalog space identities before saving the
+new login and replacing registrations. It does not send the old bearer to the new
+origin. Existing service sessions and native retirement or renewal records remain
+on their saved authority. Cancellation or failed identity checks do not replace
+registrations. If the approval code expires, retry `cotal login --migrate-from <old auth URL>`.
+Session and registry persistence are separate writes.
+
+## Sign in through a discovery name
+
+Run `cotal login <name>` or `cotal daemon setup --idp <name>` with a lowercase DNS
+hostname. The client reads `https://<name>/.well-known/cotal-mesh`, then the root
+well-known document at the declared issuer's origin. Both documents must agree on
+`userAuth.idp.issuer` and `audience`. The typed root's HTTPS IdP URL must be on the
+typed name's origin or equal the issuer root's complete IdP URL. Other third-origin
+URLs are refused before device approval. The client keeps the typed root's pins.
+The issuer's own root must list the name
+in its optional top-level `discoveryNames` array. Its own hostname needs no listing.
+An unlisted name is refused before device approval, with both hosts named.
+
+Discovery requests carry no credentials, refuse redirects, and have a five-second
+whole-response deadline and a 64 KiB decoded body limit per document. Login and
+catalog storage use the resolved IdP URL, never the typed name. The approved token
+must match the discovered issuer and audience. Catalog endpoint origin checks do
+not change. Existing machines need no new login when a provider adds a name.
+
+This generic discovery flow does not change Cloud's default address or migrate an
+existing account. Cloud now uses `cotal.cloud` for its canonical auth address while
+retaining `https://cloud.cotal.ai` as its issuer. Providers may likewise have different
+issuer and auth origins under these discovery rules.
+Use the explicit migration command above to move saved Cloud registrations.
+
 Static minting requires local signing authority. Account sign-in and actor grants are separate, and diagnostic reports state which local claims they checked.
 
 
@@ -18,6 +71,7 @@ cotal auth mint <name> --provision [--role <role>] [--space <space>] [--server <
 cotal auth mint <name> [--expires-in <seconds> | --expires-at <unix-seconds> | --no-expiry]
 cotal auth mint <name> --identity <private-creds> --out <private-file>
 cotal auth mint <name> --replace
+cotal auth mint <name> --no-persona [--allow-subscribe <a,b>] [--allow-publish <a,b>] [--role <role>]
 cotal auth mint <name> --endpoint <class> --out <private-file> [--channels <a,b>] [--expires-in <seconds>]
 ```
 
@@ -28,6 +82,9 @@ credentials. Per-user-auth spaces refuse too; a cached login does not replace si
 resolved root supplies the persona ACL, signer and default storage together. A root that cannot be
 resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
 selected-root accounts refuse before issuance.
+After a local static space is stopped, its retained broker configuration and validated signing
+trust still resolve file-only fixed-profile minting. No repeated `--server` or running broker is
+needed. Provisioning and endpoint discovery still require the selected broker.
 
 A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
 takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
@@ -36,7 +93,11 @@ the characters allowed, and its Next names the value with each such character re
 
 `agent` is the default profile. Its channel ACLs and role come from the selected root's
 `<name>.md` persona file, when present. It does not fall back to `default.md` for a different name.
-Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. A persona
+Explicit `--allow-subscribe`, `--allow-publish` and `--role` override the file's grants. Use
+`--no-persona` to ignore the label's persona, including its boot subscriptions and role. With that
+flag, only explicit flags or a matching `--identity` supply grants; an omitted role grants no task
+queue, and empty ACL flags grant no channels. Generated replacement advice includes `--no-persona`
+so a preserved same-label persona cannot add grants the old credential did not hold. A persona
 file of that name that cannot be read as a persona refuses the mint `SCHEMA_INVALID`, exit 1, even
 when the flags name every grant. The mint refusal does not print file values or parser text.
 It names the file and `cotal persona show <name>` to inspect it. A role from the file that is not one word
@@ -48,11 +109,17 @@ carried from `--identity`; JSON has them under `result.grants`, with `fromIdenti
 carried ones. An empty ACL flag means no explicit entries. The native read-ACL resolver still enforces boot membership.
 Without a matching persona, `--identity` or grant flags, the agent credential has no channel grants
 or role. Its validity does not establish that it can perform a particular task.
-Observer and admin have fixed native scope and reject agent ACL, role and provisioning flags
+Observer and admin have fixed native scope and reject agent ACL, role, `--no-persona` and provisioning flags
 rather than implying those inputs narrowed anything.
 
 
 ### Private credential output
+
+After `reset space` and a new `up`, credentials the previous local identity issued no longer
+work on that space. A rejected `--creds` file for the registered static-auth space names the
+identity mismatch and an `auth mint` replacement with the file's channel grants and role, or its
+profile. The broker still decides whether to accept the credential. Without matching local trust,
+the refusal keeps the broker's generic credential guidance.
 
 The default credential is created through its canonical secret-store kind. An existing label is
 not overwritten. Use another label or an explicit private output. `--replace` replaces the label's
@@ -196,8 +263,36 @@ this standalone caller. User-auth issuance and managed static launch are not sup
 
 ## Account login [#login]
 
+If a provider refuses an expired or revoked sign-in, run `cotal login` for Cotal Cloud.
+For another provider, run `cotal login --idp <url>` with its auth base URL, then approve
+the new sign-in in your browser. On Linux, the same approval refreshes existing sign-ins
+for Manager user services whose protected unit names their sign-in store and whose
+existing session names the same provider and account. Login lists the services it refreshed.
+It never changes a store for another account or provider. A service with local overrides
+or an unprovable store is skipped, without writing credentials to a guessed path.
+Account sign-in still completes, including space discovery and selection. The report
+lists skipped services and prints `journalctl --user -u <unit>` to find their sign-in
+command when the store cannot be proved. Skipped services do not change the command's successful exit status.
+Logout also clears the local account login even when a service must be skipped.
+Group-writable configuration ancestors are accepted only under the same
+[private-group proof](cli-selection.mdx) used for protected local paths, with no extended ACL.
+When `getfacl` is missing, `python3 -I` reads the entry's extended attribute names instead.
+Either `system.posix_acl_access` or `system.posix_acl_default` means it has an extended ACL.
+If neither reader is installed or the read fails, the skip report names a mode change
+and offers installing the `acl` package. World-writable paths, foreign owners and
+unproved groups remain refused.
+Hand-made units are not updated automatically;
+their refusal names the selected sign-in store and a command such as
+`COTAL_HOME=<store> cotal login --idp <url>`.
+
+These services share the approved provider session, including its expiry and revocation.
+`cotal logout` revokes that session. `cotal logout --local` removes matching shared copies
+on this machine without contacting the provider. Independently approved service sessions
+are not cleared. Machine daemons connected with their own service proof keep the separate
+disconnect behavior described below.
+
 ```bash
-cotal login --idp <auth base URL> [--client-id <id>] [--plain]
+cotal login [--cloud | --idp <auth base URL>] [--client-id <id>] [--no-browser] [--plain]
 cotal logout --idp <auth base URL> [--local]
 ```
 
@@ -209,13 +304,28 @@ Plain `http://` is accepted only on a loopback IP literal such as `127.0.0.1` or
 is a name: a hosts entry would choose the IdP. It prints your IdP subject, the id the operator
 grants against. When the trusted
 `/token` response advertises a same-origin space catalog, login validates and records that account's
-spaces immediately, lists them under `Your spaces`, and names `cotal use <name>` to select one. A
+spaces immediately and lists them under `Your spaces`. If no space is already selected,
+login selects the personal space, or the only space. Several team spaces prompt in a terminal;
+otherwise use `cotal use <name>` to select one. An existing selection stays unchanged, and
+switching accounts does not select a replacement automatically. A
 space registered from elsewhere that has not granted your account refuses with those discovered
 spaces as its remedy, because only that space's operator can grant you. On the root that holds the
-space's grant ledger, the refusal names the operator's `cotal actor grant` command instead. After a
-login, every command on that mesh works under your identity: each connect takes a fresh IdP
+space's grant ledger, the refusal names the operator's `cotal actor grant` command instead.
+Signing in as a different account at the same provider removes the previous account's discovered
+spaces and deletes their sentinel credential files; manual registrations and their files stay. A
+file that cannot be deleted is named, and the login exits 4 (`OPERATION_PARTIAL`) after signing in.
+After a login, every command on that mesh works under your identity: each connect takes a fresh IdP
 proof, exchanges it locally for a short-lived bearer, and is authorized against the actor
-ledger at connect time. A provider that cannot be reached, or that stops answering, refuses with
+ledger at connect time. A rate-limited `/token` read retries once when the IdP supplies a valid
+`Retry-After` or `X-Retry-After` hint that fits within `COTAL_IDP_TIMEOUT_MS` (30 seconds by default).
+When both hints are valid, the later minimum wins. Both reads and the wait share that deadline;
+cancellation stops the wait. Missing hints, a second refusal and other HTTP errors are not retried.
+An unresolved 429 throws `IdpRateLimitedError` from `@cotal-ai/auth`, with `status: 429` and
+`retryAfterSeconds` from that response's later valid hint. The delay is zero for a past date or a
+zero hint, and undefined when neither hint is usable. It does not include the client's one-second
+retry floor.
+The exchange or Manager operation that consumes the proof is never replayed by this retry.
+A provider that cannot be reached, or that stops answering, refuses with
 `DEPENDENCY_UNAVAILABLE` (exit 2) and caches no session. `logout` revokes the IdP session, clears
 its cache, and removes only that
 account's discovered registry entries. See
@@ -239,7 +349,7 @@ cotal actor list [--sub <IdP subject>] [--json|--plain]
 | `--sub <subject>` | none | The IdP subject (shown by `cotal login`) the actor belongs to. With `list`, only that subject's rows are listed |
 | `--owner <u_…>` | none | The derived owner token (alternative to `--sub`) |
 | `--full` | off | Fill each ACL flag left off with its wide default; without it, `grant` refuses unless all three are named |
-| `--scope <a,b>` | `spawn,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `run` = may start workflow runs; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it). Any other name is refused |
+| `--scope <a,b>` | `spawn,run,role:default` with `--full` | Capability scope (`''` = none; `spawn` = may run agents; `run` = may start workflow runs; `role:<r>` = may delegate role r; `admin` = cross-agent control; `supervise` = eligible for the closed remote manager-service view when the host enables it). Any other name is refused |
 | `--allow-subscribe <a,b>` | `>` (all channels) with `--full` | Channel read ACL; the user's envelope, their agents can never read beyond it |
 | `--allow-publish <a,b>` | `>` (all channels) with `--full` | Channel post ACL; also the envelope for their agents' posting |
 | `--role <r>` | none | Role (scopes the task-queue consumer) |
@@ -271,7 +381,7 @@ input that is not valid refuses the same way, naming each field and why: the act
 `--role`, `--parent`, a channel pattern, or a `--scope` name other than `admin`, `run`, `spawn`,
 `supervise` and `role:<r>`. Nothing is written. A channel needs no creation, so a grant may name one
 that has no message or registry entry yet.
-`grant --full` is the **full** envelope (all channels; scope `spawn,role:default`, so it may spawn and may delegate the default role). A
+`grant --full` includes all channels and scope `spawn,run,role:default`, covering the shipped default persona and workflow runs where the mesh supports them. An explicit `--scope` still overrides that default, including `--scope ''`. Existing grants are unchanged until the operator grants them again. A
 `grant` that leaves off `--scope`, `--allow-subscribe` or `--allow-publish` without `--full` is
 refused and writes nothing. A re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
 every field out: the new scope plus the row's current read set, post set, role and label
@@ -311,7 +421,7 @@ spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whos
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
-space registered as open, the report says that the space issues no
+space registered as open, with or without `--fix`, the report says that the space issues no
 credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. Its next step names the folder that space is registered at, where the same command
@@ -401,7 +511,8 @@ or creating replacement agents merely to obtain a different report.
 ## Account screens [#account-screens]
 
 Bare `login` chooses a known provider from cached account metadata or registered spaces. When
-none is known, an interactive terminal asks for the provider auth URL. `--idp` selects it directly.
+none is known, it selects Cotal Cloud and prints how to use another host. With several
+known providers, a terminal offers a choice. `--idp` selects another host directly.
 The device-approval link and code are written only to stderr. Session tokens are never printed.
 The sign-in receipt separates account identity from each space's grants. This client's device
 flow requires approval and refuses `--no-input` before requesting a device session.
@@ -414,7 +525,14 @@ for retry, and the refusal names `--local`; a later cleanup failure is partial a
 confirmed server outcome. `logout --local` clears this machine's cached login and that account's
 discovered registry entries without contacting the provider, for a provider that is down or does
 not confirm sign-out. The provider session stays valid until it expires or is revoked at the
-provider, and the receipt says so.
+provider, and the receipt says so. `logout` does not seed or refresh connectors, so a connector
+install problem does not keep the cached login.
+
+Signing out leaves an already connected daemon connected on the computer's own service proof,
+not the human session. The sign-out receipt explains this in text and its JSON `daemonNotice`.
+To end that connection, run `cotal daemon service-disconnect --space <space>` on this computer,
+or remove the computer in the dashboard. Disconnect removes its local renewal credentials and
+identity records. It does not revoke the remote authority.
 
 
 `endpoints --json` and `endpoints --plain` show the authorized live presence snapshot, including
@@ -527,8 +645,10 @@ re-signed by the space's operator, and the broker refuses that key from its next
 
 The broker loads a revocation only when it starts, so the space must be stopped: run
 `cotal down --yes`, then this command, then `cotal up`. On a running space it refuses
-`LIFECYCLE_BLOCKED` and names that route, and it refuses the same way while the root records a
-maintenance attempt. A connection held with the credential ends at the `down` and is refused after
+`LIFECYCLE_BLOCKED` and names that route, quoting a path a shell would split or expand, and it
+refuses the same way while the root records a maintenance attempt. After that `down`, the command
+run in the folder revokes the space that folder holds even while another space is selected. A path
+in that refusal, and in the Next after a revocation, is one shell word. A connection held with the credential ends at the `down` and is refused after
 the `up`. It asks before it revokes, or takes `--yes`; `--json` without `--yes` refuses. A key
 already revoked reports the time it was first revoked and changes nothing. `--json` reports
 `publicKey`, `revokedAt` in Unix seconds, `alreadyRevoked` and `takesEffect`.

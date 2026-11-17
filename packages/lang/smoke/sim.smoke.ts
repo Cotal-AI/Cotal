@@ -75,6 +75,20 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("and tells the author exactly what to add", err?.message.includes('{ turns: { "verify"') === true, err?.message);
 }
 
+// ---- 2b) an inherited name is not a script entry (#7050) ------------------------------------------
+
+{
+  // Parsed JSON, as `--handler <file>` gives it: an ordinary object whose `constructor` is inherited.
+  const sim = new SimHandler(JSON.parse('{"checkpoints": {}}'));
+  let err: SimUnscriptedError | null = null;
+  try {
+    await sim.checkpoint({ prompt: "Approve deployment?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "constructor")));
+  } catch (e) {
+    err = e as SimUnscriptedError;
+  }
+  ok("a checkpoint named `constructor` with an empty table is unscripted, L6001", err?.code === "L6001", err?.code);
+}
+
 // ---- 3) running past the end of a scripted list also fails --------------------------------------
 
 {

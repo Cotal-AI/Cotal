@@ -1,0 +1,3 @@
+# A published cotal-ai ships the shared docs data once; the manifest reader that restores and verifies
+# each placement refuses a missing or malformed manifest, an escaping path and a tampered shared file.
+smoke:seed-shared-files

@@ -13,6 +13,7 @@ const FILES = [
   "scopes",
   "sim",
   "participant",
+  "agent-arguments",
   "interpret",
   "dispatch-failure",
   "fuel",

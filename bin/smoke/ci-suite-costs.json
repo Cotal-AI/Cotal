@@ -1,6 +1,8 @@
 {
   "count": 4,
   "suites": {
+    "smoke:renewal-mint-contention": { "seconds": 21.2, "shard": 1 },
+    "smoke:renewal-mint-contention:delayed": { "seconds": 21.66, "shard": 1 },
     "smoke": { "seconds": 2.2, "shard": 2 },
     "smoke:acl-cas": { "seconds": 1.7, "shard": 0 },
     "smoke:actor-ephemeral": { "seconds": 1.3, "shard": 0 },
@@ -488,6 +490,11 @@
     "smoke:remote-run-client": { "seconds": 1.9, "shard": 2 },
     "smoke:remote-run-renewal": { "seconds": 6.2, "shard": 1 },
     "smoke:remote-standing-adoption": { "seconds": 28.7, "shard": 0 },
+    "smoke:authority-issued-serve": { "seconds": 1.24, "shard": 3 },
+    "smoke:renewal-request-continuity": { "seconds": 122.17, "shard": 3 },
+    "smoke:renewal-duty-requests": { "seconds": 62.24, "shard": 0 },
+    "smoke:renewal-retirement-bound": { "seconds": 14.52, "shard": 2 },
+    "smoke:request-safe-reconnect": { "seconds": 69.59, "shard": 3 },
     "smoke:remote-start-expiry-recovery": { "seconds": 18.2, "shard": 3 },
     "smoke:renewal-record-honesty": { "seconds": 1.9, "shard": 3 },
     "smoke:renewal-terminal-race": { "seconds": 11.8, "shard": 0 },

@@ -32,10 +32,47 @@ audience: integrators
   best effort; a failure is a warning, and the next entry retries it. An entry whose owner has no ACL row at all is
   retried, then given up after ten redeliveries, and kept, because a missing row does not prove the
   owner is gone.
+  A lifecycle with an empty `allowSubscribe` has no authorized channel copy, so provisioning omits
+  its DLV consumer and its three bind grants. An empty-to-nonempty regrant creates the consumer with
+  the normal deliver-all policy. DM provisioning and the `dm-reader` surface do not change.
 - **Membership registry.** A privileged-written record of who is a durable member of each
   channel, carrying per-member join and leave cursors so a post concurrent with a join or leave
   orders deterministically ([SPEC §7](../SPEC.md#7-channels)). It is broker-known truth, not
   self-reported: an agent cannot assert its own membership.
+
+## Anycast request records
+
+On an authenticated mesh the daemon also records which holder took each anycast request and which
+requests their senders cancelled ([SPEC §8.1](../SPEC.md#81-anycast-request-status)). Just before a
+role holder's connector shows a role request, it asks the daemon on its own take subject to record
+the take. The daemon reads the request at that seq on the task stream and writes one row per
+request to the `cotal_anycast_<space>` bucket. A take names the task stream's creation time as the
+holder saw it, and the daemon refuses one from a stream since recreated, because the new stream
+reuses seqs. The holder then reads the creation time again, and when it moved, it naks its copy, so
+the broker delivers the request again at once on the new stream. A take and a cancel of one
+request race on that row's create and revision check, so only one of them wins. When a take wins,
+the daemon sends the request's sender a
+DM from its own principal naming the holder. It sends a second one when the request's ack wait ran
+out and a later delivery moved the take to another holder.
+
+A sender reads or cancels its own request by seq with the `anycastStatus` and `anycastCancel`
+commands on the `ctl.delivery` rail. A cancel succeeds only while no holder has taken the request:
+the daemon writes a cancelled row and deletes the request from the task stream, and a holder that
+then asks to take its buffered copy is refused and forgets it. The daemon removes a row a day after
+the request left the queue. It checks every row when it starts and every ten minutes, and resends
+any notice a crash left unsent. Each pass reads the bucket status first and skips key enumeration
+when it has no entries, so an empty bucket creates no scan consumer. A row written after that read
+is maintained by its write path and the next pass.
+
+Before you delete or recreate the task stream, stop every delivery daemon that serves the space and
+wait until each has exited and its broker connection has closed, then start the daemon against the
+new stream. A cancel checks the stream's creation time and then deletes by seq, and JetStream has no
+delete that checks the stream it lands on. A delete still in flight when the stream is recreated
+removes the request the new stream stores at that seq, and the cancel still reads deleted.
+
+For this the `delivery` credential can read every request body on the task stream and delete any
+request there. Only the trust placed in the daemon bounds those two grants
+([SPEC Appendix B](../SPEC.md#appendix-b-profile-acls)).
 
 ## Why a *trusted* reader
 
@@ -70,6 +107,65 @@ watchdog, timer writer and membership feed, so a second daemon for the space is 
 as before. A lane that loses the broker, its credential or its lease closes alone and the host
 reopens it; the other lanes keep serving.
 
+### Standby host
+
+Two provisioned multi-space hosts can stand by for the same space, each with its own root and
+scoped credentials for that space account. The host that takes the lease serves. The other host reports the held lease, opens no lane and retries every 5
+seconds. If the holder dies, its lease row expires with the bucket TTL, and the standby takes the
+row on a retry and serves. A host that comes back finds the new holder's row, does not serve, and
+does not delete or rewrite that row. There is no election, placement or failover command: the lease
+is the only arbiter, and nothing moves a space back to the first host.
+
+A host that is not provisioned for the space, holds a credential for another account, holds a
+malformed credential, or lacks the `$SYS` observer credential refuses on its own checks and never
+touches the lease. The `smoke:delivery-standby` suite runs two complete hosts on one machine and
+one broker through the kill, return and graceful-stop cases and prints observed takeover times.
+Those times are not an SLA. One machine with two host processes is not a test of two physical
+hosts or of a network partition. The fixture also replaces each host's delivery credential through
+its own store, crosses the initial expiry while the holder still serves, and refuses an invalid
+manifest without disturbing that holder. It does not test membership-credential renewal or
+system-account rotation.
+
+### Standby provisioning
+
+This is an operator-provisioned or embedded topology; the CLI has no cross-host standby enrollment
+command. Prepare two distinct roots with `.cotal`, one version-1 manifest per host, and the same
+broker URL and space account. Start each with `cotal deliver --spaces <manifest> --root <root>
+--server <url>` and the broker's required TLS setting. The manifests name spaces, not identities or
+credentials. A malformed manifest refuses the whole start; an invalid lane credential refuses that
+lane and is retried. Never copy another account's credential to make a lane open.
+
+A trusted provisioner uses the public mint helpers and writes each host's assigned SecretStore keys:
+
+| Input | Mint helper | Store key helper |
+| --- | --- | --- |
+| Delivery | `mintCreds` with profile `delivery` | `deliveryCredsKey` |
+| Membership writer | `mintCreds` with profile `membership-rw` | `membershipRwCredsKey` |
+| Account observer | `mintMembershipObserverCreds` | `membershipObserverCredsKey` |
+| Connection eviction | `mintConnectionEvictorCreds` | `connectionEvictorCredsKey` |
+
+The mint helpers come from `@cotal-ai/core`; the store key helpers and `workspaceSecretStore` come
+from `@cotal-ai/workspace`. A CLI host's keys use `{ injected: false, root }` with that host's root.
+Keep each host's delivery nkey stable across renewal and restart, and distinct from the other host's.
+The provisioning owner retains identity/signing custody and atomically replaces bounded credentials
+in each host's store before expiry. Delivery rereads its own key and proves renewed credentials
+against the broker; the membership feed uses its own renewed writer key. Neither host needs the
+account signer. A copied static credential file is not a renewal owner. See
+[delivery renewal](embedding-daemons.mdx#delivery) for the stock Manager/store continuity contract.
+
+The observer must be pinned to the same data account and broker the lane serves. Its scan results,
+not a caller-supplied connection ID, select eviction targets. The separate evictor is high-power:
+its native KICK permission is broker-wide, not account-confined. Keep it on trusted delivery hosts,
+never in a participant or tenant-controlled sandbox. On a broker that hosts several spaces, no space
+daemon holds it. The multi-space delivery host (`cotal deliver --spaces`) is the one process that
+kicks: when a space on its root retained the system-account signing seed, the host mints a kick-only
+user per kick from that seed, and a lane asks the host to kick each live match of its own sweep. The
+host kicks a connection only after its own complete census of the lane's account lists it, and the
+lane opens no kick credential. Observer and evictor credentials have their
+own provision/rotation lifecycle; do not infer their renewal from a delivery-credential refresh.
+Missing or inconsistent scan authority refuses admission or verified eviction. An operator must
+resolve that provisioning boundary explicitly, without clearing leases or fabricating scan results.
+
 The manager needs this daemon while it starts. Its SecretStore challenge, its boot repair of a frozen
 registration gate, and the verified eviction a restart performs all go over the daemon's
 `ctl.delivery-admin` rail. Agents' durable join, leave and membership-list requests go over its
@@ -94,8 +190,8 @@ exception: the `lifecycleMemberships` inventory a retirement reads before it del
 agent's membership rows. That request is answered without waiting for the others, so a manager stop
 that retires many seats does not queue each inventory behind the other seats' evictions. Inventories
 that arrive together share one read of the members bucket, and each one's read begins after it
-arrived. Before the manager asks for a lifecycle's inventory, it narrows that lifecycle's read-ACL
-row to no reads. A durable join reads that row again just before it writes its membership row, and
+arrived. Before the manager, or the auth service retiring a chat session or a managed agent, asks for
+a lifecycle's inventory, it narrows that lifecycle's read-ACL row to no reads. A durable join reads that row again just before it writes its membership row, and
 once more after. When the channel is no longer allowed, the join writes nothing, or removes the row it
 just wrote, and is refused. A leave or an activation only updates a row that still exists. A row of the
 retiring lifecycle is then either in the inventory or gone, whichever daemon process wrote it. The
@@ -108,6 +204,12 @@ only after the writes already running have finished.
 A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
 `max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
 size in bytes, so the caller fails at once and does not wait out its timeout.
+
+An endpoint's pending control and delivery requests reject if their connection closes, including
+when the endpoint stops or replaces it. The request is not replayed on the new connection: a lost
+reply does not prove that the operation did not run. A liveness probe interrupted this way returns
+`unknown`, not `unbound`. Normal replies, timeouts and broker no-responder answers keep their usual
+classification.
 
 A restart verify-evicts every holder in the manager's credential family, and the family keeps a
 ledger row for every credential an earlier incarnation was issued. The manager keeps its serve,
@@ -255,3 +357,9 @@ Only the durable backstop and its membership writes need the privileged host. If
 `durable` channel while the backstop can't be established, it is **joined live with the durable
 backstop unestablished**: the live subscription is active, and the shortfall is surfaced as an
 exceptional delivery state, never reported as `joined durable` and never silently dropped ([SPEC §7](../SPEC.md#7-channels)).
+
+Role holders on an authenticated mesh do need the daemon. A holder's connector shows a role request
+only after the daemon records its take, so while no daemon runs, role requests wait on the queue
+and each holder reports that no delivery daemon is answering. A daemon that predates takes, or a
+seat credential minted before them, holds requests the same way, and the holder says to restart
+the daemon or respawn the seat.

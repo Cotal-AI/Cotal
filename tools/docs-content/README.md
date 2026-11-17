@@ -18,6 +18,9 @@ Their H1 and first paragraph provide the title and description.
 Direct `.mdx` pages use `title`, `description`, `kind`, and `audience` frontmatter.
 The title provides the page's H1, so the authored body starts below that heading.
 Classification and audience are metadata, not opening blockquotes.
+`kind` keeps the full classification, such as `Concept (informative)`.
+`documentationCategory(kind, sourcePath)` returns its index category, such as `Concept`,
+without changing the classification. It rejects unsupported categories.
 A directory cannot contain both `.md` and `.mdx` files with the same basename.
 
 To preserve an existing heading fragment, use the native suffix `[#id]`.

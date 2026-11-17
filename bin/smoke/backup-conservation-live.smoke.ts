@@ -438,9 +438,9 @@ async function conservationScenario(): Promise<void> {
     } finally {
       await resumed.endpoint.stop();
     }
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(mesh.root, { recursive: true, force: true });
     rmSync(mesh.home, { recursive: true, force: true });
   }
@@ -515,11 +515,11 @@ async function restoredMeshWorksScenario(): Promise<void> {
       await member.endpoint.stop();
       await poster.stop();
     }
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
     assert.ok(restored.restore, "a committed restore records its attempt");
     must("cleanup fallback", run("clean", "restore-fallback", "--attempt", restored.restore.attemptId, "--force"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(mesh.root, { recursive: true, force: true });
     rmSync(mesh.home, { recursive: true, force: true });
   }

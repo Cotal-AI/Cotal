@@ -53,7 +53,7 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, openRecordsBucket, registerServiceInstance, deregisterServiceInstance, writeServiceStatus,
   freezeExpectedSet, readRecord, deleteRecordEntry, recordSpecKey, recordStatusKey, RECORD_KINDS,
-  SERVICE_READY, EpEnvelopeError, compileContract, contractDigest, VOID_SCHEMA,
+  SERVICE_READY, EpEnvelopeError, contractDigest, VOID_SCHEMA,
   type EpIssuanceBarrier, type ServiceNameAuthority, type ServiceSpec,
 } from "../src/index.js";
 import { makeIssuanceGate, type IssuanceGate } from "./_issuance-gate.js";

@@ -5,7 +5,7 @@
  * surface that renders a message as flat text draws one as `[unrenderable part kind "ag-ui.frame"]`.
  * This is the provider that fixes that for the console family: a core {@link PartRenderer} of kind
  * `part-renderer`, named for the part kind it draws, self-registering on import exactly as a
- * terminal-layout provider does.
+ * runtime provider does.
  *
  * **IT LANDED BEFORE ANY PRODUCER, AND THAT ORDERING WAS THE POINT.** It shipped while nothing in
  * production published a frame, and the Claude connector's emitter followed it. The alternative
@@ -41,6 +41,7 @@
  * the part kind and not on a guess about shape.
  */
 import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND, isAguiFramePart, registry, type Part, type PartRenderer } from "@cotal-ai/core";
+import { TOOL_RESULT_EVENT, toolResultValue } from "./agui.js";
 
 /** One event, as untrusted input. Every read is guarded; nothing here trusts a producer. */
 type LooseEvent = Record<string, unknown>;
@@ -216,9 +217,16 @@ function renderEvents(events: readonly LooseEvent[]): string[] {
         emit(RESULT_PREFIX, CONT, str(e.content) ?? "(no content)");
         break;
 
-      case AGUI_EVENT_TYPE.CUSTOM:
-        emit("• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
+      case AGUI_EVENT_TYPE.CUSTOM: {
+        // The tool result marker draws as the result line it stands in for: done or failed, and no
+        // content, since it carries none. Its shape is read through `toolResultValue`, the rule the
+        // closed schema applies, so a marker of any other shape is drawn as the plain custom line.
+        // The browser's `toolResult.ts` restates that rule, and the parity suite compares the two.
+        const failed = e.name === TOOL_RESULT_EVENT ? toolResultValue(e.value)?.isError : undefined;
+        if (failed !== undefined) emit(RESULT_PREFIX, CONT, failed ? "failed" : "done");
+        else emit("• ", CONT, `custom ${str(e.name) ?? "(unnamed)"}`);
         break;
+      }
 
       // An event whose `type` this build does not know. NAMED, never skipped — a skipped event is a
       // hole in a transcript that still looks complete, which is `parseAguiFrame`'s own stated

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { JetStreamApiError } from "@nats-io/jetstream";
 import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
-import { CommandFailure, boundedValue, loadMeshes, localProcessPath, NATS_PIDFILE, oneLine, type MeshTarget } from "@cotal-ai/workspace";
+import { CommandFailure, boundedValue, isCommandFailure, loadMeshes, localProcessPath, NATS_PIDFILE, oneLine, type MeshTarget } from "@cotal-ai/workspace";
 import { pidfileState } from "../commands/down.js";
 import { shellWord } from "./endpoint-errors.js";
 import { readOwnedLogTail, readServiceLog } from "./service-process.js";
@@ -35,6 +35,11 @@ export function recordedStore(root: string, space: string): { path: string; cap?
 export function storeRefusedWrite(error: unknown): boolean {
   for (let e: unknown = error; e instanceof Error; e = e.cause) if (e instanceof JetStreamApiError && e.code === 10023) return true;
   return false;
+}
+
+/** JetStream's stream-store failure, whose message is the native write error. */
+export function storeWriteError(error: unknown): error is JetStreamApiError {
+  return error instanceof JetStreamApiError && error.code === 10077;
 }
 
 /** The refusal of a manager stop on a full store. Its native stop rides a control credential whose
@@ -97,7 +102,7 @@ export function storeWriteRepair(failed: Extract<StoreWriteObservation, { state:
  *  which it does not load. Recovery can leave `STREAM.INFO`'s lost-data field empty. */
 const STORE_DAMAGE = /^\[\d+\] (\S+ \S+) \[WRN\] +((?:Filestore \[[^\]]+\] indexCacheBuf corrupt |JetStream consumer '.+' delivered sequence \d+ past last stream sequence of |Stream metafile ".+": checksums do not match).*)$/;
 
-/** The newest `Critical write error` the running broker logged since it started, else the newest
+/** The newest native store write failure the running broker logged since it started, else the newest
  *  damage it logged in a stored file. */
 export function brokerStoreWrite(root: string, space: string): StoreWriteObservation {
   let broker: { pid: number; read: () => { lines: string[]; path: string | null } } | undefined;
@@ -126,7 +131,7 @@ export function brokerStoreWrite(root: string, space: string): StoreWriteObserva
   const enabled = since.findLastIndex((line) => line.includes("[INF] Starting JetStream"));
   const jetStreamDisabled = since.slice(enabled + 1).some((line) => /disabling JetStream|JetStream out of space, will be DISABLED/.test(line));
   for (const line of [...since].reverse()) {
-    const failed = /^\[\d+\] (\S+ \S+) \[ERR\] .*?ritical write error: (.+)$/.exec(line);
+    const failed = /^\[\d+\] (\S+ \S+) \[(?:ERR|WRN)\] (?:.*?ritical write error: |Filesystem permission denied while writing msg, disabling JetStream: |JetStream failed to store a msg on stream '[^']+': )(.+)$/.exec(line);
     if (!failed) continue;
     // Go reports a failed file operation as `<op> <path>: <cause>`.
     const parts = /^\S+ (\/.+): ([^:]+)$/.exec(failed[2]!);
@@ -159,6 +164,24 @@ export function jetStreamDisabled(root: string, space: string): Extract<StoreWri
 export function jetStreamDisabledRefusal(write: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string, space: string, needs: string, outcome: string, target: Record<string, unknown>, managerPid: number | undefined): CommandFailure {
   return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the broker logged a store write failure at ${write.at}: ${write.cause}, and disabled JetStream until it restarts, so ${needs}; ${outcome}`, {
     target: { ...target, brokerLog: write.log },
-    remedy: `${managerPid !== undefined ? `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`` : "run `cotal down`"}; ${storeWriteRepair(write, root, space)}, then run \`cotal up\``,
+    remedy: storeWriteRoute(write, root, space, managerPid),
   });
+}
+
+/** The refusal of a step whose issuance write failed while JetStream stayed enabled. A stream that
+ *  cannot grow may refuse the write explicitly or leave it waiting until its deadline. The logged
+ *  failure is named and the step's own failure is kept as its native detail. */
+export function storeWriteFailedRefusal(write: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string, space: string, step: string, failure: unknown, outcome: string, target: Record<string, unknown>, managerPid: number | undefined): CommandFailure {
+  const detail = failure instanceof Error ? failure.message : String(failure);
+  return new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `${step} ${storeWriteError(failure) ? "was refused" : "got no answer"} (${detail}), and the broker logged a store write failure at ${write.at}: ${write.cause}; ${outcome}`, {
+    target: { ...target, brokerLog: write.log },
+    native: isCommandFailure(failure) ? { code: failure.code, outcome: failure.outcome, detail } : { code: failure instanceof Error ? failure.name : "UNKNOWN", outcome: "unknown", detail },
+    remedy: storeWriteRoute(write, root, space, managerPid),
+  });
+}
+
+/** The way out of a stop blocked on a store write failure: a plain SIGTERM ends the manager without
+ *  a credential, so the next `down` can stop the rest; then repair the store and start again. */
+function storeWriteRoute(write: Extract<StoreWriteObservation, { state: "write-failed" }>, root: string, space: string, managerPid: number | undefined): string {
+  return `${managerPid !== undefined ? `end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`` : "run `cotal down`"}; ${storeWriteRepair(write, root, space)}, then run \`cotal up\``;
 }

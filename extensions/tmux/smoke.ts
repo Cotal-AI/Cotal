@@ -4,13 +4,14 @@
  * Uses a real tmux session; cleans up on pass or fail.
  */
 import * as tmux from "./src/driver.js";
-import { TmuxRuntime, tmuxRuntimeProvider, tmuxTerminalProvider } from "./src/runtime.js";
+import { TmuxRuntime, tmuxRuntimeProvider } from "./src/runtime.js";
 import { registry } from "@cotal-ai/core";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, statSync } from "node:fs";
 
 const SESSION = "cotal-tmux-smoke";
+/** A session only the runtime creates, never `ensureSession` here directly. */
+const FRESH = "cotal-tmux-smoke-fresh";
 let passed = 0;
 let failed = 0;
 
@@ -47,9 +48,21 @@ async function rejects(label: string, fn: () => Promise<unknown>, pattern?: RegE
 }
 
 function cleanup() {
+  for (const session of [SESSION, FRESH]) {
+    try {
+      execFileSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
+    } catch { /* already gone */ }
+  }
+}
+
+/** Whether tmux lists a session named exactly `name`. */
+function sessionListed(name: string): boolean {
   try {
-    execFileSync("tmux", ["kill-session", "-t", SESSION], { stdio: "ignore" });
-  } catch { /* already gone */ }
+    execFileSync("tmux", ["has-session", "-t", `=${name}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Needs a real tmux. Skip cleanly where it isn't installed (local `pnpm check` on a tmux-less box);
@@ -201,11 +214,15 @@ if (numericPreexists) {
 console.log("\n── runtime ─────────────────────────────────────");
 
 const runtime = new TmuxRuntime(SESSION);
+const windowsBefore = tmux.listWindows(SESSION);
 const normalExit = runtime.spawn("exit-agent", {
   command: process.execPath,
   args: ["-e", "setTimeout(() => {}, 300)"],
   env: {},
 }, "/tmp");
+const windowsAfter = tmux.listWindows(SESSION);
+ok("a spawn into a session that was already there adds its window and closes none",
+  windowsAfter.length === windowsBefore.length + 1 && windowsBefore.every((w) => windowsAfter.includes(w)));
 const normalExitWindow = tmux.windowRefs(SESSION, "exit-agent")[0]!;
 execFileSync("tmux", ["set-option", "-w", "-t", normalExitWindow, "remain-on-exit", "on"], {
   stdio: "ignore",
@@ -246,6 +263,15 @@ await handle.waitForExit!();
 ok("window gone after hard stop", !tmux.windowAlive(SESSION, "smoke-agent"));
 ok("stop -> waitForExit proves the pane exited", handle.status() === "exited");
 
+// A session the runtime creates opens with tmux's shell window, which nothing runs in. It stayed after
+// every seat was stopped, and kept the session and tmux's server running (#7116).
+ok("the fresh session is not there before the runtime's spawn", !sessionListed(FRESH));
+const fresh = new TmuxRuntime(FRESH).spawn("fresh-agent", { command: "sleep", args: ["30"], env: {} }, "/tmp");
+ok("a session the runtime created lists only the seat's window", JSON.stringify(tmux.listWindows(FRESH)) === JSON.stringify(["fresh-agent"]));
+fresh.stop({ graceful: false });
+await fresh.waitForExit!();
+ok("that session ends with its last seat", !sessionListed(FRESH));
+
 console.log("\n── registry registration ────────────────────────");
 
 const resolvedRuntime = registry.resolve("runtime", "tmux");
@@ -255,42 +281,8 @@ ok("tmuxRuntimeProvider.available() returns true", tmuxRuntimeProvider.available
 // ask for an attach at all, so a foreground `cotal spawn` on this runtime launches the seat and
 // stops there instead of failing on an attach that cannot open.
 ok("the runtime declares that it streams no terminal", new TmuxRuntime(SESSION).streamsTerminal === false);
-
-const resolvedTerminal = registry.resolve("terminal", "tmux");
-ok("tmuxTerminalProvider registered as 'terminal/tmux'", resolvedTerminal != null);
-ok("tmuxTerminalProvider.available() returns true", tmuxTerminalProvider.available());
-
-// refs() throws when not in tmux (no $TMUX env)
-throws("refs() throws when not in tmux", () => tmuxTerminalProvider.refs("anything"));
-
-// The provider reads its session from $TMUX/$TMUX_PANE, so point both at the smoke session.
-const [socketPath, serverPid] = execFileSync("tmux", ["-u", "display-message", "-p", "-t", `${SESSION}:`, "#{socket_path}\t#{pid}"], { encoding: "utf8" }).trim().split("\t");
-const anchorPane = execFileSync("tmux", ["list-panes", "-t", `${SESSION}:`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim().split("\n")[0]!;
-process.env.TMUX = `${socketPath},${serverPid},0`;
-process.env.TMUX_PANE = anchorPane;
-const launchDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith("cotal-tmux-"));
-const twoPanes = () => [{ command: "sleep", args: ["30"] }, { command: "sleep", args: ["30"] }];
-try {
-  const windowsBefore = tmux.listWindows(SESSION).length;
-  const dirsBefore = new Set(launchDirs());
-  let refusal = "";
-  try {
-    tmuxTerminalProvider.open("unsplit", { panes: twoPanes() });
-  } catch (err) {
-    refusal = (err as Error).message;
-  }
-  ok("an unsplit multi-pane tab is refused", /2 panes need a split/.test(refusal));
-  ok("the refusal opens no window", tmux.listWindows(SESSION).length === windowsBefore && tmuxTerminalProvider.refs("unsplit").length === 0);
-  ok("the refusal writes no launch script", launchDirs().every((d) => dirsBefore.has(d)));
-
-  const split = tmuxTerminalProvider.open("split", { panes: twoPanes(), split: { direction: "vertical", ratio: 0.5 } });
-  const splitPanes = execFileSync("tmux", ["list-panes", "-t", split, "-F", "#{pane_id}"], { encoding: "utf8" }).trim().split("\n");
-  ok("a split two-pane tab opens one window with two panes", splitPanes.length === 2 && tmuxTerminalProvider.refs("split").length === 1);
-  tmuxTerminalProvider.close(split);
-} finally {
-  delete process.env.TMUX;
-  delete process.env.TMUX_PANE;
-}
+ok("importing @cotal-ai/tmux registers no terminal provider", registry.all("terminal").length === 0 && !registry.has("terminal", "tmux"));
+throws("resolving 'terminal/tmux' throws", () => registry.resolve("terminal", "tmux"));
 
 console.log("\n── command builders ─────────────────────────────");
 

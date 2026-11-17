@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
@@ -29,6 +29,7 @@ import {
 } from "@cotal-ai/smoke-kit";
 import { isReachable } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { removeIssuedStoresBeforeRetention } from "../src/issued-store-recreate.js";
 
 let passed = 0, failed = 0;
 async function check(name: string, run: () => Promise<void>): Promise<void> {
@@ -58,17 +59,26 @@ try {
 
   // A store as every release before this one created it: the same immutable flags and per-key
   // shape, and no per-message TTL. It is the upgrade path's starting point.
-  await check("a store created before bounded retention is refused at bind with the recreate remedy, and recreated after the operator removes it", async () => {
+  await check("a store created before bounded retention is refused at bind with the recreate remedy, and recreated after the supported backup", async () => {
     for (const [bucket, perKey] of [[issuedBucket(space), { max_msgs_per_subject: -1 }], [acceptedBucket(space), { max_msgs_per_subject: 1, discard: DiscardPolicy.New, discard_new_per_subject: true }]] as const) {
       await kvm.create(bucket, { allow_direct: bucket === acceptedBucket(space) });
       const created = (await jsm.streams.info(`KV_${bucket}`)).config;
       await jsm.streams.update(`KV_${bucket}`, { ...created, allow_rollup_hdrs: false, deny_delete: true, deny_purge: true, ...perKey });
     }
     await assert.rejects(() => ensureIssuedStores(jsm, kvm, space),
-      new RegExp(`created before bounded retention.*delete the streams ${issuedStream} and ${acceptedStream}`));
+      new RegExp(`created before bounded retention.*--recreate-issued-stores.*backs up ${issuedStream} and ${acceptedStream}`));
     for (const stream of [issuedStream, acceptedStream]) assert.equal((await jsm.streams.info(stream)).config.allow_msg_ttl, false, "the refusal changed nothing");
-    // The operator's step: remove both streams (after backing them up), then start the release.
-    for (const stream of [issuedStream, acceptedStream]) await jsm.streams.delete(stream);
+    const backupDir = join(dir, "retention-backup");
+    const removed = await removeIssuedStoresBeforeRetention(nc!, { space, backupDir, inboxPrefix: "_INBOX_retention_backup" });
+    assert.deepEqual(removed.map(row => row.stream).sort(), [issuedStream, acceptedStream].sort());
+    assert.equal(statSync(backupDir).mode & 0o777, 0o700);
+    for (const stream of [issuedStream, acceptedStream]) {
+      for (const file of ["backup.json", "stream.tar.s2"]) {
+        const path = join(backupDir, stream, file);
+        assert.ok(existsSync(path), "supported recreation retains each stream backup");
+        assert.equal(statSync(path).mode & 0o777, 0o600);
+      }
+    }
     await ensureIssuedStores(jsm, kvm, space);
     for (const stream of [issuedStream, acceptedStream]) {
       const cfg = (await jsm.streams.info(stream)).config;

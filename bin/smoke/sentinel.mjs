@@ -54,10 +54,11 @@ export function skipSuite(reason) {
  * A skip carries zero cells, so a grader that does not read `kind` still refuses it.
  *
  * @param {string} text
+ * @param {{ rows?: boolean }} [options]
  * @returns {{ cells: number, passed: number, failed: number, kind: "canonical" | "legacy" }
  *   | { cells: 0, passed: 0, failed: 0, kind: "skipped", reason: string } | null}
  */
-export function parseSentinel(text) {
+export function parseSentinel(text, { rows = true } = {}) {
   let last = null;
   let structured = null;
   for (const raw of String(text).split(/\r?\n/)) {
@@ -189,6 +190,7 @@ export function parseSentinel(text) {
   }
   if (structured) return structured;
   if (last) return last;
+  if (!rows) return null;
   // Suites that already print one row per cell but never a tally still named their work. A no-op
   // prints neither, so this cannot turn exit-0-with-nothing into a pass.
   const passed =
@@ -200,6 +202,31 @@ export function parseSentinel(text) {
     (String(text).match(/^\s*FAIL {2}/gm) ?? []).length;
   if (passed + failed > 0) return { cells: passed + failed, passed, failed, kind: "legacy" };
   return null;
+}
+
+/** Assertion-result rows after the selected tally need a later final tally.
+ * This observes output ordering, not assertions that produce no result row.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function hasPostTallyAssertions(text) {
+  let tally = false, structured = false, trailing = false;
+  const result = /^(?:\s+(?:✓|✗)|\s*(?:ok(?: -)? |not ok - |FAIL {2}))/;
+  for (const line of String(text).split(/\r?\n/)) {
+    if (result.test(line)) {
+      if (tally) trailing = true;
+      continue;
+    }
+    // A diagnostic or assertion's prose is not an independently printed tally.
+    const parsed = parseSentinel(line, { rows: false });
+    if (parsed) {
+      if (structured && parsed.kind === "legacy") continue;
+      structured = parsed.kind !== "legacy";
+      tally = true;
+      trailing = false;
+    }
+  }
+  return trailing;
 }
 
 /**

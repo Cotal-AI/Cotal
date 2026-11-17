@@ -24,27 +24,30 @@ import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import { oneLine } from "@cotal-ai/core";
 import { plainPunctuation } from "@cotal-ai/workspace";
-import type { AdmittedChatSession, SessionEvent } from "./session.js";
+import {
+  MAX_DRAFT, discloseChoice, endingNotice, parseRecipient, parseSlash, publish, recipientLabel, runsOffline, sharedNames,
+  type AdmittedChatSession, type ChatWords, type Recipient, type SessionEvent,
+} from "@cotal-ai/workspace/chat";
 import {
   addNotice,
   applyEvent,
   applyPublishResult,
-  endingNotice,
   headerRows,
   heardFrom,
   initialState,
-  parseSlash,
-  recipientLabel,
-  runsOffline,
   setRecipient,
-  sharedNames,
   transcriptRows,
-  MAX_DRAFT,
   type ChatState,
-  type Recipient,
 } from "./view.js";
-import { closeSession, publish, runSlash } from "./controller.js";
-import { discloseChoice, listChoices, parseRecipient, refusedDm, type Choice } from "./picker.js";
+import { closeSession, runSlash } from "./controller.js";
+import { listChoices, refusedDm, type Choice } from "./picker.js";
+
+/** The line `--plain` prints when a display name becomes shared. A blank name is not one, so the line names the principals. */
+export function sharedNameNotice(name: string, ids: readonly string[]): string {
+  const who = ids.map((id) => oneLine(id)).join(", ");
+  if (!name.trim()) return `more than one principal has no display name: ${who}`;
+  return `more than one principal uses the name ${oneLine(name)}: ${who}`;
+}
 
 type Mode =
   | { readonly kind: "compose" }
@@ -63,6 +66,7 @@ export async function runPlain(opts: {
   output: Writable;
   width: number;
   initialRecipient?: Recipient;
+  words: ChatWords;
 }): Promise<ChatState> {
   const { session, input, output } = opts;
   const width = Number.isFinite(opts.width) ? Math.max(20, opts.width) : Number.POSITIVE_INFINITY;
@@ -89,7 +93,7 @@ export async function runPlain(opts: {
     }
     // Lines already printed show a name alone, so a name that more than one principal now carries is
     // named once with its principals.
-    for (const [name, ids] of now) if (!shared.has(name)) print(`more than one principal uses the name ${oneLine(name)}: ${ids.map(oneLine).join(", ")}`);
+    for (const [name, ids] of now) if (!shared.has(name)) print(sharedNameNotice(name, ids));
     shared = now;
     printedEntries = total;
     if (unacked.length) session.surfaced(unacked.splice(0));
@@ -97,7 +101,7 @@ export async function runPlain(opts: {
   const prompt = (): void => {
     switch (mode.kind) {
       case "compose": print(`[to ${recipientLabel(state.recipient, ":to")}] type a message, /command, :to, :multi`); break;
-      case "confirm": print(`send to ${recipientLabel(mode.to)}? y = send, anything else = keep as draft`); break;
+      case "confirm": print(`send to ${recipientLabel(mode.to, ":to")}? y = send, anything else = keep as draft`); break;
       case "multi": print("(multi-line: end with a line containing only .)"); break;
       case "pick": mode.choices.forEach((c, i) => print(`  ${i + 1}. ${c.label}${c.detail ? ` - ${c.detail}` : ""}`)); print("choose a number, or type #channel / @name / @owner.actor / role:<role>; empty line cancels, /quit leaves"); break;
       case "confirm-leave": print("you have an unsent draft. y = discard and leave, anything else = keep editing"); break;
@@ -142,7 +146,7 @@ export async function runPlain(opts: {
       state = addNotice(state, "failed", refused);
       return startPick();
     }
-    const warning = await discloseChoice(session, r);
+    const warning = await discloseChoice(session, r, opts.words);
     state = setRecipient(state, r);
     if (warning) state = addNotice(state, "waiting", warning);
     mode = { kind: "compose" };
@@ -192,7 +196,7 @@ export async function runPlain(opts: {
           // asked again while the draft and its recipient are unchanged.
           mode = { kind: "compose" };
           await handle(line);
-          if ((mode as Mode).kind === "compose" && !state.endedByEvent && state.draft === asked.text && recipientLabel(state.recipient) === recipientLabel(asked.to)) mode = asked;
+          if ((mode as Mode).kind === "compose" && !state.endedByEvent && state.draft === asked.text && recipientLabel(state.recipient, ":to") === recipientLabel(asked.to, ":to")) mode = asked;
           return;
         }
         if (line.trim().toLowerCase() === "y") await send(asked.to, asked.text);
@@ -224,7 +228,7 @@ export async function runPlain(opts: {
         }
         const n = Number(t);
         if (Number.isInteger(n) && n >= 1 && n <= mode.choices.length) return choose(mode.choices[n - 1]!.recipient);
-        const parsed = parseRecipient(t);
+        const parsed = parseRecipient(t, "pick a number");
         if (!parsed.ok) { state = addNotice(state, "failed", parsed.error); return; }
         return choose(parsed.recipient);
       }
@@ -237,7 +241,7 @@ export async function runPlain(opts: {
         if (to) {
           const target = to[1]?.trim();
           if (!target) return startPick();
-          const parsed = parseRecipient(target);
+          const parsed = parseRecipient(target, "pick a number");
           if (parsed.ok) return choose(parsed.recipient);
           state = addNotice(state, "failed", parsed.error);
           return startPick();
@@ -251,7 +255,7 @@ export async function runPlain(opts: {
             state = addNotice(state, "waiting", "not connected: only /reconnect, /connection, /whoami, /reply and /help run now");
             return;
           }
-          const { state: next, ack } = await runSlash(session, state, parsed.command);
+          const { state: next, ack } = await runSlash(session, () => state, parsed.command);
           state = next;
           unacked.push(...ack);
           return;

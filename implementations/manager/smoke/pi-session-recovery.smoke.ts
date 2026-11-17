@@ -82,6 +82,8 @@ const makeHandle = (name: string, spec: LaunchSpec): CrashHandle => {
       for (const fn of [...exits]) fn();
     },
     waitForExit: async () => {},
+    // This unit runtime creates only the control server, which crash closes synchronously.
+    waitForWorkExit: async () => { assert.equal(running, false); },
     interrupt: () => {},
     attach: () => session,
     crash: () => {
@@ -171,8 +173,8 @@ const agents = (manager as unknown as { agents: Map<string, typeof managed> }).a
 agents.set(managed.name, managed);
 (manager as unknown as { watchExit(agent: typeof managed): void }).watchExit(managed);
 
-const waitFor = async (predicate: () => boolean, label: string): Promise<void> => {
-  const deadline = Date.now() + 5_000;
+const waitFor = async (predicate: () => boolean, label: string, ms = 5_000): Promise<void> => {
+  const deadline = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -229,6 +231,51 @@ const before = spawnedOpts.length;
 (manager as unknown as { onAgentExit(agent: typeof deliberate): void }).onAgentExit(deliberate);
 check(spawnedOpts.length === before, "a deliberate terminal starts no replacement");
 check(!agents.has(deliberate.name), "a deliberate terminal follows normal cleanup");
+
+// The same recovery entry refuses missing/failed proof without declaring outstanding work done.
+for (const mode of ["absent", "rejected", "pending", "retired", "timeout"] as const) {
+  const handle = makeHandle(`closure-${mode}`, { command: "true", args: [], env: {} });
+  let closeWork!: () => void;
+  if (mode === "absent") delete handle.waitForWorkExit;
+  else if (mode === "rejected") handle.waitForWorkExit = async () => { throw new Error("ownership unknown"); };
+  else handle.waitForWorkExit = () => new Promise<void>((resolve) => { closeWork = resolve; });
+  const row = {
+    ...managed, name: handle.name, id: `closure_${mode}`, handle, terminalizing: false,
+    restart: { ...managed.restart, crashes: [], recovering: false, armed: true },
+  };
+  writeFileSync(statePath, JSON.stringify({ version: 1, sessionId, status: "running" }) + "\n");
+  agents.set(row.name, row);
+  handle.crash();
+  const before = spawnedOpts.length;
+  (manager as unknown as { onAgentExit(agent: typeof row): void }).onAgentExit(row);
+  if (mode === "pending" || mode === "retired") {
+    await waitFor(() => closeWork !== undefined, `${mode} closure requested`);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    check(spawnedOpts.length === before, `${mode}: no replacement before work closure`);
+    if (mode === "retired") { row.terminalizing = true; agents.delete(row.name); }
+    closeWork();
+  }
+  if (mode === "pending") {
+    await waitFor(() => spawnedOpts.length === before + 1 && !row.restart.recovering, "closed work restart");
+    check(agents.get(row.name) === row, "proved closure permits recovery under the existing lifecycle");
+    row.terminalizing = true;
+    row.handle.stop();
+    agents.delete(row.name);
+  } else {
+    await waitFor(() => !agents.has(row.name), `${mode} refusal`, 12_000);
+    if (mode === "timeout") closeWork(); // A late proof must never revive the timed-out retry.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    check(spawnedOpts.length === before, `${mode}: no replacement after unknown work or concurrent retirement`);
+  }
+}
+
+// A successor cannot turn a missing reference or an ordinary process reap into work closure.
+const recover = manager as unknown as {
+  restartSupervisedSeat(row: { alias: string; runtime?: { kind: string; id: string } }, record: { supervise: { restarts: number; windowMs: number }; crashes: number[] }): Promise<string | undefined>;
+};
+const storedPolicy = { supervise: { restarts: 1, windowMs: 60_000 }, crashes: [] };
+check((await recover.restartSupervisedSeat({ alias: "orphan" }, storedPolicy))?.includes("no durable custody reference"), "successor refuses missing durable work custody");
+check((await recover.restartSupervisedSeat({ alias: "orphan", runtime: { kind: "fake", id: "owned" } }, storedPolicy))?.includes("cannot prove prior local work ended"), "successor refuses a runtime without durable work closure");
 
 for (const server of servers) try { server.close(); } catch { /* already closed */ }
 console.log(`pi session recovery smoke: ${checks} checks passed`);

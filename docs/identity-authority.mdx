@@ -12,6 +12,11 @@ credentials and pre-creates the durables agents may only *bind* (their DM inbox,
 role's task queue). The manager hosts it today, but nothing is manager-special about it;
 privilege attaches to the signer, and a space can run without a manager.
 
+When join, foreground spawn, fixed-profile minting, or application identity issuance opens a
+short-lived CLI provisioner, it attempts to stop that endpoint even if startup or provisioning fails.
+A failed stop does not replace the provisioning result or its error. Endpoint-caller issuance has
+its own [close receipt](cli-auth.mdx#issuance-records), which can report a partial result.
+
 User-credential and auth-callout JWT signing uses Node's native Ed25519 implementation. NATS
 libraries still encode keys and JWTs. The signer produces the same signature bytes for the same key
 and payload; permissions, expiry and issuer checks are unchanged. The auth callout also verifies
@@ -50,14 +55,14 @@ normative shapes are [SPEC Appendix B](../SPEC.md#appendix-b-profile-acls); in b
 
 | Profile | Is |
 |---|---|
-| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. It reads the roster on demand with a Direct Get of the presence bucket, which binds no consumer. Its channel-registry watch, and the presence watch older seats hold, create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
+| **agent** | The ordinary peer: publishes as itself to its declared channels, reads within its read ACL + its own DM/task inboxes. A role holder asks the delivery daemon to record its take of each role request on its own take subject before it shows the request. It reads the roster on demand with a Direct Get of the presence bucket, which binds no consumer. Its channel-registry watch, and the presence watch older seats hold, create and inspect client-managed ordered consumers but cannot delete any consumer on those streams; the broker removes a finished watch's consumer five minutes after its last interest. |
 | **observer** | Read-only chat + presence; DMs invisible. What `cotal console` runs. Its only consumer deletes name its own history readers (`hist_<readerId>_<n>` on CHAT, keyed on its nkey or on the connection the server assigned), so each history read removes its consumers when it ends, and it cannot remove another principal's watch or the delivery daemon's fan-out consumer. The broker removes its finished watch consumers. |
 | **admin** | Elevated *read-only* god-view: sees DMs and anycast live, still writes nothing. A deliberate opt-in for elevated operator observation. Deletes its own history readers on CHAT and DM, and no other consumer. |
 | operator-side | Narrow single-purpose creds for the machinery (supervising, provisioning, teardown, delivery); the reference implementation splits these so no one connection can read every DM *and* delete every stream ([security model](security.mdx)). |
 | **run-driver** | One workflow run and takeover attempt: its journal subject, replay durable and run-owned record writes. Store reads and effects go through the host. |
 | **run-mediator** | The trusted hosting process's separate connection for workflow effects and leader reads. It exposes journal-checked, run-bound operations and never hands its credential to the driver. |
 | **run-operator** | One served run read, or one half of an answer, minted per call: a read holds the records walk, one run's replay and the admission read; the answering half is minted for one checkpoint token and holds that pause's answer record and settle alone. |
-| **issuer** | One issuance window: the party holding the space signer mints it for a few minutes to stage and release a credential's evidence, retire the issuances a lifecycle terminal leaves behind, or resolve the evidence a request rides. The auth service, and each callout replica, holds one of its own for the issuance its callout makes on a user-auth connect. It replaces that session before its five-minute credential expires and closes it with the service. |
+| **issuer** | One issuance window: the party holding the space signer mints it for a few minutes to stage and release a credential's evidence, retire the issuances a lifecycle terminal leaves behind, or resolve the evidence a request rides. The auth service, and each callout replica, holds one of its own for the issuance its callout makes on a user-auth connect. It retires that connection before its five-minute credential expires, opens a fresh one only for a later issuance, and closes it with the service. An idle issuer connection can disappear while the space's store, reader and callout connections keep serving. |
 | **run-admitter** | One run's admission record or revocation marker, minted per run for a minute: two exact keys in the admission store and nothing else. |
 
 **An agent's channel scope is three verbs**: `subscribe` (reads at boot),

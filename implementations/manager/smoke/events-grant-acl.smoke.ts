@@ -63,20 +63,12 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   if (!cond) failures++;
 }
 
-// The chat-publish subjects allowed by a minted creds file (decode the JWT's nats.pub.allow).
-function pubAcl(path: string): string[] {
+/** The chat subjects a minted credential allows in one direction. Publish grants say what an agent
+ *  may put on its event channel; subscribe grants say whose tool inputs and outputs it may read. */
+function chatAcl(path: string, direction: "pub" | "sub"): string[] {
   const jwt = readFileSync(path, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
   const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
-  return ((claims.nats?.pub?.allow as string[] | undefined) ?? []).filter((s) => s.includes(".chat.") && !s.startsWith("$JS"));
-}
-
-/** The chat-SUBSCRIBE subjects a minted creds file admits. The publish side says what an agent may
- *  put on its own event channel; this side says what it may READ, which is the question a plane
- *  carrying full tool inputs and outputs actually raises. */
-function subAcl(path: string): string[] {
-  const jwt = readFileSync(path, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
-  const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
-  return ((claims.nats?.sub?.allow as string[] | undefined) ?? []).filter((s) => s.includes(".chat.") && !s.startsWith("$JS"));
+  return ((claims.nats?.[direction]?.allow as string[] | undefined) ?? []).filter((s) => s.includes(".chat.") && !s.startsWith("$JS"));
 }
 
 /** The channel a chat subject names. A chat subject is `cotal.<space>.chat.<owner>.<actor>.<channel>`,
@@ -149,13 +141,11 @@ const fakeHandle = (name: string): AgentHandle => ({ name, kind: "fake", status:
 // The launch each connector renders is captured, so the ARMING half of the record can be read on the
 // way back out of a resume without a real child process.
 let lastLaunchEvents: boolean | undefined;
-let lastLaunchAllowPublish: string[] | undefined;
 const base = {
   kind: "connector" as const,
   requires: ["node"],
   buildLaunch: (o: { events?: boolean; allowPublish?: string[] }): LaunchSpec => {
     lastLaunchEvents = o.events;
-    lastLaunchAllowPublish = o.allowPublish;
     return { command: "true", args: [], env: {} };
   },
 };
@@ -180,7 +170,7 @@ try {
     const uid = String(data.lifecycleUid ?? "");
     armedName = String(data.name ?? "");
     const actor = (mgr as unknown as { agents: Map<string, { id: string }> }).agents.get(armedName)!.id;
-    const pub = pubAcl(join(credsDir, `${armedName}.${uid}.creds`));
+    const pub = chatAcl(join(credsDir, `${armedName}.${uid}.creds`), "pub");
     const granted = pub.map(channelOf).filter((c) => c.startsWith("events."));
     armedChannel = granted[0] ?? "";
     check("exactly one event channel is granted", granted.length === 1, granted);
@@ -208,7 +198,7 @@ try {
     // question that matters most, and it is answered here: arming a session grants it PUBLISH on
     // its own channel and adds NOTHING to what it may read. An agent reads what its persona's
     // access set says and nothing else, so no agent gains sight of another's plane by being armed.
-    const sub = subAcl(join(credsDir, `${armedName}.${uid}.creds`));
+    const sub = chatAcl(join(credsDir, `${armedName}.${uid}.creds`), "sub");
     check(
       "arming grants no event channel on the READ side",
       !sub.map(channelOf).some((c) => c.startsWith("events.")),
@@ -226,7 +216,7 @@ try {
     const reply = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", events: false });
     check("spawn with events explicitly disabled succeeds", reply.ok === true, reply);
     const data = (reply.ok ? reply.data : {}) as { lifecycleUid?: string; name?: string };
-    const pub = pubAcl(join(credsDir, `${String(data.name)}.${String(data.lifecycleUid)}.creds`));
+    const pub = chatAcl(join(credsDir, `${String(data.name)}.${String(data.lifecycleUid)}.creds`), "pub");
     check("no event channel is granted after the explicit opt-out", !pub.map(channelOf).some((c) => c.startsWith("events.")), pub);
     check("and the launch is explicitly unarmed", lastLaunchEvents === false, lastLaunchEvents);
   }
@@ -351,7 +341,7 @@ try {
       if (!r5.ok) return false;
       const d = r5.data as { name?: string; lifecycleUid?: string };
       const actor = (mgr as unknown as { agents: Map<string, { id: string }> }).agents.get(String(d.name))!.id;
-      const pub = pubAcl(join(credsDir, `${String(d.name)}.${String(d.lifecycleUid)}.creds`));
+      const pub = chatAcl(join(credsDir, `${String(d.name)}.${String(d.lifecycleUid)}.creds`), "pub");
       return pub.map(channelOf).includes(eventChannel({ owner: DEV_OWNER, actor }));
     })(), r5);
   }
@@ -368,7 +358,7 @@ try {
     const reply = await mgr.startAgent({ name: "quiet-bot", agent: "smoke-emitter" });
     check("a channel-less persona spawns through the manager", reply.ok === true, reply);
     const data = (reply.ok ? reply.data : {}) as { lifecycleUid?: string; name?: string };
-    const sub = subAcl(join(credsDir, `${String(data.name)}.${String(data.lifecycleUid)}.creds`));
+    const sub = chatAcl(join(credsDir, `${String(data.name)}.${String(data.lifecycleUid)}.creds`), "sub");
     const channels = sub.map(channelOf).filter((c) => c !== "");
     check(
       "an omitted read set mints NO channel read row at the manager door — general included",
@@ -413,6 +403,34 @@ try {
     const { parseResumeControlArgs } = await import("../src/resume.js");
     const entry = JSON.parse(JSON.stringify({ ...preserved, agents: [preserved!.agents[0]] }));
     delete entry.agents[0].launch.events;
+    delete entry.agents[0].launch.eventPayloads;
+    for (const version of ["cotal-manager-resume/v1", "cotal-manager-resume/v2"]) {
+      for (const choice of [undefined, true, false]) {
+        const document = structuredClone(entry);
+        document.version = version;
+        // v1 predates array-valued shareTools.
+        if (version === "cotal-manager-resume/v1") delete document.agents[0].launch.shareTools;
+        if (choice !== undefined) document.agents[0].launch.eventPayloads = choice;
+        let result: ReturnType<typeof parseResumeControlArgs> | undefined;
+        let error: string | undefined;
+        try { result = parseResumeControlArgs({ attemptId: "payload-compat", inventory: document }); }
+        catch (e) { error = String((e as Error).message); }
+        check(`${version} preserves payload choice ${String(choice)}`,
+          result !== undefined && result.inventory.agents[0]?.launch.eventPayloads === choice, error ?? result);
+      }
+    }
+    for (const invalid of ["false", null]) {
+      const document = structuredClone(entry);
+      document.agents[0].launch.eventPayloads = invalid;
+      let refused = false;
+      try { parseResumeControlArgs({ attemptId: "payload-invalid", inventory: document }); } catch { refused = true; }
+      check(`inventory refuses nonboolean payload choice ${String(invalid)}`, refused);
+    }
+    const unknown = structuredClone(entry);
+    unknown.agents[0].launch.unknownPayloadPolicy = false;
+    let unknownRefused = false;
+    try { parseResumeControlArgs({ attemptId: "payload-unknown", inventory: unknown }); } catch { unknownRefused = true; }
+    check("inventory still refuses unknown launch keys", unknownRefused);
     // The refusal this cell is about is a THROW, so it has to be caught here: an uncaught one would
     // abort the suite before either assertion printed, and a cell that never runs cannot fail.
     let parsed: ReturnType<typeof parseResumeControlArgs> | null = null;
@@ -544,7 +562,7 @@ try {
     // write it to. The operator reading this refusal is on the manager's mesh.
     check(
       "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
-      /cotal mint /.test(rf) && !/cotal actor grant/.test(rf),
+      /cotal auth mint /.test(rf) && !/cotal actor grant/.test(rf),
       rf.slice(0, 600),
     );
     const rc2 = JSON.stringify(await newManager().resumePreserved(build(false)));
@@ -574,7 +592,7 @@ try {
     // here green, which is the defect this section exists for, one field over. So the mint runs on
     // the channel the refusal PRINTED and the result is compared against the channel the manager
     // actually refused.
-    const named = /cotal mint <reader> --profile (\S+) --allow-subscribe (\S+)/.exec(remedyRefusal);
+    const named = /cotal auth mint <reader> --profile (\S+) --allow-subscribe (\S+)/.exec(remedyRefusal);
     check("the refusal prints a mint command, naming a profile and a channel", named !== null, remedyRefusal.slice(0, 400));
     // The mint cells run only on a parsed command. Without one, the cell above is already red, and
     // minting on a stand-in would throw, skip section 10 and leave the count guard to report it.
@@ -589,13 +607,13 @@ try {
           lifecycleUid: mintLifecycleUid(),
         }),
       );
-      const granted = subAcl(credsPath);
+      const granted = chatAcl(credsPath, "sub");
       check(
         "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
         granted.length === 1 && channelOf(granted[0]!) === remedyChannel,
         { profile, granted, refused: remedyChannel },
       );
-      // ANY wildcard tail, not the one literal shape the observer arm happens to emit. `subAcl` has
+      // ANY wildcard tail, not the one literal shape the observer arm happens to emit. `chatAcl` has
       // already filtered to chat subjects, so a trailing `>` here is a wildcard over some part of the
       // plane whatever its prefix: `<space>.chat.>` and `<space>.chat.*.*.>` both fail this, and only
       // the first would fail an `endsWith(".chat.>")` written against today's observer arm.
@@ -659,6 +677,7 @@ try {
       (r1.error ?? "").includes("nothing to grant on an open mesh") &&
         (r1.error ?? "").includes("connecting bare") &&
         !/cotal mint /.test(r1.error ?? "") &&
+        !/cotal auth mint /.test(r1.error ?? "") &&
         !/cotal actor grant/.test(r1.error ?? ""),
       r1,
     );
@@ -701,7 +720,7 @@ try {
       "the OPEN resume door prints the open-mesh arm too (#567)",
       /another agent's event channel/.test(r2) &&
         r2.includes("nothing to grant on an open mesh") &&
-        !/cotal mint |cotal actor grant/.test(r2),
+        !/cotal mint |cotal auth mint |cotal actor grant/.test(r2),
       r2.slice(0, 500),
     );
 
@@ -723,8 +742,8 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 48;
-check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
+const EXPECTED = 58;
+check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);

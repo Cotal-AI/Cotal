@@ -1,0 +1,77 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/spawn-args.smoke.ts"
+  ],
+  "guard": "a started seat's cotal_spawn result says where it is and the next move, naming only the join the caller passed (#5490)",
+  "command": "pnpm smoke:spawn-args",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/spawn-result.json",
+  "completionMarker": "SPAWN-ARGS SMOKE",
+  "why": [
+    "Fresh agents spawned helpers nobody could reach on a channel, and the result only said the seat",
+    "would appear in the roster.",
+    "",
+    "R1 drops the join channels from the line, and R6 stops the tool passing them, so a helper put on",
+    "the task's channel is not said to be there. R2 claims a seat with no join is on no channel, which",
+    "is false for a persona that lists subscribe. R3 hides a rename. R4 says a seat waiting at an",
+    "operator screen is on its channel before it has joined the mesh. R5 tells the spawner to despawn a",
+    "once seat its manager stops. Each is its own cell.",
+    "",
+    "NO BUILD STEP: the suite imports ../src."
+  ],
+  "mutations": [
+    {
+      "name": "R1 the line drops the join channels",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const on = s.join?.length ? s.join.map((c) => `#${c}`).join(\", \") : undefined;",
+      "replace": "  const on: string | undefined = undefined;",
+      "expectRed": "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
+      "cell": "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
+      "note": "The spawner would not be told where to post the brief."
+    },
+    {
+      "name": "R2 a seat with no join is said to be on no channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const persona = \"it starts only on the channels its persona lists, which may be none\";",
+      "replace": "  const persona = \"it starts on no channel\";",
+      "expectRed": "a spawn without join says the seat has only its persona's channels and names join",
+      "cell": "a spawn without join says the seat has only its persona's channels and names join",
+      "note": "A persona that lists subscribe starts on those channels, so the claim would be false for it."
+    },
+    {
+      "name": "R3 a rename no longer leads the line",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const lead = s.renamed ? `Started ${s.started} (\"${s.requested}\" was taken)` : `Started ${s.started}`;",
+      "replace": "  const lead = `Started ${s.started}`;",
+      "expectRed": "a renamed seat leads with the name it got and the name that was taken",
+      "cell": "a renamed seat leads with the name it got and the name that was taken",
+      "note": "The spawner would address the name it asked for, which belongs to another seat."
+    },
+    {
+      "name": "R4 a seat waiting for the operator is reported like a joined one",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (s.waitingFor !== undefined)\n",
+      "replace": "  if (false)\n",
+      "expectRed": "a seat waiting for the operator says it has not joined the mesh yet",
+      "cell": "a seat waiting for the operator says it has not joined the mesh yet",
+      "note": "The spawner would post the brief for a seat that is still at Claude's session picker."
+    },
+    {
+      "name": "R5 a once seat is told to be despawned",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "${s.once ? \"\" : \" Despawn it when its job is done.\"}",
+      "replace": " Despawn it when its job is done.",
+      "expectRed": "a once seat is not told to be despawned, since its manager stops it",
+      "cell": "a once seat is not told to be despawned, since its manager stops it",
+      "note": "A once seat is stopped when its task ends; a despawn then races the manager's own stop."
+    },
+    {
+      "name": "R6 the tool stops passing join to the line",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "mode, model: d?.model, join, waitingFor: d?.waitingFor,",
+      "replace": "mode, model: d?.model, join: undefined, waitingFor: d?.waitingFor,",
+      "expectRed": "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
+      "cell": "a spawn with join names the channel, where the brief goes, when to mention it and to despawn it",
+      "note": "The line is right only if the tool hands it the join the caller passed."
+    }
+  ]
+}

@@ -10,7 +10,7 @@ import {
   parseRemoteDelegatedRecoveryRequest,
   parseRemoteDelegatedRecoveryResult,
 } from "../src/delegated-recovery.js";
-import { parseRemoteDelegatedUserIntentExecutionRequest } from "../src/remote-manager-authority.js";
+import { parseDelegatedUserIntentRequest, parseRemoteDelegatedUserIntentExecutionRequest, parseRemoteManagerEnvelope } from "../src/remote-manager-authority.js";
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const hash = (value: unknown): string => contractDigest(value).slice("sha256:".length);
@@ -153,7 +153,56 @@ add("reject inherited launch envelope", () => { const r = launch(); const proto 
 
 add("reason allowlist is frozen", () => { assert.equal(Object.isFrozen(DELEGATED_RECOVERY_REASONS), true); });
 
-const EXPECTED_CELLS = 71;
+const userIntent = {
+  v: 1 as const, kind: "delegated-user-intent" as const, space: envelope.space, actor: "operator",
+  accountPublicKey: envelope.accountPublicKey, instanceId: envelope.instanceId, requestId: envelope.requestId,
+  intent: { operation: "launch" as const, target: { actor: target.actor } },
+};
+add("accept delegated user intent and shared manager envelope", () => {
+  assert.equal(parseDelegatedUserIntentRequest(userIntent).intent.operation, "launch");
+  assert.equal(parseRemoteManagerEnvelope(envelope, envelope.kind, "probe envelope").requestId, envelope.requestId);
+});
+for (const [label, fields] of [
+  ["v 2", { v: 2 }], ["wrong kind", { kind: "wrong" }], ["empty space", { space: "" }],
+  ["non-string space", { space: 1 }], ["empty actor", { actor: "" }], ["dotted actor", { actor: "a.b" }],
+  ["empty instanceId", { instanceId: "" }], ["bad instanceId", { instanceId: "short" }],
+  ["empty requestId", { requestId: "" }], ["16-char requestId", { requestId: "a".repeat(16) }],
+  ["21-char requestId", { requestId: "a".repeat(21) }], ["65-char requestId", { requestId: "a".repeat(65) }],
+  ["dotted requestId", { requestId: "a".repeat(10) + "." + "a".repeat(11) }],
+] as const) add(`shared base rule refuses ${label} alike`, () => {
+  const norm = (message: string) => message.replaceAll("probe envelope", "<what>").replaceAll("delegated user intent", "<what>").replace(/kind: "[^"]*"/, 'kind: "<kind>"');
+  let sharedMessage = "", intentMessage = "";
+  assert.throws(() => parseRemoteManagerEnvelope({ ...envelope, ...fields }, envelope.kind, "probe envelope"), (error: Error) => { sharedMessage = norm(error.message); return true; });
+  assert.throws(() => parseDelegatedUserIntentRequest({ ...userIntent, ...fields }), (error: Error) => { intentMessage = norm(error.message); return true; });
+  assert.equal(intentMessage, sharedMessage);
+});
+for (const requestId of ["a".repeat(22), "a".repeat(64), "_".repeat(22), "-".repeat(22)]) add(`shared requestId accepts boundary ${requestId}`, () => {
+  assert.equal(parseRemoteManagerEnvelope({ ...envelope, requestId }, envelope.kind, "probe envelope").requestId, requestId);
+  assert.equal(parseDelegatedUserIntentRequest({ ...userIntent, requestId }).requestId, requestId);
+});
+for (const [label, fields, message] of [
+  ["empty manager UID before empty requestId", { managerLifecycleUid: "", requestId: "" }, "probe envelope request requires non-empty managerLifecycleUid"],
+  ["empty manager UID before malformed actor", { managerLifecycleUid: "", actor: "a.b" }, "probe envelope request requires non-empty managerLifecycleUid"],
+  ["empty requestId before malformed manager UID", { managerLifecycleUid: "short", requestId: "" }, "probe envelope request requires non-empty requestId"],
+] as const) add(`manager refusal order: ${label}`, () => {
+  assert.throws(() => parseRemoteManagerEnvelope({ ...envelope, ...fields }, envelope.kind, "probe envelope"), (error: Error) => error.message === message);
+});
+add("manager lifecycle grammar is checked before requestId grammar", () => {
+  let lifecycleMessage = "";
+  assert.throws(() => parseRemoteManagerEnvelope({ ...envelope, managerLifecycleUid: "short" }, envelope.kind, "probe envelope"), (error: Error) => { lifecycleMessage = error.message; return true; });
+  assert.match(lifecycleMessage, /lifecycleUid/);
+  assert.throws(() => parseRemoteManagerEnvelope({ ...envelope, managerLifecycleUid: "short", requestId: "short" }, envelope.kind, "probe envelope"), (error: Error) => error.message === lifecycleMessage);
+});
+add("prepare still refuses a registration proof and accepts its absence", () => {
+  assert.throws(() => parseRemoteManagerEnvelope(envelope, envelope.kind, "probe envelope", false), /must not carry registrationProof/);
+  const { registrationProof: _proof, ...prepare } = envelope;
+  assert.equal(parseRemoteManagerEnvelope(prepare, envelope.kind, "probe envelope", false).registrationProof, undefined);
+});
+add("user intent still refuses manager-only fields", () => {
+  assert.throws(() => parseDelegatedUserIntentRequest({ ...userIntent, managerLifecycleUid: envelope.managerLifecycleUid }), /unknown field "managerLifecycleUid"/);
+});
+
+const EXPECTED_CELLS = 95;
 let ran = 0;
 for (const [name, run] of cases) {
   try { run(); }

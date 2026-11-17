@@ -79,7 +79,7 @@ try {
     check("the retained launcher writes no stack journal", !existsSync(join(root, ".cotal", "stack-controller.json")));
     const store = digest(join(root, ".cotal", "store.id"));
     const accounts = accountFiles(root).map((name) => `${name}:${digest(join(root, ".cotal", "auth", name))}`);
-    const stopped = cli(root, "down");
+    const stopped = cli(root, "down", "--yes");
     check("down stops it and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
 
     const create = cli(home, "space", "create", space, "--root", root, "--json");
@@ -92,7 +92,7 @@ try {
     check("it still has no stack journal", !existsSync(join(root, ".cotal", "stack-controller.json")));
     check("its store identity is unchanged", digest(join(root, ".cotal", "store.id")) === store);
     check("its account records are unchanged", JSON.stringify(accountFiles(root).map((name) => `${name}:${digest(join(root, ".cotal", "auth", name))}`)) === JSON.stringify(accounts));
-    const last = cli(root, "down");
+    const last = cli(root, "down", "--yes");
     check("down stops it again", last.status === 0, shown(last));
   }
 
@@ -135,7 +135,7 @@ try {
     const first = cli(root, "up", "-f", "cotal.yaml", "--open", "--no-manager");
     anchor(root);
     check("an unprepared folder deploys an open manifest on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
-    const stopped = cli(root, "down");
+    const stopped = cli(root, "down", "--yes");
     check("down stops the open root and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
     const conf = join(root, ".cotal", "server-open.conf");
     const named = readFileSync(conf, "utf8");
@@ -144,15 +144,15 @@ try {
     const again = cli(root, "up", "--no-manager");
     check("with a configuration that names no space, plain up starts the manifest's space, open, at its own address, and starts no main",
       again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
-    check("down stops the manifest's space", cli(root, "down").status === 0);
+    check("down stops the manifest's space", cli(root, "down", "--yes").status === 0);
     const other = "openmf2";
     const plain = cli(root, "up", "--open", "--space", other, "--server", server, "--no-manager");
     check("a plain open start of another space at that root starts it", plain.status === 0 && findMesh(other)?.mode === "open", shown(plain));
-    check("down stops it", cli(root, "down").status === 0);
+    check("down stops it", cli(root, "down", "--yes").status === 0);
     const latest = cli(root, "up", "--no-manager");
     check("plain up starts the space that last ran there, over the older manifest's summary",
       latest.status === 0 && findMesh(other)?.server === server && findMesh(space) === undefined && latest.stdout.includes(`Mesh: ${other}`), shown(latest));
-    const last = cli(root, "down");
+    const last = cli(root, "down", "--yes");
     check("down stops the open root again", last.status === 0, shown(last));
   }
 
@@ -164,12 +164,12 @@ try {
     const first = cli(root, "up", "--open", "--space", space, "--server", server, "--no-manager");
     anchor(root);
     check("an unprepared folder starts an open space on the retained launcher", first.status === 0 && findMesh(space)?.mode === "open", shown(first));
-    const stopped = cli(root, "down");
+    const stopped = cli(root, "down", "--yes");
     check("down stops it and removes its registration", stopped.status === 0 && findMesh(space) === undefined, shown(stopped));
     const again = cli(root, "up", "--no-manager");
     check("plain up starts that space again, open, at its own address, and starts no main",
       again.status === 0 && findMesh(space)?.server === server && findMesh(space)?.mode === "open" && findMesh("main") === undefined && again.stdout.includes(`Mesh: ${space}`), shown(again));
-    check("down stops it again", cli(root, "down").status === 0);
+    check("down stops it again", cli(root, "down", "--yes").status === 0);
     // NAMING THE ADDRESS DOES NOT CHANGE THE MODE. `--server` says where the broker listens, not
     // whether it authenticates, and reading the two off one condition brought this root back in
     // static auth, with a delivery daemon and no line about it, whenever a restart pinned the
@@ -177,10 +177,10 @@ try {
     const pinned = cli(root, "up", "--server", server, "--no-manager");
     check("a restart naming the address it already ran on starts it open again, and says the mode it started in",
       pinned.status === 0 && findMesh(space)?.mode === "open" && pinned.stdout.includes("starting this folder's stopped stack in the mode it last ran: open"), shown(pinned));
-    const last = cli(root, "down");
+    const last = cli(root, "down", "--yes");
     check("down stops the restarted open root", last.status === 0, shown(last));
   }
 } finally {
-  for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down");
+  for (const root of roots) if (anchors.has(root) && !existsSync(join(root, ".cotal", "stack-controller.json"))) cli(root, "down", "--yes");
 }
 finish();

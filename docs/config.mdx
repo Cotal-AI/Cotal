@@ -1,7 +1,7 @@
 ---
 title: Configuration
 description: Config files, preferences, environment variables, and local storage for the Cotal CLI and connectors.
-kind: Reference
+kind: "Reference: describes the TypeScript reference implementation (the `cotal` CLI and connectors), not the wire contract."
 audience: operators
 ---
 
@@ -157,6 +157,11 @@ operator default when that preference is absent. `cotal space forget` removes th
 | `detach-key` | `ctrl-<char>` or `^<char>` | no | `COTAL_DETACH_KEY` | `ctrl-]` | `attach` |
 | `color` | `auto`, `always` or `never` | no | `FORCE_COLOR`, then `NO_COLOR` | `auto` | every command |
 | `editor` | an editor command, such as `code --wait` | no | `VISUAL`, then `EDITOR` | none | `persona edit`, `personas edit` |
+| `name` | 1 to 128 letters, digits, `_`, `.` or `-`, starting and ending with a letter, digit or `_` | no | none | on a user-auth space, the handle `cotal login` recorded; on an open or static space, your OS login | `chat` |
+
+`personas edit` reports a missing editor before resolving a space. A local `persona create`
+reports an unknown `--harness` before resolving its catalog. A valid editor still needs a prepared
+or registered space's catalog. Neither command borrows another folder's space.
 
 Preference precedence, highest first, is:
 
@@ -177,7 +182,8 @@ variables override a saved value. `cotal config` shows the winning value and the
 `harness` is checked against the official connectors and the ones installed extensions provide.
 `persona` must be a persona name, made of letters, digits, `_` and `-`, or a path to a persona file
 with no control characters. When the catalog of the space a command here uses (`--space`, else the
-selected space, else the space `spawn` resolves from this folder) does not hold it, the value is still saved, since the file may be created later,
+space `spawn` resolves from this folder, which is a running space registered here even when another
+space is selected) does not hold it, the value is still saved, since the file may be created later,
 with a `PERSONA_NOT_FOUND` warning naming that catalog; a launch checks it again when it uses it. A
 value is checked when it is written, and an unknown key or an invalid value is refused with the valid
 ones. Preferences hold no credentials. They change future commands, not agents already running.
@@ -189,13 +195,15 @@ The file is private to its owner and versioned:
 ```
 
 `revision` counts writes that change a value. A write holds a lock and replaces the file atomically.
+If writing the lock or replacement fails, Cotal attempts to remove its temporary file and reports
+the original error. It does not sweep other writers' temporary files.
 If the revision changed after the command read it, the write refuses with `CONFLICT`.
 
 Each write makes the replacement file private with mode `0600`, regardless of its prior mode.
 A changed mode produces `PREFERENCES_MODE_CHANGED`; a read-only file does not prevent `config set` or `unset`.
 
 Invalid JSON, an unsupported schema version, an unknown key, or an invalid value stops commands that use defaults.
-Help, completion, `version`, and `docs` remain available. `status` reports the unreadable part and exits 4.
+Help, completion, `version`, `docs`, and `daemon` remain available. Machine-daemon operations do not use preference defaults. `status` reports the unreadable part and exits 4.
 The error names the file and fix. Cotal never resets it automatically.
 An initial UTF-8 byte order mark is accepted and omitted on the next write. UTF-16 is refused with the instruction to save as UTF-8.
 Symlinks, FIFOs, devices, and folders at `preferences.json` are refused with `PERMISSION_DENIED` before opening them.
@@ -234,10 +242,12 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_TLS` | connector session | Connect over TLS (`1`); off keeps the join link's choice | off (or the link's) |
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
+| `COTAL_ENDPOINTS` | connector session | Endpoint commands the seat was handed at launch, as the JSON list of `{ endpoint, commands, instanceId? }` entries the launcher writes, `[]` when the launch names none; the orientation card lists them. A value that is not a list, empty or `null` included, is refused when the session starts | for a session started with no such variable, the agent file's `endpoints:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | on when the MCP client declares the `claude/channel` capability in `initialize` |
 | `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher unless the launch used `--no-events` | launcher-managed |
 | `COTAL_EVENTS_REQUIRED` | hand-driven user-mode connector | Trusted registration says events are mandatory; arms the plane and refuses if the session grant omits its event channel. Launcher-managed sessions carry this in launch material instead | off |
+| `COTAL_EVENT_PAYLOADS` | hand-driven connector session | Set to `false` by the operator to withhold tool inputs and results while keeping work metadata. Cotal launchers do not set this variable: `--no-event-payloads`, persona and registration restrictions travel in private launch material as `eventPayloadsWithheld`. This variable cannot override that restriction | publish unless launch material withholds |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn (below an explicit `--harness` or legacy `--agent` and the persona's `agent:` pin, above a saved [`harness` preference](#preferences)) | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn (above a saved [`persona` preference](#preferences)) | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works. `agent-bearer` skips the gate by name, no flag needed | off |
@@ -253,7 +263,7 @@ other non-empty value when it starts, naming the variable. A blank value uses th
 | `COTAL_COMPLETE_DEBUG` | `completion` | Print completion-resolution errors and warnings to stderr (`1`). The shell stubs discard stderr, so run `cotal __complete <words>` by hand to see them. Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_DEBUG` | any `cotal` command | Print the stack trace under a command's error, followed by the stack of each error that caused it (`1`). Empty, `0`, `false` and `off`, in any case, leave it off | off |
 | `COTAL_CODEX_BIN` / `COTAL_OPENCODE_BIN` / `COTAL_ORCA_BIN` | Codex and OpenCode connectors, Orca runtime | Pin the `codex`, `opencode` or Orca CLI binary | found on `PATH` |
-| `COTAL_IDP_TIMEOUT_MS` | `cotal login`, IdP requests | Per-request IdP timeout in milliseconds, for a slow IdP; a malformed value fails loud | `30000` |
+| `COTAL_IDP_TIMEOUT_MS` | `cotal login`, `cotal daemon serve`, IdP requests | Per-request IdP timeout in whole milliseconds from `1` to `2147483647`, for a slow IdP; a malformed value fails loud, including before daemon startup | `30000` |
 | `COTAL_ENROLLMENT_FILE` | foreground `spawn` | Private `0600` file containing one remote enrollment URL; preferred over the environment form | none |
 | `COTAL_MANAGED_HANDOFF_FILE` | foreground `spawn` | Private `0600` file holding one managed lifecycle handoff from a delegating runtime; `spawn` takes and deletes it before anything else runs, and every other command drops the variable and leaves the file. Requires `COTAL_MANAGER_INSTANCE` (`COTAL_MANAGED_HANDOFF_FILE requires COTAL_MANAGER_INSTANCE`); `DelegatedSeatLaunch.managerInstanceId` is required, so managers and the CLI must be upgraded together | none |
 | `COTAL_ENROLLMENT_URL` | foreground `spawn` | One remote enrollment URL when a secret file cannot be mounted; conflicts with `COTAL_ENROLLMENT_FILE` | none |
@@ -329,7 +339,10 @@ writing a launch command. Shell syntax in environment values remains literal.
 
 This also permits host-session markers such as `CLAUDE_CODE_CHILD_SESSION`. A `COTAL_` name outside
 the machine-wide operator settings is refused before launch. Those names carry the launcher's
-per-seat identity, role, model, and read set.
+per-seat identity, role, model, and read set. This case-insensitive restriction also applies to
+`${VAR}` and `${VAR:-default}` references in shared MCP servers and the selected Claude user MCP
+configuration. Use a non-`COTAL_` name for a server's own input. Machine-wide names such as
+`COTAL_HOME` remain allowed.
 
 A space-local `spawn` object replaces the whole operator-level object. An absent `spawn`,
 `"spawn": { "env": [] }`, and `"spawn": {}` add no names. A non-object `spawn` or an `env` that is not
@@ -353,6 +366,9 @@ Model discovery uses a different environment. The `codex` and `opencode` catalog
 `cotal models` and the manager's selector receive the operator environment with `COTAL_*` removed.
 They do not read `spawn.env`. The binary resolves from the operator pin (`COTAL_CODEX_BIN` or `COTAL_OPENCODE_BIN`),
 then the absolute path recorded at manager boot, then the bare name. The seat allow-list does not apply to these short-lived reads.
+The `claude` and `pi` catalog reads receive a launch's environment: the seat allow-list and the
+connector's provider keys, without `spawn.env`. Their binary is the absolute path recorded at
+manager boot, then the bare name.
 
 ### Launch material
 
@@ -428,7 +444,8 @@ It is gitignored because it holds secrets and local process state.
 | `auth/creds/space.<key>/<name>.creds` | Standing per-agent NATS credentials in the owning space's segment. Managed lifecycles use `<name>.<lifecycleUid>.creds` in the same directory |
 | `auth/seat-generation.<key>.<n>.json` | Seat writer generation `<n>`, claimed by exclusive create when `cotal up` resumes from a checkpoint. See [Backups](cli-backups.mdx#backups) |
 | `auth/server.conf` | Generated nats-server config for the broker. See the file's generation rules below |
-| `broker-policy.json` | Durable broker launch policy with TLS cert and key path references or plaintext mode, plus configured `--auth-timeout` seconds and `--max-payload` bytes. Survives `cotal down` |
+| `account-jwts/` | Account claims a broker on the full account resolver (`cotal up --account-resolver full`) stores, one `<account>.jwt` each, owner-only. Broker state: back it up with the store |
+| `broker-policy.json` | Durable broker launch policy with TLS cert and key path references or plaintext mode, plus configured `--auth-timeout` seconds, `--max-payload` bytes and `--account-resolver full`. Survives `cotal down` |
 | `agents/<name>.md` | [Persona files](agent-files.mdx) |
 | `manifests/<runId>.json` | Legacy additive manifest-deploy ledger keyed by run ID, including retained `spawn -f` deployment records. Manifest hashes index records but do not name these files |
 | `config.json` | Space-local connector config |
@@ -457,8 +474,9 @@ A live refresh does not rewrite this file. The renderer includes every persisted
 the broker and the callout accounts for spaces with user auth enabled.
 
 `broker-policy.json` also lives under the project root. `COTAL_HOME` does not move it. Its retained
-policy prevents a later `up` from dropping TLS, the auth timeout, or payload limits after `cotal down`.
-Other renderers read those limits through `readBrokerPolicy`, not from generated server configuration.
+policy prevents a later `up` from dropping TLS, the auth timeout, payload limits or the full account
+resolver after `cotal down`. Other renderers read those limits through `readBrokerPolicy`, not from
+generated server configuration, and take the resolver from `brokerAccountResolver`.
 
 #### Runtime process records
 

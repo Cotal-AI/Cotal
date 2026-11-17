@@ -1,4 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { drainAndClose } from "@cotal-ai/core";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
@@ -20,7 +21,9 @@ import {
   sameSecretStoreIdentity,
   standaloneConnectOpts,
   startTimerWriter,
+  watchNativeConnection,
   type MembershipFeedHandle,
+  type NativeConnectionBinding,
   type ParsedArgs,
   type SecretStore,
   type SecretStoreIdentity,
@@ -32,6 +35,8 @@ import { startMembership } from "./membership.js";
 import { mayServeOn, leaseAction, type LeaseReading } from "./watchdog.js";
 import { DeliveryTransportHealth } from "./transport-health.js";
 import { executeEviction, executeEvictions, executePlaneLiveness, executePrincipalLiveness, validateScanTargetAdmission, type ScanTarget } from "./evict-exec.js";
+import { healConnectionEvictor } from "./sys-creds.js";
+import type { KickAuthority } from "./kick-authority.js";
 import type { HostedContextInputs, HostedServiceHandle, HostedServiceState, SpaceLane } from "@cotal-ai/workspace";
 
 type Values = Record<string, string | undefined>;
@@ -310,7 +315,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
  * A root with no `.cotal/` is not a workstation and gets no record — a hosted composition has none,
  * and creating one here would plant a stray workspace root wherever the daemon happened to run.
  */
-export function recordDeliveryPid(root: string, space: string): () => void {
+function recordDeliveryPid(root: string, space: string): () => void {
   if (!existsSync(join(root, ".cotal"))) {
     console.error(`• delivery: no ${join(root, ".cotal")} here, so this daemon is not recorded in a pidfile (nothing local will find it by pid)`);
     return () => {};
@@ -377,9 +382,28 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore, onStart
   await new Promise<void>(() => {}); // CLI runs until signalled
 }
 
+/** One data-account connection a hosted delivery context holds. The label says which part of the
+ *  context holds it and is not an authority. */
+export interface DeliveryNativeConnection extends NativeConnectionBinding {
+  label: "endpoint" | "membership-rw" | "timer-writer";
+}
+
+/** A hosted delivery context, with the native bindings of its data-account connections. */
+export interface DeliveryServiceHandle extends HostedServiceHandle {
+  /** Every data-account connection this context holds now: the endpoint's, the membership feed's
+   *  conn B when the feed runs, and the timer writer's. A host compares the list with a complete
+   *  native census of the account to show that no other connection uses it. The list proves neither
+   *  liveness nor the absence of other connections. Connections in the system account (the
+   *  membership observer and the sweeps) are not listed. A context that closed successfully reports
+   *  none. It throws while there is no settled answer: while the timer writer is not connected, while
+   *  a connection is down or redialing, during a credential adoption, and during or after a close
+   *  that did not succeed. No credential or connection object is returned. */
+  nativeConnections(): DeliveryNativeConnection[];
+}
+
 /** Start one independently owned delivery context. No cwd, process signal, pidfile, or exit
  * policy is borrowed from the CLI runner. The caller owns its explicit state path and store. */
-export async function startDeliveryService(inputs: HostedContextInputs): Promise<HostedServiceHandle> {
+export async function startDeliveryService(inputs: HostedContextInputs): Promise<DeliveryServiceHandle> {
   if (!inputs.context.accountPublicKey || !inputs.context.lifecycleUid || !inputs.space || !inputs.servers || !inputs.stateDir)
     throw new Error("delivery: hosted context needs an account, lifecycle, space, server and stateDir");
   if (inputs.store.identity === undefined)
@@ -399,6 +423,7 @@ export async function startDeliveryService(inputs: HostedContextInputs): Promise
       readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }),
       drain: started.close,
       close: started.close,
+      nativeConnections: started.nativeConnections,
     };
   } catch (error) {
     // The start-up fault is the report; a row the release left behind is the bucket TTL's to expire.
@@ -424,6 +449,18 @@ export interface DeliveryLaneOptions {
   rootNamed: boolean;
   tls: boolean;
   log: DeliveryLog;
+  /** The host's one kick authority. With it, this lane opens no kick credential and every live match
+   *  of an eviction is kicked through the host (`kick-authority.ts`). Without it, the lane kicks with
+   *  the space's own stored connection evictor, as a single-space daemon does. */
+  kickAuthority?: KickAuthority;
+}
+
+/** A delivery lane, with the native bindings of its data-account connections. */
+export interface DeliveryLane extends SpaceLane {
+  /** The same inventory {@link DeliveryServiceHandle.nativeConnections} reports, for a context that
+   *  reads a workstation root: every data-account connection the lane holds now, none once it has
+   *  closed, and a throw while there is no settled answer. */
+  nativeConnections(): DeliveryNativeConnection[];
 }
 
 /**
@@ -435,7 +472,7 @@ export interface DeliveryLaneOptions {
  * settles its `lost`; the other lanes of the process are untouched. Closing it quiesces Plane-3,
  * releases the lease and closes every connection the lane holds.
  */
-export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<SpaceLane> {
+export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<DeliveryLane> {
   const values: Values = { space: options.space, server: options.server, ...(options.rootNamed ? { root: options.root } : {}), ...(options.tls ? { tls: "" } : {}) };
   let releaseOnStartupFailure: (() => Promise<void>) | undefined;
   try {
@@ -443,11 +480,14 @@ export async function openDeliveryLane(options: DeliveryLaneOptions): Promise<Sp
       { values, positionals: [], raw: [] } as unknown as ParsedArgs,
       undefined,
       (release) => { releaseOnStartupFailure = release; },
-      { kind: "lane", root: options.root, log: options.log },
+      { kind: "lane", root: options.root, log: options.log, ...(options.kickAuthority !== undefined ? { kickAuthority: options.kickAuthority } : {}) },
     );
     // A release the close could not confirm is reported, never thrown at the host: the bucket TTL
     // expires a row left behind, as it does for a single-space daemon.
-    return { space: options.space, lost: started.ended, close: () => started.close().catch((e: Error) => options.log.err(`! ${e.message}`)) };
+    return {
+      space: options.space, lost: started.ended, close: () => started.close().catch((e: Error) => options.log.err(`! ${e.message}`)),
+      nativeConnections: started.nativeConnections,
+    };
   } catch (error) {
     // The start-up fault is the report; a row the release left behind is the bucket TTL's to expire.
     await releaseOnStartupFailure?.().catch((e: Error) => options.log.err(`! ${e.message}`));
@@ -465,7 +505,7 @@ type DeliveryStatus = { state: "ready" | "draining" } | { state: "unavailable"; 
 type DeliveryOwner =
   | { kind: "cli" }
   | { kind: "hosted"; inputs: HostedContextInputs }
-  | { kind: "lane"; root: string; log: DeliveryLog };
+  | { kind: "lane"; root: string; log: DeliveryLog; kickAuthority?: KickAuthority };
 
 /** Every entry gets the same result, so a start-up path that hands back nothing fails to compile.
  * The hosted entry stamps the status with its context; the CLI runner owns its own wait; a lane
@@ -475,10 +515,11 @@ async function runStartedDelivery(
   store: SecretStore | undefined,
   publishReleaser: (release: () => Promise<void>) => void,
   owner: DeliveryOwner,
-): Promise<{ status(): DeliveryStatus; close(): Promise<void>; ended: Promise<string> }> {
+): Promise<{ status(): DeliveryStatus; close(): Promise<void>; ended: Promise<string>; nativeConnections(): DeliveryNativeConnection[] }> {
   const hosted = owner.kind === "hosted" ? owner.inputs : undefined;
   const held = owner.kind !== "cli";
   const log = owner.kind === "lane" ? owner.log : consoleLog;
+  const kickAuthority = owner.kind === "lane" ? owner.kickAuthority : undefined;
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -575,7 +616,9 @@ async function runStartedDelivery(
     if (registered !== undefined) {
       log.err(
         registered.origin === "manual" || registered.origin === "catalog"
-          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${space}\` to unregister it`
+          ? `✗ delivery: no broker answered at ${server} - "${space}" is registered here but its mesh is not up; ${registered.origin === "catalog"
+            ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
+            : `start it where it runs, or \`cotal space forget ${space}\` to unregister it`}`
           : `✗ delivery: no mesh running at ${server} - mesh "${space}" is recorded at ${registered.root} but not running; run \`cotal up\` there to restart`,
       );
       if (held) throw new Error(`delivery: no broker answered at ${server}`);
@@ -609,8 +652,18 @@ async function runStartedDelivery(
   // The singleton lease is admission to serve this space, so the daemon must prove its scan tenancy
   // before it can claim that slot. A wrong-root process previously acquired and renewed lease.0,
   // then refused every admin-rail request on the account mismatch while blocking the valid daemon.
+  // Before that proof, a single-space root that retained its system-account signing seed mints the
+  // connection evictor it never had. A space created before live eviction is missing exactly that
+  // credential, and without it a retiring seat's name stays reserved for as long as one connection
+  // still holds the principal. The heal writes nothing on a hosted store, a multi-space root, or a
+  // root with no retained seed, and it leaves an evictor that is already present untouched.
+  // A lane of a host with a kick authority never opens a kick credential, so it mints none either.
+  if (kickAuthority === undefined && await healConnectionEvictor(scanTarget.source))
+    log.err("• delivery: minted the missing connection evictor from the retained system-account signing seed");
   await validateScanTargetAdmission(scanTarget);
   log.err(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
+  if (kickAuthority !== undefined)
+    log.err("• delivery: live eviction kicks through the host's kick authority; this lane opens no kick credential");
   const reloadStoreIdentity = reloadStoreIdentityOf(credsSrc);
   // THIS daemon's connection nkey, pinned once. It is what the endpoint AUTHENTICATES as, and it is
   // what `card.id` must carry at construction (a creds SOURCE has no cred to derive it from yet).
@@ -780,8 +833,12 @@ async function runStartedDelivery(
   let settleEnded!: (what: string) => void;
   const ended = new Promise<string>((resolve) => { settleEnded = resolve; });
   let closePromise: Promise<void> | undefined;
+  /** Set once close() released the lease and proved every connection closed. */
+  let closedClean = false;
   let membership: MembershipFeedHandle | undefined;
-  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>> } | undefined;
+  let timerWriter: { handle: TimerWriterHandle; nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>; native: ReturnType<typeof watchNativeConnection> } | undefined;
+  /** Every timer writer connection that has not reported closed, the retry loop's earlier ones included. */
+  const timerWriterConns = new Set<Awaited<ReturnType<ReturnType<typeof dialerFor>>>>();
   let timerWriterAttempt: Promise<void> | undefined;
   /** Ends the timer writer's retry backoff early. close() calls it so a shutdown that lands during
    *  a backoff does not wait out a retry it will not make (#3633). */
@@ -899,13 +956,14 @@ async function runStartedDelivery(
       } finally {
         try { await membership?.stop(); } catch { /* broker may be gone */ }
         try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
-        try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
+        try { if (timerWriter) await drainAndClose(timerWriter.nc); } catch { /* broker may be gone */ }
         wakeTimerWriterBackoff?.();
         try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
         try { await ep.stop(); } catch { /* broker may be gone */ }
       }
       if (left !== undefined)
         throw new Error(`delivery: the lease for shard ${shard} is still held by ${ep.ownsDeliveryLease(left.info) ? "this instance" : left.info.holder} after close`);
+      closedClean = true;
     })();
     // Settled once everything is closed, release or not, so a holder that reopens the space does so
     // after this context's connections and lease are gone.
@@ -994,9 +1052,9 @@ async function runStartedDelivery(
     },
     // Live-eviction executor (D5 slice 6): per-call $SYS observer/evictor connections; refuses
     // loudly on a pre-evictor space. Rare repair/flip step — never a standing $SYS conn here.
-    evictPrincipal: (principal) => executeEviction(server, scanTarget, principal),
+    evictPrincipal: (principal) => executeEviction(server, scanTarget, principal, kickAuthority),
     // The same executor over a set: one shared sweep for a large credential family's holders.
-    evictPrincipals: (principals) => executeEvictions(server, scanTarget, principals),
+    evictPrincipals: (principals) => executeEvictions(server, scanTarget, principals, "evictPrincipals", kickAuthority),
     // Plane-claim liveness oracle (#29 HIGH 3): read-only $SYS CONNZ per call; the auth plane's
     // stale-claim reclaim gates on this verdict (any refusal/unknown blocks takeover, fail-closed).
     planeConnLiveness: (query) => executePlaneLiveness(server, scanTarget, query),
@@ -1080,10 +1138,13 @@ async function runStartedDelivery(
           name: "cotal-delivery-timer-writer",
           maxReconnectAttempts: -1,
         });
+        const dialed = nc;
+        timerWriterConns.add(dialed);
+        void dialed.closed().then(() => timerWriterConns.delete(dialed));
         if (stopping) { await nc.close(); return; }
         const handle = await startTimerWriter(nc, space);
         if (stopping) { await handle.stop(); await nc.close(); return; }
-        timerWriter = { handle, nc };
+        timerWriter = { handle, nc, native: watchNativeConnection(nc, "delivery timer writer connection") };
         backoffMs = 5_000;
         log.out(`✓ timer writer up (space ${space}) — workflow pauses on this space expire`);
         await handle.done; // resolves only through stop(); a fault rejects
@@ -1093,7 +1154,7 @@ async function runStartedDelivery(
         log.err(
           `! timer writer: down (${(e as Error).message}) — retrying in ${Math.round(backoffMs / 1000)}s; pauses on this space do not expire until it is back`,
         );
-        try { await nc?.drain(); } catch { /* connection already gone */ }
+        try { if (nc) await drainAndClose(nc); } catch { /* connection already gone */ }
         timerWriter = undefined;
         // A close() during this sleep wakes it, and the loop's next check on `stopping` returns.
         await new Promise<void>((r) => {
@@ -1173,7 +1234,7 @@ async function runStartedDelivery(
       try { await releaseOwnLease(); } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
       try { await membership?.stop(); } catch { /* broker may be gone */ }
       try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
-      try { await timerWriter?.nc.drain(); } catch { /* broker may be gone */ }
+      try { if (timerWriter) await drainAndClose(timerWriter.nc); } catch { /* broker may be gone */ }
       try { await ep.stop(); } catch { /* broker may be gone */ }
       process.exit(code);
     })();
@@ -1503,10 +1564,30 @@ async function runStartedDelivery(
     })();
   }, Math.max(1000, Math.floor(LEASE_TTL_MS / 2)));
 
+  const nativeConnections = (): DeliveryNativeConnection[] => {
+    const unsettled = (why: string) => new Error(`delivery connection inventory is unsettled: ${why}`);
+    if (closePromise !== undefined) {
+      if (!closedClean) throw unsettled("the context is closing, or its close did not succeed");
+      // close() swallows each part's teardown fault, so each part is asked what it still holds.
+      if (ep.nativeConnections().length > 0 || (membership?.nativeDataConnections().length ?? 0) > 0 || timerWriterConns.size > 0)
+        throw unsettled("the context closed but a connection has not closed");
+      return [];
+    }
+    // While the writer is absent its retry loop is dialing, starting or backing off, so a
+    // connection of its own may exist that nothing here can name yet.
+    if (timerWriter === undefined || timerWriterConns.size !== 1) throw unsettled("the timer writer is not connected");
+    return [
+      ...ep.nativeConnections().map((binding) => ({ label: "endpoint" as const, ...binding })),
+      ...(membership?.nativeDataConnections() ?? []).map((binding) => ({ label: "membership-rw" as const, ...binding })),
+      { label: "timer-writer" as const, ...timerWriter.native.binding() },
+    ];
+  };
+
   return {
     status: (): DeliveryStatus =>
       unavailable !== undefined ? { state: "unavailable", cause: unavailable } : { state: stopping ? "draining" : "ready" },
     close,
     ended,
+    nativeConnections,
   };
 }

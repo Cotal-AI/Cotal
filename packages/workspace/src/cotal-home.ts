@@ -26,8 +26,11 @@ export function homeCotalDir(): string {
  *  `join(homeCotalDir(), "<entry>")` in shipped source names one of these; `smoke:home-record-entries`
  *  checks that. */
 export const homeRecordEntries: ReadonlySet<string> = new Set([
-  "agent-skills.json", "app-identities", "catalog", "current-mesh", "idp-sessions.json", "linear",
+  "agent-skills.json", "app-identities", "catalog", "chat-sessions", "current-mesh", "daemon", "idp-sessions.json", "idp-sessions.lock", "linear",
   "meshes", "onboarded.json", "prepared", "service-launchd", "services",
+  "update-settings.json", "update-recovery.json", "update-check.json", "update-check.lock", "update-attempt.json", "update-attempt.log",
+  "update-launchd.json", "update-launchd-result.json",
+  "update-windows.json", "update-windows-paused.json", "update-windows-clear.json", "update-windows-activation.json",
 ]);
 
 /** The OS user's own Cotal directory, which `COTAL_HOME` never redirects: POSIX `~/.cotal`, Windows

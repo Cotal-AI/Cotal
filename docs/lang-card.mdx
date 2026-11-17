@@ -1,7 +1,7 @@
 ---
 title: The cotal-lang card
 description: Effect signatures, result shapes, concurrency rules, and common refusals for cotal-lang programs.
-kind: Reference
+kind: "Reference (informative)"
 audience: workflow authors
 ---
 
@@ -57,8 +57,12 @@ A literal with a bare number or another form refuses before start with L2034. Th
 
 ### Agent options
 
-`spawn` accepts a persona name or `{ persona, model?, variant? }`. Two live agents cannot
-share a worktree, as reported by L3022 or L4008.
+`spawn` accepts a persona name, `{ persona, model?, variant? }`, or an inline persona:
+`{ name, prompt, role?, model?, variant?, description?, subscribe?, allowSubscribe?, allowPublish?,
+capabilities?, endpoints?, save? }`. An inline persona defines the helper in the program, so there is no file
+to write first. The whole definition is hashed and journalled, so editing any field of it on a
+resumed run diverges. `save: true` also writes it to the catalog for later spawns by name. Two live
+agents cannot share a worktree, as reported by L3022 or L4008.
 
 On the mesh host, `cwd` requires an existing absolute directory and
 `placement: { endpoint, instanceId }` on the run's bound endpoint. The serving manager
@@ -67,7 +71,9 @@ canonicalizes the directory. `worktree` is a separate logical identity.
 The host meters `permits: { turns?, wallClock? }`. Violations raise L4001.
 `supervise: { restarts, window? }` restarts the process under the same handle until its budget
 is spent, with default window `"10m"`. Counts are positive integers and time spans are durations.
-Unsupported budget or policy keys are refused.
+Unsupported budget or policy keys are refused. Automatic restart requires runtime proof that prior
+local work ended, including detached tools. Built-in PTY cannot provide it and refuses `supervise`
+before launch. Ordinary launches without a restart policy remain available.
 
 `events: false` starts a seat without an event plane, for a connector that publishes none,
 such as Hermes. If omitted, the host's default applies.

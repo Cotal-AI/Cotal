@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
+import { parsePersonaEndpoints, parseShareSelection, writeSecretFileAtomic } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -57,6 +57,13 @@ const source = z.discriminatedUnion("kind", [
     configPath: path,
     configSha256: digest,
   }),
+  // An inline persona's seat, launched from its lifecycle's snapshot.
+  z.strictObject({
+    kind: z.literal("inline"),
+    ref: label,
+    configPath: path,
+    configSha256: digest,
+  }),
   z.strictObject({
     kind: z.literal("manifest"),
     runId: label,
@@ -84,11 +91,22 @@ const agent = z.strictObject({
     allowSubscribe: stringList,
     allowPublish: stringList.optional(),
     capabilities: z.array(z.string().min(1).max(256)).max(64).optional(),
+    // The persona's endpoint commands as the seat was minted with them (SPEC 13.15), read under the
+    // same rule a persona is, so renewal re-mints exactly these rows. Absent means none, which is
+    // what every inventory written before the field describes.
+    endpoints: z.array(z.strictObject({ endpoint: z.string(), commands: z.array(z.string()), instanceId: z.string().optional() })).optional()
+      .superRefine((v, ctx) => {
+        // Read under the persona's own rule, so a malformed or reserved retained entry is refused here.
+        try { parsePersonaEndpoints(v, "launch"); } catch (e) { ctx.addIssue({ code: "custom", message: (e as Error).message }); }
+      }),
     // Absent means OFF, and that is the field's meaning rather than a fallback: an inventory
     // written before the event plane existed describes a session that was not publishing one. A
     // required field here would refuse every inventory the previous version wrote, so an upgrade
     // that restarts the manager would lose the agents it was supposed to preserve.
     events: z.boolean().default(false),
+    // Older inventories and seat records carry no payload choice. Preserve that absence so the
+    // connector applies its publication default, while an explicit false survives a restart.
+    eventPayloads: z.boolean().optional(),
     // Start takes any declared server key as written, empty or long, so a bound per name here would
     // refuse to preserve an agent that launched. The args byte cap bounds the list.
     shareTools: z.array(z.string()).optional(),
@@ -238,4 +256,55 @@ export function removeSeatRecord(root: string, space: string, name: string, life
     return;
   }
   if (current?.agent.identity.lifecycleUid === lifecycleUid) rmSync(path, { force: true });
+}
+
+/** The runtime reference of a seat a default stop released while it was still running. The seat
+ *  record names the lifecycle. This file names the seat the next manager adopts, or retires once
+ *  the runtime proves it gone. It carries no secret. */
+const releasedSeatReference = z.strictObject({
+  version: z.literal("cotal-released-seat/v1"),
+  lifecycleUid: z.string().min(1).max(256),
+  kind: label,
+  id: z.string().min(1).max(512),
+});
+
+export type ReleasedSeatReference = z.infer<typeof releasedSeatReference>;
+
+function releasedSeatReferencePath(root: string, space: string, name: string): string {
+  return join(root, ".cotal", "seat-records", space, `${name}.runtime-ref`);
+}
+
+export function writeReleasedSeatReference(root: string, space: string, name: string, reference: ReleasedSeatReference): void {
+  const path = releasedSeatReferencePath(root, space, name);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeSecretFileAtomic(path, `${JSON.stringify(releasedSeatReference.parse(reference))}\n`);
+}
+
+/** Undefined when this manager released no seat under that name. A file that does not parse throws. */
+export function readReleasedSeatReference(root: string, space: string, name: string): ReleasedSeatReference | undefined {
+  const path = releasedSeatReferencePath(root, space, name);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  const parsed = releasedSeatReference.safeParse(JSON.parse(text));
+  if (!parsed.success)
+    throw new Error(`released seat ${path}: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; ")}`);
+  return parsed.data;
+}
+
+/** Remove the reference of one incarnation. A reference of another incarnation under the same name is left. */
+export function removeReleasedSeatReference(root: string, space: string, name: string, lifecycleUid: string): void {
+  const path = releasedSeatReferencePath(root, space, name);
+  let current: ReleasedSeatReference | undefined;
+  try {
+    current = readReleasedSeatReference(root, space, name);
+  } catch {
+    rmSync(path, { force: true });
+    return;
+  }
+  if (current?.lifecycleUid === lifecycleUid) rmSync(path, { force: true });
 }

@@ -14,6 +14,13 @@ workspace. Implementations never import each other; they meet at runtime over NA
 See [docs/identity-and-auth.mdx](../../docs/identity-and-auth.mdx) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
+## Shutdown diagnostics
+
+`pnpm smoke:down-inventory:live` starts private per-user auth stacks against a local Better Auth
+provider. It checks denied and authorized agent inventories through the real CLI, then shuts down
+each stack without changing its actor grants. It requires `nats-server` and built packages.
+Private fixture directories are retained for diagnosis.
+
 ## Connection load
 
 `pnpm smoke:callout-load` measures the real auth-callout path. Its default

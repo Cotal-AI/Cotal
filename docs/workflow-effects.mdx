@@ -24,6 +24,13 @@ must be renewed after a reconnect or manager restart.
 
 ## Spawn ownership [#spawn-ownership-and-cleanup]
 
+Agent arguments take the handle returned by `spawn` or `participant`, not a name such as
+`"bob"`. Keep the returned value and pass it to `turn`, `ask`, `monitor`, `replied` and `down`.
+The same rule applies to members of `notify` and `conclave` and to `message`'s `from` option.
+A malformed handle is refused at evaluation with L3050, naming the argument to repair, before
+the effect is dispatched. The host still checks whether that handle belongs to this run and
+whether the operation supports its kind.
+
 `spawn` is
 the manager's spawn action submitted under the step's own identity: the goal binds under the step's
 request id, so a resumed run re-attaches to the same seat instead of allocating a second one, a
@@ -37,7 +44,11 @@ the seat stays up until you stop it with `cotal stop` once every run sharing it 
 migration handed to a later spawn follows that spawn's policy, and it stays up if any spawn that held
 it was marked `onFork: "adopt"`, because a fork taken before the migration may still share it. In a
 space with several managers, a despawn counts a seat as already gone only when the manager that
-allocated it says so. A run that
+allocated it says so. A seat release gets at most three unanswered attempts, always for the same
+lifecycle. Completion attempts every owned seat even if an earlier release fails. A release that
+still cannot be confirmed is named in the host log for inspection with `cotal ps` and manual
+cleanup with `cotal stop`; the finished program keeps its `completed` outcome. Cancellation
+cleanup still stays owed when its discharge fails. A run that
 fails or is released keeps its seats until a resume completes it or you stop them with
 `cotal stop`. Start a seat with `cotal spawn` when it should outlive any run.
 
@@ -53,21 +64,26 @@ accepted and ignored.
 
 ## Supervision [#supervision]
 
-`supervise` is the restart policy this host asks the manager to enforce:
-`restarts`, how many in-window process deaths may come back under the same handle, and `window`,
-the duration those deaths are counted in (default `10m`). The manager restarts the process in
-place under the same name, lifecycle uid, persona, worktree and permits; `monitor` does not fire
-for a restart, and `wait(down)` fires only when the seat is gone for good. Spending the budget
-retires the seat, and the next `turn` is the catchable L4002. The policy also covers the manager's
-own death. On a static mesh, when the manager ends without stopping the seat (a crash, or a pty seat
-that ended with its manager), the next manager of the same instance restarts the seat the same way
-and counts that as one restart. A turn the dead manager had accepted for the seat is served to the
-restarted seat, so the interrupted turn runs again and finished turns do not. A turn an older
-manager accepted is not served again, because its record does not name the seat's owner, and it
-ends at its deadline as L4003. A seat whose budget
-is spent, or whose persona file or credential changed or expired while no manager ran, is retired instead. A policy this host cannot enforce
-(an unknown key, a user-mode seat, or a runtime that cannot respawn a name in place) is refused
-at the spawn rather than accepted and ignored.
+`supervise` requests a bounded restart policy: `restarts` counts process deaths in `window`
+(default `10m`). Before restarting, the manager requires the runtime to prove that all prior local
+work ended, including tools in separate sessions or process groups. Parent exit and an empty
+original process group are insufficient. Missing, failed or timed-out proof refuses the restart.
+
+The built-in PTY runtime does not provide work closure and refuses `supervise` before launch.
+Ordinary launches without a restart policy remain available. Check any surviving tools and their
+outcome before manually starting the work again. The manager does not cancel completed remote
+effects or guarantee at-most-once execution.
+
+A runtime that provides closure can restart within the policy budget under the same name,
+lifecycle UID, persona, worktree and permits. Pending turns remain addressed to that lifecycle;
+finished turns are not replayed. After a manager crash, recovery additionally requires a durable
+custody reference and a runtime operation that proves all work under that reference ended.
+Older PTY records without that reference are refused, even if the seat process exited.
+A refused recovery retires the seat. Outstanding turns retain their existing deadline and death
+record; refusal does not invent a successful or cancelled result.
+
+Unknown policy keys, user-mode seats and runtimes that cannot respawn a name in place also refuse
+at spawn. A spent restart budget, changed persona or expired credential prevents recovery.
 
 ## Event plane [#event-plane]
 
@@ -122,7 +138,10 @@ including one that passes before an attempt's pause is armed.
 
 `checkpoint` binds what it asks on its own entry, so `cotal run show` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
-asked reading the source to find out what "approve" meant. The entry also records the open
+asked reading the source to find out what "approve" meant. When supplied, its schema is recorded
+beside the question and printed as JSON. Checkpoint schemas remain uninterpreted; they guide the
+answerer without restricting the answer. An older entry that recorded no schema carries none.
+The entry also records the open
 attempt's deadline and the `onExpiry` it was armed with, which `run show --json` reports; what
 an expiry does is still decided from the program's source. An escalation's attempt records its own
 deadline, one `timeout` after it opens, and a resumed attempt keeps the deadline it recorded. After a checkpoint or `ask` accepts an
@@ -151,7 +170,7 @@ a monitored agent, and refuses one the run never performed `monitor` on. It read
 same witness a conclave join resolves members through: the value carries the handle, the reason
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
 a different incarnation) and the time of observation. Presence liveness skips any value without a
-string `card.id` equal to its key, a string `card.name`, a known `status` and a finite `ts`, so a
+string `card.id` equal to its key, a non-blank string `card.name`, a known `status` and a finite `ts`, so a
 participant that publishes a malformed row under its own key
 cannot fail another run's wait, turn or conclave join. A superseded incarnation is down at once. A
 lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
@@ -204,6 +223,16 @@ turn request and the `inspect` read that confirms a lapse, and the manager arms 
 itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal
 it bound, and a retry of that submission is refused naming the terminal rather than accepted a
 second time.
+
+While a turn waits, a NATS client timeout reading its result, deadline or presence is retried
+with bounded backoff. The diagnostic names `readGoalResult`, `expired` or `presenceDeath`.
+Six unanswered attempts fail with L4026. Six attempts affected by measured host starvation
+fail with L4025. The counters are separate and neither resets during a read's retries.
+Other read errors are not retried. A turn that fails on a read claims its primary timer and
+withdraws its relay before returning, so a later yield cannot report that it continued an
+abandoned turn. A cleanup failure reports both errors without replacing L4025 or L4026 with
+L4000. Withdrawal must finish before the failure returns and can wait until the relay's
+deadline if the manager is unreachable.
 
 
 ## Reply waits [#reply-waits]
@@ -260,7 +289,10 @@ about itself and is never re-issued. When the spawn also names `cwd`, that manag
 existing absolute directory to its canonical host path before accepting the spawn. A missing,
 relative or non-directory path refuses with no seat and never falls back to the manager workspace.
 One hosted run may name one placement instance; a program naming several is refused instead of
-widening one run credential across hosts. Placement is accepted only from an object-literal spawn
+widening one run credential across hosts. The run's spawn names its run, so on a static mesh the
+placed manager reads the run's admission and revocation marker and bounds the helper as the hosting
+manager does. A user-auth run cannot place a spawn on another instance: its signerless host refuses
+the program when the run starts. Placement is accepted only from an object-literal spawn
 option bag whose `endpoint` and `instanceId` are string literals. A computed option bag, a computed
 placement field, or a spread in either object refuses at `run-start`. The option argument may be
 absent, and an object-literal bag without placement is accepted when it names no `cwd`.

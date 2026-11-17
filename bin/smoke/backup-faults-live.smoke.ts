@@ -56,6 +56,25 @@ const readJournal = (root: string): ClaimedJournal | undefined => {
   catch { return undefined; }
 };
 
+/** Status must offer the held attempt's recovery, not a start that the same claim refuses. */
+function assertRecoveryNext(run: (...args: string[]) => ReturnType<typeof spawnSync>, recover: string): void {
+  for (const flags of [[], ["--plain"], ["--json"]]) {
+    const result = run("status", ...flags);
+    assert.equal(result.status, 0, `status reads the held attempt\n${result.stdout}${result.stderr}`);
+    const output = String(result.stdout);
+    if (flags.includes("--json")) {
+      const envelope = JSON.parse(output) as { result: { hints: string[]; maintenance: { next: string } } };
+      assert.ok(envelope.result.hints[0]?.includes(recover), "JSON hints lead with recovery");
+      assert.ok(envelope.result.hints.includes(envelope.result.maintenance.next), "JSON uses the journal's next step");
+      assert.doesNotMatch(envelope.result.hints.join("\n"), /`cotal up\b/, "JSON offers no refused restart");
+    } else {
+      const next = output.split("\nNext\n")[1] ?? "";
+      assert.ok(next.trimStart().split("\n")[0]?.includes(recover), `Next leads with recovery\n${output}`);
+      assert.doesNotMatch(next, /cotal (?:up|setup|spawn|ps)\b/, "Next offers no ordinary actions while the claim holds");
+    }
+  }
+}
+
 /** Freeze `pid` with SIGSTOP once `claimed(journal)` holds while it holds no maintenance lock. A
  *  freeze that lands inside a locked step is thawed and tried again, so the commands run against
  *  the frozen attempt meet its claim rather than its lock. */
@@ -246,9 +265,9 @@ async function backupStageFaultScenario(): Promise<void> {
     const listed = run("channel", "--space", space);
     must("list registry after every fault", listed);
     assert.match(listed.stdout, /#preserved/, "the faulted attempts never touched the preserved registry");
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -370,7 +389,7 @@ async function restoreExactIdTimeoutReplayScenario(): Promise<void> {
       assert.equal(after.state.messages, before.state.messages, `${stream.name} replays with no duplicate messages`);
     }
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -444,6 +463,7 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.equal(await exited, 130, `the interrupted restore exits 130\n${stderr}`);
     assert.ok(stderr.includes(`Interrupted: restore attempt ${attemptId} stopped before it committed`) && stderr.includes(recover), `the interrupt names what it left and its recovery\n${stderr}`);
     assert.equal(journalState(root), "restore-ready", "the interrupted restore leaves its pre-commit claim");
+    assertRecoveryNext(run, recover);
     // The brokers' watchdog stops them once the restore process is gone; recovery waits for that only.
     let recovered = run("backup", "recover", attemptId, "--yes");
     for (let i = 0; i < 50 && recovered.status !== 0; i++) { await sleep(200); recovered = run("backup", "recover", attemptId, "--yes"); }
@@ -452,9 +472,9 @@ async function interruptedRestoreScenario(): Promise<void> {
     assert.ok(Date.now() < Date.parse(deadline), "recovery ran before the claim deadline");
     assert.equal(journalState(root), "ready", "recovery returns the cut to ready");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
@@ -514,6 +534,7 @@ async function interruptedCreateScenario(): Promise<void> {
     assert.equal(await exited, 130, `the interrupted create exits 130\n${stderr}`);
     assert.ok(stderr.includes(`left a partial artifact at ${destination}`) && stderr.includes(recover), `the interrupt names its partial artifact and its recovery\n${stderr}`);
     assert.equal(journalState(root), "claimed", "the interrupted create leaves its claim");
+    assertRecoveryNext(run, recover);
     const verified = run("backup", "verify", destination);
     assert.equal(verified.status, 1, `verify refuses the partial artifact\n${verified.stderr}`);
     assert.ok(verified.stderr.includes("has no manifest.json, so it is an incomplete artifact"), `verify calls the partial artifact incomplete\n${verified.stderr}`);
@@ -532,9 +553,9 @@ async function interruptedCreateScenario(): Promise<void> {
     must("create at the same destination after recovery", run("backup", "create", destination));
     assertValidManifest(destination, space, "full");
     must("ordinary resume after recovery", run("up", "--detach", "--open", "--server", server, "--space", space));
-    must("down", run("down"));
+    must("down", run("down", "--yes"));
   } finally {
-    run("down");
+    run("down", "--yes");
     rmSync(root, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }

@@ -27,9 +27,11 @@ import { connect } from "@nats-io/transport-node";
 import {
   canonicalBackupStreamConfig,
   dlvStream,
+  eventPayloadStream,
   isReachable,
   setupSpaceStreams,
   validateSpaceBackupInventory,
+  validateCanonicalBackupStreamConfig,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -81,6 +83,13 @@ try {
   // broker's list still names it, so the validator throws `unexpected` here.
   const equality = await validateAgainstBroker();
   check("the broker's own stream set equals the backup inventory exactly", equality === "", equality);
+
+  const payloadNc = await connect({ servers });
+  try {
+    const payload = await (await jetstreamManager(payloadNc)).streams.info(eventPayloadStream(SPACE));
+    validateCanonicalBackupStreamConfig(SPACE, eventPayloadStream(SPACE), payload.config as unknown as Record<string, unknown>);
+    check("the live payload stream matches the canonical backup config", true);
+  } finally { await payloadNc.close(); }
 
   // TEETH, BOTH DIRECTIONS, ON A REAL BROKER. The equality above is a claim that CAN fail; these
   // cells make it fail on purpose, so the suite proves its own check is live rather than trusting

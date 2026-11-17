@@ -88,7 +88,11 @@ function check(name: string, cond: boolean, extra?: unknown): void {
  *  `changesets.yml` moved its group from the workflow to its `version-pr` and `publish` jobs
  *  (5046e8632), so a publication waits only for the previous upload and not for its install check.
  *  It still counts as grouped: a job's own group evicts its pending job the same way. */
-const EXPECTED_WORKFLOWS = 13;
+// desktop.yml, desktop-mac-updater.yml and native-cell.yml run on pull requests,
+// workflow_call or dispatch only, so neither push-to-main population changes.
+// Upgrade matrix adds one PR/workflow-run/manual workflow, not a main-push workflow.
+// windows-setup-proof.yml runs on pull requests or dispatch only.
+const EXPECTED_WORKFLOWS = 18;
 const EXPECTED_PUSH_TO_MAIN = 8;
 /** Of those, the ones that declare a concurrency group and therefore CAN evict. Every push-to-main
  *  workflow but `windows-identity.yml` and `remotion.yml` carries one: `docs.yml` and `mutation-reproof.yml` were groupless until 2026-09-10,

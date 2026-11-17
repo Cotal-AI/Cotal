@@ -12,9 +12,10 @@
  */
 import type { Presence, PresenceStatus } from "./types.js";
 import { LINE_BREAK } from "./peer-label.js";
-import { peerLabel } from "./peer-label.js";
+import { peerLabel, shownPeerName } from "./peer-label.js";
+import { isWellFormedUnicode } from "./canonical-json.js";
 
-export { peerLabel };
+export { peerLabel, shownPeerName };
 
 /** A peer that matched an ambiguous name — structural, so each surface renders it itself.
  *  The full `id` is the authoritative, routable address. */
@@ -36,7 +37,7 @@ export class AmbiguousPeerError extends Error {
   ) {
     super(
       `"${target}" is ambiguous - ${candidates.length} peers share that name: ` +
-        candidates.map((c) => `${c.name} (${c.id}, ${c.status})`).join("; ") +
+        candidates.map((c) => `${shownPeerName(c.name, c.id)} (${c.id}, ${c.status})`).join("; ") +
         `. Re-send to the exact instance id.`,
     );
     this.name = "AmbiguousPeerError";
@@ -94,24 +95,28 @@ export function resolvePeer(
 }
 
 /**
- * Is every UTF-16 surrogate in `s` properly paired?
- *
- * `String.prototype.isWellFormed()` does exactly this, but it is ES2024 and this package targets an
- * earlier lib; raising the target repo-wide to gain one predicate would be a build-config change
- * reaching every package, for a check that is eight lines here. A high surrogate must be followed by
- * a low one, and a low surrogate must not appear on its own.
+ * The instance ids whose display name is not an address, by the comparison
+ * {@link resolvePeer} uses: trimmed and case-insensitive, the caller's own id left out when
+ * `opts.selfId` is given, and a lone offline ghost beside a live peer not counted. An id is in the
+ * set when two or more of the peers that comparison would consider share its name, so a row that
+ * carries one of these ids cannot be reached by name. A renderer appends its own spelling of the id.
  */
-function isWellFormedUtf16(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 0xdc00 && c <= 0xdfff) return false; // a low surrogate reached without its high
-    if (c >= 0xd800 && c <= 0xdbff) {
-      const next = s.charCodeAt(i + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high surrogate unpaired (or at end: NaN)
-      i++; // consume the pair
-    }
+export function sharedNameIds(roster: Presence[], opts: { selfId?: string } = {}): ReadonlySet<string> {
+  const peers = opts.selfId ? roster.filter((p) => p.card.id !== opts.selfId) : roster;
+  const groups = new Map<string, Presence[]>();
+  for (const p of peers) {
+    const key = p.card.name.trim().toLowerCase();
+    const group = groups.get(key);
+    if (group) group.push(p);
+    else groups.set(key, [p]);
   }
-  return true;
+  const ids = new Set<string>();
+  for (const group of groups.values()) {
+    const live = group.filter((p) => p.status !== "offline");
+    const pool = live.length > 0 ? live : group;
+    if (pool.length > 1) for (const p of pool) ids.add(p.card.id);
+  }
+  return ids;
 }
 
 /** Maximum length of a display name, in UTF-16 code units.
@@ -163,7 +168,7 @@ export function assertValidName(name: string): void {
   //     idea of its own name can differ from the parent's while both believe they agree.
   // Refusing here is the only fix that covers both; a consumer that hashes injectively still cannot
   // stop the name itself from changing shape as it crosses a process boundary.
-  if (!isWellFormedUtf16(name))
+  if (!isWellFormedUnicode(name))
     throw new Error(
       `invalid name ${JSON.stringify(name)}: contains an unpaired UTF-16 surrogate. Such a name ` +
         `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +

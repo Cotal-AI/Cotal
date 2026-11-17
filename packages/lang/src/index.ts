@@ -8,6 +8,8 @@
  *
  * This package is pure: it depends on nothing else in the repo, so the validator, the key
  * machinery, and the simulation handler run with no broker and no mesh.
+ *
+ * @module index
  */
 
 export {
@@ -107,6 +109,8 @@ export {
   type ObserveRequest,
   type ParticipantRequest,
   type SleepRequest,
+  type InlineSpawnDefinition,
+  type InlineSpawnEndpoint,
   type SpawnRequest,
   type TurnRequest,
   type TurnResultValue,

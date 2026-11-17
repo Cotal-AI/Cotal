@@ -48,6 +48,7 @@ export const CATALOG = Object.freeze({
   // interpreter's own "unsupported" fault stay unreachable from a validated program.
   L1029: "Syntax outside the language",
   L1030: "Forbidden literal: bigint",
+  L1031: "Program has no statements",
 
   // ---- L2xxx: name resolution and static rules ----------------------------------------------
   L2001: "Unknown identifier",
@@ -93,6 +94,10 @@ export const CATALOG = Object.freeze({
   // diagnosis. It is refused HERE, at the call, for the same reason L3046 is: the computed bag is
   // the case the validator cannot see, and the author needs the shape named rather than a stack.
   L3048: "`spawn` placement is not an endpoint and instanceId pair",
+  // An inline persona is the helper's identity and is hashed whole, so a malformed one is refused
+  // at the call, before a key is minted, and never journalled.
+  L3049: "`spawn` inline persona is malformed",
+  L3050: "Agent argument is not a handle",
 
   // ---- L4xxx: runtime semantics ---------------------------------------------------------------
   L4001: "Permit exhausted",
@@ -137,7 +142,7 @@ export const CATALOG = Object.freeze({
   // and the opposite answer: there the process was off the CPU, here it was on it and the reply was
   // late, and the remedy differs (capacity for this host versus a broker that is behind). `L4000`
   // would send a reader to their own program for a condition in neither the program nor the effect.
-  L4026: "Pause plane did not answer before the client deadline",
+  L4026: "A plane read did not answer before the client deadline",
   // An at-most-once step's hold expired (spec/cotal-lang.md §7.8). CATCHABLE, like L4003 and
   // L4023: the write may or may not have happened, and the program decides what to do about that.
   L4027: "At-most-once step's outcome was never settled",

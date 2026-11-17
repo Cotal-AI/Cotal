@@ -7,6 +7,21 @@ audience: operators
 
 The CLI reports its selected space, discovers commands, and returns receipts for operations.
 Its help describes the flags and output formats each command supports.
+On a fresh machine, run `cotal login` to sign in to Cotal Cloud. When no space is known,
+`cotal use`, `cotal space`, a spawn refusal and the status next steps point to sign-in.
+Login does not install connectors. The first launch prepares the connectors it needs.
+When a selected space has no default persona, `cotal spawn` creates the shipped default.
+Status warns about a different folder's personas only when that folder contains personas.
+You can still run `cotal up` in a project or pass `--server` for a local or custom broker.
+
+`--server` takes one broker URL with a `nats://`, `tls://`, `ws://` or `wss://` scheme.
+Scheme names are case-insensitive. Missing or unsupported schemes, inline credentials, queries,
+fragments and TCP paths refuse with `USAGE_INVALID` before connecting. WebSocket paths are allowed
+for proxy routes. Commands using the shared target connection, including `send`, `history` and
+`who`, require TLS for `tls://` and `wss://`, including with an unregistered space or explicit
+`--creds`. Registry-resolved connections also keep the registered space's TLS requirement.
+For `up -f`, a comma-separated list is checked entry by entry, then refused with the instruction
+to pass one URL for the new broker to listen on. The refusal does not repeat the addresses.
 
 
 ## Invocation [#running-it]
@@ -16,7 +31,7 @@ npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22.10+)
 cotal                     # the selected space, common commands, and where to start
 cotal help                # the same, then every command group (also `cotal --help`)
 cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
-cotal version             # cotal-ai version + each installed extension's (also `cotal --version`, `cotal -V`)
+cotal version             # cotal-ai version + each installed extension's, and a newer version when one is known (also `cotal --version`, `cotal -V`)
 cotal version --json      # the same as one JSON document (also `-j`)
 ```
 
@@ -28,8 +43,15 @@ with `hash -r` (or `rehash` in zsh). An alias or function must be corrected sepa
 connectors after an old executable rebuilt them, run the verified newer absolute executable with
 `ext seed`, without `--force`.
 
+When an installed CLI is off PATH, `status` and `ps` suggestions use the absolute Node runtime
+and installed entry, with paths quoted for a POSIX shell. For the POSIX installer, the suggestions
+also preserve its private Node/npm PATH and npm install prefix, so setup can seed connectors.
+They do not require a source checkout or pnpm. PATH invocations keep `cotal`, npx invocations keep
+`npx cotal-ai`, and checkout invocations keep `pnpm cotal`.
+
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
-the space this folder has registered, else the selected space, else, with nothing selected, the space
+the explicit `cotal use` selection first, else the space this folder has registered, else an
+automatically adopted selection, else, with nothing selected, the space
 this folder prepared, and lists common commands. It reads no
 broker. When this folder's own records show the stack of its registered space stopped, as after
 `cotal down` there, and another space is selected, it names the selected space, which the commands
@@ -127,9 +149,11 @@ then its help on stderr, writes nothing on stdout, exits 1, and does not run. Th
 `--help` prints for the same words, so a refused `cotal persona create` shows the `persona create`
 help. A refusal for a missing
 `--yes` outside an interactive terminal prints its error and a remedy that names `--yes`, without the
-help. A control character in
-a word the error quotes, from the command line or from a file, shows as its `\uXXXX` escape, so a
-typed word cannot clear the screen or retitle the terminal. A refusal that repeats an argument
+help. Control, format and default-ignorable characters in
+a word the error quotes, from the command line or from a file, show as `\uXXXX` escapes. The same
+applies to the report's Name field, so an invisible character such as U+200B is visible as `\u200b`.
+Astral characters use two UTF-16 escapes. Printable letters and ordinary combining marks stay
+unchanged. A typed word cannot clear the screen or retitle the terminal. A refusal that repeats an argument
 longer than 128 characters, such as an unknown command, a space name or a run id, shows its first
 128 characters followed by `… (<n> characters)`, in text and in the `--json` message. The command
 still checks and uses the whole value. A usage error is found before any effect, so it never seeds
@@ -139,7 +163,8 @@ A word that starts with `-` reads as an option. A message or name that starts wi
 which the refusal gives. An option given with no value, last or just before another option, is
 refused naming the option and its placeholder. A short option takes its value after a space, so `-c=general` is refused
 rather than read as the value `=general`. An option typed with a typographic dash, as pasted from
-typeset text, is refused naming the option it meant, rather than read as a positional.
+typeset text, is refused naming the option it meant, rather than read as a positional. Before the
+command word the same holds for the leading flags, so `cotal ––json status` names `--json`.
 
 
 ### Color
@@ -222,6 +247,9 @@ envelope cannot be written to stdout, and the exit code is the same either way. 
 subcommands and is near none of them is a usage error that lists the subcommands the command takes.
 A command without a JSON output refuses `--json` as an unknown option.
 
+An interrupted controller `up --json` writes its envelope on stdout and keeps the recovery notice
+on stderr. It exits with the signal's code, as [startup](cli-startup.mdx#up) describes.
+
 A subcommand's help has its own `structured output` line, and only the forms that show one write a
 document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
 `ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
@@ -229,11 +257,14 @@ failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
 report as plain lines: no color, ASCII labels, and no marks other than the `!` that begins a warning
-or failure line on stderr. Plain writes these punctuation marks in ASCII wherever they appear: `·`
+or failure line on stderr. Plain writes these punctuation marks in ASCII in prose: `·`
 and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§` as `section`. Other characters,
-such as the letters of a name or a message, are written as they are.
+such as the letters of a name or a message, are written as they are. Commands and matching
+backtick spans retain their literal punctuation, including punctuation in quoted paths. Control
+and formatting characters are still displayed as escapes for terminal safety.
 Under a locale whose character set is not UTF-8, as `LC_ALL`, then `LC_CTYPE`, then `LANG` decide,
-reports and error lines draw their marks and punctuation as plain does, and keep their color. With
+reports and error lines draw their marks and punctuation as plain does, and keep their color.
+The entry screen also uses `...` in its send example under these locales. With
 none of the three set, the marks are drawn in UTF-8. Windows consoles are always treated as UTF-8.
 A usage refusal under `--plain` or such a locale prints the classified report that begins
 `Request refused`, then the command's help. Every refusal line, the `✗` line included, shows a
@@ -268,7 +299,8 @@ keeps a line of its own and is never split. A command under Next wraps as one wo
 never holds part of one. So does anything a line writes in backticks, from its opening backtick to its
 closing one, whatever it starts with and whatever words it holds, such as
 `systemctl --user show-environment`. A remedy, Next line, hint, message or option description that
-names a command after other words writes it in backticks, so it wraps whole and `--json` carries the same text. A command that holds a
+names a command after other words writes it in backticks, so it wraps whole and `--json` carries the same text.
+This includes daemon recovery commands and update notices. A command that holds a
 backtick itself, as a quoted path can, is named between double backticks, as Markdown writes such code,
 and wraps whole to the matching pair. A line that starts with a command outside backticks, such as a
 usage line, wraps at its spaces. A command or a span in backticks wider than the line, such as a
@@ -335,6 +367,19 @@ A command with a JSON output exits by its outcome, with or without `--json`:
 | `partial`: some of the work completed, or cleanup remains | 4 | `OPERATION_PARTIAL` |
 | `failed`: a confirmed failure with no cleanup left | 5 | `OPERATION_FAILED` |
 
+Local saves by `space create`, `config set` and `config unset`, and local persona creation
+report a full disk, an exceeded quota or a file-size limit as `OPERATION_FAILED`, exit 5.
+The error names the file, keeps the native code (`ENOSPC`, `EDQUOT` or `EFBIG`) and gives a
+next step before retrying. This includes a failure to create the project's initial `.cotal`
+directory. A failed atomic save leaves the destination unchanged. A persona
+draft write failure is not invalid input. If `space create` saved its prepared record before
+the default persona failed, including creation of its `agents` directory, it reports
+`OPERATION_PARTIAL`, exit 4, names what was saved and
+warns that the persona file may be incomplete. Repair that file before starting the space.
+On POSIX, a native quota error is reported as `EDQUOT` even when Node does not name it.
+Directory creation preserves that native cause without treating a missing parent or a dangling
+symlink as a quota failure.
+
 An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
 failure. A command run from a folder that no longer exists refuses with `USAGE_INVALID`, exit 1,
 before it does anything, and says to `cd` to an existing folder. It prints that line and the `cd`
@@ -347,14 +392,18 @@ exists, and there `help` says the folder is gone instead of showing a space.
 A long-running command that SIGINT stops ends cleanly first. It stops observing, closes the
 session it holds and writes its last record, then exits 130. SIGTERM ends it the same way and exits
 143. This holds for `watch`, `chat`, `console`, `history --follow`, `channel members --follow` and
-`join`, and for `service logs --follow`, the `--wait` follows and a foreground `up`. The JSON
+`join`, and for `service logs --follow`, the `--wait` follows and a foreground `up`. A hangup of a
+foreground `up` is not a stop: the command prints that the stack is still running and names
+`cotal down`, then exits 129. The JSON
 streams of `watch`, `chat --stdio`, `history --follow` and `channel members --follow` end with an
 `end` record whose reason is `interrupted` for SIGINT or `terminated` for SIGTERM. Inside a terminal
 view a key that leaves, such as `q` or Ctrl-C, is not a signal, and the view exits as it does when
 you leave it.
 
 Output that cannot be written, for example to a full disk, is reported in one line on stderr, and
-the command stops with exit 3, or with the non-zero status it had already set. It may have stopped
+the command stops with exit 3, or with the non-zero status it had already set. That includes output
+redirected to a file that a file-size limit or a full disk cuts short, so a truncated JSON export
+does not exit 0. It may have stopped
 partway, so check what it did before you retry. A reader that closes the output early, as `| head`
 does, ends the command quietly with the status it had already set, or 0. A command that follows a
 stream, such as `watch`, `history --follow`, `console` or `channel members --follow`, notices the

@@ -13,7 +13,7 @@ import {
   acquireMaintenanceLock, beginMaintenanceCut, beginOrdinaryResume, bindRestoreListener, bindRestoreTarget, completeMaintenanceCut,
   markRestoreActive, moveSamePathRestoreSource, prepareSamePathRestore, readMaintenanceJournal, recordPreservationManagerCommit,
   recordRestoreManagerCommit, requestControllerMemberStart, settleControllerMemberStart, writeMaintenanceResumeDocument,
-  writeRestoreCommitIntent, type ControllerCutBinding, type ControllerStop, type RestoreListenerProof, type ServiceAdapterAttempt,
+  writeRestoreCommitIntent, type ControllerCutBinding, type ControllerStop, type ListenerProof, type ServiceAdapterAttempt,
   type ServiceAdapterContext,
 } from "@cotal-ai/workspace";
 import { maintenanceAdmits } from "../src/service-adapter.js";
@@ -133,7 +133,7 @@ console.log("a controller restore, its committed relaunch and its settled active
   const brokerLaunch = randomUUID();
   requestControllerMemberStart(r.lock, { role: "broker", instanceId: broker.instanceId, priorLaunchRequestId: broker.launchRequestId });
   settleControllerMemberStart(r.lock, "broker", brokerLaunch, "running");
-  const proof: RestoreListenerProof = {
+  const proof: ListenerProof = {
     kind: "controller", attemptId, serverName: `${attemptId}-n`, serverNonce: "n",
     processOwner: { pid: process.pid, host: hostname(), startedAt: new Date().toISOString(), id: `controller-broker-${brokerLaunch}` },
     serverEndpoint: server, target: bound.restore.target!,

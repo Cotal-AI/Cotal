@@ -60,6 +60,8 @@ import {
   provisionEndpointGateOpen,
   endpointRegistrationBarrier,
   serveIssuanceGateKv,
+  recordSpecKey,
+  RECORD_KINDS,
   type EpServeLedgerRow,
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
@@ -74,7 +76,6 @@ const rejects = async (n: string, fn: () => Promise<unknown>, code?: string) => 
   }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const dec = new TextDecoder();
 
 const SPACE = "epservegate";
 const ENDPOINT = "throwaway";
@@ -322,6 +323,136 @@ try {
   c("two same-second session-ledger mints for one nkey get distinct credentialIds and stage two active epcred rows via userTags issuance:",
     credentialIdOf(sameSecondSiblings.s1) !== credentialIdOf(sameSecondSiblings.s2)
     && rowsWithSiblings.filter((r) => r.holderPrincipal === principalKey(DEV_OWNER, swId.id).key && r.state === "active").length === 2);
+
+  console.log("F2. serve mint retry bounds and post-contention refusals on real KV");
+  for (const fault of ["exhausted", "boundary", "generation", "observe", "ambiguous"] as const) {
+    const instanceId = mintLifecycleUid();
+    await provisionEndpointGateOpen(kv, { endpoint: ENDPOINT, instanceId, principal: principalKey(DEV_OWNER, serveId.id).key });
+    const registration = await registerServingInstance(recordsKv, {
+      space: SPACE, spec: { endpoint: ENDPOINT, owner: DEV_OWNER, clusterDigests: [dc], protocol: { v: 1 } },
+      instanceId, registrant: { owner: DEV_OWNER }, authority, readClusterArtifact,
+      barrier: endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() }),
+    });
+    const native = serveIssuanceGateKv(kv, SPACE, { endpoint: ENDPOINT, instanceId });
+    const credentialId = mintLifecycleUid();
+    let commits = 0, stages = 0, revokes = 0;
+    const wrapped = {
+      ...native,
+      stage: async (row: EpServeLedgerRow) => { stages++; await native.stage(row); },
+      revoke: async (row: EpServeLedgerRow) => { revokes++; await native.revoke(row); },
+      observe: async () => {
+        if (fault === "observe" && commits > 0) throw new Error("injected observation failure");
+        return native.observe();
+      },
+      commit: async (pin: number) => {
+        commits++;
+        if (fault === "boundary" && commits === 64) return native.commit(pin);
+        if (fault === "ambiguous" && commits === 2) {
+          if (!await native.commit(pin)) throw new Error("ambiguous setup CAS lost");
+          throw new Error("injected lost acknowledgement after committed touch");
+        }
+        // A real competing mint touches identical bytes, making this mint's pin stale.
+        if (!await native.commit(pin)) throw new Error("competing touch unexpectedly lost");
+        if (fault === "generation") {
+          const barrier = endpointRegistrationBarrier(kv, SPACE, { endpoint: ENDPOINT, instanceId, opId: mintLifecycleUid() });
+          const before = (await barrier.observe())!;
+          const token = await barrier.freeze(before.revision);
+          if (token === null || !await barrier.reopen(token, { generation: before.generation + 1,
+            processEpoch: before.processEpoch, registrationRevision: before.registrationRevision,
+            nameAuthorityRevision: before.nameAuthorityRevision })) throw new Error("generation barrier setup failed");
+        }
+        return native.commit(pin);
+      },
+    };
+    const issue = () => finalizeServeIssuance(wrapped, registration.grant, {
+      credentialId, credentialKey: serveId.id, holderActor: serveId.id, sourceChain: ["root"], exp: Math.floor(Date.now() / 1000) + 300,
+    });
+    if (fault === "boundary") await issue();
+    else await rejects(`${fault}: serve mint refuses after real gate contention`, issue, fault === "generation" ? "expired" : "unavailable");
+    const expectedCalls = fault === "boundary" || fault === "exhausted" ? 64 : fault === "ambiguous" ? 2 : 1;
+    c(`${fault}: bounded commits, one stage and refusal revocation`, commits === expectedCalls && stages === 1
+      && revokes === (fault === "boundary" ? 0 : 1), { commits, stages, revokes });
+    const key = epcredRowKey(ENDPOINT, instanceId, credentialId);
+    c(`${fault}: durable row matches release outcome`, parseLedgerRow((await kv.get(key))!.value, key).state
+      === (fault === "boundary" ? "active" : "revoked"));
+  }
+
+  console.log("G. bounded registration revocation drains every started write before eviction or refusal (#6279)");
+  for (const fault of ["none", "async", "sync"] as const) {
+    const endpoint = `batch${fault}`;
+    const instanceId = mintLifecycleUid();
+    const opId = mintLifecycleUid();
+    await provisionEndpointGateOpen(kv, { endpoint, instanceId, principal: PRINCIPAL });
+    const barrier = endpointRegistrationBarrier(kv, SPACE, { endpoint, instanceId, opId });
+    const registerArgs = {
+      space: SPACE,
+      spec: { endpoint, owner: DEV_OWNER, clusterDigests: [dc], protocol: { v: 1 as const } },
+      instanceId, registrant: { owner: DEV_OWNER },
+      authority: { authorize: () => ({ authorized: true, revision: 0 }) },
+      readClusterArtifact,
+    };
+    const initial = await registerServingInstance(recordsKv, { ...registerArgs, barrier });
+    const fence = serveIssuanceGateKv(kv, SPACE, { endpoint, instanceId });
+    for (let i = 0; i < 36; i++) {
+      await fence.stage({ ...mkServeRow(`sha256-${i.toString(16).padStart(64, "0")}`), endpoint, lifecycleUid: instanceId,
+        holderPrincipal: i === 35 ? `u_${"d".repeat(26)}.old` : PRINCIPAL });
+    }
+    const rows = await barrier.enumerate();
+    const alreadyRevoked = rows.find((row) => row.holderPrincipal !== PRINCIPAL)!;
+    await barrier.revoke(alreadyRevoked);
+    let inFlight = 0, peak = 0, started = 0, evictions = 0;
+    let evictionAfterRevocation = false;
+    const reported: Array<{ revoked: number; total: number; inFlight: number }> = [];
+    const revoke = (row: EpServeLedgerRow) => {
+      const index = started++;
+      if (fault === "sync" && index === 1) throw new Error("synchronous revoke refusal");
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      return (async () => {
+        try {
+          await wait(20);
+          if (fault === "async" && index === 1) throw new Error("asynchronous revoke refusal");
+          await barrier.revoke(row);
+        } finally { inFlight--; }
+      })();
+    };
+    let error: unknown;
+    try {
+      await registerServingInstance(recordsKv, { ...registerArgs, barrier: {
+        ...barrier, revoke,
+        onRevocationProgress: ({ revoked, total }) => { reported.push({ revoked, total, inFlight }); },
+        evict: async (holders) => {
+          evictions++;
+          evictionAfterRevocation = inFlight === 0
+            && (await barrier.enumerate()).every((row) => row.state === "revoked")
+            && holders.length === 2 && holders.includes(alreadyRevoked.holderPrincipal);
+          return holders.map(() => true);
+        },
+      } });
+    } catch (e) { error = e; }
+    const key = epgateKey(endpoint, instanceId);
+    const finalGate = parseEndpointGate((await kv.get(key))!.value, key);
+    const spec = await recordsKv.get(recordSpecKey(RECORD_KINDS.svc, [endpoint, instanceId]));
+    c(`${fault}: no started revoke remains in flight when registration settles`, inFlight === 0, { inFlight, peak, started });
+    c(`${fault}: independent revocations overlap within the 16-row bound`, peak > 1 && peak <= 16, { peak });
+    c(`${fault}: progress counts retained revocations and only fully settled successful batches`,
+      reported.every(row => row.total === 36 && row.inFlight === 0)
+        && reported.map(row => row.revoked).join(",") === (fault === "none" ? "1,17,33,36" : "1"), reported);
+    if (fault === "none") {
+      c("success: all active rows were revoked, already-revoked rows skipped, then every holder evicted",
+        error === undefined && started === 35 && evictions === 1 && evictionAfterRevocation,
+        { error, started, evictions, evictionAfterRevocation });
+      c("success: the spec advanced and the gate reopened at the successor epoch",
+        spec!.revision > initial.registrationRevision && finalGate.state === "open" && finalGate.processEpoch === 1);
+    } else {
+      c(`${fault}: revoke failure prevents eviction, spec publication and gate reopen`,
+        error instanceof EpEnvelopeError && error.code === "unavailable" && error.message.includes(`${fault === "sync" ? "synchronous" : "asynchronous"} revoke refusal`)
+          && started === 16 && evictions === 0 && spec!.revision === initial.registrationRevision && finalGate.state === "frozen",
+        { error, started, evictions, state: finalGate.state });
+      c(`${fault}: completed revocations remain durable, with later batches untouched`,
+        (await barrier.enumerate()).filter((row) => row.state === "revoked").length === 16);
+    }
+  }
 
   await nc.drain();
 } finally {

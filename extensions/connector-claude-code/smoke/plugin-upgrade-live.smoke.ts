@@ -108,7 +108,7 @@ try {
   check("new sessions in two projects resolve the current server", () => {
     for (const project of projects) {
       const output = claude(["mcp", "list"], project);
-      assert.ok(output.includes(join(folder, "dist", "mcp.cjs")), output);
+      assert.ok(output.includes(join(folder, "dist", "seat.cjs")), output);
       assert.match(output, /Connected/);
     }
     assert.equal(health()?.state, "ok");

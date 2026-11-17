@@ -17,6 +17,9 @@
  *                                     The manager's ctl tiers were deleted in 1d, and the auth
  *                                     plane's rail moved to ep.one.auth in #350: both serve their
  *                                     control surface as v0.4 endpoints on the ep.* rails.
+ *   cotal.<space>.take.<role>.<owner>.<actor>
+ *                                     a role holder's take of one anycast request, served by the
+ *                                     delivery daemon (request/reply)
  *   cotal.<space>.ep.<one|all|inst|reply>.…
  *                                     v0.4 endpoint control surface; SPEC.md §13.2 defines each rail
  *   cotal.<space>.ep.<generation>.<one|all|inst|reply>.…
@@ -43,6 +46,10 @@ export function spacePrefix(space: string): string {
   return `${ROOT}.${token(space)}`;
 }
 
+/** The key of the data part that marks a delivery daemon's notice that a channel post mentioned an
+ *  agent who may not read the channel (SPEC §8). */
+export const MENTION_NOTICE_KEY = "cotalMentionNotice";
+
 /** Canonicalize a `mentions` list for the wire: trim, lowercase, drop empties, dedupe.
  *  Returns `undefined` for an empty result so the field is omitted rather than sent as `[]`.
  *  Presence-agnostic (no roster lookup) — validation lives in the connector. */
@@ -50,6 +57,17 @@ export function normalizeMentions(mentions?: string[]): string[] | undefined {
   if (!mentions?.length) return undefined;
   const out = [...new Set(mentions.map((m) => m.trim().toLowerCase()).filter((m) => m.length > 0))];
   return out.length ? out : undefined;
+}
+
+/** The `@name` mentions inside a message body, as bare names, for a multicast's `mentions` (a
+ *  priority/wake hint). Every surface that posts typed text derives them the same way. A trailing
+ *  `.` or `-` is punctuation, as in `thanks @ops-lead.`, since a chat name cannot end in one. An `@`
+ *  right after an ASCII letter or digit, `_`, `.`, `-` or `/` starts no mention, so an address such
+ *  as `ana@example.com` or a path such as `/@rover` names no one, and neither does `Done.@rover`.
+ *  Any other character may precede one, so `你好@rover` mentions `rover` in a script written
+ *  without spaces. */
+export function mentionsIn(text: string): string[] {
+  return [...text.matchAll(/(?<![A-Za-z0-9_.\/-])@([A-Za-z0-9_.-]*[A-Za-z0-9_])/g)].map((m) => m[1]);
 }
 
 /**
@@ -115,6 +133,22 @@ export function chatSubject(space: string, owner: string, actor: string, channel
  *  *published* to. Subscriptions may be wildcard; publishes must be concrete. */
 export function isConcreteChannel(channel: string): boolean {
   return !channel.split(".").some((s) => s.trim() === "*" || s.trim() === ">");
+}
+
+/** True if `channel` is a channel FAMILY: one or more NATS-safe segments and then a final `>`
+ *  (`review.>`, `team.backend.>`). A family is the one pattern that can hold a durable membership; the
+ *  root `>` and any pattern with `*` stay live only. It covers every channel under its segments, not
+ *  the bare prefix (`review.>` covers `review.a` and `review.a.b`, not `review`). */
+export function isChannelFamily(channel: string): boolean {
+  const segs = channel.split(".");
+  return channel.length <= MAX_CHANNEL_LENGTH && segs.length >= 2 && segs[segs.length - 1] === ">" &&
+    segs.slice(0, -1).every((s) => /^[A-Za-z0-9_-]+$/.test(s));
+}
+
+/** The families that cover concrete `channel`, nearest last: `a.>` and `a.b.>` for `a.b.c`. */
+export function familiesCovering(channel: string): string[] {
+  const segs = channel.split(".");
+  return segs.slice(1).map((_, i) => `${segs.slice(0, i + 1).join(".")}.>`);
 }
 
 /** Does NATS subject `pattern` (with `*`/`>`) match `subject`? Also reused for channel-level
@@ -296,8 +330,8 @@ export interface DeprovisionTarget {
   principal: string;
   /** The retired/target incarnation's lifecycle UID — the successor's differs by construction. */
   lifecycleUid: string;
-  /** Concrete channels whose durable membership rows (`memberKey(channel, principal, uid)`) this
-   *  teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
+  /** Concrete channels and families whose durable membership rows (`memberKey(channel, principal, uid)`)
+   *  this teardown purges. Each becomes one exact-key grant, so the cred still names only this lifecycle. */
   memberChannels?: readonly string[];
 }
 
@@ -307,7 +341,8 @@ export function deprovisionTargetPrincipal(target: DeprovisionTarget): { owner: 
   const pr = parsePrincipalKey(target.principal) ?? { owner: DEV_OWNER, actor: target.principal };
   const memberChannels = [...new Set(target.memberChannels ?? [])].map((ch) => {
     assertValidChannel(ch);
-    if (!isConcreteChannel(ch)) throw new Error(`deprovision target: member channel "${ch}" must be concrete (membership rows are per concrete channel)`);
+    if (!isConcreteChannel(ch) && !isChannelFamily(ch))
+      throw new Error(`deprovision target: member channel "${ch}" must be concrete or a family such as review.> (membership rows are per concrete channel or family)`);
     return ch;
   });
   return { ...pr, lifecycleUid: assertLifecycleToken(target.lifecycleUid), memberChannels };
@@ -512,13 +547,14 @@ export function channelInAllow(allow: string[], channel: string): boolean {
 }
 
 /** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
- *  `subscribe`. Throws when a subscription lies outside it. Every site that resolves an agent's
- *  read list calls this, so a launcher, the session it starts and the provisioner cannot disagree
- *  on the default. */
+ *  `subscribe`. Throws when a subscription lies outside it: a concrete channel must match an entry,
+ *  and a pattern must lie inside one entry ({@link patternInAllow}), as `cotal_join` checks it, so
+ *  `perm.>` is outside `perm.*`. Every site that resolves an agent's read list calls this, so a
+ *  launcher, the session it starts and the provisioner cannot disagree on the default. */
 export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
   const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
   for (const ch of subscribe)
-    if (!channelInAllow(allow, ch))
+    if (!(isConcreteChannel(ch) ? channelInAllow : patternInAllow)(allow, ch))
       throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
   return allow;
 }
@@ -553,6 +589,13 @@ export function patternCovers(cap: string, pattern: string): boolean {
  *  and keeps the refusal explainable ("name the entry that covers it, or widen the grant"). */
 export function patternInAllow(allow: string[], pattern: string): boolean {
   return allow.some((a) => patternCovers(a, pattern));
+}
+
+/** Does read ACL `allow` admit a durable membership on `channel`? A family must lie inside one entry
+ *  ({@link patternInAllow}), so every channel under it is readable; a concrete channel must be covered
+ *  ({@link channelInAllow}). */
+export function membershipInAllow(allow: string[], channel: string): boolean {
+  return isChannelFamily(channel) ? patternInAllow(allow, channel) : channelInAllow(allow, channel);
 }
 
 // ---- Principal-keyed channel grants ----
@@ -726,6 +769,38 @@ export function anycastServeFilter(space: string, service: string): string {
   return `${spacePrefix(space)}.svc.${routeToken(service)}.>`;
 }
 
+/** The route token of the anycast TAKE rail: `take.<role>.<owner>.<actor>`. A holder of a role
+ *  asks the delivery daemon to record its take of one request it was delivered, before its
+ *  connector shows the request (SPEC §8.1). The role rides the subject so the broker confines a take
+ *  to the roles a credential holds, as it confines the queue bind; the daemon then checks the role
+ *  against the request's own stored subject. */
+export const TAKE_ROUTE = "take" as const;
+
+/** The take REQUEST subject for one role and caller principal. A holder's credential may publish
+ *  only its own principal's form, and only for the roles it binds: its own and each `role:<r>`
+ *  token's (SPEC §13.15). */
+export function takeSubject(space: string, role: string, owner: string, actor: string): string {
+  return `${spacePrefix(space)}.${TAKE_ROUTE}.${routeToken(role)}.${ownerToken(owner)}.${ownerToken(actor)}`;
+}
+
+/** The delivery daemon's serve filter for takes: every role, every caller principal. */
+export function takeServeFilter(space: string): string {
+  return `${spacePrefix(space)}.${TAKE_ROUTE}.*.*.*`;
+}
+
+/** The daemon's reply-PUBLISH grant for takes, bounded to the `.reply.` leaf under a caller's own
+ *  request subject, the same shape as `ctl.delivery.*.*.reply.>`. */
+export function takeReplyGrant(space: string): string {
+  return `${spacePrefix(space)}.${TAKE_ROUTE}.*.*.*.reply.>`;
+}
+
+/** Split a take subject into its role and caller principal, or `null` for any other shape. */
+export function parseTakeSubject(subject: string): { role: string; owner: string; actor: string; sender: string } | null {
+  const parts = subject.split(".");
+  if (parts.length !== 6 || parts[0] !== ROOT || parts[2] !== TAKE_ROUTE) return null;
+  return { role: parts[3], owner: parts[4], actor: parts[5], sender: `${parts[4]}.${parts[5]}` };
+}
+
 /** Control request/reply to a service — since 1d ONLY the delivery daemon (`ctl.delivery` /
  *  `ctl.delivery-admin`); the manager's own control moved to its v0.4 `service` endpoint on the
  *  `ep.*` rails, and the auth plane's rail followed it there (#350).
@@ -835,7 +910,7 @@ export type DeliveryMode = "chat" | "anycast" | "unicast";
  *  verbatim once `from.id` carries the principal dot-form. `rest` is the channel (chat) or the routed
  *  target/role/service (inst → recipient principal dot-form; svc → role; ctl → service). */
 export interface ParsedSubject {
-  kind: "chat" | "inst" | "svc" | "ctl";
+  kind: "chat" | "evp" | "inst" | "svc" | "ctl";
   owner: string;
   actor: string;
   /** The sender principal in canonical dot-form `<owner>.<actor>`. */
@@ -861,6 +936,10 @@ export function parseSubject(subject: string): ParsedSubject | null {
   const kind = parts[2];
   const mk = (kind: ParsedSubject["kind"], owner: string, actor: string, rest: string): ParsedSubject =>
     ({ kind, owner, actor, sender: `${owner}.${actor}`, rest });
+  if (kind === "evp") {
+    if (parts.length !== 5) return null;
+    return mk(kind, parts[3], parts[4], `events.${parts[3]}.${parts[4]}`);
+  }
   if (kind === "chat") {
     if (parts.length < 6) return null; // cotal.<space>.chat.<owner>.<actor>.<channel…>
     return mk(kind, parts[3], parts[4], parts.slice(5).join("."));
@@ -891,6 +970,12 @@ export function presenceBucket(space: string): string {
   return `cotal_presence_${token(space)}`;
 }
 
+/** The publish subject of one principal's own presence key. Every agent mint carries it; an
+ *  operator instrument's never does. */
+export function presenceKeySubject(space: string, owner: string, actor: string): string {
+  return `$KV.${presenceBucket(space)}.${principalKey(owner, actor).key}`;
+}
+
 const PRESENCE_STATUSES: Record<PresenceStatus, true> = { idle: true, waiting: true, working: true, offline: true };
 
 function presenceRecord(value: unknown): value is Record<string, unknown> {
@@ -902,11 +987,12 @@ function presenceOptionalString(value: unknown): boolean {
 }
 
 /** The presence row shape every reader relies on (SPEC §6). A record whose `card.id` differs from
- *  its KV key, whose `card.name` or `status` has the wrong type, whose `ts` is not finite, whose
- *  printed display fields are present and not strings, or whose `condition` is present and is not
- *  an object with a string `code`, is not a row. `card.id` must be a non-empty string and equal the
- *  key it was read under: the key is the identity the write grant proves, and an empty id matches
- *  no key. */
+ *  its KV key, whose `card.name` is blank or has the wrong type, whose `status` has the wrong type,
+ *  whose `ts` is not finite, whose printed display fields are present and not strings, or whose
+ *  `condition` is present and is not an object with a string `code`, is not a row. `card.id` must be
+ *  a non-empty string and equal the key it was read under: the key is the identity the write grant
+ *  proves, and an empty id matches no key. `card.name` must be a non-blank string: a blank name
+ *  cannot identify the participant a refusal prints. */
 export function isPresenceRow(value: unknown, key: string): value is Presence {
   return presenceRowProblem(value, key) === undefined;
 }
@@ -916,7 +1002,7 @@ function presenceRowProblem(value: unknown, key: string): string | undefined {
   if (!presenceRecord(value.card)) return "card";
   const card = value.card;
   if (typeof card.id !== "string" || card.id.length === 0 || card.id !== key) return "card.id";
-  if (typeof card.name !== "string") return "card.name";
+  if (typeof card.name !== "string" || card.name.trim().length === 0) return "card.name";
   if (!presenceOptionalString(card.role)) return "card.role";
   if (typeof value.status !== "string" || !Object.hasOwn(PRESENCE_STATUSES, value.status)) return "status";
   if (typeof value.ts !== "number" || !Number.isFinite(value.ts)) return "ts";
@@ -958,22 +1044,34 @@ export function membersBucket(space: string): string {
 /** KV key for one membership record: `<channel>/<principal>.<lifecycleUid>`, where the tail is the
  *  member's lifecycle-scoped dot-form ({@link lifecycleSubjectKey}, SPEC §13.1: membership rows are
  *  lifecycle-keyed, so a same-alias successor starts unjoined and inherits no cursors — the
- *  join/leave cursors ride this row). The channel is concrete (no `*`/`>`, validated at the write
- *  path) so it is dotted-but-`/`-free, and the tail is `[A-Za-z0-9_.]` (also `/`-free), so the single
- *  `/` separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, and
- *  `[A-Za-z0-9_]` are all legal KV-key chars (`/^[-/=.\w]+$/`), so no encoding is needed. */
+ *  join/leave cursors ride this row). The channel is a valid concrete channel or a family
+ *  ({@link isChannelFamily}); anything else throws. A family's final `>` is stored as `=`
+ *  (`review.=/…`): a raw `>` in this key would be a wildcard in every grant and purge built from it,
+ *  reaching every member row. `=` never occurs in a channel segment (`[A-Za-z0-9_-]`), so the two forms
+ *  cannot collide. The channel is `/`-free and the tail is `[A-Za-z0-9_.]`, so the single `/`
+ *  separates them unambiguously — both halves recover via {@link parseMemberKey}. `/`, `.`, `=` and
+ *  `[A-Za-z0-9_-]` are all legal KV-key chars (`/^[-/=.\w]+$/`). */
 export function memberKey(channel: string, principal: string, lifecycleUid: string): string {
-  return `${channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
+  const family = isChannelFamily(channel);
+  if (!family && !isConcreteChannel(assertValidChannel(channel)))
+    throw new Error(`member key: "${channel}" must be a concrete channel or a family such as review.>`);
+  return `${family ? `${channel.slice(0, -1)}=` : channel}/${principal}.${assertLifecycleToken(lifecycleUid)}`;
 }
 
 /** Inverse of {@link memberKey}: split a member key back into `{ channel, principal, lifecycleUid }`,
- *  or `null` if it isn't one (no `/`, or the tail is not a lifecycle-scoped dot-form). Splits on the
- *  single `/`, then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last
- *  dot separates the uid unambiguously. */
+ *  or `null` if it isn't one (no `/`, an `=` anywhere but a whole last channel segment, or the tail
+ *  is not a lifecycle-scoped dot-form). Splits on the single `/`, decodes a final `=` back to `>`,
+ *  then peels the trailing `.<uid>` token — owner/actor tokens are dot-free, so the last dot separates
+ *  the uid unambiguously. */
 export function parseMemberKey(key: string): { channel: string; principal: string; lifecycleUid: string } | null {
   const i = key.indexOf("/");
   if (i <= 0 || i >= key.length - 1) return null;
-  const channel = key.slice(0, i);
+  let channel = key.slice(0, i);
+  const eq = channel.indexOf("=");
+  if (eq !== -1) {
+    if (eq !== channel.length - 1 || !channel.endsWith(".=")) return null;
+    channel = `${channel.slice(0, -1)}>`;
+  }
   const tail = key.slice(i + 1);
   const dot = tail.lastIndexOf(".");
   if (dot <= 0 || dot >= tail.length - 1) return null;
@@ -1112,6 +1210,13 @@ export function channelFromChatSubscription(space: string, subject: string): str
  *  bucket-level TTL is a deliberate simplicity choice for a one-purpose bucket, not a capability gap.) */
 export function deliveryBucket(space: string): string {
   return `cotal_delivery_${token(space)}`;
+}
+
+/** Name of the KV bucket holding the delivery daemon's anycast request records: one row per role
+ *  request that a holder took or its sender cancelled (SPEC §8.1). Only the `delivery` cred reads or
+ *  writes it; agents learn a request's status through the daemon. */
+export function anycastBucket(space: string): string {
+  return `cotal_anycast_${token(space)}`;
 }
 
 /** KV key for one shard's delivery lease/readiness (N=1 → `lease.0`). */

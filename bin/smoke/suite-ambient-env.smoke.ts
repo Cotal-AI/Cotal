@@ -733,6 +733,18 @@ assert.deepEqual(
  * shape has to be re-measured, which is why the reason and not just the path is recorded.
  */
 const REVIEWED: Record<string, string> = {
+  "bin/smoke/auto-update-repair.smoke.mjs":
+    "originalEnv is only a restoration snapshot; every child receives env filtered of COTAL_ and given private fixture homes",
+  "bin/smoke/connector-activity.smoke.ts":
+    "originalEnv is only restored in finally; env(name) strips COTAL_ and sets the fixture identity before each connector, including the codex child spread",
+  "implementations/auth/smoke/logout-session-race.smoke.ts":
+    "originalEnv is only restored in finally; the suite strips COTAL_ before setting private homes and makes no child from the snapshot",
+  "implementations/auth/smoke/service-session-isolation.smoke.ts":
+    "originalEnv is only restored in finally; the try block strips COTAL_ before setting private homes, and the lock-holder child copies that scrubbed environment",
+  "implementations/cli/smoke/controller-migration-baseline.smoke.ts":
+    "originalEnv is only restored in finally; process.env is cleared and replaced by the explicit private fixture env before any child runs",
+  "implementations/manager/smoke/cross-root-transcript-name.smoke.ts":
+    "childEnv is never passed to a child; module scope strips COTAL_ before main, and only self-reentered auth-service, agent-bearer and seat modes restore the fixture values their parent supplied",
   "bin/smoke/suite-ambient-env.smoke.ts": "this census itself: its ambient spreads occur only in fixture strings and it spawns nothing",
   "bin/smoke/suite-ambient-env-self.smoke.ts":
     "the in-process sibling of this census: its ambient spreads occur only in fixture strings it feeds to a parser, and it spawns nothing",
@@ -744,6 +756,12 @@ const REVIEWED: Record<string, string> = {
     "same ext-update shape: self-reentered node helpers reading COTAL_UPDATE_* / XDG_CONFIG_HOME, no connection material read",
   "bin/smoke/herdr-e2e-live.smoke.ts":
     "spawns herdr-e2e-manager-child.mjs, which builds its OWN stub identity from HE2E_* and sets the COTAL_ vars itself rather than reading the inherited ones",
+  "bin/smoke/computer-vitals-native.smoke.ts":
+    "the spread only saves process.env for restoration in finally; the suite strips COTAL_ from process.env and sets a private home before it samples, spawns nothing with the snapshot, and never passes it to a child",
+  "bin/smoke/daemon-desktop-account.smoke.ts":
+    "the spread only saves process.env for restoration in finally; a module-scope strip removes COTAL_ from process.env before the daemon is served in-process, and the snapshot is never passed to a child",
+  "bin/smoke/update-auto-service.smoke.ts":
+    "the spread only saves process.env for restoration around an in-process unit render; every child is spawned with the suite's own private env object, and the snapshot is never passed to a child",
   "packages/workspace/smoke/win32-creation-native.smoke.ts":
     "the spread only saves process.env for restoration in finally; coldOsEnvironment(before) replaces process.env before any child is spawned, and the snapshot is never passed to a child",
   "implementations/auth/smoke/personal-native-auth.smoke.ts":
@@ -761,6 +779,8 @@ const REGISTRY_HOME_REVIEWED: Record<string, string> = {
     "this census itself: recordMesh and COTAL_HOME occur only in fixture strings it feeds to a parser",
   "implementations/auth/smoke/_approval-authority.ts":
     "a fixture module, not a suite: startApprovalAuthority throws unless process.env.COTAL_HOME already equals the home its importer passes",
+  "bin/smoke/_fixture-space.mjs":
+    "a fixture module, not a suite: createFixtureSpace checks homeCotalDir() against the caller-selected machineHome before starting or writing anything; desktop proofs may use the platform default home",
 };
 
 /**
@@ -803,7 +823,6 @@ const FROZEN: readonly string[] = [
   "implementations/auth/smoke/down-manifest-usermode.smoke.ts",
   "implementations/auth/smoke/freeslot-respawn-barrier.smoke.ts",
   "implementations/auth/smoke/int2-revoke-hold.smoke.ts",
-  "implementations/auth/smoke/_ps-arm2.smoke.ts",
   "implementations/auth/smoke/ps-operator-path.smoke.ts",
   "implementations/auth/smoke/ps-user-mode.smoke.ts",
   "implementations/cli/smoke/bind-fence-live.smoke.ts",
@@ -939,8 +958,8 @@ assert.ok(
 );
 assert.equal(
   realProcessEnvScrubSpreads,
-  14,
-  "the measured module-scope process.env scrub population changed from 10 files / 14 spreads",
+  13,
+  "the measured module-scope process.env scrub population changed from 10 files / 13 spreads",
 );
 assert.equal(
   [...REAL_PROCESS_ENV_SCRUB_FILES].filter((file) => stripped.includes(file)).length,

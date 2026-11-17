@@ -1,4 +1,4 @@
-import { CotalEndpoint, subjectMatches, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
+import { CotalEndpoint, durableCovers, subjectMatches, type DeliveryClass, type FlagValues, type MembershipChange, type MembershipSnapshot } from "@cotal-ai/core";
 import { brokerAddressForDisplay, CommandFailure, exitCode, streamRecord, writeStreamRecord, writeResult, renderReport, type ConnectRefusal, type Presentation, type Report } from "@cotal-ai/workspace";
 import { connectOrThrow, credentialEnded, userViewAuthOrExit } from "../lib/connect.js";
 import { refuseUnknownChannel, type channelFlags } from "./channels.js";
@@ -25,16 +25,24 @@ export async function channelMembers(values: Values, channel: string, presentati
     channels: [], consume: false, registerPresence: false, watchPresence: true,
   });
   const target = { space: connection.space, channel };
-  const resultOf = (snapshot: MembershipSnapshot): Members => {
+  // A family follower (`team.>`) holds stored copies only on the durable-class channels under it.
+  const resultOf = (snapshot: MembershipSnapshot, stored: boolean): Members => {
     const names = new Map(ep.getRoster().map((peer) => [peer.card.id, peer.card.name]));
     return {
       ...target, asOf: snapshot.asOf ?? null,
       members: snapshot.members.flatMap((member) => {
         const live = member.live.some((pattern) => subjectMatches(pattern, channel));
-        const durable = member.durable.includes(channel);
+        const durable = durableCovers(member.durable, channel, stored);
         return live || durable ? [{ id: member.id, name: names.get(member.id) ?? null, live, durable, observedAt: member.observedAt }] : [];
       }).sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id)),
     };
+  };
+  // The class the last census was read under, which no membership change reports.
+  let readClass: DeliveryClass | undefined;
+  const read = async (): Promise<Members> => {
+    const [snapshot, cls] = await Promise.all([ep.readMembership(), ep.deliveryClassFresh(channel)]);
+    readClass = cls;
+    return resultOf(snapshot, cls === "durable");
   };
   let streaming = false;
   let stopped = false;
@@ -80,16 +88,10 @@ export async function channelMembers(values: Values, channel: string, presentati
       retry ??= setTimeout(() => { retry = undefined; refresh(); }, 2_000);
     });
   };
-  // A watch whose consumer closed delivers no more changes, so reading again cannot recover it.
-  const watchClosed = () => {
-    if (stopped) return;
-    reason = "error";
-    process.exitCode = 4;
-    emit("gap", { reason: "Membership observation was interrupted.", lastAsOf: last?.asOf ?? null });
-    emit("error", { code: "OPERATION_PARTIAL", message: "The last observations are not a current membership census." });
-    if (presentation !== "json") console.error("Membership observation interrupted. The last snapshot is not current.");
-    stop();
-  };
+  // A watch whose consumer closed delivers no more changes. The endpoint re-arms that watch when the
+  // connection is re-established, so the close is the same interruption as a dropped connection: reported
+  // once, then read again until the feed answers. Ending here is what cuts a follow short of a broker restart.
+  const watchClosed = () => interrupted(true);
   const refresh = () => {
     if (stopped) return;
     pending = true;
@@ -97,7 +99,7 @@ export async function channelMembers(values: Values, channel: string, presentati
     reading = (async () => {
       while (pending && !stopped) {
         pending = false;
-        const next = resultOf(await ep.readMembership());
+        const next = await read();
         if (stopped) continue;
         // The first read that answers after an interruption reports the gap and the census as it is now.
         if (interruption) {
@@ -122,9 +124,10 @@ export async function channelMembers(values: Values, channel: string, presentati
   // A heartbeat changes no census, only the feed's `asOf` (reported in a later gap record), so it is
   // copied into the last census instead of costing a bucket re-read (#4904). After an interruption
   // the next change of any kind is read back in full, so the gap is reported against a fresh census.
+  // So is a heartbeat that finds the channel's class moved: whether a family row counts turns on it.
   const onMembership = (change: MembershipChange) => {
     if (change.type === "replayed") return;
-    if (change.type === "heartbeat" && change.update && last && !interruption && !reading) {
+    if (change.type === "heartbeat" && change.update && last && !interruption && !reading && ep.channelDeliveryClass(channel) === readClass) {
       last = { ...last, asOf: change.asOf ?? null };
       return;
     }
@@ -138,7 +141,7 @@ export async function channelMembers(values: Values, channel: string, presentati
   });
   try {
     await ep.start();
-    last = resultOf(await ep.readMembership());
+    last = await read();
     if (values.follow) {
       streaming = true;
       process.once("SIGINT", interrupt);
@@ -195,6 +198,13 @@ export async function channelMembers(values: Values, channel: string, presentati
   }, membersView);
 }
 
+/** The name a members row shows. A blank roster name is not a participant, so the row uses the id.
+ *  A member the roster has not named still says the name was not reported. */
+export function memberName(name: string | null, id: string): string {
+  if (name === null) return "name not reported";
+  return name.trim() ? name : id;
+}
+
 /** Whether the feed has a census, and which members it observed with which membership. */
 function census(result: Members | undefined): string {
   return JSON.stringify(result && [result.asOf !== null, result.members.map(({ id, name, live, durable }) => [id, name, live, durable])]);
@@ -207,7 +217,7 @@ function membersView(result: Members, following = false): Report {
       { kind: "fields", rows: [["Space", result.space], ["Feed observed", result.asOf === null ? "no successful poll reported" : new Date(result.asOf).toISOString()]] },
       result.members.length ? {
         kind: "table", columns: [{ key: "name", label: "Participant" }, { key: "state", label: "Observed membership" }, { key: "id", label: "Identity" }],
-        rows: result.members.map((member) => ({ name: member.name ?? "name not reported", state: member.live ? member.durable ? "live subscription · durable member" : "live subscription" : "durable member · live subscription not observed", id: member.id })),
+        rows: result.members.map((member) => ({ name: memberName(member.name, member.id), state: member.live ? member.durable ? "live subscription · durable member" : "live subscription" : "durable member · live subscription not observed", id: member.id })),
       } : { kind: "lines", lines: [result.asOf === null ? "Membership is not established. An empty feed does not prove there are no members." : "No members in this feed snapshot."] },
       { kind: "lines", lines: [{ text: "Broker-derived observations, not access grants. This does not establish whether an agent is working or blocked.", tone: "hint" }] },
     ] },

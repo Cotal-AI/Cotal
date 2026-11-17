@@ -2,6 +2,7 @@ import { lstatSync, readdirSync, readFileSync, realpathSync, statSync, type Dire
 import { join, resolve, sep } from "node:path";
 import { SEEDED_EXTENSIONS, extensionPackageDir, extensionsDir, type InstalledExtension } from "@cotal-ai/workspace";
 import { seedStorePath, shippedSourceDir } from "./paths.js";
+import { sharedPlacements, type SharedPlacement } from "./shared.js";
 
 /**
  * Why `cotal update` still has to reinstall a seeded built-in that is recorded at this generation, or
@@ -30,15 +31,30 @@ export function seededInstallDiffers(name: string, generation: string, entry: In
   if (!kind.isDirectory()) return "the installed path is not a directory";
   if (!realpathSync(installed).startsWith(realpathSync(extensionsDir()) + sep)) return "the installed copy resolves outside the extensions prefix";
   const shipped = shippedSourceDir(name);
-  const files = payloadFiles(shipped);
-  if (typeof files === "string") return `the shipped payload ${files}`;
+  const own = payloadFiles(shipped);
+  if (typeof own === "string") return `the shipped payload ${own}`;
+  // A published payload's docs data ships once in the shared directory; each copy is compared with that.
+  let shared: SharedPlacement[];
+  try {
+    shared = sharedPlacements(name, shipped);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  const sources = new Map(own.map((file) => [file, join(shipped, file)]));
+  for (const { rel, source } of shared) {
+    const file = join(...rel.split("/"));
+    if (sources.has(file)) return `the shipped payload holds ${file} and also ships it shared`;
+    sources.set(file, source);
+  }
+  const files = [...sources.keys()].sort();
   for (const [copy, label] of [[store, "the seed store copy"], [installed, "the installed copy"]] as const) {
-    const have = payloadFiles(copy);
-    if (typeof have === "string") return `${label} ${have}`;
+    const listed = payloadFiles(copy);
+    if (typeof listed === "string") return `${label} ${listed}`;
+    const have = [...listed].sort();
     if (have.length !== files.length) return `${label} holds ${have.length} files, the shipped payload ${files.length}`;
     for (let i = 0; i < files.length; i++) {
       if (have[i] !== files[i]) return `${label} has ${have[i]} where the shipped payload has ${files[i]}`;
-      if (!sameBytes(join(shipped, files[i]), join(copy, files[i]))) return `${label} differs at ${files[i]}`;
+      if (!sameBytes(sources.get(files[i])!, join(copy, files[i]))) return `${label} differs at ${files[i]}`;
     }
   }
   return undefined;

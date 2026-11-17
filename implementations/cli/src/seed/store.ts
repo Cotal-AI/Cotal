@@ -1,7 +1,8 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { provenance } from "@cotal-ai/workspace";
 import { assertReleasedSeedWriter, seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
+import { sharedPlacements } from "./shared.js";
 
 /**
  * The durable seed store: a stable, per-generation copy of each shipped connector payload that
@@ -20,6 +21,16 @@ function payloadFilter(root: string, from: string): boolean {
   return !segments.includes("node_modules") && !segments.includes(".git");
 }
 
+/** Private store copies need writable directories, even when the shipped payload is read-only. */
+function writableDirectories(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat?.isDirectory()) return;
+  chmodSync(path, stat.mode | 0o700);
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.isDirectory()) writableDirectories(join(path, entry.name));
+  }
+}
+
 /**
  * Stage a built-in connector's shipped payload into `store/<generation>/<name>` and return that
  * stable path (the spec `ext add` installs from). Idempotent: an intact prior copy is reused unless
@@ -32,11 +43,22 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   if (!opts.force && existsSync(join(dest, "package.json"))) return dest;
   assertReleasedSeedWriter(generation, "write");
   const src = shippedSourceDir(name);
+  const shared = sharedPlacements(name, src);
   const staging = `${dest}.staging`;
+  writableDirectories(staging);
   rmSync(staging, { recursive: true, force: true });
+  writableDirectories(dest);
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
   cpSync(src, staging, { recursive: true, filter: (from) => payloadFilter(src, from) });
+  writableDirectories(staging);
+  // A published payload's docs data ships once for every connector; put a copy back where it was packed.
+  for (const { rel, source } of shared) {
+    const to = join(staging, ...rel.split("/"));
+    if (existsSync(to)) throw new Error(`the shipped payload for "${name}" holds ${rel} and also ships it shared - reinstall cotal-ai`);
+    mkdirSync(dirname(to), { recursive: true });
+    copyFileSync(source, to);
+  }
   renameSync(staging, dest); // atomic within the store: the final path only ever holds a complete payload
   // Announce the write on the provenance channel. This store is operator-global (a sibling of the
   // shared `extensions/` prefix, moved only by `XDG_CONFIG_HOME`), so re-seeding it from a non-released
@@ -68,6 +90,7 @@ export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly st
     const referenced = referencedSpecs.some((spec) => spec === genDir || spec.startsWith(genDir + sep));
     if (referenced) continue;
     assertReleasedSeedWriter(keepGeneration, "garbage-collect");
+    writableDirectories(genDir);
     rmSync(genDir, { recursive: true, force: true });
     // Announce the DELETE for the same reason the write above is announced: this store is
     // operator-global, so dropping a generation from it is a machine-wide act performed by a command

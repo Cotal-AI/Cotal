@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { ArtifactFileFault, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
+import { ArtifactFileFault, artifactStreams, BACKUP_MANIFEST_FORMAT, BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, createArtifactWriter, inspectBackupArtifact, stageArtifact } from "../src/lib/backup-artifact.js";
 import { backupRead } from "../src/commands/backup-read.js";
 import { down } from "../src/commands/down.js";
 import { clean } from "../src/commands/clean.js";
@@ -16,12 +16,24 @@ import { createAttemptClone, ensurePrivateAttemptsDir } from "../src/lib/isolate
 import { isManagerCommitResult, isManagerFinalizeResult, movedFolderRefusal, prepareRestore, preservedSourceState } from "../src/lib/restore.js";
 import { authorityFingerprint } from "../src/lib/maintenance-files.js";
 import { assertEndpointUnreachable } from "../src/lib/endpoint-cut.js";
-import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, rotateSystemAccount, taskStream } from "@cotal-ai/core";
+import { consumerConfigFromCheckpoint, createSpaceAuth, dmStream, eventPayloadStream, rotateSystemAccount, spaceBackupInventory, taskStream } from "@cotal-ai/core";
 import { acquireMaintenanceLock, authDir, beginMaintenanceCut, completeMaintenanceCut, ensureStoreIdentity, isCommandFailure, readMaintenanceJournal, recordPreservationManagerCommit, releaseMaintenanceLock, saveSpaceAuth, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { DeliverPolicy, type ConsumerInfo } from "@nats-io/jetstream";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
 const cells = counted.cells;
+
+for (const mode of ["open", "auth", "user"] as const) {
+  const inventory = spaceBackupInventory("versioned");
+  for (const format of [BACKUP_MANIFEST_FORMAT_V1, BACKUP_MANIFEST_FORMAT_V2, BACKUP_MANIFEST_FORMAT]) {
+    const expected = ["KV_cotal_channels_versioned", "CHAT_versioned", "DM_versioned", "TASK_versioned", "INBOX_versioned", "DLV_versioned", "KV_cotal_acl_versioned", "KV_cotal_members_versioned"];
+    if (format === BACKUP_MANIFEST_FORMAT) expected.splice(2, 0, eventPayloadStream("versioned"));
+    if (format !== BACKUP_MANIFEST_FORMAT_V1 && mode !== "user")
+      expected.push(...inventory.backedUp.filter((entry) => entry.class === "workflow").map((entry) => entry.name));
+    assert.deepEqual(artifactStreams({ format, space: "versioned", selection: "full", mode }), expected);
+    assert.deepEqual(artifactStreams({ format, space: "versioned", selection: "registry", mode }), inventory.registry);
+  }
+}
 
 const root = mkdtempSync(join(tmpdir(), "cotal-backup-cli-"));
 try {
@@ -116,7 +128,7 @@ try {
     assert.throws(() => backupRead({ positionals: [mode, path], values: {}, raw: [] }), (error: unknown) =>
       isCommandFailure(error) && error.code === "TARGET_NOT_FOUND" && error.outcome === "refused" && (error.target as { missing?: unknown }).missing === missing
         && error.message.endsWith("; nothing was checked") && error.message.includes(missing === "folder" ? `there is no folder ${join(root, "no-such-folder")}` : "holds no backup artifact no-such-artifact"), `${mode} names the missing ${missing}`);
-  writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
+  writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]), { mode: 0o600 });
   // A path through a linked folder names the artifact create published there, and verify reads it at
   // its real path, as restore stages it.
   const linkParent = mkdtempSync(join(tmpdir(), "cotal-backup-cli-link-"));
@@ -168,12 +180,14 @@ try {
     symlinkSync(external, join(destination, "stream-a.snap"));
     assert.throws(() => stageArtifact(destination, stagingParent), stageFault("stream-a.snap", "not-regular"));
     assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /^backup artifact file stream-a\.snap is not a regular file/), "verify names a linked snapshot");
+    const inspect = () => backupRead({ positionals: ["inspect", realpathSync(destination)], values: {}, raw: [] });
+    assert.throws(inspect, verifyFault("stream-a.snap", "not-regular", /^backup artifact file stream-a\.snap is not a regular file/), "inspect names a linked snapshot");
     // A FIFO is refused before it is opened, so verify does not wait for a writer.
     rmSync(join(destination, "stream-a.snap"));
     execFileSync("mkfifo", [join(destination, "stream-a.snap")]);
     assert.throws(verify, verifyFault("stream-a.snap", "not-regular", /stream-a\.snap is not a regular file/), "verify names a FIFO snapshot");
     rmSync(join(destination, "stream-a.snap"));
-    writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]));
+    writeFileSync(join(destination, "stream-a.snap"), Buffer.from([1, 2, 3]), { mode: 0o600 });
 
     const redirectedRoot = join(root, "redirected-root");
     const redirected = join(root, "redirected-maintenance");

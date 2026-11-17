@@ -1,0 +1,1 @@
+smoke:installed-command-display:live

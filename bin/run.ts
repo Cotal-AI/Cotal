@@ -25,6 +25,7 @@ const surfaces = {
   runtime: () => import("@cotal-ai/runtime"), // `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
   auth: () => import("@cotal-ai/auth"), // login / logout — per-user IdP sessions (device-code sign-in)
   docs: () => import("./docs.js"), // `docs`; the docs bundle loads only when `docs` runs
+  mcp: () => import("./mcp.js"), // stock stdio gateway for hosts without a native connector
   daemon: () => import("./daemon/command.js"), // `daemon`: the local machine daemon's authenticated control endpoint (Linux)
   // The `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event frame instead
   // of `[unrenderable part kind "ag-ui.frame"]`.
@@ -48,24 +49,45 @@ const commands = (...names: string[]): ExtensionRef[] => names.map((name) => ({ 
 // host a manager hosts runs with (@cotal-ai/runtime). Nothing else in the CLI is imported, and the
 // command's flags, refusals and exit are `runCli`'s as for any other command.
 registry.provide({ provides: commands("supervise", "__daemon-manager", "__service-manager"), load: importing("manager", "auth", "runtime") });
+registry.provide({ provides: commands("__machine-manager"), load: async () => {
+  await importing("manager", "auth", "runtime")();
+  await import("./daemon/manager-entry.js");
+} });
 registry.provide({ provides: commands("deliver", "__daemon-deliver", "__service-delivery", "feedback-intake", "__service-feedback-intake"), load: importing("delivery", "auth") });
 registry.provide({ provides: commands("auth-service", "__daemon-auth-service", "__service-auth"), load: importing("auth") });
+registry.provide({ provides: [{ kind: "registry-service", name: "builtin" }], load: () => import("@cotal-ai/registry") });
 registry.provide({ provides: commands("__service-unit"), load: () => import("@cotal-ai/cli/service-unit") });
+registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth") });
+registry.provide({ provides: commands("mcp"), load: importing("mcp") });
 
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
-const { commandWord, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
+const { commandWord, completeFileWrites, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
+const { executionIdentity } = await import("@cotal-ai/workspace");
+const identity = executionIdentity();
+if (identity && identity.logicalEntry === identity.loadedEntry) {
+  const { retireSupersededExecutionDescriptor } = await import("./execution-transaction.js");
+  const { dirname } = await import("node:path");
+  retireSupersededExecutionDescriptor(dirname(dirname(identity.logicalEntry)));
+}
 const argv = process.argv.slice(2);
+const { readFileSync } = await import("node:fs");
+const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+(await import("./update-notice.js")).installUpdateNotice(argv, currentVersion);
 const word = commandWord(argv);
 if (word !== undefined && registry.provides("command", word)) await registry.load("command", word);
 else await importing(...(Object.keys(surfaces) as Surface[]))();
+if (word === "update") await import("./daemon/update-entry.js");
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
 // or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
 // closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
 // 0. A command that must close something first, such as a chat session, owns stdout's errors while
-// it runs, and this listener stands down for it. Registered before any command can write.
+// it runs, and this listener stands down for it. Registered before any command can write. A stdout
+// redirected to a file writes each chunk whole or fails into this listener, so a file-size limit or
+// a full disk cannot cut an export short and still exit 0.
 process.stdout.on("error", stdoutError);
+completeFileWrites();
 
 // The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party
@@ -77,4 +99,6 @@ process.stdout.on("error", stdoutError);
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
 // runtimes, connectors, and local process components all self-register from those packages. Library
 // roots keep the explicit-import model.
-await runCli(registry, argv, { extensions: true, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });
+// The bundled app uses only stock daemon operations, never operator extension discovery or seeding.
+const desktopBridge = argv.length === 2 && argv[0] === "daemon" && argv[1] === "desktop";
+await runCli(registry, argv, { extensions: !desktopBridge, startupNotice: { release: releaseStartupInterrupt, handOver: handOverStartupInterrupt } });

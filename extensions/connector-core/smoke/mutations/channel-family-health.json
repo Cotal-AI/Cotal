@@ -1,0 +1,103 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts"
+  ],
+  "guard": "cotal_channels shows a family follow as its own row, and a channel under it takes its stored-copy health from the family's membership",
+  "command": "pnpm smoke:channel-attention:auth",
+  "progressPattern": "  ✓ ",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/channel-family-health.json",
+  "why": [
+    "The suite stages a real auth broker and an in-process delivery daemon, and the agent follows fx51fam.> from boot.",
+    "",
+    "H1 reads a channel's health from its own row only, so a durable channel under the family reads degraded while the family's membership serves it.",
+    "",
+    "H2 drops the pattern rows, so the family follow disappears from the list.",
+    "",
+    "H3 gives the family row no health.",
+    "",
+    "H4 renders the family row as an ordinary channel.",
+    "",
+    "The suite prints SUITE COMPLETE on pass and fail alike and refuses a run short of its EXPECTED_CELLS. It imports connector-core source relatively, so it needs no build.",
+    "",
+    "H5 gives a channel read only through a pattern with * a delivery health, so cotal_channels warns of a backstop it never asked for.",
+    "",
+    "H6 reads a family's health from its own row only, so a sub-family the family above stores for reads degraded.",
+    "",
+    "H7 leaves a family whose cleanup is pending unmarked, and H8 renders it as a family still followed. The suite reaches that state live: the agent's credential renews onto one without the family, the broker refuses the resubscription, and the daemon answers the tombstone with an error."
+  ],
+  "mutations": [
+    {
+      "name": "H1 a channel's health ignores a family row above it",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": " || (isChannelFamily(m.channel) && subjectMatches(m.channel, channel))",
+      "replace": "",
+      "expectRed": "a durable channel under the family reads active through the family's membership",
+      "cell": "a durable channel under the family reads active through the family's membership",
+      "note": "The daemon stores the follower's copies under the family row; the channel itself has none."
+    },
+    {
+      "name": "H2 the pattern rows are dropped",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (isConcreteChannel(pattern)) continue;\n",
+      "replace": "      continue;\n",
+      "expectRed": "the family follow is a row of its own, joined, with its membership's health active",
+      "cell": "the family follow is a row of its own, joined, with its membership's health active",
+      "note": "An agent could not see from cotal_channels that it follows the family."
+    },
+    {
+      "name": "H3 the family row carries no health",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        deliveryHealth: family ? held(pattern) : undefined,",
+      "replace": "        deliveryHealth: undefined,",
+      "expectRed": "the family follow is a row of its own, joined, with its membership's health active",
+      "cell": "the family follow is a row of its own, joined, with its membership's health active",
+      "note": "A failed family membership would look like a working one."
+    },
+    {
+      "name": "H4 cotal_channels renders the family row as an ordinary channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (c.follow === \"family\") {",
+      "replace": "          if (false) {",
+      "expectRed": "cotal_channels shows the family follow and its stored copies",
+      "cell": "cotal_channels shows the family follow and its stored copies",
+      "note": "The row would read as a channel named fx51fam.> with no word of what it covers."
+    },
+    {
+      "name": "H5 a channel read only through a pattern with * takes delivery health",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      const stored = mine.some((p) => p === c.channel || (isChannelFamily(p) && subjectMatches(p, c.channel)));\n",
+      "replace": "      const stored = joined;\n",
+      "expectRed": "a durable channel followed only through a pattern with * carries no delivery health",
+      "cell": "a durable channel followed only through a pattern with * carries no delivery health",
+      "note": "A pattern with * asks for no stored copies, so a backstop warning on its channels is false."
+    },
+    {
+      "name": "H6 a family's health counts its own row only",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        deliveryHealth: family ? held(pattern) : undefined,\n",
+      "replace": "        deliveryHealth: family ? (daemonMemberships?.some((m) => m.channel === pattern) ? held(pattern) : \"degraded\") : undefined,\n",
+      "expectRed": "a sub-family with no row of its own reads active through the family above it, whose row stores its posts",
+      "cell": "a sub-family with no row of its own reads active through the family above it, whose row stores its posts",
+      "note": "The family above stores the sub-family's posts, so the sub-family is held through it."
+    },
+    {
+      "name": "H7 a family whose cleanup is pending is not marked a family",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        ...(isChannelFamily(ch) ? { follow: \"family\" as const } : {}),\n",
+      "replace": "",
+      "expectRed": "the family left with its cleanup pending is still a family row, not followed",
+      "cell": "the family left with its cleanup pending is still a family row, not followed",
+      "note": "Without the mark, a family the broker forced out reads as a concrete channel."
+    },
+    {
+      "name": "H8 cotal_channels renders a family no longer followed as one still followed",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (c.follow === \"family\" && !c.joined)\n            return `○ #${c.channel} — family you no longer follow${c.durableUnclosed ? \" · durable cleanup pending (§7 backstop may still deliver — retrying)\" : \"\"}`;\n",
+      "replace": "",
+      "expectRed": "cotal_channels shows a family no longer followed with its cleanup pending",
+      "cell": "cotal_channels shows a family no longer followed with its cleanup pending",
+      "note": "The followed-family line would tell the agent it still gets stored copies."
+    }
+  ]
+}

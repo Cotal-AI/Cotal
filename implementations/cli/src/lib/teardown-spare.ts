@@ -43,7 +43,10 @@ export async function listManagerSeatsForSpare(context: LocalProcessContext): Pr
   }
   const reply = await askManager(cliControl, target.space, target.server, "ps", undefined, target.auth, "any");
   if (!reply.ok || !Array.isArray(reply.data)) {
-    console.error(c.dim(`could not list managed agents (${reply.error ?? "invalid ps reply"})`));
+    const reason = reply.code === "permission-denied"
+      ? "access denied; continuing shutdown checks without an agent inventory. To inspect agents before stopping, run `cotal ps` with an authorized account"
+      : reply.error ?? "invalid ps reply";
+    console.error(c.dim(`could not list managed agents (${reason})`));
     return undefined;
   }
   return reply.data as SpareSeatRow[];

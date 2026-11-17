@@ -39,14 +39,14 @@ export function serviceHostGranterFor(request: { operation: unknown; input: unkn
  *  the issuer that signs serving material once the engine has fixed its bounds. */
 export interface ServiceAuthorityDoor { space: string; accountPublicKey: string; engine: ServiceHostOperations; material?: ServiceMaterialIssuer }
 /** Signs the access bearer and renewal proof of a current registration; it checks nothing else. */
-export interface ServiceMaterialIssuer {
+interface ServiceMaterialIssuer {
   issueServiceAccess(claims: { witness: ServiceRegistrationWitness; expiresAt: number }): Promise<string>;
   issueServiceRenewal(claims: { witness: ServiceRegistrationWitness; expiresAt: number }): Promise<string>;
 }
 
 /** An HTTP status and a body. A protocol body echoes the request; a 5xx body is a plain error, because
  *  the request may be bound and its effect is unknown to the caller. */
-export interface ServiceAuthorityReply { status: number; body: unknown }
+interface ServiceAuthorityReply { status: number; body: unknown }
 
 type Command = EpCommandAuthority & { name: string };
 type Echo = Pick<ServiceAuthorityRequest, "v" | "kind" | "operation" | "requestId" | "space" | "accountPublicKey" | "endpoint" | "instanceId">;
@@ -75,7 +75,7 @@ export function serviceAuthorityEngineRequestId(door: Pick<ServiceAuthorityDoor,
 }
 
 /** Why a submitted closure set is refused. Nothing is admitted from a refused set. */
-export class ServiceRegistrationRefusal extends Error {
+class ServiceRegistrationRefusal extends Error {
   constructor(readonly reason: "closure-invalid" | "unsupported-runtime", detail: string) { super(detail); }
 }
 

@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readlinkSync, realpathSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, join, parse, relative, resolve, sep } from "node:path";
 import {
-  CotalEndpoint, DEV_OWNER, accountRevocations, acquireLock, agentFilePath, assertValidRole, credsClaims, ensureDirNoSymlink, identityFromCreds,
+  DEV_OWNER, accountRevocations, acquireLock, agentFilePath, assertValidRole, credsClaims, ensureDirNoSymlink, identityFromCreds,
   loadAgentFile, mintCreds, mintLifecycleUid, newIdentity, principalKey, provisionAgentDurables,
   resolveReadAcl, writeSecretFileAtomic, writeSecretFileCreateOnly,
   type FlagValues, type Identity, type ParsedArgs, type Profile, type SpaceAuth,
@@ -17,6 +17,7 @@ import {
 
 import { staticMintAuthority } from "../lib/credential-authority.js";
 import { recordCredentialExport } from "../lib/credential-exports.js";
+import { withProvisioner } from "../lib/provisioner.js";
 import { noExpiryRecordPath, noExpiryRecordText } from "../lib/no-expiry-record.js";
 import { mintEndpointCaller } from "./mint-endpoint-caller.js";
 export { resolveMintTarget } from "../lib/credential-authority.js";
@@ -125,7 +126,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
   let held: ReturnType<typeof acquireLock> | undefined;
   let target: { space?: string; name: string; profile: string; path?: string; identity?: string; lifecycleUid?: string } = { name, profile };
   try {
-    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target);
+    const { target: resolvedTarget, currentRoot, store, auth } = await staticMintAuthority(values, target, !values.provision);
     const { root, space } = resolvedTarget;
     target = { ...target, space };
     recordOperationSpace(space);
@@ -179,7 +180,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
       // A persona that cannot be used names its file and the command that says why; its values stay unprinted.
       const unusable = (problem: string, remedy: string) => new CommandFailure("refused", "SCHEMA_INVALID", `the persona file ${path} for this label ${problem}, so no credential was minted; file values and secret material were not printed`, { target: { ...target, persona: path }, remedy });
       let definition;
-      try { definition = existsSync(path) ? loadAgentFile(path) : undefined; }
+      try { definition = !values["no-persona"] && existsSync(path) ? loadAgentFile(path) : undefined; }
       catch { throw unusable("could not be read as a persona", `see what is wrong with it with \`cotal persona show ${name}\`, then fix it and mint again`); }
       // A flag wins, then the grants of the --identity credential, then the persona.
       const readFlag = parseCommaList(values["allow-subscribe"]);
@@ -288,11 +289,8 @@ function grantRows(grants: AgentGrants & { fromIdentity: readonly string[] }): [
 }
 
 async function provisionForMint(auth: SpaceAuth, identity: Identity, options: { allowSubscribe?: string[]; allowPublish?: string[]; role?: string; lifecycleUid: string; expiresInSeconds?: number; expiresAt?: number }, target: MeshTarget, onProvisioned: () => void): Promise<void> {
-  const provisioner = new CotalEndpoint({ space: target.space, servers: target.server, tls: target.tlsRequired, creds: await mintCreds(auth, newIdentity(), "provisioner"), channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false, card: { name: "mint-provisioner", role: "provisioner", kind: "endpoint" } });
-  provisioner.on("error", () => {});
-  try {
-    await provisioner.start();
+  await withProvisioner({ space: target.space, servers: target.server, tls: target.tlsRequired, auth }, "mint-provisioner", async (provisioner) => {
     await provisionAgentDurables(provisioner, { owner: DEV_OWNER, actor: identity.id, lifecycleUid: options.lifecycleUid }, { ...options, subscribe: options.allowSubscribe });
     onProvisioned();
-  } finally { await provisioner.stop(); }
+  });
 }

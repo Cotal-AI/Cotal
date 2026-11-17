@@ -48,14 +48,27 @@ cotal service remove <name> [--instance <id>] [--yes]
 
 A service is a saved definition in one space plus the instances started from it. Bare `service`
 lists every service you can name here with its state and the one command that moves it on: the
-built-in services (the presets), whether started or not, and the ones you added. Nothing starts a
-dependency for you: starting the manager does not start its broker.
+built-in services (the presets), whether started or not, and the ones you added. For saved services,
+State shows the instance's recorded state, as `service status` does. If several instances have
+different recorded states, it lists each distinct state. An HTTP readiness deadline leaves `unknown`,
+even when the process is still running, and an exit before readiness leaves `failed`. These are recorded
+outcomes, not fresh readiness checks. The instance table shows the separate process observation.
+Next still names `status` while any instance's process is running, so a failed start that left a
+process does not suggest starting another. Nothing starts a
+dependency for you: starting the manager does not start its broker. A member of a controller stack,
+`stack-broker`, `stack-auth`, `stack-delivery` or `stack-manager`, starts and stops with the stack.
+While it is stopped its Next is bare `cotal up`, and `service start` or `service restart` of it
+refuses `LIFECYCLE_BLOCKED` before anything launches, with that same Next. A start of one by itself
+would leave its process running and the space unregistered. This restriction checks the saved
+adapter and the stack journal's membership. A process service you added with one of those names
+still uses its own `service start` and `service restart` commands.
 
 A built-in service needs no `add`. `cotal service start <preset>` saves a definition of that name
 from the preset's defaults and starts it; stderr says what it saved. A preset that needs something
-only you can give, such as the `web` dashboard's credential file or the intake's keys, refuses with
-those flags named, and takes them on the start line: `cotal service start web --creds <file>`. A
-start refused before anything launched forgets the definition it saved. A preset name acts on the
+only you can give, such as the intake's keys, refuses with those flags named, and takes them on the
+start line. A default the space cannot fill yet, such as the `web` dashboard's `web.creds` on a space
+`cotal up` has not run on since it was added, refuses the same way: `cotal service start web --creds <file>`
+replaces it. A start refused before anything launched forgets the definition it saved. A preset name acts on the
 space's one service built on that preset, so after `cotal up` the name `delivery` reaches
 `stack-delivery`. The manager has its own [`manager`](cli-maintenance.mdx#manager) commands. `--json` writes one envelope for every form,
 and `logs --follow --json` writes one record per line. Without `--json`, a follow's last line says
@@ -104,8 +117,9 @@ A preset's options describe the service and never choose its space. `add` saves 
 `--space` names, or else the selected space or the folder's, as other commands resolve it.
 
 `add` checks the options against the preset's schema, and checks that each declared path exists
-with its required protection. It does not check that a root or credential suits the preset, such
-as a root's auth mode or which credential a file holds. Those are checked when the service starts.
+with its required protection. The `auth-service` preset also requires a user-auth registration and
+prepared user-auth state in its `--root` before saving. Other root and credential checks, such as
+which credential a file holds, run when the service starts.
 A refusal names the option or field at fault, by its flag on a preset add, such as `--log-file`. A
 value the preset's schema refuses gives the preset's help as its Next:
 `cotal service add <name> --preset <preset> --help`. Option values are not printed, except the
@@ -134,6 +148,11 @@ loopback health URL answers 200:
 | `readiness` | `{type: "process", timeoutMs}`: ready once the process runs. `{type: "http", url, expectedStatus, timeoutMs}`: ready when a loopback `http://127.0.0.1` or `http://[::1]` URL answers that status. An adapter definition uses `{type: "adapter", timeoutMs}`. `timeoutMs` is 1 to 120000 |
 | `envRefs` | Optional. Child variable name to the name of a variable in the environment `start` runs in. `CLAUDECODE` and names starting `COTAL_` or `CLAUDE_CODE_` are refused |
 | `credentialRef` | Optional. `{kind: "file", path}`: an absolute, protected credential file. The child receives its path as `COTAL_CREDS`, never its contents |
+
+For a foreground adapter service, `timeoutMs` bounds each readiness observation. While the adapter
+reports pending, the controller stays with its owned child, including a manager still registering.
+It reports readiness only after a valid adapter observation. A timed-out observation or invalid
+evidence still returns an unknown outcome; background starts and HTTP readiness retain their overall deadline.
 
 A `space` that names another space is refused `SCHEMA_INVALID`, exit 1, before `add` checks whether
 the selected space already has a service of that name. No other field is accepted. `add` saves the
@@ -246,10 +265,15 @@ component records make the inventory partial. Reads do not start, repair or inst
 `service add [name] --file <definition.json>` imports the version-1 service object described under
 [Adding a service](#adding-a-service). A declared preset uses
 `service add <name> --preset <preset> <declared-options>`. Guided input offers installed presets
-and file import. Input is capped at 256 KiB, checked against the selected native space and its
-schema before a private record is saved. Whether a root or credential suits the preset is checked
-at start. A process definition needs an existing executable and
-absolute working directory. Credential file protection is checked without reading its contents.
+and file import. Defaulted options show the same default description as their flag help. Enter
+keeps that default, including after opting in to a text question. A yes-or-no question starts at
+its boolean default; an explicit opposite answer overrides it. An option with no default stays
+required. Text answers are checked at their question; an invalid value is asked for again without
+losing earlier answers. Broker server answers use the same address rules as the final save.
+Input is capped at 256 KiB, checked against the selected native space and its schema before a
+private record is saved. The `auth-service` preset checks its prepared user-auth state before
+saving. Other root and credential suitability checks run at start. A process definition needs an
+existing executable and absolute working directory. Credential file protection is checked without reading its contents.
 Adapter definitions use an installed local-process provider's versioned, closed option schema.
 Adding or previewing a definition validates cached metadata without importing provider code. The
 cache records SHA-256 fingerprints of the declaration and installed package metadata. Missing,
@@ -374,14 +398,22 @@ authority.
 ## Native auth service [#native-auth-service]
 
 The `auth-service` preset requires a registered hosting `root` with its existing prepared
-user-auth projection. It loads the native callout account, issuer, owner secret and service key
-projection. Saving or starting this preset does not generate those keys, create an account or
+user-auth projection. An add without that state refuses `UNSUPPORTED` (exit 2) before saving,
+with `cotal up --user-auth --idp <url>` as the preparation step. It loads the native callout
+account, issuer, owner secret and service key projection. Saving or starting this preset does not generate those keys, create an account or
 start its broker, delivery daemon or manager.
 
 The preset options derive from the native daemon flags. Ports are bounded integers; public
 exchange options keep the native validation and reverse-proxy requirement. Advertised URLs
 cannot put credentials, query parameters or fragments on the child argv. No environment-export
 onboarding or generic caller-credential substitution is used.
+
+`--registry` enables the permission-scoped endpoint registry inside this auth service. It is off by
+default and adds no guest reader authority. The lane owns the registry's identity, native registration,
+credential renewal and shutdown. Its scoped reader can read recorded caller ceilings only in this
+space account. Keep the existing delivery observer and evictor available for registration recovery
+and restarts; a missing or inconclusive authority refuses without clearing the gate. See
+[the registry lifecycle](embedding-daemons.mdx#endpoint-registry).
 
 The preset supports a prepared local user-auth root and its registered plain loopback NATS
 broker only. The native authority path does not yet carry a required TLS policy through every
@@ -417,7 +449,7 @@ manager's entry, is deprecated the same way and names `cotal manager start`.
 ```bash
 cotal deliver --space <s> [--server <url>] [--creds <file>] [--root <dir>]
 cotal deliver --spaces <manifest> --server <url> [--root <dir>]
-cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--auth-timeout <seconds>]
+cotal auth-service --space <s> --server <url> [--port <n>] [--exchange-public-port <n>] [--exchange-public-url <https://…>] [--exchange-trusted-proxy] [--advertised-server <url>] [--agent-provisioning-url <https://…>] [--service-endpoints] [--registry] [--auth-timeout <seconds>]
 cotal auth-service --space <s> --server <url> --callout-only [--auth-timeout <seconds>]
 cotal auth-service --server <url> --callout-only --spaces <manifest> [--auth-timeout <seconds>]
 cotal auth-service --server <url> --spaces <manifest> [--auth-timeout <seconds>]
@@ -514,14 +546,20 @@ the flags it replaces:
 ] }
 ```
 
+An embedder may set the trusted `AuthServiceRuntimeOptions.eventPayloadsWithheld` option to `true`
+to deny tool-payload publication in auth-service credential grants. The generated discovery bundle
+advertises the restriction so newly registering clients receive it.
+
 An entry takes `exchangePublicPort`, `exchangePublicUrl`, `exchangeTrustedProxy`, `advertisedServer`
 and `agentProvisioningUrl`, with the rules of the flags: the last four need `exchangePublicPort`.
 An entry without `exchangePublicPort` has no public face. `serviceEndpoints`, `true` or `false`, is
 the space's `--service-endpoints`: a lane whose entry sets it opens the service endpoint host and
 serves `/service-endpoint-authority` and `/service-endpoint-host`, and a lane without it opens none of
-that and answers both routes 404. Two spaces naming one port, a version other than 2 and any refusal
-of the version 1 grammar refuse the whole manifest. `--port`, the public-face flags and
-`--service-endpoints` refuse with `--spaces`; `--server` and `--auth-timeout` apply to every lane. A
+that and answers both routes 404. The independent `registry` field is also boolean and defaults to
+false; only entries with `"registry": true` host an endpoint registry. Two spaces naming one port,
+a version other than 2 and any refusal of the version 1 grammar refuse the whole manifest. `--port`,
+the public-face flags, `--service-endpoints` and `--registry` refuse with `--spaces`; `--server` and
+`--auth-timeout` apply to every lane. A
 changed entry closes that space's lane and opens it again on its new settings, and the other lanes
 keep serving. An embedder that writes the manifest checks it with `parseAuthHostManifest(text)` from
 `@cotal-ai/auth` before renaming it into place: it applies the rules the host applies and throws the
@@ -569,6 +607,16 @@ broker watchdog, timer writer and membership feed, on its own connections. Its l
 host is stopped by its supervisor: on SIGTERM or SIGINT it closes every lane, releasing each lease,
 and exits 0, or exits after 10 seconds when a lane cannot finish.
 
+The host is also the one process on its root that kicks a live connection. When a space on the root
+retained the system-account signing seed (`cotal up` retains it at space creation and at
+`--rotate-sys`), the host says so at start and every lane evicts through the host's kick authority:
+the lane scans its own account, the host checks each connection against its own complete census of
+that account, mints a kick-only user that lives five minutes, kicks, and keeps no `$SYS` connection
+open between kicks. A lane opens no `connection-evictor` credential, so a space created before live
+eviction evicts without a system-account rotation. When no space on the root retained the seed, the
+host says that too, and each lane kicks with the space's own stored evictor as a single-space daemon
+does.
+
 At startup the host serves every space it can, names each one it cannot with the reason, and
 retries those every 5 seconds; its ready line names the spaces it serves and the spaces it retries,
 in manifest order. A space whose lease a
@@ -609,14 +657,25 @@ the verb exists to inspect); when neither a card nor the durable can be found, i
 `✗ not-found: no agent "<name>" and no DM durable for it in space <s>` and exits non-zero, never
 `pending 0`. On a match it prints the durable name and one fact per line: `pending`,
 `ack-pending`, `delivered`, `ack-floor`, `created`, `frontier`, and the stream's `max_age` /
-`max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
+`max_msgs_per_subject` / `discard` limits, followed
 by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
 heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
 there, not proof that nothing was lost. Each plain candidate line prints `from=` with the sender
 principal parsed from the stored message subject, which the broker binds to the sender's
 credential, then `ts=`, then `label=` with the name and role the sender wrote in its own message.
 The label is the sender's claim and can name another agent; control characters and brackets in it
-print as spaces. `--json` keeps its earlier candidate lines.
+print as spaces. A name that is only whitespace is left out. When that card still has a role, the
+label uses the subject principal in its place. A card with neither a name nor a role adds no label.
+
+With `--json`, this spelling uses the [`cotal pending`](cli-messaging.mdx#pending) reader and
+returns one versioned receipt, with facts and candidate IDs in `result`. No plain candidate
+heading or lines follow it. A missing name or lifecycle durable returns a `refused` receipt with
+`TARGET_NOT_FOUND` (exit 2). The reader accepts `--limit` from 1 to 100 and a lifecycle-keyed
+`--durable`, and reports an incomplete candidate read or unconfirmed reader cleanup as partial
+(exit 4). The deprecation warning stays on stderr. Without `--json`, the earlier text output and
+refusals remain unchanged. Pending inspection never seeds or repairs installed connectors.
+Receipts for this spelling name `deliver` in `command`, including success, partial reads and
+refusals. Value-taking options may precede `pending`; parser refusals still return one receipt.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal auth mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,

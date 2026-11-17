@@ -33,7 +33,7 @@ let attempted = 0;
 const failures: string[] = [];
 /** How many cells this suite must run. A cell silently skipped or silently added is a defect in
  *  its own right, and one this file has already shipped once (an ambient-dependent arm). */
-const EXPECTED_CELLS = 153;
+const EXPECTED_CELLS = 157;
 /**
  * Every code the classifier may emit, IMPORTED from production rather than restated here.
  *
@@ -317,7 +317,7 @@ check("  a public-tls verdict carries no residual — the transport is proven, n
 const hostMsg = refuses("nats://broker.example.com:4222", "hostname without required TLS", TODAY, "unprotected-target");
 check("  the no-TLS hostname refusal names the lookup and the permitted classes", /Only a loopback literal/i.test(hostMsg) && /whoever answers the lookup/i.test(hostMsg), hostMsg);
 check("  and its next step is the tls:// form of that name, or --tls", remedyOf("nats://broker.example.com:4222") === "use tls://broker.example.com:4222, or pass --tls", remedyOf("nats://broker.example.com:4222"));
-check("  a ws:// name's next step is wss://, with its path", remedyOf("ws://broker.example.com/mesh") === "use wss://broker.example.com/mesh, or pass --tls", remedyOf("ws://broker.example.com/mesh"));
+check("  a ws:// name's next step is wss://, with its path", remedyOf("ws://broker.example.com/mesh") === "use wss://broker.example.com/mesh", remedyOf("ws://broker.example.com/mesh"));
 // A cafe LAN is private too: RFC1918 stays refused in BOTH modes (also pinned in the loop above).
 refuses("nats://192.168.1.10:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");
 refuses("nats://10.1.2.3:4222", "RFC1918 never becomes public-tls", WITH_TLS, "private-range");
@@ -483,6 +483,10 @@ permits("ws://127.0.0.1:4222", "loopback");
 refuses("ws://203.0.113.7:4222", "plaintext websocket to a public address sends credentials in the clear", TODAY, "unprotected-target");
 refuses("wss://broker.example.com/mesh-ws", "a wss hostname handed to a policy WITHOUT recorded strictness still fails closed", TODAY, "unprotected-target");
 permits("wss://broker.example.com/mesh-ws", "public-tls", WITH_TLS, "wss://broker.example.com:443/mesh-ws");
+refuses("ws://127.0.0.1:4222", "loopback cannot override recorded TLS intent", WITH_TLS, "unprotected-target");
+refuses("ws://203.0.113.7:4222", "plaintext websocket cannot satisfy required TLS", WITH_TLS, "unprotected-target");
+refuses("ws://broker.example.com/mesh-ws", "a hostname cannot make ws encrypted", WITH_TLS, "unprotected-target");
+refuses("ws://100.64.0.1:4222", "overlay consent cannot waive required TLS", { ...WITH_TLS, allowUnencryptedOverlay: true }, "unprotected-target");
 refuses("nats://999.1.1.1:4222", "octet out of range is a hostname, not an IP", TODAY, "unprotected-target");
 
 // THE EPILOGUE IS THE GATE, AND IT DECIDES DIRECTLY — never through `check()`.

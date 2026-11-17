@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { CotalEndpoint, eventChannel, isAguiFramePart, isReachable, parsePrincipalKey, resolvePeer, seedChannelRegistry } from "@cotal-ai/core";
 import { RUN_ERROR_EGRESS_MESSAGE } from "@cotal-ai/connector-core";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { readLaunchRecord } from "../src/private-lifecycle.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor<T>(name: string, read: () => T | undefined | Promise<T | undefined>, timeoutMs = 20_000): Promise<T> {
@@ -34,7 +35,8 @@ const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+// Match source-checkout launches: the tsx CLI can kill its child after a 30 ms signal-ack window.
+const hostArgs = ["--import", import.meta.resolve("tsx"), host];
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
@@ -43,7 +45,7 @@ teardownOnSignal(nats);
 const hosts: ChildProcess[] = [];
 
 function spawnHost(opts: SpawnOptions): ChildProcess {
-  const proc = spawn(tsx, [host], { ...opts, detached: true });
+  const proc = spawn(process.execPath, hostArgs, { ...opts, detached: true });
   hosts.push(proc);
   return proc;
 }
@@ -680,6 +682,10 @@ try {
     !existsSync(relaySocket) && !existsSync(relayDir),
     { relaySocket, relayDir },
   );
+  // The seat home outlives the launch for its resume record, but its credential copies do not: the
+  // next launch mirrors them afresh (#5641).
+  check("a retired launch removes the credential copy it mirrored into the seat home",
+    !existsSync(join(peerHome, "auth.json")) && existsSync(join(inheritedJcodeHome, "auth.json")) && existsSync(peerHome));
 
   // A variant does not require an explicit model pin. The connector must still fetch RuntimeInfo and
   // verify the provider route that will receive the effort instead of treating the provider default
@@ -868,8 +874,19 @@ try {
       !modelOnlyConnectorLog.includes("model deepseek-v4-pro is served by provider"),
     modelOnlyConnectorLog,
   );
+  const modelOnlyLaunch = readLaunchRecord(managedHome("jcodehost", "modelonlypeer"));
+  check(
+    "the model-only stop targets the host directly rather than a signal wrapper",
+    modelOnlyLaunch !== undefined && modelOnlyLaunch.host.pid === modelOnly.pid,
+    { launchedPid: modelOnly.pid, hostPid: modelOnlyLaunch?.host.pid },
+  );
   await stopHostTree(modelOnly, "SIGTERM");
   check("the model-only lag launch exits cleanly", modelOnly.exitCode === 0, { code: modelOnly.exitCode, stderr: modelOnlyErr });
+  check(
+    "the model-only lag launch completes its own SIGTERM shutdown",
+    modelOnlyErr.includes("received SIGTERM; shutting down"),
+    modelOnlyErr,
+  );
 
   // A route the Harness API names with no provider publishes no provider key: absent, never
   // fabricated (#785).
@@ -928,7 +945,7 @@ try {
       FAKE_JCODE_RUNTIME_MODEL_LAG: "1",
       FAKE_JCODE_RUNTIME_PROVIDER: "active-provider",
       FAKE_JCODE_RUNTIME_ROUTES: JSON.stringify([
-        { model: "some-other-model", provider: "active-provider", api_method: "responses", available: true, detail: "wrong model" },
+        { model: "some-other-model", provider: "active-provider", api_method: "responses", available: true, detail: "PRIVATE_ROUTE_CANARY" },
       ]),
       JCODE_HOME: inheritedJcodeHome,
       COTAL_SPACE: "jcodehost",
@@ -963,6 +980,23 @@ try {
       !announced.has("missingroutepeer"),
     { missingRouteCode, missingRouteErr, requests: missingRouteRequests.map((entry) => entry.frame?.req), announced: [...announced] },
   );
+
+  check(
+    "model mismatch names the requested model, reported provider and unapplied effort",
+    missingRouteErr.includes('requested model "requested-route-model"') &&
+      missingRouteErr.includes('reported provider "active-provider"') &&
+      missingRouteErr.includes('requested tier "high" was not applied'),
+    missingRouteErr,
+  );
+  const missingRouteFatal = missingRouteErr.split("\n").find((line) => line.includes("fatal:"))!;
+  check("model mismatch distinguishes stale runtime identity from the requested pin",
+    missingRouteFatal.includes('reported model "deepseek-v4-pro"') &&
+      missingRouteFatal.includes("no matching model route was reported") &&
+      missingRouteFatal.includes("matching model routes: 0"), missingRouteFatal);
+  const missingRoutePersisted = connectorLog(managedHome("jcodehost", "missingroutepeer"));
+  check("model mismatch details persist in the private connector log", missingRoutePersisted.includes(missingRouteFatal));
+  check("model mismatch never prints private route details",
+    !missingRouteErr.includes("PRIVATE_ROUTE_CANARY") && !missingRoutePersisted.includes("PRIVATE_ROUTE_CANARY"));
 
   // #777 reproduction: Jcode can lock the first turn's tool snapshot before cotal connects. The
   // old host makes one proof turn and rejects this otherwise healthy launch before it can join.
@@ -1096,6 +1130,14 @@ try {
   await waitFor("ordinary dnd traffic buffered before kickoff", () =>
     busyActivity.includes("inbound: 1 automatic queued") ? busyActivity : undefined);
   check("ordinary dnd traffic does not start a turn while kickoff is held", !busyTurns().some((entry) => String(entry.frame?.content).includes(deferred)), busyTurns());
+  // #5688: the connector still owns that channel post, but a peek may read it now. The cell below
+  // that sees it reach the following turn is the proof the peek cleared nothing.
+  const deferredPeek = await callJcodeMcp(busyHome, busySocket, busyToken, { peek: true });
+  check(
+    "a peek shows the queued channel post before its turn and clears nothing",
+    !deferredPeek.isError && deferredPeek.text.includes(deferred) && deferredPeek.text.includes("peek: nothing cleared"),
+    deferredPeek,
+  );
   writeFileSync(busyRelease, "release");
   await waitFor("the external busy turn to become idle", () =>
     busyRead().find((entry) => entry.ev === "busy_after_readiness_status" && entry.status === "idle"));

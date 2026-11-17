@@ -1,0 +1,3 @@
+# A clean manager stop during a reconnect still releases its liveness lease, so a same-root restart
+# does not wait out the TTL (#3916).
+smoke:lease-release-reconnect

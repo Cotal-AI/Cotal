@@ -23,7 +23,7 @@ import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
 export type WorkspaceError =
   | { kind: "target"; error: MeshTargetError }
   | { kind: "preflight"; failure: PreflightFailure; target: MeshTarget; pruned: boolean; pid?: number; heldBy?: string }
-  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout"; server: string; hasAuth: boolean };
+  | { kind: "reachable"; reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported"; server: string; hasAuth: boolean };
 
 /** A workspace failure in two parts: what happened, and what to run next when there is something. */
 export interface WorkspaceErrorParts {
@@ -52,9 +52,9 @@ export function renderWorkspaceError(e: WorkspaceError): string {
   return `✗ ${message}${remedy === undefined ? "" : ` - ${remedy}`}`;
 }
 
-/** The step for a root whose stack runs under another Cotal home (`stackRunsUnderOtherHome`). */
+/** The step when the current home has no records of a root's running stack members. */
 export function stackHomeRemedy(): string {
-  return `run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}`;
+  return `if the records are in another home, run it with COTAL_HOME set to the Cotal home the stack was started under${process.env.COTAL_HOME ? `, or with COTAL_HOME unset if that was the default ${userCotalDir()}` : ""}; if that home's records were removed, run \`cotal down --dry-run\` in the stack's folder, then \`cotal down --yes\` to stop its creation-pinned members`;
 }
 
 /** "Which mesh" resolution failures — maps a {@link MeshTargetError}'s `{code, details}` to copy. */
@@ -62,7 +62,13 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
   const d = err.details;
   switch (err.code) {
     case "no-meshes":
-      return parts("no mesh running", "run `cotal up` in a project, or pass `--server`");
+      // A folder whose records name no space is not a mesh named the held default. Its next step
+      // prepares a space there, and names the team file in the folder when one declares a space.
+      if (d.root !== undefined && d.manifest !== undefined)
+        return parts(`no space is registered or prepared here for ${d.root}`, `${shellPath(d.manifest.path)} declares space ${shellPath(d.manifest.space)}; check it with \`cotal team check ${shellPath(d.manifest.path)}\`, prepare that space with \`cotal space create ${shellPath(d.manifest.space)} --root ${shellPath(d.root)}\`, then \`cotal team boot ${shellPath(d.manifest.path)}\` or \`cotal up -f ${shellPath(d.manifest.path)}\``);
+      if (d.root !== undefined)
+        return parts(`no space is registered or prepared here for ${d.root}`, `prepare a space with \`cotal space create <name> --root ${shellPath(d.root)}\`, or select one with \`cotal use <name>\``);
+      return parts("no mesh running", "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`");
     case "unknown-space":
       return d.selected
         ? parts(`the selected space "${boundedValue(String(d.requested), SHOWN_VALUE_MAX)}" is not registered here`, "select one with `cotal use <name>` (`cotal space` lists them), or name one with `--space`")
@@ -118,7 +124,7 @@ function targetErrorParts(err: MeshTargetError): WorkspaceErrorParts {
       if (d.lastRun) return parts(`the mesh${d.stackSpace === undefined ? "" : ` "${d.stackSpace}"`} in ${d.root} last ran at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid address"}, and no space is registered for it here`, `start it again with \`cotal up\` in ${d.root}`);
       return d.home === undefined
         ? parts(`the stack in ${d.root} recorded ${broker}, and no space is registered for it here`, `prepare it again with ${codeSpan(`cotal space create ${d.stackSpace ?? "<space>"} --root ${shellPath(d.root!)}`)}, then start it with \`cotal up\` there`)
-        : parts(`the stack in ${d.root} recorded ${broker} and runs under another Cotal home; ${d.home} holds no record of its members`, stackHomeRemedy());
+        : parts(`the stack in ${d.root} recorded ${broker}; its member records are missing from ${d.home}`, stackHomeRemedy());
     }
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable
@@ -153,7 +159,9 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")
-        return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, `start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`);
+        return parts(`no broker answered at ${server}; "${t.space}" is registered here but its mesh is not up`, t.origin === "catalog"
+          ? "start it where it runs, or remove it from the provider's catalog and run `cotal sync` to unregister it here"
+          : `start it where it runs, or \`cotal space forget ${t.space}\` to unregister it`);
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
@@ -175,6 +183,8 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
       return parts(`broker at ${server} requires auth, but this mesh is open (no trust material)`, "use `--space <name>` for an auth mesh, or run `cotal up` here without `--open`");
     case "stale-auth":
       return parts(`credentials for "${t.space}" have EXPIRED; this mesh enforces bounded credential lifetimes`, `run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`);
+    case "tls-unsupported":
+      return parts(`the listener at ${server} does not offer the required TLS`, "check the address and configure TLS on the broker");
     case "tls-trust":
       // INFO advertised tls_required (shape evidence only — unauthenticated). Never claims removal
       // or peer identity; conservatively keep the record and point at the trust-store repair.
@@ -211,7 +221,7 @@ function preflightFailureParts(kind: PreflightFailure, t: MeshTarget, pruned: bo
 /** Plain reachability for a RAW (off-registry) probe — the `--creds` / `--server`+unregistered-`--space`
  *  escape hatch, which never touches the registry (no prune, no stale-entry wording). */
 function reachableParts(
-  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
+  reason: "auth-required" | "stale-auth" | "unreachable" | "timeout" | "tls-unsupported",
   rawServer: string,
   hasAuth: boolean,
 ): WorkspaceErrorParts {
@@ -219,6 +229,7 @@ function reachableParts(
   if (reason === "stale-auth")
     return parts(`credential EXPIRED at ${server}; bounded lifetime reached (credential death)`, "run `cotal doctor auth` where the mesh runs, or re-mint the credential");
   if (reason === "unreachable") return parts(`can't reach a broker at ${server}`, "is it running? (`cotal up`)");
+  if (reason === "tls-unsupported") return parts(`the listener at ${server} does not offer the required TLS`, "check the address and configure TLS on the broker");
   if (reason === "timeout")
     return parts(`the broker at ${server} accepted the connection but is not answering: the connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s`, NOT_ANSWERING_REMEDY);
   // `auth-required` is two different user situations with two different repairs, and this path used

@@ -22,7 +22,7 @@
  * Needs `nats-server` on PATH. Run: pnpm smoke:presence-ttl-refresh-cli
  */
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { connect, nanos } from "@nats-io/transport-node";
 import { jetstreamManager, StorageType } from "@nats-io/jetstream";
@@ -218,7 +218,7 @@ try {
     if (!existsSync(join(root, ".cotal"))) {
       console.error(`  ! refusing \`cotal down\`: ${root} owns no .cotal, so the child would resolve elsewhere and could signal processes this suite never started`);
     } else {
-      const down = await cotal(["down"], 60_000);
+      const down = await cotal(["down", "--yes"], 60_000);
       // A timeout, a signal death and a launch failure all resolve here too — an unchecked await
       // would read every one of them as a successful stop.
       if (down.launchError || down.timedOut || down.signal) console.error(`  ! \`cotal down\` did not run cleanly: ${down.launchError ?? (down.timedOut ? "timed out" : String(down.signal))}`);

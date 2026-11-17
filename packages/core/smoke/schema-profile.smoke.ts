@@ -319,53 +319,26 @@ refuses("member $id collision is contract-invalid", () =>
     members: { [dA]: idA, [dB]: idB },
   }), "does not compile");
 
-// 15) THE OVERFLOW ITSELF (#1551): a wide but legal object schema — admitted by every ceiling
-// above — overflows the generated validator's call stack at compile, and the caller-facing error
-// must name the compiler's shape and the overflowing width, not the schema. The overflow's own
-// width is a function of THIS process's stack budget and frame depth (see the pin comment on
-// `AJV_PROFILE_OPTIONS`), so it cannot be reached deterministically in THIS process at a fixed
-// property count — a width chosen here would silently stop overflowing on a different host or
-// Node build. A CHILD PROCESS with a reduced `--stack-size` fixes both problems: the reduced
-// budget makes a modest width overflow every time, and the child is disposable, so nothing about
-// this process's own call depth leaks into the result.
-//
-// The smoke's existing 1000-property width (section 6b, admitted with the profile's real stack
-// budget) is re-run in the SAME child, at the SAME reduced budget, as a positive control: it must
-// still compile, so a failure at the larger width is provably about the WIDTH and not about the
-// reduced budget alone.
+// 15) Wide admitted schemas no longer generate nested validator code. Both widths must prepare
+// under the same reduced stack budget that overflowed the previous compiler.
 {
   const schemaProfileModule = fileURLToPath(new URL("../src/schema-profile.js", import.meta.url));
-  const overflowWidth = 2000; // ~2.3x the smoke's 1000-property control width
   const childScript = `
     import { compileContractSchema } from ${JSON.stringify(schemaProfileModule)};
-    function heavy(n) {
-      const props = {};
-      for (let i = 0; i < n; i++) props["p" + i] = { type: "string", pattern: "^a{0,4}b" + i + "c[0-9]{1,3}$", minLength: 1, maxLength: 40 };
-      return { type: "object", properties: props, additionalProperties: false };
-    }
-    compileContractSchema({ root: heavy(1000) });
-    console.log("CONTROL_1000_OK");
-    try {
-      compileContractSchema({ root: heavy(${overflowWidth}) });
-      console.log("OVERFLOW_DID_NOT_THROW");
-    } catch (e) {
-      console.log("OVERFLOW_MESSAGE " + JSON.stringify(e.message));
-      console.log("OVERFLOW_NAME " + e.constructor.name);
+    for (const n of [1000, 2000]) {
+      const properties = {};
+      for (let i = 0; i < n; i++) properties["p" + i] = { type: "string", pattern: "^a{0,4}b" + i + "c[0-9]{1,3}$", minLength: 1, maxLength: 40 };
+      const validate = compileContractSchema({ root: { type: "object", properties, additionalProperties: false } });
+      if (!validate({}) || validate({ p0: 1 })) throw new Error("wide validator verdict");
+      console.log("WIDTH_" + n + "_OK");
     }
   `;
   const child = spawnSync(process.execPath, ["--stack-size=256", "--import", "tsx", "-e", childScript], {
     encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL",
   });
-  const out = child.stdout ?? "";
-  ok("positive control: the smoke's 1000-property width still compiles at the reduced stack budget",
-    out.includes("CONTROL_1000_OK"), { status: child.status, stderr: child.stderr?.slice(0, 2000) });
-  ok(`a ${overflowWidth}-property object overflows the reduced stack deterministically`,
-    !out.includes("OVERFLOW_DID_NOT_THROW") && /OVERFLOW_MESSAGE/.test(out), out);
-  ok("the overflow names the compiler's generated-code shape, the overflowing width, and that every profile ceiling had already admitted the schema — not the caller's schema",
-    out.includes("OVERFLOW_NAME") && out.includes("ContractInvalidError")
-    && new RegExp(`generated validator's code shape overflowed.*compiling a ${overflowWidth}-property object.*every profile ceiling.*had already admitted`).test(out)
-    && !out.includes("document is") && !/is \d+ bytes \(profile max/.test(out) && !out.includes("nesting exceeds"),
-    out);
+  ok("both admitted widths prepare and validate at the reduced stack budget",
+    child.status === 0 && child.stdout.includes("WIDTH_1000_OK") && child.stdout.includes("WIDTH_2000_OK"),
+    { status: child.status, stderr: child.stderr });
 }
 
 // 16) Published service tables stay lazy without exposing replaceable command validators.
@@ -394,3 +367,4 @@ refuses("member $id collision is contract-invalid", () =>
 }
 
 console.log(`schema-profile.smoke: ${pass} checks passed`);
+await import("./schema-meta-cache.smoke.js");

@@ -17,7 +17,7 @@ import * as auth from "../../auth/dist/index.js";
 // The browser is `COTAL_SMOKE_BROWSER`, or the first Chromium-family binary on PATH. There is no
 // substitute for a real browser here, so a host without one refuses.
 if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href);
+  (await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href)).startExecutionProgram();
 } else {
   await main();
 }
@@ -282,7 +282,7 @@ async function main() {
     check("C27 the follow ignores them and returns A's own terminal for that goal, not B's forged success, and launches it once",
       hostile?.ok === false && hostile.responder === A && typeof hostile.code === "string" && hostile.code !== "succeeded" && hostile.errorOutcome !== "unknown"
         && !JSON.stringify(first.hostile).includes("forged") && first.launches?.decoy === 1, [first.hostile, first.launches]);
-    check("C24 a command the person's view does not carry (ps) is a broker refusal before any effect, not unavailable",
+    check("C24 a command the person's view does not carry (slots) is a broker refusal before any effect, not unavailable",
       err(first.notGranted)?.code === "permission-denied" && err(first.notGranted)?.outcome === "not-executed" && err(first.notGranted)?.unanswered === false, first.notGranted);
   } finally {
     if (chrome && chrome.exitCode === null) await killAndAwaitExit(chrome, "SIGKILL");

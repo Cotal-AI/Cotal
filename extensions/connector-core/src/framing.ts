@@ -71,9 +71,11 @@ export function attributionSafe(s: string): string {
   return peerLabel({ name: s });
 }
 
-/** A message's sender, by the label every other surface prints for that peer. */
+/** A message's sender, by the label every other surface prints for that peer. A blank name is not a
+ *  name: the frame uses the sender's id, and a role still follows it. */
 export function fmtFrom(i: InboxItem): string {
-  return peerLabel({ name: i.fromName, role: i.fromRole });
+  const name = i.fromName.trim() ? i.fromName : i.fromId;
+  return peerLabel({ name, ...(i.fromRole ? { role: i.fromRole } : {}) });
 }
 
 /**
@@ -120,6 +122,9 @@ function formatItem(i: InboxItem, metadata = ""): string {
     ? `(broker redelivery, delivery ${i.deliveryCount}: prior model handoff unknown) `
     : "";
   const body = `${metadata}${h}${r}${fmtBody(i.text)}`;
+  // A notice is the mesh's own word about something this session sent, checked against the delivery
+  // lease, so it is labelled as that and not as a peer's DM that wants an answer.
+  if (i.notice) return `[${i.notice} notice from the delivery daemon] ${body}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
   return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;

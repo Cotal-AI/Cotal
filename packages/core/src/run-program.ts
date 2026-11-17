@@ -26,7 +26,8 @@ export interface RunProgramValue {
   readonly at: number;
 }
 
-function parseProgram(raw: unknown, key: string): RunProgramValue {
+/** Validate a stored program read by either a point read or a batched inventory. */
+export function parseRunProgram(raw: unknown, key: string): RunProgramValue {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw))
     throw new EpEnvelopeError("internal", `run program ${key} is not an object; garbled state never authorizes`);
   const o = raw as Record<string, unknown>;
@@ -78,5 +79,5 @@ export async function recordRunProgram(
 export async function readRunProgram(kv: KV, endpoint: string, runId: string): Promise<RunProgramValue | undefined> {
   const key = recordAtomicKey(RECORD_KINDS.program, [endpoint, runId]);
   const read = await readAtomicRecord(kv, RECORD_KINDS.program, [endpoint, runId]);
-  return read === undefined ? undefined : parseProgram(read.value, key);
+  return read === undefined ? undefined : parseRunProgram(read.value, key);
 }

@@ -8,7 +8,7 @@ import {
   epcStreamName, epeStreamName, epfStreamName, epjStreamName, eprStreamName,
   eptStreamName, eptReqStreamName, epwStreamName,
   channelBucket, presenceBucket, membershipBucket, deliveryBucket, managerBucket,
-  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, transferBucket, objectStoreStream,
+  membersBucket, aclBucket, epAuthBucket, recordsBucket, sessionsBucket, anycastBucket, transferBucket, objectStoreStream,
   type Profile, type MintOpts, type MintPrincipal, type EpCapability,
 } from "@cotal-ai/core";
 import { calloutPermissions } from "../../src/permissions.js";
@@ -60,6 +60,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     delivery: () => one("delivery"), "membership-rw": () => one("membership-rw"),
     probe: () => one("probe"), "channel-writer": () => one("channel-writer"), "channel-purger": () => one("channel-purger"),
     teardown: () => one("teardown"), "issued-store-recreate": () => one("issued-store-recreate"),
+    "membership-store-recreate": () => one("membership-store-recreate"),
     "control-caller-privileged": () => one("control-caller-privileged"),
     "control-caller-admin": () => one("control-caller-admin"),
     deployer() { one("deployer"); one("deployer", { controlTier: "privileged" }, "privileged-tier"); },
@@ -195,6 +196,8 @@ export function streamSubjects(space: string): Record<string, string> {
     [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),
     [`KV_cotal_admission_${space}`]: kv(`cotal_admission_${space}`),
     [`KV_${sessionsBucket(space)}`]: kv(sessionsBucket(space)),
+    // Anycast request records. A raw read of this bucket is modelled like the other issued stores.
+    [`KV_${anycastBucket(space)}`]: kv(anycastBucket(space)),
     // The census instance's transfer bucket (SPEC 8): its writer and reader read it raw.
     [objectStoreStream(transferBucket(space, CENSUS_INSTANCE))]: `$O.${transferBucket(space, CENSUS_INSTANCE)}.>`,
   };
@@ -227,7 +230,7 @@ export function writeAndRawReadStreams(permissions: Record<string, unknown>, spa
   return [...rawRead].filter(writable).sort();
 }
 
-/** True when a publish grant row lands anywhere inside a stream's captured subject space. */
+/** True when a publish grant covers the stream's subjects. One key inside the stream does not. */
 function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
   const prefix = streamPattern.replace(/\.>$/, "").split(".");
   const row = grantRow.split(".");
@@ -236,7 +239,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
     if (row[i] === ">") return true;
     if (row[i] !== "*" && prefix[i] !== "*" && row[i] !== prefix[i]) return false;
   }
-  return true;
+  return row[prefix.length] === ">" || row[prefix.length] === "*";
 }
 
 /**
@@ -261,6 +264,9 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
   // The registry's reads: the evidence store stream-wide, so never a peer's.
   "registry-reader",
+  // The operator/embedding host holds this one-shot credential only for a stopped-space
+  // derived-store conversion. Its exact stream DELETE authority never belongs to a peer.
+  "membership-store-recreate",
   // Manager-only infrastructure duties, like remote-manager. This classification is not
   // an isolation proof; host admission and the child UID boundary remain separate requirements.
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",

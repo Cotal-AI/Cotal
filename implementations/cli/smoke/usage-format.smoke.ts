@@ -5,7 +5,9 @@
  * `usage:` line or a lowercase "refusing to clean store without --force"; and `help service nosuch`
  * refused without listing the subcommands. A missing `--yes` is the exception: its refusal and remedy
  * are the whole fix, so it prints without the help. A mistyped word that is near a command, leading
- * flag, subcommand or option names it. Under `--plain` or a locale without UTF-8, which have no
+ * flag, subcommand or option names it. A leading flag typed with a typographic dash, as `––json
+ * status`, is refused naming the flag with hyphens, as it is after the command word; it was an
+ * unknown command. Under `--plain` or a locale without UTF-8, which have no
  * refusal mark, the error is the classified report instead, still followed by the help; it used to
  * print the `✗` mark under `--plain` and the `!` warning mark under such a locale.
  *
@@ -118,6 +120,22 @@ for (const typed of ["\u2014json", "\u2212\u2212json", "\u2013json"]) {
   const r = run(["status", typed]);
   check(`${typed} is refused as a typographic dash, naming --json`, usageShape(r, /starts with a typographic dash/) && /type the option with hyphens: --json/.test(r.stderr), shown(r));
 }
+// Before the command word the same word was an unknown command: `––json status` got no suggestion
+// and `−−version` was offered the version command.
+for (const [args, flag] of [
+  [["\u2013\u2013json", "status"], "--json"],
+  [["\u2212\u2212version"], "--version"],
+  [["\u2013\u2013plain", "status"], "--plain"],
+  [["\u2013no-input", "status"], "--no-input"],
+  [["\u2014json", "status"], "--json"],
+] as const) {
+  const r = run([...args]);
+  check(`${args.join(" ")} is refused as a typographic dash before the command word, naming ${flag}`, r.status === 1 && r.stdout === ""
+    && r.stderr.startsWith(`✗ ${args[0]} starts with a typographic dash, so it is not an option\n  type the option with hyphens: ${flag}\n`) && !/unknown command|did you mean/.test(r.stderr), shown(r));
+}
+const leadingBogus = run(["\u2013\u2013bogus", "status"]);
+check("control: a leading typographic-dash word that names no leading flag is an unknown command", leadingBogus.status === 1
+  && leadingBogus.stderr.startsWith("✗ unknown command: \u2013\u2013bogus - run `cotal help` to list commands"), shown(leadingBogus));
 
 const missing = run(["space", "create"]);
 check("a missing argument a command checks has the same shape", usageShape(missing, /space create/), shown(missing));
@@ -150,6 +168,9 @@ for (const args of [["space", "create", "--help"], ["history", "general", "--hel
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
 
+const createHelp = run(["space", "create", "--help"]);
+check("space create help documents adopt in usage and options", createHelp.status === 0 && /Usage\n[^\n]*\[--adopt\]/.test(createHelp.stdout) && /--adopt\s+create: take over the stack journal a copied or moved project folder holds/.test(createHelp.stdout), shown(createHelp));
+
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [
   [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
@@ -168,7 +189,7 @@ for (const [args, usage, foreign] of [
 // before `<file>`, in the refusal line and under `--plain` in its Next.
 {
   const root = join(home, "wide-next");
-  mkdirSync(root);
+  mkdirSync(root, { mode: 0o700 });
   const created = run(["space", "create", "widenext", "--root", root]);
   const at80 = async (args: string[], ptyEnv: Record<string, string> = env as Record<string, string>): Promise<string[]> => {
     let out = "";
@@ -430,6 +451,9 @@ check("under a locale without UTF-8 an unknown command is the report, with no wa
 // A missing --yes outside a terminal is not a grammar mistake: the refusal and a remedy that names
 // --yes are the whole fix, so the command's help is left out, as `down` already did.
 const project = join(home, "proj");
+mkdirSync(project, { mode: 0o700 });
+const confirmationSpace = run(["space", "create", "confirmation", "--root", project]);
+check("confirmation refusals use a prepared local space", confirmationSpace.status === 0, shown(confirmationSpace));
 mkdirSync(join(project, ".cotal", "agents"), { recursive: true });
 writeFileSync(join(project, ".cotal", "agents", "p1.md"), "---\nname: p1\n---\nhello\n");
 const confirmShape = (r: ReturnType<typeof run>, message: RegExp, remedy: string) =>

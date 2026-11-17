@@ -183,10 +183,10 @@ try {
   });
   await cell("the isolated path refuses a foreign owner without local remint or holder replacement", async () => {
     if (target === "executor") {
-      await assert.rejects((m as unknown as { withEndpointServeExecutor(fn: () => Promise<void>): Promise<void> }).withEndpointServeExecutor(async () => {}), /another owner/);
+      await assert.rejects((m as unknown as { withEndpointServeExecutor(fn: () => Promise<void>): Promise<void> }).withEndpointServeExecutor(async () => {}), /not serve principal/);
     } else {
       const label = target === "serve" ? "service endpoint" : "goal-writer";
-      assert.ok(await until(() => logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*another owner`).test(l)), 7_000), `${label} close handler did not surface host refusal`);
+      assert.ok(await until(() => logged.some((l) => new RegExp(`manager ${label} re-dial attempt failed: .*not serve principal`).test(l)), 7_000), `${label} close handler did not surface host refusal`);
     }
     assert.ok(refusals >= 1, "issuer must refuse first request");
     assert.equal(m.remoteExecutorCreds, initial.executor, "last-good executor must remain held");

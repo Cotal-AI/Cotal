@@ -261,7 +261,7 @@ try {
     let thrown = "";
     try {
       try { await s1!.bearer(); } catch (e) { thrown = e instanceof Error ? e.message : String(e); }
-      c.check("L5 the pull fails and state is unavailable", thrown !== "" && s1!.state().state === "unavailable", { thrown, state: s1!.state() });
+      c.check("L5 the pull fails without blaming the store", thrown !== "" && s1!.state().state === "unavailable" && !("cause" in s1!.state()), { thrown, state: s1!.state() });
       c.check("L5 the error carries no token", !jwtLike.test(thrown));
     } finally { doorDown = false; }
     const b = await s1!.bearer(); tokensSeen.push(b);
@@ -365,20 +365,20 @@ try {
     };
     const onRecord = (k: string) => k.includes("/service-renewal/");
     const gotErr = await fail(() => { clientStore.get = async (k) => { if (onRecord(k)) throw new Error(marker); return get(k); }; });
-    const stGet = s.state().state;
+    const stGet = s.state();
     const putErr = await fail(() => { clientStore.put = async (k, v) => { if (onRecord(k)) throw new Error(marker); return put(k, v); }; });
-    const stPut = s.state().state;
+    const stPut = s.state();
     const { key: k, ...rec } = (await recordOf(eight.witness))!;
     clientStore.values.set(k, `not-json ${marker}`);
     let corrupt = "";
     try { await s.bearer(); } catch (e) { corrupt = e instanceof Error ? e.message : String(e); }
-    const stCorrupt = s.state().state;
+    const stCorrupt = s.state();
     clientStore.values.set(k, JSON.stringify(rec));
     const texts = [gotErr, putErr, corrupt];
     c.check("L13 3 failures, each rejected with fixed text (no store or record bytes)", texts.every((t) => t !== "" && !t.includes(marker) && !t.includes("not-json")), texts);
-    c.check("L13 each failure leaves the source unavailable, not idle or current", stGet === "unavailable" && stPut === "unavailable" && stCorrupt === "unavailable", { stGet, stPut, stCorrupt });
+    c.check("L13 each failure identifies the store without ending the source", [stGet, stPut, stCorrupt].every((st) => st.state === "unavailable" && st.cause === "store"), { stGet, stPut, stCorrupt });
     tokensSeen.push(await s.bearer());
-    c.check("L13 with the store and record restored, the same source recovers under the same ids", s.state().state === "current" && await count(ep, eight.instanceId, "renew") === 1);
+    c.check("L13 with the store and record restored, the same source recovers under the same ids", s.state().state === "current" && !("cause" in s.state()) && await count(ep, eight.instanceId, "renew") === 1);
   });
 
   await cell("L8 close aborts a pull in flight and rejects new pulls", async () => {

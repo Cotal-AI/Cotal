@@ -17,9 +17,9 @@ const WATCH = { pollMs: 10_000, graceMs: 60_000 };
 
 /** What the person decided about a bound conversation's pending request. `id` is the approval the
  *  conversation already holds; an approved request is finished with `cotal_connect` and that id. */
-export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired"; id: string }
+export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired" | "refused"; id: string }
 
-export interface AppHostOptions {
+interface AppHostOptions {
   cotal: () => readonly string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -32,7 +32,7 @@ export interface AppHostOptions {
   watch?: typeof WATCH;
 }
 
-export interface AppHost extends GatewayHost {
+interface AppHost extends GatewayHost {
   closeAll(): Promise<void>;
   nativeEvent(event: Record<string, unknown>): Promise<void>;
   sessionFor(id: string): string | undefined;
@@ -53,7 +53,7 @@ interface Held {
 
 type Reply = { ok: true; env: Record<string, string>; retire?: { dir: string }; grant?: ConversationGrant }
   | ({ ok: false; pending: true } & ConversationPending)
-  | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused" };
+  | { ok: false; pending?: false; taken?: true; error?: string; refused?: "denied" | "expired" | "refused"; retryable?: boolean };
 
 /** A bound session's request the person has not decided. The host replays it until the authority
  *  records a decision, the request expires, or the session ends; an issued identity waits here,
@@ -98,6 +98,9 @@ export function createAppHost(o: AppHostOptions): AppHost {
   const bindings = new Map<string, NativeBinding>();
   const pending = new Map<string, string>();
   const watches = new Map<string, Watch>();
+  // A native refusal notice carries no server text. Reading its approval handle returns this
+  // saved explanation without issuing another request or asking for another approval.
+  const refusals = new Map<string, { name: string; id: string; error: string }>();
   const watch = o.watch ?? WATCH;
   let opening: Promise<unknown> = Promise.resolve();
   /** Every CLI provision runs alone: a replay and a `cotal_connect` for one session share a record lock. */
@@ -164,9 +167,11 @@ export function createAppHost(o: AppHostOptions): AppHost {
         tell(session, w, "approved");
         return;
       }
-      if (reply && !reply.ok && !reply.pending && reply.refused) {
+      if (reply && !reply.ok && !reply.pending && (reply.refused || reply.retryable === false)) {
         stopWatch(session);
-        tell(session, w, reply.refused === "expired" ? "expired" : "denied");
+        const status = reply.refused === "denied" || reply.refused === "expired" ? reply.refused : "refused";
+        if (status === "refused") refusals.set(session, { name: w.name, id: w.approval.id, error: reply.error ?? "The mesh refused this connection. No automatic retry will be made." });
+        tell(session, w, status);
         return;
       }
       if (reply && !reply.ok && reply.pending) w.approval = reply.approval;
@@ -189,8 +194,17 @@ export function createAppHost(o: AppHostOptions): AppHost {
     w.timer.unref();
   };
   const open = async (name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection> => {
+    // The native hook binds this conversation before the connect call. It does not put the session
+    // into the call's arguments: a host that blocks a hook for changing tool input would refuse the
+    // first connect. One bound session is this server's conversation. More than one is not a guess.
+    if (context === undefined && bindings.size === 1) context = bindings.keys().next().value;
     const binding = context ? bindings.get(context) : undefined;
     if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
+    const refusal = context ? refusals.get(context) : undefined;
+    if (approvalId !== undefined && refusal) {
+      if (refusal.id !== approvalId || refusal.name !== name) throw new Error("approval_id does not name this conversation's refused request");
+      throw new Error(refusal.error);
+    }
     // approval_id resumes only this conversation's own pending request. It proves nothing: the CLI
     // replays the saved request and the authority's record decides.
     const watched = context ? watches.get(context) : undefined;
@@ -219,14 +233,15 @@ export function createAppHost(o: AppHostOptions): AppHost {
         catch (error) { pending.set(context!, watched.issued); throw error; }
       }
     }
+    if (context) refusals.delete(context);
     const reply = await plumbing(args);
     if (!reply.ok) {
       if (reply.pending) {
         // A bound session can be told the decision, so the host follows the request for it.
         if (binding) startWatch(binding.session, name, args, reply.approval);
-        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed });
+        throw new ApprovalRequired({ requestId: reply.requestId, approval: reply.approval, proposed: reply.proposed }, space);
       }
-      if (reply.refused && binding) stopWatch(binding.session);
+      if ((reply.refused || reply.retryable === false) && binding) stopWatch(binding.session);
       if (reply.taken) throw new NameTaken(name);
       throw new Error(reply.error ?? "identity provisioning failed");
     }
@@ -322,6 +337,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       }
       if (event.hook_event_name === "SessionEnd") {
         bindings.delete(session);
+        refusals.delete(session);
         // The conversation that could claim an issued identity is gone: retire it exactly. A request
         // still pending stays saved; the CLI finishes it before this session's next request.
         const w = stopWatch(session);
@@ -332,6 +348,7 @@ export function createAppHost(o: AppHostOptions): AppHost {
       }
     },
     async closeAll() {
+      refusals.clear();
       for (const session of [...watches.keys()]) stopWatch(session);
       const results = await Promise.allSettled([...held.keys()].map(close));
       if (results.some((r) => r.status === "rejected") || pending.size)

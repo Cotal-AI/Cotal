@@ -29,6 +29,30 @@ and rebuilt. A clean connector stop clears both states locally.
 If a binding fails after transport connection, the endpoint closes the partial
 connection. Both states become false before the connector retries.
 
+`EndpointOptions.beforeBind` is an optional asynchronous admission check. Each bind awaits it before
+presence registration, consumers and readiness. A rejection closes the partial connection.
+`onConnection` remains a synchronous notification that the transport opened.
+
+When events are enabled, `MeshAgent.start()` checks the selected root's acknowledged transcript state.
+A zero local frontier with retained events from that principal blocks the event plane. The launch
+refuses only when the space requires events. Where events are optional the seat starts and
+`connectionIssue` keeps the reason, the same outcome as an event plane that stops after startup.
+Reuse the previous state root or choose a new principal to publish again. Successful initial
+validation is retained across reconnects; the emitter's existing compare-and-set checks still detect
+concurrent writers.
+
+For managed user-auth launches with events enabled, the manager applies this same check before
+launching. Persona-derived names skip an incompatible retained transcript and take the next suffix.
+A pinned name or a failed state/count read refuses before launch. The spawn reply carries the
+name that was allocated.
+
+This manager check applies only when the manager launches on its own state root and knows the
+user owner. Delegated runtimes keep their existing destination-side startup check.
+On an older host that does not grant CHAT `STREAM.INFO`, the manager logs the missing permission
+and launches the selected name unchanged. It does not infer a free name from that denial.
+The agent still checks its own transcript state and can refuse as before. Other state or count
+read failures refuse the spawn.
+
 The endpoint's `transport` event reports state changes. It does not replay earlier
 events to a listener added later. A connector reads `transportConnected` for the
 current state and subscribes to the event for later changes.
@@ -45,6 +69,16 @@ Concurrent triggers join that rebuild instead of opening parallel connections.
 A failed post-connect bind closes its partial transport before another attempt begins.
 Unacknowledged durable messages remain eligible for redelivery after the endpoint rebinds.
 `cotal_reconnect` requests this recovery manually.
+When channel drop tracking is exhausted, reconnect reports transport recovery and the
+channel degradation that remains. Ambient channel traffic stays suppressed until the
+session restarts. Direct messages and anycast remain available, and fresh mentions on
+unmuted channels wake the session to pull their buffered bodies with `cotal_inbox`.
+
+On an authenticated mesh a session binds the DM durable its launch created and cannot create one.
+If a broker outage or restore loses that durable, every rebind fails with `dm-durable-missing`.
+`cotal_reconnect` and `connectionIssue` then name the missing durable and the recovery: restart the
+session, or respawn it if a manager launched it. The new launch creates a new durable.
+An open mesh session recreates its own durable when it rebinds.
 
 ## Reply correlation
 
@@ -96,10 +130,29 @@ Each CLI, connector, or web renderer owns its wording. Compact maps and DM picke
 `cotal ps`, `cotal endpoints`, `cotal console`, `cotal join`, and `cotal_roster` show reported conditions with their ages and the age of `activeAt`.
 The last four also show the age of `statusSince` and date the activity separately through `activitySince`.
 Changing status does not make an old activity recent.
+
+Connectors relay harness work into the existing presence `activeAt` timestamp, independently of the optional event plane:
+
+| Connector | Work events |
+| --- | --- |
+| Claude Code | Main-session prompt submission, tool start, completed tool batch, and successful turn end |
+| Codex | Turn start, item start and completion, assistant and reasoning deltas, and command or file-change output |
+| OpenCode 1.x | Busy events, text, reasoning and tool part updates during the owned turn, and tool starts |
+| OpenCode 2.x | Owned execution starts, completed model steps, and tool starts |
+| Hermes | Model-call start and completion, and tool starts |
+| Jcode | Native session work events, including tokens and tools |
+| pi | Agent start, assistant text, thinking and tool-call deltas, and tool execution start, output and completion |
+
+A heartbeat, notification, retry status or session reset does not advance this timestamp.
+Connectors with only boundary hooks cannot report tokens between those boundaries.
+An old `activeAt` dates the last reported work; it cannot distinguish a slow provider from a hung one.
+Missing means no work event was reported. The existing progress wording remains unchanged.
+
 The shared timestamp rules are in the [CotalEndpoint reference](embedding-endpoints.mdx#presence-metadata).
 Each printed condition code or activity stays on one line, escapes control characters and line separators as `\uXXXX`, and is limited to 200 characters.
 
 `cotal_orientation` and `cotal_roster` read presence on demand.
+A present peer whose name is only whitespace is named by id on the orientation card.
 If that read fails, both say `presence read failed` with its reason and label the retained roster last-known.
 A missing name in that result does not prove absence. These seat tools do not depend on an always-on presence watcher.
 Actual presence watchers retain their own current, unpopulated, and stale states.
@@ -119,15 +172,16 @@ An unknown name after a successful read receives the ordinary unknown-peer refus
 ## Send receipts [#send-receipts]
 
 A stored sequence proves broker acceptance, without confirming receipt or completed work.
-`cotal_dm` includes the sequence, the recipient's roster status immediately before publication, and `delivery not confirmed`.
-The status can be `idle`, `waiting`, `working`, or `offline`.
-When offline, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
+`cotal_dm` names the recipient, says other agents can't read the DM, and points what others could use at the task's channel.
+It reads the recipient's roster status immediately before publication.
+It uses that observation for offline and unrostered warnings; the success text does not include the stored sequence or a full roster-status report.
+When that status is `offline`, `cotal_dm`, `cotal send -t`, `cotal chat`, `cotal join`, and the console explain that the DM waits for the recipient to reconnect.
 The same lifecycle receives it after reconnect. A new spawn under the same name does not inherit that inbox.
 Retention and the lifecycle interval still bound delivery.
 
 A one-shot sender such as `cotal send` can send a DM without joining the roster.
 A reply to that authenticated sender is stored under its ID even if no inbox ever reads it.
-`cotal_dm` describes this case with `recipient had no roster row at send`.
+`cotal_dm` says the recipient `has no roster row` and that the DM may never reach an inbox.
 Storage, status at send, and eventual inbox delivery are separate facts.
 [`cotal deliver pending`](cli-services.mdx#deliver) inspects the recipient's pending DM durable.
 The [NATS binding](../SPEC.md#8-nats--jetstream-binding) defines lifecycle-scoped consumers and retention.

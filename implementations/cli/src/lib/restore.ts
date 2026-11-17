@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { drainAndClose } from "@cotal-ai/core";
 import {
   constants,
   fsyncSync,
@@ -16,10 +17,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  anycastStoreDefinition,
   canonicalBackupStreamConfig,
-  chatHistoryLimitOf,
-  chatHistoryRestoreStaging,
-  chatStream,
+  historyLimitOf,
+  historyLimitRestoreStaging,
+  historyLimitStreamOf,
   consumerConfigFromCheckpoint,
   deliveryBucket,
   downloadStreamSnapshot,
@@ -32,7 +34,6 @@ import {
   membershipStoreDefinition,
   PRESENCE_STORAGE,
   presenceBucket,
-  recordsBucket,
   recreateConsumerCheckpoint,
   spaceBackupInventory,
   uploadStreamRestoreChunk,
@@ -44,9 +45,10 @@ import {
   createEndpointStreams,
   ensureArtifactStore,
   hardenedAuthorityStreamNames,
-  setChatHistoryLimit,
+  setHistoryLimit,
   wfjStreamName,
-  type ChatHistoryLimit,
+  type HistoryLimit,
+  type HistoryLimitStream,
 } from "@cotal-ai/core";
 import {
   CommandFailure,
@@ -65,6 +67,7 @@ import {
   prepareAlternateRestore,
   prepareMissingSourceRestore,
   prepareSamePathRestore,
+  rearmUnboundRestoreCommitIntent,
   localProcessOwnerStatus, parsePositiveIntegerFlag, readMaintenanceJournal, restoreLeftOut, restoreOtherAccounts, restoreReplacedNewerCut, restoreRolledBackRuns, storeAccounts,
   readMaintenanceResumeDocument,
   recordRestoreAttemptResources,
@@ -86,7 +89,7 @@ import {
   type ProcessOwner,
   type RestoreActiveRecord,
   type RestoreDegradedRecord,
-  type RestoreListenerProof,
+  type ListenerProof,
   type RestoreManagerCommittedRecord,
   type RestoreReadyRecord,
   readStoreIdentity,
@@ -149,7 +152,7 @@ export interface PreparedRestore {
   reentry: boolean;
   journalState: "commit-intent" | "manager-committed" | "active" | "degraded";
   managerCommit?: ManagerCommitEvidence;
-  listenerProof?: RestoreListenerProof;
+  listenerProof?: ListenerProof;
   cleanupStage(): void;
 }
 
@@ -214,7 +217,9 @@ export function rehydratePreparedRestore(root: string, journal: RecoverableResto
     inventory: resume.inventory,
     serverName,
     serverNonce,
-    reentry: !replacementPending,
+    // Only a bound listener is adopted or replaced. With none bound, the attempt starts its listener,
+    // the first one under its launch identity (#7127).
+    reentry: Boolean(journal.listenerProof),
     journalState: journal.state,
     ...(journal.state !== "commit-intent" && journal.managerCommit ? { managerCommit: journal.managerCommit } : {}),
     ...(journal.listenerProof ? { listenerProof: journal.listenerProof } : {}),
@@ -233,13 +238,13 @@ export function bindPreparedRestoreListener(
   prepared: PreparedRestore,
   processOwner: ProcessOwner,
   heldLock?: MaintenanceLock,
-): RestoreListenerProof {
+): ListenerProof {
   const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
   try {
     const journal = readMaintenanceJournal(prepared.root);
     if (!journal || journal.state !== "commit-intent" || journal.restore.attemptId !== prepared.attemptId)
       throw new Error(`restore listener bind does not match commit attempt ${prepared.attemptId}`);
-    const proof: RestoreListenerProof = {
+    const proof: ListenerProof = {
       attemptId: prepared.attemptId,
       serverName: prepared.serverName,
       serverNonce: prepared.serverNonce,
@@ -266,6 +271,18 @@ export function replacePreparedDeadRestoreListener(prepared: PreparedRestore, he
     prepared.listenerProof = undefined;
     prepared.journalState = "commit-intent";
     prepared.reentry = false;
+  } finally {
+    if (!heldLock) releaseMaintenanceLock(lock);
+  }
+}
+
+/** Return a restore with no bound listener to commit intent before its listener starts (#7127). The
+ *  caller has proved that no listener this attempt spawned still runs. */
+export function rearmUnboundRestore(prepared: PreparedRestore, heldLock?: MaintenanceLock): void {
+  const lock = heldLock ?? acquireMaintenanceLock(prepared.root);
+  try {
+    rearmUnboundRestoreCommitIntent(lock);
+    prepared.journalState = "commit-intent";
   } finally {
     if (!heldLock) releaseMaintenanceLock(lock);
   }
@@ -465,8 +482,9 @@ async function validateManifest(
 type RestorePass = "quarantine" | "target";
 
 /** Smoke hook: `COTAL_SMOKE_FAIL_RESTORE_STREAM=<stream>` fires on any pass; `<pass>:<stream>`
- *  fires only on that pass (so the target pass is reachable after quarantine succeeded). */
-function smokeFailRestoreStream(pass: RestorePass, stream: string): boolean {
+ *  fires only on that pass (so the target pass is reachable after quarantine succeeded), and
+ *  `age:<stream>` as the restore applies that stream's recorded age. */
+function smokeFailRestoreStream(pass: RestorePass | "age", stream: string): boolean {
   const spec = process.env.COTAL_SMOKE_FAIL_RESTORE_STREAM;
   if (!spec) return false;
   const separator = spec.indexOf(":");
@@ -474,11 +492,12 @@ function smokeFailRestoreStream(pass: RestorePass, stream: string): boolean {
   return spec.slice(0, separator) === pass && spec.slice(separator + 1) === stream;
 }
 
-/** The chat history limit the backup recorded, when `record` is the chat stream's. Every restore
- *  check holds that stream at {@link chatHistoryRestoreStaging} of it, which keeps the recorded
- *  count and sets no age, so nothing expires while the restored state is compared. */
-function recordedChatHistory(space: string, record: BackupManifest["streams"][number]): ChatHistoryLimit | undefined {
-  return record.stream === chatStream(space) ? chatHistoryLimitOf(record.config) : undefined;
+/** The history limit the backup recorded, when `record` is CHAT's, INBOX's, DLV's or DM's. Every
+ *  restore check holds that stream at {@link historyLimitRestoreStaging} of it, which keeps the
+ *  recorded count and sets no age, so nothing expires while the restored state is compared. */
+function recordedHistoryLimit(space: string, record: BackupManifest["streams"][number]): { kind: HistoryLimitStream; limit: HistoryLimit } | undefined {
+  const kind = historyLimitStreamOf(space, record.stream);
+  return kind && { kind, limit: historyLimitOf(record.config) };
 }
 
 async function restoreStream(
@@ -488,7 +507,7 @@ async function restoreStream(
   pass: RestorePass,
   stream: BackupManifest["streams"][number],
 ): Promise<void> {
-  const recorded = recordedChatHistory(space, stream);
+  const recorded = recordedHistoryLimit(space, stream);
   const initLogin = await broker.addLogin({
     profile: "restore",
     scope: { operation: "initiate", stream: stream.stream },
@@ -500,12 +519,12 @@ async function restoreStream(
       init,
       space,
       stream.stream,
-      canonicalBackupStreamConfig(space, stream.stream, recorded && chatHistoryRestoreStaging(recorded)),
+      canonicalBackupStreamConfig(space, stream.stream, recorded && historyLimitRestoreStaging(recorded.kind, recorded.limit)),
       stream.state as unknown as Readonly<Record<string, unknown>>,
       RESTORE_TIMEOUT_MS,
     );
   } finally {
-    await init.drain().catch(() => {});
+    await drainAndClose(init).catch(() => {});
   }
   const uploadLogin = await broker.addLogin({
     profile: "restore",
@@ -523,11 +542,11 @@ async function restoreStream(
       await uploadStreamRestoreChunk(upload, session, buffer.subarray(0, count), RESTORE_TIMEOUT_MS);
     }
     const restored = await finalizeStreamRestore(upload, session, RESTORE_TIMEOUT_MS);
-    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config, { restoreStagingFor: recorded });
+    validateCanonicalBackupStreamConfig(space, stream.stream, restored.config, { restoreStagingFor: recorded?.limit });
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, restored.state as unknown as Readonly<Record<string, unknown>>);
   } finally {
     closeSync(fd);
-    await upload.drain().catch(() => {});
+    await drainAndClose(upload).catch(() => {});
   }
 }
 
@@ -565,12 +584,12 @@ async function sanitizeStreamSnapshot(
         }
       },
     });
-    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config, { restoreStagingFor: recordedChatHistory(space, stream) });
+    validateCanonicalBackupStreamConfig(space, stream.stream, metadata.config, { restoreStagingFor: recordedHistoryLimit(space, stream)?.limit });
     assertRestoredState(stream.stream, stream.state as unknown as Readonly<Record<string, unknown>>, metadata.state as unknown as Readonly<Record<string, unknown>>);
     fsyncSync(fd);
   } finally {
     closeSync(fd);
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
@@ -594,30 +613,30 @@ async function validateRestoredStream(
     };
     if (info.error) throw new Error(info.error.description ?? `${record.stream} validation failed`);
     if (!info.config || !info.state) throw new Error(`${record.stream} validation returned an incomplete response`);
-    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>, { restoreStagingFor: recordedChatHistory(space, record) });
+    validateCanonicalBackupStreamConfig(space, record.stream, info.config as unknown as Record<string, unknown>, { restoreStagingFor: recordedHistoryLimit(space, record)?.limit });
     assertRestoredState(record.stream, record.state as unknown as Readonly<Record<string, unknown>>, info.state as unknown as Readonly<Record<string, unknown>>);
     if (info.state.consumer_count !== expectedConsumers)
       throw new Error(`${record.stream} has ${info.state.consumer_count} consumers after restore; expected ${expectedConsumers}`);
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
-/** Give the restored chat stream the age the backup recorded, after the target's last check, and
- *  read it back; a failure fails the restore. No full-state comparison runs after it, since the
- *  broker may expire posts as soon as it lands. A process that dies before this write leaves the
- *  target at age 0, before commit intent, so the attempt rolls back with it. The login reaches the
- *  chat stream alone. */
-async function applyRecordedChatAge(broker: IsolatedBroker, space: string, record: BackupManifest["streams"][number]): Promise<void> {
-  const recorded = chatHistoryLimitOf(record.config);
-  if (recorded.maxAgeMs === 0) return;
-  const stream = chatStream(space);
-  const login = await broker.addLogin({ profile: "infrastructure", streams: [stream], updateStreams: [stream] });
+/** Give a restored CHAT, INBOX, DLV or DM stream the age the backup recorded, after the target's last
+ *  check, and read it back; a failure fails the restore. No full-state comparison runs after it,
+ *  since the broker may expire entries as soon as it lands. A process that dies before this write
+ *  leaves the target at age 0, before commit intent, so the attempt rolls back with it. Each login
+ *  reaches its one stream alone and only updates it. */
+async function applyRecordedAge(broker: IsolatedBroker, space: string, record: BackupManifest["streams"][number]): Promise<void> {
+  const recorded = recordedHistoryLimit(space, record);
+  if (!recorded || recorded.limit.maxAgeMs === 0) return;
+  if (smokeFailRestoreStream("age", record.stream)) throw new Error(`smoke-injected failure applying the recorded age of ${record.stream}`);
+  const login = await broker.addLogin({ profile: "infrastructure", streams: [record.stream], updateStreams: [record.stream] });
   const nc = await connectIsolatedBroker(broker, login);
   try {
-    await setChatHistoryLimit(await jetstreamManager(nc), space, recorded, chatHistoryRestoreStaging(recorded));
+    await setHistoryLimit(await jetstreamManager(nc), space, recorded.kind, recorded.limit, historyLimitRestoreStaging(recorded.kind, recorded.limit));
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
@@ -636,16 +655,16 @@ async function recreateCheckpoint(
     const info = await recreateConsumerCheckpoint(nc, space, checkpoint, RESTORE_TIMEOUT_MS);
     if (info.config.opt_start_seq !== expected.opt_start_seq || info.config.deliver_policy !== expected.deliver_policy)
       throw new Error(`${checkpoint.stream}/${checkpoint.name} did not preserve its conservative checkpoint floor`);
-    // A fresh durable is BORN with a native stream floor of effectiveStart - 1, where the
-    // effective start is its opt_start_seq or, for DeliverAll over a truncated WorkQueue (TASK),
-    // the stream's first_seq (verified against nats-server 2.14). That floor claims nothing
-    // delivered and replays everything still in the stream. Anything else — a delivered count, or
-    // a floor beyond the born value — would silently skip pre-cut entries.
+    // A fresh durable can report a zero ACK floor or effectiveStart - 1. The start policy
+    // above preserves the replay position in either case. No delivery or pending ACK may
+    // have advanced the new consumer, and no other stream floor is accepted.
     const bornFloor = Math.max(expected.opt_start_seq ?? 1, checkpoint.streamState.first_seq || 1) - 1;
-    if (info.ack_floor.stream_seq !== bornFloor || info.ack_floor.consumer_seq !== 0)
-      throw new Error(`${checkpoint.stream}/${checkpoint.name} was recreated with ack floor ${info.ack_floor.stream_seq}/${info.ack_floor.consumer_seq}; expected the born floor ${bornFloor}/0`);
+    const floor = info.ack_floor.stream_seq;
+    if ((floor !== 0 && floor !== bornFloor) || info.ack_floor.consumer_seq !== 0 ||
+        info.delivered?.consumer_seq !== 0 || info.num_ack_pending !== 0)
+      throw new Error(`${checkpoint.stream}/${checkpoint.name} was not recreated as an unused checkpoint with stream ACK floor 0 or ${bornFloor}`);
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
@@ -677,6 +696,8 @@ async function createOmittedInfrastructure(
     await kvm.create(presenceBucket(space), { ttl: 6_000, storage: PRESENCE_STORAGE });
     const membership = membershipStoreDefinition(space);
     await kvm.create(membership.bucket, membership.createOptions);
+    const anycast = anycastStoreDefinition(space);
+    await kvm.create(anycast.bucket, anycast.createOptions);
     await kvm.create(deliveryBucket(space), { ttl: LEASE_TTL_MS });
     await kvm.create(managerBucket(space), { ttl: MANAGER_LEASE_TTL_MS });
     // The other endpoint stores are nonportable control state. Recreate them empty, with any workflow
@@ -709,7 +730,7 @@ async function createOmittedInfrastructure(
     }
     validateSpaceBackupInventory(space, names);
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
@@ -1003,9 +1024,13 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     const lockedOverlap = artifactOverlapRefusal(root, artifactPath, journal.source.path);
     if (lockedOverlap) throw lockedOverlap;
     // The cut records its source by real path, so a default .cotal/nats that links there is that
-    // source and is restored in place, not taken for an alternate target.
+    // source and is restored in place, not taken for an alternate target. A missing source is rebuilt
+    // where the cut records it, the only target its disaster restore takes (#7049).
     const defaultStore = join(root, ".cotal", "nats");
-    targetPath = resolve(flags["store-dir"] ?? (controller || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    const rebuild = source.state === "missing";
+    targetPath = resolve(flags["store-dir"] ?? (controller || rebuild || linksTo(defaultStore, journal.source.path) ? journal.source.path : defaultStore));
+    if (rebuild && targetPath !== journal.source.path)
+      throw new CommandFailure("refused", "USAGE_INVALID", `a restore over a missing preserved store rebuilds it at its recorded path ${journal.source.path}, and --store-dir names another; the restore did not start`, { target: { root, space: journal.space, recordedStore: journal.source.path }, remedy: "omit --store-dir, or pass the recorded path" });
     if (flags["store-dir"] !== undefined) assertNewStorePath(targetPath, journal.source.path);
     assertRestoreTargetPath(journal.source.path, artifactPath, stageParent, targetPath);
     // A restore into the preserved store's own path moves that store aside whole, so a file in it that
@@ -1190,8 +1215,8 @@ export async function prepareRestore(root: string, flags: RestoreFlags, progress
     // journals of both stores: the restored one here, the set-aside one from a private clone.
     const previousCutNewer = sourceExists && Date.parse(journal.cut.intentAt) > Date.parse(artifact.manifest.createdAt);
     const restoredRuns = previousCutNewer && wanted.includes(wfjStreamName(journal.space)) ? await readRunJournals(broker, journal.space) : undefined;
-    const chatRecord = artifact.manifest.streams.find((entry) => entry.stream === chatStream(journal.space));
-    if (chatRecord && wanted.includes(chatRecord.stream)) await applyRecordedChatAge(broker, journal.space, chatRecord);
+    for (const record of artifact.manifest.streams)
+      if (wanted.includes(record.stream)) await applyRecordedAge(broker, journal.space, record);
     await broker.stop();
     broker = undefined;
     const previousStore = restoredRuns ? (readMaintenanceJournal(root) as RestoreReadyRecord | undefined)?.restore.previousSource?.identity.path : undefined;

@@ -12,11 +12,36 @@ or in a PID namespace: the shard's initial orphan-process sweep is not limited t
 
 ## Live broker suites
 
+`pnpm smoke:local-write-quota` drives the built CLI with native quota errors injected at
+directory creation and filesystem publication. It checks saved prepared records and retry,
+and keeps missing-path errors separate from quota failures. It needs Linux and `strace` on
+PATH and reports a skip otherwise.
+It retains its private fixtures and syscall traces under the temporary directory it prints.
+
 The Linux live job runs `smoke:no-manager-credential-warning:live` with its usual NATS 2.12.12
 binary. `smoke:broker-logging:live` requires NATS 2.15.1 and receives a separately downloaded,
 checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace the broker on
 PATH for other suites. To run the logging suite locally, set that variable to the absolute path
 of a NATS 2.15.1 binary after building the workspace.
+
+## Fixture registry homes
+
+`pnpm smoke:fixture-space-home` checks the desktop space helper with a real loopback broker,
+auth and delivery. The caller selects its machine home before entering the helper. A mismatch
+with `machineHome` refuses before creating fixture state. The check covers a private override
+and the platform default under a private home, without starting a manager or native service.
+
+`prepareUpdateParticipant` selects its supplied private `COTAL_HOME` until its close callback
+restores the previous environment. Its standalone smoke selects a private home before its own
+registry calls and keeps temporary files under `TMPDIR`.
+
+## Daemon entry checks
+
+After building the workspace and the platform's daemon host primitives, run
+`pnpm smoke:daemon-install-native`. It checks native service definitions and starts the built
+native-service entry and ordinary CLI in separate private profiles. It never installs a host
+service. The entry checks retain their private fixtures and print the path; use a short `TMPDIR`
+so temporary Unix bind sockets fit the platform's path limit.
 
 ## Inventory command resolution
 
@@ -99,12 +124,25 @@ with a line break. Structured count and skip records take precedence over legacy
 regardless of their position. The last structured record wins; without one, the last legacy
 tally wins. Per-row counting is used only when neither is present.
 
+Serial and pooled runners refuse a tally followed by more assertion-result rows unless a later
+final tally covers them. These rows are indented check/cross marks, TAP `ok`/`not ok` lines and
+`FAIL` rows. An unindented check mark in a product notice is not an assertion record. Diagnostic
+output after the tally is allowed. This checks premature tally acceptance, not omitted assertions,
+assertions that print no result row, or unmarked output.
+
 ## Shared hosts
 
 `pnpm smoke:up-stack:live` checks that `up` moves off the default address when it is taken. With
 127.0.0.1:4222 free, it starts an open broker there for a few seconds, and any client on the host
 can join it. On a host other stacks share, set `COTAL_SMOKE_SHARED_HOST=1`: those cells then skip
 and print why.
+
+`pnpm smoke:orphan-seat-succession` keeps its manager hosts and detached seats inside a
+recorded private sandbox. It records each seat at spawn, including seats created after manager
+readiness, and waits for the successor to launch before normal teardown. On Linux the smoke-kit
+watchdog removes remaining sandbox processes when the suite exits, including after a signal.
+The predecessor stays alive during the succession assertions; this cleanup is test ownership,
+not a change to production orphan custody.
 
 ## Failure reports
 
@@ -130,6 +168,13 @@ not the full gate or a replacement name for a smaller testing tier.
 directory under the scanned source roots and removes only that directory. Selected-probe mode
 uses the same ownership rule. Probe inputs are test scratch, not CLI source to commit or publish;
 the full suite checks that an existing file at the old fixed probe name survives both modes.
+
+Honest-text smoke proofs must cite a unique output assertion with reviewed coverage of the
+entry's module in `packages/workspace/smoke/presence-render-proofs.ts`. Review the assertion's
+rendered route or shared renderer before adding a binding. Importing a module does not prove
+that an assertion reads its output. `pnpm smoke:presence-render-proofs` checks all manifest
+smoke proofs and rejects unrelated assertions without creating source probes. It does not run
+the cited suites or replace the AST census.
 
 `pnpm smoke:required-arg-seam --census` prints the actual classified call sites. Review each
 added or removed site before updating `required-arg-sites.json` and the total/smoke pins.

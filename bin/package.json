@@ -1,6 +1,6 @@
 {
   "name": "cotal-ai",
-  "version": "0.134.0",
+  "version": "0.166.1",
   "description": "Cotal — lateral agent coordination over NATS. Run `npx cotal-ai` for the CLI.",
   "license": "Apache-2.0",
   "keywords": [
@@ -26,6 +26,7 @@
     "directory": "bin"
   },
   "type": "module",
+  "cotalPreinstall": { "v": 1, "entry": "./dist/execution-preinstall.js" },
   "bin": {
     "cotal": "./dist/cotal.js"
   },
@@ -47,9 +48,11 @@
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/delivery": "workspace:*",
     "@cotal-ai/manager": "workspace:*",
+    "@cotal-ai/registry": "workspace:*",
     "@cotal-ai/runtime": "workspace:*",
     "@cotal-ai/seat": "workspace:*",
-    "@cotal-ai/workspace": "workspace:*"
+    "@cotal-ai/workspace": "workspace:*",
+    "jose": "^6.2.3"
   },
   "devDependencies": {
     "@cotal-ai/connector-claude-code": "workspace:*",
@@ -61,8 +64,8 @@
     "@cotal-ai/pi": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/web": "workspace:*",
-    "@nats-io/jetstream": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0",
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
     "typescript": "^5.9.3"
   },
   "files": [

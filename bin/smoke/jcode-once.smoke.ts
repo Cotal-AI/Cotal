@@ -35,11 +35,10 @@ process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 
 const { connect } = await import("@nats-io/transport-node");
 const {
-  createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, standaloneConnectOpts, setupSpaceStreams,
-  DEV_OWNER, digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom,
+  createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
+  digestIdToken, epCall, readGoalResult, readGoalIndex, lifecycleBlockedFrom,
 } = await import("@cotal-ai/core");
-type EpCaller = import("@cotal-ai/core").EpCaller;
-const { authDir, saveSpaceAuth, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, saveSpaceAuth, mintControlInstrument, workspaceSecretStore } = await import("@cotal-ai/workspace");
 await import("@cotal-ai/connector-jcode");
 const { Manager } = await import("@cotal-ai/manager");
 const { MANAGER_ENDPOINT, MANAGER_CONTRACTS } = await import("../../implementations/manager/src/manager-service-contract.js");
@@ -105,9 +104,10 @@ try {
   type Seat = { lifecycleUid: string; handle: { pid?: number; status(): string } };
   const M = manager as unknown as { agents: Map<string, Seat>; goalWriter: { ctx: Parameters<typeof readGoalResult>[0] } };
 
-  const runnerId = newIdentity();
-  const runner: EpCaller = { owner: DEV_OWNER, actor: runnerId.id, uid: mintLifecycleUid() };
-  const runnerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: await mintCreds(auth, runnerId, "control-caller-admin", { lifecycleUid: runner.uid }), tls: false }), maxReconnectAttempts: 0 });
+  // The spawner: the operator's admin instrument, issued as the CLI mints it, so the static spawn
+  // bound reads its evidence and it hands on the helper's role (SPEC 13.15).
+  const { creds: runnerCreds, epCaller: runner } = await mintControlInstrument({ server: broker.servers, space, tlsRequired: false, auth }, "admin");
+  const runnerNc = await connect({ servers: broker.servers, ...standaloneConnectOpts({ creds: runnerCreds, tls: false }), maxReconnectAttempts: 0 });
   conns.push(runnerNc);
   const call = (command: string, args: Record<string, unknown>, id: string) =>
     epCall(runnerNc, space, { mode: "one" }, { endpoint: MANAGER_ENDPOINT, command, contract: MANAGER_CONTRACTS[command], caller: runner, id, args }, { deadlineMs: 20_000, currentEpoch: async () => 0 })

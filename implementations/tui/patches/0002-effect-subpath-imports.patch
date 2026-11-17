@@ -1,0 +1,63 @@
+Importing the effect barrel evaluates every effect module, about 0.5 s on Node 26 before the first frame.
+The Schema, DateTime, Option and SchemaGetter subpaths load only what the shell uses.
+
+--- a/packages/schema/src/schema.ts
++++ b/packages/schema/src/schema.ts
+@@ -1,4 +1,7 @@
+-import { DateTime, Option, Schema, SchemaGetter } from "effect"
++import * as DateTime from "effect/DateTime"
++import * as Option from "effect/Option"
++import * as Schema from "effect/Schema"
++import * as SchemaGetter from "effect/SchemaGetter"
+ 
+ export const PositiveInt = Schema.Int.check(Schema.isGreaterThan(0))
+ export const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
+--- a/packages/schema/src/vcs.ts
++++ b/packages/schema/src/vcs.ts
+@@ -1,6 +1,6 @@
+ export * as Vcs from "./vcs.js"
+ 
+-import { Schema } from "effect"
++import * as Schema from "effect/Schema"
+ import { NonNegativeInt, optional } from "./schema.js"
+ 
+ export const Branch = Schema.Struct({
+--- a/packages/theme/src/tui/resolve.ts
++++ b/packages/theme/src/tui/resolve.ts
+@@ -1,5 +1,5 @@
+ import { RGBA } from "@opentui/core"
+-import { Schema } from "effect"
++import * as Schema from "effect/Schema"
+ import { expandTheme, mergeTheme } from "./expand.js"
+ import {
+   ActionState,
+--- a/packages/theme/src/tui/schema.ts
++++ b/packages/theme/src/tui/schema.ts
+@@ -1,4 +1,4 @@
+-import { Schema } from "effect"
++import * as Schema from "effect/Schema"
+ 
+ export const HueStep = Schema.Literals([100, 200, 300, 400, 500, 600, 700, 800, 900])
+ export type HueStep = Schema.Schema.Type<typeof HueStep>
+--- a/packages/tui/src/config/index.tsx
++++ b/packages/tui/src/config/index.tsx
+@@ -2,7 +2,7 @@
+ 
+ import { createBindingLookup } from "@opentui/keymap/extras"
+ import { Vcs } from "@opencode/schema/vcs"
+-import { Schema } from "effect"
++import * as Schema from "effect/Schema"
+ import { createContext, onCleanup, type JSX, useContext } from "solid-js"
+ import { createStore, reconcile } from "solid-js/store"
+ import { safeWatch } from "../util/watch"
+--- a/packages/tui/src/config/keybind.ts
++++ b/packages/tui/src/config/keybind.ts
+@@ -3,7 +3,7 @@
+ import type { KeyEvent, Renderable } from "@opentui/core"
+ import type { Binding } from "@opentui/keymap"
+ import type { BindingConfig, BindingDefaults } from "@opentui/keymap/extras"
+-import { Schema } from "effect"
++import * as Schema from "effect/Schema"
+ 
+ const KeyStroke = Schema.Struct({
+   name: Schema.String,

@@ -23,6 +23,7 @@ import {
   serverConfig,
   standaloneConnectOpts,
   submitAndFollowGoal,
+  controlReplyFrom, parseEndpointReply, EpEnvelopeError,
   type EpAttributedReply,
 } from "../src/index.js";
 import { SMOKE_BROKER_TOKEN, emitSentinel, teardownOnSignal, killAndAwaitExit } from "@cotal-ai/smoke-kit";
@@ -154,6 +155,32 @@ try {
   releaseHeld();
   const released = await raced;
   check("held standing subscription receives borrowed terminal after gate release", !submittedWhileHeld && submits === 1 && released.reply.ok === true && (released.reply.data as { name?: string }).name === "late" && violations.length === 0, { submittedWhileHeld, submits, reply: released.reply, violations });
+
+  for (const state of ["failed", "cancelled", "expired", "uncertain"] as const) {
+    const goal = `goal-${state}`;
+    const acceptance = accepted(goal);
+    acceptance.reply.data = { goalId: goal, name: "allocated", readinessDeadlineMs: 0 };
+    acceptance.reply.receipt = "acceptance-receipt";
+    const result = await submitAndFollowGoal(follower, space, endpoint, caller, 2000, async () => {
+      publisher.publish(subject(goal), enc.encode(JSON.stringify({
+        phase: "terminal", goalId: goal, state, data: { reason: `goal ${state}` },
+      })));
+      await publisher.flush();
+      return acceptance;
+    });
+    check(`${state} terminal keeps the acceptance and receipt in the local reply`,
+      result.reply.ok === false && result.reply.error.code === state
+        && result.reply.data === acceptance.reply.data && result.reply.receipt === "acceptance-receipt",
+      result.reply);
+    const control = controlReplyFrom(result.reply);
+    check(`${state} terminal keeps the acceptance when converted for a caller`,
+      control.ok === false && control.code === state && control.data === acceptance.reply.data
+        && control.error === `goal ${state}`, control);
+    let wireRefused = false;
+    try { parseEndpointReply(result.reply); }
+    catch (e) { wireRefused = e instanceof EpEnvelopeError && e.code === "bad-request"; }
+    check(`${state} local acceptance is still refused as a failed wire reply`, wireRefused);
+  }
 } catch (e) {
   check("goal submit order completed", false, e instanceof Error ? e.message : String(e));
 } finally {
@@ -167,7 +194,7 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker();
 }
-if (pass + fail !== 4) throw new Error(`goal-submit-order executed ${pass + fail} cells, expected 4`);
+if (pass + fail !== 16) throw new Error(`goal-submit-order executed ${pass + fail} cells, expected 16`);
 console.log(`goal-submit-order smoke: ${pass} passed, ${fail} failed`);
 emitSentinel({ passed: pass, failed: fail });
 process.exit(fail === 0 ? 0 : 1);

@@ -31,12 +31,13 @@
  * stall a login (or a non-interactive `requireIdpSession`→`fetchIdpJwt` on an agent connect)
  * forever. Override the 30s default with `COTAL_IDP_TIMEOUT_MS` for a slow IdP.
  */
+import { idpSessionDir } from "./session-context.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { decodeJwt } from "jose";
-import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { CommandFailure, acquireLock, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
+import { isCredentialTransportUrl, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
+import { loginRecoveryCommand, serviceLoginRecovery, CommandFailure, acquireLock, chatNameProblem, credentialFailure, checkIdpUrl } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -47,6 +48,12 @@ export interface IdpSession {
   /** The IdP subject this session proved at login (display + local owner derivation). Absent only
    *  in caches written by older builds — consumers that need it fail loud naming `cotal login`. */
   sub?: string;
+  /** The handle a chat session appears as by default: the IdP's preferred_username, else its
+   *  email's local part, else its name, the first that is a chat name. Display only. Absent when
+   *  none is, and in caches written by older builds. */
+  name?: string;
+  /** Account display label returned by the provider, never an authorization identity. */
+  label?: string;
 }
 
 const SPACE_CATALOG_REL = "https://cotal.ai/relations/space-catalog";
@@ -91,6 +98,8 @@ export interface DeviceLoginOpts {
   idpUrl: string;
   /** The OAuth client id this CLI presents; the IdP may pin it via its validateClient hook. */
   clientId: string;
+  /** Retained auth URL when this approval is part of a native migration. */
+  migrationFrom?: string;
   /** Shows the human the verification URL + code. Called exactly once; polling starts only after
    *  it settles, a rejection fails the login, and the device code's lifetime bounds it. */
   onPrompt: (prompt: DeviceLoginPrompt) => void | Promise<void>;
@@ -121,7 +130,13 @@ interface OAuthError {
 }
 async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthError> {
   try {
-    return (await res.json()) as OAuthError;
+    const body: unknown = await res.json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return {};
+    const fields = body as Record<string, unknown>;
+    return {
+      ...(typeof fields.error === "string" ? { error: fields.error } : {}),
+      ...(typeof fields.error_description === "string" ? { error_description: fields.error_description } : {}),
+    };
   } catch {
     // An unreadable error body is treated as "no detail", unless the caller cancelled mid-read.
     throwIfCancelled(cancel);
@@ -129,22 +144,39 @@ async function oauthError(res: Response, cancel?: AbortSignal): Promise<OAuthErr
   }
 }
 
+/** Local IdP configuration that must be corrected before making a request. */
+export class IdpConfigurationError extends Error {}
+
 /** Per-request timeout budget (ms). Default 30s; `COTAL_IDP_TIMEOUT_MS` overrides for a slow IdP
- *  (or a test). A malformed override fails loud rather than silently reverting to the default. */
-function idpTimeoutMs(): number {
+ *  (or a test). Requires whole milliseconds from 1 to 2147483647, the non-overflowing Node timer
+ *  range. A malformed override fails loud rather than silently reverting to the default. */
+export function idpTimeoutMs(): number {
   const raw = process.env.COTAL_IDP_TIMEOUT_MS;
   if (raw === undefined) return 30_000;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0)
-    throw new Error(`COTAL_IDP_TIMEOUT_MS must be a positive number of milliseconds - got "${raw}"`);
+  // AbortSignal.timeout rejects fractions; its underlying timer clamps larger delays to 1ms.
+  if (!Number.isInteger(n) || n < 1 || n > 2_147_483_647)
+    throw new IdpConfigurationError(`COTAL_IDP_TIMEOUT_MS must be a whole number of milliseconds from 1 to 2147483647 - got "${raw}"`);
   return n;
 }
 
 /** An IdP request that got no answer: the transport failed or the per-request timeout fired. */
 export class IdpUnreachableError extends Error {}
 
+/** The provider refused the initial device-code request, before approval or persistence. */
+export class IdpDeviceAuthorizationRefusedError extends Error {}
+
 /** The IdP answered 401 to a cached session: it expired or was revoked there. */
 export class IdpSessionRejectedError extends Error {}
+
+/** A token read still answered 429. The provider's minimum delay is in seconds, without the
+ *  client's retry floor, or undefined when neither retry header is usable. */
+export class IdpRateLimitedError extends Error {
+  readonly status = 429;
+  constructor(message: string, readonly retryAfterSeconds?: number) {
+    super(message);
+  }
+}
 
 /** A sign-in stopped by the caller's AbortSignal. It stops this local operation only: nothing
  *  is revoked at the IdP, and an approval already given there is left as it is. */
@@ -186,8 +218,7 @@ async function sleepUnlessCancelled(ms: number, signal: AbortSignal | undefined)
 /** `fetch` with a hard per-request timeout, so a hung IdP connection can never stall the client
  *  (Node's global fetch has no default timeout). A timeout or transport failure surfaces as a
  *  legible sentence rather than a raw DOMException/TypeError. */
-async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal): Promise<Response> {
-  const ms = idpTimeoutMs();
+async function idpFetch(url: string, init?: RequestInit, cancel?: AbortSignal, ms = idpTimeoutMs()): Promise<Response> {
   throwIfCancelled(cancel);
   try {
     const timeout = AbortSignal.timeout(ms);
@@ -258,7 +289,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
   }, opts.signal);
   if (!res.ok) {
     const e = await oauthError(res, opts.signal);
-    throw new Error(
+    throw new IdpDeviceAuthorizationRefusedError(
       `idp login: ${base} refused the device authorization (${e.error ?? `HTTP ${res.status}`}: ${e.error_description ?? "no detail"})`,
     );
   }
@@ -285,7 +316,8 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     (grant.interval !== undefined && !sane(grant.interval, 300))
   )
     throw new Error(`idp login: ${base} returned a malformed device grant - refusing to poll on it`);
-  const expired = `idp login: the device code expired after ${grant.expires_in}s without approval - run \`cotal login\` again`;
+  const retry = opts.migrationFrom === undefined ? "cotal login" : `cotal login --migrate-from ${normalizeIdpUrl(opts.migrationFrom)}`;
+  const expired = `idp login: the device code expired after ${grant.expires_in}s without approval - run \`${retry}\` again`;
   // The code's lifetime runs from the grant, so a prompt that never settles fails the login at
   // expiry instead of holding it open.
   const deadline = Date.now() + grant.expires_in * 1000;
@@ -345,7 +377,7 @@ export async function deviceLogin(opts: DeviceLoginOpts): Promise<IdpSession> {
     }
     if (e.error === "access_denied") throw new Error("idp login: the sign-in was denied at the verification page");
     if (e.error === "expired_token")
-      throw new Error("idp login: the device code expired before the sign-in was approved - run `cotal login` again");
+      throw new Error(`idp login: the device code expired before the sign-in was approved - run \`${retry}\` again`);
     throw new Error(
       `idp login: ${base} rejected the poll (${e.error ?? `HTTP ${poll.status}`}: ${e.error_description ?? "no detail"})`,
     );
@@ -380,7 +412,7 @@ function jwtCacheUntil(jwt: string, now: number): number {
  *  means the session was revoked or expired at the IdP: the error says exactly how to recover.
  *  The JWT is held in memory within the bounds above and never written anywhere; a failure is
  *  never held, so a rate-limited or unreachable IdP is retried on the next call. Concurrent
- *  callers without a cancel signal share one request; a cancellable call makes its own request,
+ *  callers without a cancel signal share one proof fetch; a cancellable call makes its own fetch,
  *  so one caller's abort rejects nobody else. */
 async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
   const base = normalizeIdpUrl(idpUrl);
@@ -411,32 +443,91 @@ async function fetchIdpJwtResponse(idpUrl: string, sessionToken: string, cancel?
   return inflight;
 }
 
+/** Retry only an explicitly rate-limited proof read, never the operation that consumes its JWT.
+ * Both attempts, their bodies and the server's wait share the original IdP timeout. */
 async function fetchIdpJwtUncached(base: string, sessionToken: string, cancel?: AbortSignal): Promise<IdpJwtResult> {
-  const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel);
-  if (res.status === 401)
-    throw new IdpSessionRejectedError(
-      `idp session: ${base} rejected the cached session (expired or revoked) - run \`cotal login --idp ${base}\` to sign in again`,
-    );
-  if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
-  const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
-  if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
-  return { jwt: body.token, response: res };
+  const deadline = Date.now() + idpTimeoutMs();
+  for (let attempt = 0; ; attempt++) {
+    const remaining = deadline - Date.now();
+    throwIfCancelled(cancel);
+    if (remaining <= 0) throw new IdpUnreachableError(`idp request to ${base}/token timed out before the retry`);
+    const res = await idpFetch(`${base}/token`, { headers: { authorization: `Bearer ${sessionToken}` } }, cancel, remaining);
+    if (res.status === 429) {
+      const delays = ["retry-after", "x-retry-after"].map((name) => {
+        const value = res.headers.get(name)?.trim();
+        return value && /^\d+$/.test(value) ? Number(value) * 1000
+          : value && name === "retry-after" ? Date.parse(value) - Date.now() : NaN;
+      }).filter(Number.isFinite);
+      const wait = Math.max(1000, ...delays);
+      if (attempt === 0 && delays.length && wait < deadline - Date.now()) {
+        await res.body?.cancel();
+        await sleepUnlessCancelled(wait, cancel);
+        continue;
+      }
+      throw new IdpRateLimitedError(
+        `idp session: ${base}/token failed (HTTP 429)`,
+        delays.length ? Math.max(0, ...delays) / 1000 : undefined,
+      );
+    }
+    if (res.status === 401)
+      throw new IdpSessionRejectedError(
+        `idp session: ${base} rejected the cached session (expired or revoked) - ${serviceLoginRecovery(base, idpSessionDir())}`,
+      );
+    if (!res.ok) throw new Error(`idp session: ${base}/token failed (HTTP ${res.status})`);
+    const body = await idpJson<{ token?: string }>(`${base}/token`, res, cancel);
+    if (typeof body.token !== "string" || !body.token) throw new Error(`idp session: ${base}/token returned no token`);
+    return { jwt: body.token, response: res };
+  }
 }
 
-export async function fetchIdpJwt(idpUrl: string, sessionToken: string): Promise<string> {
-  return (await fetchIdpJwtResponse(idpUrl, sessionToken)).jwt;
+export async function fetchIdpJwt(idpUrl: string, sessionToken: string, signal?: AbortSignal): Promise<string> {
+  return (await fetchIdpJwtResponse(idpUrl, sessionToken, signal)).jwt;
 }
 
-/** The whole login operation, in the only safe order: device sign-in, then PROVE the session
- *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
- *  land on disk — it would pass {@link requireIdpSession}'s no-fallback gate as a dud and defer
- *  the failure to some later connect. Returns the session plus the JWT's `sub`, and a human
- *  `label` (email/name/preferred_username when the IdP mints one) — BOTH display-only: the
- *  operator must be able to read WHICH human signed in, but verification is the bridge/callout's
- *  job, server-side. */
-export async function establishIdpSession(
-  opts: DeviceLoginOpts & { dir: string },
-): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+/** Optional expected identity claims checked before a staged login can be committed.
+ * Claims are decoded from the provider response. Signature verification remains server-side. */
+export interface IdpLoginPins {
+  idpUrl?: string;
+  issuer: string;
+  audience: string;
+  sub?: string;
+}
+
+/** An in-memory login proof. Its bearer and advertisement are private to this module. */
+export interface StagedIdpSession {
+  readonly sub: string;
+  readonly issuer?: string;
+  readonly audience?: string | readonly string[];
+}
+
+interface StagedLoginState {
+  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins; migrationFrom?: string };
+  session: IdpSession;
+  claims: Record<string, unknown>;
+  link: string | null;
+  previousSub?: string;
+  baseline?: string;
+}
+const stagedLogins = new WeakMap<StagedIdpSession, StagedLoginState>();
+
+function assertLoginPins(claims: Record<string, unknown>, pins?: IdpLoginPins): void {
+  if (!pins) return;
+  const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
+  if (claims.iss !== pins.issuer || !Array.isArray(audiences) || !audiences.every(a => typeof a === "string") || !audiences.includes(pins.audience) || (pins.sub !== undefined && claims.sub !== pins.sub))
+    throw new Error("idp login: the approved account does not match the expected issuer, audience or subject; nothing was saved");
+}
+
+/** Approve and prove a fresh login without writing any local state.
+ * `migrationFrom` fences the retained account used to validate a native migration. */
+export async function stageIdpSession(
+  opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins; migrationFrom?: string },
+): Promise<StagedIdpSession> {
+  // Refuse damaged local state before asking the person to approve a sign-in.
+  const initial = readCatalogPreparationState(opts.dir);
+  const baseline = opts.migrationFrom === undefined ? undefined : migrationDependency(initial, opts.migrationFrom);
+  opts = { ...opts, ...(opts.expectedPins ? { expectedPins: { ...opts.expectedPins } } : {}) };
+  if (opts.expectedPins?.idpUrl !== undefined && normalizeIdpUrl(opts.idpUrl) !== normalizeIdpUrl(opts.expectedPins.idpUrl))
+    throw new Error("idp login: the provider URL does not match the expected login URL; nothing was saved");
   const previousSub = loadIdpSession(opts.dir, opts.idpUrl)?.sub;
   const session = await deviceLogin(opts);
   const tokenResult = await fetchIdpJwtResponse(opts.idpUrl, session.token, opts.signal);
@@ -452,16 +543,76 @@ export async function establishIdpSession(
   const sub = claims.sub;
   if (typeof sub !== "string" || !sub)
     throw new Error(`idp login: ${normalizeIdpUrl(opts.idpUrl)} minted a user JWT without a sub - refusing to cache the session; re-run \`cotal login\` after fixing the IdP`);
+  assertLoginPins(claims, opts.expectedPins);
   session.sub = sub; // proven above — cached so owner derivation (spawn paths) stays offline
-  // The persistence fence: a cancel that lands after approval, while the proof was in flight,
-  // must leave no session and no catalog entry on disk.
-  throwIfCancelled(opts.signal);
-  saveIdpSession(opts.dir, opts.idpUrl, session);
-  saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, sub, tokenResult.response.headers.get("link"));
   const label = [claims.email, claims.name, claims.preferred_username].find(
     (c): c is string => typeof c === "string" && c.length > 0,
   );
-  return { session, sub, ...(previousSub && previousSub !== sub ? { previousSub } : {}), ...(label ? { label } : {}) };
+  const at = typeof claims.email === "string" ? claims.email.lastIndexOf("@") : -1;
+  const local = at > 0 ? (claims.email as string).slice(0, at) : undefined;
+  const handle = [claims.preferred_username, local, claims.name].find(
+    (c): c is string => typeof c === "string" && chatNameProblem(c) === undefined,
+  );
+  if (label) session.label = label;
+  if (handle) session.name = handle;
+  throwIfCancelled(opts.signal);
+  const candidate: StagedIdpSession = Object.freeze({ sub,
+    ...(typeof claims.iss === "string" ? { issuer: claims.iss } : {}),
+    ...(typeof claims.aud === "string" ? { audience: claims.aud } : Array.isArray(claims.aud) && claims.aud.every(a => typeof a === "string") ? { audience: Object.freeze([...claims.aud]) } : {}),
+  });
+  stagedLogins.set(candidate, { opts, session, claims, previousSub, baseline, link: tokenResult.response.headers.get("link") });
+  return candidate;
+}
+
+function stagedState(candidate: StagedIdpSession): StagedLoginState {
+  const state = stagedLogins.get(candidate);
+  if (!state) throw new Error("idp login: unknown or already committed staged login");
+  return state;
+}
+
+/** Fetch a fresh candidate catalog without caching it or applying registrations. */
+export async function fetchStagedIdpSpaceCatalog(candidate: StagedIdpSession, validate: (snapshot: unknown, account: AuthSpaceCatalogAccount) => void): Promise<{ snapshot: unknown; account: AuthSpaceCatalogAccount }> {
+  const { opts, session, claims, link } = stagedState(candidate);
+  throwIfCancelled(opts.signal);
+  const idpUrl = normalizeIdpUrl(opts.idpUrl);
+  const catalogUrl = catalogUrlFromLink(idpUrl, link);
+  if (!catalogUrl) throw new Error("idp login: the approved provider did not advertise a same-origin catalog");
+  if (typeof claims.iss !== "string" || !claims.iss) throw new Error("idp login: the approved provider did not supply an issuer");
+  const account = { idpUrl, issuer: claims.iss, sub: candidate.sub, ownerKey: ownerKey(idpUrl, candidate.sub), catalogUrl };
+  const response = await idpFetch(catalogUrl, { headers: { authorization: `Bearer ${session.token}` }, redirect: "manual" }, opts.signal);
+  if (!response.ok) throw new Error(`idp login: candidate catalog failed (HTTP ${response.status})`);
+  const snapshot = await idpJson<unknown>(catalogUrl, response, opts.signal);
+  validate(snapshot, account);
+  throwIfCancelled(opts.signal);
+  return { snapshot, account };
+}
+
+/** Persist a staged proof after the caller has checked its migration pins. Not a multi-file transaction. */
+export function commitStagedIdpSession(candidate: StagedIdpSession): { session: IdpSession; sub: string; previousSub?: string; label?: string } {
+  const { opts, session, claims, previousSub, baseline, link } = stagedState(candidate);
+  // The persistence fence: a cancel that lands after approval, while the proof was in flight,
+  // must leave no session and no catalog entry on disk.
+  throwIfCancelled(opts.signal);
+  assertLoginPins(claims, opts.expectedPins);
+  // Approval can take minutes. Recheck before writing if another process changed the cache.
+  const current = readCatalogPreparationState(opts.dir);
+  if (opts.migrationFrom !== undefined && migrationDependency(current, opts.migrationFrom) !== baseline)
+    throw new Error("idp login: the old account sign-in or catalog state changed during approval; nothing was saved; retry `cotal login --migrate-from " + normalizeIdpUrl(opts.migrationFrom) + "`");
+  stagedLogins.delete(candidate);
+  saveIdpSession(opts.dir, opts.idpUrl, session);
+  saveCatalogAdvertisement(opts.dir, opts.idpUrl, claims.iss, candidate.sub, link);
+  return { session, sub: candidate.sub, ...(previousSub && previousSub !== candidate.sub ? { previousSub } : {}), ...(session.label ? { label: session.label } : {}) };
+}
+
+/** The whole login operation, in the only safe order: device sign-in, then PROVE the session
+ *  mints a user JWT, and only then persist it. A session that can't produce a JWT must never
+ *  land on disk, because it would pass {@link requireIdpSession}'s no-fallback gate as a dud and
+ *  defer the failure to some later connect. Returns the session plus the JWT's `sub`, and a human
+ *  `label` (email/name/preferred_username when the IdP mints one). Both are display-only: the
+ *  operator must be able to read which human signed in, but verification is the bridge/callout's
+ *  job, server-side. */
+export async function establishIdpSession(opts: DeviceLoginOpts & { dir: string; expectedPins?: IdpLoginPins }): Promise<{ session: IdpSession; sub: string; previousSub?: string; label?: string }> {
+  return commitStagedIdpSession(await stageIdpSession(opts));
 }
 
 function ownerKey(idpUrl: string, sub: string): string {
@@ -503,8 +654,7 @@ function catalogUrlFromLink(idpUrl: string, link: string | null): string | undef
     } catch {
       return undefined;
     }
-    const loopback = url.protocol === "http:" && isLoopbackLiteral(url.hostname);
-    if (url.origin !== origin || (url.protocol !== "https:" && !loopback) || url.username || url.password)
+    if (url.origin !== origin || !isCredentialTransportUrl(url) || url.username || url.password)
       return undefined;
     return url.toString();
   }
@@ -546,7 +696,7 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
   const result = await fetchIdpJwtResponse(state.idpUrl, session.token);
   const claims = decodeJwt(result.jwt);
   if (claims.sub !== state.sub)
-    throw new Error(`idp session: ${state.idpUrl} proved a different subject than the cached session - run \`cotal login --idp ${state.idpUrl}\` again`);
+    throw new Error(`idp session: ${state.idpUrl} proved a different subject than the cached session - run \`${loginRecoveryCommand(state.idpUrl)}\` again`);
   const catalogUrl = catalogUrlFromLink(state.idpUrl, result.response.headers.get("link"));
   return {
     ...state,
@@ -555,6 +705,41 @@ async function discoverAdvertisement(state: CatalogAccountState, session: IdpSes
     advertisementCheckedAt: new Date().toISOString(),
     ...(catalogUrl ? { catalogUrl } : { catalogUrl: undefined }),
   };
+}
+
+/** Account identities available to a machine client. Session proofs stay inside this module. */
+export function signedInMachineAccounts(dir: string): AuthSpaceCatalogAccount[] {
+  const { sessions, file } = readCatalogPreparationState(dir);
+  return Object.keys(sessions).sort().flatMap((idpUrl) => {
+    const session = loadIdpSession(dir, idpUrl);
+    if (!session?.sub) return [];
+    const key = ownerKey(idpUrl, session.sub);
+    return [accountView(file.accounts[key] ?? { idpUrl, issuer: new URL(idpUrl).origin, sub: session.sub, ownerKey: key, advertised: false })];
+  });
+}
+
+/** Call only the account-computer routes on the signed-in provider's origin. */
+export async function requestAccountMachine(opts: {
+  dir: string; idpUrl: string; machineId: string; method: "PUT" | "GET";
+  metadata?: { name: string; platform: "linux" | "darwin" | "win32"; daemonVersion: string; managers: readonly { spaceId: string; instanceId: string }[]; vitals?: { sampledAt: string; cpu: { logicalCount: number; utilisationPercent: number; intervalMs: number; load1?: number; load5?: number; load15?: number }; memory: { totalBytes: number; availableBytes: number }; filesystems: Array<{ mount: string; totalBytes: number; freeBytes: number }>; uptimeSeconds: number } };
+  etag?: string; signal?: AbortSignal;
+  intent?: { spaceId: string; enabled: boolean; expectedRevision: number };
+}): Promise<{ status: number; etag?: string; body?: unknown }> {
+  const idp = normalizeIdpUrl(opts.idpUrl);
+  if (!/^[0-9a-f-]{36}$/.test(opts.machineId)) throw new Error("invalid computer identity");
+  const session = requireIdpSession(opts.dir, idp);
+  if (opts.intent && (opts.method !== "PUT" || !/^[A-Za-z0-9_-]{1,128}$/.test(opts.intent.spaceId) || !Number.isSafeInteger(opts.intent.expectedRevision) || opts.intent.expectedRevision < 0)) throw new Error("invalid computer space intent");
+  const url = opts.intent
+    ? `${new URL(idp).origin}/api/machines/${opts.machineId}/spaces/${encodeURIComponent(opts.intent.spaceId)}`
+    : `${new URL(idp).origin}/api/cli/machines/${opts.machineId}${opts.method === "GET" ? "/spaces" : ""}`;
+  const headers: Record<string, string> = { authorization: `Bearer ${session.token}` };
+  if (opts.etag) headers["if-none-match"] = opts.etag;
+  if (opts.method === "PUT") headers["content-type"] = "application/json";
+  const body = opts.method === "PUT" ? JSON.stringify(opts.intent ? { enabled: opts.intent.enabled, expectedRevision: opts.intent.expectedRevision } : opts.metadata) : undefined;
+  if (body !== undefined && Buffer.byteLength(body, "utf8") > 16384) throw new Error("invalid computer registration exceeds 16384 bytes");
+  const response = await idpFetch(url, { method: opts.method, headers, redirect: "manual", ...(opts.method === "PUT" ? { body } : {}) }, opts.signal);
+  const etag = response.headers.get("etag");
+  return { status: response.status, ...(etag ? { etag } : {}), ...(response.ok ? { body: await idpJson<unknown>(url, response, opts.signal) } : {}) };
 }
 
 interface PrepareCatalogOpts {
@@ -570,17 +755,27 @@ function readCatalogPreparationState(dir: string) {
   let file: CatalogsFile;
   try { sessions = readSessionsFile(dir).sessions; }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local sign-in cache (idp-sessions.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, SESSIONS_FILE) }, remedy: "inspect and restore the sign-in cache before retrying; its contents were not printed or replaced",
     });
   }
   try { file = readCatalogsFile(dir); }
   catch {
-    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache could not be read; no catalog refresh or registry application was attempted", {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "the local space catalog cache (space-catalogs.json) could not be read; no catalog refresh or registry application was attempted", {
       target: { path: join(dir, CATALOG_FILE) }, remedy: "inspect and restore the catalog cache before retrying; its contents were not printed or replaced",
     });
   }
   return { sessions, file };
+}
+
+/** Only the retained account supplies migration authority. Refresh timing is not authority. */
+function migrationDependency(state: ReturnType<typeof readCatalogPreparationState>, from: string): string {
+  const idpUrl = normalizeIdpUrl(from);
+  const session = state.sessions[idpUrl];
+  const account = session?.sub ? state.file.accounts[ownerKey(idpUrl, session.sub)] : undefined;
+  const catalog = account ? { ...account } : undefined;
+  if (catalog) delete catalog.fetchedAt;
+  return JSON.stringify({ session, catalog });
 }
 
 const catalogPreparations = new Map<string, Promise<AuthSpaceCatalogResult[]>>();
@@ -600,7 +795,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
   // observation. Active accounts are read again under the lock before any refresh or application.
   const initial = readCatalogPreparationState(opts.dir);
   const signedOut = () => new CommandFailure("refused", "AUTH_REQUIRED", "the requested IdP has no cached sign-in; no catalog refresh or registry application was attempted", {
-    target: { idp: requested }, remedy: `run \`cotal login --idp ${requested}\` before syncing this account`,
+    target: { idp: requested }, remedy: `run \`${loginRecoveryCommand(requested!)}\` before syncing this account`,
   });
   if (!Object.keys(initial.sessions).some((idp) => !requested || idp === requested)) {
     if (requested) throw signedOut();
@@ -621,7 +816,7 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
         const tokenResult = await fetchIdpJwtResponse(idpUrl, session.token);
         const claims = decodeJwt(tokenResult.jwt);
         if (typeof claims.sub !== "string" || !claims.sub)
-          throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`cotal login --idp ${idpUrl}\` again`);
+          throw new Error(`idp session: ${idpUrl} minted a user JWT without a sub - run \`${loginRecoveryCommand(idpUrl)}\` again`);
         session = { ...session, sub: claims.sub };
         saveIdpSession(opts.dir, idpUrl, session);
         saveCatalogAdvertisement(opts.dir, idpUrl, claims.iss, claims.sub, tokenResult.response.headers.get("link"));
@@ -685,6 +880,8 @@ async function prepareIdpSpaceCatalogsLocked(opts: PrepareCatalogOpts): Promise<
           results.push(result);
           continue;
         }
+        if (response.status === 401)
+          throw new IdpSessionRejectedError(`idp session: ${idpUrl} rejected the cached session (expired or revoked) - ${serviceLoginRecovery(idpUrl, opts.dir)}`);
         if (!response.ok) throw new Error(`${catalogUrl} failed (HTTP ${response.status})`);
         const snapshot = await idpJson<unknown>(catalogUrl, response);
         opts.validate(snapshot, accountView(state));
@@ -792,15 +989,18 @@ function readSessionsFile(dir: string): SessionsFile {
     throw new Error(`${f}: unknown version ${String(parsed.ver)} (expected ${SESSIONS_VER}) - refusing to guess at a credential file`);
   if (parsed.sessions === null || typeof parsed.sessions !== "object" || Array.isArray(parsed.sessions))
     throw new Error(`${f}: malformed sessions map`);
+  for (const [idp, session] of Object.entries(parsed.sessions)) {
+    if (normalizeIdpUrl(idp) !== idp || !session || typeof session !== "object" || Array.isArray(session)
+      || typeof session.token !== "string" || !session.token
+      || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
+      throw new Error(`${f}: malformed session record`);
+  }
   return parsed;
 }
 
 /** Account-picker metadata only. Session tokens never leave this helper. */
 export function listIdpAccounts(dir: string): { idp: string; sub?: string; expiresAt: number }[] {
   return Object.entries(readSessionsFile(dir).sessions).map(([idp, session]) => {
-    const normalized = normalizeIdpUrl(idp);
-    if (normalized !== idp || !session || typeof session.expiresAt !== "number" || !Number.isFinite(session.expiresAt))
-      throw new Error("the cached account metadata is invalid");
     return { idp, expiresAt: session.expiresAt, ...(typeof session.sub === "string" ? { sub: session.sub } : {}) };
   });
 }
@@ -809,12 +1009,16 @@ export function loadIdpSession(dir: string, idpUrl: string): IdpSession | undefi
   const key = normalizeIdpUrl(idpUrl);
   const s = readSessionsFile(dir).sessions[key];
   if (s === undefined) return undefined;
-  if (typeof s.token !== "string" || !s.token || typeof s.expiresAt !== "number")
-    throw new Error(`stored idp session for ${key} is malformed - run \`cotal login --idp ${key}\` again`);
   // `sub` rides the cache round-trip (offline owner derivation for the spawn paths) — every
   // consumer of ownerForLogin is a SEPARATE process re-reading this file, so dropping it here
   // broke both user-mode spawn entry points while every in-process test passed.
-  return { token: s.token, expiresAt: s.expiresAt, ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}) };
+  return {
+    token: s.token,
+    expiresAt: s.expiresAt,
+    ...(typeof s.sub === "string" && s.sub ? { sub: s.sub } : {}),
+    ...(typeof s.label === "string" && s.label ? { label: s.label } : {}),
+    ...(typeof s.name === "string" && s.name ? { name: s.name } : {}),
+  };
 }
 
 /** Whether this machine carries any cached human login. Enrollment URLs are single-use credentials,
@@ -824,12 +1028,31 @@ export function hasIdpSessions(dir: string): boolean {
   return Object.keys(readSessionsFile(dir).sessions).length > 0;
 }
 
+const sessionLocks = new Set<string>();
+
+/** Serialize a read-modify-write of one session cache, including service-store propagation. */
+export function withIdpSessionLock<T>(dir: string, run: () => T): T {
+  const path = resolve(dir, "idp-sessions.lock");
+  if (sessionLocks.has(path)) return run();
+  mkSecretDir(dir);
+  const lock = acquireLock(path, { label: "IdP session cache", waitMs: 5000 });
+  sessionLocks.add(path);
+  try { return run(); }
+  finally { sessionLocks.delete(path); lock.release(); }
+}
+
 export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession): void {
+  withIdpSessionLock(dir, () => saveIdpSessionLocked(dir, idpUrl, session));
+}
+
+function saveIdpSessionLocked(dir: string, idpUrl: string, session: IdpSession): void {
   const file = readSessionsFile(dir);
   file.sessions[normalizeIdpUrl(idpUrl)] = {
     token: session.token,
     expiresAt: session.expiresAt,
     ...(session.sub ? { sub: session.sub } : {}),
+    ...(session.label ? { label: session.label } : {}),
+    ...(session.name ? { name: session.name } : {}),
   };
   mkSecretDir(dir); // harden the dir BEFORE the secret lands (0700 POSIX, private ACL win32)
   writeSecretFileAtomic(join(dir, SESSIONS_FILE), JSON.stringify(file, null, 2));
@@ -837,6 +1060,11 @@ export function saveIdpSession(dir: string, idpUrl: string, session: IdpSession)
 
 /** Remove the cached session. Returns false when there was nothing to remove. */
 export function deleteIdpSession(dir: string, idpUrl: string): boolean {
+  if (!existsSync(join(dir, SESSIONS_FILE))) return false;
+  return withIdpSessionLock(dir, () => deleteIdpSessionLocked(dir, idpUrl));
+}
+
+function deleteIdpSessionLocked(dir: string, idpUrl: string): boolean {
   const key = normalizeIdpUrl(idpUrl);
   const file = readSessionsFile(dir);
   if (!(key in file.sessions)) return false;
@@ -854,7 +1082,7 @@ export function requireIdpSession(dir: string, idpUrl: string): IdpSession {
   if (!s)
     throw credentialFailure(
       "signed-out",
-      `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; run \`cotal login --idp ${key}\``,
+      `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; ${serviceLoginRecovery(key, dir)}`,
     );
   return s;
 }

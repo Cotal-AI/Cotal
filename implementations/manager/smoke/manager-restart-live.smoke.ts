@@ -28,7 +28,6 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect } from "@nats-io/transport-node";
 import type { ActionContext, EpCaller, ParsedEpRequest } from "@cotal-ai/core";
 import { workspaceSecretStore } from "@cotal-ai/workspace";
 import { bootDeliveryDaemon } from "./_boot-delivery.js";

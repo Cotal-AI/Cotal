@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, copyFileSync, cpSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,7 @@ import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
-import { readDocument } from '@cotal-ai/docs-content';
+import { frontmatter, readDocument } from '@cotal-ai/docs-content';
 import { connectorIcons } from '../src/lib/connector-icons.mjs';
 import { httpReferences } from '../src/http-references.js';
 import { publishHttpReferences } from './publish-http.mjs';
@@ -53,7 +53,7 @@ const navigation = [
         page('docs/recover-a-mesh.mdx'),
         page('docs/upgrade-cotal.mdx'),
       ]),
-      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi'].map(name => page(`docs/${name}.mdx`))),
+      group('Connect agents', ['connectors', 'connect-claude', 'connect-opencode', 'connect-codex', 'connect-hermes', 'connect-jcode', 'connect-pi', 'connect-mcp'].map(name => page(`docs/${name}.mdx`))),
       group('Build integrations', [
         ...['authoring-a-connector', 'build-a-client', 'embedding'].map(name => page(`docs/${name}.mdx`)),
         group('Embedding reference', ['exports', 'endpoints', 'remote-clients', 'daemons', 'provisioning', 'schema-inspection', 'service-authority', 'service-custody', 'service-host', 'service-access', 'service-callers', 'manager', 'delegated-seats'].map(name => page(`docs/embedding-${name}.mdx`))),
@@ -79,11 +79,12 @@ const navigation = [
       ]),
     ]),
     group('Specification', [page('SPEC.md')]),
-    group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
+    group('Project', ['roadmap', 'release', 'stability', 'setup-internals', 'upgrade-matrix', 'UPGRADING'].map(name => page(`docs/${name}.md`))),
   ] },
   { section: 'api-reference', title: 'API Reference', children: [
     page('docs/overview.mdx'),
     page('docs/api-reference.mdx'),
+    page('docs/mesh-commands.mdx'),
     group('CLI', [
       page('docs/cli.mdx'),
       group('Workstation', ['cli-usage', 'cli-installation', 'cli-selection'].map(name => page(`docs/${name}.mdx`))),
@@ -351,8 +352,13 @@ for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
   const file = join(skillsDir, entry.name, 'SKILL.md'); // missing SKILL.md fails the sync
   const raw = readFileSync(file);
-  const description = raw.toString('utf8').match(/^description:\s*"?(.+?)"?\s*$/m)?.[1];
-  if (!description) throw new Error(`no description frontmatter in ${file}`);
+  let description;
+  try {
+    description = frontmatter(raw.toString('utf8')).data?.description;
+  } catch (cause) {
+    throw new Error(`invalid skill frontmatter in ${file}`, { cause });
+  }
+  if (typeof description !== 'string' || !description.trim()) throw new Error(`non-empty description string required in frontmatter of ${file}`);
   skills.push({
     name: entry.name,
     type: 'skill-md',
@@ -424,6 +430,12 @@ const anchors = new Map([...documents].map(([rel, document]) => [rel, anchorsOf(
 for (const section of ['docs', 'api-reference', 'api']) {
   rmSync(join(pubDir, section), { recursive: true, force: true });
 }
+// TypeDoc writes the TypeScript reference from the published packages' sources; the site serves
+// it unchanged, with its own navigation and search.
+const typedocDir = join(here, '..', 'typedoc');
+if (existsSync(join(typedocDir, 'index.html'))) {
+  cpSync(typedocDir, join(pubDir, 'api', 'typescript'), { recursive: true });
+}
 const http = publishHttpReferences({
   outDir, pubDir, genDir, documents,
   rewriteMarkdown: (markdown, rel) => rewriteLinks(markdown, rel, [gfm()]),
@@ -488,7 +500,7 @@ const taskRoutes = [
 const taskRouting = '## Route by task\n\n' +
   '- [Agent setup prompt](https://docs.cotal.ai/prompt.md): Run the setup instructions with your coding agent.\n' +
   taskRoutes.join('\n') + '\n\n## All pages\n\n';
-writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n\n' + taskRouting + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
+writeFileSync(join(pubDir, 'llms.txt'), '# Cotal\n\nA standard wire interface for agents over NATS + JetStream. The normative wire specification wins where other pages disagree. Roadmap content is not shipped behavior.\n\n- [All documentation](https://docs.cotal.ai/llms-full.txt)\n- [Compact documentation](https://docs.cotal.ai/llms-small.txt)\n- [Agent setup prompt](https://docs.cotal.ai/prompt.md)\n- [Message schema](https://docs.cotal.ai/cotal.schema.json)\n- [TypeScript reference](https://docs.cotal.ai/api/typescript/)\n\n' + httpReferences.map(reference => `- [${reference.label} OpenAPI](${origin}/${reference.specFile})`).join('\n') + '\n\n' + taskRouting + pages.map(p => `- [${p.title}](${origin}${p.url.slice(0, -1)}.md)`).join('\n') + '\n');
 for (const [name, subset] of [['full', pages], ['small', pages.filter(p => !['release', 'setup-internals', 'roadmap'].includes(p.slug))]]) {
   writeFileSync(join(pubDir, `llms-${name}.txt`), subset.map(p => `Source: ${origin}${p.url}\n\n${p.markdown}`).join('\n\n'));
 }

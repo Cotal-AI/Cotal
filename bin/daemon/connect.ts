@@ -1,11 +1,12 @@
 /**
  * The daemon's connection readiness for one space (A2b.1). It answers whether this machine's daemon
  * could register with the space as its own service, and if not, exactly why. It never registers,
- * holds no bearer and starts nothing.
+ * persists no bearer and starts nothing.
  *
  * Every input is stock: the mesh registry entry (`findMesh`), the machine's stock IdP session
- * (`loadIdpSession`), and the registered auth provider's `serviceEndpointInfo`, which reads the
- * space's stock service authority route (GET only, no redirects, closed parser). A 404 there means the
+ * (`loadIdpSession` and `fetchIdpJwt`), and the registered auth provider's `serviceEndpointInfo`,
+ * which reads the space's stock service authority route (GET only, no redirects, closed parser).
+ * A 404 there means the
  * space does not host service endpoints (stock `serviceEndpoints` is off by default); the daemon
  * reports that, and never falls back to a Manager view, `manager.vitals` or static credentials.
  *
@@ -16,15 +17,23 @@
  * holds no credential, owner, hostname or hardware id.
  */
 import { join } from "node:path";
+import { base64url, decodeJwt, decodeProtectedHeader } from "jose";
 import { assertLifecycleToken, isAccountNkey, mintLifecycleUid, resolveAuthProvider } from "@cotal-ai/core";
-import { claimIdentityRecord, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
-import { loadIdpSession } from "@cotal-ai/auth";
+import { claimIdentityRecord, codeSpan, findMesh, homeCotalDir, spaceSegment, userAuthStateDir, workspaceSecretStore } from "@cotal-ai/workspace";
+import { fetchIdpJwt, IdpSessionRejectedError, IdpUnreachableError, loadIdpSession } from "@cotal-ai/auth";
 import type { ConnectCheckResult } from "./protocol.js";
+import { daemonCommandCopy } from "./guidance.js";
 
 /** The service name the daemon proposes for itself. Single-label names are reserved for reference
  *  endpoints and a third-party name must be reverse-DNS, so this is the reverse-DNS of cotal.ai.
  *  Binding it still needs the space operator's `name-bind`; the daemon never claims it. */
 export const DAEMON_ENDPOINT = "ai.cotal.machine";
+
+/** Shared diagnosis when the live authority no longer matches the daemon's pinned account. */
+export const ACCOUNT_MISMATCH_MESSAGE = "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand";
+
+/** Fixed clock diagnosis for a provider proof already expired on this machine. */
+const IDP_CREDENTIAL_EXPIRED_MESSAGE = "the sign-in provider returned a credential that is expired according to this machine's clock; check this machine's and the authority's clocks, then connect again; nothing is connected";
 
 const KIND = "cotal-daemon-service-identity";
 
@@ -38,7 +47,7 @@ export interface DaemonServiceIdentity {
 }
 
 /** Where this machine's daemon keeps its identity for `space`. */
-export function daemonIdentityFile(space: string, home: string = homeCotalDir()): string {
+function daemonIdentityFile(space: string, home: string = homeCotalDir()): string {
   return join(home, "daemon", spaceSegment(space), "service-identity.json");
 }
 
@@ -55,11 +64,18 @@ function parseIdentity(space: string) {
   };
 }
 
+/** Read an existing daemon identity without ever minting a replacement. */
+export function readDaemonServiceIdentity(space: string, home: string): DaemonServiceIdentity {
+  return claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => {
+    throw new Error("the daemon service identity is missing");
+  });
+}
+
 /** The fixed sentence per failure. Nothing from the remote side is quoted. */
 const SENTENCE = {
   "not-registered": "this space is not registered on this machine; add it with `cotal meshes add`",
   "not-user-auth": "this space does not use user sign-in, so the daemon cannot connect to it as its own service",
-  "not-signed-in": "this machine is not signed in to the space's provider; run `cotal daemon login --idp <url>`",
+  "not-signed-in": "this machine is not signed in to the space's provider",
   "unsupported-by-space": "the space's auth service does not host service endpoints, so the daemon cannot register with it",
   unreachable: "the space's auth service could not be reached",
   refused: "the space's auth service gave an answer the daemon cannot use",
@@ -67,20 +83,43 @@ const SENTENCE = {
 
 /** Check readiness for `space`. `home` is the machine home where the stock session and the daemon's
  *  own state live. */
-export async function connectCheck(space: string, home: string = homeCotalDir()): Promise<ConnectCheckResult> {
+export async function connectCheck(space: string, home: string = homeCotalDir(), signal?: AbortSignal): Promise<ConnectCheckResult> {
+  signal?.throwIfAborted();
   const entry = findMesh(space);
   if (!entry) return { outcome: "not-registered", space, message: SENTENCE["not-registered"] };
   const ua = entry.mode === "user" ? entry.userAuth : undefined;
   if (!ua) return { outcome: "not-user-auth", space, message: SENTENCE["not-user-auth"] };
   let session;
   try { session = loadIdpSession(home, ua.idp.url); } catch { session = undefined; }
-  if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"] };
+  if (!session) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],
+    remedy: `run ${codeSpan(daemonCommandCopy("login", home, [["--idp", ua.idp.url]]))}` };
+  // The cached handle's presence and advisory expiry do not prove the IdP still accepts it.
+  // Reuse the stock bounded JWT cache, so readiness and registration agree on revocation.
+  try {
+    const jwt = await fetchIdpJwt(ua.idp.url, session.token, signal);
+    const header = decodeProtectedHeader(jwt), claims = decodeJwt(jwt);
+    const signature = jwt.split(".")[2] ?? "";
+    const now = Date.now() / 1000;
+    // This is a usability check only. The space still verifies the signature and pinned claims.
+    if (typeof header.alg !== "string" || !header.alg || header.alg === "none" || !/^[A-Za-z0-9_-]+$/.test(signature) || base64url.decode(signature).length === 0
+      || typeof claims.sub !== "string" || !claims.sub
+      || typeof claims.exp !== "number" || !Number.isFinite(claims.exp)
+      || (claims.nbf !== undefined && (typeof claims.nbf !== "number" || !Number.isFinite(claims.nbf) || claims.nbf > now)))
+      return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+    if (claims.exp <= now) return { outcome: "credential-expired", space, message: IDP_CREDENTIAL_EXPIRED_MESSAGE };
+  }
+  catch (e) {
+    if (e instanceof IdpSessionRejectedError) return { outcome: "not-signed-in", space, message: SENTENCE["not-signed-in"],
+      remedy: `run ${codeSpan(daemonCommandCopy("login", home, [["--idp", ua.idp.url]]))}` };
+    if (e instanceof IdpUnreachableError) return { outcome: "unreachable", space, message: "the space's sign-in provider could not be reached" };
+    return { outcome: "refused", space, message: "the space's sign-in provider gave an answer the daemon cannot use" };
+  }
 
   let accountPublicKey: string;
   try {
     const provider = resolveAuthProvider();
     if (!provider.serviceEndpointInfo) return { outcome: "unsupported-by-space", space, message: SENTENCE["unsupported-by-space"] };
-    const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space });
+    const info = await provider.serviceEndpointInfo({ store: workspaceSecretStore(entry.root), dir: userAuthStateDir(entry.root, space, { readOnly: true }), space, signal });
     accountPublicKey = info.accountPublicKey;
   } catch (e) {
     const status = (e as { httpStatus?: number }).httpStatus;
@@ -90,12 +129,19 @@ export async function connectCheck(space: string, home: string = homeCotalDir())
     return { outcome: "refused", space, message: SENTENCE.refused };
   }
 
-  const identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({
-    v: 1, kind: KIND, space, endpoint: DAEMON_ENDPOINT, instanceId: mintLifecycleUid(), accountPublicKey,
-  }));
+  signal?.throwIfAborted();
+  let identity: DaemonServiceIdentity;
+  try {
+    identity = claimIdentityRecord(daemonIdentityFile(space, home), "daemon service identity", parseIdentity(space), () => ({
+      v: 1, kind: KIND, space, endpoint: DAEMON_ENDPOINT, instanceId: mintLifecycleUid(), accountPublicKey,
+    }));
+  } catch {
+    return { outcome: "local-state-error", space,
+      message: "the daemon could not read or create its local service identity; inspect service-identity.json and its permissions, and restore the original record if damaged" };
+  }
   if (identity.accountPublicKey !== accountPublicKey)
     return { outcome: "account-mismatch", space, pinnedAccountPublicKey: identity.accountPublicKey, observedAccountPublicKey: accountPublicKey,
-      message: "the space now answers with a different account than this daemon pinned; nothing was changed. Confirm the space was not replaced before removing the daemon's identity for it by hand" };
+      message: ACCOUNT_MISMATCH_MESSAGE };
   return { outcome: "ready-to-register", space, endpoint: DAEMON_ENDPOINT, instanceId: identity.instanceId, accountPublicKey,
     message: "this daemon can ask the space to register it; the space owner must still approve it, and nothing has been registered" };
 }

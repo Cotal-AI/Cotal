@@ -1,12 +1,10 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   credsClaims,
   mintConnectionEvictorCreds,
   mintMembershipObserverCreds,
   newIdentity,
   rotateSystemAccount,
-  writeSecretFileAtomic,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import { assertSingleSpaceBroker, authDir, getSpaceAuth, putSpaceAuth } from "./auth-paths.js";

@@ -57,7 +57,7 @@ import {
   waitConsumerConfig,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshwait";
 const EP = "manager";
@@ -70,21 +70,6 @@ const CHANNEL = "build";
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** A cell whose claim is "this ENDS" must fail as a RED, not as a suite that stops: a bare `await`
- *  on a deadline nothing expires hangs the file, and `mutation-proof` grades a hang INCONCLUSIVE —
- *  "a hang is not a red" — so a guard asserted by a bare await grades nothing. */
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}meshwait-`));

@@ -49,6 +49,7 @@ const {
   renderWorkspaceError,
   reachableOrThrow,
   ConnectRefusal,
+  isWorkspaceTargetError,
   resolveControlTarget,
   resolveTargetOrThrow,
   setCurrent,
@@ -264,27 +265,27 @@ for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-
 check("message: open-wants-auth does NOT claim a space name", !preflightMessage("open-wants-auth", T, true).includes("alpha"));
 
 // A folder whose `.cotal/` holds records but names no space, as after `space forget` of a prepared
-// space, resolves to the default space with nothing recording it there. An unreachable broker then
-// names the folder and the step that prepares a space in it, not a default mesh recorded there.
+// space, is not resolved to the default space. The refusal names the folder and the step that
+// prepares a space in it.
 {
   const forgotten = mkdtempSync(join(home, "forgotten-"));
   mkdirSync(join(forgotten, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(forgotten, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
   const empty = mkdtempSync(join(home, "empty-"));
   mkdirSync(join(empty, ".cotal"));
-  const t = resolveMeshTarget(forgotten);
-  check("a folder whose records name no space resolves local-space, flagged as naming no space", t.source === "local-space" && t.namesNoSpace === true, t);
-  check("control: an empty .cotal/ is not flagged", resolveMeshTarget(empty).namesNoSpace === undefined);
-  const m = preflightMessage("unreachable", t, false);
-  check("message: unreachable for that folder names it and space create, not the default mesh or address",
-    m === `✗ no space is registered or prepared here for ${t.root} - prepare one there with \`cotal space create <name> --root ${t.root}\`, or select one with \`cotal use <name>\`` && !m.includes(t.server), m);
-  check("control: the same target without the flag keeps the recorded-mesh sentence", preflightMessage("unreachable", { ...t, namesNoSpace: undefined }, false).includes(`mesh "${t.space}" is recorded at ${t.root}`));
-  // The refusal's target names the folder only, so no report is headed by the assumed space.
-  const refusal = await preflightOrThrow({ ...t, server: DEAD }).then(() => undefined, (e: unknown) => e);
-  check("preflightOrThrow on that folder refuses with a target naming only the folder, not the assumed space",
-    refusal instanceof ConnectRefusal && refusal.code === "TARGET_UNAVAILABLE" && JSON.stringify(refusal.target) === JSON.stringify({ root: t.root }) && !Object.hasOwn(refusal.failure().target as object, "space"), refusal instanceof ConnectRefusal ? refusal.target : String(refusal));
-  const recorded = await preflightOrThrow({ ...t, server: DEAD, namesNoSpace: undefined }).then(() => undefined, (e: unknown) => e);
-  check("control: without the flag the refusal's target keeps the space", recorded instanceof ConnectRefusal && (recorded.target as { space?: string } | undefined)?.space === t.space, recorded instanceof ConnectRefusal ? recorded.target : String(recorded));
+  const refused = (() => { try { return resolveMeshTarget(forgotten); } catch (e) { return e; } })();
+  check("a folder whose records name no space refuses, naming the folder and no assumed space",
+    isWorkspaceTargetError(refused) && refused.code === "no-meshes" && refused.details.root === forgotten && refused.details.manifest === undefined, refused);
+  const emptyRefused = (() => { try { return resolveMeshTarget(empty); } catch (e) { return e; } })();
+  check("an empty .cotal/ refuses without assuming a space",
+    isWorkspaceTargetError(emptyRefused) && emptyRefused.code === "no-meshes" && emptyRefused.details.root === empty && emptyRefused.details.space === undefined, emptyRefused);
+  const declared = mkdtempSync(join(home, "declared-"));
+  mkdirSync(join(declared, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(declared, ".cotal", "agents", "default.md"), "---\nname: default\n---\n");
+  writeFileSync(join(declared, "cotal.yaml"), "apiVersion: cotal/v1\nkind: Mesh\nspace: declared\nchannels:\n  general: {}\n");
+  const named = (() => { try { return resolveMeshTarget(declared); } catch (e) { return e; } })();
+  check("a cotal.yaml in that folder is named with the space it declares, and nothing is launched",
+    isWorkspaceTargetError(named) && named.details.manifest?.path === join(declared, "cotal.yaml") && named.details.manifest.space === "declared", named);
 }
 
 // ── preflightTarget: probe a dead broker, classify, but DO NOT mutate the registry ────────────────
@@ -373,10 +374,14 @@ check("pruneMesh mismatch refuses a catalog record", pruneMesh("catalog-kept") =
 removeMesh("catalog-kept");
 // …and the copy stops telling the operator to `cotal up` a mesh that runs somewhere else.
 const manualT = { ...T, space: "theirs", origin: "manual" as const };
-check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cotal up`", (() => {
+check("unreachable copy for a registered mesh names `cotal space forget`, not legacy removal or `cotal up`", (() => {
   const m = preflightMessage("unreachable", manualT, false);
-  return m.includes("cotal meshes rm theirs") && !m.includes("cotal up");
+  return m.includes("cotal space forget theirs") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
 })(), preflightMessage("unreachable", manualT, false));
+check("unreachable catalog copy names provider removal and sync, not locally refused forget", (() => {
+  const m = preflightMessage("unreachable", { ...manualT, origin: "catalog" }, false);
+  return m.includes("remove it from the provider's catalog") && m.includes("cotal sync") && !m.includes("cotal space forget") && !m.includes("cotal meshes rm") && !m.includes("cotal up");
+})());
 // A user-mode target never reaches preflightTarget, so this arm has to throw the same refusal.
 {
   const userBase = { ...T, mode: "user" as const, space: "hosted", root: "/tmp/hosted-root" };
@@ -384,7 +389,7 @@ check("unreachable copy for a registered mesh names `cotal meshes rm`, not `cota
   check("user-mode preflight of a hand-registered mesh refuses through the shared unreachable sentence",
     manualUser instanceof ConnectRefusal && manualUser.kind === "transient" && manualUser.code === "TARGET_UNAVAILABLE"
       && manualUser.rendered === preflightMessage("unreachable", { ...userBase, origin: "manual" }, false)
-      && manualUser.rendered.includes("cotal meshes rm hosted") && !manualUser.rendered.includes("cotal up"),
+      && manualUser.rendered.includes("cotal space forget hosted") && !manualUser.rendered.includes("cotal meshes rm") && !manualUser.rendered.includes("cotal up"),
     manualUser instanceof ConnectRefusal ? manualUser.rendered : String(manualUser));
   const upUser = await preflightOrThrow({ ...userBase, origin: "up" }).then(() => undefined, (e: unknown) => e);
   check("user-mode preflight of an up record still names `cotal up` at the recorded root",
@@ -446,6 +451,42 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
   check("CONTROL: a real auth refusal behind the same greeting is AUTH_REQUIRED and drops the `up` record", refused instanceof ConnectRefusal && refused.code === "AUTH_REQUIRED" && findMesh("refused-auth") === undefined, { refused: String(refused), meshes: loadMeshes() });
   await reset.close();
   await refuse.close();
+}
+
+// A real listener without TLS must be distinguished from one that never answered (#4181).
+{
+  const { spawn } = await import("node:child_process");
+  const { probeConnect } = await import("@cotal-ai/core");
+  const { freePort, SMOKE_BROKER_TOKEN, teardownOnSignal, killAndAwaitExit, awaitBrokerReady } = await import("@cotal-ai/smoke-kit");
+  const store = mkdtempSync(join(home, SMOKE_BROKER_TOKEN));
+  const port = await freePort();
+  const server = `nats://127.0.0.1:${port}`;
+  const child = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(port), "-js", "-sd", store], { stdio: "ignore" });
+  const release = teardownOnSignal(child, store);
+  try {
+    await awaitBrokerReady(async () => (await probeConnect(server)).ok, { servers: server, attempts: 20, delayMs: 100 });
+    check("TLS diagnostic control: the real broker answers without a TLS requirement", (await probeConnect(server)).ok);
+    const probe = await probeConnect(server, { tls: true });
+    check("TLS diagnostic: public probe names the unsupported TLS requirement", !probe.ok && probe.reason === "tls-unsupported", probe);
+    for (const source of [...REGISTRY, ...NON_REGISTRY]) {
+      const classified = classifyPreflightFailure(source, "tls-unsupported", false);
+      check(`TLS diagnostic: ${source} keeps its record`, classified.kind === "tls-unsupported" && !classified.prune, classified);
+    }
+    recordMesh({ space: "tls-refusal", server, root: home, mode: "open", origin: "up", tlsRequired: true, ts: new Date(0).toISOString() });
+    const target: MeshTarget = { ...T, space: "tls-refusal", server, root: home, origin: "up", tlsRequired: true };
+    const before = readFileSync(meshFile("tls-refusal"));
+    const refused = await preflightOrThrow(target).then(() => undefined, (e: unknown) => e);
+    check("TLS diagnostic: registered refusal names TLS rather than an outage or credentials", refused instanceof ConnectRefusal && refused.code === "DEPENDENCY_UNAVAILABLE" && refused.rendered.includes("does not offer the required TLS") && !refused.rendered.includes("no broker answered"), String(refused));
+    check("TLS diagnostic: registered refusal preserves the exact record", before.equals(readFileSync(meshFile("tls-refusal"))));
+    const raw = await reachableOrThrow(server, { tls: true }).then(() => undefined, (e: unknown) => e);
+    check("TLS diagnostic: raw refusal names TLS without registry wording", raw instanceof ConnectRefusal && raw.code === "DEPENDENCY_UNAVAILABLE" && raw.rendered.includes("does not offer the required TLS") && !raw.rendered.includes("registry"), String(raw));
+    check("TLS diagnostic control: the same broker still answers", (await probeConnect(server)).ok);
+    removeMesh("tls-refusal");
+  } finally {
+    await killAndAwaitExit(child);
+    release();
+    rmSync(store, { recursive: true, force: true });
+  }
 }
 
 // ── S10 delayed-INFO confirm: first 1s INFO read misses; second longer read must still save. ─────

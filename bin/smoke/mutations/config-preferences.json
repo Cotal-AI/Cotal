@@ -94,7 +94,7 @@
     },
     {
       "name": "the detach key ignores the saved preference",
-      "file": "implementations/cli/src/lib/attach-client.ts",
+      "file": "packages/workspace/src/attach/attach-client.ts",
       "find": "  const resolved = resolvePreference(\"detach-key\", { preferences: cachedPreferences() });",
       "replace": "  const resolved = resolvePreference(\"detach-key\", { preferences: { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } });",
       "expectRed": "a saved detach-key rebinds it and names its source",

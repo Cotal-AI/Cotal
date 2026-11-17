@@ -1,0 +1,2 @@
+# Deleting a space on an authenticated mesh: a credential that cannot delete throws, the space's trust material deletes every stream (#2658).
+smoke:delete-space-auth

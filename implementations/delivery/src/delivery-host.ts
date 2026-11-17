@@ -9,12 +9,18 @@
  * membership feed. Lanes share the process and nothing else, so one space losing its broker
  * connection, its credential or its lease closes that lane and leaves the others serving.
  *
+ * The host is also the one process that may hold the broker's kick credential (`kick-authority.ts`):
+ * when a space on the root retained the system-account signing seed, every lane kicks through the
+ * host's kick authority and none opens a kick credential of its own.
+ *
  * The manifest grammar and the reconcile lifecycle are `runSpaceHost` in `@cotal-ai/workspace`,
  * shared with the auth callout host.
  */
 import type { ParsedArgs } from "@cotal-ai/core";
 import { runSpaceHost } from "@cotal-ai/workspace";
 import { daemonRoot, openDeliveryLane, type DeliveryLog } from "./delivery.js";
+import { hostKickAuthority } from "./kick-authority.js";
+import { retainedBrokerSeed } from "./sys-creds.js";
 
 /** How long a signalled host waits for its lanes to release their leases before it exits anyway. A
  *  row left behind is the bucket TTL's to expire, as it is for a single-space daemon's 2s bound. */
@@ -56,9 +62,17 @@ export async function runDeliveryHost(args: ParsedArgs): Promise<void> {
   // One root for every lane, chosen once: `--root`, or the nearest `.cotal/` above the working directory.
   const root = daemonRoot(v);
   const tls = v.tls !== undefined;
+  // The kick posture is decided once, here, and said out loud: with a retained seed on the root the
+  // host is the kick authority for every lane; without one each lane is on its own stored evictor.
+  const retained = await retainedBrokerSeed(root);
+  const kickAuthority = retained === undefined ? undefined : hostKickAuthority({ root, server });
+  if (retained !== undefined)
+    console.error(`• delivery host: live eviction kicks through this process's one kick authority, minted per kick from the system-account signing seed retained by space "${retained.space}"; no lane opens a kick credential`);
+  else
+    console.error("! delivery host: no space on this root retained its system-account signing seed, so this process holds no kick authority; a lane kicks with its own connection evictor, and a lane without one refuses a live eviction");
   const host = await runSpaceHost({
     manifest,
-    open: (space) => openDeliveryLane({ space, server, root, rootNamed: v.root !== undefined, tls, log: laneLog(space) }),
+    open: (space) => openDeliveryLane({ space, server, root, rootNamed: v.root !== undefined, tls, log: laneLog(space), ...(kickAuthority !== undefined ? { kickAuthority } : {}) }),
     startup: "servable",
     label: "delivery host",
     entry: "deliver --spaces",

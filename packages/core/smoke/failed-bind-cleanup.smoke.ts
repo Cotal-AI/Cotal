@@ -114,6 +114,35 @@ try {
   }
   if (!up) throw new Error(`fixture broker never came up on ${SERVERS}`);
 
+  // An awaited admission refusal must precede readiness and retain the original error.
+  {
+    const refusal = new Error("fixture admission refusal");
+    let transportOpened = false;
+    let admissionRan = false;
+    let ready = false;
+    const endpoint = new CotalEndpoint({
+      space: "admission-refusal", servers: SERVERS,
+      card: { name: "admission-client", kind: "endpoint" },
+      onConnection: () => { transportOpened = true; },
+      beforeBind: async () => {
+        await wait(20);
+        admissionRan = transportOpened;
+        throw refusal;
+      },
+    });
+    endpointHandle = endpoint;
+    endpoint.on("error", () => {});
+    endpoint.on("connection", (state) => { if (state.connected) ready = true; });
+    let rejected: unknown;
+    try { await endpoint.start(); } catch (error) { rejected = error; }
+    await wait(100);
+    check("ADMISSION: asynchronous refusal precedes readiness and preserves its error",
+      admissionRan && !ready && rejected === refusal, { admissionRan, ready });
+    check("ADMISSION: refused bind closes the real transport", await connectionCount() === 0);
+    await endpoint.stop();
+    endpointHandle = undefined;
+  }
+
   // --- Cell 1: the presence-watch stub is REACHED, and the retry loop closes the transport ---
   //
   // Two named cells share the same three attempts. Splitting them makes the CONTROL failure mode

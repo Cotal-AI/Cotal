@@ -208,10 +208,10 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, serverConfig, setupSpaceStreams,
   standaloneConnectOpts, isReachable, remoteManagerActors, remoteManagerRegistrationProof,
-  eventChannel, loadAgentFile, readRunAdmission, runDriverCaller, readGoalResult,
+  eventChannel, loadAgentFile, readRunAdmission, runDriverCaller,
   openRecordsBucket, createRunSpec, writeRunStatus, newTakeoverId, type RunListPage,
   RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost, type RunHostDrive,
-  epCall, issuedUserCaller, resolveService, invokeCommand, type EpCaller, type Connector, type EpAttributedReply, registry,
+  issuedUserCaller, resolveService, invokeCommand, type EpCaller, type Connector, type EpAttributedReply, registry,
 } from "@cotal-ai/core";
 import { authDir, userAuthStateDir, workspaceSecretStore, saveSpaceAuth, recordMesh, assertUserAuthInfo } from "@cotal-ai/workspace";
 import {
@@ -219,7 +219,7 @@ import {
   deriveOwnerForIdpSubject, findActorUnified, revokeActor,
 } from "@cotal-ai/auth";
 import { Manager, type ManagerOptions } from "../src/manager.js";
-import { managerClusterArtifacts, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
+import { managerClusterArtifacts } from "../src/manager-service-contract.js";
 import { registerRemoteManagerAuthority } from "../src/remote-register.js";
 import * as remote from "../src/remote-authority.js";
 import { RunHosting } from "../src/run-hosting.js";
@@ -548,6 +548,11 @@ try {
     const recordsBefore = await runCount();
     writeFileSync(controlPath, scenario);
     await until(() => trace().some((e) => e.kind === `tool-${scenario}`), `native tool ${scenario}`);
+    // The child writes the trace when the tool call returns. The drive and the run record can
+    // still be landing, so a parent-restored read at that instant sees the old counts (#5609).
+    if (scenario === "parent-restored") {
+      await until(async () => drives.size === before + 1 && await runCount() === recordsBefore + 1, "native tool parent-restored recorded", 10_000).catch(() => {});
+    }
     check(`MC-5 ${scenario} uses authentic child caller without new acceptance on denial`, (trace().find((e) => e.kind === `tool-${scenario}`)?.isError === true) === (scenario !== "parent-restored") && drives.size === before + (scenario === "parent-restored" ? 1 : 0) && await runCount() === recordsBefore + (scenario === "parent-restored" ? 1 : 0));
   }
   writeFileSync(join(root, ".cotal", "agents", "toolbaseline.md"), "---\nname: toolbaseline\nagent: u4-seat\ncapabilities: []\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative child without run.\n");

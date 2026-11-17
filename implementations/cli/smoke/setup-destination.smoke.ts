@@ -17,7 +17,8 @@
  * provider is asked whether it answers; an unknown name or a missing host tool is refused before
  * anything is written, and a runtime left unnamed is never removed.
  *
- * On a terminal: Cloud is shown and cannot be chosen, every answer is shown before the save,
+ * On a terminal: Cloud can be chosen, a Cloud space registered here is set up in the project folder
+ * the terminal asks for, every answer is shown before the save,
  * Change asks again with the answers kept, Cancel saves nothing, and a missing project folder is
  * created only after the operator agrees. Installed runtimes and those whose host tool is found
  * start selected, and a selected runtime whose host tool is missing is reported and not installed.
@@ -46,7 +47,7 @@ process.env.COTAL_HOME = join(home, ".cotal");
 const xdg = join(home, ".config");
 process.env.XDG_CONFIG_HOME = xdg;
 mkdirSync(process.env.COTAL_HOME, { recursive: true });
-const { findMesh, findPreparedSpace, loadExtensionsManifest, loadMeshes, readPreferences, recordMesh, resolveMeshTarget, resolveOnPath } = await import("@cotal-ai/workspace");
+const { COTAL_CLOUD_IDP, findMesh, findPreparedSpace, loadExtensionsManifest, loadMeshes, readPreferences, recordMesh, resolveMeshTarget, resolveOnPath } = await import("@cotal-ai/workspace");
 const { loadAgentFile } = await import("@cotal-ai/core");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { check, finish } = createSuite();
@@ -78,7 +79,22 @@ function tool(dir: string, name: string, out = ""): void {
   chmodSync(join(dir, name), 0o755);
   writeFileSync(join(dir, `${name}.cmd`), `@${out ? `echo ${out}` : "exit /b 0"}\r\n`);
 }
-tool(bin, "codex");
+const codexStandIn = join(bin, "codex-fixture.cjs");
+writeFileSync(codexStandIn, `const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const state = path.join(process.env.HOME, ".codex-fixture.json");
+const saved = fs.existsSync(state) ? JSON.parse(fs.readFileSync(state, "utf8")) : {};
+if (args.join(" ") === "plugin marketplace list") console.log(saved.market ? "cotal-mesh" : "");
+else if (args.slice(0, 3).join(" ") === "plugin marketplace add") {
+  saved.market = args[3]; fs.writeFileSync(state, JSON.stringify(saved));
+} else if (args.join(" ") === "plugin add cotal@cotal-mesh") {
+  saved.version = JSON.parse(fs.readFileSync(path.join(saved.market, "plugins/cotal/.codex-plugin/plugin.json"), "utf8")).version;
+  fs.writeFileSync(state, JSON.stringify(saved));
+} else if (args.join(" ") === "plugin list" && saved.version) console.log("cotal@cotal-mesh  installed  " + saved.version);
+`);
+writeFileSync(join(bin, "codex"), `#!/bin/sh\nexec "${process.execPath}" "${codexStandIn}" "$@"\n`, { mode: 0o755 });
+writeFileSync(join(bin, "codex.cmd"), `@"${process.execPath}" "${codexStandIn}" %*\r\n`);
 tool(bin, "tmux");
 tool(more, "herdr", "herdr 0.7.0");
 tool(more, "orca");
@@ -92,6 +108,7 @@ const env: Record<string, string> = {
   COTAL_HOME: process.env.COTAL_HOME,
   COTAL_SKIP_CONNECTOR_SEED: "1",
   COTAL_SKIP_ASSIST: "1",
+  COTAL_NO_UPDATE_CHECK: "1",
   PATH: [bin, ...(process.platform === "win32" ? [join(process.execPath, "..")] : [])].join(delimiter),
   TERM: "xterm-256color",
 };
@@ -299,10 +316,10 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
 
   const before = files();
   const again = await json(FULL("research", dir));
-  check("a rerun with the same answers is a no-op, exit 0, and writes nothing",
-    again.status === 0 && again.env?.outcome === "no-op" && again.env.result.spaceState === "prepared" && again.env.result.written.length === 0 && JSON.stringify(files().filter((f) => !f.endsWith("setup.log"))) === JSON.stringify(before.filter((f) => !f.endsWith("setup.log"))), shown(again));
+  check("a rerun refreshes the Codex plugin, exits 0, and creates no new files",
+    again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && again.env.result.spaceState === "prepared" && again.env.result.written.length === 0 && JSON.stringify(files().filter((f) => !f.endsWith("setup.log"))) === JSON.stringify(before.filter((f) => !f.endsWith("setup.log"))), shown(again));
   const plain = await run([...FULL("research", dir), "--plain"]);
-  check("its plain report says the space is already set up", plain.status === 0 && /research is already set up for codex/.test(plain.stdout) && /already prepared/.test(plain.stdout), shown(plain));
+  check("its plain report names the refreshed setup and already prepared space", plain.status === 0 && /set up research for codex/.test(plain.stdout) && /already prepared/.test(plain.stdout), shown(plain));
 
   const startedRoot = project("started-here");
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
@@ -318,6 +335,21 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
 
+// A confirmed scripted local setup creates its explicitly named project folder.
+{
+  const dir = join(home, "new-project");
+  const created = await json([...FULL("new-project", dir), "--yes"]);
+  check("--yes creates a missing local project and prepares its default persona",
+    created.status === 0 && findPreparedSpace("new-project")?.root === dir &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")) &&
+      created.env?.result?.written?.some((w: { what: string }) => w.what === "project folder"), shown(created));
+  const file = join(home, "project-file");
+  writeFileSync(file, "keep");
+  const rejected = await json([...FULL("project-file", file), "--yes"]);
+  check("--yes still refuses an existing non-directory without changing it",
+    refused(rejected, 1, "USAGE_INVALID") && readFileSync(file, "utf8") === "keep", shown(rejected));
+}
+
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
 {
   const dir = project("p-claude");
@@ -330,6 +362,8 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     readPreferences().defaults.harness === "codex" && !partial.env?.result.written.some((w: { what: string }) => w.what === "your harness preference"), readPreferences().defaults);
   const human = await run(FULL("claudespace", dir, "claude"));
   check("its report does not call the space set up", human.status === 4 && /saved claudespace; claude is not set up yet/.test(human.stdout) && !/already set up/.test(human.stdout), shown(human));
+  check("missing application setup points to dependency repair before startup",
+    partial.env?.result.next.command === "install or repair claude, then run the same setup again" && /Next\s+install or repair claude/.test(human.stdout), shown(human));
 }
 
 // ── A self-hosted space ───────────────────────────────────────────────────────────────────────────
@@ -374,7 +408,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     boundTarget.root === catalogProject && boundTarget.personaRoot === join(catalogProject, ".cotal", "agents") &&
       existsSync(join(boundTarget.personaRoot, "default.md")) && !sentinelCredsPath.startsWith(catalogProject), boundTarget);
   const boundAgain = await json(hosted("catalog-team", catalogProject));
-  check("the same discovered project binding again is a no-op", boundAgain.status === 0 && boundAgain.env?.outcome === "no-op" && boundAgain.env.result.spaceState === "registered", shown(boundAgain));
+  check("the same discovered project binding refreshes the plugin without rebinding", boundAgain.status === 0 && boundAgain.env?.outcome === "ok" && boundAgain.env.result.actions.length === 1 && boundAgain.env.result.actions[0].action === "codex-plugin" && boundAgain.env.result.spaceState === "registered", shown(boundAgain));
   const otherCatalogProject = project("catalog-project-other");
   const rebound = await json(hosted("catalog-team", otherCatalogProject));
   check("a discovered space already bound to another project refuses instead of moving again",
@@ -403,7 +437,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     added.status === 0 && added.env?.result.spaceState === "added" && findMesh("hosted")?.root === userRoot && findMesh("hosted")?.mode === "user" && added.env.result.written.some((w: { what: string }) => w.what === "space registration"), shown(added));
   check("and its persona lands where spawn reads for that space", existsSync(join(resolveMeshTarget(home, { space: "hosted" }).personaRoot, "default.md")));
   const again = await json(hosted("hosted", userRoot, ["--connection-file", file]));
-  check("the same connection file again is a no-op", again.status === 0 && again.env?.outcome === "no-op" && again.env.result.spaceState === "registered", shown(again));
+  check("the same connection file refreshes the plugin without registering again", again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && again.env.result.spaceState === "registered", shown(again));
   writeFileSync(join(home, "moved.json"), JSON.stringify({ ...bundle, server: "nats://127.0.0.1:4998" }));
   const moved = await json(hosted("hosted", userRoot, ["--connection-file", join(home, "moved.json")]));
   check("a connection file naming another broker for a registered space is CONFLICT", refused(moved, 2, "CONFLICT") && /cotal space forget hosted/.test(moved.env?.error?.remedy ?? ""), shown(moved));
@@ -424,7 +458,7 @@ const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find(
   const listed = await json(["runtimes"]);
   check("cotal runtimes reports it installed and reachable", listed.env?.result?.items?.some((x: { name: string; state: string; reachable: boolean }) => x.name === "tmux" && x.state === "installed" && x.reachable === true), shown(listed));
   const again = await json([...FULL("rt", dir), "--runtime", "tmux"]);
-  check("naming it again is a no-op that finds it set up", again.status === 0 && again.env?.outcome === "no-op" && row(again, "tmux")?.state === "set-up" && row(again, "tmux")?.reachable === true, shown(again));
+  check("naming it again refreshes the plugin and finds the runtime set up", again.status === 0 && again.env?.outcome === "ok" && again.env.result.actions.length === 1 && again.env.result.actions[0].action === "codex-plugin" && row(again, "tmux")?.state === "set-up" && row(again, "tmux")?.reachable === true, shown(again));
   const bare = await run(["ext", "add", "@cotal-ai/tmux"]);
   check("ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
     bare.status === 0 && installed("@cotal-ai/tmux")?.version === VERSION && installed("@cotal-ai/tmux")?.spec === `@cotal-ai/tmux@${VERSION}`, { run: shown(bare), installed: installed("@cotal-ai/tmux") });
@@ -489,15 +523,15 @@ if (process.platform !== "win32") {
     const dir = project("pty-cloud");
     const before = files();
     const t = terminal(dir);
-    check("a terminal is asked where the space runs, with Cloud pointing to cotal login", (await t.at(DESTINATION)) && /Cloud \(sign in with `cotal login`/.test(t.s.text()), t.s.text().slice(-600));
+    check("a terminal is asked where the space runs, with Cloud among the choices", (await t.at(DESTINATION)) && /○ Cloud/.test(t.s.text()), t.s.text().slice(-600));
     t.write(DOWN);
     await wait(300);
     t.write(DOWN);
     await wait(500);
     const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
-    check("Cloud cannot be chosen: moving past Self-hosted comes back to Local", /● Local/.test(frame.slice(frame.lastIndexOf("Local") - 4)), frame.slice(-400));
+    check("Cloud can be chosen on a terminal, and with no Cloud space here it offers the sign-in", /● Cloud \(sign in to Cotal Cloud and choose your space\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
     t.write("\x03");
-    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code });
+    check("Ctrl-C leaves setup and saves nothing", (await t.exited()) && JSON.stringify(files()) === JSON.stringify(before), { code: t.s.code, added: files().filter(f => !before.includes(f)), removed: before.filter(f => !files().includes(f)) });
   }
   {
     const dir = project("pty-local");
@@ -564,6 +598,45 @@ if (process.platform !== "win32") {
     await t.answer(SAVE, ENTER);
     await t.answer(START_HOSTED, ENTER);
     check("and saving sets it up", (await t.exited()) && t.s.code === 0, { code: t.s.code, out: t.s.text().slice(-500) });
+  }
+  for (const [cloudLabel, cloudIdp] of [["canonical", COTAL_CLOUD_IDP], ["legacy", "https://cloud.cotal.ai/api/auth"]] as const) {
+    const custody = project(`cloud-custody-${cloudLabel}`);
+    const creds = join(custody, ".cotal", "auth", "spaces", "cloud-team", "user-auth", "sentinel.creds");
+    mkdirSync(join(creds, ".."), { recursive: true });
+    writeFileSync(creds, "fixture-sentinel", { mode: 0o600 });
+    recordMesh({
+      space: "cloud-team", server: "nats://127.0.0.1:4997", root: custody, catalogRoot: custody,
+      mode: "user", origin: "catalog", catalogOwner: "cloud-fixture-account", catalogId: "cloud-space", catalogSlug: "cloud-team", catalogName: "Cloud team", catalogRole: "owner",
+      userAuth: { provider: "cotal", idp: { url: cloudIdp, issuer: "https://cloud.cotal.ai", audience: "cotal-mesh" }, endpoints: { url: "https://auth.example.test" }, remote: true, sentinelCredsPath: creds },
+      ts: new Date(0).toISOString(),
+    });
+    const dir = project(`pty-cloud-space-${cloudLabel}`);
+    const t = terminal(dir);
+    await t.at(DESTINATION);
+    t.write(DOWN + DOWN);
+    await wait(500);
+    const frame = t.s.text().slice(t.s.text().lastIndexOf(DESTINATION));
+    check(`${cloudLabel}: with a Cloud space registered here the Cloud choice names the account's spaces`, /● Cloud \(a space of your Cotal Cloud account\)/.test(frame.slice(frame.lastIndexOf("Local"))), frame.slice(-400));
+    await t.answer(DESTINATION, ENTER);
+    check(`${cloudLabel}: Cloud with one space asks for the project folder next, without a sign-in or a space question`,
+      (await t.at("Project folder (your agents work in it)")) && !/Which Cloud space\?|Approve sign-in/.test(t.s.text()), t.s.text().slice(-600));
+    await t.answer(PROJECT, ENTER);
+    await t.answer(APPLICATION, ENTER);
+    await t.answer(RUNTIMES, ENTER);
+    check("the review names Cloud, its space and the project folder",
+      (await t.at(SAVE)) && /destination\s+Cloud/.test(t.s.text()) && /space\s+cloud-team/.test(t.s.text()) && t.s.text().includes(`project      ${dir}`), t.s.text().slice(-700));
+    check("nothing is bound before the save", findMesh("cloud-team")?.root === custody);
+    await t.answer(SAVE, ENTER);
+    await t.answer(START_HOSTED, ENTER);
+    check("saving binds the Cloud space to the project and leaves its credentials where the sign-in put them",
+      (await t.exited()) && t.s.code === 0 && findMesh("cloud-team")?.root === dir && findMesh("cloud-team")?.catalogRoot === custody && existsSync(creds) && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, entry: findMesh("cloud-team"), out: t.s.text().slice(-700) });
+    const again = terminal(project(`pty-cloud-elsewhere-${cloudLabel}`));
+    await again.answer(DESTINATION, DOWN + DOWN + ENTER);
+    await again.answer(APPLICATION, ENTER);
+    await again.answer(RUNTIMES, ENTER);
+    check("a Cloud space bound to a project keeps it, unasked", (await again.at(SAVE)) && again.s.text().includes(`project      ${dir}`) && !again.s.text().includes(PROJECT), again.s.text().slice(-700));
+    await again.answer(SAVE, DOWN + DOWN + ENTER);
+    check("and Cancel there saves nothing", (await again.exited()) && again.s.code === 0 && findMesh("cloud-team")?.root === dir, { code: again.s.code, out: again.s.text().slice(-400) });
   }
   {
     const dir = project("pty-runtimes");

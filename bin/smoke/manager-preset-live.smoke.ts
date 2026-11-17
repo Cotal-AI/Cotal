@@ -285,7 +285,7 @@ try {
         && liveState() === "running" && await isReachable(SERVER) && findMesh(SPACE) !== undefined, out(refused));
     const stop = cotal(stopCommand.split(" ").slice(1));
     check("the stop the refusal names stops the service", stop.status === 0 && liveState() === "stopped", out(stop));
-    const down = cotal(["down"]);
+    const down = cotal(["down", "--yes"]);
     stackUp = down.status !== 0;
     check("bare down skips the stopped service and stops the broker",
       down.status === 0 && !out(down).includes("Service stopped") && !out(down).includes("Service was not running") && liveState() === "stopped"
@@ -303,7 +303,7 @@ try {
       check("teardown stops the background manager", stop.status === 0, out(stop));
     }
     // Bare down stops the stack recorded at this root; it takes no --space.
-    const down = cotal(["down"]);
+    const down = cotal(["down", "--yes"]);
     check("cotal down stops the sandboxed stack", down.status === 0, out(down));
   }
   for (const dir of [home, root, fresh, linkedRoot]) rmSync(dir, { recursive: true, force: true });

@@ -215,11 +215,12 @@ arriving with `Nats-Stream`, `Nats-Subject`, `Nats-Sequence` and `Nats-Time-Stam
 the `$SYS.REQ.USER.INFO` response arrives with none. An endpoint can refuse a marked frame. It
 cannot refuse an unmarked one.
 
-Measured limits. No current profile holds a grant that would let it request its own server view
-(a census cell, with a positive control), and a connection without that grant cannot discover its
-generation (a static cell), so production issuance would have to add `$SYS.REQ.USER.INFO` to each
-issued ceiling. A
-connection whose publish permissions are unrestricted names no generation and refuses. Grant
+The current provisioner and teardown profiles hold the exact `$SYS.REQ.USER.INFO` grant to
+check their connection's account before native impact reads. The census checks those two trusted
+holders and excludes peer-held profiles, with positive and negative detector controls. Using this
+discovery mechanism for peers would still require changing their grants; this prototype does not
+select that change. A connection without the grant cannot discover its generation (a static cell).
+A connection whose publish permissions are unrestricted names no generation and refuses. Grant
 rows carrying two generations, a wildcard generation, or a malformed field all refuse rather
 than picking one. Foreign-space rows are ignored.
 

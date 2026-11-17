@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  brokerPolicyPath, writeBrokerPolicy, readBrokerPolicy, BrokerPolicyError,
+  brokerPolicyPath, writeBrokerPolicy, readBrokerPolicy, BrokerPolicyError, brokerAccountResolver, accountJwtsDir, ACCOUNT_JWT_LIMIT,
 } from "../src/broker-policy.js";
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
@@ -147,5 +147,24 @@ function refuses(fn: () => unknown, match: RegExp, what: string): void {
   }
 }
 
-console.log("broker-policy smoke: OK - plaintext and TLS round-trip with and without an auth timeout and a payload limit, .cotal is 0700, and every unusable policy REFUSES rather than degrading to plaintext or a default (missing cert, missing key, corrupt JSON, unknown transport, future version, half pair, bad auth timeout, bad payload limit)");
+// 12. The full account resolver round-trips beside the other limits, anything else refuses, and the
+//     resolver every render derives from the record names the same directory and limit. `up` and a
+//     host that renders the same broker both derive it here, so a guessed value would leave the two
+//     renders on different resolvers, which nats-server refuses to reload.
+{
+  const d = fresh();
+  writeBrokerPolicy(d, { version: 1, transport: { kind: "plaintext" }, accountResolver: "full" });
+  assert.deepEqual(readBrokerPolicy(d), { version: 1, transport: { kind: "plaintext" }, accountResolver: "full" });
+  writeBrokerPolicy(d, { version: 1, transport: { kind: "tls-required", certFile, keyFile }, maxPayload: 2098176, accountResolver: "full" });
+  assert.deepEqual(readBrokerPolicy(d), { version: 1, transport: { kind: "tls-required", certFile, keyFile }, maxPayload: 2098176, accountResolver: "full" });
+  for (const bad of ["memory", "FULL", "cache", true, null]) {
+    writeFileSync(brokerPolicyPath(d), JSON.stringify({ version: 1, transport: { kind: "plaintext" }, accountResolver: bad }));
+    refuses(() => readBrokerPolicy(d), /unknown account resolver/, `account resolver ${JSON.stringify(bad)}`);
+  }
+  assert.deepEqual(brokerAccountResolver(d, undefined), { kind: "memory" });
+  assert.deepEqual(brokerAccountResolver(d, "full"), { kind: "full", directory: join(d, ".cotal", "account-jwts"), limit: ACCOUNT_JWT_LIMIT, intervalMs: 60_000 });
+  assert.equal(accountJwtsDir(join(d, "x", "..")), join(d, ".cotal", "account-jwts"), "the directory is absolute and normalized");
+}
+
+console.log("broker-policy smoke: OK - plaintext and TLS round-trip with and without an auth timeout, a payload limit and the full account resolver, .cotal is 0700, and every unusable policy REFUSES rather than degrading to plaintext or a default (missing cert, missing key, corrupt JSON, unknown transport, future version, half pair, bad auth timeout, bad payload limit, unknown account resolver)");
 emitSentinel({ passed: cells(), failed: 0 });

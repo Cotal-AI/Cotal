@@ -34,6 +34,7 @@ import type { JournalEntry, JournalStore } from "./../journal.js";
 import type { RunPins } from "../pins.js";
 import { serviceBridge } from "./bridge.js";
 import type { InspectionSnapshot } from "./inspection.js";
+import { PACKAGE_VERSION as hostPackageVersion } from "./package-version.js";
 
 /** Where the reason's byte length lives in the shared stop buffer; the bytes follow it. */
 const STOP_HEADER = 4;
@@ -229,9 +230,12 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
   let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
   let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
+  // Assigned when the run's answer is set up below; the bridge hears only the thread, which does
+  // not exist yet, so no disagreement can arrive before the assignment.
+  let disagree: (e: Error) => void = () => {};
   if (options.bridge !== undefined) {
     const channel = new MessageChannel();
-    host = serviceBridge(channel.port1, options.bridge);
+    host = serviceBridge(channel.port1, options.bridge, (e) => disagree(e));
     bridge = { port: channel.port2, clock: host.clock };
   }
   // Two literal spellings rather than one spread, so the crossing audit in the engine suite reads
@@ -239,8 +243,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   let worker: Worker;
   try {
     worker = bridge !== undefined
-      ? new Worker(options.entry, { workerData: { request, stop, bridge }, transferList: [bridge.port] })
-      : new Worker(options.entry, { workerData: { request, stop } });
+      ? new Worker(options.entry, { workerData: { request, stop, bridge, hostPackageVersion }, transferList: [bridge.port] })
+      : new Worker(options.entry, { workerData: { request, stop, hostPackageVersion } });
   } catch (e) {
     // A thread that never started never reaches `done`, where the seam closes, so close it here:
     // the handler's quiescence hook would otherwise wait forever on a thread that does not exist.
@@ -252,6 +256,13 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   let ready = false;
   const done = new Promise<WorkerRunResult>((resolve, reject) => {
     let answered = false;
+    // A bridge disagreement is this run's failure, exactly like an unknown kind on the thread's own
+    // port below: the run is refused and the thread terminated, and the host process lives on.
+    disagree = (e) => {
+      if (answered) return;
+      answered = true;
+      reject(e);
+    };
     worker.on("message", (m: { kind: "ready" } | { kind: "log"; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
       if (m.kind === "ready" && !ready) {
         ready = true;

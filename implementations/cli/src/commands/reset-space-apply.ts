@@ -69,6 +69,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   const impact = { kind: "reset-space-impact" as const, space, root, storePath: expected.path, storeState: expected.identity ? "present-with-pinned-directory" : "absent-at-read", storeContents, identity: resetSpaceIdentityProjection(plan), registration: selected.source === "registration" ? "only-this-local-up-entry" : "none-recorded-prepared-record-and-journal-kept", preserved: ["personas", "service definitions and stopped-instance records", "installed packages", "login sessions and remote data"], clearsCredentialRefs: credentialRefs, dryRun, effectAttempted: false };
   // A user-auth reset also removes the pinned IdP and the actor ledger, so a bare up refuses afterwards.
   const userAuth = selected.mode === "user";
+  const warnings = selected.mode !== "auth" || plan.accountPub === undefined ? [] : [{ code: "EXPORTED_CREDENTIALS_INVALIDATED", target, message: "Credentials exported with auth mint --out will stop working on this space after the next up. Mint replacements after up with `cotal auth mint <label> --out <new file>`. Exported files are not removed; no remote credential is revoked." }];
   const refLines = (done: boolean) => credentialRefs.map((ref) => `${done ? "Cleared" : "Clears"} the credentialRef of service ${ref.definition}: ${ref.path} was issued by ${done ? "the identity this reset removed" : "this space's identity, which the next up replaces"}.`);
   const impactView = (): Report => ({ space, sections: [{ title: "Reset space impact", blocks: [
     { kind: "fields", rows: [["Space", space], ["Root", root], ["Store", impact.storePath], ["Store observation", impact.storeState], ["Identity paths", String(impact.identity.paths.length)], ["Auth provider", impact.identity.provider ?? "none registered"], ["Declared provider keys", String(impact.identity.providerKeyCount)], ["Trust", impact.identity.trust], ["Registration", impact.registration]] },
@@ -77,7 +78,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   ] }, ...storeContentsSection(storeContents.removed, runsAtDown, root)] });
   if (dryRun) {
     // Every check passed, so the verdict is that the apply is offered; it runs them all again.
-    writeResult(presentation, { command: "reset", target, result: { ...impact, applyVerdict: { offered: true } } }, () => {
+    writeResult(presentation, { command: "reset", target, result: { ...impact, applyVerdict: { offered: true } }, warnings }, () => {
       const view = impactView();
       return { ...view, sections: [verdictSection(`reset space ${space}`, undefined, { command: `cotal reset space ${space} --yes`, description: "Remove the stopped store and local identity", recheck: "The apply runs every check again under the root's maintenance lock." }), ...view.sections] };
     });
@@ -85,6 +86,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
   }
   if (!yes) {
     console.error(renderReport({ ...impactView(), space }, presentation === "plain" ? "plain" : "rich", process.stderr));
+    for (const warning of warnings) console.error(warning.message);
     const answer = await prompts.confirm({ message: `Remove the reviewed stopped store and local identity for ${oneLine(space)}?`, initialValue: false });
     if (prompts.isCancel(answer) || !answer) {
       stopReporting?.();
@@ -144,7 +146,7 @@ export async function resetSpaceApply(space: string, args: ParsedArgs): Promise<
     catch { if (!failure) failure = new CommandFailure("partial", "OPERATION_PARTIAL", "the reset returned, but maintenance lock release did not confirm", { target, changed: [...removed, ...(registrationRemoved ? [{ space, registrationRemoved: true }] : [])] }); }
     stopReporting?.();
   }
-  writeResult(presentation, { command: "reset", target, result: { kind: "reset-space", space, root, storePath: expected.path, removedPaths: removed, localIdentityRemoved: cleanupReturned, registrationRemoved, clearedCredentialRefs: credentialRefs.slice(0, refsCleared), remoteRevocation: "not-performed", preserved: impact.preserved }, ...(failure ? { failure } : {}) }, (data): Report => ({ sections: [{ title: failure ? "Local reset incomplete" : "Local space reset", blocks: [
+  writeResult(presentation, { command: "reset", target, result: { kind: "reset-space", space, root, storePath: expected.path, removedPaths: removed, localIdentityRemoved: cleanupReturned, registrationRemoved, clearedCredentialRefs: credentialRefs.slice(0, refsCleared), remoteRevocation: "not-performed", preserved: impact.preserved }, warnings, ...(failure ? { failure } : {}) }, (data): Report => ({ sections: [{ title: failure ? "Local reset incomplete" : "Local space reset", blocks: [
     { kind: "fields", rows: [["Space", data.space], ["Store", data.storePath], ["Local identity", data.localIdentityRemoved ? "removed and checked absent" : "not confirmed removed"], ["Local registration", data.registrationRemoved ? "removed" : selected.source === "stopped-stack" ? "none recorded; the prepared record and stack journal stay" : "not confirmed removed"], ["Remote revocation", "not performed"]] },
     { kind: "lines", lines: data.removedPaths.slice(0, 100) },
     { kind: "lines", lines: [...(data.removedPaths.length > 100 ? ["Additional returned deletion receipts are in JSON."] : []), "Personas, service definitions, installed packages and account login sessions were kept. This resets local files, not Cloud data or a remote broker's authority.", failure ? "Inspect the retained original paths and registration before any new startup or reset." : userAuth ? userAuthTrustNote(true) : "A later up creates a new local identity."] },

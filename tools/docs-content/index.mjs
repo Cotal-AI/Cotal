@@ -9,6 +9,7 @@ import { frontmatter } from 'fumadocs-core/content/md/frontmatter';
 import { remarkLLMs } from 'fumadocs-core/mdx-plugins/remark-llms';
 import { replaceSource } from 'fumadocs-core/mdx-plugins/stringifier';
 import { AGENT_PROMPT } from './agent-prompt.mjs';
+export { frontmatter };
 
 /** @typedef {import('./index.d.ts').Document} Document */
 /** @typedef {import('mdast').Nodes} Node */
@@ -199,6 +200,14 @@ export async function readDocument(sourcePath) {
   const body = file.data.markdown;
   if (typeof body !== 'string' || !body.trim()) throw new Error(`${sourcePath} produced empty Markdown`);
   return { sourcePath, format, metadata, content, markdown: `# ${metadata.title}\n\n${body}` };
+}
+
+/** @param {string} kind @param {string} sourcePath */
+export function documentationCategory(kind, sourcePath) {
+  const categories = ['Start here', 'Guide', 'Concept', 'Reference', 'Project'];
+  const category = categories.find(value => kind === value || kind.startsWith(value + ' (') || kind.startsWith(value + ':'));
+  if (!category) throw new Error(`${sourcePath} has no supported documentation category`);
+  return category;
 }
 
 /** @param {string} directory @returns {Promise<string[]>} */

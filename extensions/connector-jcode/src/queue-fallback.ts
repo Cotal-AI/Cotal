@@ -55,15 +55,10 @@
  * turn defers and delivers late rather than reconnecting, and finite so a wedged one cannot defer
  * forever. Delivery is late, bounded, and exactly once in every branch.
  *
- * NOT GRADED BY A LIVE CELL, AND SAYING SO RATHER THAN IMPLYING OTHERWISE. A mutation severing the
- * call site SURVIVED the loss suite: that suite's A is a swallowed SEND, not an open unacknowledged
- * RUN, so the deferral is never consulted there. I then built the run-debt cell (the fixture knob
- * `FAKE_JCODE_RUN_WITHOUT_ACCEPT_ON_CONTENT` exists for it) and it PASSED WITH THE DEFERRAL SEVERED,
- * because `nextFallbackAction` takes `drive` on an idle seat and only reaches `queue-turn` on the
- * busy branch after a soft interrupt has failed, so my probe measured a path the defect cannot
- * touch. I deleted the mutation instead of keeping one whose SURVIVED verdict I could not turn into
- * a red, and left the knob so the next attempt starts further along. The behaviour here is covered
- * by the policy cells and by a reviewer's live reproduction, NOT by a mutation-graded live cell.
+ * Policy cells and a live reproduction cover this deferral, not a mutation-graded live cell.
+ * The loss suite's swallowed SEND does not consult it: the deferral concerns an open unacknowledged
+ * RUN. `nextFallbackAction` takes `drive` on an idle seat and reaches `queue-turn` only on the busy
+ * branch after a failed soft interrupt, so an idle run-debt fixture does not exercise this path.
  */
 export function attributionBlockedByOpenRun(unsettledRunDispatches: number, blockedForMs = 0): boolean {
   if (unsettledRunDispatches <= 0) return false;
@@ -112,8 +107,8 @@ export function deferralExhausted(unsettledRunDispatches: number, blockedForMs: 
 /**
  * What an EXHAUSTED deferral should do, which is a three-way decision and not a two-way one.
  *
- * Both obvious answers were measured harmful by reviewers, one of them after I had already written
- * it. Forcing the boundary when the one-shot recovery is spent does not replace anything: it calls
+ * Neither forced shutdown nor continued writes is safe after recovery is spent.
+ * Forcing the boundary when the one-shot recovery is spent does not replace anything: it calls
  * `shutdown(1)` and the seat exits, so a starvation report is answered by killing the seat. And
  * continuing to WRITE is the same defect as doing nothing: the send is refused as unattributable,
  * the batch stays owed, and the loop re-sends once a minute while the Harness accepts and RUNS each
@@ -124,7 +119,7 @@ export function deferralExhausted(unsettledRunDispatches: number, blockedForMs: 
  * redelivers elsewhere, and the reported connection state stops calling the seat `ready`. Terminal
  * for the SEAT's queued-turn tier, never for the MESSAGE.
  */
-export type ExhaustedDeferralAction = "replace-bridge" | "stop-attempting";
+type ExhaustedDeferralAction = "replace-bridge" | "stop-attempting";
 
 export function exhaustedDeferralAction(bridgeRecoveryAvailable: boolean): ExhaustedDeferralAction {
   return bridgeRecoveryAvailable ? "replace-bridge" : "stop-attempting";
@@ -145,7 +140,7 @@ export const FALLBACK_MAX_MS = 60_000;
  * - `wait` — nothing can be attempted right now; stay armed and look again later.
  * - `stop` — this host is shutting down; disarm.
  */
-export type FallbackAction = "drive" | "steer" | "queue-turn" | "wait" | "stop";
+type FallbackAction = "drive" | "steer" | "queue-turn" | "wait" | "stop";
 
 export interface FallbackState {
   /** The host is shutting down. */
@@ -176,7 +171,7 @@ export interface FallbackState {
   giveUpAfter: number;
 }
 
-export interface FallbackDecision {
+interface FallbackDecision {
   action: FallbackAction;
   /** Why, so a refusal is attributable rather than an unexplained `wait`. */
   reason:

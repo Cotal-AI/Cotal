@@ -102,6 +102,8 @@ jobs:
         run: pnpm smoke:docs
       - name: Unit tests
         run: pnpm test
+      - name: Upgrade matrix planning and evidence guards
+        run: pnpm smoke:upgrade-matrix
       - name: Validator lock acquisition source controls
         run: node --test --test-reporter=tap --test-concurrency=1 scripts/ci-validator-lock-acquisition.test.mjs
       - name: Remaining schema direct-engine diagnostic
@@ -221,11 +223,23 @@ jobs:
         with:
           name: seat-native-linux-arm64
           path: ${{ runner.temp }}/seat-native-linux-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-darwin-*
+          path: ${{ runner.temp }}/seat-host-native
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-win32-*
+          path: ${{ runner.temp }}/seat-host-native
       - name: Assemble the seat SO_PEERCRED helpers
         run: node scripts/seat-assemble-natives.mjs
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-host-native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
       - name: Protocol & security smoke tests (shard ${{ matrix.shard }}/4)
         # The detector grades committed blobs. Earlier steps must not change inputs or execution hooks.
         shell: /usr/bin/env -u BASH_ENV -u ENV -u SHELLOPTS -u BASHOPTS /usr/bin/bash --noprofile --norc -e -o pipefail {0}
@@ -279,12 +293,27 @@ jobs:
       # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
       - name: Core boundary, mesh preflight & resolution
         run: pnpm smoke:core-boundary && pnpm smoke:preflight && pnpm smoke:server-resolution:live && pnpm smoke:spawn-from-anywhere:live && pnpm smoke:spawn-detach:live && pnpm smoke:readiness:live && pnpm smoke:setup-pure:live && pnpm smoke:up-stack:live && pnpm smoke:up-manifest:live && pnpm smoke:ext:live && pnpm smoke:dogfood:live
+      # The readiness verdict against a shipped connector rather than a child the suite wrote (#608).
+      # Claude Code is on PATH for this step only, so no other suite finds a `claude`. It is not
+      # logged in: the seat joins the mesh before any model call, so the run needs no credential.
+      # Install scripts are skipped and only Claude Code's own postinstall runs, which places its
+      # native binary.
+      - name: Shipped Claude Code connector reaches presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          claude_dir="$(mktemp -d "$RUNNER_TEMP/claude-code.XXXXXX")"
+          npm install --prefix "$claude_dir" --ignore-scripts --no-audit --no-fund @anthropic-ai/claude-code@2.1.326
+          (cd "$claude_dir" && node node_modules/@anthropic-ai/claude-code/install.cjs)
+          PATH="$claude_dir/node_modules/.bin:$PATH" pnpm smoke:claude-presence:live
       # Own step so a later failure cannot hide whether this suite ran. First CI execution
       # of join-external:live passed 19 checks at 2850a5a2e.
       - name: Join an external broker
         run: pnpm smoke:join-external:live
       - name: Broker-only credential renewal warning
         run: pnpm smoke:no-manager-credential-warning:live
+      - name: Broker store identity warnings
+        run: pnpm smoke:store-identity:live
       - name: Stock broker logging and rotation
         # This suite pins 2.15.1 separately; the other smoke suites keep their 2.12.12 broker.
         shell: bash
@@ -458,7 +487,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     name: seat pack (assembled)
     timeout-minutes: 20
-    needs: [seat-native-linux-x64, seat-native-linux-arm64]
+    needs: [seat-native-linux-x64, seat-native-linux-arm64, workspace-native]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -478,10 +507,22 @@ jobs:
         with:
           name: seat-native-linux-arm64
           path: ${{ runner.temp }}/seat-native-linux-arm64
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-darwin-*
+          path: ${{ runner.temp }}/seat-host-native
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: seat-native-win32-*
+          path: ${{ runner.temp }}/seat-host-native
       - name: Assemble natives and pack
         env:
           SEAT_NATIVE_X64: ${{ runner.temp }}/seat-native-linux-x64/peercred.node
           SEAT_NATIVE_ARM64: ${{ runner.temp }}/seat-native-linux-arm64/peercred.node
+          SEAT_NATIVE_DARWIN_X64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-x64/peercred.node
+          SEAT_NATIVE_DARWIN_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-darwin-arm64/peercred.node
+          SEAT_NATIVE_WIN32_X64: ${{ runner.temp }}/seat-host-native/seat-native-win32-x64/peercred.node
+          SEAT_NATIVE_WIN32_ARM64: ${{ runner.temp }}/seat-host-native/seat-native-win32-arm64/peercred.node
           SEAT_PACK_DEST: ${{ runner.temp }}/seat-pack
         run: sh scripts/ci-seat-pack.sh
       - uses: actions/upload-artifact@v4

@@ -8,7 +8,9 @@ to this site and the release bundle served by `cotal_docs`.
 
 ## Develop
 
-Requires Node.js 22 or later.
+Requires Node.js 22 or later. The site publishes the TypeScript reference, which
+TypeDoc generates from the package sources: run `pnpm install` and `pnpm gen:tsdocs`
+at the repository root before the site commands.
 
 ```sh
 cd website
@@ -32,6 +34,7 @@ Cotal gold accents. Sidebar page links each occupy their own row. Desktop
 section tabs sit above the page; mobile uses the section dropdown.
 
 Docs live at `/docs/<page>/`; API Reference lives at `/api-reference/<page>/`.
+The TypeScript reference at `/api/typescript/` keeps TypeDoc's own navigation and search.
 The root opens What is Cotal through a Pages redirect. Old page and Markdown
 URLs redirect to their new section. The legacy `/api-reference/` URL retains its
 Integration interfaces document and heading bookmarks; the API tab opens the overview.
@@ -73,6 +76,10 @@ that twin for `Accept: text/markdown` with an `x-markdown-tokens` estimate.
 The root returns the documentation index for Markdown requests and discovery
 Link headers. Installer hosts `get.cotal.ai` and `install.cotal.ai` serve the installer.
 
+Skill descriptions come from YAML frontmatter parsed by Fumadocs, including quoted
+and multiline strings. Sync refuses missing, blank, non-string or invalid descriptions.
+The served `SKILL.md` bytes and their discovery digests remain unchanged.
+
 ## Deployment
 
 Cloudflare Pages uses root directory `website`, build command `npm run build`,
@@ -82,7 +89,10 @@ The existing workflow publishes PR previews, production, and release snapshots.
 not run Pages middleware or redirects; use the Pages preview for compatibility checks.
 
 Build checks verify installer safety, skill digests, page exports, legacy redirects,
-and local links and assets. Existing unresolved fragment links await page cleanup.
+and local links and assets. The link check parses HTML and Markdown destinations,
+including reference definitions and image candidates. Code samples remain literal text;
+relative targets are refused regardless of their directory name.
+Existing unresolved fragment links await page cleanup.
 Verify a preview deployment before production cutover.
 
 ## HTTP references

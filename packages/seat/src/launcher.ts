@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discardSeatArtifacts } from "./artifacts.js";
-import { assertSeatId, capabilityToken, processStatFields, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
+import { assertSeatId, capabilityToken, exitPath, processStartToken, processStatFields, recordPath, seatId, socketPath, writePrivate, type SeatRecord, readRecord } from "./record.js";
 import { unattendedMs, assertSocketPathFits, unsupportedTransport } from "./protocol.js";
 
 export interface SeatLaunchSpec {
@@ -222,8 +222,17 @@ function startCustodian(opts: LaunchSeatOpts, artifactRoot: string) {
   return { child, launchFd, launchPath, recPath, logPath };
 }
 
+/** The record of a seat about to be adopted. Refuses a seat nobody can adopt: one whose custodian
+ *  recorded its child's exit, or whose custodian process is gone (its pid is free or reused), because
+ *  a client of such a seat reports it running for ever and never proves its exit. Such a seat is
+ *  reaped, not adopted. */
 export function loadSeat(root: string, id: string): SeatRecord {
-  return readRecord(recordPath(root, id));
+  const path = recordPath(root, id);
+  const record = readRecord(path);
+  if (existsSync(exitPath(path))) throw new Error(`seat ${id} has exited (its custodian recorded the exit); reap it instead of adopting it`);
+  if (record.custodianStart !== undefined && processStartToken(record.custodianPid) !== record.custodianStart)
+    throw new Error(`seat ${id} cannot be adopted: its custodian (pid ${record.custodianPid}) is gone; reap it instead`);
+  return record;
 }
 
 export function readSeatFile(path: string): SeatRecord {

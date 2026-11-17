@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
-import { isLoopbackLiteral } from "./loopback.js";
+import { isCredentialTransportUrl } from "./loopback.js";
 import { assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
 
 /** The env var naming the handoff file inside the child. It carries a path, never a secret. */
@@ -31,7 +31,7 @@ export interface ManagedLifecycleHandoff extends ManagedLifecycleTarget {
   readonly subscribe: readonly string[];
   readonly allowSubscribe: readonly string[];
   readonly allowPublish: readonly string[];
-  readonly policy?: { readonly events: "required" };
+  readonly policy?: { readonly events?: "required"; readonly eventPayloads?: "withheld" };
 }
 
 const TARGET_FIELDS = ["space", "owner", "actor", "lifecycleUid"] as const;
@@ -69,15 +69,18 @@ export function parseManagedLifecycleHandoff(text: string, expected: ManagedLife
   } catch {
     throw new Error("the managed handoff's exchangeUrl is not a URL");
   }
-  if (exchange.protocol !== "https:" && !(exchange.protocol === "http:" && isLoopbackLiteral(exchange.hostname)))
+  if (!isCredentialTransportUrl(exchange))
     throw new Error("the managed handoff's exchangeUrl must be https://, except for a loopback HTTP literal");
   for (const k of LIST_FIELDS)
     if (!Array.isArray(doc[k]) || !(doc[k] as unknown[]).every((s) => typeof s === "string"))
       throw new Error(`the managed handoff's ${k} is not an array of strings`);
   const policy = doc.policy as Record<string, unknown> | undefined | null;
   if (policy !== undefined &&
-      (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length !== 1 || policy.events !== "required"))
-    throw new Error('the managed handoff\'s policy is not exactly { events: "required" }');
+      (policy === null || typeof policy !== "object" || Array.isArray(policy) || Object.keys(policy).length === 0 ||
+       Object.keys(policy).some((key) => key !== "events" && key !== "eventPayloads") ||
+       ("events" in policy && policy.events !== "required") ||
+       ("eventPayloads" in policy && policy.eventPayloads !== "withheld")))
+    throw new Error("the managed handoff's policy has invalid restrictions");
   return doc as unknown as ManagedLifecycleHandoff;
 }
 

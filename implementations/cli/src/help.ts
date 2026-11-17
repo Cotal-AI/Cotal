@@ -4,7 +4,7 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, findSubcommand, type Command, type Subcommand } from "@cotal-ai/core";
-import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
+import { cachedPreferences, canonicalRoot, displayWidth, findCotalRoot, findPreparedSpace, folderSpace, folderSpaceHeld, folderSpaceStopped, getCurrent, readCurrentSelection, heldSpaceNote, loadMeshes, loadPreparedSpaces, localeIsUtf8, nearbyMeshManifest, plainPunctuation, readMesh, recordsElsewhereError, recordsElsewhereText, paintFor, renderReport, resolvePreference, rootHidesNoManifest, terminalWidth, upCommand, wrapWords, type Section } from "@cotal-ai/workspace";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { workingFolderRemoved } from "./lib/paths.js";
@@ -178,6 +178,8 @@ export function printEntry(commands: readonly Command[], listing = false): void 
   let unreadable = false;
   // Setup is the first step only on a machine with no space at all.
   let anySpace = false;
+  // A team file in this folder, named when no space is selected.
+  let manifest: { path: string; space: string } | undefined;
   // From a removed folder every command that uses a space refuses, so no space is shown.
   const removed = workingFolderRemoved();
   if (!removed) try {
@@ -199,8 +201,10 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     const records = recordsElsewhereError(root)?.details;
     const holds = records && recordsElsewhereText(records);
     if (holds) elsewhere = `${holds}; ${records!.stackRemedy}`;
-    space = folder ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
-    if (selected && folder !== undefined && folder !== selected) outside = selected;
+    const explicit = selected && readCurrentSelection()?.source === "explicit";
+    space = (explicit ? selected : folder) ?? selected ?? (preparedHere && canonicalRoot(preparedHere.root) === canonicalRoot(held!.root) ? held!.space : undefined);
+    if (!explicit && selected && folder !== undefined && folder !== selected) outside = selected;
+    if (explicit && folder && folder !== selected) folderHeld = `commands here target the selected space "${selected}"; reach this folder's space with --space ${folder} or cotal use --clear`;
     // The same `up` the note under a command's heading names, with `--root` from another folder.
     const upAt = (dir: string, name: string): string => upCommand(dir, name, ...(canonicalRoot(dir) === canonicalRoot(root) ? [] : ["--root", shellWord(dir)]));
     if (held) {
@@ -218,6 +222,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
       if (prepared) start = upAt(prepared.root, space);
       if (held && held.space !== space) folderHeld = heldSpaceNote(held);
     } else anySpace = loadMeshes().length > 0 || loadPreparedSpaces().length > 0;
+    if (!space && rootHidesNoManifest(root)) manifest = nearbyMeshManifest(process.cwd(), root);
   } catch {
     unreadable = true;
   }
@@ -229,7 +234,7 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(outside ? [{ text: `this folder's space while it runs; the selected space "${outside}" applies outside it and while it is stopped`, tone: "hint" } as const] : []),
     ...(folderHeld ? [{ text: folderHeld, tone: "hint" } as const] : []),
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
-  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Set up a local space, or connect to a self-hosted one.", tone: "hint" },
+  else sections.push({ blocks: [{ kind: "lines", lines: ["No space is selected.", { text: manifest ? `${manifest.path} declares space "${manifest.space}".` : anySpace ? "Select one with `cotal use <name>`; `cotal space` lists them." : "Sign in to Cotal Cloud with `cotal login`, set up a local space, or connect to a self-hosted one.", tone: "hint" },
     ...(elsewhere ? [{ text: elsewhere, tone: "hint" } as const] : [])] }] });
   sections.push({ title: "Usage", blocks: [{ kind: "lines", lines: [{ text: "cotal <command> [options]", tone: "command" }] }] });
   sections.push(actions("Start here", space ? [
@@ -240,15 +245,20 @@ export function printEntry(commands: readonly Command[], listing = false): void 
     ...(start ? [] : [["spawn", "cotal spawn", "Open your default agent"] as [string, string, string]]),
     ["setup", "cotal setup", "Review setup and defaults"],
     ["use", "cotal use", "Choose another space"],
+  ] : manifest ? [
+    ["team", `cotal team check ${shellWord(manifest.path)}`, `Check the team file, which declares ${shellWord(manifest.space)}`],
+    ["space", `cotal space create ${shellWord(manifest.space)}`, "Prepare the space that file declares"],
+    ["team", `cotal team boot ${shellWord(manifest.path)}`, "Boot that team"],
+    ["up", `cotal up -f ${shellWord(manifest.path)}`, "Start the space from that file"],
   ] : anySpace ? [
     ["use", "cotal use <name>", "Choose the space commands use"],
     ["space", "cotal space", "List the spaces on this machine"],
-  ] : [["setup", "cotal setup", "Choose your application and prepare a space"]]));
+  ] : [["login", "cotal login", "Sign in to Cotal Cloud"], ["setup", "cotal setup", "Choose your application and prepare a space"]]));
   sections.push(actions("Everyday", [
     ["ps", "cotal ps", "List agents"],
     ["attach", "cotal attach <name>", "Return to an agent"],
     ["stop", "cotal stop <name>", "Stop one agent"],
-    ["send", 'cotal send -t <name> "…"', "Send one message"],
+    ["send", `cotal send -t <name> "${localeIsUtf8() ? "…" : "..."}"`, "Send one message"],
     ["chat", "cotal chat", "Join a live conversation"],
     ["watch", "cotal watch", "Follow activity without controlling agents"],
     ["status", "cotal status", "See this machine and the selected space"],

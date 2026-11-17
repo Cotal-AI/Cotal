@@ -1,6 +1,6 @@
 import {
   authorizeTrustedServeSnapshot,
-  contractDigest,
+  singleDocumentClosure,
   EpEnvelopeError,
   parseClusterDocument,
   type ClusterDocument,
@@ -9,10 +9,10 @@ import {
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
 
-/** A manager cluster document as core parsed it, with its root digest and the raw document a
+/** A manager cluster document as core parsed it, with its closure digest and the raw document a
  * descriptor inlines. */
 export interface ManagerCluster {
-  digest: string;
+  closureDigest: string;
   document: ClusterDocument;
   raw: unknown;
 }
@@ -26,17 +26,17 @@ export function reconstructRemoteManagerServeGrant(
 ) {
   const raw = (request.contractArtifacts ?? []).find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager");
   if (raw === undefined) throw new EpEnvelopeError("bad-request", "the activation request submits no ai.cotal.manager cluster document");
-  return remoteManagerServeGrantFromCluster(request, owner, { document: parseClusterDocument(raw), digest: contractDigest(raw), raw }, observed);
+  return remoteManagerServeGrantFromCluster(request, owner, { document: parseClusterDocument(raw), closureDigest: singleDocumentClosure(raw).closureDigest, raw }, observed);
 }
 
 /** The command declarations of the manager cluster, in the shape a serve grant pins. */
-export function remoteManagerSurface({ digest, document }: ManagerCluster): Record<string, EpCommandAuthority> {
+export function remoteManagerSurface({ closureDigest, document }: ManagerCluster): Record<string, EpCommandAuthority> {
   const surface: Record<string, EpCommandAuthority> = Object.create(null);
   for (const command of document.commands) {
     if (command.class !== "ephemeral")
       throw new EpEnvelopeError("failed-precondition", `the manager cluster declares ${command.class}-class command ${command.name}; every manager command is ephemeral`);
     surface[command.name] = {
-      clusterDigest: digest,
+      clusterDigest: closureDigest,
       class: command.class,
       targeted: command.targeted,
       modes: command.modes ?? [],
@@ -72,7 +72,7 @@ export function remoteManagerServeGrantFromCluster(
     descriptor: {
       endpoint: "manager",
       owner,
-      clusters: [{ digest: cluster.digest, commands: Object.keys(surface), document: cluster.raw as Record<string, unknown> }],
+      clusters: [{ digest: cluster.closureDigest, commands: Object.keys(surface), document: cluster.raw as Record<string, unknown> }],
       protocol: { v: 1 },
     },
   });

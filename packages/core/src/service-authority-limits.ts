@@ -1,3 +1,5 @@
+import { CONTRACT_ARTIFACT_MAX_BYTES } from "./endpoint-contract-store.js";
+
 export const SERVICE_ACCESS_TTL_SECONDS = 60;
 export const SERVICE_RENEWAL_TTL_SECONDS = 24 * 60 * 60;
 export const SERVICE_AUTHORITY_MAX_BYTES = 2 * 1024 * 1024;
@@ -9,4 +11,10 @@ export const SERVICE_CALLER_PAYLOAD_OVERHEAD = 1024;
  *  fits in one write. The auth host asserts it before caller issuance and `cotal up --max-payload`
  *  refuses a smaller limit on a space that admits service endpoints, so both read one number. */
 export const SERVICE_CALLER_PAYLOAD_FLOOR = SERVICE_AUTHORITY_MAX_BYTES + SERVICE_CALLER_PAYLOAD_OVERHEAD;
+/** The smallest broker `max_payload` under which the manager's largest contract artifact, bounded
+ *  at {@link CONTRACT_ARTIFACT_MAX_BYTES}, fits in one create-only publish with the same header
+ *  allowance the caller floor uses. A manager-backed `cotal up --max-payload` refuses a smaller
+ *  limit before it records one, so a later start does not inherit a broker the manager cannot
+ *  publish on. */
+export const MANAGER_START_PAYLOAD_FLOOR = CONTRACT_ARTIFACT_MAX_BYTES + SERVICE_CALLER_PAYLOAD_OVERHEAD;
 export const SERVICE_DESCRIBE_QUERY_BUDGET_MS = 2_000;

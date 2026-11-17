@@ -15,9 +15,9 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { performance } from "node:perf_hooks";
 import { AGENT_LIFECYCLE_HELD, mintLifecycleUid } from "@cotal-ai/core";
 import { jwtVerify } from "jose";
@@ -700,8 +700,188 @@ console.log("C2) advertised space catalog cache");
     { removed, manual: findMesh("manual_keep"), current: getCurrent() });
   const switched = JSON.parse(readFileSync(join(switchedHome, "space-catalogs.json"), "utf8"));
   check("the previous account's catalog state is gone after switching", Object.keys(switched.accounts).length === 0, switched);
+
+  // An account switch deletes the previous account's discovered-space credential files with their
+  // registrations. Only a regular file in the entry's own catalog custody folder is deleted.
+  const { keptCatalogCredentials, removeCatalogAccount } = await import("@cotal-ai/workspace");
+  const custodyRoot = (owner: string, space: string) => join(switchedHome, "catalog", owner, space);
+  const sentinelIn = (root: string, space: string): string => {
+    const dir = userAuthStateDir(root, space);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = join(dir, "sentinel.creds");
+    writeFileSync(path, `fixture-sentinel-${space}`, { mode: 0o600 });
+    return path;
+  };
+  const userAuth = (sentinelCredsPath: string) => ({ provider: "cotal", idp: { url: catalogIdp, issuer: "http://127.0.0.1", audience: "http://127.0.0.1" }, endpoints: { url: "http://127.0.0.1/exchange" }, remote: true as const, sentinelCredsPath });
+  const discovered = (space: string, owner: string, sentinelCredsPath: string, root = custodyRoot(owner, space)) =>
+    recordMesh({ space, server: "nats://127.0.0.1:55110", root, catalogRoot: custodyRoot(owner, space), mode: "user", origin: "catalog", catalogOwner: owner, userAuth: userAuth(sentinelCredsPath), ts: new Date().toISOString() });
+  const project = mkdtempSync(join(tmpdir(), "cotal-login-catalog-project-"));
+  const owned = sentinelIn(custodyRoot("account-c", "c_one"), "c_one");
+  discovered("c_one", "account-c", owned);
+  // A discovered space bound to a project keeps its sentinel under the custody root; the project stays.
+  const bound = sentinelIn(custodyRoot("account-c", "c_bound"), "c_bound");
+  discovered("c_bound", "account-c", bound, project);
+  discovered("c_gone", "account-c", join(userAuthStateDir(custodyRoot("account-c", "c_gone"), "c_gone"), "sentinel.creds"));
+  const outside = join(project, "not-a-catalog-credential");
+  writeFileSync(outside, "operator file", { mode: 0o600 });
+  discovered("c_escape", "account-c", outside);
+  const otherAccount = sentinelIn(custodyRoot("account-d", "d_one"), "d_one");
+  discovered("d_one", "account-d", otherAccount);
+  const manualRoot = mkdtempSync(join(tmpdir(), "cotal-login-catalog-manual-"));
+  const manualSentinel = sentinelIn(manualRoot, "manual_creds");
+  recordMesh({ space: "manual_creds", server: "nats://127.0.0.1:55111", root: manualRoot, mode: "user", origin: "manual", userAuth: userAuth(manualSentinel), ts: new Date().toISOString() });
+  setCurrent("c_one");
+  const cleared = removeCatalogAccount("account-c");
+  check("an account switch deletes the previous account's discovered-space credential files",
+    !existsSync(owned) && !existsSync(bound), { owned: existsSync(owned), bound: existsSync(bound) });
+  check("an account switch removes every one of that account's registrations and its selection",
+    cleared.removed.join(",") === "c_bound,c_escape,c_gone,c_one" && ["c_one", "c_bound", "c_gone", "c_escape"].every((s) => findMesh(s) === undefined) && getCurrent() === undefined,
+    { cleared, current: getCurrent() });
+  check("an already absent credential file is not reported", !cleared.credentialsKept.some((k) => k.space === "c_gone"), cleared.credentialsKept);
+  check("a credential path outside the entry's custody folder is reported and left alone",
+    cleared.credentialsKept.length === 1 && cleared.credentialsKept[0]?.space === "c_escape" && cleared.credentialsKept[0].path === outside &&
+    readFileSync(outside, "utf8") === "operator file" && existsSync(project), cleared.credentialsKept);
+  check("another account's and a manual registration's credentials and records stay",
+    existsSync(otherAccount) && findMesh("d_one") !== undefined && existsSync(manualSentinel) && findMesh("manual_creds")?.origin === "manual");
+  const told = keptCatalogCredentials(cleared.credentialsKept);
+  check("the kept-file report names each path and why", told.message.includes(outside) && told.message.includes("outside the space's catalog credential folder") && told.remedy.length > 0, told);
+  if (process.platform !== "win32") {
+    const link = sentinelIn(custodyRoot("account-e", "e_link"), "e_link");
+    const target = join(project, "symlink-target");
+    writeFileSync(target, "target bytes", { mode: 0o600 });
+    rmSync(link);
+    symlinkSync(target, link);
+    discovered("e_link", "account-e", link);
+    const linked = removeCatalogAccount("account-e");
+    check("a symbolic link in place of the credential is reported, and its target is not followed",
+      linked.credentialsKept[0]?.reason === "it is a symbolic link" && readFileSync(target, "utf8") === "target bytes" && findMesh("e_link") === undefined, linked);
+    // A symbolic link above the file passes a lexical containment check and a leaf lstat. The file it
+    // reaches lies outside the catalog, so it stays, both for the credential's own folder and for a
+    // folder higher up, and the registration still goes.
+    for (const [space, linkAt] of [["g_parent", (root: string) => userAuthStateDir(root, "g_parent")], ["g_ancestor", (root: string) => root]] as const) {
+      const root = custodyRoot("account-g", space);
+      const elsewhere = mkdtempSync(join(tmpdir(), `cotal-login-catalog-${space}-`));
+      const linked = linkAt(root);
+      const credential = join(userAuthStateDir(root, space), "sentinel.creds");
+      const reached = join(elsewhere, relative(linked, credential));
+      mkdirSync(dirname(reached), { recursive: true, mode: 0o700 });
+      writeFileSync(reached, "outside bytes", { mode: 0o600 });
+      mkdirSync(dirname(linked), { recursive: true, mode: 0o700 });
+      symlinkSync(elsewhere, linked);
+      discovered(space, "account-g", credential);
+      const through = removeCatalogAccount("account-g");
+      check(`a symbolic link at ${space === "g_parent" ? "the credential's folder" : "the space's custody folder"} is reported, and the file it reaches outside the catalog stays`,
+        existsSync(reached) && readFileSync(reached, "utf8") === "outside bytes" && through.credentialsKept.length === 1 && through.credentialsKept[0]?.space === space && findMesh(space) === undefined, { through, reached: existsSync(reached) });
+    }
+    check("a manual registration's credential stays through every switch above", existsSync(manualSentinel) && findMesh("manual_creds")?.origin === "manual");
+  }
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const locked = sentinelIn(custodyRoot("account-f", "f_locked"), "f_locked");
+    discovered("f_locked", "account-f", locked);
+    chmodSync(dirname(locked), 0o500);
+    try {
+      const refused = removeCatalogAccount("account-f");
+      check("a credential file that cannot be deleted is reported with its errno and its registration still goes",
+        refused.credentialsKept.length === 1 && refused.credentialsKept[0]?.path === locked && refused.credentialsKept[0].reason === "EACCES" && existsSync(locked) && findMesh("f_locked") === undefined,
+        refused);
+    } finally { chmodSync(dirname(locked), 0o700); }
+  }
   process.env.COTAL_HOME = priorHome;
   catalog.close();
+}
+
+// ---- one listed space the catalog cannot serve: its siblings keep serving ----
+console.log("C3) a catalog entry marked unavailable");
+{
+  const REASON = "space \"held\" is unavailable: journal-held; an operator must release it";
+  let held: "registered" | "unavailable" | "both" | "empty" = "registered";
+  let heldBase = "";
+  const heldHome = mkdtempSync(join(tmpdir(), "cotal-login-catalog-held-"));
+  const registration = (slug: string, i: number) => ({
+    space: slug,
+    server: `nats://127.0.0.1:${55201 + i}`,
+    tlsRequired: false,
+    userAuth: { provider: "cotal", idp: { url: `${heldBase}/api/auth`, issuer: "http://127.0.0.1", audience: "catalog" }, endpoints: { url: `${heldBase}/exchange` } },
+    sentinelCreds: `held-sentinel-${slug}`,
+  });
+  const row = (slug: string) => ({ id: `id-${slug}`, slug, name: `Space ${slug}`, kind: "team", role: "member" });
+  const server = createServer((req, res) => {
+    if (req.url === "/api/auth/token") {
+      res.writeHead(200, { "content-type": "application/json", link: `<${heldBase}/spaces>; rel="https://cotal.ai/relations/space-catalog"` });
+      return void res.end(JSON.stringify({ token: "eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwOi8vMTI3LjAuMC4xIiwic3ViIjoiY2F0LXVzZXIifQ." }));
+    }
+    if (req.url === "/spaces") {
+      const spaces: Record<string, unknown>[] = [{ ...row("sibling"), registration: registration("sibling", 0) }];
+      if (held === "registered") spaces.push({ ...row("held"), registration: registration("held", 1) });
+      else if (held === "both") spaces.push({ ...row("held"), registration: registration("held", 1), unavailable: REASON });
+      else spaces.push({ ...row("held"), unavailable: held === "empty" ? "" : REASON }, { ...row("never_seen"), unavailable: REASON });
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ v: 1, account: { idpUrl: `${heldBase}/api/auth`, issuer: "http://127.0.0.1", sub: "cat-user" }, spaces }));
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  heldBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const heldIdp = `${heldBase}/api/auth`;
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = heldHome;
+  saveIdpSession(heldHome, heldIdp, { token: "catalog-session", expiresAt: Date.now() / 1000 + 600, sub: "cat-user" });
+  const { prepareCatalogCommand, prepareCatalogTargets } = await import("../../cli/src/commands/sync.js");
+  const { findMesh, getCurrent, setCurrent } = await import("@cotal-ai/workspace");
+  const cacheFile = join(heldHome, "space-catalogs.json");
+  // The lazy path refetches only once the five-second window has passed, as a command run a little
+  // later does; ageing the cached fetch is that later command without the wait.
+  const makeStale = () => {
+    const cached = JSON.parse(readFileSync(cacheFile, "utf8"));
+    for (const account of Object.values(cached.accounts as Record<string, { fetchedAt?: string }>)) account.fetchedAt = new Date(0).toISOString();
+    writeFileSync(cacheFile, JSON.stringify(cached));
+  };
+  const outcome = (run: Promise<unknown>) => run.then(() => undefined, (e: Error & { code?: string }) => ({ message: e.message, code: e.code }));
+  const seeded = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  const heldBefore = findMesh("held");
+  const heldCreds = heldBefore?.userAuth?.sentinelCredsPath ? readFileSync(heldBefore.userAuth.sentinelCredsPath, "utf8") : undefined;
+  check("both listed spaces are recorded while each is registered",
+    seeded.diffs[0]?.added.join(",") === "held,sibling" && heldCreds === "held-sentinel-held" && findMesh("sibling") !== undefined, seeded);
+
+  held = "unavailable";
+  setCurrent("sibling");
+  makeStale();
+  const sibling = await outcome(prepareCatalogCommand({ positionals: [], values: {}, raw: [] }));
+  const heldAfter = findMesh("held");
+  check("a sibling of an unavailable space refreshes its account and serves", sibling === undefined && getCurrent() === "sibling", sibling);
+  check("the unavailable space keeps its registration and credential, and carries the catalog's reason",
+    heldAfter?.server === heldBefore?.server && heldAfter?.catalogError === REASON && heldAfter?.userAuth?.sentinelCredsPath !== undefined &&
+      readFileSync(heldAfter.userAuth.sentinelCredsPath, "utf8") === heldCreds,
+    heldAfter);
+  check("an unavailable space this machine never held is not recorded", findMesh("never_seen") === undefined, findMesh("never_seen"));
+  const targeted = await outcome(prepareCatalogCommand({ positionals: [], values: { space: "held" }, raw: [] }));
+  check("a command targeting the unavailable space refuses with the catalog's reason inside the freshness window",
+    targeted?.code === "DEPENDENCY_UNAVAILABLE" && targeted.message.includes(REASON), targeted);
+  const unseen = await outcome(prepareCatalogCommand({ positionals: [], values: { space: "never_seen" }, raw: [] }));
+  check("a command naming an unavailable space it never held refuses with the reason, not as unknown",
+    unseen?.code === "DEPENDENCY_UNAVAILABLE" && unseen.message.includes(REASON), unseen);
+  const synced = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  check("sync lists both as unavailable, keeps the held registration unchanged and removes nothing",
+    synced.diffs[0]?.unavailable.join(",") === "held,never_seen" && synced.diffs[0]?.unchanged.join(",") === "held,sibling" &&
+      synced.diffs[0]?.removed.length === 0 && synced.diffs[0]?.added.length === 0,
+    synced.diffs[0]);
+
+  for (const malformed of ["both", "empty"] as const) {
+    held = malformed;
+    const refused = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+    check(`an entry ${malformed === "both" ? "both registered and unavailable" : "with an empty reason"} refuses the whole snapshot`,
+      refused.results[0]?.state === "failed" && findMesh("held")?.server === heldBefore?.server, refused.results[0]);
+  }
+
+  held = "registered";
+  const restored = await prepareCatalogTargets({ idpUrl: heldIdp, force: true });
+  check("the space serving again clears its reason and keeps its credential",
+    restored.results[0]?.state === "updated" && findMesh("held")?.catalogError === undefined && restored.diffs[0]?.unavailable.length === 0 &&
+      readFileSync(findMesh("held")!.userAuth!.sentinelCredsPath!, "utf8") === heldCreds,
+    { result: restored.results[0], held: findMesh("held") });
+  if (priorHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = priorHome;
+  server.close();
 }
 
 // ---- the reject matrix ----
@@ -864,7 +1044,7 @@ console.log("E) hostile-IdP responses");
   const logoutHome = mkdtempSync(join(tmpdir(), "cotal-logout-"));
   saveIdpSession(logoutHome, soBase, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
   // Asynchronous, so this process's sign-out server can answer the child.
-  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
+  const cli = (...args: string[]) => new Promise<{ status: number | null; envelope?: { outcome?: string; result?: { serverRevoked?: boolean; localLoginCleared?: boolean; daemonNotice?: string } | null; error?: { code?: string; remedy?: string } }; stderr: string }>((done) => {
     execFile(process.execPath, ["--import", import.meta.resolve("tsx"), join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts"), "logout", "--idp", soBase, "--json", ...args],
       { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), HOME: logoutHome, COTAL_HOME: logoutHome, XDG_CONFIG_HOME: join(logoutHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, encoding: "utf8", timeout: 60_000 },
       (error, stdout, stderr) => {
@@ -880,6 +1060,12 @@ console.log("E) hostile-IdP responses");
   const local = await cli("--local");
   check("logout --local clears the login without contacting the provider",
     local.status === 0 && local.envelope?.result?.serverRevoked === false && local.envelope.result.localLoginCleared === true && loadIdpSession(logoutHome, soBase) === undefined && signOuts === before + 1, { local, signOuts, before });
+  const absent = await cli("--local");
+  for (const [label, reply] of [["cleared", local], ["already absent", absent]] as const) {
+    const notice = reply.envelope?.result?.daemonNotice ?? "";
+    check(`logout ${label} explains the service proof and both retirement choices`, reply.status === 0
+      && notice.includes("own service proof") && notice.includes("service-disconnect") && notice.includes("dashboard"));
+  }
   so.close();
 }
 

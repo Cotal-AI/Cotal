@@ -59,7 +59,7 @@ try {
       owner, space, accountPublicKey, proofSecret, endpoint: "manager", observeManagerGate: async () => gate,
       issued, sourceIsLive: async () => live, registeredCommand: async () => contract,
       takeObserved: async s => { await nc!.flush(); const o = observations.get(s); observations.delete(s); return o; },
-      withStore: async (_run, _submission, fn) => fn(kv, jsm) });
+      delegationOf: () => undefined, withStore: async (_run, _submission, fn) => fn(kv, jsm) });
   }
   const first = await forward("run-start-keyed"), duplicate = await forward("run-start-keyed"), status = await forward("run-submission-status");
   assert.equal(first.winner, true); assert.equal(duplicate.winner, false); assert.equal(status.winner, false);

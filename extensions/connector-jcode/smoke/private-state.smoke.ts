@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, shortSocketHome, unlinkThroughSwappedPinForTest } from "../src/private-state.js";
+import { copyCredentialFile, ensurePinnedPrivateDirectory, jcodeCredentialMirrorInventory, mirrorJcodeCredentials, removeCredentialMirror, removeJcodeCredentials, shortSocketHome, unlinkThroughSwappedPinForTest } from "../src/private-state.js";
 import { JcodeCursorStateUnreadable } from "../src/startup-diagnostics.js";
 
 let pass = 0;
@@ -187,6 +187,20 @@ try {
   const surviving = driven.filter((mirror) => existsSync(join(home, mirror.destinationRelative)));
   check("removed credentials are absent from every persistent mirror on the next launch", surviving.length === 0, surviving.map((mirror) => ({ family: mirror.family, destination: join(home, mirror.destinationRelative) })));
   check("credential reconciliation preserves unrelated private-home state", existsSync(unrelated) && readFileSync(unrelated, "utf8") === "keep");
+
+  // #5641: a retired launch removes every copy the mirror holds, and leaves its sources and the
+  // home's own state alone. The four families are restored so every kind of copy is present.
+  for (const mirror of removalCases) writeFileSync(mirror.source, `throwaway-${mirror.family}`, { mode: 0o600 });
+  mirrorJcodeCredentials(home, sources);
+  const mirrored = () => jcodeCredentialMirrorInventory(home, sources).filter((entry) => existsSync(join(home, entry.destinationRelative)));
+  const present = mirrored().map((entry) => entry.family);
+  const removedCount = removeJcodeCredentials(home, sources);
+  check("retirement removes every mirrored credential copy, Cursor state included",
+    present.length === 7 && new Set(present).size === 5 && removedCount === 7 && mirrored().length === 0,
+    { present, removedCount, left: mirrored().map((entry) => entry.destinationRelative) });
+  check("retirement keeps the credential sources and unrelated private-home state",
+    existsSync(direct) && existsSync(external) && removalCases.every((mirror) => existsSync(mirror.source)) && readFileSync(unrelated, "utf8") === "keep");
+  for (const mirror of removalCases) rmSync(mirror.source, { force: true }); // the absent-source cells below need them gone
 
     const outside = join(root, "outside-removal");
     mkdirSync(outside, { mode: 0o700 });

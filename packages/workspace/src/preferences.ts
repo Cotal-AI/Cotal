@@ -4,6 +4,8 @@ import { acquireLock, globalConfigDir, token, utf16Problem, writeSecretFileAtomi
 import { CommandFailure, isCommandFailure, type OutputWarning } from "./output.js";
 import { localRecordAccess, protectedLocalDirectory, shellPath } from "./protected-records.js";
 import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js";
+import { chatNameProblem } from "./chat-name.js";
+import { localWriteFailure } from "./local-write.js";
 
 /**
  * Personal workstation preferences: defaults a person sets for their own commands, saved for the
@@ -14,7 +16,7 @@ import { DEFAULT_CONNECTOR, OFFICIAL_CONNECTORS } from "./official-connectors.js
 
 export const PREFERENCES_SCHEMA_VERSION = 1;
 
-export type PreferenceKey = "harness" | "persona" | "detach-key" | "color" | "editor";
+export type PreferenceKey = "harness" | "persona" | "detach-key" | "color" | "editor" | "name";
 
 /** Where a value came from, in the order a launch setting is decided: a flag, a persona pin, a named
  *  environment variable, the per-space preference, the user preference, then the product default. */
@@ -112,6 +114,15 @@ const KEYS: readonly KeySpec[] = [
     env: ["VISUAL", "EDITOR"],
     check: nonEmpty,
     fromEnv: fromNonEmpty,
+  },
+  {
+    // No environment variable, since `COTAL_NAME` names a seat's agent, and no product default,
+    // since the default depends on the space's mode and `resolveChatName` adds it.
+    key: "name",
+    about: "the name your chat sessions appear as, in place of your sign-in name or OS login",
+    perSpace: false,
+    env: [],
+    check: chatNameProblem,
   },
 ];
 
@@ -316,7 +327,7 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
         target: { path: dir },
         remedy: existsSync(dir) ? `make ${dir} writable by you, for example with \`chmod u+w ${shellPath(dir)}\`` : `make ${dirname(dir)} writable by you, or create ${dir} yourself`,
       });
-    throw e;
+    throw localWriteFailure(e, preferencesPath(), scope.space === undefined ? {} : { space: scope.space });
   }
   try {
     const current = readPreferences();
@@ -336,7 +347,8 @@ export function writePreference(scope: PreferenceScope, key: string, value: stri
     }
     const next: Preferences = { schemaVersion: PREFERENCES_SCHEMA_VERSION, revision: current.revision + 1, defaults, spaces };
     const old = localRecordAccess() === "posix" ? lstatSync(preferencesPath(), { throwIfNoEntry: false }) : undefined;
-    writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`);
+    try { writeSecretFileAtomic(preferencesPath(), `${JSON.stringify(next, null, 2)}\n`); }
+    catch (error) { throw localWriteFailure(error, preferencesPath(), scope.space === undefined ? {} : { space: scope.space }); }
     cached = { path: preferencesPath(), prefs: next };
     const oldMode = old ? old.mode & 0o777 : undefined;
     return { changed: true, revision: next.revision, ...(oldMode !== undefined && oldMode !== 0o600 ? { replacedMode: oldMode } : {}) };

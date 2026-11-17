@@ -14,8 +14,8 @@
     {
       "name": "W1 a wake repeats before the read",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;",
-      "replace": "      if (c.agent.stopping || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;",
+      "find": "      if (c.agent.stopping || signalled.has(c.agent) || wakeCount(c.agent) === 0) return;",
+      "replace": "      if (c.agent.stopping || wakeCount(c.agent) === 0) return;",
       "expectRed": "a second DM before the first is read adds no second wake",
       "cell": "a second DM before the first is read adds no second wake",
       "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
@@ -25,8 +25,8 @@
     {
       "name": "W2 a held cotal_wait is woken too",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "      if (c.agent.stopping || signalled.has(c.agent) || (holding.get(c.agent) ?? 0) > 0 || wakeCount(c.agent) === 0) return;",
-      "replace": "      if (c.agent.stopping || signalled.has(c.agent) || wakeCount(c.agent) === 0) return;",
+      "find": "      if ((holding.get(c.agent) ?? 0) > 0) {\n        missed.add(c.agent);\n        return;\n      }\n",
+      "replace": "",
       "expectRed": "a DM that a held cotal_wait returns wakes nothing",
       "cell": "a DM that a held cotal_wait returns wakes nothing",
       "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",
@@ -36,8 +36,8 @@
     {
       "name": "W3 cotal_inbox does not rearm the wake",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "        if (spec.name === \"cotal_inbox\") signalled.delete(c.agent);\n",
-      "replace": "",
+      "find": "        const result = spec.name === \"cotal_inbox\" ? await holdFor(c, run) : await run();\n",
+      "replace": "        const result = await run();\n",
       "expectRed": "after the read, the next DM wakes the session again",
       "cell": "after the read, the next DM wakes the session again",
       "command": "pnpm --filter @cotal-ai/connector-core build && pnpm --filter @cotal-ai/connector-claude-code build && pnpm exec tsx extensions/connector-claude-code/smoke/local-server-live.smoke.ts",

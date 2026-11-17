@@ -89,7 +89,7 @@ function hard(condition: unknown, name: string): asserts condition {
 /** The count is a FLOOR. A derived tally proves the suite RAN its assertions, not that it still
  *  CONTAINS them: delete one and the tally quietly reads lower and the shard still passes. Raise it
  *  deliberately when you add a cell; a drop means one vanished. */
-const EXPECTED_CELLS = 36;
+const EXPECTED_CELLS = 56;
 
 if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
@@ -104,7 +104,10 @@ const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { 
 // anything.
 hard(python, "python is on PATH, so the injected-frame rendering can be verified at all");
 
-function run(mode: "subject" | "raw-concat"): Record<string, string> {
+function run(mode: "subject" | "raw-concat"): {
+  frames: Record<string, string>;
+  chats: Record<string, { chat_name: string | null; user_name: string | null }>;
+} {
   const res = spawnSync(python!, [probe, pkgDir + "plugin", mode], { encoding: "utf8", timeout: 60_000 });
   // The probe's own output is reported through the failure path rather than the cell name, so a
   // cell stays one short line and the transcript still carries the whole thing when it matters.
@@ -115,11 +118,20 @@ function run(mode: "subject" | "raw-concat"): Record<string, string> {
   const line = res.stdout.split("\n").find((l) => l.startsWith("RESULT "));
   if (!line) console.error(`the ${mode} probe printed no RESULT line:\n${res.stdout}`);
   hard(line, `the ${mode} probe reported a result, so its silence is not an answer`);
-  return JSON.parse(line!.slice("RESULT ".length)) as Record<string, string>;
+  const chatLine = res.stdout.split("\n").find((l) => l.startsWith("CHAT "));
+  if (!chatLine) console.error(`the ${mode} probe printed no CHAT line:\n${res.stdout}`);
+  hard(chatLine, `the ${mode} probe reported the chat title, so its silence is not an answer`);
+  return {
+    frames: JSON.parse(line!.slice("RESULT ".length)) as Record<string, string>,
+    chats: JSON.parse(chatLine!.slice("CHAT ".length)) as Record<string, { chat_name: string | null; user_name: string | null }>,
+  };
 }
 
-const subject = run("subject");
-const control = run("raw-concat");
+const subjectRun = run("subject");
+const controlRun = run("raw-concat");
+const subject = subjectRun.frames;
+const control = controlRun.frames;
+const subjectChat = subjectRun.chats;
 
 /**
  * What counts as a line break, which is more than what JavaScript splits on.
@@ -201,6 +213,21 @@ assert.ok(subject.historical.startsWith("[channel from Ada] (history) "),
 assert.ok(!subject.honest.includes("(history)"), `a live item is not framed as history: ${subject.honest}`);
 assert.ok(!control.historical.includes("(history)"),
   "refuse control: the pre-fix rendering really did present a backfilled item as live, or this grader is blind");
+
+// A name that is only whitespace is not a name. The frame, the direct-message title and the
+// user name all show the id. A name that still has other characters, including a leading space, stays.
+for (const key of ["blank_space", "blank_newline", "blank_empty"] as const) {
+  assert.equal(subject[key], "[dm from local.blank] hello", `a whitespace sender is shown as its id (${key})`);
+  assert.notEqual(control[key], subject[key], `refuse control: the old rendering does not use the id (${key})`);
+  assert.equal(subjectChat[key]?.chat_name, "local.blank", `a direct-message title uses the id when the name is blank (${key})`);
+  assert.equal(subjectChat[key]?.user_name, "local.blank", `the sender user name uses the id when the name is blank (${key})`);
+}
+assert.equal(subject.blank_role, "[dm from local.blank / worker] hello", "a whitespace sender keeps its role beside the id");
+assert.notEqual(control.blank_role, subject.blank_role, "refuse control: the old rendering keeps the blank name beside the role");
+assert.equal(subjectChat.blank_role?.chat_name, "local.blank", "a direct-message title uses the id when the name is blank and a role is set");
+assert.equal(subject.spaced_name, "[dm from  ada] hello", "a name with a leading space stays that name");
+assert.equal(control.spaced_name, subject.spaced_name, "the old rendering and the subject agree on a name that is not only whitespace");
+assert.equal(subjectChat.spaced_name?.chat_name, " ada", "a direct-message title keeps a name that is not only whitespace");
 
 console.log("hermes injected frame: body and attribution both neutralized; the pre-fix control forged on every case");
 if (cells !== EXPECTED_CELLS) {

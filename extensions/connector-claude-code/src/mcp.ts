@@ -67,6 +67,7 @@ const CODE_LISTENING =
   'A prompt beginning "Cotal: inline messages" contains complete messages; answer those without fetching them again. ' +
   'A notification beginning "Cotal:" without complete messages names the connection_id; read those with cotal_inbox. ' +
   'A notification beginning "Cotal: the person approved", "Cotal: the person denied" or "Cotal: the approval for connection" reports the person\'s decision on this conversation\'s pending cotal_connect; finish it exactly as that notification says, and after a denial or expiry do not ask again on your own. ' +
+  'A notification beginning "Cotal: the mesh refused connection" reports a policy or request failure, not a denial by the person. Read the saved refusal with the name and approval_id it gives; that read makes no new connection request. Show the reason and its available actions, and do not retry the connection automatically. ' +
   "cotal_connect reports whether its incoming-message reader is connected. Where it is not: " +
   GATEWAY_LISTENING;
 

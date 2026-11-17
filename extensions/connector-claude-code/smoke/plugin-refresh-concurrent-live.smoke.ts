@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cotal-plugin-concurrent-")));
+const boundary = spawnSync("git", ["init", "-q", root], { encoding: "utf8" });
+assert.equal(boundary.status, 0, boundary.stderr);
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_") || key.startsWith("CLAUDE_") || key === "CLAUDECODE") delete process.env[key];
 Object.assign(process.env, {
   HOME: root, CLAUDE_CONFIG_DIR: join(root, ".claude"), COTAL_HOME: join(root, ".cotal"),

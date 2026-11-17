@@ -1,0 +1,13 @@
+Node exposes a UMD/CJS package only as a default export, so `import * as fuzzysort` leaves fuzzysort.go undefined on Node (Bun interop hides this). A default import works on both.
+
+--- a/packages/tui/src/ui/dialog-select.tsx	2026-10-30 17:57:48.597437411 +0530
++++ b/packages/tui/src/ui/dialog-select.tsx	2026-10-30 17:57:48.601026947 +0530
+@@ -5,7 +5,7 @@
+ import { batch, createEffect, createMemo, createSignal, For, Show, type JSX, on, onCleanup, onMount } from "solid-js"
+ import { createStore } from "solid-js/store"
+ import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+-import * as fuzzysort from "fuzzysort"
++import fuzzysort from "fuzzysort"
+ import { isDeepEqual } from "remeda"
+ import {
+   DIALOG_INSET,

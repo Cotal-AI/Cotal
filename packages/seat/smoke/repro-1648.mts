@@ -24,7 +24,7 @@
  */
 import { connect } from "node:net";
 import { readFileSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeSeatRoot } from "@cotal-ai/smoke-kit";
 import { launchSeat } from "../src/index.js";

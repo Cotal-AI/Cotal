@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { Algorithms, decode, encodeAuthorizationResponse, encodeUser } from "@nats-io/jwt";
+import { Algorithms, decode, encodeAuthorizationResponse, encodeUser, fmtCreds } from "@nats-io/jwt";
 import { createAccount, createCluster, createCurve, createOperator, createServer, createUser, fromPublic, fromSeed, NKeysErrorCode, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import { decodeNatsJwt, nativeNkeySigner } from "../src/nkey-signer.js";
-import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, newIdentity } from "../src/index.js";
+import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, identityFromCreds, newIdentity } from "../src/index.js";
 
 const messages = [new Uint8Array(), new TextEncoder().encode("NATS signing: café"), Uint8Array.from({ length: 256 }, (_, i) => i)];
 let cases = 0;
@@ -173,3 +173,19 @@ try {
   cases++;
 }
 console.log(`native nkey signing smoke: ${cases} cases passed (5 key kinds × 3 payloads, invalid seeds, v1/v2 JWTs and callout responses, native JWT decode, identity/account factories and broker binding)`);
+
+// identityFromCreds derives the creds' identity with the native signer: the id equals the stock
+// library's derivation from the same seed, the seed block comes back verbatim, and a seed paired with
+// someone else's JWT is still refused.
+{
+  const account = createAccount(), user = createUser(), other = createUser();
+  const jwt = await encodeUser("native-identity", user.getPublicKey(), account);
+  const creds = new TextDecoder().decode(fmtCreds(jwt, user));
+  const identity = identityFromCreds(creds);
+  assert.equal(identity.id, fromSeed(user.getSeed()).getPublicKey(), "native and stock derivations agree");
+  assert.equal(identity.seed, new TextDecoder().decode(user.getSeed()));
+  assert.throws(() => identityFromCreds(new TextDecoder().decode(fmtCreds(jwt, other))), /seed identity .* != JWT subject/);
+  cases++;
+  console.log(`native identity derivation: ${cases} cases`);
+}
+

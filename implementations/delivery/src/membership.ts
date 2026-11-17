@@ -26,7 +26,7 @@ import type { DeliveryLog } from "./delivery.js";
  *  daemon's log line is not the only place it is needed: an adoption reply that says only "the feed is
  *  not running" sends an operator hunting for a feed fault when the real one is an expired $SYS cred
  *  three layers down (the failure reported in #338). Exactly one of the two members is set. */
-export type MembershipStart = { handle: MembershipFeedHandle; down?: undefined } | { handle?: undefined; down: string };
+type MembershipStart = { handle: MembershipFeedHandle; down?: undefined } | { handle?: undefined; down: string };
 
 export async function startMembership(
   opts: { space: string; server: string; accountId: string; root?: string },

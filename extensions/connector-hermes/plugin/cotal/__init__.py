@@ -101,10 +101,10 @@ def _bootstrap_standalone_sidecar() -> None:
     space = os.environ.get("COTAL_SPACE") or "(from COTAL_LINK)"
     os.environ.setdefault("COTAL_BRIDGE_SOCKET", str(run_dir / "bridge.sock"))
     os.environ.setdefault("COTAL_CONTROL_SOCKET", str(run_dir / "control.sock"))
-    # The sidecar (listener) and the lifecycle hooks and bridge client (this process) prove to each
-    # other that they hold a shared control key, without sending it. Managed mode gets the key and its
-    # protocol version from the launcher; standalone mints one here so both sides (they share this env)
-    # agree on it.
+    # The sidecar (listener) and the lifecycle hooks (this process) prove to each other that they hold
+    # a shared control key, without sending it, and the bridge client presents a token derived from
+    # it. Managed mode gets the key and its protocol version from the launcher; standalone mints one
+    # here so both sides (they share this env) agree on it.
     os.environ.setdefault("COTAL_CONTROL_TOKEN", secrets.token_urlsafe(32))
     os.environ.setdefault("COTAL_CONTROL_VERSION", "1")
     os.environ.setdefault("COTAL_TOOLS_FILE", str(run_dir / "cotal-tools.json"))

@@ -20,6 +20,7 @@ import {
 import { basename, dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import {
   hardenPrivate,
+  eventPayloadStream,
   type BackupStreamState,
   type PersistentConsumerCheckpoint,
   type SpaceBackupSelection,
@@ -29,7 +30,9 @@ import {
 import { CommandFailure, protectedLocalEntries, readLocalRecordSource, readMaintenanceJournal, type MaintenanceAuthMode, type StoreIdentity } from "@cotal-ai/workspace";
 import type { AuthorityFingerprint } from "./maintenance-files.js";
 
-export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v2" as const;
+export const BACKUP_MANIFEST_FORMAT = "cotal-space-backup/v3" as const;
+/** The format before full backups held the event payload stream. */
+export const BACKUP_MANIFEST_FORMAT_V2 = "cotal-space-backup/v2" as const;
 /** The format before full backups held workflow runs. Such an artifact still restores; its full
  *  selection is the message, registry and authorization streams, and the run stores come back empty. */
 export const BACKUP_MANIFEST_FORMAT_V1 = "cotal-space-backup/v1" as const;
@@ -53,7 +56,7 @@ export interface BackupStreamRecord {
 }
 
 export interface BackupManifest {
-  format: typeof BACKUP_MANIFEST_FORMAT | typeof BACKUP_MANIFEST_FORMAT_V1;
+  format: typeof BACKUP_MANIFEST_FORMAT | typeof BACKUP_MANIFEST_FORMAT_V2 | typeof BACKUP_MANIFEST_FORMAT_V1;
   createdAt: string;
   space: string;
   selection: SpaceBackupSelection;
@@ -251,13 +254,16 @@ function parseManifest(path: string, pinnedBytes?: Buffer): BackupManifest {
 export function artifactStreams(manifest: Pick<BackupManifest, "format" | "space" | "selection" | "mode">): readonly string[] {
   const inventory = spaceBackupInventory(manifest.space);
   if (manifest.selection !== "full") return inventory.registry;
-  return manifest.format === BACKUP_MANIFEST_FORMAT_V1 || manifest.mode === "user" ? inventory.backedUp.filter((stream) => stream.class !== "workflow").map((stream) => stream.name) : inventory.full;
+  return inventory.backedUp.filter((stream) =>
+    (manifest.format === BACKUP_MANIFEST_FORMAT || stream.name !== eventPayloadStream(manifest.space)) &&
+    (!(manifest.format === BACKUP_MANIFEST_FORMAT_V1 || manifest.mode === "user") || stream.class !== "workflow"),
+  ).map((stream) => stream.name);
 }
 
 /** The manifest's shape, format, inventory and source identity. Messages name no manifest value. */
 function validManifest(value: BackupManifest): BackupManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("backup manifest is not a JSON object");
-  if (value.format !== BACKUP_MANIFEST_FORMAT && value.format !== BACKUP_MANIFEST_FORMAT_V1) throw new Error("backup manifest names an unsupported format");
+  if (value.format !== BACKUP_MANIFEST_FORMAT && value.format !== BACKUP_MANIFEST_FORMAT_V2 && value.format !== BACKUP_MANIFEST_FORMAT_V1) throw new Error("backup manifest names an unsupported format");
   if (!value.space || !["full", "registry"].includes(value.selection) || !["auth", "open", "user"].includes(value.mode))
     throw new Error("backup manifest has invalid space, selection, or mode");
   if (typeof value.space !== "string" || value.space.length > 200) throw new Error("backup manifest names an invalid space");
@@ -281,7 +287,8 @@ function validManifest(value: BackupManifest): BackupManifest {
   return value;
 }
 
-function copyPinnedFile(source: string, destination: string | undefined, expected: BackupFileRecord): void {
+/** Copy or verify a regular file against pinned size and bytes; an incomplete copy stays untrusted. */
+export function copyPinnedFile(source: string, destination: string | undefined, expected: Pick<BackupFileRecord, "path" | "size" | "sha256">): void {
   const pathStat = lstatSync(source);
   if (!pathStat.isFile() || pathStat.isSymbolicLink()) throw new ArtifactFileFault(expected.path, "not-regular");
   const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
@@ -318,7 +325,7 @@ function copyPinnedFile(source: string, destination: string | undefined, expecte
   }
 }
 
-/** The existing exact-name/metadata checks shared by staging and read-only inspection. */
+/** The exact-name, regular-file and metadata checks shared by inspect, verify and staging. */
 function validateArtifactInventory(artifact: string, manifest: BackupManifest): void {
   for (const file of manifest.files) safeFileName(file.path);
   const expected = new Set(["manifest.json", ...manifest.files.map((file) => file.path)]);
@@ -338,6 +345,13 @@ function validateArtifactInventory(artifact: string, manifest: BackupManifest): 
       throw invalidManifest(`its record for ${file.path} has an invalid size, SHA-256, kind or stream`);
     if (file.kind === "checkpoints" && file.size > MAX_CHECKPOINT_BYTES)
       throw invalidManifest(`it declares a checkpoints file larger than its ${MAX_CHECKPOINT_BYTES / 1024 / 1024} MiB limit`);
+  }
+  // Inspect, verify and staging share this inventory. A declared name that is a symbolic link,
+  // FIFO or device is refused here, before any read follows it, the way a linked manifest is.
+  // Record shape is checked first, so a bad record keeps the fault it had before this check.
+  for (const file of manifest.files) {
+    const stat = lstatSync(join(artifact, file.path));
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new ArtifactFileFault(file.path, "not-regular");
   }
   const checkpointFiles = manifest.files.filter((file) => file.kind === "checkpoints");
   if (checkpointFiles.length !== 1 || checkpointFiles[0].path !== manifest.checkpoints)

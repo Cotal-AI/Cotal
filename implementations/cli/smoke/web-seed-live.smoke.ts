@@ -13,7 +13,6 @@
  * Needs `nats-server` on PATH (like the other auth smokes). Kills only the broker it spawns.
  * Run: pnpm smoke:web-seed:live
  */
-import { once } from "node:events";
 import { closeSync, mkdtempSync, writeFileSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

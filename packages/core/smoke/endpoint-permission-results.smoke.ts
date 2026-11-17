@@ -114,7 +114,10 @@ try {
     "list-denied",
     fromPublic(identity.id),
     fromPublic(auth.account.pub),
-    { pub: { allow: ["$JS.API.INFO"] }, sub: { allow: [`_INBOX_${identity.id}.>`] } },
+    {
+      pub: { allow: ["$JS.API.INFO", `cotal.${space}.ctl.>`] },
+      sub: { allow: [`_INBOX_${identity.id}.>`, `cotal.${space}.ctl.granted.>`] },
+    },
     { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)) },
   );
   const restrictedCreds = new TextDecoder().decode(
@@ -150,6 +153,48 @@ try {
     !statusErrors.some((message) => /STREAM\.INFO\.CHAT_permissionresults/.test(message)),
     statusErrors,
   );
+
+  const serviceErrors: Error[] = [];
+  restricted.on("error", (error) => serviceErrors.push(error));
+  const denials: unknown[] = [];
+  for (let round = 1; round <= 2; round++) {
+    const before = serviceErrors.length;
+    const sub = restricted.serveControl("denied", () => ({ ok: true }));
+    const closed = await Promise.race([sub.closed.then(() => true), wait(1500).then(() => false)]);
+    await wait(200);
+    const errors = serviceErrors.slice(before);
+    check(
+      `refused service subscription ${round} emits one annotated denial and closes`,
+      closed && sub.isClosed() && errors.length === 1 && isPermissionDenied(errors[0]) &&
+        errors[0]?.cause instanceof Error,
+      errors.map((error) => error.message),
+    );
+    denials.push(errors[0]?.cause);
+    sub.unsubscribe();
+  }
+  check("independent refusals on the same service remain distinct",
+    denials.every((denial) => denial instanceof Error) && denials[0] !== denials[1]);
+
+  const beforeGranted = serviceErrors.length;
+  let handled = 0;
+  const granted = restricted.serveControl("granted", () => { handled++; return { ok: true }; });
+  const reply = await restricted.requestControl("granted", { op: "probe" }, 1500);
+  await wait(100);
+  check("granted service executes and replies without an error",
+    reply.ok && handled === 1 && !granted.isClosed() && serviceErrors.length === beforeGranted,
+    serviceErrors.slice(beforeGranted));
+  granted.unsubscribe();
+
+  for (let round = 1; round <= 2; round++) {
+    const before = serviceErrors.length;
+    let refused: unknown;
+    try { await restricted.requestControl("denied", { op: "probe" }, 1500); }
+    catch (error) { refused = error; }
+    await wait(200);
+    check(`request reply-subscription refusal ${round} still rejects and reports once`,
+      isPermissionDenied(refused) && serviceErrors.length - before === 1,
+      serviceErrors.slice(before).map((error) => error.message));
+  }
 
   const deletionIdentity = newIdentity();
   const deletionJwt = await encodeUser(

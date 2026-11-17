@@ -1,11 +1,14 @@
 import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import { drainAndClose } from "@cotal-ai/core";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve as resolvePath } from "node:path";
 import { type CompletionResult, type ParsedArgs } from "@cotal-ai/core";
 import {
   CommandFailure,
+  ConfirmationRequired,
   isCommandFailure,
   localRecordName,
+  oneLine,
   presentationOf,
   renderReport,
   abortMaintenanceCut,
@@ -89,9 +92,11 @@ import { c, stderrLine } from "../ui.js";
 import { cotalRoot, linkedCotalRefusal } from "../lib/paths.js";
 import { parsePid, probeLiveness, readPidfile } from "@cotal-ai/workspace";
 import { resolveRuntimeSpace } from "../lib/status.js";
+import { interruptedStartBroker } from "../lib/legacy-start.js";
 import { downManifest } from "./down-manifest.js";
 import { directKvValue, refuseLiveUnrecordedDaemons } from "./down-live-lease.js";
 import { listLedgerFiles } from "../lib/manifest/ledger.js";
+import { loadManifest } from "../lib/manifest/index.js";
 import { freshTeamAttemptSettled, listFreshTeamAttempts, listFreshTeamSummaries } from "../lib/team-fresh.js";
 import { additiveTeamRecordedState, listAdditiveTeamAttempts, retainedAdditiveTeamAttempts } from "../lib/team-additive-attempt.js";
 import { retainedRemovalRemedy } from "../lib/team-text.js";
@@ -113,6 +118,9 @@ import { restoreNextStep } from "../lib/restore.js";
 import { ownStdoutErrors } from "../lib/stdout-owner.js";
 import { askManager } from "@cotal-ai/workspace/control";
 import { cliControl } from "../lib/control.js";
+import { canPrompt } from "./meshes-wizard.js";
+import * as prompts from "../lib/prompts.js";
+import { yesRequired } from "../lib/confirmation-required.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -128,6 +136,11 @@ interface ManagerResumeAgentShape {
     unresolvedLaunchOptionKeys?: string[];
     source: { configSha256: string; manifestSha256?: string; hash?: string };
   };
+}
+
+/** How a live unmanaged endpoint is named in the preserve refusal. A missing or whitespace-only name is the id. */
+export function unmanagedEndpointLabel(name: string, id: string): string {
+  return name.trim() ? `${name} (${id})` : id;
 }
 
 /** Complete selective component names without importing installed packages. */
@@ -166,7 +179,18 @@ export function validateDownArguments(args: ParsedArgs): void {
   if (args.values["abandon-stop"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-stop applies only to a controller stack's member stop, and this root has none; nothing was abandoned");
   if (args.values["abandon-launch"] !== undefined) throw new CommandFailure("refused", "UNSUPPORTED", "--abandon-launch applies only to a controller stack's member launch, and this root has none; nothing was abandoned");
   if (args.values["dry-run"] === true && args.values.yes === true) throw new CommandFailure("refused", "USAGE_INVALID", "--yes acknowledges a guarded apply, not a read-only stack preview");
-  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.file === undefined && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined) return;
+  if (typeof args.values.file === "string" && args.values.run === undefined && recordedStackPreview()) {
+    if (args.values["dry-run"] === true) {
+      const reason = manifestRead(args.values.file);
+      if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: args.values.file } });
+    } else if (Object.entries(args.values).every(([name, value]) => value === undefined || ["file", "yes", "dry-run", "json", "plain"].includes(name))) {
+      throw new CommandFailure("refused", "UNSUPPORTED", "file-form apply requires an additive deployment ledger; this folder records a stack started by up, so nothing was stopped", {
+        target: { root: canonicalRoot(cotalRoot()), file: args.values.file },
+        remedy: "run `cotal down` from this stack's root; no run ID is needed",
+      });
+    }
+  }
+  if ((args.values.json !== undefined || args.values.plain !== undefined) && args.values["dry-run"] === true && args.values.run === undefined && args.values["preserve-state"] === undefined && args.values["store-dir"] === undefined && args.values["session-store"] === undefined && (args.values.file === undefined || typeof args.values.file === "string" && recordedStackPreview())) return;
   // A folder holding another folder's registered space answers with a refusal, not with the lines a
   // bare stop prints, so structured output carries it rather than refusing the flag.
   if ((args.values.json !== undefined || args.values.plain !== undefined) && !(bareStop(args.values) && (stoppedLegacyStack() || recordsElsewhere(canonicalRoot(cotalRoot()), "stop")))) throw new CommandFailure("refused", "UNSUPPORTED", "--json and --plain apply only to a controller stack, a --dry-run preview, a stack that is already stopped or a folder whose records name another folder's space; a bare stop here prints its own lines, and nothing was stopped", { remedy: "run `cotal down` from this root without --json or --plain; `cotal down --dry-run --json` reads this root's stack" });
@@ -274,6 +298,27 @@ function previewWholeStack(args: ParsedArgs): void {
       ? [{ title: "Next", blocks: [{ kind: "commands" as const, items: [{ command: "cotal down --preserve-state", description: "Stop the machine-home stack and keep its state for the next `cotal up`" }] }] }]
       : [{ title: "Next", blocks: [{ kind: "lines" as const, lines: ["No process of the machine-home stack is running, so there is nothing to stop."] }] }]),
   ] }));
+}
+
+/** Why a file-form dry-run cannot read its manifest, or undefined when the file resolves. A missing
+ *  or malformed file is reported as itself, never as a missing ledger. */
+function manifestRead(file: string): string | undefined {
+  try { loadManifest(file); return undefined; }
+  catch (error) { return `cannot read ${file}: ${(error as Error).message}`; }
+}
+
+/** A file-form dry-run previews this root's recorded stack when the manifest can be read and no
+ *  additive ledger exists. A ledger, or a file that cannot be read, stays on the ledger teardown,
+ *  which fails closed. */
+function recordedStackPreview(): boolean {
+  try {
+    const root = canonicalRoot(cotalRoot());
+    const local = localMeshesForRoot(root);
+    const sole = local[0];
+    if (local.length !== 1 || sole?.origin !== "up" || canonicalRoot(sole.root) !== root) return false;
+    const ledgers = listLedgerFiles(root, { requireReadable: true });
+    return ledgers.valid.length === 0 && ledgers.refused.length === 0;
+  } catch { return false; }
 }
 
 /** A bare stop, its preview included: no flag beyond --dry-run, --with-agents, --yes and the
@@ -390,15 +435,19 @@ function guardLegacyBareDown(): { space: string; server: string } {
     if (!existsSync(join(root, ".cotal")) || !localMeshesForRoot(root).length && !pidRecordsUnder(root)) throw noOwnedStack(root);
     throw new CommandFailure("refused", "CONFLICT", "the machine home is not an isolated whole-stack stop root; no process was signalled", { target, remedy: MACHINE_HOME_STOP });
   }
-  let mesh: NonNullable<ReturnType<typeof findMesh>>;
+  let mesh: { readonly space: string; readonly server: string };
   try {
     if (!realDirNoSymlink(root, ".cotal")) throw new Error("missing project control directory");
     // A root that hosts several spaces refuses before the registration lookup, naming them.
     try { assertSingleSpaceBroker(authDir(root), "bare down"); }
     catch (error) { throw new CommandFailure("refused", "CONFLICT", (error as Error).message, { target }); }
     const local = localMeshesForRoot(root), sole = local[0];
-    if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
-    mesh = sole;
+    // A start interrupted before it registered its space left its broker with no registration. The
+    // root's own files name that space and address, and the guards below apply to it unchanged.
+    const interrupted = local.length ? undefined : interruptedStartBroker(root);
+    if (interrupted) mesh = interrupted;
+    else if (local.length !== 1 || sole?.origin !== "up") throw new Error("no unique locally started stack at this root");
+    else mesh = sole;
   } catch (error) {
     if (error instanceof CommandFailure) throw error;
     throw noOwnedStack(root);
@@ -526,6 +575,11 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   if ((values.file || values.run) && values.space) {
     throw new CommandFailure("refused", "USAGE_INVALID", "component names and --space cannot be combined with --file or --run");
   }
+  if (values.file && values["dry-run"] && values.run === undefined && recordedStackPreview()) {
+    const reason = manifestRead(values.file);
+    if (reason) throw new CommandFailure("refused", "SCHEMA_INVALID", reason, { target: { file: values.file } });
+    return previewWholeStack(args);
+  }
   if (values.file || values.run) {
     await downManifest(values.file ?? "<run>", { run: values.run, dryRun: Boolean(values["dry-run"]) });
     return;
@@ -546,6 +600,33 @@ async function downCommand(args: ParsedArgs): Promise<void> {
   let folderContext: LocalProcessContext | undefined;
   const folderCtx = (): LocalProcessContext => (folderContext ??= { root: cotalRoot(), space: resolveRuntimeSpace(process.cwd()) });
   refuseUncontainedRecords(selected, folderCtx());
+  if (args.values.yes !== true) {
+    const target = { root: folderCtx().root, space: guarded.space };
+    if (!canPrompt()) throw new ConfirmationRequired(yesRequired("stopping the whole local stack", false), { target, remedy: "run `cotal down --yes` to stop it; `cotal down --dry-run` shows its local records" });
+    const records = () => selected.map((component) => {
+      const path = localProcessPath(component.pidFile, folderCtx());
+      return { path, recorded: processRecorded(component, folderCtx()), pid: readContainedRecord(target.root, path), identity: readContainedRecord(target.root, `${path}.identity`) };
+    });
+    const reviewedRecords = JSON.stringify(records());
+    console.log(renderReport({ space: guarded.space, sections: [{ title: "Whole-stack stop", blocks: [
+      { kind: "fields", rows: [["Root", target.root], ["Stop recorded components", selected.filter((component) => processRecorded(component, folderCtx())).map((component) => component.label).join(", ") || "none"], ["Retire managed agents", values["with-agents"] ? "requested" : "not requested"]] },
+      { kind: "lines", lines: ["These are retained local records, not a verified process or agent-impact plan. The existing ownership and stop guards still apply."] },
+    ] }] }, "rich", process.stdout));
+    const answer = await prompts.confirm({ message: `Stop ${oneLine(guarded.space)}'s whole local stack?`, initialValue: false });
+    if (prompts.isCancel(answer) || !answer) {
+      console.log("Cancelled; no process was stopped.");
+      return;
+    }
+    // Input can wait indefinitely. A prior scope check cannot authorize the stack now present.
+    const changed = () => new CommandFailure("refused", "CONFLICT", "the local stack changed while confirmation waited; no process was stopped", { target, remedy: "run `cotal down` again to review the current stack" });
+    if (cotalRoot() !== target.root) throw changed();
+    validateDownArguments(args);
+    if (controllerStackRecorded(target.root)) throw changed();
+    const current = guardLegacyBareDown();
+    if (current.space !== guarded.space || current.server !== guarded.server || resolveRuntimeSpace(process.cwd()) !== folderCtx().space) throw changed();
+    refuseUncontainedRecords(selected, folderCtx());
+    if (JSON.stringify(records()) !== reviewedRecords) throw changed();
+  }
   // A signal ends the stop where it is, and the notice names the members it stopped and those still
   // running. One that lands after a member was signalled waits for that member's exit, so its stop is
   // reported first; a second one ends the stop at once and names that member. Once every member is
@@ -920,7 +1001,7 @@ async function preserveStateDown(storeOverride?: string, sessionStores: readonly
         // unknown outcome (`OPERATION_UNKNOWN`) with no next step (#4510).
         if (unmanaged.length)
           throw new CommandFailure("refused", "LIFECYCLE_BLOCKED",
-            `cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => `${presence.card.name} (${presence.card.id})`).join(", ")} (manager lease holder: ${observed.managerId}); nothing was preserved`,
+            `cannot preserve while unmanaged endpoints are live: ${unmanaged.map((presence) => unmanagedEndpointLabel(presence.card.name, presence.card.id)).join(", ")} (manager lease holder: ${observed.managerId}); nothing was preserved`,
             { remedy: "stop those endpoints, or wait for their presence to expire, then run `cotal down --preserve-state` again" });
         // A seat that cannot be checkpointed is refused HERE, at prepare time, while every child is
         // still running. This reads only the prepared inventory, so it needs nothing that stopping
@@ -1189,7 +1270,7 @@ export async function assertControlPlaneQuiesced(space: string, server: string):
       await sleep(500);
     }
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 
@@ -1255,7 +1336,7 @@ async function readPresenceAndLease(space: string, server: string): Promise<{ ro
     if (!lease?.holder) return { roster };
     return { roster, managerId: parsePrincipalKey(lease.holder) ? lease.holder : principalKey(DEV_OWNER, lease.holder).key };
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }
 

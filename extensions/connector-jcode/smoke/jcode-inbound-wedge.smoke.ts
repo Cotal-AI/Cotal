@@ -45,7 +45,7 @@ const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+const hostArgs = ["--import", import.meta.resolve("tsx"), host];
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const log = join(root, "fake.jsonl");
@@ -93,7 +93,7 @@ async function spawnHost(extra: NodeJS.ProcessEnv, controlSock: string): Promise
   const inheritedJcodeHome = join(root, "source-jcode");
   mkdirSync(inheritedJcodeHome, { recursive: true, mode: 0o700 });
   writeFileSync(join(inheritedJcodeHome, "auth.json"), "jcode-inbound-wedge-smoke-token", { mode: 0o600 });
-  const spawned = spawn(tsx, [host], {
+  const spawned = spawn(process.execPath, hostArgs, {
     cwd: root,
     detached: true,
     env: {
@@ -216,7 +216,7 @@ try {
   const busyMs = 8_000;
 
   // --- Cell A: the initial automatic batch stays visible while its Cotal-owned run() is open ---
-  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(root, "ci.sock"));
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs) }, join(sockRoot, "ci.sock"));
   // The post-join notice turn (#2001) must complete before Cell A probes, else presence can interleave (#2055).
   await waitFor("the post-join notice turn completes before the initial-drive cell (#2001, #2055)", () =>
     entries().find(
@@ -252,7 +252,7 @@ try {
   peerPresenceAt = 0;
 
   // --- Cell B: advisory idle during a still-open Cotal-owned run() ---
-  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs), FAKE_JCODE_IDLE_DURING_TURN: "1" }, join(root, "control-a.sock"));
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: String(busyMs), FAKE_JCODE_IDLE_DURING_TURN: "1" }, join(sockRoot, "control-a.sock"));
   // The post-join notice turn (#2001) must complete before the first DM, else presence can interleave (#2055).
   await waitFor("the post-join notice turn completes before the idle-during-drive cell (#2001, #2055)", () =>
     entries().find(
@@ -306,7 +306,7 @@ try {
   peerPresenceAt = 0;
 
   // --- Cell C: TUI-owned working session, host not inside drive() ---
-  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: "10", FAKE_JCODE_EXTERNAL_TURN_MS: String(busyMs) }, join(root, "control-b.sock"));
+  child = await spawnHost({ FAKE_JCODE_TURN_DELAY_MS: "10", FAKE_JCODE_EXTERNAL_TURN_MS: String(busyMs) }, join(sockRoot, "control-b.sock"));
   // The post-join notice turn (#2001) must complete before the first DM, else presence can interleave (#2055).
   await waitFor("the post-join notice turn completes before the TUI-owned cell (#2001, #2055)", () =>
     entries().find(
@@ -540,5 +540,6 @@ try {
   await operator?.stop().catch(() => {});
   await killAndAwaitExit(nats);
   releaseBroker();
+  rmSync(sockRoot, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

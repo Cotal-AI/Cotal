@@ -37,6 +37,7 @@ const agent = new MeshAgent(cfg);
 (agent as unknown as { ep: unknown }).ep = {
   principal: { owner: "local", actor: "seat" },
   setStatus: async () => {},
+  noteActivity() {},
   setActivity: async () => {},
   setAttention: async () => {},
   joinedChannels: () => [],

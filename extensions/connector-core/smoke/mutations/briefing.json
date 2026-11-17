@@ -19,7 +19,13 @@
     "M1 is the drift that shipped: a connector that forgets one paragraph. M2 is the gateway's",
     "exception going the other way, an arrival sentence that would contradict the connect result's",
     "own listening line. M3 is the identity line losing the role, which the orientation card and",
-    "every harness used to agree on."
+    "every harness used to agree on.",
+    "",
+    "M4 drops the sentence that sends a status meant for one peer to the shared channel with a",
+    "mention. Claude Code reads the briefing before it picks a tool, and loads a tool's description only after.",
+    "",
+    "M5 and M6 put back two false claims: that a live channel reaches every connected agent,",
+    "and that once works on every harness."
   ],
   "mutations": [
     {
@@ -48,6 +54,42 @@
       "expectRed": "every harness opens with the identity line",
       "cell": "every harness opens with the identity line",
       "note": "The role is what cotal_anycast routes on; a seat not told its role does not know which requests are its own."
+    },
+    {
+      "name": "M4 drop the sentence that sends a status for a peer to the shared channel",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "  \"or sign-off starts a wake-up loop. When you are \" +\n  \"asked to tell a peer about shared work, such as a status or a result, post it on the channel you \" +\n  \"share and mention that peer there. Use cotal_dm only for something one peer alone needs, such as a \" +",
+      "replace": "  \"or sign-off starts a wake-up loop. \" +\n  \"Use cotal_dm only for something one peer alone needs, such as a \" +",
+      "expectRed": "the channel guidance sends a status for a peer to the shared channel with a mention",
+      "cell": "the channel guidance sends a status for a peer to the shared channel with a mention",
+      "note": "Without it, \"Tell bob the build is green\" went to a DM on both rehearsal harnesses."
+    },
+    {
+      "name": "M5 the briefing drops what a live channel misses",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "\"and one that is offline gets it when it comes back; on a live channel, one that is disconnected or \" +\n  \"busy then misses it, unless the post mentions it by a name only it has and it may read the channel. \" +",
+      "replace": "\"and one that is offline gets it when it comes back; on a live channel, every connected agent \" +\n  \"gets it. \" +",
+      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
+      "cell": "the briefing says a live post misses an agent that is away, and where once works",
+      "note": "SPEC §4: a live post misses an agent that is disconnected or busy."
+    },
+    {
+      "name": "M6 the briefing offers once on every harness",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "starts a Claude Code, jcode, OpenCode or pi helper that is stopped when the task ends.",
+      "replace": "starts a helper that is stopped when the task ends.",
+      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
+      "cell": "the briefing says a live post misses an agent that is away, and where once works",
+      "note": "The manager refuses once for a connector without supportsTurnRelay."
+    },
+    {
+      "name": "M7 the briefing drops the mention exception on a live channel",
+      "file": "extensions/connector-core/src/orientation.ts",
+      "find": "  \"busy then misses it, unless the post mentions it by a name only it has and it may read the channel. \" +",
+      "replace": "  \"busy then misses it. \" +",
+      "expectRed": "the briefing says a live post misses an agent that is away, and where once works",
+      "cell": "the briefing says a live post misses an agent that is away, and where once works",
+      "note": "SPEC §4: a mention on a live channel keeps a durable copy for a mentioned target allowed to read it."
     }
   ]
 }

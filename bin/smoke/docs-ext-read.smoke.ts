@@ -80,7 +80,9 @@ let specBody = "";
   check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
   // A page is drawn only on a terminal (the pty suite reads that); to a pipe it is its Markdown.
   const piped = run(["docs", "cli"]);
-  check("a page read to a pipe without --plain is its Markdown", piped.status === 0 && piped.stdout.includes("\n# `cotal` CLI reference\n") && /^\|---\|---\|$/m.test(piped.stdout), shown(piped));
+  check("the CLI hub read to a pipe keeps its Markdown heading and links", piped.status === 0 && piped.stdout.includes("\n# CLI reference\n") && piped.stdout.includes("[CLI usage](cli-usage.mdx#structured-output)"), shown(piped));
+  const usage = run(["docs", "cli-usage"]);
+  check("a reference page read to a pipe keeps its Markdown table", usage.status === 0 && usage.stdout.includes("\n# CLI usage\n") && /^\|---\|---\|$/m.test(usage.stdout) && /^\| `schemaVersion` \| `1` \|$/m.test(usage.stdout), shown(usage));
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
@@ -102,7 +104,22 @@ let specBody = "";
 {
   const json = run(["docs", "--search", "allowSubscribe", "--json"]);
   const r = json.envelope?.result as { kind: string; query: string; hits: { slug: string; heading: string; text: string }[] } | undefined;
-  check("--search returns sections that hold the query, each naming its page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && r.hits.every((h) => h.slug && h.heading && /allowsubscribe/i.test(h.text)), r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
+  const matchingSections = r?.hits.every((h) => {
+    if (!h.slug || !h.heading || !h.text) return false;
+    const page = run(["docs", h.slug, "--json"]);
+    const body = (page.envelope?.result as { body?: string } | undefined)?.body ?? "";
+    const excerpt = h.text.replace(/\n\n… \(section continues; read the full page\)$/, "");
+    const start = body.indexOf(excerpt);
+    if (page.status !== 0 || start < 0) return false;
+    // Search deliberately caps long sections. Verify the match in that same section,
+    // rather than requiring the identifier to occur before the display cap.
+    const rest = body.slice(start);
+    const heading = /^#+ /m.exec(rest);
+    const next = /^#+ /m.exec(rest.slice((heading?.index ?? 0) + (heading?.[0].length ?? 0)));
+    const end = next ? (heading?.index ?? 0) + (heading?.[0].length ?? 0) + next.index : rest.length;
+    return /allowsubscribe/i.test(rest.slice(0, end));
+  });
+  check("--search returns matching sections and excerpts from each named page", json.status === 0 && r?.kind === "docs-search" && r.query === "allowSubscribe" && r.hits.length > 0 && matchingSections === true, r && { hits: r.hits.map((h) => `${h.slug}: ${h.heading}`) });
   const plain = run(["docs", "--search", "allowSubscribe", "--plain"]);
   check("the plain search points at each hit's full page", plain.status === 0 && /read the full page: `cotal docs [^\s`]+`/.test(plain.stdout), shown(plain));
   const none = run(["docs", "--search", "zzqqxxnomatch", "--json"]);

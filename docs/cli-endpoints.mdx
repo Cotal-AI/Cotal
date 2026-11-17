@@ -19,7 +19,9 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
 it is not limited to child processes owned by the manager. The Participant column holds the name
-that `endpoint describe` takes, and the role has its own column.
+that `endpoint describe` takes, and the role has its own column. A name that is only whitespace is
+shown as the id, and a role or activity that is only whitespace is shown as none or not reported.
+`result.items` keeps the name, role, and activity from the presence record.
 
 
 ## who [#who]
@@ -36,7 +38,13 @@ cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] 
 | `--plain` | off | The same report without color or marks |
 
 Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
-activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
+activity, attention mode, harness, model and host, as its presence reports them. A name that is only
+whitespace is shown as the participant id. `result.items[].name` stays the name on the presence record. A name that two or
+more live participants share is not an address, so each of those rows appends its instance id in
+brackets. A lone offline participant beside a live one of the same name does not, because a direct
+message by that name reaches the live one. `cotal_roster` marks the same rows, leaving out the
+session's own, since a direct message to its name reaches the other participant.
+Infrastructure
 endpoints are hidden unless `--all` asks for them; the report says how many it hid. A `cotal chat`
 session is a participant a person drives, so it is listed with the agents and never counted as
 infrastructure. The report adds a Kind column that names it `chat session`, and its JSON row carries
@@ -54,8 +62,8 @@ every row and no manager is asked. Otherwise every registered manager is asked f
 seat is matched on its lifecycle UID. In a user-auth space each of your live managers is asked, and
 each answers only for the caller's own seats, so other seats show `managed: null` with a
 `MANAGED_SCOPE` warning. An
-identity the broker does not let ask the managers, such as a user whose grant has no `admin`, sees
-every seat `null` with a `MANAGERS_DENIED` warning. So does a credential passed with `--creds`: it
+identity the broker does not let ask the managers, such as a user whose grant has neither `spawn`
+nor `admin`, sees every seat `null` with a `MANAGERS_DENIED` warning. So does a credential passed with `--creds`: it
 carries no caller the managers accept from this command, so they are not asked. These two warnings
 say how far the identity's
 grant reaches; the roster itself was read in full, so they do not make the run partial. A manager
@@ -123,9 +131,8 @@ trust gives it: `space-signer` when the root holds the space's signer, as after 
 `space create` again, and `no-credential` before its first `up`. `server` and `mode` are `null`, the
 `target` names the root, and the report says to start it with `cotal up` there. With `--server`, or
 when the prepared folder no longer exists, it still refuses with `TARGET_UNAVAILABLE`.
-In a folder whose `.cotal/` names no space, as after `space forget`, the held default `main` is
-assumed. The report keeps `Mesh: main` and says under it that the default was assumed, and the JSON
-`target` is `{"root": <folder>, "assumed": "main"}`.
+In a folder whose `.cotal/` names no space, as after `space forget`, `whoami` refuses with no space
+selected. The report names the folder and does not assume `main`.
 `--creds <file>` reports what a credential file may do instead, with `kind: "credential"`: the space
 its permissions name, the profile it was minted with, its principal, the agent lifecycle its
 delivery and history grants are keyed to (none for the `observer` and `admin` profiles), when it was
@@ -202,13 +209,15 @@ conflicting current-folder and selected-root account authorities refuse before p
 registered as open refuses `UNSUPPORTED`: it issues no credentials, so it has no signer to export.
 A per-user-auth space refuses `UNSUPPORTED` as `auth mint` does there, naming the login or
 enrollment path, and nothing is written.
+After a local static space is stopped, signer export can still resolve its retained broker
+configuration and validated trust without starting a broker or repeating its address.
 
 
 ### Protected output
 
-`--out` is required. Its parent must exist and pass the protected physical-directory checks. A
-parent that does not exist refuses `TARGET_NOT_FOUND`, naming the folder, before anything is
-written.
+`--out` is required. Missing parent directories are created privately with mode `0700`, without
+following symbolic links. The parent must pass the protected physical-directory checks before the
+signer is written. Existing directories are not made less restrictive or repaired.
 Managed `.cotal` and workstation state are not valid explicit export destinations. The file is private, and secret contents
 never appear on stdout, in the receipt or in diagnostics. Keep this account-wide signer out of
 logs and support bundles; it is not a least-privilege endpoint credential.
@@ -381,8 +390,11 @@ cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--server
 
 This removes a departed instance's registration, not a process or an agent. Both the native
 class and full instance ID are required; there is no default instance, prefix match or saved
-reference. The selected static space must have validated local signing authority. Open and
-user-auth targets refuse instead of borrowing a static credential path.
+reference. A static space needs validated local signing authority. A user-auth space sends
+`manager` removal to its pinned governing auth service with a fresh login proof. That service
+requires the current `cli` grant's `supervise` scope and checks that the account owns both the
+stored registration and its manager gate. `admin` alone does not authorize removal. Open spaces
+refuse. User-auth removal accepts no `--server` override and never borrows a static signer.
 
 The command resolves one root, account and broker policy, including its TLS requirement.
 A terminal reviews that full target and defaults to Cancel. Scripts need `--yes`.
@@ -400,10 +412,22 @@ A registration that moves during deletion is not success: its spec was not remov
 older status may already have been removed. That uncertain outcome retains the target and is
 not retried. Raw probe diagnostics and credential material are not copied into the receipt.
 
+The stock auth service serves `POST /endpoint-deregister` on its exchange faces. The body is
+`{ idpToken, request: { v: 1, kind: "endpoint-deregister", space, endpoint: "manager", instanceId } }`.
+The loopback face also requires its exchange capability. No owner claim, credential or grant is
+accepted from the request. A hosted service with its own route table must expose this operation.
+An older host refuses `UNSUPPORTED`; the client does not delete records itself.
+
+The embedded auth-service handle's `deregisterEndpoint(request, granter)` is the trusted host
+door. A host authenticates the space operator before supplying `{ kind: "operator", auditId }`,
+or a member before supplying `{ kind: "owner", owner }`. Only the operator arm can target another
+account's registration. Neither a ledger `admin` scope nor the public body grants operator authority.
+Computer-removal handlers can call this door for the recorded native instance after the broker
+reports its rail empty. They must retain an unconfirmed result for inspection, not retry blindly.
+Environment-manager registrations use their separate admission authority and refuse this route.
+
 The old `deregister-instance` spelling is a hidden migration refusal. It starts no operation
-and names the literal replacement, and says that the replacement needs a static space's signing
-authority, since an open or user-auth space has no command that removes a registration. Its former
-default-to-this-folder instance is not retained.
+and names the literal replacement. Its former default-to-this-folder instance is not retained.
 
 
 ## Native endpoint reports [#native-endpoint-reports]
@@ -431,7 +455,9 @@ shows the saved space, native class, full instance pin and storage revision. The
 not connect to a broker or infer registrations from participant presence.
 
 `endpoint add <name> --file <reference.json>` imports a strict version-1 reference object.
-Guided add is available in an interactive terminal. Names use case-safe hexadecimal
+Guided add is available in an interactive terminal. The class, instance pin and credential path
+are checked at their questions. Invalid answers are asked for again without losing earlier answers.
+Names use case-safe hexadecimal
 storage keys under the workstation endpoint directory. Imports are capped at 256 KiB. References
 reject unknown fields, raw inline credentials, target-space mismatches and malformed native pins.
 A credential reference is an owned private regular file; its contents are not read when saving.
@@ -615,7 +641,10 @@ policy, then grants the `--commands` you list on that instance; the host refuses
 outside the approval's caller ceiling. An agent spawned by another actor is admitted only under its
 actual parent chain, with every ancestor already holding a covering grant, so grant the chain from
 its root down. A caller that already holds an active grant covering those commands is reported with
-its grant id and nothing is sent. A grant or revoke goes under a request id derived from the space and
+its grant id and nothing is sent. The broker fixes a connection's permissions when it authenticates,
+so a grant reaches only the caller's next connection: one already connected stays refused until it
+reconnects (an agent session uses `cotal_reconnect`), and both the grant result and the refusal say
+so. A grant or revoke goes under a request id derived from the space and
 the request, including the policy revision it was read at, so running it again after a lost answer
 sends the same request and the host replays its answer. `callers` lists the grantees of the
 proposal's instance, 50 per page; pass the page's `nextCursor` as `--cursor`. `revoke` answers

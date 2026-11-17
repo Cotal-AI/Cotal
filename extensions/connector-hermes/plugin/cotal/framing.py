@@ -40,6 +40,20 @@ def body_safe(text: object) -> str:
     return _LINE_BREAK.sub("\n  ", "" if text is None else str(text))
 
 
+def shown_sender(msg: dict) -> str:
+    """The sender to render. A missing or whitespace-only name is that participant's id.
+
+    ``peer`` is the word left when the message carries no id either.
+    """
+    raw = msg.get("fromName")
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    ident = msg.get("fromId")
+    if isinstance(ident, str) and ident.strip():
+        return ident
+    return "peer"
+
+
 def format_injection(msg: dict) -> str:
     """One mesh message as one injected line: neutralized attribution, then an indented body.
 
@@ -52,9 +66,13 @@ def format_injection(msg: dict) -> str:
     guarantee belongs to somebody else's code.
     """
     kind = attribution_safe(msg.get("kind"))
-    sender = attribution_safe(msg.get("fromName") or "peer")
+    sender = attribution_safe(shown_sender(msg))
     role = msg.get("fromRole")
     who = f"{sender} / {attribution_safe(role)}" if role else sender
     # A backfilled item pre-dates this session; say so the way connector-core's fmtItem does (#2205).
     history = "(history) " if msg.get("historical") is True else ""
+    # A notice is the mesh's own word about something this seat sent, checked against the delivery
+    # lease, so it is labelled as that and not as a peer's DM, as connector-core's fmtItem does.
+    if msg.get("notice") in ("anycast", "mention"):
+        return f"[{msg['notice']} notice from the delivery daemon] {history}{body_safe(msg.get('text'))}"
     return f"[{kind} from {who}] {history}{body_safe(msg.get('text'))}"

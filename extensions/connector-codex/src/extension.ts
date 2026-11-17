@@ -122,6 +122,7 @@ async function listCodexModels(opts: ModelCatalogOpts = {}): Promise<ModelCatalo
 export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
+  setup: { kind: "connector-setup", name: "codex" },
   supportsFreshStart: true,
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
@@ -278,7 +279,7 @@ export const codexConnector: Connector = {
     // after every refusal above, and its directory is a launch artifact the launcher removes once the
     // child has exited (core launch-artifacts).
     const artifacts: string[] = [];
-    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, userAuth: opts.userAuth }, artifacts));
+    Object.assign(env, materialEnv({ creds: opts.creds, servers: opts.servers, control, eventsRequired: opts.eventsRequired, eventPayloads: opts.eventPayloads, userAuth: opts.userAuth }, artifacts));
 
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control, ...(artifacts.length > 0 ? { artifacts } : {}) };
   },

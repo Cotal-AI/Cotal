@@ -1,0 +1,2 @@
+# The composer: where a view posts, the note for each capability, the faded row and the draft that survives a refusal, one dock height in every state, the Message buttons that focus it, and the sidebar footer's place on the roster.
+smoke:web-compose

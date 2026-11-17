@@ -49,7 +49,7 @@ export interface HostedAuthFixture {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export async function startHostedAuthFixture(label: string, count = 2, opts: { websocket?: boolean; maxPayload?: number; clusterPort?: number; clusterName?: string } = {}): Promise<HostedAuthFixture> {
+export async function startHostedAuthFixture(label: string, count = 2, opts: { websocket?: boolean; maxPayload?: number; clusterPort?: number; clusterName?: string; fullResolver?: boolean; keepFiles?: boolean } = {}): Promise<HostedAuthFixture> {
   const port = await pickFreePort();
   const wsPort = opts.websocket ? await pickFreePort() : undefined;
   const servers = `nats://127.0.0.1:${port}`;
@@ -79,6 +79,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
   let maxPayload = opts.maxPayload;
   const render = (clientPort: number, node: string, route?: number) => serverConfig(broker, spaceAccounts, {
     transport: { kind: "plaintext" }, port: clientPort, storeDir: join(dir, `js-${node}`), extraAccounts: calloutAccounts,
+    ...(opts.fullResolver ? { accountResolver: { kind: "full" as const, directory: join(dir, `resolver-${node}`), limit: Math.max(64, count * 2 + 8), intervalMs: 120_000 } } : {}),
     ...(maxPayload === undefined ? {} : { maxPayload }), ...(wsPort !== undefined ? { wsPort } : {}),
   }) + (route === undefined ? "" : `\nserver_name: "owned-payload-${node}"\ncluster {\n name: ${JSON.stringify(opts.clusterName ?? "owned-fixture")}\n host: 127.0.0.1\n port: ${route}\n routes: ["nats://127.0.0.1:${opts.clusterPort}", "nats://127.0.0.1:${clusterPeer!.route}"]\n}\n`);
   writeFileSync(join(dir, "server.conf"), render(port, "primary", opts.clusterPort));
@@ -86,7 +87,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
   if (clusterPeer) {
     writeFileSync(join(dir, "peer.conf"), render(clusterPeer.port, "peer", clusterPeer.route));
     peer = spawn("nats-server", ["-c", join(dir, "peer.conf")], { stdio: "ignore" });
-    releasePeer = teardownOnSignal(peer, dir);
+    releasePeer = teardownOnSignal(peer, opts.keepFiles ? undefined : dir);
   }
   let startupError = "";
   // Reloads are counted off whole LINES: nats-server logs one `Reloaded server configuration` line
@@ -101,7 +102,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
   };
   let nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
   nats.stderr?.on("data", absorb);
-  let release = teardownOnSignal(nats, dir);
+  let release = teardownOnSignal(nats, opts.keepFiles ? undefined : dir);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(servers); if (!up) await wait(200); }
   if (!up) { await killAndAwaitExit(nats, "SIGKILL"); if (peer) await killAndAwaitExit(peer, "SIGKILL"); releasePeer?.(); release(); throw new Error(`nats-server did not come up on ${port}: ${startupError}`); }
@@ -116,7 +117,7 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
     async restartBroker() {
       nats = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: ["ignore", "ignore", "pipe"] });
       nats.stderr?.on("data", absorb);
-      release = teardownOnSignal(nats, dir);
+      release = teardownOnSignal(nats, opts.keepFiles ? undefined : dir);
       for (let i = 0; i < 50; i++) { if (await isReachable(servers)) return; await wait(200); }
       throw new Error("hosted-auth broker did not restart");
     },
@@ -146,7 +147,8 @@ export async function startHostedAuthFixture(label: string, count = 2, opts: { w
       if (peer) await killAndAwaitExit(peer, "SIGKILL");
       releasePeer?.();
       nats.unref();
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+      if (opts.keepFiles) console.log(`retained owned fixture: ${dir}`);
+      else if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
       release();
     },
   };

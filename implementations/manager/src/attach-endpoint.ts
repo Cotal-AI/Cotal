@@ -4,8 +4,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { EpEnvelopeError } from "@cotal-ai/core";
-import { rejectionText } from "./rejection-text.js";
+import { EpEnvelopeError, rejectionText } from "@cotal-ai/core";
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +47,7 @@ export function attachHost(servers: string | undefined): string {
 }
 
 /** One Server-Sent-Events frame: a named event carrying JSON data. */
-export interface FeedEvent {
+interface FeedEvent {
   event: string;
   data: unknown;
 }
@@ -68,7 +67,7 @@ export interface SessionEstablishment {
  *  credential, and return what the browser needs to connect. INJECTED — the face never constructs a
  *  plane; the manager wires the single plane + the cred mint at boot. Absent ⇒ the route 503s
  *  (an open mesh with no console session client). */
-export type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
+type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
 
 /**
  * The manager's local HTTP face. It serves the **console** (a lightweight xterm.js page + its

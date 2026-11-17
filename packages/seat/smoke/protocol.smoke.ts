@@ -2,8 +2,7 @@
  * Length-prefixed protocol and connect-auth cells. Isolated. No fleet.
  */
 import { createServer, connect, type Socket } from "node:net";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { FrameReader, MAX_FRAME_SIZE, encodeFrame } from "../src/protocol.js";
 import { peerCredentials } from "../src/peercred.js";

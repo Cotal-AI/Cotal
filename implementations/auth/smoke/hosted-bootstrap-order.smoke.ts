@@ -29,7 +29,7 @@ let passed = 0;
 const check = (name: string, condition: boolean) => { assert.ok(condition, name); passed++; };
 const quiet = () => {};
 try {
-  const [a, b] = fx.accounts;
+  const [a] = fx.accounts;
   const inputs = fx.accounts.map((acct, i) => ({
     context: { accountPublicKey: acct.accountPublicKey, lifecycleUid: `life-${i}` },
     space: acct.space, servers: fx.servers, store: acct.store, storeIdentity: acct.store.identity, stateDir: acct.stateDir,

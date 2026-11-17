@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Copy native linux-x64 and linux-arm64 SO_PEERCRED helpers into @cotal-ai/seat
- * and refuse anything that is not ELF e_machine 62 plus 183.
+ * Copy native host helpers into @cotal-ai/seat and verify their ELF, Mach-O or PE
+ * container and architecture.
  *
  * The PR pack proof, Changesets publish, and snapshot publish all run this
  * script. It does not compile. It does not run `pnpm build`.
@@ -46,6 +46,14 @@ for (const [arch, src] of [
   ["arm64", arm64],
 ]) {
   const dir = join(destRoot, `linux-${arch}`);
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(src, join(dir, "peercred.node"));
+}
+
+for (const platform of ["darwin", "win32"]) for (const arch of ["x64", "arm64"]) {
+  const src = arg(`--${platform}-${arch}`, `SEAT_NATIVE_${platform.toUpperCase()}_${arch.toUpperCase()}`);
+  if (!src || !existsSync(src)) throw new Error(`@cotal-ai/seat: missing ${platform}-${arch} native builder artifact`);
+  const dir = join(destRoot, `${platform}-${arch}`);
   mkdirSync(dir, { recursive: true });
   copyFileSync(src, join(dir, "peercred.node"));
 }

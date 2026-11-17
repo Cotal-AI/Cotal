@@ -67,8 +67,9 @@ const usage = (message: string): CommandFailure => new CommandFailure("refused",
 /** The scope a run reads through or writes to: the user's defaults, or one space's values. */
 interface Scope {
   readonly space: string | null;
-  /** How the space was chosen: `--space`, the selected space (`cotal use`), or with nothing selected
-   *  the space a launch here uses: this folder's, or the only running one. */
+  /** How the space was chosen: `--space`, or the space a launch here uses. A running space registered
+   *  for this folder is `folder`, even when another space is selected. With none running here, the
+   *  selected space is `selected`, and the only running space elsewhere is `running`. */
   readonly from: "flag" | "selected" | "folder" | "running" | null;
 }
 
@@ -180,15 +181,23 @@ function assertKnownSpace(space: string, prefs: Preferences, saved: boolean): vo
   });
 }
 
-/** A read looks through `--space`, or when neither scope flag is given, the space a launch here uses:
- *  the selected one, else the one `spawn` resolves from this folder. */
+/** A read looks through `--space`, or when neither scope flag is given, the space a launch here uses,
+ *  the one `spawn` resolves from this folder. A running space registered for this folder is that space
+ *  even when `cotal use` selected another. Where a launch has no space, the selection is the scope, as
+ *  it is outside a project and in a folder whose own space is not running. */
 function readScope(v: FlagValues<typeof configFlags>): Scope {
   if (v.space !== undefined) return { space: v.space, from: "flag" };
   if (v.user) return { space: null, from: null };
-  const selected = getCurrent();
-  if (selected) return { space: selected, from: "selected" };
   const here = launchSpace(process.cwd());
-  return here ? { space: here.space, from: here.source === "registry" ? "running" : "folder" } : { space: null, from: null };
+  if (here) {
+    const from = here.source === "current" ? "selected"
+      : here.source === "local-recorded" || here.source === "prepared" ? "folder"
+      : here.source === "registry" ? "running"
+      : null;
+    if (from !== null) return { space: here.space, from };
+  }
+  const selected = getCurrent();
+  return selected ? { space: selected, from: "selected" } : { space: null, from: null };
 }
 
 const target = (scope: Scope) => (scope.space === null ? null : { space: scope.space });

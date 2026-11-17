@@ -15,6 +15,7 @@ function fixture(initial: InboxItem[]) {
   const source = {
     stopping: false,
     peekInbox: () => items.filter((row) => !row.historical),
+    inboxCount: () => items.filter((row) => !row.historical).length,
     isInFlight: (key: string) => held.has(key),
     holdInFlight(keys: readonly string[]) { if (!capacity) return false; for (const key of keys) held.add(key); return true; },
     releaseInFlight(keys: readonly string[]) { for (const key of keys) held.delete(key); },

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
-import { readDocument, discoverDocuments } from './index.mjs';
+import { readDocument, discoverDocuments, documentationCategory } from './index.mjs';
 import { markdownToMdx } from './generate.mjs';
 
 const metadata = '---\ntitle: Try Cotal\ndescription: Run a local mesh.\nkind: Informative\naudience: First-time users\n---\n\n';
@@ -26,13 +26,30 @@ test('generates literal-safe MDX with native Markdown serialization', async t =>
   assert(doc.markdown.includes('a \\| b'));
   assert.equal(markdownToMdx(markdown), body);
 });
-async function fixture(t, body, ext = 'mdx') {
+async function fixture(t, body, ext = 'mdx', header = metadata) {
   const dir = await mkdtemp(join(tmpdir(), 'cotal-docs-content-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, `page.${ext}`);
-  await writeFile(path, ext === 'mdx' ? metadata + body : body);
+  await writeFile(path, ext === 'mdx' ? header + body : body);
   return path;
 }
+
+test('keeps full classifications separate from their index categories', async t => {
+  for (const category of ['Start here', 'Guide', 'Concept', 'Reference', 'Project']) {
+    for (const kind of [category, `${category} (informative)`, `${category}: implementation details`]) {
+      for (const format of ['md', 'mdx']) {
+        const body = format === 'md' ? `# Page\n\n> **${kind}** · For: readers\n\nPage content.\n` : 'Page content.\n';
+        const header = metadata.replace('kind: Informative', `kind: ${JSON.stringify(kind)}`);
+        const doc = await readDocument(await fixture(t, body, format, header));
+        assert.equal(doc.metadata.kind, kind, `${format} preserves the complete kind`);
+        assert.equal(documentationCategory(doc.metadata.kind, doc.sourcePath), category);
+      }
+    }
+  }
+  for (const kind of ['', 'Informative', 'Conceptual', 'Reference-other']) {
+    assert.throws(() => documentationCategory(kind, 'page.mdx'), /page\.mdx has no supported documentation category/);
+  }
+});
 
 test('exports native Card groups without a destination and retains child links', async t => {
   const path = await fixture(t, imports + '<Cards>\n<Card title="Mesh lifecycle">\n\n- [Start](cli-startup.mdx)\n- [Stop](cli-shutdown.mdx)\n\n</Card>\n</Cards>');

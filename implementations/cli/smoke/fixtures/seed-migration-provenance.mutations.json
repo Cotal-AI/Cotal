@@ -9,8 +9,10 @@
   "why": [
     "THREE MUTATIONS, one for each externally visible part of the contract.",
     "",
-    "M1 deletes the migration announcement after the new stamp commits. The store still advances and",
-    "the provenance still persists, so only the operator-visible migration cell turns red.",
+    "M1 drops the migration announcement after the new stamp commits. The store still advances and",
+    "the provenance still persists, so only the operator-visible migration cell turns red. The",
+    "replacement keeps the announcer and the committed stamp referenced, because deleting the line",
+    "leaves both unused and noUnusedLocals then fails the build before the suite runs.",
     "",
     "M2 writes the legacy generation-only stamp. The migration still announces, but the durable record",
     "cannot tell a later older CLI which executable wrote it or when. The writer cell is the first red.",
@@ -26,7 +28,7 @@
       "name": "the generation advances silently because the migration announcement is deleted",
       "file": "implementations/cli/src/seed/reconcile.ts",
       "find": "  if (migrationFrom) announceSeedMigration(migrationFrom, committedStamp);",
-      "replace": "",
+      "replace": "  if (migrationFrom) void [announceSeedMigration, committedStamp];",
       "expectRed": "✗ FAIL: migration provenance: a newer binary announces the shared seed-store generation migration",
       "cell": "✗ FAIL: migration provenance: a newer binary announces the shared seed-store generation migration"
     },

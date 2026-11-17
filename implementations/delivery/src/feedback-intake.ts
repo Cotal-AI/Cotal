@@ -58,7 +58,7 @@ class HttpError extends Error {
   }
 }
 
-export interface FeedbackIntakeHooks {
+interface FeedbackIntakeHooks {
   readonly creds: string;
   readonly testers: readonly FeedbackTester[];
   readonly store: string;

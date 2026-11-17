@@ -70,6 +70,7 @@ class MockEndpoint extends EventEmitter {
   async stop(): Promise<void> {}
   getRoster(): Presence[] { return []; }
   tap(handler: (subject: string, m: CotalMessage | undefined) => void): void { this.tapHandler = handler; }
+  channelDeliveryClass() { return "live"; }
   async listChannels(): Promise<{ channel: string; messages: number }[]> { return CHANNELS; }
   async channelHistory(channel: string): Promise<CotalMessage[]> {
     this.historyAsked.push(channel);

@@ -11,6 +11,8 @@
  * `smoke:up-tls-routes`.
  *
  * Run: pnpm smoke:status-report
+ * PID-file regression only: pnpm exec tsx implementations/cli/smoke/status-report.smoke.ts --pidfile-only
+ * Add --bin=<installed-cli-path> to exercise an installed CLI.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -19,11 +21,12 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
-import { acquireMaintenanceLock, beginMaintenanceCut, findMesh, recordMesh, releaseMaintenanceLock, renderReport, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
 import { restoreNextStep } from "../src/lib/restore.js";
+import { displayCmd } from "../src/lib/self-exec.js";
 
-const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
+const BIN = process.argv.find(arg => arg.startsWith("--bin="))?.slice("--bin=".length) ?? join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
   console.error(`✗ ${BIN} missing - build first: pnpm --filter cotal-ai... build`);
   process.exit(1);
@@ -44,13 +47,13 @@ type Envelope = {
   command: string;
   result: {
     kind: string;
-    machine: { nats: string; natsServer: { path: string; version: string | null } | null; natsProblem: string | null };
+    machine: { nats: string; natsServer: { path: string; version: string | null; skipped?: { path: string; reason: string } } | null; natsProblem: string | null };
     extensions?: { items: { label: string; version: string }[] | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
-    store?: { state: string; at?: string; cause?: string; path?: string | null };
+    store?: { state: string; at?: string; cause?: string; path?: string | null; jetStreamDisabled?: boolean };
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -91,6 +94,41 @@ const asPlain = (rich: string) => ascii(strip(rich).replace(/[●○] /g, ""));
 const words = (text: string) => text.split(/\s+/).filter(Boolean).join(" ");
 
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
+const pidfileOnly = process.argv.includes("--pidfile-only");
+// Component pidfile reads share the folder report's path-bearing diagnostics.
+if (!brokerDisplayOnly) {
+  const { home, run } = sandbox();
+  const space = "pid-reader";
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = join(home, ".cotal-home");
+  try { recordMesh({ space, server, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() }); }
+  finally { if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome; }
+  const webPid = canonicalLocalProcessPath(WEB_PIDFILE, { root: home, space, userAuth: false });
+  const args = ["status", "--space", space, "--verbose", "--components"];
+  const component = (r: ReturnType<typeof run>, name: string) => r.stdout.split("Component Health")[1]?.split("\n").find(line => line.trimStart().startsWith(`${name} `)) ?? "";
+  const missing = run(args, { NO_COLOR: "1" });
+  check("component control: a missing optional web pidfile is not started or not installed",
+    /web\s+(not-started|not-installed)/.test(component(missing, "web")), shown(missing));
+  writeFileSync(webPid, " \n");
+  const empty = run(args, { NO_COLOR: "1" });
+  check("component control: an empty web pidfile has the same classification as a missing file",
+    empty.status === missing.status && component(empty, "web") === component(missing, "web"), shown(empty));
+  writeFileSync(webPid, "not-a-pid");
+  const malformed = run(args, { NO_COLOR: "1" });
+  check("component control: a malformed web pidfile is refused, not absent",
+    /web\s+refused.*unattributable pidfile/.test(component(malformed, "web")), shown(malformed));
+  rmSync(webPid);
+  mkdirSync(webPid);
+  const unreadable = run(args, { NO_COLOR: "1" });
+  check("component control: an unreadable web pidfile refuses its row without aborting the report",
+    unreadable.status === 3 && /web\s+refused.*pidfile unreadable/.test(component(unreadable, "web")) && component(unreadable, "manager") !== "" && component(unreadable, "broker") !== "", shown(unreadable));
+  check("the folder report names the unreadable web pidfile",
+    unreadable.stdout.includes(`pidfile unreadable · cannot read ${webPid}: EISDIR`), shown(unreadable));
+  check("the component row names the unreadable web pidfile",
+    component(unreadable, "web").includes(`pidfile unreadable: cannot read ${webPid}: EISDIR`), component(unreadable, "web"));
+}
+if (!pidfileOnly) {
 let brokerDisplayCases = 0;
 if (!brokerDisplayOnly) {
 // ── a fresh machine: one envelope, one report, the agreed order ──────────────────────────────────
@@ -126,7 +164,9 @@ if (!brokerDisplayOnly) {
   const machine = env?.result?.machine;
   const natsRow = verbose.stdout.split("\n").find((line) => /^ {2}NATS: /.test(line))?.replace(/^ {2}NATS: +/, "");
   const version = machine?.natsServer?.version ? `nats-server ${machine.natsServer.version}` : "nats-server, version not reported";
-  const expected = machine?.nats === "missing" ? "missing" : machine?.natsProblem ?? (machine?.nats === "path" ? `${version} on PATH at ${machine.natsServer?.path}` : `bundled ${version} at ${machine?.natsServer?.path}`);
+  const baseExpected = machine?.nats === "missing" ? "missing" : machine?.natsProblem ?? (machine?.nats === "path" ? `${version} on PATH at ${machine.natsServer?.path}` : `bundled ${version} at ${machine?.natsServer?.path}`);
+  const skipped = machine?.natsServer?.skipped;
+  const expected = skipped ? `${baseExpected}; the one on PATH at ${skipped.path} is not protected against other local writers, so it was not used` : baseExpected;
   check("the NATS row names the nats-server it would run, where it came from and its version", natsRow === expected && ["path", "bundled", "missing"].includes(machine?.nats ?? ""), { machine, natsRow });
   check("each hint in the result is printed under Next", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nNext\n")[1]?.includes(ascii(hint))), { hints: env?.result?.hints, out: plain.stdout });
   check("no report line ends in padding", [plain.stdout, verbose.stdout].every((out) => out.split("\n").every((line) => !line.endsWith(" "))), plain.stdout);
@@ -220,7 +260,7 @@ if (!brokerDisplayOnly) {
     check(`control: ${label} gets no bare up`, !/(^|\s)cotal up(\s{2}|$)/m.test(next), next);
   check("control: a controller stack is not read from legacy pidfiles", !/(^|\s)cotal up(\s{2}|$)/m.test(legacyNext(["manager"], { controllerStack: true })), legacyNext(["manager"], { controllerStack: true }));
   const plain = run(["status", "--space", "alpha", "--plain"]);
-  const NOT_DIALED = "Unselected spaces are not dialed - `pnpm cotal status --all` dials each";
+  const NOT_DIALED = `Unselected spaces are not dialed - \`${displayCmd()} status --all\` dials each`;
   check("the other registration carries no connection state, and one note says why, once",
     /^ {2}beta +open$/m.test(plain.stdout) && !/^ {2}\S+ +not checked/m.test(plain.stdout) &&
       (plain.stdout.match(/are not dialed/g) ?? []).length === 1 && plain.stdout.includes(NOT_DIALED), plain.stdout);
@@ -287,6 +327,20 @@ if (!brokerDisplayOnly) {
   const restoring = { ...json.envelope!.result!, maintenance: { root: home, space: "held", state: "restore-ready", attemptId: attempt, next: restoreNextStep("restore-ready", attempt) } };
   const report = renderReport(statusView(restoring as unknown as Parameters<typeof statusView>[0]), "plain");
   check("a held restore names its recover command with the full attempt id", new RegExp(`Attempt: +${attempt}`).test(report) && report.includes(`cotal backup recover ${attempt} --yes`), report);
+  for (const [state, next] of [
+    ["restore-ready", restoreNextStep("restore-ready", attempt)],
+    ["claimed", `backup attempt ${attempt} stopped before it finished: release it with \`cotal backup recover ${attempt} --yes\``],
+  ] as const) {
+    const held = { ...restoring, maintenance: { ...restoring.maintenance, state, next }, hints: [next] };
+    const rendered = renderReport(statusView(held as unknown as Parameters<typeof statusView>[0]), "plain");
+    const actions = rendered.split("\nNext\n")[1] ?? "";
+    check(`${state} leads Next with recovery and no ordinary startup or setup`, actions.trim() === next && !/cotal (?:up|setup|spawn|ps)\b/.test(actions), rendered);
+  }
+  for (const state of ["ready", "commit-intent", "active"]) {
+    const settled = { ...restoring, maintenance: { ...restoring.maintenance, state, next: state === "ready" ? "resume with bare `cotal up`" : restoreNextStep(state, attempt) } };
+    const rendered = renderReport(statusView(settled as unknown as Parameters<typeof statusView>[0]), "plain");
+    check(`${state} keeps ordinary Next actions`, /cotal setup/.test(rendered.split("\nNext\n")[1] ?? ""), rendered);
+  }
 }
 
 // ── a launch summary recorded at a folder this one was moved from is listed, not unreadable ──────
@@ -459,11 +513,19 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   const store = failed.envelope?.result?.store;
   check("status --json names this broker's store write failure with its time, cause and file", store?.state === "write-failed" && store.at === "2026/10/23 19:38:44" && store.cause === "no space left on device" && store.path === "/store/msgs/1.blk", shown(failed));
   const plain = run(["status", ...server, "--plain"]);
-  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then .*`pnpm cotal up` starts the broker again with the history it kept/.test(plain.stdout), plain.stdout);
+  check("the report shows a Store row and leads Next with down, after freeing space on the disk for a full one", /Store: +write failed at 2026\/10\/23 19:38:44: no space left on device - \/store\/msgs\/1\.blk/.test(plain.stdout) && /cotal down +First free space on the disk that holds \S+; then /.test(plain.stdout) && plain.stdout.includes(`then \`${displayCmd()} up\` starts the broker again with the history it kept`), plain.stdout);
   // The repair follows the cause: a permission is given back, not disk space freed.
   appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: open /store/msgs/2.blk: permission denied\n`);
   const denied = run(["status", ...server, "--plain"]);
   check("for a permission denied, Next makes the store writable by this account again and says nothing of disk space", /cotal down +First make \S+ writable by this account again/.test(denied.stdout) && !/Free space|free space/.test(denied.stdout), denied.stdout);
+  appendFileSync(log, `[${pid}] ${stamp} [WRN] Filesystem permission denied while writing msg, disabling JetStream: open .cotal/nats/jetstream/A/streams/CHAT_s/msgs/2.blk: permission denied\n`);
+  const permission = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("the native permission warning records its relative path and disabled JetStream", permission?.state === "write-failed" && permission.cause === "open .cotal/nats/jetstream/A/streams/CHAT_s/msgs/2.blk: permission denied" && permission.jetStreamDisabled === true, permission);
+  appendFileSync(log, `[${pid}] ${stamp} [INF] Starting JetStream\n[${pid}] ${stamp} [ERR] JetStream failed to store a msg on stream 'A > KV_cotal_issued_s': write .cotal/nats/jetstream/A/streams/KV_cotal_issued_s/msgs/1.blk: file too large\n`);
+  const limited = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("the native stream-write error preserves the issuance path and leaves JetStream enabled", limited?.state === "write-failed" && limited.cause === "write .cotal/nats/jetstream/A/streams/KV_cotal_issued_s/msgs/1.blk: file too large" && limited.jetStreamDisabled === false, limited);
+  appendFileSync(log, `[1] ${stamp} [WRN] Filesystem permission denied while writing msg, disabling JetStream: open /foreign: permission denied\n`);
+  check("another broker's native warning cannot replace the owned broker's observation", run(["status", ...server, "--json"]).envelope?.result?.store?.cause === limited?.cause);
 }
 
 // ── damage the running local broker found in a stored file is shown in its own words ────────────
@@ -502,8 +564,8 @@ if (process.platform !== "win32") {
   const json = run(["status", "--space", "nosuch", "--json"], onPath);
   const machine = json.envelope?.result?.machine;
   check("status names the old nats-server on PATH, its version and why up refuses it", json.status === 0 && machine?.nats === "path" && machine.natsServer?.path === old && machine.natsServer.version === "2.2.0" && named.test(machine.natsProblem ?? ""), machine);
-  const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
-  check("the Broker executable row says so", new RegExp(`^ {2}Broker executable: +${named.source}$`, "m").test(plain.stdout), shown(plain));
+  const plain = run(["status", "--space", "nosuch", "--plain", "--wide"], onPath);
+  check("the full Broker executable row says so", new RegExp(`^ {2}Broker executable: +${named.source}$`, "m").test(plain.stdout), shown(plain));
   const port = await freePort();
   const created = run(["space", "create", "gate", "--root", project, "--json"], onPath);
   check("space create prepares the project", created.status === 0, shown(created));
@@ -537,7 +599,7 @@ if (process.platform !== "win32") {
   const plain = run(["status", "--space", "nosuch", "--plain"], onPath);
   const machine = plain.stdout.split("\n\n")[0] ?? "";
   check("the applications line names what is set up and counts the rest behind cotal setup",
-    /^ {2}Agent applications: +aa - 1 more with `pnpm cotal setup`$/m.test(plain.stdout), shown(plain));
+    ascii(`  Agent applications: aa · 1 more with \`${displayCmd()} setup\``) === plain.stdout.split("\n").find(line => /^ {2}Agent applications:/.test(line)), shown(plain));
   check("no row is printed per known application",
     !/^ {2}aa: /m.test(plain.stdout) && !/^ {2}bb: /m.test(plain.stdout) && !/not on PATH/.test(plain.stdout), machine);
   check("the extensions line is one count at the version they share",
@@ -555,7 +617,22 @@ if (process.platform !== "win32") {
       /^ {2}Extensions: +aa v/m.test(wide.stdout) && /Broker executable/.test(wide.stdout) && /Dashboard/.test(wide.stdout), shown(wide));
   const all = run(["status", "--space", "nosuch", "--plain", "--all"], onPath);
   check("--all reports the same rows in full", /^ {2}aa: +available on PATH$/m.test(all.stdout) && /Broker executable/.test(all.stdout), shown(all));
-  // A pin an upgrade did not carry is the one thing named, against the version the rest share.
+  // First-party pins follow the CLI release, even when every extension shares an old version.
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    { pkg: "@cotal-ai/tmux", version: "0.155.0", spec: "@cotal-ai/tmux@0.155.0", provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
+  ] }));
+  const stale = run(["status", "--space", "nosuch", "--plain"], onPath);
+  check("status names first-party skew and the whole-installation remedy",
+    stale.status === 0 && /extension version skew: @cotal-ai\/tmux is 0\.155\.0/.test(stale.stderr) && stale.stdout.includes(`\`${displayCmd()} update --self\``), shown(stale));
+  const staleJson = run(["status", "--space", "nosuch", "--json"], onPath);
+  check("skew is a structured warning, not an unreadable report",
+    staleJson.status === 0 && staleJson.stdout.includes('"EXTENSION_VERSION_SKEW"') && staleJson.stdout.includes('"completeness":"complete"'), shown(staleJson));
+  writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
+    { pkg: "@cotal-ai/tmux", version: VERSION, spec: `@cotal-ai/tmux@${VERSION}`, provides: [{ kind: "runtime", name: "tmux" }], commands: [] },
+  ] }));
+  const current = run(["status", "--space", "nosuch", "--json"], onPath);
+  check("matching first-party versions do not warn", current.status === 0 && !current.stdout.includes("EXTENSION_VERSION_SKEW"), shown(current));
+  // A third-party pin need not match the CLI release.
   writeFileSync(join(manifest, "extensions.json"), JSON.stringify({ extensions: [
     connector("aa", ["aa-bin"]),
     { pkg: "@rig/one", version: VERSION, spec: `@rig/one@${VERSION}`, provides: [{ kind: "runtime", name: "one" }], commands: [] },
@@ -594,9 +671,9 @@ if (process.platform !== "win32") {
     });
     const runningText = running.run(["status", "--plain"]);
     const runningJson = running.run(["status", "--json"]);
-    check("a running folder space is the target, and the heading says the selection applies outside it",
-      runningJson.envelope?.target.space === "held" && runningJson.envelope.result?.meshes.current === "sel" &&
-        /^Mesh: held\n {2}this folder's space; the selected space "sel" applies outside it$/m.test(runningText.stdout), shown(runningText));
+    check("an explicit selection wins over a running folder and names its concrete override",
+      runningJson.envelope?.target.space === "sel" && runningJson.envelope.result?.meshes.current === "sel" &&
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(runningText.stdout), shown(runningText));
 
     const stopped = await folderRig((project, run) => {
       check("rig: this folder's space is registered at a broker that does not answer",
@@ -604,10 +681,9 @@ if (process.platform !== "win32") {
     });
     const stoppedText = stopped.run(["status", "--plain"]);
     const stoppedJson = stopped.run(["status", "--json"]);
-    check("a stopped folder space is not the target: the selection is, with what this folder holds under it",
+    check("an explicit selection remains the target over a stopped folder and names its override",
       stoppedJson.envelope?.target.space === "sel" &&
-        /^Mesh: sel\n {2}this folder holds the stopped space "held"; restart it with `cotal up`$/m.test(stoppedText.stdout) &&
-        !/this folder's space/.test(stoppedText.stdout), shown(stoppedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(stoppedText.stdout), shown(stoppedText));
 
     const prepared = await folderRig((project, run) => {
       const created = run(["space", "create", "held", "--root", project]);
@@ -615,9 +691,9 @@ if (process.platform !== "win32") {
     });
     const preparedText = prepared.run(["status", "--plain"]);
     const preparedJson = prepared.run(["status", "--json"]);
-    check("a prepared folder space is not the target either, and its up is named under the selection",
+    check("an explicit selection remains the target over a prepared folder and names its override",
       preparedJson.envelope?.target.space === "sel" && preparedJson.envelope.result?.meshes.folder === null &&
-        /^Mesh: sel\n {2}this folder holds the prepared space "held"; start it with `cotal up`$/m.test(preparedText.stdout), shown(preparedText));
+        /^Mesh: sel\n {2}the selected space applies here; this folder's space "held" is reached with --space held or cotal use --clear$/m.test(preparedText.stdout), shown(preparedText));
   } finally {
     if (greeter.exitCode === null && greeter.signalCode === null) {
       const exited = once(greeter, "exit");
@@ -728,4 +804,5 @@ if (process.platform !== "win32") {
 }
 
 if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);
+}
 finish();

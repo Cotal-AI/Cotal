@@ -18,7 +18,7 @@
  *      identity reads fix.x live but cannot join general
  *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, --signer on
  *      mint, and the footprint flags on `auth signer` → exit 1, one sentence, nothing written; `auth
- *      signer` into a missing folder → exit 2 naming it, nothing created; and
+ *      signer` into a missing folder → private directories and signer created; and
  *      the control that the same ACL flag on the agent profile still works
  *   6. --provision naming a mesh on another trust root; from a FRESH open root (no auth on disk, as
  *      `cotal up` leaves one), where mint and signer export refuse as unsupported; from a root holding
@@ -57,6 +57,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertSmokeSandboxDown, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 // The child `runCotal` starts: the composition root as the binary imports it (the CLI and the
 // `auth` command register themselves), one command line through `runCli`, then its exit code.
@@ -72,6 +73,7 @@ if (process.argv[2] === "cotal-child") {
 for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
 const home = mkdtempSync(join(tmpdir(), "cotal-mint-prov-home-"));
 process.env.COTAL_HOME = home;
+process.env.XDG_CONFIG_HOME = join(home, "xdg");
 process.env.COTAL_NO_PROMPT = "1";
 
 const {
@@ -159,6 +161,29 @@ try {
   process.chdir(root); // `auth mint` finds the root's `.cotal/` by walking up from cwd, like the binary
   cleanup.push(() => process.chdir(cwd0));
 
+  // Signer output protection is independent of provisioning and its consuming-connect checks.
+  {
+    // Output names are filesystem paths, never shell commands, even with spaces and expansions.
+    const missingParent = join(root, "signer parent $HOME 'quoted'"), missingFolder = join(missingParent, "nested");
+    const missingSigner = join(missingFolder, "signer.json");
+    const result = await runCotal(["auth", "signer", "--out", missingSigner, "--plain"]);
+    check("auth signer creates missing nested output folders", result.code === 0 && existsSync(missingSigner), result.out);
+    check("  new folders are private", [missingParent, missingFolder].every((p) => (statSync(p).mode & 0o777) === 0o700));
+    const signer = JSON.parse(readFileSync(missingSigner, "utf8"));
+    check("  signer is private and holds only the selected account signer", (statSync(missingSigner).mode & 0o777) === 0o600
+      && signer.account.signingSeed === auth.account.signingSeed && signer.operator.seed === "");
+    check("  no secret appears in output and no split path is created", !result.out.includes(auth.account.signingSeed) && !existsSync(join(root, "signer")));
+    const linkedParent = join(root, "signer-link");
+    symlinkSync(missingParent, linkedParent);
+    const linked = await runCotal(["auth", "signer", "--out", join(linkedParent, "not-created", "signer.json")]);
+    check("auth signer refuses a symlink ancestor before creating descendants", linked.code === 2 && /PERMISSION_DENIED/.test(linked.out)
+      && !existsSync(join(missingParent, "not-created")), linked.out);
+    chmodSync(missingFolder, 0o777);
+    const unsafe = await runCotal(["auth", "signer", "--out", join(missingFolder, "unsafe.json")]);
+    check("auth signer still refuses an unprotected existing folder", unsafe.code === 2 && !existsSync(join(missingFolder, "unsafe.json")), unsafe.out);
+    chmodSync(missingFolder, 0o700);
+  }
+
   // A second, ordinary peer that will DM and anycast the minted identity. Provisioned the launcher
   // way (the control): its footprint is what --provision must reproduce for the minted one.
   const peerIdent = newIdentity();
@@ -202,7 +227,7 @@ try {
     }
     await ep.stop().catch(() => {});
     check("  a consuming connect FAILS: the inbox durable was never pre-created (the negative control)",
-      /consumer not found|not found/i.test(failure), failure);
+      /dm-durable-missing|consumer not found|not found/i.test(failure), failure);
   }
 
   // ── 2. --provision: the same mint, and the identity can consume ─────────────────────────────
@@ -323,13 +348,6 @@ try {
     const r3s = await runCotal(["auth", "signer", "--provision", "--role", "board", "--out", signerOut]);
     check("auth signer with --provision/--role exits 1 with the reason", r3s.code === 1 && /use auth signer --out <private-file>/.test(r3s.out), r3s.out);
     check("  and writes no signer file", !existsSync(signerOut));
-    // No folder is created for signing material: a missing one is named, with the command that makes it.
-    const missingFolder = join(root, "no-such-folder");
-    const r3m = await runCotal(["auth", "signer", "--out", join(missingFolder, "signer.json")]);
-    check("auth signer into a missing folder exits 2 TARGET_NOT_FOUND naming the folder and how to make it",
-      r3m.code === 2 && /^\s*Code:\s+TARGET_NOT_FOUND$/m.test(r3m.out) && r3m.out.includes(`the --out folder ${missingFolder} does not exist; nothing was written`)
-        && r3m.out.includes(`(umask 077 && mkdir -p ${missingFolder})`), r3m.out);
-    check("  and creates nothing", !existsSync(missingFolder));
     // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
     // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
     // whole chat plane, and the command read `--allow-subscribe` only inside its agent branch. So
@@ -661,7 +679,7 @@ try {
     const droppedEnvelope = JSON.parse(dropped.out.split("\n").find((text) => text.startsWith('{"schemaVersion"')) ?? "{}") as { warnings?: { code: string; message: string; target: { replacedGrants?: unknown } }[] };
     const grantsWarning = droppedEnvelope.warnings?.find((warning) => warning.code === "REPLACED_GRANTS_CHANGED");
     check("--replace with no grant flag warns that the replaced credential's grants were not carried, naming them and the flags that name them",
-      dropped.code === 0 && grantsWarning?.message === "the credential this replaced held read general, post general and role board, and this one holds read no channel, post no channel and no role: a replacement holds only the grants its persona file, --identity or its grant flags name, and `--allow-subscribe general --allow-publish general --role board` names the replaced ones"
+      dropped.code === 0 && grantsWarning?.message === "the credential this replaced held read general, post general and role board, and this one holds read no channel, post no channel and no role: a replacement holds only the grants its persona file, --identity or its grant flags name, and `--allow-subscribe general --allow-publish general --role board --no-persona` names the replaced ones"
         && JSON.stringify(grantsWarning.target.replacedGrants) === JSON.stringify({ read: ["general"], post: ["general"], role: "board" }), dropped.out);
     await runMint(["acl2", ...grantFlags, "--no-expiry"]);
     const sameGrants = await runMint(["acl2", "--replace", ...grantFlags]);
@@ -731,6 +749,55 @@ try {
       spaced.code === 1 && spaced.out.includes("/.cotal/agents/spaced.md for this label sets a role that is not one word of letters, digits, _ or -") && spaced.out.includes("give it such a role with `cotal persona edit spaced`, then mint again") && !spaced.out.includes("bau meister") && !existsSync(standing("spaced")), spaced.out);
     const roled = await runMint(["spaced", "--role", "ok"]);
     check("  a --role flag replaces that role and mints", roled.code === 0 && existsSync(standing("spaced")), roled.out);
+  }
+
+  // A legacy down removes a registration unless the space is named after its folder.
+  // File-only signing still belongs to the retained local authority, not the default broker.
+  {
+    const stoppedRoot = mkdtempSync(join(tmpdir(), "cotal-offline-signing-"));
+    const exports = mkdtempSync(join(tmpdir(), "cotal-offline-exports-"));
+    mkdirSync(join(stoppedRoot, ".cotal"), { mode: 0o700 });
+    const anchor = recordSmokeSandbox({ root: stoppedRoot, cotalHome: home, xdgConfigHome: process.env.XDG_CONFIG_HOME! });
+    const server = `nats://127.0.0.1:${await freePort()}`;
+    process.chdir(stoppedRoot);
+    const up = spawn(process.execPath, [join(import.meta.dirname, "../../../bin/dist/cotal.js"), "up", "--foreground", "--no-manager", "--space", "offlinecheck", "--server", server], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    up.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    up.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
+    const exited = new Promise<number | null>((resolve, reject) => { up.on("close", resolve); up.on("error", reject); });
+    const down = async () => {
+      const args = ["down", "--yes"];
+      assertSmokeSandboxDown(anchor, args, { cwd: stoppedRoot, env: process.env });
+      return runCotal(args);
+    };
+    try {
+      check("offline rig: foreground static up completes", await until(() => output.includes("--no-manager starts no local"), 30_000), output);
+      const live = await runMint(["live", "--provision", "--allow-subscribe", "test", "--allow-publish", "test"]);
+      check("offline rig: live provisioned mint succeeds", live.code === 0, live.out);
+      const stopped = await down();
+      check("offline rig: normal down and foreground up exit successfully", stopped.code === 0 && await exited === 0, stopped.out);
+      for (const profile of ["agent", "observer", "admin"]) {
+        const minted = await runMint([`offline_${profile}`, "--profile", profile, "--plain"]);
+        const file = agentSecretFilePaths(stoppedRoot, "offlinecheck", `offline_${profile}`).creds;
+        check(`stopped root mints ${profile} without repeating --server`, minted.code === 0 && existsSync(file) && /Broker footprint:\s+not provisioned by this command/.test(minted.out), minted.out);
+        check(`offline ${profile} credential retains the original account`, credsClaims(readFileSync(file, "utf8")).nats?.issuer_account === credsClaims(readFileSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "live").creds, "utf8")).nats?.issuer_account);
+      }
+      const signer = join(exports, "signer.json");
+      const exported = await runCotal(["auth", "signer", "--out", signer, "--plain"]);
+      check("stopped root exports its signer without a broker", exported.code === 0 && existsSync(signer) && (statSync(signer).mode & 0o777) === 0o600, exported.out);
+      const provision = await runMint(["needsbroker", "--provision"]);
+      check("stopped root still refuses provisioning and publishes no credential", provision.code === 2 && !existsSync(agentSecretFilePaths(stoppedRoot, "offlinecheck", "needsbroker").creds), provision.out);
+      const endpoint = await runMint(["caller", "--endpoint", "com.example.offline", "--out", join(exports, "caller.creds")]);
+      check("stopped root still refuses endpoint discovery and publishes no caller", endpoint.code === 2 && !existsSync(join(exports, "caller.creds")), endpoint.out);
+      check("offline signing started no stack process", !(await down()).out.includes("✓ stopped"));
+    } finally {
+      await down();
+      if (up.exitCode === null) up.kill("SIGTERM");
+      await exited;
+      process.chdir(root);
+      rmSync(stoppedRoot, { recursive: true, force: true });
+      rmSync(exports, { recursive: true, force: true });
+    }
   }
 
   console.log(`\nMINT-PROVISION SMOKE OK ✅  (${pass} passed)`);

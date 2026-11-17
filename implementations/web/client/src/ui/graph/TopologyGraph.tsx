@@ -1,0 +1,215 @@
+import { useContext, useEffect, useReducer, useRef, useState } from "react";
+import { select } from "d3-selection";
+import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomTransform } from "d3-zoom";
+import type { Status } from "../../lib/roster.js";
+import type { TopoModel, TopoNode } from "../../lib/topology.js";
+import { characterMarkup } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
+import { AgentPicker } from "../panel/picker.js";
+import { ForceLayout, pillWidth } from "./layout.js";
+
+/** The two browser calls the frame loop makes, read from `globalThis` when called. Only an effect
+ *  calls them, and a server render never runs one, so the Node-side smoke program (which has no DOM
+ *  lib, to keep a render from reaching `window`) can still import this file. */
+const frames = {
+  request: (cb: () => void): number => (globalThis as unknown as { requestAnimationFrame(cb: () => void): number }).requestAnimationFrame(cb),
+  cancel: (id: number): void => (globalThis as unknown as { cancelAnimationFrame(id: number): void }).cancelAnimationFrame(id),
+};
+
+/** The line a link draws as: a class for its kind, dashed also for an offline agent's links, and
+ *  `ui-tl-hot` while a message is flowing on its channel. The CSS gives each class its look. */
+function linkClass(kind: TopoModel["links"][number]["kind"], hot: boolean, sourceOffline: boolean): string {
+  return ["ui-tl", `ui-tl-${kind}`, sourceOffline ? "ui-tl-off" : "", hot ? "ui-tl-hot" : ""].filter(Boolean).join(" ");
+}
+
+/** The status dot at a node's bottom right, drawn as the avatars draw it: working a solid green dot,
+ *  waiting a gold ring half filled, idle a hollow ring and offline a dashed one (`ui-tst-<status>`).
+ *  It names the status to no one: the graph is one image, and the Agents view says it in words. */
+function NodeDot({ status, x, y }: { status: Status; x: number; y: number }) {
+  return (
+    <g className={`ui-tst ui-tst-${status}`} aria-hidden="true">
+      {status === "working" && <circle cx={x} cy={y} r={5} />}
+      {status === "waiting" && (
+        <>
+          <circle cx={x} cy={y} r={5} className="ui-tst-bg" />
+          <path d={`M${x} ${y - 4.2} A4.2 4.2 0 0 0 ${x} ${y + 4.2} Z`} />
+          <circle cx={x} cy={y} r={4.2} className="ui-tst-ring" />
+        </>
+      )}
+      {(status === "idle" || status === "offline") && <circle cx={x} cy={y} r={4.4} />}
+    </g>
+  );
+}
+
+/** A working node's mark (overhaul mock W): a faint full ring round the character and a 2px arc a
+ *  fifth of the way round it, which `ui-orbit` turns every 3.2s and stops where it is under reduced
+ *  motion. */
+function Orbit({ r }: { r: number }) {
+  const round = 2 * Math.PI * r;
+  return (
+    <g className="ui-orbit-g" aria-hidden="true">
+      <circle r={r} className="ui-orbit-ring" />
+      <circle r={r} className="ui-orbit" strokeDasharray={`${round / 5} ${(round * 4) / 5}`} />
+    </g>
+  );
+}
+
+/** One agent: its character, its roster name, and for a reader of every channel the "all channels"
+ *  badge in place of a link to each channel. An offline agent is greyscale at half opacity, which
+ *  `ui-ta-off` gives the art group (`ui-ta-art`) only.
+ *
+ *  A roster agent also gets its initial badge (`BadgeOf`, by `node.id`) bottom left of the character,
+ *  as the avatars draw it: inside the node's group and outside the greyscale one, so an offline
+ *  badge's fill is grey (`--id-off`) and its letter keeps full strength.
+ *
+ *  Every node carries its status dot (`NodeDot`) bottom right, and a working node its orbit
+ *  (`Orbit`), both from presence alone.
+ *
+ *  Inside the shell (`AgentPicker`) a click on the node picks the agent: its peek, or on a phone its
+ *  page. The graph is an image to assistive tech, so the node takes no focus; the Agents view and
+ *  the Members tab are the keyboard's way to the same agent. */
+function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number; size: number }) {
+  const status = node.status ?? "idle";
+  const pick = useContext(AgentPicker);
+  const chip = 8 + "all channels".length * 5.2;
+  const badge = useBadgeOf()(node.id);
+  const r = size * 0.23;
+  const bx = -size / 2 + r - 3;
+  const by = size / 2 - r + 2;
+  const mark = badge && (
+    <g className="ui-tidb" aria-hidden="true">
+      <circle cx={bx} cy={by} r={r} style={{ fill: `var(--id-${status === "offline" ? "off" : badge.slot})` }} />
+      <text x={bx} y={by + r * 0.42} textAnchor="middle" fontSize={[...badge.letter].length > 1 ? r * 0.95 : r * 1.2}>{badge.letter}</text>
+    </g>
+  );
+  return (
+    <g
+      className={status === "offline" ? "ui-ta ui-ta-off" : "ui-ta"}
+      data-node={node.id}
+      data-pick={pick ? "" : undefined}
+      transform={`translate(${x} ${y})`}
+      onClick={pick ? () => pick(node.id) : undefined}
+    >
+      {status === "working" && <Orbit r={size / 2 + 7} />}
+      <g className="ui-ta-art">
+        <svg
+          x={-size / 2}
+          y={-size / 2}
+          width={size}
+          height={size}
+          viewBox="-2 -4 112 112"
+          overflow="visible"
+          dangerouslySetInnerHTML={{ __html: characterMarkup(node.vendor, status) }}
+        />
+        <text y={size / 2 + 13} textAnchor="middle" className="ui-ta-name">{node.label}</text>
+        {node.wide && (
+          <g className="ui-wide" transform={`translate(0 ${size / 2 + 26})`}>
+            <rect x={-chip / 2} y={-8} width={chip} height={16} rx={6} />
+            <text y={3.5} textAnchor="middle">all channels</text>
+          </g>
+        )}
+      </g>
+      {mark}
+      <NodeDot status={status} x={size / 2 - 2} y={size / 2 - 1} />
+    </g>
+  );
+}
+
+/** One channel, as the mock's rounded `#name` pill. It is outlined in the hot colour while a message flows on it. */
+function ChannelNode({ node, x, y, hot }: { node: TopoNode; x: number; y: number; hot: boolean }) {
+  const w = pillWidth(node.label);
+  return (
+    <g className={hot ? "ui-tn ui-tn-hot" : "ui-tn"} data-node={node.id} transform={`translate(${x} ${y})`}>
+      <rect x={-w / 2} y={-12} width={w} height={24} rx={8} />
+      <text y={4} textAnchor="middle">#{node.label}</text>
+    </g>
+  );
+}
+
+/** The mesh as a force-directed graph: agents are their characters, channels are `#name` pills,
+ *  and a link is hot while a message flows on its channel.
+ *
+ *  React draws the SVG. The positions live in a layout that is not state: a `requestAnimationFrame`
+ *  loop ticks it and bumps a counter to redraw, and stops when the layout comes to rest. The layout
+ *  heats again only when the set of nodes or links changes, so a link going hot or cold, a status or
+ *  a new label moves nothing. The first draw is already at rest. `d3-zoom` on the SVG pans and zooms.
+ *
+ *  `width` and `height` are the drawing's own coordinates (its `viewBox`); CSS scales it to its box.
+ *  A new size on the same mount refits the layout's forces and heats it, so the nodes move to the
+ *  new middle rather than staying where the old size put them. */
+export function TopologyGraph({ model, width = 400, height = 420 }: { model: TopoModel; width?: number; height?: number }) {
+  const layoutRef = useRef<ForceLayout | null>(null);
+  if (layoutRef.current === null) {
+    layoutRef.current = new ForceLayout(width, height);
+    layoutRef.current.sync(model);
+    layoutRef.current.warm();
+  }
+  const layout = layoutRef.current;
+
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const frame = useRef(0);
+  const run = () => {
+    if (frame.current !== 0 || layout.settled) return;
+    const step = () => {
+      frame.current = 0;
+      layout.tick();
+      redraw();
+      if (!layout.settled) frame.current = frames.request(step);
+    };
+    frame.current = frames.request(step);
+  };
+
+  useEffect(() => {
+    if (layout.resize(width, height)) layout.reheat();
+    if (layout.sync(model)) layout.reheat();
+    run();
+  });
+
+  useEffect(
+    () => () => {
+      frames.cancel(frame.current);
+      frame.current = 0;
+    },
+    [],
+  );
+
+  const svg = useRef<SVGSVGElement>(null);
+  const [view, setView] = useState<ZoomTransform>(zoomIdentity);
+  useEffect(() => {
+    const el = svg.current!;
+    select(el).call(zoom<SVGSVGElement, unknown>().scaleExtent([0.4, 4]).on("zoom", (e: D3ZoomEvent<SVGSVGElement, unknown>) => setView(e.transform)));
+    return () => void select(el).on(".zoom", null);
+  }, []);
+
+  const place = (id: string) => layout.at(id) ?? { x: width / 2, y: height / 2 };
+  const byId = new Map(model.nodes.map((n) => [n.id, n]));
+  const hotChannels = new Set(model.links.filter((l) => l.hot).map((l) => l.target));
+  const size = Math.min(40, width / 10);
+  return (
+    <svg ref={svg} className="ui-topo-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Mesh topology">
+      <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+        {model.links.map((l) => {
+          const a = place(l.source);
+          const b = place(l.target);
+          return (
+            <line
+              key={`${l.source}\u0000${l.target}`}
+              data-link={`${l.source}>${l.target}`}
+              className={linkClass(l.kind, l.hot, byId.get(l.source)?.status === "offline")}
+              x1={a.x}
+              y1={a.y}
+              x2={b.x}
+              y2={b.y}
+            />
+          );
+        })}
+        {model.nodes.filter((n) => n.kind === "channel").map((n) => (
+          <ChannelNode key={n.id} node={n} {...place(n.id)} hot={hotChannels.has(n.id)} />
+        ))}
+        {model.nodes.filter((n) => n.kind === "agent").map((n) => (
+          <AgentNode key={n.id} node={n} {...place(n.id)} size={size} />
+        ))}
+      </g>
+    </svg>
+  );
+}

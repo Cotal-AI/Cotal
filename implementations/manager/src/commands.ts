@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { drainAndClose } from "@cotal-ai/core";
 import { existsSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { Kvm } from "@nats-io/kv";
@@ -16,7 +17,6 @@ import {
   standaloneConnectOpts,
   DEFAULT_SERVER,
   DEFAULT_SPACE,
-  DEV_OWNER,
   isAuthRejection,
   registry,
   parseCommandArgs,
@@ -26,6 +26,7 @@ import {
   type FlagSpec,
   type ParsedArgs,
   type RemoteManagerMaintenanceRequest,
+  rejectionText,
 } from "@cotal-ai/core";
 import {
   assertManagerName, authDir, canonicalLocalProcessPath, canonicalRoot, claimServicePid, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, listenForLocalStop, loadManagerInstanceIdentity, loadSpaceAccountAuth, parsePositiveIntegerFlag, parseSeatCapFlag, publishManagerSpareCapability, readManagerName, readManagerSeatCap, reclaimDeadPreUpgradeRecord, recordManagerName, recordManagerSeatCap, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
@@ -36,7 +37,6 @@ import {
   deprecatedDaemonEntry, DEPRECATED_MANAGER_ENTRY,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
-import { rejectionText } from "./rejection-text.js";
 import { acceptManagerServiceStop, armManagerServiceObserver, bindManagerServiceIdentity, managerServiceChild, managerServiceStopRequested, type ManagerServiceChild } from "./service-child.js";
 import { MANAGER_ENDPOINT } from "./manager-service-contract.js";
 import { makeManagerEndpointHolderEvictor } from "./endpoint-evict.js";
@@ -56,7 +56,7 @@ type Values = Record<string, string | undefined>;
 
 /** Read the resume commit token from its protected handoff file once, check it against the
  *  digest named on argv, then unlink it. Errors name the field only; the value is never echoed. */
-export function readResumeCommitFile(path: string, sha256: string): string {
+function readResumeCommitFile(path: string, sha256: string): string {
   if (!path.startsWith("/") || path.length > 4096 || /[\u0000-\u001f\u007f]/u.test(path) || !/^[0-9a-f]{64}$/.test(sha256)) throw new CommandFailure("refused", "USAGE_INVALID", "--resume-commit-file needs an absolute protected path and --resume-commit-sha256 its full digest");
   protectedCredentialReference(path);
   const bytes = readLocalRecordSource(path, 128, true);
@@ -382,7 +382,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
-      const material = await provider.managerServiceAuthority({ ...providerCall, request });
+      console.error(`manager startup: requesting remote authority for ${state.instanceId}`);
+      let material = await provider.managerServiceAuthority({ ...providerCall, request });
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
@@ -399,6 +400,17 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        refreshPrepareCreds: async () => {
+          const refreshed = await provider.managerServiceAuthority!({
+            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare"),
+          });
+          if (refreshed.owner !== material.owner || refreshed.instanceId !== state.instanceId ||
+              refreshed.lifecycleUid !== state.lifecycleUid || JSON.stringify(refreshed.actors) !== JSON.stringify(actors))
+            throw new Error("the host returned manager-service material for different lifecycle coordinates");
+          const creds = materialCredential(refreshed, "executor", state.identities.executor);
+          material = refreshed;
+          return creds;
+        },
         tlsRequired: target.tlsRequired,
         evict: async (principals) => (await maintain("evict-family-principal", state.instanceId, [...principals])).evictions!.map((e) => e.verifiedGone),
         reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
@@ -410,6 +422,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       // schema closure here exceeded the typed protocol's 64-artifact cap as the command set grew.
       const contractArtifacts = [artifacts.document, artifacts.manifest];
       const registrationProof = remoteManagerRegistrationProof(material.owner, state, contractArtifacts);
+      console.error(`manager startup: activating registered instance ${state.instanceId}`);
       const activate = await provider.managerServiceAuthority({
         ...providerCall,
         request: remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof, contractArtifacts }),
@@ -515,13 +528,15 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         // the host knows nothing about.
         ...(provider.enrollRemoteManagedAgent
           ? {
-              enrollManagedAgent: async ({ target }) => {
+              enrollManagedAgent: async ({ target, spawn, requestId }) => {
                 const request = remoteManagedAgentEnrollmentRequest(
                   state,
                   "cli",
                   retainedRegistrationProof,
                   registered.processEpoch,
                   target,
+                  spawn,
+                  requestId,
                 );
                 const result = await provider.enrollRemoteManagedAgent!({ ...providerCall, request });
                 return remoteManagedAgentEnrollmentMaterial(result, request);
@@ -622,8 +637,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // pre-policy manual entry learns it from its pinned exchange, and a refusal there must never
   // pre-empt the `--server` mismatch or the missing-login sentence the operator can act on.
   let eventsRequired = target.eventsRequired;
+  let eventPayloadsWithheld = target.policy?.eventPayloads === "withheld";
   try {
-    eventsRequired = (await refreshRegistrationPolicy(target))?.events === "required";
+    const policy = await refreshRegistrationPolicy(target);
+    eventsRequired = policy?.events === "required";
+    eventPayloadsWithheld = policy?.eventPayloads === "withheld";
   } catch (e) {
     if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
@@ -683,6 +701,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       space,
       servers: server,
       eventsRequired,
+      eventPayloadsWithheld,
       runtime,
       execution,
       consolePort,
@@ -692,6 +711,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       ...(seatCap !== undefined ? { seatCap } : {}),
       ...(name !== undefined ? { name } : {}),
       installedExtensions: true,
+      ...(typeof v["expected-connector-generation"] === "string" ? { expectedConnectorGeneration: v["expected-connector-generation"] } : {}),
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken,
       remoteAuthority,
@@ -704,6 +724,45 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
     if (service) throw unconfirmedStart(e);
     console.error(c.red(`✗ ${rejectionText(e)}`));
     process.exit(1);
+  }
+  // Only the machine-daemon composition root opts into its private parent channel.
+  if (args.values["machine-parent"] === true && process.connected) {
+    let pending = Promise.resolve();
+    let heldAttempt: string | undefined;
+    process.on("message", (raw: unknown) => {
+      if (!raw || typeof raw !== "object") return;
+      const frame = raw as { kind?: unknown; attemptId?: unknown; op?: unknown };
+      if (frame.kind === "machine-agents" && typeof frame.attemptId === "string" && /^[A-Za-z0-9-]{1,64}$/.test(frame.attemptId)) {
+        try { process.send?.({ kind: "machine-agents-result", attemptId: frame.attemptId, ok: true, agents: mgr.hostedAgents() }); }
+        catch { process.send?.({ kind: "machine-agents-result", attemptId: frame.attemptId, ok: false }); }
+        return;
+      }
+      if (frame.kind !== "machine-generation" || typeof frame.attemptId !== "string" || !["inspect", "prepare", "abort"].includes(String(frame.op))) return;
+      const attemptId = frame.attemptId;
+      pending = pending.then(async () => {
+        try {
+          if (frame.op === "inspect") {
+            process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true, seats: mgr.hostedSeatCount() });
+            return;
+          } else if (frame.op === "abort") {
+            if (heldAttempt === attemptId) { mgr.abortPreservation(attemptId); heldAttempt = undefined; }
+            else if (heldAttempt) throw new Error("another parent attempt holds the manager");
+          } else {
+            heldAttempt = attemptId;
+            const plan = await mgr.preparePreservation(attemptId);
+            if (!plan.ok || plan.inventory.agents.length !== 0) {
+              mgr.abortPreservation(attemptId);
+              heldAttempt = undefined;
+              process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: false });
+              return;
+            }
+          }
+          process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: true });
+        } catch {
+          process.send?.({ kind: "machine-generation-result", attemptId, op: frame.op, ok: false });
+        }
+      });
+    });
   }
   const managerContext = { root: managerRoot, space };
   // Until the settled record exists, a release only drops a managed child's exact starting slot.
@@ -786,6 +845,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
   // managed child already owns its exact starting PID slot; it settles that same process here.
   releaseSettledRecord = recordManagerPid(managerRoot, space);
   publishManagerSpareCapability(managerContext, mgr.spareSeats);
+  if (args.values["machine-parent"] === true && remoteAuthority) process.send?.({ kind: "manager-ready", instanceId: remoteAuthority.instanceId });
   if (v.name !== undefined && name !== undefined) {
     try { if (readManagerName(managerContext) !== name) recordManagerName(managerContext, name); }
     catch (e) { console.error(c.yellow(`! the manager name was not recorded, so the next start does not keep it: ${(e as Error).message}`)); }
@@ -949,7 +1009,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     // The guard's own sentence names the freeze-holder and the next step for this condition.
     if (beforeEffects) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `the native gate-repair guard refused (${error.condition}); the repair did not pass its pre-effect guard`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "inspect the selected gate and the delivery liveness oracle; a timeout is not proof that its holder is gone" });
     throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "the native gate repair did not confirm completion; revocation, eviction or reopen work may have occurred. No mutation was retried", { target: { ...target, ...(error instanceof GateReconcileRefused ? { condition: error.condition } : {}) }, remedy: "re-observe this gate and its operation-bound native repair cursor before another explicit repair" });
-  } finally { await nc.drain().catch(() => nc.close()); }
+  } finally { await drainAndClose(nc); }
 }
 
 /** List local custodian records; drain only through the native creation-identity guards. */
@@ -964,7 +1024,17 @@ async function runSeats(args: ParsedArgs): Promise<void> {
   const project = (entries: Awaited<ReturnType<typeof drainSeats>>) => entries.map((entry) => ({ id: entry.id, name: entry.name ?? null, state: entry.state, custodianPid: entry.custodianPid ?? null, childPid: entry.childPid ?? null }));
   let before: ReturnType<typeof project>;
   try { before = project(await drainSeats(root)); }
-  catch { throw new CommandFailure("refused", process.platform === "linux" ? "DEPENDENCY_UNAVAILABLE" : "UNSUPPORTED", "the native local custody inventory could not be read; no drain was submitted", { target }); }
+  catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    throw new CommandFailure("refused", process.platform === "linux" ? "DEPENDENCY_UNAVAILABLE" : "UNSUPPORTED", `the native local custody inventory at ${JSON.stringify(root)} could not be read${drain ? "; no drain was submitted" : ""}`, {
+      target,
+      cause: error,
+      native: { ...(code === undefined ? {} : { code }), detail: rejectionText(error) },
+      remedy: process.platform === "linux"
+        ? "check that COTAL_SEAT_ROOT names the intended readable directory and that its parent directories can be entered, then retry"
+        : "run this command on the Linux host that owns the local custody store",
+    });
+  }
   const refused = before.some((entry) => entry.state === "refused");
   if (!drain || args.values["dry-run"] || refused) {
     writeResult(presentation, { command: "manager", target, result: { kind: drain ? "manager-seat-drain-preview" : "manager-seat-census", entries: before, preview: drain, drainSubmitted: false }, ...(refused ? { completeness: "partial" as const, ...(drain ? { failure: new CommandFailure("refused", "LIFECYCLE_BLOCKED", "some native custody records are unresolved; no drain was submitted", { target, remedy: "inspect those full seat IDs before requesting a drain" }) } : { partial: { message: "Some native custody records are unresolved; this is an incomplete local observation, not proof that those seats are gone." } }) } : {}) }, view);
@@ -1111,7 +1181,7 @@ const managerCommands: Command[] = [
       { name: "endpoint", type: "string", value: "<e>", description: `endpoint the instance serves (default: ${MANAGER_ENDPOINT})` },
       { name: "instance", type: "string", value: "<id>", description: "instance id to deregister, the whole id as `cotal ps` prints it (default: this folder's persisted manager instance)" },
     ],
-    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority; an open or user-auth space has no command that removes a registration", selfContained: true }); },
+    validate: () => { throw new CommandFailure("refused", "USAGE_INVALID", "the legacy deregistration spelling no longer executes", { remedy: "use cotal endpoint deregister <class> <full-instance-id> [--space <space>] [--yes|--dry-run], which needs a static space's signing authority or the user-auth space's governing removal authority; an open space has no native registration authority", selfContained: true }); },
     run: async () => { throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal endpoint deregister <class> <full-instance-id>` instead"); },
   },
   {

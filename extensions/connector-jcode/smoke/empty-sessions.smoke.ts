@@ -26,11 +26,13 @@ async function waitFor<T>(name: string, read: () => T | undefined, timeoutMs = 2
 }
 
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}jcode-empty-sessions-`));
+// Control sockets are AF_UNIX: a long path under the tokened root can exceed sun_path.
+const sockRoot = mkdtempSync(join("/tmp", "jes-"));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
 const fake = fileURLToPath(new URL("./fake-jcode.mjs", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+const hostArgs = ["--import", import.meta.resolve("tsx"), host];
 const shimDir = join(root, "bin");
 const shim = join(shimDir, "jcode");
 const nats = spawn("nats-server", ["-js", "-p", String(port), "-sd", join(root, "js")], { stdio: "ignore" });
@@ -64,7 +66,7 @@ function managedHome(space: string, name: string): string {
 
 function startHost(name: string, extra: NodeJS.ProcessEnv): { child: ChildProcess; log: string; stderr: () => string } {
   const log = join(root, `${name}.jsonl`);
-  const run = spawn(tsx, [host], {
+  const run = spawn(process.execPath, hostArgs, {
     cwd: root,
     env: {
       ...baseEnv,
@@ -80,7 +82,7 @@ function startHost(name: string, extra: NodeJS.ProcessEnv): { child: ChildProces
       COTAL_ALLOW_PUBLISH: "team",
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, `${name}-control.sock`),
+      COTAL_CONTROL_SOCKET: join(sockRoot, `${name}-control.sock`),
       COTAL_CONTROL_TOKEN: `${name}-control-token`, COTAL_CONTROL_VERSION: "1",
       ...extra,
     },
@@ -266,5 +268,6 @@ try {
   if (child && child.exitCode === null) child.kill("SIGKILL");
   nats.kill("SIGKILL");
   await sleep(100);
+  rmSync(sockRoot, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

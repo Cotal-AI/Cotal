@@ -17,11 +17,11 @@ import { fetchIdpJwt, requireIdpSession } from "./login.js";
 import { loadAuthServiceInfo, loadPinnedIdp } from "./store.js";
 
 /** A host request as the route takes it: the granter is the route's to derive. */
-export type ServiceHostRouteRequest<K extends ServiceHostOperation = ServiceHostOperation> = { [O in K]: {
+type ServiceHostRouteRequest<K extends ServiceHostOperation = ServiceHostOperation> = { [O in K]: {
   v: 1; kind: "service-endpoint-host"; requestId: string; operation: O; input: ServiceHostInputs[O];
 } }[K];
 
-export const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref> | callers <proposalId> | grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> | revoke <grantId> --to <owner.actor> --lifecycle <uid>>";
+const SERVICE_ENDPOINT_USAGE = "service-endpoint <approve <proposalId> | refuse <proposalId> | proposal <proposalId> | operation <operationId> | name <endpoint> | name-bind <endpoint> --owner <u_…> --claim <ref> | callers <proposalId> | grant <proposalId> --to <owner.actor> --lifecycle <uid> --commands <a,b> | revoke <grantId> --to <owner.actor> --lifecycle <uid>>";
 
 export type ServiceEndpointValues = { owner?: string; claim?: string; "caller-ceiling"?: string; "request-id"?: string;
   to?: string; lifecycle?: string; commands?: string; cursor?: string };
@@ -29,7 +29,7 @@ export type ServiceEndpointValues = { owner?: string; claim?: string; "caller-ce
 /** One `cotal service-endpoint` run: the subcommand, its subject, the id an effectful request went
  *  under, the host's answer, and why nothing was sent when the answer is a read that made the
  *  request unnecessary. */
-export interface ServiceEndpointCall { request: string; subject: string; requestId?: string; answer: ServiceHostResult; note?: string }
+interface ServiceEndpointCall { request: string; subject: string; requestId?: string; answer: ServiceHostResult; note?: string }
 
 /** An effectful host request as this root sent it, kept so a later run can send the same bytes
  *  under the same id. The host replays an identical request and answers `conflict` to a different
@@ -205,11 +205,15 @@ export async function serviceEndpointHostCall(dir: string, space: string, positi
    *  and the host replays its answer, while a run after the change landed reads a new revision. */
   async function derived(request: ServiceHostRouteRequest<"caller-grant" | "caller-revoke">): Promise<ServiceEndpointCall> {
     const requestId = createHash("sha256").update(`cotal/service-endpoint/${request.operation}/v1\n${space}\n${canonicalJson(request.input)}`).digest("hex").slice(0, 32);
-    return { request: sub!, subject: subject!, requestId, answer: await post({ ...request, requestId }) };
+    const answer = await post({ ...request, requestId });
+    // The broker fixes a connection's permissions when it authenticates, so a live grantee does not see this grant yet.
+    if (request.operation !== "caller-grant" || answer.state !== "granted") return { request: sub!, subject: subject!, requestId, answer };
+    const { owner, actor } = request.input.grantee;
+    return { request: sub!, subject: subject!, requestId, answer, note: `a connection ${owner}.${actor} opened before this grant keeps its earlier permissions; it must reconnect before it can use these commands` };
   }
 }
 
-export type ServiceHostTarget = { endpoint: string; idpUrl: string; authorization?: string };
+type ServiceHostTarget = { endpoint: string; idpUrl: string; authorization?: string };
 
 /** The refusal for a space this root knows no service endpoint host for. Only the auth service of a
  *  user-auth space started with `--service-endpoints` hosts one, so a static or open space is told
@@ -240,7 +244,7 @@ function serviceHostEndpoint(dir: string, space: string, what: string): ServiceH
 }
 
 /** POST one host request to the resolved host with a fresh IdP proof and return the engine's parsed answer. */
-export async function postServiceEndpointHost(target: ServiceHostTarget, request: ServiceHostRouteRequest): Promise<ServiceHostResult> {
+async function postServiceEndpointHost(target: ServiceHostTarget, request: ServiceHostRouteRequest): Promise<ServiceHostResult> {
   const idpToken = await fetchIdpJwt(target.idpUrl, requireIdpSession(homeCotalDir(), target.idpUrl).token);
   const res = await fetch(target.endpoint, {
     method: "POST", redirect: "manual",

@@ -54,6 +54,28 @@ export const TURN_OUTPUT_SCHEMA = deepFreeze({
   },
 } as const);
 
+/** `turn-yield` output: the goal's terminal state as committed — first-terminal-wins, so a yield
+ *  that raced a deadline or a despawn reports the state that actually landed, never a lie. */
+export const TURN_YIELD_OUTPUT_SCHEMA = deepFreeze({
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: {
+    goalId: { type: "string" },
+    state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] },
+  },
+} as const);
+
+/** `cancel` (SPEC 13.6 item 4): the reserved goal cancel, served for a turn this manager relays.
+ *  Untargeted, because it names a goal rather than a seat: the goal ref derives from the
+ *  authenticated caller, so a caller withdraws only a relay it submitted. It answers with the
+ *  terminal the goal reached, which is the yield's own output shape. */
+export const CANCEL_INPUT_SCHEMA = deepFreeze({
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: {
+    goalId: { type: "string", minLength: 1 },
+    mode: { enum: ["graceful", "terminate"] },
+  },
+} as const);
+
 /** Freeze a schema and everything it holds at its declaration. `as const` is type-only, so without
  *  this an importer could change the contract every manager serves and validates against. */
 function deepFreeze<T>(v: T): T {
@@ -86,17 +108,23 @@ export function turnNoticeFilter(space: string, instanceId: string, seat: EpCall
   ].join(".");
 }
 
+/** The name a once task shows for who started the seat. A missing or whitespace-only name is `fallback`. */
+export function shownSpawner(name: string | undefined, fallback: string): string {
+  return name !== undefined && name.trim() ? name : fallback;
+}
+
 /** A once task as its seat's session reads it: who started the seat, that this is its only task,
  *  and that the seat is stopped when the turn ends. The prompt is the manager-set `context`, shown
  *  as text. It lives here so a seat renders it and a manager measures it at admission
- *  ({@link Connector.turnFrameLimit}) with the same function. */
+ *  ({@link Connector.turnFrameLimit}) with the same function. A missing or whitespace-only spawner
+ *  is shown as "your spawner". */
 export function renderOnceTask(t: { goalId: string; payload: string; spawner?: string; deadlineAt?: number }): string {
   let context = t.payload;
   try {
     const p = JSON.parse(t.payload) as { context?: unknown };
     if (typeof p.context === "string") context = p.context;
   } catch { /* shown as it came */ }
-  const from = t.spawner ?? "your spawner";
+  const from = shownSpawner(t.spawner, "your spawner");
   const deadline = t.deadlineAt !== undefined ? `, or at ${new Date(t.deadlineAt).toISOString()} if you are still working then` : "";
   return `🎯 Cotal — ${from} started this seat for one task (goal ${t.goalId}):\n${context}\n`
     + `(This is the only task this seat takes. Do it with your own tools, and send your result to whoever needs it, for example with cotal_dm to ${from}, before you end your turn: `

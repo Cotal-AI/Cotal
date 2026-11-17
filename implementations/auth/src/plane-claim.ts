@@ -62,6 +62,7 @@ import {
   type PlaneLivenessResult,
 } from "@cotal-ai/core";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The ONE exact claim key (`$KV.cotal_auth_<space>.plane`) — the bucket is already space-scoped;
  *  the barrier grant carries exactly this key, never `plane.>`. */
@@ -127,7 +128,7 @@ export interface PlaneClaimHold {
 }
 
 /** The frozen provenance of one acquired hold: its space and the original held-check closure. */
-export interface GenuinePlaneHold { readonly space: string; readonly assertHeld: ScanGuard["assertHeld"] }
+interface GenuinePlaneHold { readonly space: string; readonly assertHeld: ScanGuard["assertHeld"] }
 /** Every hold `acquirePlaneClaim` returned. A structural object with the same fields is not a hold,
  *  and replacing a hold's `guard` later does not change the check its provenance carries. */
 const GENUINE_HOLDS = new WeakMap<PlaneClaimHold, GenuinePlaneHold>();
@@ -377,7 +378,7 @@ export async function acquirePlaneClaim(opts: {
 export function makeDeliveryAdminPlaneOracle(opts: {
   space: string;
   server: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): PlaneLivenessOracle {
@@ -414,7 +415,7 @@ export function makeDeliveryAdminPlaneOracle(opts: {
 export function makeDeliveryAdminPrincipalOracle(opts: {
   space: string;
   server: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): (principal: string) => Promise<import("@cotal-ai/core").PrincipalLivenessResult> {

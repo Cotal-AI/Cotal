@@ -145,26 +145,36 @@ export const S5TopologyRotate: React.FC = () => {
   const e_bc = edge(m1a, m1b);
   const e_cd = edge(m1b, m1c);
   const e_da = edge(m1c, l1);
-  const p1Paths = [e_ab.d, e_bc.d, e_cd.d, e_da.d];
   const t_p1a = prog(frame, 10, 42);
   const t_p1b = prog(frame, 19, 51);
-  const p1Glow = [arrival(frame, 10, 42), 0, arrival(frame, 19, 51), 0].map((g) => g * s1);
+  const p1Wires = [
+    { d: e_ab.d, glow: arrival(frame, 10, 42) * s1 },
+    { d: e_bc.d, glow: 0 },
+    { d: e_cd.d, glow: arrival(frame, 19, 51) * s1 },
+    { d: e_da.d, glow: 0 },
+  ];
 
   // phase 2: supervised — leader -> each member (three down-beams).
   const e_a_b = edge(l2, m2a);
   const e_a_c = edge(l2, m2b);
   const e_a_d = edge(l2, m2c);
-  const p2Paths = [e_a_b.d, e_a_c.d, e_a_d.d];
   const t_p2 = [prog(frame, 77, 106), prog(frame, 86, 115), prog(frame, 96, 122)];
-  const p2Glow = [arrival(frame, 77, 106), arrival(frame, 86, 115), arrival(frame, 96, 122)].map((g) => g * s2);
+  const p2Wires = [
+    { d: e_a_b.d, glow: arrival(frame, 77, 106) * s2 },
+    { d: e_a_c.d, glow: arrival(frame, 86, 115) * s2 },
+    { d: e_a_d.d, glow: arrival(frame, 96, 122) * s2 },
+  ];
 
   // phase 3: hierarchical — root -> mid; mid -> each leaf.
   const h_ab = edge(l3, mid3);
   const h_bc = edge(mid3, leaf3a);
   const h_bd = edge(mid3, leaf3b);
-  const p3Paths = [h_ab.d, h_bc.d, h_bd.d];
   const t_p3 = [prog(frame, 134, 157), prog(frame, 157, 176), prog(frame, 163, 181)];
-  const p3Glow = [arrival(frame, 134, 157), arrival(frame, 157, 176), arrival(frame, 163, 181)].map((g) => g * s3);
+  const p3Wires = [
+    { d: h_ab.d, glow: arrival(frame, 134, 157) * s3 },
+    { d: h_bc.d, glow: arrival(frame, 157, 176) * s3 },
+    { d: h_bd.d, glow: arrival(frame, 163, 181) * s3 },
+  ];
 
   // phase 4: hybrid — manager -> 3 members + two lateral peer links among members.
   const y_ab = edge(l4, m4a);
@@ -172,16 +182,15 @@ export const S5TopologyRotate: React.FC = () => {
   const y_ad = edge(l4, m4c);
   const y_bd = edge(m4a, m4c, 26);
   const y_cd = edge(m4b, m4c, -26);
-  const p4Paths = [y_ab.d, y_ac.d, y_ad.d, y_bd.d, y_cd.d];
   const t_p4mgr = prog(frame, 195, 221);
   const t_p4lat = prog(frame, 208, 234);
-  const p4Glow = [
-    arrival(frame, 195, 221),
-    arrival(frame, 195, 221) * 0.6,
-    0,
-    arrival(frame, 208, 234),
-    arrival(frame, 208, 234) * 0.7,
-  ].map((g) => g * s4);
+  const p4Wires = [
+    { d: y_ab.d, glow: arrival(frame, 195, 221) * s4 },
+    { d: y_ac.d, glow: (arrival(frame, 195, 221) * 0.6) * s4 },
+    { d: y_ad.d, glow: 0 },
+    { d: y_bd.d, glow: arrival(frame, 208, 234) * s4 },
+    { d: y_cd.d, glow: (arrival(frame, 208, 234) * 0.7) * s4 },
+  ];
 
   // --- per-SLOT arrival flashes (same timing as the base), keyed to the node ---
   // currently occupying that slot in each phase, then maxed per node.
@@ -238,10 +247,10 @@ export const S5TopologyRotate: React.FC = () => {
   return (
     <CreamStage>
       <div style={{ position: "absolute", inset: 0, opacity: rootOpacity }}>
-        <div style={{ opacity: s1 }}><WireLines paths={p1Paths} glow={p1Glow} /></div>
-        <div style={{ opacity: s2 }}><WireLines paths={p2Paths} glow={p2Glow} /></div>
-        <div style={{ opacity: s3 }}><WireLines paths={p3Paths} glow={p3Glow} /></div>
-        <div style={{ opacity: s4 }}><WireLines paths={p4Paths} glow={p4Glow} /></div>
+        <div style={{ opacity: s1 }}><WireLines wires={p1Wires} /></div>
+        <div style={{ opacity: s2 }}><WireLines wires={p2Wires} /></div>
+        <div style={{ opacity: s3 }}><WireLines wires={p3Wires} /></div>
+        <div style={{ opacity: s4 }}><WireLines wires={p4Wires} /></div>
 
         {/* the four agents are vendor symbols, gliding between layouts */}
         {n.map((at, i) => (

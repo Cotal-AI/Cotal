@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "../lib/prompts.js";
-import { registry, token, writePrivateRecord, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
+import { parseCommandArgs, registry, token, writePrivateRecord, type Command, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   OFFICIAL_CONNECTORS,
@@ -11,6 +11,7 @@ import {
   assertPreferencesFolderProtected,
   canonicalRoot,
   checkUserBundle,
+  isCotalCloudIdp,
   extensionPackageDir,
   findMesh,
   homeCotalDir,
@@ -27,6 +28,7 @@ import {
   preparedSpaceAt,
   presentationOf,
   provenance,
+  readCurrent,
   readPreferences,
   recordMesh,
   resolveOnPath,
@@ -35,6 +37,7 @@ import {
   writeResult,
   type Cell,
   type ErrorCode,
+  type MeshEntry,
   type Outcome,
   type OutputWarning,
   type Presentation,
@@ -57,6 +60,7 @@ import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 import { addExtension, ExtensionAddInterrupted, exitOnInterruptedAdd } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
 import type { ManagedLaunchResult } from "@cotal-ai/workspace/launch";
+import { joinedAgentRows } from "./agents.js";
 import type { SetupStackStartResult } from "./setup-start.js";
 import { runtimeProviders } from "./runtimes.js";
 import { onInstanceId } from "../lib/control.js";
@@ -230,7 +234,8 @@ export function validateSetupArguments(args: ParsedArgs): void {
 
 /**
  * Setup prepares a space before a separate, explicit startup decision. Its inputs are the
- * destination (a local space this machine starts, or a self-hosted one registered here), the
+ * destination (a local space this machine starts, or a self-hosted one registered here, which on a
+ * terminal can be a Cotal Cloud space chosen after its sign-in), the
  * application (the connector your agents run in), the runtimes to set up besides the built-in
  * `pty`, the project folder (the space's root) and the space name. On a terminal it asks for each
  * one no flag gave and shows the answers before it writes; in a script every one is a flag, and a
@@ -268,8 +273,9 @@ async function runSkillsOnly(): Promise<void> {
   seedAgentSkills();
 }
 
-/** A destination this cut can prepare. A Cloud space is a registered space, so `cloud` is refused
- *  with the self-hosted route before anything is written or any endpoint is contacted. */
+/** A destination a flag can name. A Cloud space is a registered space, and its sign-in needs a
+ *  terminal, so the flag value `cloud` is refused with the self-hosted route before anything is
+ *  written or any endpoint is contacted. */
 function destinationOf(value: string): Destination {
   if (value === "local" || value === "self-hosted") return value;
   if (value === "cloud")
@@ -277,14 +283,15 @@ function destinationOf(value: string): Destination {
   throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
 }
 
-/** The inputs of a run that asks nothing: every one is a flag, and the project folder exists. No
+/** The inputs of a run that asks nothing: every one is a flag. With `--yes`, a missing local project folder is created. No
  *  `--runtime` sets up no runtime beyond `pty`. */
 function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
   if (missing.length > 0) throw new MissingFlags(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, v.destination === "self-hosted" ? SELF_HOSTED_FORM : SCRIPTED_FORM);
   const project = resolve(v.project!);
-  if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
-  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
+  const createProject = v.destination === "local" && v.yes === true && !existsSync(project);
+  if (!isDir(project) && !createProject) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
+  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 
 /**
@@ -306,16 +313,21 @@ async function askInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Pro
     ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }),
   };
   let again = false;
+  let cloud = false;
   for (;;) {
     const ask = <K extends keyof SetupInputs>(key: K): boolean => again || given[key] === undefined;
-    const destination = ask("destination") ? await askDestination(given.destination) : given.destination!;
+    const where: Destination | "cloud" = ask("destination") ? await askDestination(cloud ? "cloud" : given.destination) : given.destination!;
+    cloud = where === "cloud";
+    const destination = where === "cloud" ? "self-hosted" : where;
+    // The sign-in follows the choice that needs it, before the questions it does not change.
+    const cloudPlace = where === "cloud" ? await askCloud(given, ask) : undefined;
     const harness = ask("harness") ? await askHarness(candidates, given.harness) : given.harness!;
     const runtimes = ask("runtimes") ? await askRuntimes(choices, given.runtimes) : given.runtimes!;
-    const place = destination === "local" ? await askLocal(given, ask) : await askSelfHosted(given, ask);
+    const place = cloudPlace ?? (where === "local" ? await askLocal(given, ask) : await askSelfHosted(given, ask));
     const inputs: SetupInputs = { destination, harness, runtimes, ...place };
     note(
       [
-        `destination  ${destination === "local" ? "Local" : "Self-hosted"}`,
+        `destination  ${where === "local" ? "Local" : where === "cloud" ? "Cloud" : "Self-hosted"}`,
         `application  ${harness}`,
         `runtimes     ${["pty", ...runtimes].join(", ")}`,
         `project      ${inputs.project}${inputs.createProject ? " (created on save)" : ""}`,
@@ -342,18 +354,59 @@ async function askInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Pro
   }
 }
 
-async function askDestination(initial: Destination | undefined): Promise<Destination> {
+/** Cloud is a choice of this question only: its space is a registered one, so the answer is saved
+ *  as a self-hosted destination. */
+async function askDestination(initial: Destination | "cloud" | undefined): Promise<Destination | "cloud"> {
   return abortIfCancel(
     await p.select<Destination | "cloud">({
       message: "Where does your space run?",
       options: [
         { value: "local", label: "Local", hint: "this machine starts it" },
         { value: "self-hosted", label: "Self-hosted", hint: "it runs on a server and is registered here" },
-        { value: "cloud", label: "Cloud", hint: "sign in with `cotal login`, then choose Self-hosted", disabled: true },
+        { value: "cloud", label: "Cloud", hint: cloudSpaces().length > 0 ? "a space of your Cotal Cloud account" : "sign in to Cotal Cloud and choose your space" },
       ],
       initialValue: initial ?? "local",
     }),
-  ) as Destination;
+  );
+}
+
+/** The Cotal Cloud spaces a sign-in registered here. */
+function cloudSpaces(): MeshEntry[] {
+  return loadMeshes()
+    .filter((m) => m.origin === "catalog" && m.userAuth !== undefined && isCotalCloudIdp(m.userAuth.idp.url))
+    .sort((a, b) => a.space.localeCompare(b.space));
+}
+
+/** A Cotal Cloud space. With none registered here, the sign-in runs first in this terminal. A space
+ *  bound to a project keeps that project. One that is not asks for the project folder. */
+async function askCloud(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness" | "runtimes">> {
+  let spaces = cloudSpaces();
+  if (spaces.length === 0) {
+    const login = registry.resolve<Command>("command", "login");
+    await login.run(parseCommandArgs(login, ["--cloud"]));
+    spaces = cloudSpaces();
+    if (spaces.length === 0)
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the sign-in registered no Cloud space here; nothing was set up", { remedy: "create a space in Cotal Cloud, then run `cotal setup` again" });
+  }
+  let entry = spaces.find((m) => m.space === given.space);
+  if (ask("space") || entry === undefined) {
+    const current = readCurrent();
+    const picked = spaces.length === 1
+      ? spaces[0]!.space
+      : abortIfCancel(
+          await p.select({
+            message: "Which Cloud space?",
+            options: spaces.map((m) => ({ value: m.space, label: m.catalogName ?? m.space, hint: [m.catalogName === undefined ? undefined : m.space, m.catalogRole].filter(Boolean).join(" · ") })),
+            initialValue: (entry ?? spaces.find((m) => m.space === current))?.space ?? spaces[0]!.space,
+          }),
+        );
+    entry = spaces.find((m) => m.space === picked)!;
+  }
+  const flagged = ask("project") ? undefined : given.project;
+  if (canonicalRoot(entry.root) !== canonicalRoot(entry.catalogRoot ?? entry.root)) return { project: flagged ?? entry.root, createProject: false, space: entry.space };
+  const project = flagged
+    ?? resolve(abortIfCancel(await p.text({ message: "Project folder (your agents work in it)", initialValue: given.project ?? process.cwd(), validate: (s) => (isDir(resolve(s?.trim() ?? "")) ? undefined : "name a folder that exists") })).trim());
+  return { project, createProject: false, space: entry.space };
 }
 
 async function askHarness(candidates: readonly SetupConnectorCandidate[], initial: string | undefined): Promise<string> {
@@ -470,16 +523,16 @@ function bundleSpace(file: string): string {
   return check.value.space;
 }
 
-/** The applications setup can set up: every installed connector. With none installed, a `harness`
- *  no official connector provides is refused as a usage error, and the remedy names `cotal ext seed`
- *  only where it runs: it refuses a source checkout unless a sandboxed release test opts in. */
+/** The applications setup can set up: every installed connector. With none installed, reject an
+ *  unknown harness and name a recovery that also restores deliberately removed connectors.
+ *  A source checkout needs an installed CLI or an explicit sandboxed seed opt-in. */
 async function harnessCandidates(harness?: string): Promise<SetupConnectorCandidate[]> {
   const candidates = await setupConnectorCandidates(await setupConnectorSurface());
   if (candidates.length > 0) return candidates;
   if (harness !== undefined && !Object.hasOwn(OFFICIAL_CONNECTORS, harness)) throw usage(`no harness ${JSON.stringify(harness)}; the official connectors are ${Object.keys(OFFICIAL_CONNECTORS).join(", ")}`, HARNESS_REMEDY);
   const seeds = seedWriterKind() === "released" || process.env.COTAL_ALLOW_CHECKOUT_SEED === "1";
   throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", {
-    remedy: seeds ? "run `cotal ext seed`" : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
+    remedy: seeds ? (harness === undefined ? "run `cotal ext seed --reset` to restore all built-in extensions, including any you removed" : `run \`cotal ext add ${OFFICIAL_CONNECTORS[harness]}\``) : "this cotal is not a released install, so it does not seed connectors; run setup from an installed cotal-ai, or for a sandboxed release test set COTAL_ALLOW_CHECKOUT_SEED=1 and run `cotal ext seed`",
   });
 }
 
@@ -649,7 +702,9 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     runtimes: runtimes.rows,
     written,
     startup,
-    next: local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
+    next: candidate.missing.length > 0
+      ? { command: `install or repair ${candidate.missing.join(", ")}, then run the same setup again`, cwd: inputs.project }
+      : local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
@@ -677,11 +732,6 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
         startup.stackAttempted = true;
         const { startSetupLocalStack } = await import("./setup-start.js");
         startup.stack = await startSetupLocalStack(inputs.project, inputs.space);
-        const moved = startup.stack.chatHistory;
-        if (moved) {
-          const { chatHistoryMigratedNotice } = await import("./stack-up.js");
-          warnings.push({ code: "CHAT_HISTORY_MIGRATED", target: { root: inputs.project, space: inputs.space, stream: moved.stream }, message: chatHistoryMigratedNotice(inputs.space, moved) });
-        }
       }
       const { launchManagedPersona } = await import("./spawn.js");
       await launchManagedPersona({ space: inputs.space, agent: inputs.harness, detach: opts.detach, ...(startup.stack ? { on: startup.stack.managerInstanceId, cwd: inputs.project } : opts.managerInstanceId ? { on: opts.managerInstanceId } : {}), ...(opts.presentation === "json" ? { json: true } : opts.presentation === "plain" ? { plain: true } : {}) }, ["default"], undefined, undefined, {
@@ -690,7 +740,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
           startup.joinedAt = new Date().toISOString();
           startup.state = "joined";
           warnings.push(...notices);
-          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: [["Agent", agent.name], ["Identity", agent.id], ["Manager", agent.managerInstanceId]] }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
+          if (opts.interactive && !opts.detach) console.error(paintFor(process.stderr, () => renderReport({ space: inputs.space, sections: [{ title: "Agent joined", blocks: [{ kind: "fields", rows: joinedAgentRows(agent) }, { kind: "lines", lines: [{ text: "Opening the allocated incarnation's terminal. Leaving the view sends no stop request.", tone: "hint" }] }] }] }, "rich")));
         },
       });
       if (!startup.agent) throw new CommandFailure("unknown", "OPERATION_UNKNOWN", "setup received no native joined receipt; no readiness was inferred");
@@ -701,9 +751,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
       const failureTarget = setupFailureCoordinates(known?.target, inputs.space);
       const diagnostic = known && startup.stackAttempted && !startup.stack ? known.message : undefined;
       startup.failure = { code: known?.code ?? "OPERATION_UNKNOWN", outcome: known?.outcome ?? "unknown", target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) };
-      // A start that moved the chat history limit changed the space, whichever step failed.
-      const moved = known && startup.stackAttempted && !startup.stack ? known.changed ?? [] : startup.stack?.chatHistory ? [(await import("./stack-up.js")).chatHistoryChanged(startup.stack.chatHistory)] : [];
-      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...moved, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
+      const failure = new CommandFailure(unknown ? "unknown" : "partial", unknown ? "OPERATION_UNKNOWN" : "OPERATION_PARTIAL", startup.agent ? "preparation is saved and the agent joined, but its terminal handoff did not finish" : "preparation is saved, but the requested startup did not finish", { target, native: { code: known?.code, outcome: known?.outcome, detail: { target: failureTarget, ...(diagnostic ? { message: diagnostic } : {}) } }, changed: [...written, ...(startup.agent ? [startup.agent] : [])], remedy: "inspect the recorded startup, selected space and original manager/agent before another attempt; saved preparation was not rolled back and startup was not retried" });
       writeResult(opts.presentation, { command: "setup", target, result, warnings, failure }, setupView);
       return;
     }
@@ -1097,7 +1145,12 @@ export async function refreshConnectorInstalls(): Promise<string[]> {
     // Refresh owns installed state even when a harness executable disappeared. Its provider must
     // distinguish an absent integration from one it cannot update; availability must not hide it.
     const refresh = (await connectorSetupProvider(connector))?.refresh;
-    if (refresh) lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+    if (refresh) {
+      const started = Date.now();
+      console.error(`Refreshing ${refresh.title}`);
+      lines.push(`${refresh.title}: ${await refresh.run({ cotal: selfArgv(), skills: connectorSkillsInput() })}`);
+      console.error(`✓ integration ${connector.name} refreshed (${((Date.now() - started) / 1000).toFixed(1)} s)`);
+    }
   }
   return lines;
 }

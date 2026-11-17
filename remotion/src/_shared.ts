@@ -56,12 +56,12 @@ export function gridLine(...segs: Seg[]): string {
 // --- ANSI Shadow "cotal" wordmark (6 rows × 42 cols) ------------------------
 
 export const WORDMARK: string[] = [
-  "███████╗██╗    ██╗ █████╗ ██████╗ ██╗     ",
-  "██╔════╝██║    ██║██╔══██╗██╔══██╗██║     ",
-  "███████╗██║ █╗ ██║███████║██████╔╝██║     ",
-  "╚════██║██║███╗██║██╔══██║██╔══██╗██║     ",
-  "███████║╚███╔███╔╝██║  ██║██║  ██║███████╗",
-  "╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝",
+  " ██████╗ ██████╗ ████████╗ █████╗ ██╗     ",
+  "██╔════╝██╔═══██╗╚══██╔══╝██╔══██╗██║     ",
+  "██║     ██║   ██║   ██║   ███████║██║     ",
+  "██║     ██║   ██║   ██║   ██╔══██║██║     ",
+  "╚██████╗╚██████╔╝   ██║   ██║  ██║███████╗",
+  " ╚═════╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚══════╝",
 ];
 export const WM_WIDTH = 42;
 
@@ -121,6 +121,18 @@ export function horizontalPath(row: number, startCol: number, endCol: number): C
   const out: Cell[] = [];
   for (let col = startCol; col !== endCol + step; col += step) out.push({ row, col });
   return out;
+}
+
+// Down the source tap, along the bus, then up into the destination tap. The bus
+// cell under the source tap is visited twice, once at the end of the descent and
+// once at the start of the run, which is the timing the frames were rendered with.
+export function busRoute(busRow: number, fromCol: number, toCol: number): Cell[] {
+  return [
+    { row: busRow - 1, col: fromCol },
+    { row: busRow, col: fromCol },
+    ...horizontalPath(busRow, fromCol, toCol),
+    { row: busRow - 1, col: toCol },
+  ];
 }
 
 export function pick<T>(path: T[], t: number): T {

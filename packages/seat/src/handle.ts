@@ -1,6 +1,6 @@
 import { SeatClient } from "./client.js";
 import type { SeatRecord } from "./record.js";
-import type { SeatExit } from "./protocol.js";
+import { DEFAULT_COLS, DEFAULT_ROWS, type SeatExit } from "./protocol.js";
 
 export interface SeatAttachSession {
   readonly cols: number;
@@ -34,8 +34,8 @@ export function adoptSeatSync(record: SeatRecord): SeatHandle {
   const ready = client.connect();
   let status: "running" | "exited" = "running";
   let exit: SeatExit | undefined;
-  let cols = 120;
-  let rows = 32;
+  let cols = DEFAULT_COLS;
+  let rows = DEFAULT_ROWS;
   let helloGeometryApplied = false;
   const liveUnsubs = new Set<() => void>();
 

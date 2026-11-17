@@ -40,6 +40,7 @@ export interface CalloutLane {
 
 /** Everything a lane needs. `secrets` is the one store a host opens for every space it serves. */
 export interface CalloutLaneOptions {
+  eventPayloadsWithheld?: boolean;
   space: string;
   server: string;
   root: string;
@@ -148,7 +149,7 @@ export async function openCalloutLane(options: CalloutLaneOptions): Promise<Call
       name: `cotal:auth-callout-replica:${space}`,
     });
     // This space's signing material enters the request path here and nowhere else.
-    serveCallout(calloutNc as never, { space, dir, callout, dataAccount, issuer, hooks, ...(options.limits !== undefined ? { limits: options.limits } : {}) });
+    serveCallout(calloutNc as never, { space, dir, callout, dataAccount, issuer, hooks, eventPayloadsWithheld: options.eventPayloadsWithheld, ...(options.limits !== undefined ? { limits: options.limits } : {}) });
     await calloutNc.flush();
   } catch (e) {
     stopping = true;

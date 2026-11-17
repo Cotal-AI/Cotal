@@ -178,7 +178,7 @@ try {
 
   console.log(`\nMANAGER-SINGLETON LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
-  cli("down");
+  cli("down", "--yes");
   await sleep(500);
   // Belt-and-suspenders: `down` should stop the broker; if it didn't, free the port SURGICALLY (by
   // port, never a broad pkill — a co-running broker on another port is untouched).

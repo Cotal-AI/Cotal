@@ -73,11 +73,11 @@ try {
   const add = spawnSync(
     process.execPath,
     [...process.execArgv, cli, "ext", "__update-add", pkg, fixture],
-    { env: { ...env, XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", [EXT_UPDATE_PARENT_ENV]: String(process.pid) }, encoding: "utf8", timeout: 30_000 },
+    { env: { ...env, ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_UPDATE_CLOSURE_"))), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1", [EXT_UPDATE_PARENT_ENV]: String(process.pid) }, encoding: "utf8", timeout: 30_000 },
   );
   assert.notEqual(add.status, 0, `the stub npm fails the add: ${add.stderr}`);
   const masks = recordedUmasks();
-  assert.ok(masks.length >= 1, `the add reached npm: ${add.stderr}`);
+  assert.ok(masks.length >= 1, `the add reached npm: ${JSON.stringify({ status: add.status, signal: add.signal, error: add.error?.message, stdout: add.stdout, stderr: add.stderr })}`);
   assert.deepEqual(masks, masks.map(() => 0o022), "every npm child of ext add starts under 022");
   assert.equal(statSync(extensionsDir()).mode & 0o777, 0o755, "the extension prefix is created 0755 under a umask of 0002");
   assert.equal(statSync(join(extensionsDir(), "package.json")).mode & 0o777, 0o644, "the prefix package.json is created 0644 under a umask of 0002");

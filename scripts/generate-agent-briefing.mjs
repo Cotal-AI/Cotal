@@ -44,12 +44,12 @@ const metadata = [
 ].join("\n");
 
 const markdown = `Every connector hands its agent one briefing when the session starts: who it is, to orient
-first, when to send feedback, to keep multi-agent work on the mesh, when a durable workflow run
-is the right tool, where to talk, how a peer message reaches it, how to reply, and the reply
-etiquette. The paragraphs are written once, in the connector core, and each harness adds only
-the sentence that says how a peer message appears in its model's context. This page is rendered
-from that module for an agent named \`alice\` with the role \`reviewer\` in the space \`main\`,
-so a wording change shows up here as a diff of what each harness will read.
+first, to use its mesh tools rather than the command line, when to send feedback, to keep multi-agent
+work on the mesh, when a durable workflow run is the right tool, where to talk, how a peer message
+reaches it, how to reply, and the reply etiquette. The paragraphs are written once, in the connector
+core, and each harness adds only the sentence that says how a peer message appears in its model's
+context. This page is rendered from that module for an agent named \`alice\` with the role \`reviewer\`
+in the space \`main\`, so a wording change shows up here as a diff of what each harness will read.
 
 The briefing is the ambient text. The live facts (identity, access, who is present, unread
 count) are the orientation card, which \`cotal_orientation\` returns at any time and which the

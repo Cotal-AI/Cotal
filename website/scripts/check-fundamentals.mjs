@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parse } from 'parse5';
-import { readDocument } from '@cotal-ai/docs-content';
+import { readDocument, documentationCategory } from '@cotal-ai/docs-content';
 import { assertPlainMarkdown } from './assert-plain-markdown.mjs';
 
 const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
@@ -39,7 +39,7 @@ for (const slug of [...concepts, ...related]) {
     assert(!/^> \*\*(?:Concept|Reference)\*\*/m.test(markdown), `classification outside prose: ${slug}`);
     const source = await readDocument(new URL(`../../docs/${slug}.mdx`, import.meta.url).pathname);
     assert.equal(source.format, 'mdx', `direct MDX: ${slug}`);
-    assert.equal(source.metadata.kind, concepts.includes(slug) ? 'Concept' : 'Reference', `document mode: ${slug}`);
+    assert.equal(documentationCategory(source.metadata.kind, source.sourcePath), concepts.includes(slug) ? 'Concept' : 'Reference', `document mode: ${slug}`);
     assert(source.metadata.audience, `audience metadata: ${slug}`);
   }
   for (const node of nodes) {

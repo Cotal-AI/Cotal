@@ -12,7 +12,7 @@
  * here only map its outcome to the invocation-time code (`bad-request`, distinct from
  * registration-time `contract-invalid`).
  */
-import type { ValidateFunction } from "ajv/dist/2020.js";
+import type { ContractValidator, ContractValidationError } from "./contract-validator.js";
 import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
 import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { SCHEMA_PROFILE } from "./schema-bounds.js";
@@ -131,15 +131,15 @@ export interface EndpointRequest {
   auth?: string;
 }
 
-export interface EndpointReply {
+/** `ok` selects whether an error is required or absent. Failed goal-follow results may retain
+ *  acceptance data locally; the wire parser still refuses data on a failed reply (§13.3). */
+export type EndpointReply = {
   v: typeof EP_ENVELOPE_V;
   id: string;
-  ok: boolean;
   data?: unknown;
-  error?: EpError;
   /** Opaque signed receipt slot (§13.10). */
   receipt?: string;
-}
+} & ({ ok: true; error?: never } | { ok: false; error: EpError });
 
 /** The {@link ControlReply} a caller hands on for an endpoint reply. Every caller converts here, so
  *  whether it can act on a refusal's code, its details, or the acceptance a non-succeeded terminal
@@ -147,13 +147,13 @@ export interface EndpointReply {
 export function controlReplyFrom(reply: EndpointReply): ControlReply {
   if (reply.ok) return { ok: true, ...(reply.data !== undefined ? { data: reply.data } : {}) };
   const { error } = reply;
-  if (!error) throw new Error(`endpoint reply ${reply.id} failed without an error`);
   return {
     ok: false,
     error: renderLifecycleBlocked(error.message, error),
     code: error.code,
     ...(reply.data !== undefined ? { data: reply.data } : {}),
     ...(error.details ? { details: error.details } : {}),
+    ...(error.outcome !== undefined ? { outcome: error.outcome } : {}),
   };
 }
 
@@ -166,6 +166,7 @@ export function controlReplyFromThrown(e: EpEnvelopeError, message: string): Con
     error: renderLifecycleBlocked(message, e),
     code: e.code,
     ...(e.details ? { details: e.details } : {}),
+    ...(e.outcome !== undefined ? { outcome: e.outcome } : {}),
   };
 }
 
@@ -465,14 +466,11 @@ export function parseEndpointReply(raw: unknown): EndpointReply {
   if (typeof o.ok !== "boolean") fail("bad-request", "ok is not a boolean");
   if (o.ok && o.error !== undefined) fail("bad-request", "an ok reply must not carry an error");
   if (!o.ok && o.data !== undefined) fail("bad-request", "a failed reply must not carry data");
-  const error = o.ok ? undefined : pickError(o.error);
+  const reply: EndpointReply = o.ok
+    ? { v: EP_ENVELOPE_V, id, ok: true, ...(o.data !== undefined ? { data: o.data } : {}) }
+    : { v: EP_ENVELOPE_V, id, ok: false, error: pickError(o.error) };
   const receipt = o.receipt === undefined ? undefined : asString(o.receipt, "receipt");
-  return {
-    v: EP_ENVELOPE_V, id, ok: o.ok,
-    ...(o.ok && o.data !== undefined ? { data: o.data } : {}),
-    ...(error ? { error } : {}),
-    ...(receipt !== undefined ? { receipt } : {}),
-  };
+  return { ...reply, ...(receipt !== undefined ? { receipt } : {}) };
 }
 
 /** Shape-validate an event at its consuming boundary (§13.3: every plane is runtime-validated).
@@ -565,14 +563,11 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
   );
 }
 
-/** The first AJV error as refusal prose: where (`instancePath`, root as "/"), its message, and -
- *  when the keyword is `additionalProperties` - WHICH property was rejected, which AJV carries
- *  only in `params.additionalProperty`. A closed-contract refusal that does not name the key turns
- *  a caller/manager version skew into a guessing game: the operator cannot tell which key to drop
- *  or which side to upgrade. Shared by the args and output sides so the two render in lockstep. */
-function firstErrorDetail(first: { instancePath?: string; message?: string; params?: Record<string, unknown> } | undefined | null): string {
+/** Render the first structured validation failure, including an undeclared property's original
+ * name. Shared by input and output boundaries. No property is recovered by splitting a pointer. */
+function firstErrorDetail(first: ContractValidationError | undefined | null): string {
   if (!first) return "";
-  const extra = typeof first.params?.additionalProperty === "string" ? `: ${JSON.stringify(first.params.additionalProperty)}` : "";
+  const extra = typeof first.additionalProperty === "string" ? `: ${JSON.stringify(first.additionalProperty)}` : "";
   return `: ${first.instancePath || "/"} ${first.message ?? ""}${extra}`;
 }
 
@@ -589,7 +584,7 @@ function firstErrorDetail(first: { instancePath?: string; message?: string; para
  *  ({@link import("./schema-profile.js").compileContract}), which is where the COMPILE-time DoS
  *  lives - not the only place a DoS lives, see the note on `reportValidateBudget` - and where
  *  a false positive fails loudly instead of lying to a caller. */
-export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
+export function assertArgsValid(validate: ContractValidator, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
   const startedCpu = cpuNow();
   const started = Date.now();
@@ -610,7 +605,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
  *  `bad-request`. The §13.8 budget is REPORTED, not enforced, for the same reason as the args side
  *  ({@link reportValidateBudget}). A void output is `undefined`, validated as `null` against the
  *  void schema, mirroring the args side. */
-export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
+export function assertOutputValid(validate: ContractValidator, data: unknown): void {
   const value = data === undefined ? null : data;
   const startedCpu = cpuNow();
   const started = Date.now();

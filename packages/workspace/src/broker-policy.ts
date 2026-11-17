@@ -21,8 +21,8 @@
  * entirely sensible-sounding basis would be handing over the broker's identity.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic, type BrokerTransport } from "@cotal-ai/core";
+import { join, resolve } from "node:path";
+import { mkSecretDir, writeSecretFileAtomic, type AccountResolver, type BrokerTransport } from "@cotal-ai/core";
 
 /** What was recorded about how this broker is served. */
 export interface BrokerPolicy {
@@ -37,6 +37,12 @@ export interface BrokerPolicy {
    *  A renderer outside `up` - a hosted tenant provisioner, say - reads it from here rather than
    *  from the rendered config, so every render of this broker carries the same limit. */
   readonly maxPayload?: number;
+  /** `"full"` when the broker resolves space accounts from a directory (`cotal up --account-resolver
+   *  full`), so a host can add and retire accounts on the running broker without a reload. Absent:
+   *  the MEMORY resolver, which only knows the accounts its configuration lists. A renderer outside
+   *  `up` passes {@link brokerAccountResolver} for it, because nats-server switches resolvers only at
+   *  start and refuses a reload that changes one. */
+  readonly accountResolver?: "full";
 }
 
 /** Thrown for every unreadable, unparseable or unusable policy. Distinct so callers can report a
@@ -106,7 +112,11 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
   const maxPayload = doc.maxPayload;
   if (maxPayload !== undefined && (!Number.isSafeInteger(maxPayload) || maxPayload <= 0))
     throw new BrokerPolicyError(`broker policy at ${path} names a payload limit that is not a positive whole number of bytes: ${JSON.stringify(maxPayload)}`);
-  const limits = { ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}) };
+  const accountResolver = doc.accountResolver;
+  if (accountResolver !== undefined && accountResolver !== "full")
+    throw new BrokerPolicyError(`broker policy at ${path} names an unknown account resolver ${JSON.stringify(accountResolver)}; expected "full" or none`);
+  const limits = { ...(authTimeout !== undefined ? { authTimeout } : {}), ...(maxPayload !== undefined ? { maxPayload } : {}),
+    ...(accountResolver !== undefined ? { accountResolver } : {}) };
 
   if (t.kind === "plaintext") return { version: 1, transport: { kind: "plaintext" }, ...limits };
 
@@ -128,6 +138,26 @@ export function readBrokerPolicy(root: string): BrokerPolicy | undefined {
   }
 
   return { version: 1, transport: { kind: "tls-required", certFile: t.certFile, keyFile: t.keyFile }, ...limits };
+}
+
+/** `<root>/.cotal/account-jwts`, where a broker on the full account resolver stores the account
+ *  claims it was pushed. It sits beside `auth/` rather than inside it, where every subdirectory is
+ *  read as a space. */
+export function accountJwtsDir(root: string): string {
+  return join(resolve(root), ".cotal", "account-jwts");
+}
+
+/** Accounts the full resolver may hold: a space uses its data account and, with user auth, a callout
+ *  account, so this is room for 50000 spaces on one broker. nats-server refuses a push beyond it. */
+export const ACCOUNT_JWT_LIMIT = 100_000;
+
+/** The account resolver every render of this root's broker carries, from the recorded choice
+ *  (`readBrokerPolicy(root)?.accountResolver`). `up` and a host that renders the same broker both
+ *  call this, so the two renders cannot name different directories or limits. */
+export function brokerAccountResolver(root: string, recorded: BrokerPolicy["accountResolver"]): AccountResolver {
+  return recorded === "full"
+    ? { kind: "full", directory: accountJwtsDir(root), limit: ACCOUNT_JWT_LIMIT, intervalMs: 60_000 }
+    : { kind: "memory" };
 }
 
 /** Node's codes for a certificate chain this client does not trust: a self-signed certificate, or

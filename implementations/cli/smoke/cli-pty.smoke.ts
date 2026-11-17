@@ -171,9 +171,12 @@ try {
   // and it wraps to 80 columns. Only a line that is one word, or one span in backticks, stays wider.
   const unbreakable = (line: string) => !/\S \S/.test(line.trim()) || /^[("']*`[^`]+`[)"',.;:]*$/.test(line.trim());
   const page = await helpAt(["docs", "cli"], 80);
-  check("cotal docs cli on an 80-column terminal is drawn, with no heading marks or table rules",
-    page.exitCode === 0 && page.all.includes("`cotal` CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && page.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), page.all.slice(0, 12));
-  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.length > 1000 && fit(page.all.join("\n"), 80).every(unbreakable), fit(page.all.join("\n"), 80));
+  check("cotal docs cli on an 80-column terminal draws its heading and internal link destinations",
+    page.exitCode === 0 && page.all.includes("CLI reference") && !page.all.some((line) => /^#{1,6} /.test(line)) && page.all.some((line) => line.includes("<cli-processes.mdx#daemon>")), page.all.slice(0, 12));
+  check("cotal docs cli on an 80-column terminal fits every line that can break", page.exitCode === 0 && page.all.some((line) => line.includes("<cli-installation.mdx#telemetry>")) && fit(page.all.join("\n"), 80).every(unbreakable), fit(page.all.join("\n"), 80));
+  const usagePage = await helpAt(["docs", "cli-usage"], 80);
+  check("cotal docs cli-usage on an 80-column terminal draws a wide table as labeled records",
+    usagePage.exitCode === 0 && usagePage.all.includes("CLI usage") && !usagePage.all.some((line) => /^#{1,6} /.test(line) || /^\s*\|[\s:|-]+\|\s*$/.test(line)) && usagePage.all.some((line) => /^ {2}field: +`schemaVersion`$/.test(line)), usagePage.all.filter((line) => line.includes("schemaVersion")));
   // A search hit is drawn as its page is, so a span in backticks that crosses a line break in the
   // page's source stays whole, and `--plain` wraps the same text. A run of backticks closes at the
   // next run as long, as in Markdown.
@@ -182,7 +185,7 @@ try {
     const search = await helpAt(["docs", "--search", "manager", ...flags], 80);
     const name = ["cotal docs --search manager", ...flags].join(" ");
     check(`${name} on an 80-column terminal splits no span in backticks across lines`,
-      search.exitCode === 0 && search.all.some((line) => line.trim() === "read the full page: `cotal docs cli`") && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
+      search.exitCode === 0 && search.all.some((line) => /^read the full page: `cotal docs [^\s`]+`$/.test(line.trim())) && search.all.every(spansClose), search.all.filter((line) => !spansClose(line)));
     check(`${name} on an 80-column terminal fits every line that can break`, search.exitCode === 0 && search.all.length > 20 && fit(search.all.join("\n"), 80).every(unbreakable), fit(search.all.join("\n"), 80));
   }
   // A hit's title, `Page › heading`, is a section title and wraps at its words as any title does.
@@ -246,7 +249,7 @@ try {
     f.exitCode === 2 && fit(f.text(), 40).length === 0 &&
       failLines.join("\n") === [
         "Request refused", "  no mesh running", "  Outcome", "    refused", "  Code", "    TARGET_NOT_FOUND",
-        "Next", "  run `cotal up` in a project, or pass", "  `--server`",
+        "Next", "  sign in to Cotal Cloud with", "  `cotal login`, run `cotal up` in a", "  project, or pass `--server`",
       ].join("\n"),
     failLines,
   );
@@ -396,20 +399,34 @@ try {
   const catalog = mkdtempSync(join(tmpdir(), "cotal-cli-pty-catalog-"));
   mkdirSync(join(catalog, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(catalog, ".cotal", "agents", "evb.md"), "---\nname: evb\nsubscribe: []\n---\nbody \x1b]0;PWN\x07\x1b[2JB\n");
+  const unpreparedPty = cotalPty(["personas", "show", "evb"], { cwd: catalog, env });
+  ptys.push(unpreparedPty);
+  const unprepared = session(unpreparedPty);
+  await until(() => unprepared.exitCode !== undefined);
+  check("personas show refuses a catalog folder with no prepared or selected space",
+    unprepared.exitCode === 2 && unprepared.text().includes("TARGET_NOT_FOUND") && unprepared.text().includes("cotal space create <name> --root") && !unprepared.text().includes("PWN"), unprepared.text());
+
+  const spacePty = cotalPty(["space", "create", "ptyspace", "--root", catalog, "--plain"], { cwd: catalog, env });
+  ptys.push(spacePty);
+  const created = session(spacePty);
+  await until(() => created.exitCode !== undefined);
+  check("control: a space is created over the catalog", created.exitCode === 0, created.text());
+  const source = readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8");
+  check("control: the prepared catalog's persona still contains raw terminal control characters",
+    source === "---\nname: evb\nsubscribe: []\n---\nbody \x1b]0;PWN\x07\x1b[2JB\n", JSON.stringify(source));
+
   const showPty = cotalPty(["personas", "show", "evb"], { cwd: catalog, env });
   ptys.push(showPty);
   const shownCard = session(showPty);
   await until(() => shownCard.exitCode !== undefined);
   check("personas show on a terminal escapes the file's control characters",
     shownCard.exitCode === 0 && !/\x1b\]0;|\x07|\x1b\[2J/.test(shownCard.raw) && shownCard.raw.includes("body \\u001b]0;PWN\\u0007\\u001b[2JB"), JSON.stringify(shownCard.raw.slice(-300)));
+  const card = await screen(shownCard.raw, 120, 32);
+  check("the terminal displays the persona's path and complete escaped source",
+    shownCard.exitCode === 0 && card === `${join(catalog, ".cotal", "agents", "evb.md")}\n---\nname: evb\nsubscribe: []\n---\nbody \\u001b]0;PWN\\u0007\\u001b[2JB`, card);
 
   // A cancelled `persona remove` says once that it was cancelled, and its warning says what that
   // left, whether Enter takes the default or `--plain` takes the numbered choice.
-  const spacePty = cotalPty(["space", "create", "ptyspace", "--root", catalog, "--plain"], { cwd: catalog, env });
-  ptys.push(spacePty);
-  const created = session(spacePty);
-  await until(() => created.exitCode !== undefined);
-  check("control: a space is created over the catalog", created.exitCode === 0, created.text());
   for (const [label, argv, ready, answer] of [["Enter", [], "Remove 'evb'", "\r"], ["--plain choice 1", ["--plain"], "Choice [1]", "1\r"]] as const) {
     const removePty = cotalPty(["persona", "remove", "evb", ...argv], { cwd: catalog, env });
     ptys.push(removePty);
@@ -418,9 +435,10 @@ try {
     removePty.write(answer);
     await until(() => r.exitCode !== undefined);
     const shown = await screen(r.raw, 80, 24);
+    const receipt = shown.replace(/\n/g, " ");
     check(`persona remove cancelled by ${label} says so once and keeps the file`,
-      asked && r.exitCode === 0 && shown.split("Removal cancelled: evb is kept at ").length === 2 && shown.includes("nothing was removed") && !shown.includes("persona removal cancelled")
-        && readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8").startsWith("---\nname: evb\n"), shown);
+      asked && r.exitCode === 0 && shown.split("Removal cancelled:").length === 2 && receipt.includes(`Removal cancelled: evb is kept at ${join(catalog, ".cotal", "agents", "evb.md")}.`) && shown.includes("nothing was removed") && !shown.includes("persona removal cancelled")
+        && readFileSync(join(catalog, ".cotal", "agents", "evb.md"), "utf8") === source, shown);
   }
 } catch (err) {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);

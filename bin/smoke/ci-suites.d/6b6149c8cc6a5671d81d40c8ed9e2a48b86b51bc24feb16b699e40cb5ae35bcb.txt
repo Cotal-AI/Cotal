@@ -1,0 +1,3 @@
+# `cotal update` reads the custody of a manager that serves a remote user mesh from this machine
+# instead of reporting that the manager runs elsewhere.
+smoke:update-remote-custody

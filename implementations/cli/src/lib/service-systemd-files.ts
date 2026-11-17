@@ -10,6 +10,23 @@ function ownedDirectory(path: string, privateState = false): void {
   if (process.getuid === undefined || !stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & (privateState ? 0o077 : 0o022)) !== 0) throw new CommandFailure("refused", "PERMISSION_DENIED", "the proposed systemd state directory is not owned and protected; no unit file was published");
 }
 
+/** Check the unit directory without creating it. Missing descendants are allowed only beneath
+ *  a protected physical directory; an existing unit directory must also pass publication checks. */
+export function assertSystemdSourceDirectory(path: string): void {
+  let ancestor = path;
+  for (;;) {
+    try { lstatSync(ancestor); break; }
+    catch (error) {
+      if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw new CommandFailure("refused", "TARGET_UNAVAILABLE", "the native unit directory has no existing protected ancestor");
+      ancestor = parent;
+    }
+  }
+  if (ancestor === path) ownedDirectory(path);
+  else protectedLocalDirectory(ancestor);
+}
+
 /** The manager-selected unit directory may not exist yet. Create only physical, protected
  *  descendants of an existing protected ancestor; a unit filename is never an ownership claim. */
 export function createSystemdPrivateHome(unitDirectory: string, privateHome: string): void {

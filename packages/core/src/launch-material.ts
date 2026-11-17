@@ -44,6 +44,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } 
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
+import type { UserAuthLaunch } from "./connector.js";
 
 /** The prefix {@link writeLaunchMaterial} gives its private directory, and the single filename it
  *  puts inside. Named constants because {@link discardLaunchMaterial} has to recognise this module's
@@ -74,8 +75,10 @@ export type LaunchMaterial = {
   controlVersion?: number;
   /** The selected registration requires this session's structured event plane. */
   eventsRequired?: boolean;
+  /** Trusted decision to withhold tool payloads while retaining status events. */
+  eventPayloadsWithheld?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
 };
 
 /**
@@ -183,6 +186,10 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
       throw new Error(`launch material: ${path} has eventsRequired that is not exactly true`);
     material.eventsRequired = true;
   }
+  if (raw.eventPayloadsWithheld !== undefined) {
+    if (raw.eventPayloadsWithheld !== true) throw new Error(`launch material: ${path} has eventPayloadsWithheld that is not true`);
+    material.eventPayloadsWithheld = true;
+  }
   if (raw.userAuth !== undefined) {
     const u = raw.userAuth;
     if (typeof u !== "object" || u === null || Array.isArray(u))
@@ -199,7 +206,7 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
       actor: actor as string,
       sentinelCredsPath: sentinelCredsPath as string,
       bearerCmd: bearerCmd as string[],
-    };
+    } satisfies Required<UserAuthLaunch>;
   }
   if (Object.keys(material).length === 0)
     throw new Error(

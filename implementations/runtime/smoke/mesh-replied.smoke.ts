@@ -36,6 +36,12 @@ import {
   readCheckpointSettle,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
+  CANCEL_INPUT_SCHEMA,
+  TURN_YIELD_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -69,7 +75,7 @@ import {
 import { type EffectContext, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshreplied";
 const EP = "manager";
@@ -80,17 +86,7 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshreplied", uid: "a".rep
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
+
 /** Grade a rejection as a value rather than a process kill (the bare-call trap). */
 const safe = (p: Promise<unknown>): Promise<unknown> =>
   p.catch((e: unknown) => ({ threw: true, name: (e as Error)?.name, code: (e as { code?: string })?.code, message: (e as Error)?.message ?? String(e) }));
@@ -129,54 +125,20 @@ const armPending = async (expect = 4): Promise<void> => {
   }
 };
 
-// ── the suite-served manager-shaped goal endpoint (spawn + turn), the turn suite's rig ─────────
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
-// The published manager cancel schemas (SPEC 13.6 item 4), without importing the manager.
-const CANCEL_INPUT = {
-  type: "object", additionalProperties: false, required: ["goalId"],
-  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
-} as const;
-const CANCEL_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["goalId", "state"],
-  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
-  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
+  cancel: { input: cc(CANCEL_INPUT_SCHEMA), output: cc(TURN_YIELD_OUTPUT_SCHEMA) },
 };
 const CANCEL_COMMAND = { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest };
 // One list owns both registration and serving, so omitting cancel restores the original gap.
 const CANCEL_COMMANDS: typeof CANCEL_COMMAND[] = [CANCEL_COMMAND];
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.repliedmgr", revision: 1, attributes: [], events: [],
   commands: [
@@ -195,7 +157,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA, CANCEL_INPUT_SCHEMA, TURN_YIELD_OUTPUT_SCHEMA]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -477,10 +439,12 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   const h = mk("rp-3");
   const d = await spawnSeat(h, "d");
   turnEndings.push({ state: "succeeded", status: "done", note: "first", delayMs: 50 });
-  await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("e"), { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)), 20_000, "the first turn");
+  c("the first turn ended within its deadline",
+    await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("e"), { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)).then(() => true), 20_000, "the first turn") === true);
   await wait(50); // two yields need two distinct stamps
   turnEndings.push({ state: "succeeded", status: "done", note: "second", delayMs: 50 });
-  await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("f"), { key: { scope: [], kind: "turn", name: "", occurrence: 1 } }).ctx)), 20_000, "the second turn");
+  c("the second turn ended within its deadline",
+    await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("f"), { key: { scope: [], kind: "turn", name: "", occurrence: 1 } }).ctx)).then(() => true), 20_000, "the second turn") === true);
   const got = await withDeadline(safe(h.wait({ event: { event: "replied", agent: d!.agent }, timeout: "10m" } as never, stepCtx(token("g")).ctx)), 20_000, "the level read");
   c("a wait over two completed turns resolves to the later yield", isReplied(got) && got.note === "second", JSON.stringify(got));
   const settle3 = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: token("g") });
@@ -494,7 +458,8 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   const d = await spawnSeat(h, "h");
   turnEndings.push({ state: "deadline", delayMs: 50 });
   const T = token("i");
-  await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(T, { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)), 30_000, "the denied turn");
+  c("the denied turn ended within its deadline",
+    await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(T, { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)).then(() => true), 30_000, "the denied turn") === true);
   const W = token("j");
   const p = safe(h.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W).ctx));
   await armPending(12);
@@ -522,7 +487,8 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   // a reply to a turn the run had abandoned.
   turnEndings.push({ state: "succeeded", status: "done", note: "yielded before the cancel", delayMs: 100 });
   const T5 = token("i5");
-  await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(T5, { key: { scope: [], kind: "turn", name: "c5", occurrence: 0 } }).ctx)), 30_000, "the turn the run then cancels");
+  c("the turn the run then cancels ended within its deadline",
+    await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(T5, { key: { scope: [], kind: "turn", name: "c5", occurrence: 0 } }).ctx)).then(() => true), 30_000, "the turn the run then cancels") === true);
   const fresh5 = mk("rp-5");
   const seeded = adoptedPending("rp-5", d!, token("h5"), T5);
   seeded.push({
@@ -573,7 +539,8 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   turnEndings.push({ state: "succeeded", status: "done", note: "shipped", delayMs: 50 });
   const T = token("q");
   const sT = stepCtx(T, { key: { scope: [], kind: "turn", name: "", occurrence: 0 } });
-  await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, sT.ctx)), 20_000, "the recorded turn");
+  c("the recorded turn ended within its deadline",
+    await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, sT.ctx)).then(() => true), 20_000, "the recorded turn") === true);
   const { name, uid } = { name: d!.agent.slice(0, d!.agent.lastIndexOf("#")), uid: d!.agent.slice(d!.agent.lastIndexOf("#") + 1) };
   const fresh = mk("rp-7");
   await fresh.adopted([
@@ -599,7 +566,8 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
 {
   console.log("• 8 — a yield handing off to a stranger is the turn's L4005 and never resolves the wait");
   const h = mk("rp-8");
-  const d = await spawnSeat(h, "o");
+  // Its own spawn goal: a run's spawn names its run, so cell 7's goal under this run is another submission.
+  const d = await spawnSeat(h, "o8");
   turnEndings.push({ state: "succeeded", status: "handoff", to: "stranger", delayMs: 50 });
   const got = await withDeadline(safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, stepCtx(token("p"), { key: { scope: [], kind: "turn", name: "", occurrence: 0 } }).ctx)), 30_000, "the refused-handoff turn");
   c("the turn refuses the spoofed addressee as L4005", (got as { code?: string } | undefined)?.code === "L4005", JSON.stringify(got));
@@ -708,7 +676,8 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   await armPending(6);
   await wait(600);
   s.cancel("race decided elsewhere");
-  await withDeadline(p, 20_000, "the losing turn");
+  c("the losing turn ended within its deadline",
+    await withDeadline(p.then(() => true), 20_000, "the losing turn") === true);
   await wait(2_000); // the relay records the seat's yield regardless
   const fresh = mk("rp-10");
   const spawnEntry = {
@@ -735,7 +704,7 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 26;
+const EXPECTED_CELLS = 37;
 const ran = ok + fail;
 console.log(`mesh-replied.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

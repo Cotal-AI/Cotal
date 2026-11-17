@@ -46,7 +46,7 @@ import {
 import type { JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshmonitor";
 const EP = "manager";
@@ -56,17 +56,6 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshmonitor", uid: "a".rep
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -314,7 +303,8 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
   c("a re-entered down-wait attaches to the recorded pause rather than re-minting", got === null, JSON.stringify(got));
   c("the deadline is absolute: the re-entry resolves on the ORIGINAL clock",
     elapsed < 3_600, `${elapsed}ms from re-entry (a restarted clock would take ~4000ms)`);
-  await withDeadline(first, 20_000, "the first down-wait, sharing the settle");
+  c("the first down-wait, sharing the settle ended within its deadline",
+    await withDeadline(first.then(() => true), 20_000, "the first down-wait, sharing the settle") === true);
 }
 
 // ── 6) cancellation claims the armed timeout ───────────────────────────────────────────────────
@@ -398,7 +388,7 @@ const pendingEntry = async (runId: string, kind: string, ms = 15_000): Promise<J
     JSON.stringify({ status: settled?.status, result: settled?.result }));
 }
 
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 26;
 const ran = ok + fail;
 console.log(`mesh-monitor.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

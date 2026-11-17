@@ -43,6 +43,7 @@
  * clock that only moves forward at its own rate.
  */
 import { EffectError } from "@cotal-ai/lang";
+import { TimeoutError } from "@nats-io/transport-node";
 import { delay } from "./delay.js";
 
 /**
@@ -55,7 +56,7 @@ import { delay } from "./delay.js";
  * `Date.now()` left all 41 cells GREEN. One clock means a test steps THE HOST, and which member the
  * window reads becomes the implementation's own choice, which a cell can therefore grade.
  */
-export interface HostClock {
+interface HostClock {
   /**
    * Never steps, counts only forward at its own rate, origin arbitrary. Every window is measured
    * on this. Not `Date.now()`, and that is the whole correction above: a wall clock states what
@@ -68,7 +69,7 @@ export interface HostClock {
 }
 
 /** The real host. */
-export const systemClock: HostClock = {
+const systemClock: HostClock = {
   monotonic: () => performance.now(),
   wall: () => Date.now(),
 };
@@ -79,10 +80,10 @@ export const systemClock: HostClock = {
 
 /** How often the observer checks in. Short enough that a window of a few seconds carries enough
  *  ticks for a shortfall to mean something, long enough that the observer is not itself load. */
-export const LOOP_TICK_MS = 250;
+const LOOP_TICK_MS = 250;
 
 /** A point in the observer's history. Windows are differences between two of these. */
-export interface LoopLagMark {
+interface LoopLagMark {
   /** Monotonic. The window's length is a difference of these, never of wall readings. */
   readonly at: number;
   /** The WALL reading at the same instant, carried only so a step can be NOTICED. */
@@ -235,26 +236,20 @@ export const STARVED_SHARE_DIVISOR = 4;
  *  reports large lag while losing no ticks is a clock that moved, not a loop that stopped. */
 export const STARVED_TICK_KEPT_DIVISOR = 2;
 
-const nameOf = (e: unknown): string | undefined => {
-  const n = (e as { name?: unknown } | null | undefined)?.name;
-  return typeof n === "string" ? n : undefined;
-};
-
 /**
  * Is this failure the SHAPE a client-side deadline produces?
  *
- * Read off the error's CLASS, never its message. The NATS client's timeout carries the bare text
- * `timeout`, and so do several unrelated failures in this tree and in other people's, so matching the
- * word would classify a broker's refusal as starvation the moment somebody phrased one that way.
- *
- * Two accepting branches, because the client raises the deadline in two shapes: on its own for a
- * plain API call, and wrapped in a `RequestError` when the deadline ends a request. Each has a
- * refusing cell that differs from it only in the class involved.
+ * Read off the client's CLASS, never its name and never its message. The deadline this host's own
+ * client raises is a `TimeoutError` with no cause: a plain API call rejects one, and so does a
+ * request, because the client keeps the stack it captured for the deadline and does not wrap it.
+ * Both the class and `AbortSignal.timeout`'s `DOMException` set `name` to `TimeoutError`, and so
+ * does any other error somebody renamed. Matching that name classified all of them as a late
+ * pause-plane reply, so the wrapper retried them and, after the bound, failed the step as `L4026`.
+ * A renamed error and a DOM exception are not instances of the client's class. Neither is a
+ * `RequestError` built around a `TimeoutError`: the pinned client never attaches that cause.
  */
 export function isDeadlineShaped(error: unknown): boolean {
-  if (nameOf(error) === "TimeoutError") return true;
-  if (nameOf(error) === "RequestError" && nameOf((error as { cause?: unknown }).cause) === "TimeoutError") return true;
-  return false;
+  return error instanceof TimeoutError;
 }
 
 /** Was this process demonstrably not scheduled across the window? */
@@ -282,7 +277,7 @@ export function wasStarved(w: LoopLagWindow): boolean {
  *   - `transient`, when the loop WAS running (#1619). The deadline fired honestly and the reply
  *     was merely late, which is a property of one request and not of the pause behind it.
  */
-export type PauseCondition =
+type PauseCondition =
   | { readonly condition: "starved"; readonly window: LoopLagWindow }
   | { readonly condition: "transient"; readonly window: LoopLagWindow }
   | { readonly condition: "fault" };
@@ -318,7 +313,7 @@ export const STARVED_ATTEMPTS = 6;
  * and a starved loop cannot run a timer either, so waiting on one is itself a small measurement of
  * whether scheduling has returned.
  */
-export const STARVED_YIELD_MS = 250;
+const STARVED_YIELD_MS = 250;
 
 /**
  * How many CONSECUTIVE late replies a pause operation gets before the plane is declared unable to
@@ -341,11 +336,11 @@ export const POLL_ATTEMPTS = 6;
  * cadence adds to exactly the queue that is already behind. Each attempt additionally costs the
  * client's own deadline before it can fail again, so the bound is real wall-clock time either way.
  */
-export const POLL_BACKOFF_MS = 250;
-export const POLL_BACKOFF_MAX_MS = 2_000;
+const POLL_BACKOFF_MS = 250;
+const POLL_BACKOFF_MAX_MS = 2_000;
 
 /**
- * Perform a pause-plane operation, and do not let this host's own starvation, or one late reply
+ * Perform an idempotent plane operation, and do not let this host's own starvation, or one late reply
  * from the plane, be recorded as the effect's failure.
  *
  * THE OPERATION MUST BE IDEMPOTENT, which the pause plane's are by construction: `arm` mints
@@ -395,9 +390,8 @@ export async function servedDespiteStarvation<T>(
           throw new EffectError(
             "L4026",
             "pause-unanswered",
-            `${what} could not be served: the pause plane did not answer ${unanswered} consecutive reads before their client deadline, while this host's own event loop was running (${evidence}). `
-            + `The pause and its timer are intact on the plane and nothing about the program or the resource it waits on is at fault; `
-            + `the run can be resumed once the broker is answering.`,
+            `${what} could not be served: the plane did not answer ${unanswered} reads before their client deadline, while this host's own event loop was running (${evidence}). `
+            + `Check broker connectivity and capacity.`,
             { attempts: unanswered, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
           );
         }
@@ -413,9 +407,8 @@ export async function servedDespiteStarvation<T>(
         throw new EffectError(
           "L4025",
           "host-starved",
-          `${what} could not be served: this host did not schedule the run's process across ${starved} consecutive attempts (${evidence}). `
-          + `The pause and its timer are intact on the plane and nothing about the program or the resource it waits on is at fault; `
-          + `the run can be resumed once the host has capacity.`,
+          `${what} could not be served: this host did not schedule the run's process across ${starved} attempts (${evidence}). `
+          + `Check host capacity.`,
           { attempts: starved, lagMs: last.lagMs, elapsedMs: last.elapsedMs, ticksExpected: last.ticksExpected, ticksObserved: last.ticksObserved },
         );
       }

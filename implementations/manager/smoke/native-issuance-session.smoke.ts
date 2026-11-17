@@ -6,7 +6,7 @@ import * as auth from "../../auth/dist/index.js";
 // its callout. Added cells read the persisted row with a full-grant TEST-account reader and assert
 // the row's exp is the redeemed session grant's expiry (the inner JWT's bound expiry).
 if (process.argv[2] === "agent-bearer") {
-  await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href);
+  (await import(new URL("../../../bin/dist/cotal.js", import.meta.url).href)).startExecutionProgram();
 } else {
   await main();
 }
@@ -25,7 +25,7 @@ async function main() {
   const { nativeRemoteManager } = await import("./_native-remote-manager.js");
   const { nativeAccountConnections } = await import("./_native-account-connections.js");
   const { remoteManagerClient } = await import("../dist/index.js");
-  const { meshSessionTransport } = await import("../../cli/src/lib/attach-client.js");
+  const { meshSessionTransport } = await import("../../../packages/workspace/src/attach/attach-client.js");
   await import("../../runtime/dist/index.js");
   const { emitSentinel } = await import("@cotal-ai/smoke-kit");
   const { openAuthorityClient } = await import("../../auth/dist/authority-client.js");

@@ -17,10 +17,12 @@ export interface InlineDeliveryBatch {
   settle(delivered: boolean): void;
 }
 
-type Source = Pick<MeshAgent, "peekInbox" | "isInFlight" | "holdInFlight" | "releaseInFlight" | "drainInboxDeliveries" | "stopping">;
+type Source = Pick<MeshAgent, "peekInbox" | "inboxCount" | "isInFlight" | "holdInFlight" | "releaseInFlight" | "drainInboxDeliveries" | "stopping">;
 
 /** Select and format complete automatic messages without consuming a preview or truncating a body.
- * The adapter measures its final transport envelope, including any escaping and receipt metadata. */
+ * The adapter measures its final transport envelope, including any escaping and receipt metadata.
+ * A role request still held for its take is never carried inline (SPEC §8.1): it is counted as
+ * remaining, and `cotal_inbox` takes it when it shows it. */
 export function prepareInlineDelivery(agent: Source, options: {
   connectionId: string;
   fits(payload: InlineDeliveryPayload): boolean;
@@ -33,9 +35,10 @@ export function prepareInlineDelivery(agent: Source, options: {
   if (!Number.isInteger(maxItem) || maxItem < 1 || !Number.isInteger(maxItems) || maxItems < 1)
     throw new Error("inline delivery limits must be positive whole numbers");
   const pending = agent.peekInbox("automatic");
+  const queued = agent.inboxCount("automatic");
   const selected: InboxItem[] = [];
   const render = (items: InboxItem[]): InlineDeliveryPayload => {
-    const remaining = pending.length - items.length;
+    const remaining = queued - items.length;
     return {
       text: `Cotal: inline messages for connection_id ${options.connectionId}.\n` +
         formatInjection(items, { metadata: true }) +

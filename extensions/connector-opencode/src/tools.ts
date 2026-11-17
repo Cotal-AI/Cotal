@@ -5,7 +5,8 @@
  * across adapters: an OpenCode peer gets the same tools (incl. channels / join / leave / channel_info).
  *
  * The one OpenCode-specific tool is `cotal_inbox`: automatic traffic remains owned by the driver,
- * while the tool destructively pulls only quiet ambient (plus read-only focus recall).
+ * while the tool destructively pulls only quiet ambient (plus read-only focus recall). A peek clears
+ * nothing, so it also shows the automatic queue (#5688).
  *
  * The definitions are plain literals, NOT OpenCode's `tool()` helper: `tool()` is an identity
  * function for type inference only, so importing it would make `@opencode-ai/plugin` a RUNTIME
@@ -14,8 +15,11 @@
  * silently. A type-only import keeps the bundle self-contained.
  */
 import type { ToolDefinition } from "@opencode-ai/plugin";
-import { cotalToolSpecs, parseToolArgs, refuseAnyArgs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
+import { cotalToolSpecs, parseToolArgs, type MeshAgent, type AgentConfig } from "@cotal-ai/connector-core";
 import type { OpenCode2ToolEditor } from "./opencode2-types.js";
+
+const INBOX_DESCRIPTION =
+  "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic stays queued; in focus mode, normal channel recall is also shown read-only. With peek, also shows the queued automatic messages without clearing anything; they still arrive at the end of your turn.";
 
 /** Build the cotal_* tool map wired to one mesh agent, rendered from the shared specs. */
 export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<string, ToolDefinition> {
@@ -23,16 +27,18 @@ export function buildCotalTools(agent: MeshAgent, config: AgentConfig): Record<s
   for (const spec of cotalToolSpecs(config, "opencode")) {
     if (spec.name === "cotal_inbox") {
       tools.cotal_inbox = {
-        description:
-          "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic stays queued; in focus mode, normal channel recall is also shown read-only.",
-        args: {},
-        // Published with no arguments and `scope` supplied by us — but this host validates nothing,
-        // so ignoring the caller's object would silently swallow whatever it sent. Check it against
-        // the empty contract we published first, then substitute our own scope.
+        description: INBOX_DESCRIPTION,
+        args: spec.schema.shape as Record<string, never>,
+        // This host validates nothing, so check the caller's object against the published contract
+        // first, then pass `peek` on and supply our own scope.
         async execute(args: unknown) {
-          const refusal = refuseAnyArgs(spec.name, args);
-          if (refusal) return `⚠ ${refusal}`;
-          const r = await spec.run(agent, config, { scope: "pull-only" });
+          let parsed: { peek?: boolean };
+          try {
+            parsed = parseToolArgs(spec, args);
+          } catch (e) {
+            return `⚠ ${(e as Error).message}`;
+          }
+          const r = await spec.run(agent, config, { peek: parsed.peek, scope: "pull-only" });
           return r.isError ? `⚠ ${r.text}` : r.text;
         },
       };
@@ -76,13 +82,16 @@ export function buildCotalTools2(agent: MeshAgent, config: AgentConfig): Paramet
     if (spec.name === "cotal_inbox") {
       defs.push({
         name: "cotal_inbox",
-        description:
-          "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic stays queued; in focus mode, normal channel recall is also shown read-only.",
+        description: INBOX_DESCRIPTION,
         input: spec.schema,
         async execute(args: unknown) {
-          const refusal = refuseAnyArgs(spec.name, args);
-          if (refusal) return { content: `⚠ ${refusal}` };
-          const r = await spec.run(agent, config, { scope: "pull-only" });
+          let parsed: { peek?: boolean };
+          try {
+            parsed = parseToolArgs(spec, args);
+          } catch (e) {
+            return { content: `⚠ ${(e as Error).message}` };
+          }
+          const r = await spec.run(agent, config, { peek: parsed.peek, scope: "pull-only" });
           return { content: r.isError ? `⚠ ${r.text}` : r.text };
         },
       });

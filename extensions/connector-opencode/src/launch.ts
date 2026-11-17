@@ -24,8 +24,12 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+import { acquireLock } from "@cotal-ai/core/advisory-lock";
+import { openPrivateAppend } from "@cotal-ai/core/secret-fs";
+import { OPENCODE_BOOT_TIMEOUT_MS } from "./startup.js";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The opencode binary to spawn. `COTAL_OPENCODE_BIN` overrides. On Windows, `opencode` on PATH is
@@ -127,12 +131,12 @@ function isLiveOpencodeServe(pid: number): boolean {
 
 /** The foreground TUI's argv, built from the server it attaches to. Its env carries the server's
  *  basic-auth credentials, so the argv never needs the secret. */
-export type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
+type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
 
 /** Extra env for the server, built from inputs the caller writes into the agent's home. It runs only
  *  once no seat of this name is running, so a refused launch never rewrites files a running seat's
  *  server still reads. */
-export type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
+type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
 
 export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<void> {
   const port = process.env.COTAL_OPENCODE_PORT?.trim() || String(await freePort());
@@ -147,6 +151,18 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   if (!dataRoot) throw new Error("COTAL_OPENCODE_HOME is not set — the connector must pin the agent's data root");
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
+
+  // One launcher of a name at a time. The check below reads the serve records, and a serve records
+  // itself only after the version probe and the spawn, so two overlapping launches both passed it and
+  // both started a serve on this database (#3040). The claim is core's advisory lock, held until this
+  // process exits: a launcher that died leaves a claim the next launch reclaims, and any serve it
+  // left behind is still found by its record below.
+  const claim = acquireLock(join(agentHome, "launch.lock"), {
+    waitMs: 0,
+    label: `agent "${name}"'s launch`,
+    onTimeout: (owner) => new Error(`agent "${name}" is already running (launcher pid ${owner.pid}) — kill it first`),
+  });
+  process.on("exit", () => claim.release());
 
   // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. Each
   // launch records its serve at a path of its own, and `serve.pid` is the record of a serve an
@@ -191,7 +207,16 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the next launch cannot see, so the record has to exist before the serve does: the process writes
   // its own pid and only then becomes the serve, which keeps that pid. Windows has no exec, so there
   // the launcher records it after the spawn.
-  const pidFile = join(agentHome, `serve.${randomBytes(16).toString("hex")}.pid`);
+  const launchToken = randomBytes(16).toString("hex");
+  const pidFile = join(agentHome, `serve.${launchToken}.pid`);
+  const bootLog = join(agentHome, `boot.${launchToken}.log`);
+  const bootFd = openPrivateAppend(bootLog);
+  process.on("exit", () => closeSync(bootFd));
+  const bootOutput = (d: Buffer | string): void => {
+    writeFileSync(bootFd, d);
+    process.stderr.write(d);
+  };
+  bootOutput(`OpenCode boot log: ${bootLog}\n`);
   const serveArgv: [string, ...string[]] = [BIN, "serve", "--hostname", "127.0.0.1", "--port", port];
   const [serveCommand, ...serveArgs]: [string, ...string[]] = process.platform === "win32"
     ? serveArgv
@@ -210,11 +235,13 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));
-  // A graceful stop signals only this process and can arrive anywhere in the minute-long boot below,
+  // A graceful stop can arrive anywhere in the two-minute boot below,
   // so its teardown is installed with the serve. The exit handlers below end this process.
   let tui: ChildProcess | undefined;
+  let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const)
     process.on(sig, () => {
+      stopping = true;
       void terminate(serve);
       if (tui) void terminate(tui);
     });
@@ -224,23 +251,43 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   let sessionId: string | undefined;
   let attached = false;
   let onSession: ((id: string) => void) | undefined;
-  const scan = (d: Buffer): void => {
-    if (!attached) process.stderr.write(d);
-    if (!sessionId) {
-      const m = d.toString().match(/\[cotal-session\] (\S+)/);
-      if (m) {
-        sessionId = m[1];
-        onSession?.(sessionId);
+  // The plugin's last line before the handshake. A host shows only the launcher's final row as the
+  // cause of a failed launch (the Manager's `last output`), so the exit line below repeats it.
+  let connectorLine: string | undefined;
+  const scanner = (): ((d: Buffer) => void) => {
+    const decoder = new StringDecoder("utf8");
+    let partial = "";
+    return (d) => {
+      if (!attached) bootOutput(d);
+      if (sessionId) return;
+      const lines = (partial + decoder.write(d)).split("\n");
+      partial = lines.pop() ?? "";
+      for (const line of lines) {
+        const session = /\[cotal-session\] (\S+)/.exec(line);
+        if (session) {
+          sessionId = session[1];
+          connectorLine = undefined;
+          onSession?.(sessionId);
+          return;
+        }
+        const message = /^\[cotal-connector\] (.+)$/.exec(line.trimEnd());
+        if (message) connectorLine = message[1];
       }
-    }
+    };
   };
-  serve.stdout?.on("data", scan);
-  serve.stderr?.on("data", scan);
+  serve.stdout?.on("data", scanner());
+  serve.stderr?.on("data", scanner());
   // Set once the boot has failed, so the serve's own clean exit on our SIGTERM cannot turn that
   // failure into exit 0: this handler runs before the abort's own `process.exit(1)` (#3878).
   let bootFailed = false;
-  serve.on("exit", (code, signal) => {
-    if (!attached) process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0))); // died before the TUI came up
+  serve.on("close", (code, signal) => {
+    if (!attached) {
+      if (!bootFailed && !stopping) bootOutput(
+        `[cotal-connector] OpenCode exited before its Cotal session was ready (code ${code ?? signal}). ` +
+          (connectorLine ? `Last connector message: ${connectorLine}\n` : "Check the retained boot log for setup errors, then launch again.\n"),
+      );
+      process.exit(bootFailed ? 1 : (code ?? (signal ? 1 : 0)));
+    }
   });
 
   // Poke the server until the plugin's session handshake lands (lazy plugin load → mesh join +
@@ -251,8 +298,9 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the loop on it forever (undici queues later requests behind it on the pooled connection).
   const auth = `Basic ${Buffer.from(`${USERNAME}:${SECRET}`).toString("base64")}`;
   const pokePath = line === 2 ? "/api/config" : "/session";
+  const bootDeadline = Date.now() + OPENCODE_BOOT_TIMEOUT_MS;
   void (async () => {
-    for (let i = 0; i < 300 && !sessionId; i++) {
+    while (Date.now() < bootDeadline && !sessionId && !bootFailed && !stopping) {
       try {
         await fetch(`${url}${pokePath}`, { headers: { authorization: auth }, signal: AbortSignal.timeout(1500) });
       } catch {
@@ -265,16 +313,16 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // Wait for the agent's session, then attach a foreground TUI to it.
   const id = await new Promise<string | undefined>((resolve) => {
     if (sessionId) return resolve(sessionId);
-    onSession = resolve;
-    setTimeout(() => resolve(sessionId), 60_000);
+    const timer = setTimeout(() => resolve(sessionId), Math.max(0, bootDeadline - Date.now()));
+    onSession = (id) => { clearTimeout(timer); resolve(id); };
   });
   if (!id) {
-    process.stderr.write(
-      `[cotal-connector] serve: agent session never came up (~60s) — aborting. Check the boot log above for plugin/mesh errors (OPENCODE_DB=${dbPath})\n`,
-    );
     bootFailed = true;
+    bootOutput(
+      `[cotal-connector] OpenCode session not ready after ${OPENCODE_BOOT_TIMEOUT_MS / 1000}s: first-run dependencies or plugin/mesh setup did not finish. Check the retained boot log, then launch again.\n`,
+    );
     await terminate(serve);
-    process.exit(1);
+    return; // close drains both output pipes and exits with the recorded boot failure
   }
 
   // Headless mode (COTAL_SERVE_HEADLESS=1): no foreground TUI. Hand the running server back to a

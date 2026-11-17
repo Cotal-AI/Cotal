@@ -1,0 +1,26 @@
+{
+  // Typecheck only: scripts/build.mjs compiles src/ and vendor/ with Babel, because Solid on
+  // OpenTUI needs babel-preset-solid's universal output, which tsc cannot produce.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "lib": ["ES2024", "DOM"],
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    // Mirrors ALIASES in scripts/upstream.mjs.
+    "paths": {
+      "#string-width": ["./vendor/opencode/packages/tui/src/util/string-width.node.ts"],
+      "@opencode/schema/vcs": ["./vendor/opencode/packages/schema/src/vcs.ts"],
+      "@opencode/theme/tui": ["./vendor/opencode/packages/theme/src/tui/index.ts"],
+      "@opencode/theme/tui/v1": ["./vendor/opencode/packages/theme/src/tui/v1.ts"],
+      "@opencode/util/duration": ["./vendor/opencode/packages/util/src/duration.ts"],
+      "@opencode/util/flock": ["./vendor/opencode/packages/util/src/flock.ts"]
+    }
+  },
+  "include": ["src", "types"]
+}

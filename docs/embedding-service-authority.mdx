@@ -31,6 +31,8 @@ name the submitted closure set. Inline artifacts include each closure manifest a
 documents, within the envelope byte limit; native per-closure walk limits still apply. The client does not transmit
 the local host capability or read callout signing material. Local setup needs the client sentinel
 projection written by `prepareServer`; a missing projection refuses rather than reading server secrets.
+`serviceEndpointInfo` accepts an optional `signal` to cancel its metadata request.
+`serviceEndpointAuthority` carries cancellation through sign-in proof acquisition and the authority request.
 
 ### Host lifecycle requirements
 
@@ -78,6 +80,13 @@ callout request, record natkey evidence or release an encrypted response; the ho
 Native service receipts bind the same epcred connection and registration witness to the broker user
 key. Recording rechecks the evidence, receipt, native authority and fixed expiry. Expired service
 receipts are retained, not pruned on elapsed JWT time. The opt-in authority plane now records this evidence for service connections. Qualified terminal retirement remains unsupported.
+
+Auth startup checks at most one historical native receipt before opening HTTP listeners. Cleanup
+continues in batches of at most 64 rows, including deletion markers, without waiting for the
+next full-walk interval. After a walk ends, `nativeIssuancePruneMs` controls the delay before
+starting again (60 seconds by default). Invalid evidence refuses startup if found in its check,
+or fences the running service when a background batch reaches it. Transient store failures retry
+with backoff. Closing cancels the walk between store operations and waits for any in-flight IO.
 
 ### Service name bindings
 

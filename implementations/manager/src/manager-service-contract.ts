@@ -43,6 +43,15 @@ import {
   serviceContractTable,
   singleDocumentClosure,
   TURN_INPUT_SCHEMA,
+  AGENT_ROW_SCHEMA,
+  INSPECT_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  PERSONA_ENDPOINTS_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
+  TURN_YIELD_OUTPUT_SCHEMA,
+  CANCEL_INPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   VOID_SCHEMA,
   type ClusterDocument,
@@ -328,100 +337,6 @@ export interface ManagerConnectorStatus {
   reason?: string;
 }
 
-/** One managed-agent row (`ps`/`inspect`), the ctl `list()` shape plus `lifecycleUid` — the
- *  coordinate an ep caller needs to build a targeted (`despawn`/`attach`) request. The two
- *  auth-health fields appear only on a user-mode agent whose bearer refresh is unhealthy; `role`
- *  only when the launch profile declared one (a role-less row serializes WITHOUT the key —
- *  `JSON.stringify` drops `undefined` — so pinning it required fails the responder's own reply). */
-const AGENT_ROW_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["name", "id", "agent", "space", "mode", "status", "uptimeMs", "mesh", "lifecycleUid"],
-  properties: {
-    name: { type: "string" },
-    id: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
-    space: { type: "string" },
-    mode: { type: "string" },
-    status: { type: "string" },
-    uptimeMs: { type: "integer", minimum: 0 },
-    mesh: { type: "string" },
-    // A bounded launch wait elapsed without the exact incarnation joining. Process status stays
-    // separate, and a later observed join clears this optional diagnostic.
-    joinHealth: {
-      type: "object", additionalProperties: false, required: ["state", "reason"],
-      properties: {
-        state: { type: "string", const: "degraded" },
-        reason: { type: "string" },
-      },
-    },
-    // The roster's harness-reported condition beside `mesh` (SPEC §6), its four fields projected. Optional:
-    // absent when the connector reported none, and on rows from managers that predate it.
-    condition: {
-      type: "object",
-      additionalProperties: false,
-      required: ["code"],
-      properties: {
-        code: { type: "string" },
-        source: { type: "string" },
-        message: { type: "string" },
-        since: { type: "number" },
-      },
-    },
-    // The roster's `activeAt` (SPEC §6): epoch ms of the seat's last harness-reported work progress.
-    // Optional: absent when the connector reports none, and on rows from managers that predate it.
-    activeAt: { type: "number" },
-    // The observing manager's presence-view state at the time of the read: `current` (the mesh
-    // column is a verdict), `stale` (its watch has been silent past TTL; `mesh` is last-known),
-    // or `unpopulated` (its watch has not replayed the bucket yet; `absent` means nothing).
-    // Optional so a v0.47 manager's rows still validate; a reader treats absence as `current`.
-    meshView: { type: "string", enum: ["current", "stale", "unpopulated"] },
-    // Optional proof that the name-matched roster record also matches this managed principal
-    // and lifecycle UID. False is not proof the agent is absent; older managers omit the field.
-    presenceIdentityVerified: { type: "boolean" },
-    // Snapshot time of a current, identity-verified manager presence read, not the seat's
-    // unvalidated heartbeat timestamp. Absent when the view is stale or identity differs.
-    presenceObservedAt: { type: "integer", minimum: 0 },
-    // Epoch ms of the seat's last presence heartbeat, present only when `mesh` is `offline` and
-    // `meshView` is `current`: when the offline verdict began (#1208). Optional so an older
-    // manager's rows still validate.
-    offlineSince: { type: "integer", minimum: 0 },
-    lifecycleUid: { type: "string" },
-    authHealth: { type: "string" },
-    authReason: { type: "string" },
-    // #651 enrichment, all OPTIONAL: per-seat facts the manager already records, surfaced by
-    // `cotal ps --wide`/`--json`. Optional because absence is real state: a launch may pin no
-    // model, and a runtime that does not own a real process (tmux/cmux/orca/herdr) has no pid.
-    // The row serializes a fact only when this backend recorded one - absent never means zero,
-    // empty, or fabricated. `spawner` is the authenticated requester id (`id`-shaped: an nkey or
-    // an owner.actor principal key); the owning manager's instance/host ride per-row so a
-    // multi-manager scatter view can attribute seats (#579 records the spawner's RAIL when it is
-    // itself a managed seat - not carried here, the manager does not hold it).
-    model: { type: "string" },
-    variant: { type: "string" },
-    // The connector-reported provider from presence (#785): absent when the connector reported none.
-    provider: { type: "string" },
-    cwd: { type: "string" },
-    pid: { type: "integer", minimum: 1 },
-    spawner: { type: "string" },
-    instanceId: { type: "string" },
-    host: { type: "string" },
-    // #1500: present only on a `--resume` seat. `source` is the session it forked; `title` and
-    // `transcriptSha256` appear once the seat has recorded its fork, and `title` only when the source
-    // has one. A carried resume (#1499) also names the source `host` and when its bytes were staged.
-    resume: {
-      type: "object",
-      additionalProperties: false,
-      required: ["source"],
-      properties: {
-        source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" },
-        host: { type: "string" }, transferredAt: { type: "string" },
-      },
-    },
-  },
-} as const;
-
 const PS_OUTPUT_SCHEMA = { type: "array", items: AGENT_ROW_SCHEMA } as const;
 
 // One durable static-slot observation row (the `StaticSlotObservationDetail` fields minus
@@ -463,116 +378,42 @@ const SLOTS_INPUT_SCHEMA = {
   ],
 } as const;
 
-const INSPECT_INPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: { name: { type: "string", minLength: 1 } },
-} as const;
-
-/** An optional `spawn` field that is present must say something: the persona fills an omitted
- *  field, so a blank one read as omitted would launch on a value the caller did not ask for. A
- *  fresh object per field, because the canonical serializer refuses a shared reference as circular. */
+/** Optional persona and spawn strings must be nonblank when present. Omission can inherit a value;
+ *  a blank string must not silently select that value. A fresh object per field is needed because
+ *  the canonical serializer refuses a shared reference as circular. */
 const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
-
-/** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the
- *  fidelity oracle) — same fields, same types, nothing extra. Deep semantics (connector-specific
- *  launchOptions keys) stay in the SHARED handler/connector validation. */
-const SPAWN_INPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 },
-    agent: nonBlank(),
-    defaultAgent: nonBlank(),
-    role: nonBlank(),
-    config: nonBlank(),
-    identity: nonBlank(),
-    model: nonBlank(),
-    variant: nonBlank(),
-    launchOptions: { type: "object" },
-    resume: nonBlank(),
-    // #1499: the one-time claim `transcript-receive` issued for carried bytes of `resume`, and the
-    // agent the CLI found them with.
-    resumeClaim: nonBlank(),
-    resumeAgent: nonBlank(),
-    events: { type: "boolean" },
-    cwd: nonBlank(),
-    prompt: nonBlank(),
-    subscribe: { type: "array", items: { type: "string" } },
-    allowSubscribe: { type: "array", items: { type: "string" } },
-    allowPublish: { type: "array", items: { type: "string" } },
-    // Channels the new seat joins on top of its persona's read set (the peer door's `join`).
-    join: { type: "array", items: { type: "string" } },
-    // The caller's own read/post ACL. Used only when the persona file names no channel field, so
-    // a helper spawned from a persona that says nothing about channels is scoped to its spawner.
-    callerAcl: {
-      type: "object",
-      additionalProperties: false,
-      required: ["allowSubscribe", "allowPublish"],
-      properties: {
-        allowSubscribe: { type: "array", items: { type: "string" } },
-        allowPublish: { type: "array", items: { type: "string" } },
-      },
-    },
-    shareTools: { type: "array", items: { type: "string" } },
-    runtime: nonBlank(),
-    supervise: {
-      type: "object",
-      additionalProperties: false,
-      required: ["restarts", "windowMs"],
-      properties: {
-        restarts: { type: "integer", minimum: 1 },
-        windowMs: { type: "integer", minimum: 1 },
-      },
-    },
-    // The seat takes its prompt as one relayed turn and is stopped when that turn ends. Omitted,
-    // `deadlineMs` is the manager's default; -1 means no deadline.
-    once: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        deadlineMs: { anyOf: [{ const: -1 }, { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }] },
-      },
-    },
-  },
-} as const;
 
 /** The `start` op's argument vocabulary as the served contract declares it: every property name
  *  `SPAWN_INPUT_SCHEMA` accepts. Exported so a parity check reads the vocabulary from here rather
  *  than carrying a second, driftable copy of it. */
 export const SPAWN_INPUT_KEYS: readonly string[] = Object.keys(SPAWN_INPUT_SCHEMA.properties);
 
-/** `spawn` success output: the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
- *  (name + the owner/actor/uid addressing triple) plus the goal coordinates
- *  (goalId = the request id), the accepted readiness budget a synchronous follower must outlive,
- *  and the executor coordinate (the manager incarnation its terminal fences on). No secret material.
- *  The spawned identity + outcome ride the goal's progress + terminal, not this reply. */
-const SPAWN_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  // Additive for mixed-version readers: current managers always emit readinessDeadlineMs, while a
-  // new follower accepts an older acceptance without it and falls back to its caller deadline.
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
+/** Bounded directory navigation for an authorized host-local launch. */
+const LIST_DIR_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false,
   properties: {
-    name: { type: "string" },
-    owner: { type: "string" },
-    actor: { type: "string" },
-    uid: { type: "string" },
-    goalId: { type: "string" },
-    fingerprint: { type: "string" },
-    readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object",
-      additionalProperties: false,
-      required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
+    path: { type: "string", minLength: 1 },
+    includeHidden: { type: "boolean" },
+    limit: { type: "integer", minimum: 1, maximum: 1000 },
+  },
+} as const;
+const LIST_DIR_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["path", "parent", "directories", "truncated", "roots"],
+  properties: {
+    path: { type: "string" }, parent: { type: ["string", "null"] },
+    directories: {
+      type: "array", maxItems: 1000,
+      items: {
+        type: "object", additionalProperties: false, required: ["name", "symlink"],
+        properties: { name: { type: "string" }, symlink: { type: "boolean" } },
+      },
     },
+    truncated: { type: "boolean" },
+    roots: { type: "array", maxItems: 26, items: { type: "string" } },
   },
 } as const;
 
-/** Resolve a host-local spawn directory on the manager that will launch the seat. The runtime
- * already consumes this exact closed shape; keeping it in the manager command table makes the
- * registered contract and the served validator one source. */
+/** Resolve a host-local spawn directory on the manager that will launch the seat. */
 const RESOLVE_CWD_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["cwd"],
   properties: { cwd: { type: "string", minLength: 1 } },
@@ -591,16 +432,6 @@ const RESOLVE_AGENT_INPUT_SCHEMA = {
 const RESOLVE_AGENT_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["agent"],
   properties: { agent: { type: "string" } },
-} as const;
-
-const GRACEFUL_INPUT_SCHEMA = {
-  type: "object", additionalProperties: false,
-  properties: { graceful: { type: "boolean" } },
-} as const;
-
-const STOP_OUTPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
 
 // Attach returns the holder-bound §13.6 session GRANT, never a 127.0.0.1 ws:// URL. The
@@ -709,15 +540,6 @@ const TURN_YIELD_INPUT_SCHEMA = {
     note: { type: "string", maxLength: 4096 },
   },
 } as const;
-/** `turn-yield` output: the goal's terminal state as committed — first-terminal-wins, so a yield
- *  that raced a deadline or a despawn reports the state that actually landed, never a lie. */
-const TURN_YIELD_OUTPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["goalId", "state"],
-  properties: {
-    goalId: { type: "string" },
-    state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] },
-  },
-} as const;
 /** `turn-unconfirmed`: a `once` seat reports that the handoff of its task to its harness was not
  *  confirmed, so the task may or may not have reached the session. Nothing hands it over again: the
  *  manager fails the task `delivery-unconfirmed` and stops the seat. Only for the once task pending
@@ -725,17 +547,6 @@ const TURN_YIELD_OUTPUT_SCHEMA = {
 const TURN_UNCONFIRMED_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["goalId"],
   properties: { goalId: { type: "string", minLength: 1 } },
-} as const;
-/** `cancel` (SPEC 13.6 item 4): the reserved goal cancel, served for a turn this manager relays.
- *  Untargeted, because it names a goal rather than a seat: the goal ref derives from the
- *  authenticated caller, so a caller withdraws only a relay it submitted. It answers with the
- *  terminal the goal reached, which is the yield's own output shape. */
-const CANCEL_INPUT_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["goalId"],
-  properties: {
-    goalId: { type: "string", minLength: 1 },
-    mode: { enum: ["graceful", "terminate"] },
-  },
 } as const;
 
 const MODELS_INPUT_SCHEMA = {
@@ -774,12 +585,14 @@ const PERSONA_INPUT_SCHEMA = {
   properties: {
     name: { type: "string", minLength: 1 },
     persona: { type: "string", minLength: 1 },
-    model: { type: "string" },
-    role: { type: "string" },
-    agent: { type: "string" },
+    model: nonBlank(),
+    role: nonBlank(),
+    agent: nonBlank(),
     subscribe: CHANNEL_LIST,
     allowSubscribe: CHANNEL_LIST,
     allowPublish: CHANNEL_LIST,
+    capabilities: { type: "array", items: { type: "string" } },
+    endpoints: PERSONA_ENDPOINTS_SCHEMA,
   },
 } as const;
 const PERSONA_OUTPUT_SCHEMA = {
@@ -1159,6 +972,7 @@ const RUN_STATUS_OUTPUT_SCHEMA = {
           winner: { type: "string" },
           lostRace: { type: "string" },
           asks: { type: "string" },
+          schema: {},
           addressee: { type: "string" },
           deadlineAt: { type: "number" },
           onExpiry: { type: "string" },
@@ -1236,6 +1050,7 @@ const ROWS: CommandRow[] = [
   { name: "inspect", capability: "manager.read", input: INSPECT_INPUT_SCHEMA, output: AGENT_ROW_SCHEMA, targeted: false, handler: "inspect" },
   { name: "slots", capability: "manager.read", input: SLOTS_INPUT_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
+  { name: "list-dir", capability: "manager.spawn", input: LIST_DIR_INPUT_SCHEMA, output: LIST_DIR_OUTPUT_SCHEMA, targeted: false, handler: "listDir" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
@@ -1457,9 +1272,30 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  44 = `once` on `spawn`: the spawn input grows `once` (`deadlineMs`), a `turn-pending` row gains
  *  `once` and its `deadlineAt` becomes optional (a once task with no deadline never expires), the
  *  `turn-pending` reply gains `stop` for a once seat the manager does not hold whose task ended, and
- *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task. */
+ *  the new `turn-unconfirmed` command lets a once seat report an unconfirmed handoff of its task.
+ *
+ *  45 = `spawn` takes an inline `persona` record and a run's `runId`, and `define-persona` takes
+ *  `capabilities`. Both input schemas are closed, so a revision-44 contract rejects either.
+ *
+ *  46 = `define-persona` refuses empty or whitespace-only model, role and agent arguments.
+ *  The changed input schema advances the described surface without adding a command.
+ *
+ *  47 = the inline `persona` on `spawn` and the `define-persona` input take `endpoints`, the endpoint
+ *  commands a persona hands on. Both input schemas are closed, so a revision-46 contract rejects it.
+ *
+ *  48 = `list-dir` lists bounded child directory names on the selected Manager's host.
+ *
+ *  49 = `spawn` takes `eventPayloads` to withhold tool arguments and results. The input schema
+ *  is closed, so a revision-48 contract rejects this field.
+ *
+ *  50 = every `status.connectors` row required `permissionRequests`, for the harness permission
+ *  requests that revision 51 withdraws.
+ *
+ *  51 = `status.connectors` rows no longer carry `permissionRequests`. The status output schema is
+ *  closed, so a revision-50 contract rejects a row without the field and this one rejects a row
+ *  with it. The number moves forward because revision 50 was published. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 44, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 51, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1510,13 +1346,14 @@ export function managerBrowserContractSource(): BrowserContractSource {
  *  manager can run its shared admission chokepoint and derive the caller principal; each returns
  *  the command's output value (the compiled output contract validates it at the serve boundary).
  *  Kept as a narrow interface so the contract module stays broker-free. */
-export interface ManagerServiceHandlers {
+interface ManagerServiceHandlers {
   vitals(ctx: EpServeContext): ManagerVitals | Promise<ManagerVitals>;
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
   inspect(ctx: EpServeContext): unknown | Promise<unknown>;
   slots(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
+  listDir(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveAgent(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;

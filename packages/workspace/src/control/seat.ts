@@ -3,7 +3,8 @@ import { isConnectRefusal, type ConnectFlags } from "../connect.js";
 import { resolveControlTarget } from "../control-target.js";
 import { DEFAULT_MANAGER_NAME } from "../manager-name.js";
 import { CommandFailure, isCommandFailure } from "../output.js";
-import { askManager, readFailure, scatterManager, type ControlClient, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { askManager, scatterManager, readFailure, type ControlClient, type ManagerPin, type ManagerReply, type ScatterInstanceReply } from "./manager.js";
+import { presenceSeat } from "./seat-presence.js";
 
 /** The exchange's refusal of an unpinned manager-caller selection while several of the caller's own
  *  managers are live: their count, the owner and the instance ids. */
@@ -27,13 +28,16 @@ export interface ManagerCandidate {
 }
 
 /** How a manager is shown: the name it was started with, or `<host>/<runtime>` for one left at the
- *  default name, with the runtime read from its `supervisor (<runtime>)` activity. A manager whose
- *  presence names no host, as one started by a cotal before 0.100.0, is shown by its runtime. */
+ *  default name, with the runtime read from its `supervisor (<runtime>)` activity. A missing or
+ *  whitespace-only name is treated as the default name. A manager whose presence names no host, as
+ *  one started by a cotal before 0.100.0, is shown by its runtime. With no host or runtime, the
+ *  label is the manager's id. */
 export function managerLabel(p: Presence): string {
-  if (p.card.name !== DEFAULT_MANAGER_NAME) return p.card.name;
+  const named = p.card.name.trim() ? p.card.name : undefined;
+  if (named !== undefined && named !== DEFAULT_MANAGER_NAME) return named;
   const host = presenceHost(p);
   const runtime = presenceRuntime(p);
-  return host !== null && runtime ? `${host}/${runtime}` : host ?? runtime ?? p.card.name;
+  return host !== null && runtime ? `${host}/${runtime}` : host ?? runtime ?? named ?? p.card.id;
 }
 
 const presenceHost = (p: Presence): string | null => typeof p.card.meta?.host === "string" && p.card.meta.host ? p.card.meta.host : null;
@@ -85,25 +89,17 @@ export async function severalLive(failure: CommandFailure, readRoster: () => Pro
  * HOSTING the seat, and the class queue does not know which one that is — so without this the verb
  * is answered by whichever instance wins the race and fails on a seat that plainly exists.
  *
- * This is a POSITIVE lookup, not a retry after a miss, and that is forced by measurement: a manager
- * asked about a seat it does not host answers `not-found: no agent "<n>"` — the SAME code and the
- * same message it gives for a name that exists nowhere. "Hosted elsewhere" and "does not exist" are
- * indistinguishable from a single manager's answer, so a caller that retried on a miss would scatter
- * for a typo and, worse, could only ever report the ambiguous message. Asking every instance is the
- * only construction that can tell the two apart — which is also what lets the error finally say
- * which case it is.
- *
- * Costs a second one-shot instrument. The scatter's freeze read belongs to the PRIVILEGED tier;
- * `stop`/`attach` mint ADMIN, which is denied that read deliberately ("the admin tier never
- * scatters"). Rather than widen admin for convenience, the lookup runs as its own privileged
- * instrument and the admin instrument is then minted pinned to the answer.
+ * Static and open callers read the seat's live presence routing hint before making a manager
+ * request. When no live peer matches, ask the managers for their live seats, including processes
+ * that never joined the mesh. No class-queue answer or durable slot replaces a live owner lookup.
+ * The selected instance still requires the caller's own grant and checks its live seat mapping.
  *
  * On a user-auth mesh there is no scatter: the exchange refuses an unpinned selection while several
  * of your managers are live, and names them, so each is read as `ps` reads them. `managers` is that
  * set, as presence shows it.
  */
 export type SeatLocation =
-  | { kind: "pin"; instanceId: string }
+  | { kind: "pin"; instanceId: string; expectedSeat?: ManagerPin["expectedSeat"] }
   | { kind: "unpinned" } // one instance, or a mode that cannot scatter — no ambiguity to resolve
   /** The registry lists no live manager, so no instance can host the seat or be asked for it. */
   | { kind: "no-manager"; space: string; native: { code?: string; detail: string } }
@@ -151,11 +147,21 @@ export async function locateSeat(
   }
   if (probe.auth.managerInstanceId !== undefined) return { kind: "pin", instanceId: probe.auth.managerInstanceId };
   if (probe.auth.bearer) return { kind: "unpinned" };
-  const scatter = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
-  if (!scatter.ok && scatter.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: scatter.code, detail: scatter.error } };
-  if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
-  const loc = locateSeatIn(scatter.instances, name);
-  return loc.kind === "several" || loc.kind === "absent" || loc.kind === "unknown" ? { ...loc, space: probe.space } : loc;
+  const roster = await client.roster({ space: probe.space, server: probe.server });
+  try { return { kind: "pin", ...presenceSeat(roster, name) }; }
+  catch (error) {
+    if (!isCommandFailure(error) || error.code !== "TARGET_NOT_FOUND") throw error;
+  }
+  const census = await scatterManager(client, probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
+  if (!census.ok && census.noLiveManager) return { kind: "no-manager", space: probe.space, native: { code: census.code, detail: census.error } };
+  if (!census.ok) throw readFailure(census, { space: probe.space, scope: "all-managers" });
+  const loc = locateSeatIn(census.instances, name);
+  if (loc.kind === "pin") {
+    const rows = census.instances.find(i => i.instanceId === loc.instanceId)!.data as { name: string; id: string; lifecycleUid: string }[];
+    const row = rows.find(r => r.name === name)!;
+    return { ...loc, expectedSeat: { name: row.name, id: row.id, lifecycleUid: row.lifecycleUid } };
+  }
+  return loc.kind === "unpinned" ? loc : { ...loc, space: probe.space };
 }
 
 /**
@@ -174,7 +180,6 @@ export async function locateSeat(
 export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: string): SeatLocation {
   const reachable = instances.filter((i) => i.reachable);
   const silent = instances.filter((i) => !i.reachable).map((i) => i.instanceId);
-  if (reachable.length <= 1 && !silent.length) return { kind: "unpinned" };
   const answered = reachable.filter((i) => i.error === undefined);
   const refused = reachable.filter((i) => i.error !== undefined).map((i) => ({ instanceId: i.instanceId, error: i.error as string }));
   const hosts = answered.filter((i) => ((i.data as { name?: unknown }[] | undefined) ?? []).some((r) => r.name === name));
@@ -189,7 +194,8 @@ export function locateSeatIn(instances: readonly ScatterInstanceReply[], name: s
  *  hold a proved `absent`, so this stays the narrow shape their call sites guarantee. */
 export function seatNotFoundMessage(loc: { checked: number }, name: string, verb?: string): string {
   const remedy = verb ? ` To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).` : "";
-  return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${remedy}`;
+  return loc.checked === 0 ? `no managed agent "${name}" in live presence for this space.${remedy}`
+    : `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${remedy}`;
 }
 
 /**
@@ -221,7 +227,8 @@ export function seatMissRefusal(
   if (loc.kind === "several")
     return `"${name}" is held on each of ${loc.instances.length} manager instances (${loc.instances.join(", ")}), so this command does not pick one. ${address}`;
   if (loc.kind === "absent")
-    return `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space (${loc.instances.join(", ")}).`;
+    return loc.checked === 0 ? seatNotFoundMessage(loc, name)
+      : `no managed agent "${name}" on any of the ${loc.checked} reachable manager instance(s) in this space (${loc.instances.join(", ")}).`;
   const silent = loc.silent.length
     ? ` ${loc.silent.length} registered manager instance(s) gave no answer within the deadline (${loc.silent.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it.`
     : "";
@@ -231,17 +238,23 @@ export function seatMissRefusal(
   return `could not establish where "${name}" is: ${loc.answered} manager instance(s) answered and none hosts it, but ${loc.silent.length + loc.refused.length} did not answer for themselves, so this is NOT a report that it is gone — it may be running on one of those.${silent}${refused} ${address}`;
 }
 
+/** The scope a user-mode manager-caller view needs on the actor grant for each manager read. */
+const MANAGER_READ_SCOPE = {
+  ps: "the `spawn` or `admin` scope on your actor grant",
+  slots: "the `admin` scope on your actor grant; `spawn` alone does not carry it",
+} as const;
+
 /** A manager read that failed, as the classified failure. For a user-mode manager view that the
  *  broker refused before any responder saw the call, the broker does not say which row was missing,
  *  so this names the documented requirement for these reads instead of asserting a cause, and keeps
  *  the native refusal as it was. A refusal the manager answered, such as a retiring caller's, already
  *  states its own reason. */
-export function managerReadFailure(reply: ManagerReply, target: Record<string, unknown>, command: string, userAuth: boolean): CommandFailure {
+export function managerReadFailure(reply: ManagerReply, target: Record<string, unknown>, command: keyof typeof MANAGER_READ_SCOPE, userAuth: boolean): CommandFailure {
   const failure = readFailure(reply, target);
   if (!userAuth || failure.code !== "PERMISSION_DENIED" || reply.nativeOutcome !== "not-executed" || reply.answered) return failure;
   return new CommandFailure(failure.outcome, failure.code, failure.message, {
     target,
-    remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need the \`admin\` scope on your actor grant; \`spawn\` alone does not carry it. Check what your row holds with \`cotal auth grants\``,
+    remedy: `on a user-auth mesh, the manager's \`${command}\` read is documented to need ${MANAGER_READ_SCOPE[command]}. Check what your row holds with \`cotal auth grants\``,
     ...(failure.native ? { native: failure.native } : {}),
   });
 }

@@ -1,3 +1,4 @@
+import { cliVersion } from "../lib/version.js";
 import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
@@ -19,6 +20,7 @@ import {
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
+  cachedUpdateSummary,
   CommandFailure, accountInventory, canonicalRoot, codeSpan, credentialFileExposure, isCommandFailure, jsonFlag, plainFlag, preparedNeverStarted, presentationOf, readLocalRecordSource, renewalRecordPath, upCommand, writeResult,
   agentCredsDir,
   authDir,
@@ -32,6 +34,7 @@ import {
   legacyRenewalRecord,
   MEMBERSHIP_OBSERVER_CREDS_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  WEB_CREDS_KIND,
   MeshTargetError,
   migrateLegacyCotalMaterial,
   preflightTarget,
@@ -39,7 +42,6 @@ import {
   REMINTABLE_DAEMON_CREDS,
   type Report,
   resolveMeshTarget,
-  spaceAccountPath,
   staleSystemCreds,
   STORE_CONTENTS,
   storeContentsText,
@@ -142,6 +144,7 @@ function trustRootStep(root: string, space: string | undefined, fix: boolean): s
 /** Local credential observations only; native repair remains an explicit, separately labeled phase. */
 export async function doctor(args: ParsedArgs): Promise<void> {
   validateDoctorArguments(args);
+  if (!args.values.json && !args.values.plain) console.log(`Cotal ${cliVersion()}: ${cachedUpdateSummary(cliVersion())}`);
   const values = args.values as FlagValues<typeof doctorFlags>;
   const root = findCotalRoot(process.cwd());
   const repair: RepairObservation = { requested: values.fix === true, attempted: false, authority: null, results: [], migrationAttempted: false, migrations: [], coordinationCleanup: "not-opened" };
@@ -156,13 +159,13 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   try { auth = values.space ? await getSpaceAuth(workspaceSecretStore(root), values.space) : await getSoleSpaceAuth(workspaceSecretStore(root), authDir(root)); }
   catch { throw new CommandFailure("refused", "SCHEMA_INVALID", "the local authority inventory could not be validated; no repair was attempted", { target: { root, space: values.space ?? null } }); }
   if (!auth) {
-    const open = values.fix ? undefined : recordedOpenSpace(root, values.space);
+    const open = recordedOpenSpace(root, values.space);
     if (open !== undefined) {
-      writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
+      writeResult(presentationOf(values), { command: "doctor auth", target: { root, space: open }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: open, localFindings: null, credentialScope: "open-space", brokerAuthorization: "not-checked", repair }, noOp: true }, () => ({ sections: [{ title: "No credentials to check", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", open], ["Mode", "open, as registered"]] }, { kind: "lines", lines: [{ text: "This space is open: it authenticates no one and issues no credentials, so there are none to check.", tone: "hint" }] }] }] }));
       return;
     }
     if (values.fix || values.space) throw new CommandFailure("refused", "AUTH_REQUIRED", "no validated signing trust for the named local diagnostic scope is present; no open mode or broader authority was inferred", { target: { root, space: values.space ?? null }, remedy: trustRootStep(root, values.space, values.fix === true) });
-    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: trustRootStep(root, undefined, false) } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
+    writeResult(presentationOf(values), { command: "doctor auth", target: { root }, result: { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: null, localFindings: null, credentialScope: "not-established", brokerAuthorization: "not-checked", repair }, completeness: "not-checked", partial: { message: "No local static authority was established. This is not proof of an open or healthy mesh.", remedy: trustRootStep(root, undefined, false) } }, () => ({ sections: [{ title: "Local credential scope not established", blocks: [{ kind: "fields", rows: [["Root", root], ["Space", "not established"], ["Live authorization", "not checked"], ["Repair", "not requested"]] }] }] }));
     return;
   }
   const target = { root, space: auth.space };
@@ -201,7 +204,7 @@ export async function doctor(args: ParsedArgs): Promise<void> {
   const findings = items.filter((row) => row.problem !== null).length;
   const refused = renewal.state === "present" && renewal.brokerAcceptance === "recorded-refusal";
   const incomplete = renewal.state === "unreadable";
-  const result = { kind: "credential-health", root, space: auth.space, mode: userMode ? "user" : "static", scope: "local credential claims and recorded renewal only", items, exported, findings, renewal, repair, brokerAuthorization: "not-checked", liveAgentHealth: "not-checked", systemAccountRotated: false, agentCredentialsReminted: false };
+  const result = { kind: "credential-health", update: cachedUpdateSummary(cliVersion()), root, space: auth.space, mode: userMode ? "user" : "static", scope: "local credential claims and recorded renewal only", items, exported, findings, renewal, repair, brokerAuthorization: "not-checked", liveAgentHealth: "not-checked", systemAccountRotated: false, agentCredentialsReminted: false };
   // A recorded refusal names the renewal owner to repair, so the finding keeps its next step.
   const failure = incomplete ? new CommandFailure("partial", "OPERATION_PARTIAL", "credential observations were collected but the renewal record is unreadable; a complete healthy verdict was not inferred", { target }) : findings || refused ? new CommandFailure(repair.results.some((row) => row.ok) || repair.migrations.length ? "partial" : "failed", repair.results.some((row) => row.ok) || repair.migrations.length ? "OPERATION_PARTIAL" : "OPERATION_FAILED", refused ? "the recorded renewal was not broker-accepted; local re-signing alone cannot clear that finding" : "local credential findings remain; per-file native repair guidance is retained", { target, ...(refused ? { remedy: "start or repair this space's manager, the renewal owner, so it re-signs the daemon credentials and the broker accepts them; do not respawn agents for this finding" } : {}) }) : undefined;
   writeResult(presentationOf(values), { command: "doctor auth", target, result, completeness: incomplete ? "partial" : "complete", warnings, failure, noOp: failure === undefined && values.fix === true && !repair.attempted && !repair.migrations.length }, (data): Report => ({ sections: [
@@ -376,16 +379,21 @@ function daemonRemintRepair(): string {
 
 /** The repair for the $SYS pair, which nothing re-signs in place. A plain `down` + `up` does NOT
  *  touch these: `up` mints them only on the branch that CREATES the trust record, so re-upping an
- *  existing space reuses the same files and reports success. The rotation must be asked for. */
-function systemRotationRepair(): string {
-  return `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+ *  existing space reuses the same files and reports success. The rotation must be asked for. A
+ *  missing connection evictor is the exception: the delivery daemon mints that one on its next start
+ *  when this root hosts one space and retained its system-account signing seed. */
+function systemRotationRepair(kind?: CredentialKind): string {
+  const rotation = `system-account rotation: \`${displayCmd()} down\` then \`${displayCmd()} up --rotate-sys\` re-mints the $SYS material (the space, its agents, its creds and its data are untouched)`;
+  if (kind !== "connection-evictor") return rotation;
+  return `the delivery daemon mints a missing connection evictor on its next start when this root hosts one space and retained its system-account signing seed. Otherwise ${rotation}`;
 }
 
 /** A credential file that is absent. Only the $SYS pair is a finding then, once the space has its
- *  trust: `up` mints the other two when they are missing, and nothing but a rotation mints these. */
+ *  trust: `up` mints the other two when they are missing. Nothing but a rotation mints the observer.
+ *  The delivery daemon mints a missing evictor on its next start when the root can sign one. */
 function missingReport(label: string, kind: CredentialKind, path: string, sysPub?: string): CredReport {
   if (sysPub === undefined || (kind !== "membership-observer" && kind !== "connection-evictor")) return { label, kind, path };
-  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair() };
+  return { label, kind, path, problem: `missing - ${kind === "membership-observer" ? "the membership feed" : "live connection eviction"} cannot run without it`, repair: systemRotationRepair(kind) };
 }
 
 /** Local filename/issued-at ordering only. No role here proves a connected or running successor. */
@@ -515,6 +523,7 @@ function inventory(root: string, space: string, sysPub?: string, readOnly = fals
     { label: MEMBERSHIP_RW_CREDS_KIND, kind: "membership-rw", path: at(MEMBERSHIP_RW_CREDS_KIND) },
     { label: MEMBERSHIP_OBSERVER_CREDS_KIND, kind: "membership-observer", path: at(MEMBERSHIP_OBSERVER_CREDS_KIND) },
     { label: CONNECTION_EVICTOR_CREDS_KIND, kind: "connection-evictor", path: at(CONNECTION_EVICTOR_CREDS_KIND) },
+    { label: WEB_CREDS_KIND, kind: "observer", path: at(WEB_CREDS_KIND) },
   ];
   // Ask the staleness question ONCE, through the same helper the boot path uses, so `doctor auth`
   // and `cotal up` can never disagree about which $SYS creds the trust record authorizes.
@@ -640,6 +649,9 @@ function report(label: string, kind: CredentialKind, path: string, sysPub?: stri
         r.repair = agentUnboundedRepair(path, space!, noExpiryRecordPath(path), grants, claims?.name);
         break;
       }
+      // The dashboard cred is minted without an expiry by design (the dashboard reads it once at
+      // start and nothing reloads it), so its state is shown and is no finding.
+      if (label === WEB_CREDS_KIND) break;
       // A credential with no expiry claim stays valid until its signer rotates, whatever its kind,
       // so it is a finding even where no renewal owner bounds it.
       r.problem = standing

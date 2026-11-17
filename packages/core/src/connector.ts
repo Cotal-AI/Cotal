@@ -2,6 +2,17 @@ import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
 import type { StartupBlocker, StartupReply } from "./startup-confirm.js";
 import type { ControlEndpoint } from "./control-exchange.js";
+import type { PersonaEndpoint } from "./persona-endpoints.js";
+
+/** User-mode launch identity shared by the manager, connector and launch-material carrier. The
+ *  sentinel is a file path, and the bearer command is argv. The material reader checks its rebuilt
+ *  value against `Required<UserAuthLaunch>` so added optional fields also need explicit validation. */
+export interface UserAuthLaunch {
+  owner: string;
+  actor: string;
+  sentinelCredsPath: string;
+  bearerCmd: string[];
+}
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -20,7 +31,7 @@ export interface LaunchOpts {
    *  verbatim (`COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` as JSON
    *  argv) — like {@link creds}, host-local pointers, opaque to core. Mutually exclusive with
    *  `creds`/`id` (the principal IS the identity; connectors throw on a conflicting combination). */
-  userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  userAuth?: UserAuthLaunch;
   /** The incarnation's lifecycle UID (SPEC §13.1), minted by the launcher at spawn. The connector
    *  forwards it (`COTAL_LIFECYCLE_UID`) so the session's endpoint binds its lifecycle-keyed
    *  dm/dlv/chathist durables — the same exact names its credential pins. */
@@ -51,6 +62,9 @@ export interface LaunchOpts {
    *  whose materialized persona carries no `capabilities:` frontmatter — gets none, so those tools stay
    *  hidden even though its creds authorize them. */
   capabilities?: string[];
+  /** The endpoint commands the agent was handed at launch (SPEC 13.15), the list its creds were
+   *  minted from. Forwarded as `COTAL_ENDPOINTS` so the session can say what it was handed. */
+  endpoints?: PersonaEndpoint[];
   /** Path to an agent definition file (`.cotal/agents/<name>.md`). The connector
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
    *  card from it, and applies the file's persona at launch. */
@@ -117,6 +131,8 @@ export interface LaunchOpts {
    *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
    *  path never armed. */
   events?: boolean;
+  /** Publish tool inputs/results on the sibling rail. False retains names/times only. Defaults to true. */
+  eventPayloads?: boolean;
   /** The selected registration requires this session's structured event plane. A launcher sets this
    *  from trusted registration material; connectors carry it into launch material for session-side
    *  enforcement as well as arming the emitter. */
@@ -354,6 +370,12 @@ export interface Connector extends Extension {
    *  manager's failure gives for a `ready` outcome. A runtime that does not report the outcome
    *  refuses such a spawn. */
   readonly onceNeedsConfirmed?: string;
+  /** A seat on this connector is woken while idle by mesh traffic only when its startup watch ended
+   *  `confirmed`. A plain spawn whose watch ended `ready` still succeeds; its reply carries this
+   *  clause as `startupNotice` and the seat's `ps` row carries it, so the spawner and the operator
+   *  learn that the seat does not wake on its own. A runtime that does not report the outcome
+   *  carries no notice. */
+  readonly idleWakeNeedsConfirmed?: string;
   /** The most once task text one turn frame of this connector carries, in UTF-16 code units, as
    *  {@link renderOnceTask} renders it. A `once` spawn whose rendered task is longer is refused at
    *  admission. Absent means the connector's frames carry any length. */

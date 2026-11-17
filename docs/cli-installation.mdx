@@ -21,12 +21,14 @@ cotal setup [--destination <local|self-hosted>] [-H|--harness <connector>] [--ru
 cotal setup --skills
 ```
 
+A terminal that reports 0 columns gets the splash, questions and notes drawn for 80 columns.
+
 | Flag | Default | Meaning |
 |---|---|---|
-| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. `cloud` is refused before anything is written or contacted, and the refusal names that route: `cotal login`, then `--destination self-hosted --space <name>`. |
+| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server, including a Cloud space `cotal login` discovered. The flag value `cloud` is refused before anything is written or contacted, because the Cloud sign-in needs a terminal. The refusal names the scripted route: `cotal login`, then `--destination self-hosted --space <name>`. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. When you have no `harness` preference of your own, it becomes yours too. |
 | `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
-| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
+| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. For a local space, `--yes` creates a missing folder; otherwise a script's folder must exist. A terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
 | `--connection-file` | none | Self-hosted: register the space from a connection bundle exported where it runs, with the checks `space add --file` makes. |
 | `--configure-only` | on | Save preparation and start nothing. Refused with `--start`. |
@@ -42,8 +44,13 @@ Setup saves preparation before a separate startup decision. Configure-only is th
 `--yes` never turns it into startup. On a terminal it asks for each input no flag gave: destination,
 application, runtimes, project folder and space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
-answers kept, and Cancel saves nothing. Cloud is listed but cannot be chosen. Its hint says to sign
-in with `cotal login` and choose Self-hosted, because a Cloud space is registered here when you sign in.
+answers kept, and Cancel saves nothing.
+
+Choose Cloud to set up a space of your Cotal Cloud account. When no Cloud space is registered on
+this machine, setup signs you in first: it prints the approval link and code, opens your browser,
+and waits for your approval, as `cotal login` does. With several spaces it asks which one. A space
+that no project uses yet asks for the project folder your agents work in. A space already set up in
+a project keeps that project.
 
 Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
 is `USAGE_INVALID` naming each missing flag, before anything is written. The refusal prints the
@@ -69,7 +76,8 @@ skills. When you have no `harness` preference of your own, setup also records th
 yours, so a space you prepare later with `space create` uses it. A value you already set stays.
 A preferences folder another account could write is refused with `PERMISSION_DENIED`, exit 2, before
 anything is written (see [Preferences](config.mdx#preferences)).
-The result names the next command: `cotal up` in the project for a local space, or
+When an application executable is missing, the next step is to install or repair it and rerun setup.
+Otherwise, the result names the next command: `cotal up` in the project for a local space, or
 `cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
 setup wrote.
 
@@ -95,7 +103,7 @@ uses the registered manager's persona catalog; `--on` pins its manager instance
 through credential issuance and launch. It uploads no local persona file. Without detach,
 the terminal opens that allocated incarnation's native view. If it disappears before attachment,
 setup reports the confirmed join and an incomplete view, not a healthy attached terminal. Leaving
-the view sends no stop request.
+the view sends no stop request. The joined receipt shows the agent's id when that agent's name is missing or only whitespace.
 
 `result.startup` separates the requested self-hosted manager pin, native stack-command
 return, joined-agent receipt and any classified failure. A declined Start keeps the
@@ -133,8 +141,71 @@ stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. 
 
 ## update [#update]
 
+Update preferences are saved in the Cotal home. `cotal update --auto off` disables automatic
+installation and `cotal update --auto on` enables it on eligible Linux, macOS and Windows installs.
+Automatic installation is on by default and requires the machine daemon service.
+Older macOS and Windows versions need one manual `cotal update --self` before they can schedule
+updates through the new helper. Other unsupported platforms still require manual updates.
+Daily checks, update notices and their settings remain available on every platform.
+Bare `cotal update --auto` reports the saved setting and the platform limit.
+On Linux, macOS and Windows, enabling or reading an enabled setting also checks the daemon's
+schedule. If no daemon answers, it names `cotal daemon install` and `cotal daemon status`.
+An answering daemon without an active automatic schedule is reported separately, including one
+paused by an unreadable update-attempt record with no next attempt. The preference stays saved;
+the command installs and starts nothing.
+`cotal update --notify off` silences notices independently, and `--notify on` enables them.
+`COTAL_NO_UPDATE_CHECK=1` disables both checks and automatic installation for that process.
+
+On Windows, an interrupted helper in the same boot pauses automatic installation. Status and
+notices tell you to restart the computer or run `cotal update`. A successful manual update clears
+that attempt's pause. A later boot permits the existing interrupted-update recovery before another
+automatic attempt. Boot identity uses the OS-loader sequence, not the wall clock.
+
+The desktop app's bundled runtime never runs npm updates. In a configured updater build,
+**Install updates automatically** uses the same saved preference as `cotal update --auto`.
+A build without an updater key keeps its release summary, installer link and **Notify me about updates**
+control. Settings explains that this build updates through the installer. Configured macOS and Windows builds
+request the manifest again on **Check now** rather than using the automatic daily cache.
+They download and replace the installation only before a window appears, with all windows hidden,
+or after **Restart to update**. Sign-in, setup and connection operations hold that work back.
+The app relaunches after replacement, then waits for the target background service and ready
+inventories before reporting success. Linux deb/rpm builds still use the installer.
+There is no automatic rollback.
+The app does not change a separately installed command line.
+
+Interactive commands print a one-line update notice on stderr from a daily cached registry check.
+The check runs daily with `npm view cotal-ai@latest` against your configured registry, and nothing else is sent.
+A command started during the few seconds an update replaces the installation can fail to load and should be run again.
+The check runs in the background. JSON, plain, CI and redirected output receive no notice.
+Version output reports the cached update state without waiting for the registry.
+
+Before replacing the global package, the updater verifies both the target and previous release
+archives and fetches the installed first-party extensions with their dependency closures in a
+disposable prefix. An unavailable dependency stops the update before replacement. A failed replacement
+is followed by another reconcile attempt, then a verified reinstall
+and reconcile of the previous version. A private same-filesystem snapshot restores the previous seed
+stamp, connectors and operator extensions before Managers start. Interrupted restoration resumes on
+the next update or daemon start. The snapshot is removed after successful update or restoration.
+If the computer has never run setup, update creates the missing config folders with private permissions before taking the snapshot. Existing unsafe folders or symbolic links still refuse the update. Automatic config and snapshot preflight refusals appear in the daemon status update result as one line with paths redacted.
+If reconciliation still fails after retry, the command preserves the original child's exit status
+through restoration. An interrupt takes precedence over that status.
+If restoration also fails, the error names the installed version
+and asks for `cotal update --self`; unattended updates remain paused until manual repair succeeds.
+A daemon that starts while an update is paused keeps running. `cotal daemon status` names the pause
+and the repair command, and the daemon loads no new version until the repair succeeds.
+
+An update the daemon installs on its own runs inside the daemon's service. It reconciles the new
+version, records the result and exits, and only then does the daemon restart into the new version.
+It does not wait for that restart, so it cannot restore the previous version if the restarted
+daemon fails. Read `cotal daemon status` after an unattended update, or run `cotal update --self`
+yourself to get the verified wait.
+
+A runtime bundled with the desktop app refuses `update --self` before changing its installation.
+Update that app with its signed platform installer so the app, CLI and runtime stay together.
+
+
 ```bash
-cotal update [--self] [--space <s>] [--server <url>] [--creds <path>]
+cotal update [--self] [--space <s>] [--server <url>] [--creds <path>] [--on <instance>]
 cotal update --check [-j|--json|--plain]
 ```
 
@@ -142,12 +213,25 @@ cotal update --check [-j|--json|--plain]
 |---|---|---|
 | `--self` | off | If a newer release exists, install that exact validated `cotal-ai` version globally and reconcile through the newly installed binary |
 | `--space`, `--server`, `--creds` | resolved mesh | Select the running manager whose continuity state is reported |
+| `--on` | none | Name the manager whose continuity state is reported, by the instance id `cotal ps` prints or, on a user-auth mesh, by its name or host. The reconcile the new binary runs inherits it. |
 | `--check` | off | Read version availability and recorded extensions without installation or restart; takes no mesh selector or `--self` |
 | `--json`, `-j`, `--plain` | off | Choose the finite check report; requires `--check` |
 
+On a user-auth mesh where you run several managers, the exchange refuses to pick one and names `--on`; pass this machine's manager.
 Update reads the recorded mesh inventory without refreshing account space catalogues. An expired
-login to a remote mesh does not block the software update. Local manager continuity checks still
+login to a remote mesh does not block the software update. An unreachable registered broker does
+not block either update flow when no local Manager of this installation serves that space. The
+liveness check keeps the registration unchanged. Local manager continuity checks still
 apply before changing the installation.
+
+After `update --self` replaces the installation, its verified replacement waits up to 120 seconds
+for the recorded same-installation daemon to load the new version and its intended hosted Managers
+to answer. It prints this wait before the continuity check. The daemon owns its automatic restart;
+the updater does not start a competing restart. Connector reconciliation still requires the
+continuity check to answer. If activation does not finish, the failure names the last daemon or
+Manager state and asks you to inspect `cotal daemon status` and the recorded user service, restore
+the connection, then run `cotal update` again. A machine without a recorded daemon service keeps
+the existing update path.
 
 After an upgrade, `up`, `down` and the `service` verbs still control the stack members and
 first-party service instances an earlier release recorded, even when that release declared their
@@ -169,20 +253,79 @@ the binary's exact version, after a line that says why. A built-in or extension 
 reported as verified. The extension check reads versions, not file contents. `cotal ext seed --force`
 remains the unconditional reinstall of the built-ins, and `cotal ext add <package>` of one extension.
 Each reinstall runs in an isolated child, so one failure cannot poison later replays. It then
-checks npm; a newer binary is an informational notice with `cotal update --self` as the next
-command, not an automatic install.
+checks npm; after successful reconciliation, a newer binary is an informational notice with
+`cotal update --self` as the next command, not an automatic install. A refused update keeps its
+recovery guidance instead of suggesting another update that would meet the same refusal.
 
 
 ### Manager continuity
 
-Before disk reconciliation, `update` reads the selected running manager. A machine with no recorded
+When `update --self` finds no newer release and verifies the installed package closure is current,
+it reports that no connector reconciliation ran. It does not suggest a repair it did not observe.
+
+If an older updater refuses an answering hosted Manager as `starting`, install the fixed release
+with npm directly in the same installation prefix. For an installer-managed Unix installation,
+run `npm install -g --prefix "$HOME/.local/share/cotal" cotal-ai@<version>` using its Node runtime.
+For an npm-managed installation, use its existing npm prefix. After saving and stopping active
+seats, restart the recorded daemon service, then run `cotal update` to reconcile matching extensions.
+The direct npm installation does not call the older updater's Manager-state check.
+
+For Managers hosted by the machine daemon, `update` checks every active hosted instance before
+reconciliation, even with `--space`, because restarting the global installation affects them all.
+It pins each status request to its instance and refuses unreadable custody or a non-answering
+Manager. A hosted `legacy` Manager with running agents blocks update because restarting it would
+end them. The refusal names agents from the Manager's status and gives `cotal stop <name>` and
+`cotal ps` commands pinned to their Manager instance and space. The list command requires admin
+scope on user-auth spaces. Save their work and stop them, then rerun the same update command,
+including `--self` if you used it. No agent is stopped automatically.
+During continuity checks, a timed-out remote credential exchange or an HTTP 5xx response retries
+within one shared 120-second budget. The command reports the host and the remaining retry time.
+HTTP 4xx responses, including credential denials and rate limits, fail without retry. If the host
+does not recover before the deadline, restore its connection and run `cotal update` again.
+Reconciliation still requires a fresh status answer from each pinned Manager.
+After reconciliation, update waits up to 120 seconds
+for the matching daemon version and the previously active hosted spaces to report answering
+Managers. When the daemon version differs, update prepares every hosted child through the local
+preservation guard before restarting the recorded native service. A refused preparation leaves
+the occupied Managers running.
+
+A direct installed `npm i -g cotal-ai@<version>` replacement is detected by the running daemon.
+It verifies the replacement entry's reported version and its recorded native service, then asks
+every hosted child locally to prepare through the existing preservation fence. Occupied legacy
+Managers keep running while activation waits and retries. Once their seats stop and every child
+confirms preparation, the daemon stops its owned children and exits. The recorded supervisor then
+resumes the daemon and its hosting intents automatically. These are local daemon and child IPC
+operations and require no additional external admin scope. This path does not itself wait for
+restored Manager readiness. Native restart
+requests and endpoint readiness do not establish login or reboot autostart on any OS.
+
+For Managers outside machine-daemon hosting, `update` reads the selected running manager before
+disk reconciliation. A machine with no recorded
 mesh has no running manager to observe, so that read is skipped and the command completes. The same
 holds when every recorded mesh is down and none is selected. A remote user mesh, registered with
-`cotal meshes add --mode user`, is named and skipped: its manager runs under another install, so
-there is no custody on this machine to preserve, and a `legacy` verdict still comes only from a
-manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
-inside its project, has no running manager either when no `cotal supervise` process on this machine
-may be serving its space and nothing listens at its recorded broker address, so the read is skipped
+`cotal meshes add --mode user`, is named and skipped when no `cotal manager start` or
+`cotal supervise` process that loaded this install may be serving its space. A supervisor whose
+command names another install's CLI entry is untouched by replacing this one, so it is no custody
+here, the same as a manager that runs on another machine. On Linux, this check reads the kernel's
+argument boundaries, so spaces in the installed CLI path do not prevent attribution.
+A node binary or a loader argument does
+not name that entry. A supervisor under another numeric user ID counts only when an absolute
+argument resolves to this installation's CLI entry. This keeps a supervisor launched through sudo
+against the same installation in the continuity check. For the same user, a different mount
+namespace excludes an unresolved entry, but a namespace difference alone never excludes a shared
+entry. Remaining uncertainty refuses before a remote Manager is selected and names the process
+ID, numeric user ID and its stop command.
+The Linux census reads the effective user ID from kernel process status, not the ownership of its
+proc directory, which can change when a process becomes non-dumpable. A partial launch-coordinate
+read refuses rather than discarding a possible same-installation relative entry.
+A supervisor started without `--space`
+serves the space its `COTAL_SPACE` names, so a service unit's manager for another mesh does not count
+as this one's. When such a process runs here, that
+manager is read like a local one, and a `legacy` verdict's `Next` line names
+`cotal manager stop --space <space>` as the stop before the cold update. A `legacy` verdict still
+comes only from a manager this machine read. A stopped mesh that this machine runs, chosen with `--space` or by running
+inside its project, has no running manager either when no `cotal supervise` process that loaded this
+install may be serving its space and nothing listens at its recorded broker address, so the read is skipped
 there too. A controller stack that completed ordinary `cotal down` is eligible after its retained
 service records prove every process gone. Missing instance records, live or unresolved processes,
 and an unfinished down still refuse. That is the cold path past a `legacy` verdict: `cotal down`,
@@ -200,7 +343,7 @@ way, one registration at a time. A selector flag still reports
 one manager. A manager without a
 custody generation is reported as `legacy`: it cannot preserve its manager-owned PTYs, so the
 command says that this is not a hot update and prints `exact`, `fork`, `fresh`, or `drain-only`
-for every seat. This report sends no stop, preservation-commit, or replacement command.
+for every seat. A seat whose name is missing or only whitespace is listed by its id, or as `(unnamed)` when the inventory has no id. This report sends no stop, preservation-commit, or replacement command.
 It does not preserve a running PTY on a legacy manager. The built-in pty runtime spawns
 in-process on every platform and reports `legacy`. On Linux it still adopts seats that an earlier
 manager left under a detached custodian, but it starts no new custodian. An incompatible native
@@ -209,8 +352,28 @@ manager left under a detached custodian, but it starts no new custodian. An inco
 
 ### CLI upgrade
 
-With `--self`, the selected running manager is reported before any global install. When a newer
-release exists, Cotal then installs the exact version it validated, resolves and verifies that
+With `--self`, the selected running manager is reported before any global install.
+For daemon-hosted Managers whose agents cannot survive replacement, a terminal lists the agents
+and their reported idle times, then asks once whether to stop them and continue. Missing activity
+measurements are shown as unavailable. Save their work before answering yes. Use
+`cotal update --self --stop-agents` to give the same consent without a prompt. Without a terminal
+or this flag, the update refuses without stopping agents. Automatic updates always defer and name
+the blocking agents.
+
+If a previous update replaced the CLI but left first-party extensions on older versions,
+`cotal --version` and `cotal update --check` report pending reconciliation and the repair command.
+Run `cotal update --self` again to reconcile the installed generation. The same agent-consent
+checks apply even when no newer CLI is available.
+
+When a newer release exists, Cotal first downloads and integrity-checks its `cotal-ai` archive and the archives
+of its first-party runtime dependency closure through npm, using a temporary cache and no install
+scripts. Each registry request has a 15-second timeout. Package installs and archive checks retry
+transient network failures twice, waiting one second and then two seconds. The latest-version read
+keeps a single attempt. Missing archives or invalid
+metadata refuse before global installation or connector reconciliation, with a registry propagation
+hint and a request to check registry access and try again in a few minutes. This preflight does not
+guarantee later registry requests or third-party dependency downloads will succeed.
+Cotal then installs the exact version it validated, resolves and verifies that
 package in npm's global root, then launches that binary with the same `--space` / `--server` /
 `--creds` selection to reconcile connectors and first-party extensions to the new generation. An npx
 or dev-clone invocation therefore installs and continues through a separate global copy; it never
@@ -218,6 +381,20 @@ claims the already-running process changed. From a source checkout, the `update 
 `update` and `update --check` says so. If the binary is current, `--self` performs the normal
 local reconcile without reinstalling it. Each npm install it runs starts with 022 added to your
 umask, so a umask of 0002 does not leave the installed tree group-writable.
+
+On POSIX, an installed npm CLI binds the update to the prefix whose package and `bin/cotal`
+link identify the running entry. This also applies when a service invokes the package bin
+without the installer's external launcher. The vendored Node runtime's own npm prefix is not
+used. A missing or redirected global bin link, a conflicting `npm_config_prefix`, or an npm
+root that disagrees with that prefix refuses before installation. Local/npx copies and source
+checkouts still install a separate global copy; Windows keeps npm's configured global root.
+
+If that installation is not writable by your account, the update refuses before changing it.
+For a root-owned npm installation, have an administrator run the printed
+`sudo npm install -g --prefix '<install-prefix>' cotal-ai@latest` command.
+Then run `cotal update` as your normal account, without sudo, to reconcile your connectors and
+extensions. Keep any `--space`, `--server`, `--creds` or `--on` selection from the original command.
+Do not run `sudo cotal update`: user configuration and reconciliation belong to your normal account.
 
 Once global replacement starts, Ctrl-C waits for installation, verification and reconciliation to
 finish before returning exit code 130. SIGTERM waits the same way and returns 143. The command
@@ -228,7 +405,9 @@ nonzero result. Force-killing the process or closing its terminal is not a suppo
 Run through the installer's `cotal` launcher, `update` first removes group and other write from the
 folders and files you own in Cotal's install root, without following links. An installer from before
 it set its own umask, run under a umask of 0002, left that tree group-writable. Running the installer
-again repairs it the same way.
+again repairs it the same way. Permission repair preserves the selected CLI generation, including
+when an older updater hands reconciliation to the new release. Before reporting a successful
+self-update, the updater verifies the selected version again after reconciliation.
 
 `update` also removes group and other write from the folders and files you own in Cotal's config
 directory, `$XDG_CONFIG_HOME/cotal` or `~/.config/cotal`, which holds the extension prefix and the
@@ -243,7 +422,10 @@ and names `chmod g-w <path>` as the next step.
 
 Third-party extensions are listed with their installed version and recorded spec but are not
 auto-updated in v1. Floating third-party updates require `@cotal-ai/*` peer-range validation and are
-a future follow-up. A failed connector/extension install, npm metadata check, or requested global
+a future follow-up. When `update --self` cannot reach the registry before selecting a release,
+it reports that nothing changed and exits 0 without reconciling packages or inspecting Manager
+custody. The version read has no retries and a 15-second network timeout. Unknown availability
+is not a claim that the installed version is current. A failed connector/extension install, npm metadata check after reconciliation, or requested global
 install is reported and makes the command exit nonzero. Independent extension attempts continue so
 the output includes every failure; an unavailable npm registry does not undo a completed local
 reconcile, but the command still exits nonzero because it could not establish that the install is
@@ -258,6 +440,9 @@ It performs no install, reconcile or process restart and takes no mesh selection
 afterwards, no log files and no npm update notifier, so it leaves nothing in npm's cache, log
 directory or notifier stamp. Missing registry data or an unreadable extension inventory remains
 unknown or partial, never an empty successful check.
+If the extension manifest is corrupt, the check still reports the running and registry versions,
+leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
+and the `EXTENSION_INVENTORY_UNREADABLE` warning.
 
 The report compares first-party recorded versions with the running CLI. It does not inspect
 package contents, signatures or loaded process generations. `cotal update` and `update --self`
@@ -277,27 +462,45 @@ cotal join --link <url> | --token <t>
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh, and which credential |
 | `--name <n>` | none | Your presence name |
 | `--role <r>` | none | Your role |
-| `--channel <c>` | none | Channel to join |
+| `--channel <c>` | link's first channel, else `general` | Channel to join; a static credential needs a read grant for it |
 | `--kind <k>` | `agent` | Endpoint kind |
 | `--link <url>` | none | Join link (`cotal://…`) |
 | `--token <t>` | none | Join token |
 | `--lifecycle-uid <uid>` | none | Required with `--creds`: the lifecycle UID minted alongside the credential (`COTAL_LIFECYCLE_UID` works too). A credential's durable grants name exact lifecycle-keyed resources, so `join` refuses to invent one |
 | `--tls` | off | Connect over TLS |
+| `--expires-in <seconds>`, `--expires-at <unix-seconds>` | no expiry | A bare join on a static mesh only, one or the other: when the session's issued credential ends. Without either it has no expiry, and it is retired when you leave. Refused with `--link`, `--token` or `--creds`, and on a user-auth or open mesh |
 
 An interactive presence: join a space under your own name and role, without launching an agent
-harness. A `--link` supplies the where and the auth in one value. See
+harness. Another participant whose name is only whitespace is shown as the id, in the roster,
+on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
 
+A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
+channel. It establishes durable membership when the channel's delivery policy is durable, even
+with replay disabled. A live channel keeps live-only membership.
+
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
-keeping that registration's TLS requirement. With no `--space`, that is the selected space, else
-this folder's, and inside a project whose root has one space other than the selection, that space.
+keeping that registration's TLS requirement. With no `--space`, an explicit `cotal use` selection
+wins in every folder. An automatically adopted selection yields to the folder's running space.
 A space not registered here is refused before anything is dialed. The default address is never
 assumed for a credential.
 
-A `--creds` join binds the inbox provisioned for its lifecycle, so the space's owner mints the
-credential with `cotal auth mint <name> --provision` and hands over the lifecycle UID that mint
-reports. A credential minted without `--provision` has no inbox there, and `join` refuses, naming
-that lifecycle and the mint that makes one.
+A `--creds` join needs a provisioned inbox and a read grant for its landing channel. For `general`,
+the space's owner mints the credential with:
+
+```bash
+cotal auth mint <name> --provision --allow-subscribe general --allow-publish general --out <file>
+cotal join --space <s> --creds <file> --lifecycle-uid <uid> --channel general
+```
+
+The owner hands over the file and the lifecycle UID that mint reports. `--allow-subscribe` grants
+reading; `--allow-publish` is optional when the session will not post. Use the intended channel in
+both commands. `--provision` alone grants no channel access. A missing read grant is refused with
+`PERMISSION_DENIED` naming the channel and `--allow-subscribe`. A mismatched lifecycle UID is
+refused separately, naming the UID and the mint that reported its pair. Neither refusal points at
+the delivery daemon. A credential minted without `--provision` has no inbox there; with its paired
+UID and a read grant, the refusal names that lifecycle and the mint that makes one. Without a UID, `join`
+first refuses with the lifecycle-pairing requirement.
 
 On a registered user-auth space, sign in with `cotal login` first. `join` uses your existing `cli`
 actor bearer and renews it through the same login and exchange while the session runs. Its channel
@@ -343,6 +546,9 @@ cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
 
+`add` and `remove` each take one operand. Missing or extra operands are usage errors and
+leave the extension inventory unchanged.
+
 Operator-installed extensions: `add` installs an npm package into a cotal-owned prefix and records
 every registry provider it contributes. Commands appear in help, completion, and dispatch; runtime
 providers are loaded on demand by commands such as `supervise`, and by a running manager the first
@@ -354,8 +560,20 @@ as they are. `remove` and `list` manage them. The `@cotal-ai/web` dashboard is t
 canonical service preset and local-process example. Installed packages and their location are described in
 [config](config.mdx). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
+Each load or add reads the installed package's metadata once, using that same result for its version,
+peer links, entry and import diagnosis. Corrupt or unreadable metadata refuses before import; an entry
+that later changes its own `package.json` cannot change the peer range used to diagnose that import.
+When linking siblings, only a missing package directory can be skipped with a warning. A directory
+without metadata, or a dangling package link, is damaged and still refuses.
 Removing an extension or cleaning up a failed add keeps unrelated file-based extensions as
 installed copies, rather than turning them into links to their source or the built-in seed store.
+
+One command at a time changes the installed connectors and extensions. While `setup`, `ext add`,
+`ext seed` or an update does that, a command that needs a connector waits for it. After one second
+of waiting the command says so on stderr:
+`waiting for another cotal command (pid <id>) to finish changing this installation`.
+`cotal status` does not wait. It names that command, leaves the application rows unread and exits 4
+with a partial report: `another cotal command (pid <id>) is changing this installation, so the application rows were not read`.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
@@ -392,19 +610,28 @@ A package directory that is present without a readable `package.json` still fail
 a seed that failed this way in an earlier release, `cotal ext seed --repair` finishes it, and
 `cotal ext remove` then drops the entry.
 
-Removing an extension that owns a running local process is refused with its process or record remedy. There is no command that stops one extension's legacy process. Follow the emitted `stop pid <pid>, then retry`, `delete <pidPath>, then retry`, or resolve instruction before retrying removal, so uninstalling does not strand a process whose provider is gone. While it uninstalls, `remove` reserves each process record the package
+Removing an extension reclaims a pidfile when its recorded PID is proven dead. A running process,
+unreadable or unattributable record, or unconfirmed liveness still refuses removal with its process
+or record remedy. There is no command that stops one extension's legacy process. Follow the emitted
+stop or resolve instruction before retrying removal, so uninstalling does not strand a process
+whose provider is gone. While it uninstalls, `remove` reserves each process record the package
 declares under every mesh root, and a record folder it creates there is mode `0700`, even with a
 group-writable umask.
 
-Loading an installed extension takes the same locks as `add`, `remove` and `cotal update`. When another
-`cotal` process holds them, the load waits up to five seconds in total (one deadline for both locks)
-without blocking the waiting process, then refuses. A running `cotal update`, `cotal ext add` or
-`cotal ext remove` holds the update-pass lock as well as the install/remove lock, so the load refuses with
-"another extension update or mutation is in progress (pid N) - retry once it finishes". The install/remove
-text, "extension install/remove is in progress (pid N) - retry after the active `cotal ext` command
-finishes", appears only when the update-pass lock is free but a live process still holds the
-install/remove lock itself, for example an update child that outlived its `cotal update` parent. Re-run
-the command once the other one has finished.
+Loading an installed extension first waits for the installation closure held by another command,
+including another extension load. It leaves peer links and module evaluation untouched until the
+holder releases, then continues. A non-update holder has a five-minute wait limit and gets the
+one-second notice above. A running update has a two-minute limit and prints
+`waiting for a Cotal update to finish`.
+
+After that barrier, the load takes the update-pass and install/remove locks with one shared
+five-second deadline. It refuses with
+`another extension update or mutation is in progress (pid <id>) - retry once it finishes` if the
+update-pass lock stays held. The install/remove text,
+``extension install/remove is in progress (pid <id>) - retry after the active `cotal ext` command finishes``,
+appears when the update-pass lock is free but a live process still holds the install/remove lock,
+for example an update child that outlived its `cotal update` parent. Re-run the command once the
+other one has finished.
 
 
 ### Connector seeding [#built-in-connectors-are-seeded-extensions]
@@ -433,6 +660,9 @@ the seed keeps stdout to itself:
 | `--repair` | Recover after a seed that failed or was interrupted, or a lost authority (rebuilds that seed's connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current. Refuses to downgrade a newer shared store. |
+
+Maintenance flags may precede `seed`: `cotal ext --repair seed` is equivalent to
+`cotal ext seed --repair`, including when the extensions manifest is corrupt.
 
 A seed that fails names the connector and the reason, such as npm missing from PATH. Until
 `cotal ext seed --repair` finishes it, each command that seeds refuses. The refusal says whether
@@ -474,6 +704,8 @@ seed/refresh entirely (for a controlled or offline setup that manages connectors
 seed` still runs on request. `cotal agent-bearer` never takes the seed at all: it is exec'd by
 spawned seats on every bearer refresh, so it neither reconciles nor is refused by the store's
 generation (see [Plumbing](cli-auth.mdx#plumbing)).
+`cotal logout` skips the seed as well. Signing out does not install a connector, and a seed
+refusal must not leave the cached login in place.
 `cotal completion` skips the seed as well, so a shell profile that sources its stub never reconciles
 and is never refused by the store's generation or the source-checkout guard. Printing a stub writes
 nothing, and `completion install` writes only shell configuration.
@@ -527,18 +759,18 @@ cotal config unset <key> [--user | --space <name>] [--json | --plain]
 | Flag | Default | Meaning |
 |---|---|---|
 | `--user` | your defaults for a write | Your own values, with no space's values |
-| `--space <name>` | the selected space for a read | Your values for one space |
+| `--space <name>` | the space a launch here uses, for a read | Your values for one space |
 | `--verbose` / `-v` | off | Bare `config` also shows the preferences file and its revision, which its JSON result always holds |
 | `--json` / `-j` | off | One JSON document |
 | `--plain` | off | The same report without color |
 
-Your [preferences](config.mdx#preferences): `harness`, `persona`, `detach-key`, `color` and `editor`.
+Your [preferences](config.mdx#preferences): `harness`, `persona`, `detach-key`, `color`, `editor` and `name`.
 Bare `config` lists every key with the value a command uses, where it came from (a variable, your
 value for the space, your own value, or the default) and the values it outranks. `get` shows one
-key. A read looks through `--space`, else the space a launch here uses: the space selected with
-`cotal use`, or with nothing selected the space `spawn` resolves from this folder, which is this
-folder's space or the only running one. With none of those it reads your defaults. `--user` reads
-your defaults alone.
+key. A read looks through `--space`, else the space a launch here uses, the space `spawn` resolves
+from this folder. A running space registered for this folder is that space, even when `cotal use`
+selected another. With no space running here it is the selected space, or the only running one.
+With none of those it reads your defaults. `--user` reads your defaults alone.
 
 `set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
 and `persona` have per-space values. `set --space` takes a space registered or prepared on this
@@ -582,8 +814,10 @@ and recorded ownership separately. It does not inspect or load the running shell
 file or ownership record produces a warning and a partial result, exit 4. The warning names the
 file and why. A record wired into another startup file, as an install under another `ZDOTDIR` leaves
 one, names that file and the `ZDOTDIR` to read it with. A folder above the files that is a symlink,
-owned by another user, or group- or other-writable is named once, with the `chmod go-w` that fixes
-it when one does. The files under it are not opened, and one that does not exist is reported missing,
+owned by another account, or writable by an account that is not you is named once, with the `chmod`
+that fixes it when one does. Group write is accepted when the group is your proven user private
+group and the folder has no extended ACL, the same rule as every other protected path. The files
+under it are not opened, and one that does not exist is reported missing,
 so a report with nothing installed stays complete, exit 0. Next offers that `chmod` first, offers
 `install` and `uninstall` only when nothing stops them, and offers `uninstall` only when something is
 installed. A relative `ZDOTDIR`
@@ -649,9 +883,14 @@ completion does not support, such as tcsh, is refused with `UNSUPPORTED` (exit 2
 An absolute `XDG_CONFIG_HOME` replaces `~/.config` for the owned stubs; a relative value is
 ignored. Mutation refuses a relative `ZDOTDIR`, missing startup directory, symlink, untrusted
 owner or unsafe file access before it creates anything. A missing startup directory is named, with
-`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every refused startup
-file, stub, record and directory on the way to them with its reason, and a group- or other-writable
-one with its mode and one `chmod go-w <paths>` that fixes them all. A startup file that is a
+`ZDOTDIR` when that variable chose it, and with the `mkdir` that creates it. One refusal names every
+refused startup file, stub, record and directory on the way to them with its reason, and one another
+local account could write with its mode and one `chmod` that fixes them all. Bare `completion`
+offers that `chmod` before `install`. Group write on a file
+you own is accepted when the group is your proven user private group and the file has no extended
+ACL. Replacements keep the existing file's group and mode, including under a setgid directory.
+The temporary file starts private, and its final access is checked before it receives shell content.
+A file you do not own stays refused. A startup file that is a
 symlink, as a dotfile manager such as stow links it, is never written through: `install` refuses
 it, exit 2, names it and gives the line to add to the file it points to yourself. Bare `completion`
 warns that it is a symlink and does not read it. A startup file its owner made read-only is never

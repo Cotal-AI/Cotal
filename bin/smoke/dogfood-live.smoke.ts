@@ -14,7 +14,7 @@
  *       other port, and the same definition starts once the port is free;
  *     - the running dashboard refuses an unauthenticated request, exchanges its single-use launch
  *       link (read from the private bootstrap file its log names) for a session, serves / and
- *       /app.js, reads the sent message back through its broker-backed history and activity
+ *       the page's script under /assets/, reads the sent message back through its broker-backed history and activity
  *       routes, and refuses channel delete as read-only;
  *     - a second start is a no-op, `ext remove` refuses while it runs, and `service stop` ends it;
  *     - the private bootstrap record preserves the listener's bound host and port;
@@ -27,7 +27,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -56,7 +56,11 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const env = { ...process.env, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const openerDir = join(sandbox, "openers");
+mkdirSync(openerDir);
+const openedPath = join(sandbox, "opened-url");
+writeFileSync(join(openerDir, "xdg-open"), `#!/bin/sh\nprintf '%s' "$1" > '${openedPath}'\n`, { mode: 0o700 });
+const env = { ...process.env, DISPLAY: ":smoke", WAYLAND_DISPLAY: "", PATH: `${openerDir}:${process.env.PATH}`, XDG_CONFIG_HOME: configDir, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
 const realNode = spawnSync("which", ["node"], { encoding: "utf8" }).stdout.trim();
 const tsxCli = join(REPO, "node_modules", "tsx", "dist", "cli.mjs");
 const binCotal = join(REPO, "bin", "cotal.ts");
@@ -76,7 +80,7 @@ const alive = (pid: number) => {
 };
 const out = (r: ReturnType<typeof cotal>) => r.stdout + r.stderr;
 const pidOf = (r: ReturnType<typeof cotal>) => Number(/^\s*PID:\s+(\d+)\s*$/m.exec(r.stdout)?.[1]);
-const web = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${WEB_PORT}${path}`, { ...init, signal: AbortSignal.timeout(15_000) });
+const web = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${WEB_PORT}${path}`, { ...init, headers: { ...init?.headers, connection: "close" }, signal: AbortSignal.timeout(15_000) });
 
 /** The service's bounded log tail, parsed from its JSON result. */
 const serviceLog = (name: string) => {
@@ -157,7 +161,7 @@ try {
     squatter.closeAllConnections();
     await new Promise<void>((closed) => squatter.close(() => closed()));
 
-    const start = cotal(["service", "start", "web", "--space", SPACE]);
+    const start = cotal(["service", "start", "web", "--space", SPACE, "--no-open"]);
     const webPid = pidOf(start);
     if (Number.isFinite(webPid)) ownPids.push(webPid);
     ok("once the port is free the same definition starts", start.status === 0 && /Owned service process running/.test(start.stdout) && alive(webPid), out(start).slice(-600));
@@ -176,15 +180,51 @@ try {
     ok("the dashboard refuses a request with no session", unauthenticated.status === 401, unauthenticated.status);
     // Spend the token ONCE and ride the session it mints. Presenting `?k=` a second time earns
     // `launch-token-already-used`, a different refusal that reads exactly like the first.
-    const exchange = await fetch(launchUrl, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    const exchange = await fetch(launchUrl, { redirect: "manual", headers: { connection: "close" }, signal: AbortSignal.timeout(15_000) });
     const cookie = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange.headers.get("set-cookie") ?? "")?.[1];
     ok("the launch link is accepted once and mints a session", exchange.status === 302 && cookie !== undefined, exchange.status);
     const authed = { cookie: `cotal_web_session=${cookie}` };
+    const absentDir = join(sandbox, "no-opener");
+    mkdirSync(absentDir);
+    const savedPath = env.PATH;
+    env.PATH = absentDir;
+    const absent = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
+    env.PATH = savedPath;
+    const absentResult = JSON.parse(absent.stdout);
+    ok("missing opener leaves a successful running dashboard with a warning", absent.status === 0 && absentResult.outcome === "ok" && absentResult.warnings.some((warning: { message: string }) => /No browser was opened/.test(warning.message)) && alive(webPid), out(absent));
+    env.DISPLAY = "";
+    const headless = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
+    env.DISPLAY = ":smoke";
+    const headlessResult = JSON.parse(headless.stdout);
+    ok("no graphical session leaves a successful dashboard with a warning and no opener", headless.status === 0 && headlessResult.outcome === "ok" && headlessResult.warnings.length > 0 && !existsSync(openedPath), out(headless));
+    const originalSessionBytes = readFileSync(sessionPath, "utf8");
+    const corruptedSession = JSON.parse(originalSessionBytes);
+    corruptedSession.launchRequestId = "mismatched";
+    writeFileSync(sessionPath, JSON.stringify(corruptedSession));
+    const broken = cotal(["service", "start", "web", "--space", SPACE, "--json"]);
+    writeFileSync(sessionPath, originalSessionBytes);
+    ok("a mismatched session remains partial and leaves the process alive", broken.status !== 0 && JSON.parse(broken.stdout).outcome === "partial" && alive(webPid), out(broken));
+    const reopen = cotal(["service", "start", "web", "--space", SPACE]);
+    ok("a matching running dashboard opens a new browser session without restarting", reopen.status === 0 && pidOf(reopen) === webPid, out(reopen));
+    for (let i = 0; i < 50 && !existsSync(openedPath); i++) await sleep(100);
+    ok("the browser opener receives a private launch URL", existsSync(openedPath));
+    const reopenedUrl = readFileSync(openedPath, "utf8");
+    const reopened = await fetch(reopenedUrl, { redirect: "manual", headers: { connection: "close" } });
+    ok("the reopened link authenticates after the original link was spent", reopened.status === 302 && reopened.headers.has("set-cookie"), reopened.status);
+    ok("the reopened link is single-use", (await fetch(reopenedUrl, { redirect: "manual" })).status === 401);
+    ok("unauthenticated callers cannot mint browser links", (await web("/api/browser-launch", { method: "POST" })).status === 401);
+    ok("readiness authority cannot mint browser links", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-readiness": (session as Bootstrap & { readiness: string }).readiness } })).status === 401);
+    const launchNonce = (JSON.parse(readFileSync(sessionPath, "utf8")) as { launchNonce: string }).launchNonce;
+    ok("cross-origin callers cannot use the private launch capability", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-browser-launch": launchNonce, origin: "https://example.invalid" } })).status === 403);
+    ok("browser cookies alone cannot mint another link", (await web("/api/browser-launch", { method: "POST", headers: authed })).status === 404);
+    ok("a launch request with a body is refused", (await web("/api/browser-launch", { method: "POST", headers: { "x-cotal-browser-launch": launchNonce }, body: "x" })).status === 401);
+    ok("browser links and private capabilities stay out of output", !out(reopen).includes(launchNonce) && !out(reopen).includes(new URL(reopenedUrl).searchParams.get("k")!) && !serviceLog("web").lines.some((line) => line.includes(reopenedUrl) || line.includes(launchNonce)));
     const page = await web("/", { headers: authed });
     const html = await page.text();
     ok("dashboard page is the real asset (packaged via files:[dist])", page.status === 200 && /<html|<!doctype/i.test(html) && html.length > 200, html.slice(0, 120));
-    const appJs = await web("/app.js", { headers: authed });
-    ok("static asset /app.js serves", appJs.status === 200 && /javascript/.test(appJs.headers.get("content-type") ?? ""), appJs.headers.get("content-type"));
+    const script = /(?:src)="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
+    const asset = script === undefined ? undefined : await web(script, { headers: authed });
+    ok("the page's script under /assets/ serves as JavaScript", asset?.status === 200 && (asset.headers.get("content-type") ?? "").startsWith("text/javascript"), { script, status: asset?.status, type: asset?.headers.get("content-type") });
     const metaRes = await web("/api/meta", { headers: authed });
     const meta = (await metaRes.json()) as { space?: string; pid?: number; channelDeleteSupported?: boolean };
     ok("/api/meta names the space and serving pid, and no channel delete", metaRes.status === 200 && meta.space === SPACE && meta.pid === webPid && meta.channelDeleteSupported === false, { meta, webPid });
@@ -242,7 +282,7 @@ try {
     const stopAgain = cotal(["service", "stop", "web", "--instance", liveBoot!.log.instanceId, "--space", SPACE, "--yes"]);
     for (let i = 0; i < 50 && alive(livePid); i++) await sleep(100);
     ok("the explicit stop ends the dashboard and removes its bootstrap file before the stack", stopAgain.status === 0 && !alive(livePid) && !existsSync(liveBoot!.path) && meshPids.every(alive), out(stopAgain).slice(-500));
-    const down = cotal(["down"]);
+    const down = cotal(["down", "--yes"]);
     ok("bare down then stops the auth mesh", down.status === 0 && meshPids.every((pid) => !alive(pid)), out(down).slice(-500));
   }
 
@@ -256,7 +296,7 @@ try {
   console.log(`\nDOGFOOD LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
   cotal(["service", "stop", "web", "--space", SPACE, "--yes"]);
-  cotal(["down"]);
+  cotal(["down", "--yes"]);
   for (const p of ownPids) if (alive(p)) { try { process.kill(p, "SIGTERM"); } catch { /* gone */ } }
   rmSync(sandbox, { recursive: true, force: true });
 }

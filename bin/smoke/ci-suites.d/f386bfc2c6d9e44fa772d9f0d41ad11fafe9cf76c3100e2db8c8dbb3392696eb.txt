@@ -1,0 +1,2 @@
+# cmux inventory failures stay distinct from empty listings (#3211).
+smoke:cmux-inventory

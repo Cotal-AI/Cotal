@@ -1,0 +1,2 @@
+# dmHistoryOf reads named principals' DMs filtered on the broker and reports a denial instead of an empty list.
+smoke:dm-history-of

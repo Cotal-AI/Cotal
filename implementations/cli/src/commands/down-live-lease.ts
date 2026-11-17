@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /** A manager or delivery daemon whose pidfile is gone while its lease is still live.
  *  A daemon that is running keeps renewing, and `down` must not stop the broker under it. A daemon
  *  that exited without releasing, such as one whose broker stalled past its broker-gone window,
@@ -35,9 +36,9 @@ export async function directKvValue<T>(
 }
 
 
-import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, standaloneConnectOpts } from "@cotal-ai/core";
-import { CommandFailure, findMesh, localProcessPath, stderrLine, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
-import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
+import { awaitLeaseExpiry, dialerFor, deliveryBucket, isReachable, LEASE_EXPIRY_GRACE_MS, LEASE_TTL_MS, leaseRemainingMs, MANAGER_LEASE_KEY, MANAGER_LEASE_TTL_MS, managerBucket, mintCreds, mintLifecycleUid, newIdentity, standaloneConnectOpts } from "@cotal-ai/core";
+import { canonicalRoot, CommandFailure, findMesh, getSpaceAuth, localProcessPath, stderrLine, workspaceSecretStore, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { connectOrExit } from "../lib/connect.js";
 import { c } from "../ui.js";
 
 /** One KV subject's last row as its revision and broker write time, without creating a consumer.
@@ -83,11 +84,27 @@ async function liveUnrecordedDaemonNames(
   if (!watched.length) return [];
   const mesh = findMesh(context.space);
   if (!mesh?.server || !(await isReachable(mesh.server))) return [];
-  const resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
-  const user = resolved.bearer ? await userViewAuthOrExit(resolved, "deployer") : undefined;
+  let userCreds: string | undefined;
+  let resolved: Awaited<ReturnType<typeof connectOrExit>> | undefined;
+  if (mesh.mode === "user") {
+    // This is a hosting-folder infrastructure check, not a user operation. Use only this
+    // root's own signer, never a login or a signer from another registered root.
+    if (canonicalRoot(mesh.root) !== canonicalRoot(context.root))
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "the registered space belongs to another root; no daemon lease was read and nothing was stopped");
+    const trust = await getSpaceAuth(workspaceSecretStore(context.root), context.space);
+    if (!trust)
+      throw new CommandFailure("refused", "PERMISSION_DENIED", "this root has no signing authority for the daemon lease check; nothing was stopped");
+    userCreds = await mintCreds(trust, newIdentity(), "deployer", { lifecycleUid: mintLifecycleUid() });
+  } else {
+    resolved = await connectOrExit({ space: context.space, server: mesh.server }, "deployer");
+  }
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ ...(user ?? { creds: resolved.creds }), tls: resolved.tls }),
+    ...standaloneConnectOpts(
+      mesh.mode === "user"
+        ? { creds: userCreds, tls: mesh.tlsRequired === true }
+        : { creds: resolved!.creds, tls: resolved!.tls },
+    ),
     maxReconnectAttempts: 0,
   });
   try {
@@ -123,6 +140,6 @@ async function liveUnrecordedDaemonNames(
     const order = ["manager", "delivery daemon"];
     return order.filter((label) => found.includes(label)).concat(found.filter((label) => !order.includes(label)));
   } finally {
-    await nc.drain().catch(() => {});
+    await drainAndClose(nc).catch(() => {});
   }
 }

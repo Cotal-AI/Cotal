@@ -89,8 +89,10 @@ file under any name, and a `store.id` that is a symbolic link or holds anything 
 `--creds` that names one real workstation while process cwd resolves another is refused
 at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
 path that is not under any `.cotal` tree is not that case and is not refused here. It never
-walks ancestors with `findCotalRoot`. No bound daemon is not a named
-store, so start proceeds; a later daemon on a foreign store is refused on the next remint.
+walks ancestors with `findCotalRoot`. The manager proceeds without a bound daemon only after a structural
+no-responder result and a delivery lease row that is missing or holderless. A timeout or an
+answered reply that cannot be decoded does not establish absence, even when its error text contains
+`503` or `no responders`. A later daemon on a foreign store is refused on the next remint.
 The first-party filesystem adapter declares its workspace-root identity on the store itself. Other
 injected adapters declare their stable coordinate on `SecretStore.identity`, or name it in
 `COTAL_SECRET_STORE` on both processes. It never throws: it
@@ -149,14 +151,46 @@ and closes any resources created by that late completion.
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
 under the explicit `stateDir`. The auth plane's instance identity holds its private serve seed, so it
 lives in the store under `authInstanceKey(space)`. A record an earlier release kept under `stateDir`
-moves into the store on the first start.
+moves into the store on the first start. If the store and file disagree on the instance id,
+public serve key or serve seed, startup refuses and leaves both identity records intact.
 The context never resolves a workspace root from the working directory and has no local manager, so
 only remote manager gates can be selected. It returns after
-the authority plane, the callout subscription and the loopback listener are bound. A start that
-fails closes the connections it opened and releases its plane claim, so a retry on the same space
-can claim it. A fenced plane or
+the authority plane, the callout subscription and the loopback listener are bound. A failed start
+attempts to close its connections and release its plane claim. If closing the plane fails, it logs
+that failure through the context's diagnostic sink (stderr by default) and throws the original
+start error. A claim left held requires liveness adjudication before a later start can reclaim it.
+A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it.
+
+### Endpoint registry
+
+Auth can host the space's permission-scoped endpoint registry. It is off by default. Import
+`registryService` from `@cotal-ai/registry` and pass `registry: registryService` to
+`startAuthService`, or in the third argument of `runAuthService`. The binary supplies the same
+implementation for the `auth-service` preset's `registry` option. A multi-space process enables it
+only on manifest entries with `"registry": true`; an injected implementation alone does not enable
+other lanes.
+
+The auth lane keeps a distinct registry instance and serving identity in its assigned secret store.
+The record is pinned to the account and is retained across restarts. Missing state may be created;
+malformed or foreign state is refused without replacing it. Registration and recovery use the native
+endpoint gate and repair cursor. A frozen registration requires the delivery oracle to prove the
+former holder gone and verify every required eviction. Missing authority or inconclusive evidence
+leaves the gate held. Keep the space's scoped delivery observer and evictor available for restarts.
+
+The registry implementation receives separate serving and read connections, never signing keys or
+the secret store. Its reader can read every recorded caller ceiling in that account, a stream-wide
+residual of the native registry-reader profile; it is not a credential to give a guest. Every serving
+credential renewal passes the native issuance-gate CAS against the captured registration. The usual
+profile lifetimes apply: one hour for the reader and 24 hours for serving. The trusted-host
+`registryCredentialTtlSeconds` rehearsal option shortens both to 5 through 900 seconds; no CLI flag
+sets it.
+
+Listings use the caller's recorded ceiling and current registration records. An unproved reader,
+failed read or plane fence refuses disclosure. Registry work and its connections close before the
+auth plane claim is released. An unsupported or failed registry start refuses that auth lane;
+no empty or fabricated listing stands in for it.
 
 ### Public exchange face
 
@@ -192,7 +226,21 @@ the same way, bounded to 5 to 300 seconds, with the five-minute `issuer` lifetim
 ### Claim recovery order
 
 The auth plane can renew a registered manager's five standing credentials from the current
-service registration. Run-driver renewal reads the hosted run attempt and checks its active
+service registration. A serve mint retries contention with session or other serving mints only while
+all issuance-gate authority fields remain unchanged. A freeze or changed coordinate still refuses
+issuance, and contention retries are bounded. The manager binds its replacement serve connection before draining the old
+connection. Both use the same incarnation's queue groups, so overlap does not execute a request
+twice. The old connection has five seconds to drain in-flight handlers and flush replies before
+closing. If that deadline expires, the manager reports the unfinished drain and closes only the
+retired transport. An unfinished request's outcome is unknown and must not be retried blindly.
+An endpoint that serves on its resident connection can ask for the same overlap with `overlapOnConnectionRenewal`. A planned credential swap dials a second connection, calls `onConnection`, and flushes before it reconnects the resident connection. It closes the second connection after the resident connection has flushed the subscriptions it restored. `onConnection` must accept a connection that exists only for the swap. The daemon's machine-status serve sets this. An endpoint that does not set it still reconnects in place.
+The supervisor, goal writer and session ledger retain their connections during planned renewal.
+They wait up to five seconds for outgoing requests to finish before requesting a native reconnect.
+If requests stay busy, the manager reports the deferred refresh and retries after one second.
+Credential adoption releases scoped maintenance before the retired serve connection drains, so an
+admitted session handler does not wait for its own completion. Broker failures and credential
+expiry can still interrupt requests. The manager never replays a mutation after a lost reply.
+Run-driver renewal reads the hosted run attempt and checks its active
 fence as well as the manager's open issuance gate and process epoch. A moved gate or run
 fence refuses issuance. These primitives do not establish a complete pooled deployment.
 A fresh auth plane can initialize without a delivery-admin responder. Reclaiming a held claim from a dead predecessor needs the delivery

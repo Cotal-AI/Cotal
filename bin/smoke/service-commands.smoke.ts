@@ -37,7 +37,7 @@ type ServicePreset = import("@cotal-ai/workspace").ServicePreset;
 const { cacheServicePreset, isCommandFailure, recordMesh } = await import("@cotal-ai/workspace");
 const { execWords } = await import("../../implementations/cli/src/lib/exec-words.js");
 const { serviceDefinitionStore } = await import("../../implementations/cli/src/lib/service-definitions.js");
-const { presetDefaultOptions, presetMaterialPath, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
+const { presetDefaultOptions, presetMaterialPath, presetOptionRefusal, resolveServicePreset, servicePresetDefinition, servicePresetFlags } = await import("../../implementations/cli/src/lib/service-presets.js");
 const { controlsRecordedAdapter, resolveServiceAdapter } = await import("../../implementations/cli/src/lib/service-adapters.js");
 await import("@cotal-ai/cli");
 await import("@cotal-ai/manager");
@@ -72,6 +72,13 @@ for (const [line, what] of [["echo 'x", "single quote that is never closed"], ["
   const result = words(line);
   check(`--exec ${JSON.stringify(line)} refuses: ${what}`, typeof result === "string" && result.startsWith("USAGE_INVALID: ") && result.includes(what), result);
 }
+
+// A guided answer is checked without requiring the form's other answers yet.
+const guidedAuth = resolveServicePreset("auth-service");
+check("a guided integer answer rejects invalid JSON", presetOptionRefusal(guidedAuth, "port", "abc")?.includes("not valid JSON") === true);
+check("a guided integer answer rejects a fractional value", presetOptionRefusal(guidedAuth, "port", "1.25")?.includes("closed schema") === true);
+check("a guided port answer applies its schema bound", presetOptionRefusal(guidedAuth, "port", "65536")?.includes("closed schema") === true);
+check("a corrected guided port answer needs no other answers", presetOptionRefusal(guidedAuth, "port", "65535") === undefined);
 
 // ---- A preset's defaults are a closed declaration ----------------------------------------------
 const base = { kind: "service-preset" as const, name: "fixture", summary: "fixture", adapter: "fixture-adapter", timeoutMs: 1000 };
@@ -151,7 +158,7 @@ check("the manager preset defaults to this space's root and the pty runtime",
   JSON.stringify(builtIn("manager")?.defaults) === JSON.stringify({ root: { space: "root" }, runtime: { value: "pty" } }), builtIn("manager")?.defaults);
 check("the delivery preset defaults to this space's root and its delivery credential file",
   builtIn("delivery")?.defaults?.root !== undefined && JSON.stringify(builtIn("delivery")?.defaults?.creds) === JSON.stringify({ space: "material", kind: "delivery.creds" }), builtIn("delivery")?.defaults);
-check("the web preset defaults to this space's root and read-only", sorted(builtIn("web")?.defaults) === sorted({ "read-only": { value: true }, root: { space: "root" } }), builtIn("web")?.defaults);
+check("the web preset defaults to this space's root, read-only and its web credential file", sorted(builtIn("web")?.defaults) === sorted({ "read-only": { value: true }, root: { space: "root" }, creds: { space: "material", kind: "web.creds" } }), builtIn("web")?.defaults);
 check("the auth-service and feedback-intake presets default only the root",
   ["auth-service", "feedback-intake"].every((name) => JSON.stringify(builtIn(name)?.defaults) === JSON.stringify({ root: { space: "root" } })), ["auth-service", "feedback-intake"].map((name) => builtIn(name)?.defaults));
 check("every built-in preset's summary is plain words a person reads", ["manager", "delivery", "web", "auth-service", "feedback-intake"].every((name) => (builtIn(name)?.summary.length ?? 0) > 10), ["manager", "delivery", "web", "auth-service", "feedback-intake"].map((name) => builtIn(name)?.summary));
@@ -276,6 +283,13 @@ try {
   check("service add m1 --preset manager saves m1", manager.status === 0, out(manager));
   const shown = cotal(["service", "show", "manager", "--space", SPACE]);
   check("service show manager reads m1 and says so on stderr", shown.status === 0 && shown.stderr.includes("manager in space servicecommands is the saved service m1") && /Name: +m1\n/.test(shown.stdout), out(shown));
+  // #7072: a dry run with another option used to save m1 again, so the next real start used the
+  // previewed --runtime. The note about m1 shows the preview reached m1.
+  const savedM1 = () => JSON.stringify(serviceDefinitionStore(SPACE).read("m1"));
+  const beforePreview = savedM1();
+  const preview = cotal(["manager", "start", "--space", SPACE, "--runtime", "absent", "--dry-run"]);
+  check("manager start --runtime absent --dry-run previews m1 and saves nothing",
+    preview.status === 0 && preview.stderr.includes("manager in space servicecommands is the saved service m1") && !out(preview).includes("again with the new") && savedM1() === beforePreview, { preview: out(preview), before: beforePreview, after: savedM1() });
   const removed = cotal(["service", "remove", "manager", "--space", SPACE, "--yes", "--json"]);
   let removedName: unknown;
   try { removedName = (JSON.parse(removed.stdout) as { result: { kind: string; name: string } }).result; } catch { removedName = out(removed); }

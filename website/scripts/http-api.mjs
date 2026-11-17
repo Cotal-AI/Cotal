@@ -139,7 +139,7 @@ export function referenceMdx(reference, spec) {
   const metadata = {
     title: spec.info.title,
     description: `HTTP operations, parameters, responses, and authentication for the ${reference.label} interface.`,
-    kind: 'Reference',
+    kind: 'Reference (informative)',
     audience: 'HTTP client authors',
   };
   const frontmatter = ['---', ...Object.entries(metadata).map(([key, value]) => `${key}: ${JSON.stringify(value)}`), '---', ''].join('\n');

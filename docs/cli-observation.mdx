@@ -51,6 +51,14 @@ preview that leaves any of its text out ends with `…`. Closing a detail return
 message and scroll position it showed, and the roster to the seat it had selected, or to that row if
 the seat has left.
 
+In an agent detail, `t` toggles the tool-call panel. Payloads start collapsed; `p` toggles their
+display. Use ↑/↓ or `j`/`k` to scroll and Esc to close the panel. The console reads payload live
+traffic and history only for the selected concrete principal. A denied history read shows a
+payload-unavailable diagnostic rather than claiming the tool returned no output. A cut payload
+shows its `originalBytes` and `sha256` marker so the display does not imply a complete value.
+Payload admission and withholding follow the
+[connector rules](claude-connector-reference.mdx#event-plane).
+
 
 
 ## Web dashboard [#web-dashboard]
@@ -59,11 +67,11 @@ the seat has left.
 ### Dashboard command [#web]
 
 The dashboard is an owned service preset from `@cotal-ai/web`, not a top-level `web` command.
-It is not started by `up`. An absent extension requires the explicit `cotal ext add @cotal-ai/web`;
-starting a service never installs it or creates a caller credential.
+It is not started by `up`, which only mints its read-only credential, the space's `web.creds`. An
+absent extension requires the explicit `cotal ext add @cotal-ai/web`; starting a service never
+installs it or creates a caller credential.
 
 ```bash
-cotal service add web --preset web --space main --root /absolute/registered/root --creds /absolute/private/dashboard.creds --read-only
 cotal service start web --space main
 cotal service status web --space main
 cotal service logs web --space main
@@ -73,15 +81,17 @@ cotal service stop web --space main --yes
 
 ### Dashboard authority
 
-This route requires a registered static-auth target, an existing protected credential file
-and explicit read-only intent. `--host` chooses a concrete bind/browser address, default
+This route requires a registered static-auth target and a protected observer credential file.
+Read-only is the default. The file is the space's `web.creds` unless `--creds` names another one. `--host` chooses a concrete bind/browser address, default
 `127.0.0.1`; wildcard binds refuse. `--port` is 1 to 65535, default 7799. Broker coordinates and
 required TLS come from the registered target. Broker TLS does not encrypt the dashboard's HTTP
-listener. The file supplies the only connection authority.
+listener. The file supplies the observer connection authority.
 No cached human login, managed-seat identity, operator signer or channel-purger credential is
 substituted. User-auth/open targets refuse, because no supported caller handoff is connected for them.
-The page marks this service read-only and hides channel delete; the server also refuses it before
+The service hides channel delete and refuses it before
 reading a delete body or opening a mutation connection. The broker still enforces the file's scope.
+Posting requires `--no-read-only` and a separate protected `--posting-creds` file.
+See [Authorize posting](web-dashboard.mdx#authorize-posting) for a channel-scoped setup.
 
 
 ### Private launch record
@@ -92,8 +102,11 @@ a private process-initialization phase. This is not a fresh authenticated endpoi
 Logs print only the session file's reference, never its bootstrap URL or readiness credential. A
 background `service start` ends with the `service logs` command for the new instance, which is where
 that reference appears. An endpoint error or warning in that log names only the error's class, its
-name and code, never its message. Open the private file locally and use its single-use launch link in the
-intended browser. There is no automatic browser action. The existing cookie and origin gates remain in use. Confirmed close
+name and code, never its message. Background `cotal service start web` reads the matching private record
+and opens a fresh single-use link in the default browser. Repeating the command reuses the process
+and preserves existing browser sessions. The local launch capability is separate from readiness authority
+and is never printed. Use `--no-open` to retain the manual private-file route, including for remote listeners.
+Foreground starts remain manual. The existing cookie and origin gates remain in use. Confirmed close
 removes only this child's unchanged session/PID records; uncertainty retains custody.
 
 Foreground service start uses the shared terminal lifetime. OS installation and full native caller
@@ -118,8 +131,9 @@ comes back, after a broker restart too, the feed resumes and reports the transit
 `--plain` or a noninteractive invocation uses the attributed line stream. Interactive filters
 are not supported by that stream. A line carries at most 16,384 code units of a message's text, the
 observer stream's row bound. A longer message is cut there, and its line ends with the count not
-shown and the read that shows it whole: `cotal history <channel>`, or `cotal history --dms` for a
-direct message. Authenticated observer views keep direct messages out of
+shown and the read that carries the whole text: `cotal history <channel> --json`, or
+`cotal history --dms --json` for a direct message. A text or plain `history` row cuts a long message
+again. Authenticated observer views keep direct messages out of
 the channel tap. Opening this view never launches, stops or attaches an agent. If the reader
 of the stream closes it, as `| head` does, the observer stops at its next line, so on a quiet mesh it
 runs until a message arrives or Ctrl-C ends it with exit 130.
@@ -149,9 +163,12 @@ control request. Connection or authorization failure is an error, not an empty c
 
 `watch --view` accepts `feed`, `events`, `messages`, `roster`, `channels`, `waiting`, `dms` and
 `topology`; `activity` remains the feed spelling. The terminal cycles available views with `f`.
-Roster and waiting rows show reported state without inventing blocked duration. Channel counts
+The roster includes agents and endpoints, including chat sessions and the manager, with each
+participant's kind and identity. Waiting rows cover agents reporting a waiting state.
+Both views show reported state without inventing blocked duration. Channel counts
 keep retained messages separate from observed arrivals. Topology displays broker-sourced live
-patterns and durable channels, not task dependencies or permission grants. Missing or unreadable
+patterns and durable channels, not task dependencies or permission grants. A durable family
+membership such as `team.>` links to each durable-class channel under it. Missing or unreadable
 membership is explicit, never an empty complete graph. Long identities wrap without clipping.
 
 The authenticated observer remains narrowed to channel traffic. Its DM view refuses instead of

@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import {

@@ -42,7 +42,7 @@ const space = "discoverysmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
-const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const srv = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
 
 let pass = 0;
@@ -171,7 +171,7 @@ try {
   const unrelated = await run(me, "cotal_dm", { to: "grace", text: "nobody" });
   check("an unrelated name keeps the plain refusal", unrelated.isError && unrelated.text === `Couldn't DM: no peer "grace" in space "${space}"`, unrelated.text);
   const full = await run(me, "cotal_dm", { to: "ada-lovelace (web)", text: "by full name" });
-  check("the full name delivers", !full.isError && full.text.includes("for ada-lovelace (web)"), full.text);
+  check("the full name delivers", !full.isError && full.text.startsWith("Sent to ada-lovelace (web)."), full.text);
   const texts = (seat: Seat) => seat.agent.inboxSnapshot(8).items.map((i) => i.text);
   check("the full-name DM arrived", await until(() => texts(human).includes("by full name")), texts(human));
   await sleep(500);
@@ -179,7 +179,7 @@ try {
 
   // ---- cotal_anycast ----
   const held = await run(me, "cotal_anycast", { role: "default", text: "for a held role" });
-  check("a role someone holds gets no waiting note", !held.isError && held.text.includes("(1 holder online at send") && !held.text.includes("waits on its queue"), held.text);
+  check("a role someone holds gets no waiting note", !held.isError && held.text.includes("(holder online at send: scout (") && !held.text.includes("waits on its queue"), held.text);
   const waiting = await run(me, "cotal_anycast", { role: "reviewer", text: "queued for a reviewer" });
   check(
     "a role nobody holds says the request waits on its queue",
@@ -191,6 +191,15 @@ try {
     "the next holder of that role receives the queued request",
     await until(() => reviewer.agent.inboxSnapshot(8).items.some((i) => i.kind === "anycast" && i.text === "queued for a reviewer"), 10000),
     texts(reviewer),
+  );
+
+  const messageFlow = await run(me, "cotal_docs", { page: "presence-and-delivery" });
+  check("the message-flow page is served through cotal_docs", !messageFlow.isError && messageFlow.text.includes("`cotal_dm`"), messageFlow.text);
+  check(
+    "message-flow docs do not promise fields absent from the live DM result",
+    !messageFlow.text.includes("`cotal_dm` reports both the stored sequence and the recipient's roster status at send time.") ||
+      (/\bseq(?:uence)?\b[^\n]*\d/i.test(full.text) && /\b(idle|working|waiting|offline)\b/.test(full.text)),
+    full.text,
   );
 
   console.log(`\nDISCOVERY AND ADDRESSING TESTS PASSED ✅  (${pass} checks)`);

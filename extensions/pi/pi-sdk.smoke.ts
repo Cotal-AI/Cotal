@@ -347,8 +347,11 @@ try {
   if (brokerRoot && port) broker = spawn("nats-server", ["-js", "-p", String(port), "-sd", brokerRoot], { stdio: "ignore" });
   const releaseBroker = broker && brokerRoot ? teardownOnSignal(broker, brokerRoot) : undefined;
   const root = mkdtempSync(join(tmpdir(), "cotal-pi-events-sdk-"));
-  const keys = ["COTAL_SPACE", "COTAL_NAME", "COTAL_ID", "COTAL_SERVERS", "COTAL_EVENTS", "COTAL_WORKSPACE_ROOT", "COTAL_PI_EXPECTED_SESSION", "COTAL_PI_FRESH_SESSION"] as const;
-  const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  // A Cotal seat running this smoke carries its own COTAL_* launch identity (launch material,
+  // control socket, grants). Inherited, it mixes with the identity set below and the extension's
+  // config refuses the launch, which Pi's loader drops silently (#5697). Clear all of it here.
+  const prior = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("COTAL_")));
+  for (const key of Object.keys(prior)) delete process.env[key];
   const space = process.env.PI_EVENTS_TEST_SPACE ?? `pi_events_${randomUUID().replace(/-/g, "")}`;
   const actor = `pi_${randomUUID().replace(/-/g, "")}`;
   Object.assign(process.env, {
@@ -606,10 +609,8 @@ try {
     native?.dispose();
     provider.unregister();
     await observer.stop();
-    for (const key of keys) {
-      if (prior[key] === undefined) delete process.env[key];
-      else process.env[key] = prior[key];
-    }
+    for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+    Object.assign(process.env, prior);
     rmSync(root, { recursive: true, force: true });
     if (broker) await killAndAwaitExit(broker);
     releaseBroker?.();

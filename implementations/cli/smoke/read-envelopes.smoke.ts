@@ -103,7 +103,7 @@ const ansi = /\x1b\[/;
     check(`${command} --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2`,
       json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.command === words[0] && json.envelope.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
     check(`${command} --json with no mesh gives the remedy apart from the message`,
-      json.envelope?.error?.message === "no mesh running" && json.envelope.error.remedy === "run `cotal up` in a project, or pass `--server`", json.envelope?.error);
+      json.envelope?.error?.message === "no mesh running" && json.envelope.error.remedy === "sign in to Cotal Cloud with `cotal login`, run `cotal up` in a project, or pass `--server`", json.envelope?.error);
     const human = run(words);
     check(`${command} with no mesh exits 2 with the sentence on stderr and nothing on stdout`, human.status === 2 && human.stdout === "" && /no mesh running/.test(human.stderr), shown(human));
   }

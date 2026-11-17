@@ -68,7 +68,7 @@ export interface OpenCodeMessageWithParts {
 }
 
 /** Reads the whole session. Injected so the source can be exercised without a live server. */
-export type ReadSessionMessages = () => Promise<OpenCodeMessageWithParts[]>;
+type ReadSessionMessages = () => Promise<OpenCodeMessageWithParts[]>;
 
 /**
  * The part types this source may hand to the mapper as EMITTABLE, meaning a frame depends on them.
@@ -125,7 +125,7 @@ function isAfter(record: OpenCodeRecord, at: { messageId: string; partId: string
   return record.part.id > at.partId;
 }
 
-export interface OpenCodeSessionSourceOptions {
+interface OpenCodeSessionSourceOptions {
   /** Reads the session. */
   read: ReadSessionMessages;
   /**

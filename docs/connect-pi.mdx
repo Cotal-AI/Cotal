@@ -1,7 +1,7 @@
 ---
 title: "Connect pi (alpha)"
 description: "Launch pi on a Cotal mesh or load the Cotal extension into your own pi host."
-kind: Guide
+kind: "Guide (informative)"
 audience: "operators"
 ---
 
@@ -15,7 +15,7 @@ Cotal does not bundle the pi runtime.
 <Callout type="info" title="Alpha connector">
 
 This release targets pi `0.79.10`.
-Persona files, model selection, initial prompts, session forks, and managed crash recovery are supported.
+Persona files, model selection, initial prompts, and session forks are supported.
 Model variants, MCP tool sharing, and arbitrary launch options are refused.
 
 </Callout>
@@ -52,6 +52,9 @@ Add `--detach` to launch through a manager and return after readiness.
 To use a persona file on the execution host, add `--file <persona-file>`.
 `--model <model>` overrides that file's `model:` field.
 The connector passes the model name to pi unchanged.
+To list the models your pi can run, use `cotal models --harness pi`.
+It lists each model as `provider/id` for the providers pi holds credentials for.
+With no credentials, it reports `pi lists no models because it holds no provider credentials; sign in with /login in pi or set a provider API key`.
 Provider keys come from the connector's declared list and the names explicitly allowed in `spawn.env`.
 See [Launcher variables](config.mdx#launcher-variables) when a provider needs another variable.
 
@@ -99,15 +102,17 @@ cotal spawn --harness pi --resume <pi-session-id>
 ```
 
 Pi forks the source session and leaves its transcript unchanged.
-A managed process crash instead reopens the seat's current session with the same Cotal identity and durable inbox.
-The manager allows three restarts in two minutes; another crash retires the seat.
-A deliberate stop does not restart it.
+Automatic crash recovery requires the runtime to prove that all prior local work has ended, including detached tools.
+The built-in PTY runtime cannot provide that proof, so a crashed Pi seat is retired without an automatic restart.
+Its tools may still be running; check their outcome before starting the work again. A deliberate stop does not restart the seat.
 
 For a team member declared `continuity: exact`, Cotal opens its recorded pi session and refuses a missing session.
 See [Define a team](define-a-team.mdx) for continuity and [Session lifecycle](pi-connector-reference.mdx#session-lifecycle) for reload behavior.
 
 If a turn exhausts its continuation attempts, presence reports that delivery needs intervention.
 Start a new turn in the session or replace the seat.
+The presence line includes the error Pi reported.
+`Unknown provider: unknown` means Pi has no model provider set up on that computer, so set one up in Pi before you start a new turn.
 After an abort or dispatch watchdog, a managed restart ends any possibly active provider call before redelivery.
 The [delivery reference](pi-connector-reference.mdx#delivery-confirmation) explains when messages are acknowledged.
 

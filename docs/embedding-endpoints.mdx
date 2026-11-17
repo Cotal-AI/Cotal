@@ -9,6 +9,22 @@ This page describes `CotalEndpoint` behavior in the TypeScript reference impleme
 [Message flow](presence-and-delivery.mdx) explains how presence and delivery fit together.
 The wire requirements are in [SPEC §6](../SPEC.md#6-presence-and-discovery) and [§8](../SPEC.md#8-nats--jetstream-binding).
 
+## Channel history [#channel-history]
+
+`multiChannelHistory(channels, { limit, signal })` returns the newest matching chat messages,
+oldest first by stream sequence. Each row contains `{ channel, seq, msg }`. The channel comes
+from the broker subject, not the message payload. The default limit is 100.
+
+Pass concrete channel names, or one channel family such as `["events.>"]`. A family uses one
+broker filter without listing its concrete channels. It covers descendants such as
+`events.alpha` and `events.alpha.worker`, but not the bare `events` channel.
+An unused family returns an empty array. An empty channel list also returns an empty array.
+
+A family must be the only entry. Multiple families, a family mixed with concrete names,
+the root `>` and patterns containing `*` are refused. Invalid channel names are never rewritten.
+The broker enforces the caller's existing grants, including the filter-bearing consumer-create
+grant for a family. Permission failures throw. This method grants no additional read access.
+
 ## Presence metadata [#presence-metadata]
 
 Each presence record contains an `AgentCard`, status, and heartbeat timestamp, under the key `card.id`.
@@ -50,7 +66,7 @@ A missing observation means unknown. A change to runtime metadata notifies prese
 The endpoint rejects a presence row when any of these checks fails:
 
 - The row and `card` are objects, and `card.id` equals the KV key.
-- `card.name` is a string, and `status` is one of `idle`, `waiting`, `working`, or `offline`.
+- `card.name` is a non-blank string, and `status` is one of `idle`, `waiting`, `working`, or `offline`.
 - `ts` is a finite number.
 - Each present `card.role`, `activity`, and `attention` is a string.
 - A present `condition` is an object with a string `code`.
@@ -66,6 +82,8 @@ The complete wire field definitions are in [SPEC §6](../SPEC.md#6-presence-and-
 Agent seats call `CotalEndpoint.readPresence()` when a tool needs a roster. Batched Direct Gets bind no consumer, apply presence validation and liveness rules, share concurrent calls, and retain a missing previously observed peer as offline. They need `$JS.API.DIRECT.GET.KV_cotal_presence_<space>`. Older issuers can mint credentials without it. Upgrade the issuer, mint replacement credentials, and connect with those credentials. Reconnecting the same credential adds no grant. A refused read remains an authorization failure.
 
 A failed read leaves a last-known roster. A DM or mention with a name that the failed read cannot verify refuses with that same reason. A name verified by an earlier read remains accepted. Watching managers, delivery, chat, and dashboard endpoints retain their transition watches.
+
+A consuming endpoint that reads presence on demand reads the channel registry on demand too. It reads once at connect, and `listChannels()`, `joinChannel()` and `leaveChannel()` read again first. Call `CotalEndpoint.readChannels()` before `getChannelConfig()` or `channelReplay()` when the answer must be current. It needs `$JS.API.DIRECT.GET.KV_cotal_channels_<space>`, which issuers mint from 0.116.0; an older credential is refused with the grant named.
 
 ## Presence diagnosis [#presence-view-and-write-diagnosis]
 
@@ -113,6 +131,13 @@ An old connection's late result cannot change a newer connection's diagnosis.
 Within one connection, an older write's late result cannot replace newer settled evidence.
 The diagnosis reports observed presence-write refusals. It does not establish that the fault is limited to presence.
 See [connector presence display](connector-runtime-reference.mdx#presence-display-and-name-verification) for tool behavior.
+
+## Service subscription errors [#service-subscription-errors]
+
+A broker refusal of a `serveControl()` subscription emits one endpoint `error` event.
+Its message identifies the permission denial, and its `cause` retains the broker error.
+The service iterator and connection-status observer share reporting by error identity.
+A separate refusal on the same subject still emits its own event. Other service-iterator failures remain reported.
 
 ## Plane liveness probes [#plane-liveness-probes]
 

@@ -46,6 +46,12 @@ import {
   presenceBucket,
   compileContract,
   TURN_INPUT_SCHEMA,
+  SPAWN_INPUT_SCHEMA,
+  SPAWN_OUTPUT_SCHEMA,
+  GRACEFUL_INPUT_SCHEMA,
+  STOP_OUTPUT_SCHEMA,
+  CANCEL_INPUT_SCHEMA,
+  TURN_YIELD_OUTPUT_SCHEMA,
   TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
@@ -75,7 +81,7 @@ import {
 import { Cancelled, journalEntryKeyString, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun, resolveCheckpoint, outstandingPauseTokens } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { withDeadline, SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "meshask";
 const EP = "manager";
@@ -86,17 +92,6 @@ const CALLER: EpCaller = { owner: "local", actor: "wf_meshask", uid: "a".repeat(
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const withDeadline = async <T>(p: Promise<T>, ms: number, what: string): Promise<T | undefined> => {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), ms); });
-  try {
-    const got = await Promise.race([p.then((v) => ({ v })), late]);
-    if (got === undefined) { fail++; console.log(`  ✗ FAIL: ${what} did not end within ${ms}ms`); return undefined; }
-    return got.v;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-};
 
 // ── broker + planes ────────────────────────────────────────────────────────────────────────────
 const PORT = await pickFreePort();
@@ -121,54 +116,17 @@ const kv = await openRecordsBucket(nc, SPACE);
 // The liveness registry a spawn's readiness reads; a row lives until deleted.
 const presenceKv = await new Kvm(nc).create(presenceBucket(SPACE));
 
-// ── the suite-served manager-shaped goal endpoint (spawn + turn) ───────────────────────────────
-// An ask is TOLD to its agent over the turn relay, so the suite serves the manager's shape for
-// spawn (the roster registration, the seat's address) and turn (the relay's accept), records every
-// relay it is handed, and can refuse one at accept the way the real manager refuses a gone seat.
-const SPAWN_INPUT = {
-  type: "object", additionalProperties: false, required: ["name"],
-  properties: {
-    name: { type: "string", minLength: 1 }, agent: { type: "string" }, role: { type: "string" },
-    model: { type: "string" }, variant: { type: "string" },
-    subscribe: { type: "array", items: { type: "string" } },
-    runtime: { type: "string" },
-  },
-} as const;
-const SPAWN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, readinessDeadlineMs: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
-
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
-// A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
-const DESPAWN_INPUT = { type: "object", additionalProperties: false, properties: { graceful: { type: "boolean" } } } as const;
-const DESPAWN_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
-  properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
-} as const;
-// A cancelled step withdraws its relay through the manager's reserved cancel (SPEC 13.6 item 4).
-const CANCEL_INPUT = {
-  type: "object", additionalProperties: false, required: ["goalId"],
-  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
-} as const;
-const CANCEL_OUTPUT = {
-  type: "object", additionalProperties: false, required: ["goalId", "state"],
-  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
-} as const;
 const COMPILED = {
-  spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
+  spawn: { input: cc(SPAWN_INPUT_SCHEMA), output: cc(SPAWN_OUTPUT_SCHEMA) },
   turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
-  despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
-  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
+  despawn: { input: cc(GRACEFUL_INPUT_SCHEMA), output: cc(STOP_OUTPUT_SCHEMA) },
+  cancel: { input: cc(CANCEL_INPUT_SCHEMA), output: cc(TURN_YIELD_OUTPUT_SCHEMA) },
 };
+for (const field of ["agent", "role", "model", "variant"]) {
+  c(`served spawn refuses blank ${field}`, !COMPILED.spawn.input.validate({ name: "worker", [field]: " \t" }));
+}
+c("served spawn accepts omitted optional fields", COMPILED.spawn.input.validate({ name: "worker" }));
 const DOCUMENT = {
   urn: "ai.cotal.test.askmgr", revision: 1, attributes: [], events: [],
   commands: [
@@ -187,7 +145,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
+  for (const source of [SPAWN_INPUT_SCHEMA, SPAWN_OUTPUT_SCHEMA, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, GRACEFUL_INPUT_SCHEMA, STOP_OUTPUT_SCHEMA, CANCEL_INPUT_SCHEMA, TURN_YIELD_OUTPUT_SCHEMA]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -558,16 +516,17 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   c("the default is one attempt: no second pause was opened",
     (out as { status?: string } | undefined)?.status === "completed" && Math.max(...attempts, 1) === 1,
     { out: JSON.stringify(out), attempts });
+  let drained = true;
   if ((out as { status?: string } | undefined)?.status !== "completed") {
     // A mutant that widened the default leaves the run parked on attempt 2 — drain it so nothing
     // floats past this block, then let the cells above stand as the verdict.
     await answerRun("ak-3", 2, { estimate: 1 }).catch(() => undefined);
     await answerRun("ak-3", 3, { estimate: 1 }).catch(() => undefined);
-    await withDeadline(drv, 30_000, "the drained mutant run");
+    drained = await withDeadline(drv.then(() => true), 30_000, "the drained mutant run") === true;
   }
   const settled = entries.find((e) => e.state === "settled");
   c("the entry settles as the ask effect's own catchable L4006",
-    settled?.status === "failed" && settled?.error?.code === "L4006" && settled?.error?.kind === "ask-nonconforming",
+    drained && settled?.status === "failed" && settled?.error?.code === "L4006" && settled?.error?.kind === "ask-nonconforming",
     JSON.stringify(settled?.error)?.slice(0, 120));
   c("and the failure carries the last refusal, so the record says WHY nothing conformed",
     settled?.error?.message?.includes('"estimate" wants number') === true, settled?.error?.message?.slice(0, 160));
@@ -700,7 +659,8 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   // broken re-judge nothing ever answers that pause and its deadline is the un-pumped mediated
   // hour, so a bare await here parked the whole suite behind the mutant's own wreckage: red cells
   // printed, then no summary line, and the proof graded an unfinished run as unknown.
-  await withDeadline(parked.then(() => undefined, () => undefined), 15_000, "the live ask settling on the re-judge's shared answer");
+  c("the live ask settling on the re-judge's shared answer ended within its deadline",
+    await withDeadline(parked.then(() => undefined, () => undefined).then(() => true), 15_000, "the live ask settling on the re-judge's shared answer") === true);
 }
 
 // ── 7) a cancelled ask's CURRENT attempt is the pause the discharge ends ───────────────────────
@@ -723,7 +683,8 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
     kind: "ask", requestId: T, state: "pending",
     external: { attempt: 2, askToken: second, deadlineAt: s.bound.deadlineAt },
   } as unknown as JournalEntry;
-  await withDeadline(h.discharge([entry]), 20_000, "the discharge");
+  c("the discharge ended within its deadline",
+    await withDeadline(h.discharge([entry]).then(() => true), 20_000, "the discharge") === true);
   const settled = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: second });
   c("the discharge settled the CURRENT attempt's pause, so its timer cannot fire into the run",
     settled !== undefined, settled);
@@ -801,7 +762,8 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   c("and the entry itself records what it asks, so the operator surface can show it",
     k.bound.asks === "Ship it?" && k.bound.addressee === name11, JSON.stringify(k.bound));
   k.cancel("the cell has what it came for");
-  await withDeadline(parked, 15_000, "the escalated pause");
+  c("the escalated pause ended within its deadline",
+    await withDeadline(parked.then(() => true), 15_000, "the escalated pause") === true);
 
   // THE PAUSE OUTLIVES ITS ADDRESSEE. A seat the endpoint reports gone at the relay's accept is the
   // same case as a person: nobody is told, and the pause stands answerable from anywhere. The
@@ -824,7 +786,8 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
       && said.some((l) => l.includes("could not be told") && l.includes(name11)),
     JSON.stringify({ early3, relays: turnInvokes.length - before3, state: armed3?.value.state, said: said.join(" | ").slice(0, 160) }));
   k3.cancel("the cell has what it came for");
-  await withDeadline(parked3, 15_000, "the unreachable-addressee pause");
+  c("the unreachable-addressee pause ended within its deadline",
+    await withDeadline(parked3.then(() => true), 15_000, "the unreachable-addressee pause") === true);
 
   // TOLD BEFORE ARMED. A refusal that is not "the seat is gone" is this endpoint's and is not
   // tolerated: the step fails. Relayed after the arm, that failure left a waiting pause the
@@ -851,7 +814,8 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
     relay5 !== undefined && relay5.deadlineAt === recordedAt && Object.keys(k5.bound).length === 0,
     JSON.stringify({ deadlineAt: relay5?.deadlineAt, expected: recordedAt, rebound: k5.bound }));
   k5.cancel("the cell has what it came for");
-  await withDeadline(parked5, 15_000, "the resumed escalation");
+  c("the resumed escalation ended within its deadline",
+    await withDeadline(parked5.then(() => true), 15_000, "the resumed escalation") === true);
 
   // A `to` that is not a seat of this run is a PERSON. The reference allows it (`to` is a name,
   // not a handle), the pause is answerable from anywhere by design, and its addressee is on the
@@ -870,12 +834,13 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
     early === "parked" && turnInvokes.length === before2 && k2.bound.asks === "Sign off?" && k2.bound.addressee === "david",
     JSON.stringify({ early, relays: turnInvokes.length - before2, bound: k2.bound }));
   k2.cancel("the cell has what it came for");
-  await withDeadline(parked2, 15_000, "the unaddressed pause");
+  c("the unaddressed pause ended within its deadline",
+    await withDeadline(parked2.then(() => true), 15_000, "the unaddressed pause") === true);
 }
 
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
-const EXPECTED_CELLS = 42;
+const EXPECTED_CELLS = 53;
 const ran = ok + fail;
 console.log(`mesh-ask.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

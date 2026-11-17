@@ -1,0 +1,2 @@
+# The shared dashboard components: avatars, status, message rows, the stale marker and the copy command.
+smoke:web-components

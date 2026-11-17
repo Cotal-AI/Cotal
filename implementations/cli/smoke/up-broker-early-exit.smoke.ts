@@ -13,6 +13,7 @@
  * and its next step is the one a detached start gives, not the same `up` again. Off a terminal its
  * start line is one line on stdout and its exit line one on stderr. On an 80-column terminal both
  * wrap at spaces, each continuation under its text, with no path split and `cotal up` whole.
+ * The dashboard credential notice wraps too, keeping `service start web` whole and its full text.
  *
  * Run: pnpm smoke:up-broker-early-exit
  */
@@ -67,6 +68,9 @@ try {
   const meshes = spawnSync(process.execPath, [cli, "meshes"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
   suite.check("foreground: no record was written for it", meshes.status === 0 && flat(meshes.stdout).includes("no meshes registered"), flat(`${meshes.stdout}${meshes.stderr}`));
   const fake = join(scratch, "bin-code", "nats-server");
+  const provisioned = "• web: provisioned web.creds - the dashboard's read-only credential, the `service start web` default";
+  suite.check("foreground: off a terminal, the dashboard credential notice stays one line on stdout",
+    foreground.stdout.split("\n").includes(provisioned) && !foreground.stderr.includes(provisioned), { stdout: foreground.stdout, stderr: foreground.stderr });
   const starting = (at: string) => `Starting nats-server 2.14.0 on PATH at ${fake} (JetStream, JWT auth) - store: ${join(at, ".cotal", "nats")}, bind: 127.0.0.1`;
   const exited = `✗ nats-server exited unexpectedly (code 1) before the mesh "fg" was recorded; next: read the terminal output above, then fix ${fake} or take it off PATH so cotal uses its bundled nats-server, and run \`cotal up\` again`;
   suite.check("foreground: off a terminal, the start line is one line on stdout and the exit line one line on stderr",
@@ -82,10 +86,14 @@ try {
   const ptyExit = await new Promise<number>((done) => pty.onExit((e) => done(e.exitCode)));
   const lines = clean(shown).split(/\r?\n/);
   const startAt = lines.findIndex((l) => l.startsWith("Starting nats-server")), startEnd = lines.indexOf("Press Ctrl-C to stop.");
+  const provisionAt = lines.findIndex((l) => l.startsWith("• web: provisioned"));
+  const provisionEnd = lines.findIndex((l, i) => i > provisionAt && !l.startsWith("  "));
   const exitAt = lines.findIndex((l) => l.startsWith("✗ nats-server exited unexpectedly"));
   const exitEnd = lines.findIndex((l, i) => i > exitAt && !l.startsWith("  "));
   suite.check("foreground on 80 columns: exit 5, and only a word wider than the line runs past it",
     ptyExit === 5 && lines.every((l) => displayWidth(l) <= 80 || !l.trim().includes(" ")), { ptyExit, lines });
+  suite.check("foreground on 80 columns: the dashboard notice wraps under its text with its command whole",
+    provisionAt >= 0 && provisionEnd - provisionAt > 1 && lines.slice(provisionAt, provisionEnd).map((l, i) => (i ? l.slice(2) : l)).join(" ") === provisioned && lines.slice(provisionAt, provisionEnd).some((l) => l.includes("`service start web`")), lines);
   suite.check("foreground on 80 columns: the start line wraps at spaces and reads whole",
     startAt >= 0 && startEnd - startAt > 1 && lines.slice(startAt, startEnd).join(" ") === starting(ttyRoot), lines);
   suite.check("foreground on 80 columns: the exit line wraps at spaces under its text, with `cotal up` on one line",

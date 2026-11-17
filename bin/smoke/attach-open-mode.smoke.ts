@@ -89,9 +89,9 @@ type Resolved = {
 };
 type Link = { mode: "bare"; tls: boolean } | { mode: "session-caller"; tls: boolean; creds: string };
 
-const agentsMod = (await import("../../implementations/cli/dist/commands/agents.js")) as Record<string, unknown>;
-const decide = agentsMod.attachSessionMaterial as ((t: Target) => Material) | undefined;
-const connectOptsFor = agentsMod.redeemConnectOpts as ((l: Link) => Record<string, unknown>) | undefined;
+const attachMod = (await import("@cotal-ai/workspace/attach")) as Record<string, unknown>;
+const decide = attachMod.attachSessionMaterial as ((t: Target) => Material) | undefined;
+const connectOptsFor = attachMod.redeemConnectOpts as ((l: Link) => Record<string, unknown>) | undefined;
 const controlMod = (await import("@cotal-ai/workspace/control")) as Record<string, unknown>;
 const scatterProbe = controlMod.scatterProbeMaterial as
   | ((auth: { creds?: string; bearer?: string }, spaceAuth?: SpaceAuth) => { kind: string })
@@ -171,7 +171,7 @@ const coreDist = join(import.meta.dirname, "..", "..", "packages", "core", "dist
 const CHILD = [
   "const{pathToFileURL}=require('node:url');",
   "import(pathToFileURL(process.env.CORE_DIST).href).then(async({CotalEndpoint})=>{",
-  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent'}});",
+  "const ep=new CotalEndpoint({space:process.env.COTAL_SPACE,servers:process.env.COTAL_SERVERS,lifecycleUid:process.env.COTAL_LIFECYCLE_UID||undefined,channels:[],consume:false,registerPresence:true,watchPresence:false,card:{id:process.env.COTAL_ID||undefined,name:process.env.COTAL_NAME,kind:'agent',meta:{'ai.cotal.manager.instance':process.env.COTAL_MANAGER_INSTANCE}}});",
   "ep.on('error',()=>{});await ep.start();setInterval(()=>{},1000);});",
 ].join("");
 let lastOpts: LaunchOpts | undefined;

@@ -1,0 +1,1 @@
+smoke:user-endpoint-deregister

@@ -66,6 +66,15 @@ class FakeMesh {
     return this.items.filter((value) => scope === "all" || (scope === "pull-only") === this.pullOnly.has(value.id));
   }
 
+  // No role request is held here, so the preview is the inbox and a take changes nothing.
+  inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+    return this.peekInbox(scope);
+  }
+
+  async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+    return [...choose(this.peekInbox(scope))];
+  }
+
   drainInbox(limit?: number): InboxItem[] {
     const count = limit && limit > 0 ? Math.min(limit, this.items.length) : this.items.length;
     const drained = this.items.splice(0, count);
@@ -85,6 +94,20 @@ class FakeMesh {
 
   channelMode(channel?: string): "quiet" | "muted" | undefined {
     return channel ? this.modes.get(channel) : undefined;
+  }
+
+  /** Receive keys the driver holds in flight, and whether the next hold hits the ceiling. */
+  held = new Set<string>();
+  refuseHolds = false;
+
+  holdInFlight(keys: readonly string[]): boolean {
+    if (this.refuseHolds) return false;
+    for (const key of keys) this.held.add(key);
+    return true;
+  }
+
+  releaseInFlight(keys: readonly string[]): void {
+    for (const key of keys) this.held.delete(key);
   }
 
   // The run-turn intake is two-phase on the real agent (peek is pure, commit arms). Nothing here
@@ -256,6 +279,22 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(mesh.drained.length === 0, "provider acceptance alone waits for a terminal agent boundary");
   driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
   ok(mesh.drained.join() === "m1", "a clean terminal boundary drains the exact confirmed prefix");
+  ok(mesh.held.size === 0, "the commit releases the batch it held in flight");
+}
+
+// A dispatched batch is held in flight until its turn commits it; at the hold ceiling nothing goes out.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  mesh.refuseHolds = true;
+  driver.onSessionStart(context());
+  ok(host.sent.length === 0 && mesh.drained.length === 0, "a batch the agent cannot hold in flight is deferred, not dispatched");
+  mesh.refuseHolds = false;
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "m1" && mesh.held.has(item("m1").recvKey), "once holds are available the batch is dispatched and held");
 }
 
 // Real Pi may expose the request context before all extensions observe message_start.
@@ -292,6 +331,215 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   driver.onSessionStart(context());
   ok(mesh.drained[0] === "echo", "only an own channel multicast is treated as an echo");
   ok(host.sent[0]?.details.ids.join() === "self-anycast", "self-selected anycast is surfaced");
+}
+
+// A batch carrying a held role request takes only that batch, then goes out (SPEC §8.1).
+{
+  class HeldMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    chosen: string[][] = [];
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      this.chosen.push(picked.map((value) => value.recvKey));
+      const keys = new Set(picked.map((value) => value.recvKey));
+      this.items.push(...this.gated.filter((value) => keys.has(value.recvKey)));
+      this.gated = this.gated.filter((value) => !keys.has(value.recvKey));
+      return [...picked];
+    }
+  }
+  const mesh = new HeldMesh();
+  mesh.items = [item("dm")];
+  mesh.gated = Array.from({ length: 40 }, (_, i) => item(`req${i}`, { kind: "anycast", service: "worker" }));
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  ok(host.sent.length === 0, "a batch holding a role request waits for its take before it goes out");
+  await new Promise((resolve) => setImmediate(resolve));
+  ok(mesh.chosen.length === 1 && mesh.chosen[0]!.length === 32, "the take covers only the 32 messages the batch carries");
+  ok(mesh.gated.length === 9, "the role requests past the batch stay held and untaken");
+  ok(
+    host.sent.length === 1 && host.sent[0]!.details.ids.length === 32 && host.sent[0]!.details.ids[0] === "dm",
+    "the batch goes out once taken, carrying what it took",
+  );
+  ok(host.sent[0]!.details.ids.every((id) => mesh.held.has(id)), "a batch that goes out on its take is held for its turn like any other");
+}
+
+// A full batch seats a role request ahead of the channel posts that arrived before it, so the request
+// does not wait behind chatter for a later turn.
+{
+  class HeldMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    chosen: string[][] = [];
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      const picked = choose(this.inboxPreview(scope));
+      this.chosen.push(picked.map((value) => value.recvKey));
+      const keys = new Set(picked.map((value) => value.recvKey));
+      this.items.push(...this.gated.filter((value) => keys.has(value.recvKey)));
+      this.gated = this.gated.filter((value) => !keys.has(value.recvKey));
+      return [...picked];
+    }
+  }
+  const mesh = new HeldMesh();
+  mesh.attention = "dnd";
+  const posts = Array.from({ length: 40 }, (_, i) => `post${i}`);
+  mesh.items = posts.map((id) => item(id, { kind: "channel", channel: "team" }));
+  mesh.gated = [item("req", { kind: "anycast", service: "worker" })];
+  const host = new FakeHost();
+  const driver = new PiDriver(mesh as unknown as MeshAgent);
+  driver.bind(host);
+  driver.onSessionStart(context());
+  await new Promise((resolve) => setImmediate(resolve));
+  const ids = host.sent[0]?.details.ids ?? [];
+  ok(
+    host.sent.length === 1 && ids.length === 32 && ids.includes("req") && mesh.chosen[0]?.includes("req"),
+    "a full batch takes and carries a role request that arrived after more channel posts than fit",
+  );
+  ok(ids.join() === [...posts.slice(0, 31), "req"].join(), "the batch keeps arrival order and leaves out the latest channel posts");
+
+  // A DM between the posts and the request keeps its seat, so a post gives way to both.
+  const mixed = new HeldMesh();
+  mixed.attention = "dnd";
+  mixed.items = [...posts.slice(0, 31).map((id) => item(id, { kind: "channel", channel: "team" })), item("dm")];
+  mixed.gated = [item("req", { kind: "anycast", service: "worker" })];
+  const mixedHost = new FakeHost();
+  const mixedDriver = new PiDriver(mixed as unknown as MeshAgent);
+  mixedDriver.bind(mixedHost);
+  mixedDriver.onSessionStart(context());
+  await new Promise((resolve) => setImmediate(resolve));
+  ok(
+    mixedHost.sent[0]?.details.ids.join() === [...posts.slice(0, 30), "dm", "req"].join(),
+    "a full batch fits a DM and a role request that arrived after the channel posts",
+  );
+}
+
+// A take that leaves a batch with nothing that wakes, and a user turn that starts during a take.
+{
+  class TakingMesh extends FakeMesh {
+    gated: InboxItem[] = [];
+    /** "out" is a take still waiting for its answer when the read's wait runs out: the request stays
+     *  held and offered, as the real agent's does. */
+    outcome: (key: string) => "taken" | "refused" | "out" = () => "taken";
+    /** How long a read waits on a take that is still out. */
+    waitMs = 10;
+    takes = 0;
+    /** Role requests that arrive while a take is out. */
+    arriving: InboxItem[] = [];
+    /** Resolves when the take may answer. */
+    answer: Promise<void> = Promise.resolve();
+
+    override inboxPreview(scope: InboxScope = "all"): InboxItem[] {
+      return [...this.peekInbox(scope), ...(scope === "pull-only" ? [] : this.gated)];
+    }
+
+    override async takeChosen(scope: InboxScope, choose: (preview: InboxItem[]) => readonly InboxItem[]): Promise<InboxItem[]> {
+      this.takes++;
+      const picked = choose(this.inboxPreview(scope));
+      await this.answer;
+      for (const value of picked) {
+        if (!this.gated.includes(value)) continue;
+        const how = this.outcome(value.recvKey);
+        if (how === "out") await new Promise((resolve) => setTimeout(resolve, this.waitMs));
+        if (how !== "out") this.gated = this.gated.filter((other) => other !== value);
+        if (how === "taken") this.items.push(value);
+      }
+      this.gated.push(...this.arriving.splice(0));
+      const showable = new Set(this.peekInbox(scope).map((value) => value.recvKey));
+      return picked.filter((value) => showable.has(value.recvKey));
+    }
+  }
+  const chatter = item("c1", { kind: "channel", channel: "team" });
+  const request = (id: string) => item(id, { kind: "anycast", service: "worker" });
+
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.items = [chatter];
+    mesh.gated = [request("r1")];
+    mesh.outcome = () => "out";
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    driver.requestShutdown();
+    ok(host.sent.length === 0, "in dnd a batch whose role request's take is still out does not go out with only chatter");
+    ok(mesh.takes >= 2 && mesh.takes <= 12, "and the request is chosen again once each wait on its take runs out");
+  }
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.items = [chatter];
+    mesh.gated = [request("r1")];
+    mesh.outcome = (key) => (key === "r1" ? "refused" : "taken");
+    mesh.arriving = [request("r2")];
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1,r2",
+      "in dnd when a refused take leaves only chatter, the batch is chosen again with the request that arrived meanwhile",
+    );
+  }
+  {
+    const mesh = new TakingMesh();
+    mesh.attention = "dnd";
+    mesh.gated = [request("r1")];
+    mesh.outcome = () => "refused";
+    let answer!: () => void;
+    mesh.answer = new Promise((resolve) => { answer = resolve; });
+    const host = new FakeHost();
+    const ctx = context();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(ctx);
+    mesh.items.push(chatter);
+    driver.onAgentStart(ctx);
+    answer();
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "c1",
+      "a user turn that starts during a take still carries the chatter once the take is refused",
+    );
+  }
+  {
+    // A redelivery between a take's answer and its batch sends the request back to wait for a take
+    // of the new copy.
+    const mesh = new TakingMesh();
+    mesh.items = [item("d1")];
+    mesh.gated = [request("r1")];
+    const takeChosen = mesh.takeChosen.bind(mesh);
+    mesh.takeChosen = async (scope, choose) => {
+      const shown = await takeChosen(scope, choose);
+      mesh.items = mesh.items.filter((value) => value.recvKey !== "r1");
+      mesh.gated.push(request("r1"));
+      return shown;
+    };
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    await tick();
+    await tick();
+    ok(
+      host.sent.length === 1 && host.sent[0]!.details.ids.join() === "d1",
+      "a taken batch sends nothing a redelivery sent back to wait for its take",
+    );
+  }
 }
 
 // A buried own echo cannot let older pull-only traffic block a later DM.
@@ -345,6 +593,25 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   driver.onIncoming();
   driver.onMentionWake(item("mention", { kind: "channel", channel: "general", mentionsMe: true }));
   ok(host.sent.length === 1, "new traffic and a mention cannot race a second unconfirmed trigger");
+}
+
+// A mention wake names a blank sender by id. A name that still has other characters stays.
+{
+  const wake = (over: Partial<InboxItem>) => {
+    const mesh = new FakeMesh();
+    const host = new FakeHost();
+    const driver = new PiDriver(mesh as unknown as MeshAgent, 30);
+    driver.bind(host);
+    driver.onSessionStart(context());
+    driver.onMentionWake(item("blank", { kind: "channel", channel: "general", fromId: "local.blank", mentionsMe: true, ...over }));
+    return host.sent[0]?.content ?? "";
+  };
+  ok(wake({ fromName: " " }).includes("by local.blank while"), "a whitespace mention sender is named by id");
+  ok(wake({ fromName: "" }).includes("by local.blank while"), "an empty mention sender is named by id");
+  const broken = wake({ fromName: "\n" });
+  ok(broken.includes("by local.blank while") && !broken.includes("\n"), "a newline mention sender is named by id on one line");
+  ok(wake({ fromName: "  ", fromRole: "worker" }).includes("by local.blank/worker while"), "a whitespace mention sender keeps its role beside the id");
+  ok(wake({ fromName: " ada" }).includes("by  ada while"), "a mention sender with a leading space keeps that name");
 }
 
 // Abort retains even provider-confirmed work, holds new traffic, then a clean continuation commits.
@@ -551,6 +818,60 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(host.sent.length === sentBeforeFreshInput, "fresh input cannot dispatch once the continuation budget is spent");
 }
 
+// The error Pi reported reaches the held reason and the presence line, on one bounded line: a turn
+// that fails because Pi has no model provider says so, rather than only "ended with error".
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 200);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  startBatch(driver, host);
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "Unknown provider:\n  unknown" };
+  driver.onAgentStart(ctx);
+  driver.onAgentEnd([failed], ctx);
+  ok(
+    (driver.reason ?? "").startsWith("Pi turn ended with error (Unknown provider: unknown); "),
+    "a retained turn's held reason carries Pi's error on one line",
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const retry = context();
+    driver.onAgentStart(retry);
+    driver.onAgentEnd([failed], retry);
+  }
+  await driver.flushPresence();
+  ok(
+    (driver.reason ?? "").startsWith(
+      "Pi turn ended with error (Unknown provider: unknown) after 2 automatic continuation attempts; ",
+    ),
+    "the spent-attempts held reason carries Pi's error",
+  );
+  ok(
+    /\(Unknown provider: unknown\)/.test(mesh.statuses.at(-1)?.activity ?? ""),
+    "the presence line carries Pi's error",
+  );
+
+  const longMesh = new FakeMesh();
+  longMesh.items = [item("m1")];
+  const long = new PiDriver(longMesh as unknown as MeshAgent, 200);
+  const longHost = new FakeHost();
+  const longCtx = context();
+  long.bind(longHost);
+  long.onSessionStart(longCtx);
+  startBatch(long, longHost);
+  long.onAgentStart(longCtx);
+  long.onAgentEnd([{ role: "assistant", stopReason: "error", errorMessage: `\u001b[2J${"x".repeat(5000)}` }], longCtx);
+  const longReason = long.reason ?? "";
+  ok(
+    longReason.includes("… (5004 characters)") && longReason.includes("\\u001b[2J") && !longReason.includes("\u001b"),
+    "a long error is bounded, and its control character is escaped rather than reaching the presence line",
+  );
+  long.requestShutdown();
+}
+
 // Controls that must not weaken: zero batches still returns to idle on the same error boundary.
 {
   const mesh = new FakeMesh();
@@ -728,6 +1049,59 @@ for (const assistant of [
   ok(mesh.drained.join() === "slow", "late lifecycle confirmation remains associated with the original batch");
 }
 
+// A steer into a running turn starts after the running tool, so the start watchdog does not hold it.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("first")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 5);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const first = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, first);
+  driver.onToolStart("bash");
+  mesh.items.push(item("steer"));
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "steer", "a message that arrives during a tool is steered into the run");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  ok(driver.state !== "held", "a steer waiting behind a running tool is not held by the start watchdog");
+  driver.onToolEnd();
+  confirm(driver, startBatch(driver, host));
+  mesh.items.push(item("later"));
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "later", "a later message still steers into the same run");
+  confirm(driver, startBatch(driver, host));
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(mesh.drained.join() === "first,steer,later", "the run's terminal boundary commits every steered batch");
+}
+
+// Without a provider response hook, a tool start confirms the answered request's batches, so the next
+// batch steers in during the run instead of waiting for it to end.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("first")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const first = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details: first }]);
+  mesh.items.push(item("second"));
+  driver.onIncoming();
+  ok(host.sent.length === 1, "a batch in a request with no answer yet still holds back the next one");
+  driver.onToolStart("bash");
+  ok(host.sent.at(-1)?.details.ids.join() === "second", "a tool start confirms the answered batch and the next one steers in");
+  driver.onToolEnd();
+  const second = startBatch(driver, host);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details: second }]);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(mesh.drained.join() === "first,second", "the run's terminal boundary commits both batches");
+}
+
 // Presence writes complete in callback invocation order despite asynchronous operations.
 {
   const mesh = new FakeMesh();
@@ -842,6 +1216,8 @@ for (const assistant of [
     "COTAL_CONTROL_SOCKET",
     "COTAL_CONTROL_TOKEN",
     "COTAL_LAUNCH_MATERIAL",
+    "COTAL_SPACE",
+    "COTAL_ID",
   ] as const;
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -860,6 +1236,40 @@ for (const assistant of [
   } as unknown as ExtensionAPI;
   await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
   checks++;
+
+  // Managed reload has already consumed its launch material. It must bind the existing
+  // authenticated runtime, not parse the now deliberately incomplete launch environment.
+  const symbol = Symbol.for("cotal.pi.runtimes");
+  const root = globalThis as typeof globalThis & { [symbol]?: Map<string, unknown> };
+  const previous = root[symbol];
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let starts = 0;
+  const runtime = {
+    config: { name: "partial-control", space: "reload-fixture", id: "reload-actor", subscribe: [], allowSubscribe: [], allowPublish: [] },
+    mesh: {},
+    driver: {
+      bind(): void {},
+      onSessionStart(): void { starts++; },
+    },
+    personaCleaned: true,
+  };
+  root[symbol] = new Map([["reload-fixture\0reload-actor", runtime]]);
+  process.env.COTAL_SPACE = "reload-fixture";
+  process.env.COTAL_ID = "reload-actor";
+  try {
+    await cotalMesh({ ...compatibleApi, on(name: string, handler: (...args: unknown[]) => unknown): void {
+      handlers.set(name, handler);
+    } } as unknown as ExtensionAPI);
+    await handlers.get("session_start")?.({ reason: "reload" }, {
+      sessionManager: { getSessionId: () => "reloaded-session", getSessionFile: () => undefined },
+    });
+    ok(starts === 1, "managed reload rebinds the cached driver after launch material was scrubbed");
+  } finally {
+    if (previous) root[symbol] = previous;
+    else delete root[symbol];
+    delete process.env.COTAL_SPACE;
+    delete process.env.COTAL_ID;
+  }
   for (const key of keys) {
     const value = saved[key];
     if (value === undefined) delete process.env[key];

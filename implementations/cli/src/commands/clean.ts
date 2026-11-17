@@ -7,6 +7,7 @@ import {
   DELIVERY_CREDS_KIND,
   MEMBERSHIP_CONFIG_KIND,
   MEMBERSHIP_RW_CREDS_KIND,
+  WEB_CREDS_KIND,
   segmentedKey,
   spaceMaterialDir,
   spaceSegment,
@@ -460,7 +461,8 @@ export async function removeLocalState(root: string, opts: { includeAuth: boolea
     // too. The builders are `segmentedKey`, never the migrating resolvers — a sweep must not move
     // material into the path it is about to delete, and a §2 rule 3/4 refusal must not fail a reset
     // over material the reset does not care about.
-    const p7StoreKeys = [DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND].flatMap((kind) => [segmentedKey(kind, space), kind]);
+    // The dashboard cred postdates the per-space layout, so only its segmented key is swept.
+    const p7StoreKeys = [...[DELIVERY_CREDS_KIND, MEMBERSHIP_RW_CREDS_KIND].flatMap((kind) => [segmentedKey(kind, space), kind]), segmentedKey(WEB_CREDS_KIND, space)];
     for (const key of p7StoreKeys) {
       // Migrated kinds: the store delete is authoritative (idempotent on an absent key). Both went
       // through `store.put` at write time and are read back through the seam, so they must be removed

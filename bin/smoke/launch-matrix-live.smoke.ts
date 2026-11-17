@@ -363,7 +363,7 @@ try {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
   for (const child of started) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  const downs = [cotal(["down"]), cotal(["down"], { cwd: fgRoot })];
+  const downs = [cotal(["down", "--yes"]), cotal(["down", "--yes"], { cwd: fgRoot })];
   // The foreground stack stops itself on SIGINT, so its root may have nothing left to stop.
   check("cotal down stops both sandboxed stacks",
     downs.every((d) => d.status === 0 || out(d).includes("Nothing running for the local stack")), downs.map(out));

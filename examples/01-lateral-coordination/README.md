@@ -53,7 +53,7 @@ space every command below uses; without it the space takes the folder's name. `-
 broker address: if `:4222` is taken, `up` refuses, so pick another port and use it everywhere below.
 `--no-manager` leaves the manager to this example (see below). The
 optional `--channels` file seeds the channel registry (per-channel replay policy and
-descriptions); edit it live with `cotal channels set <name> [--replay|--no-replay] [--desc …]`.
+descriptions); edit it live with `cotal channel set <name> [--replay|--no-replay] [--desc …]`.
 
 **2. Join as a few peers** (one terminal each):
 

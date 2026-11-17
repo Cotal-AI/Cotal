@@ -9,7 +9,8 @@
  *      browser-origin requests and requests without the file-ACL capability.
  *   C. a real device-code login (auto-approved) + `cotal actor grant cli --sub …` → a plain
  *      `cotal send -c` connects USER-MODE (login → exchange → bearer → callout) and the message
- *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap);
+ *      lands on the wire as the derived `u_….cli` principal (witnessed on a static admin tap); a
+ *      `cotal chat --stdio` session connects as its own `u_….chat_…` principal and its send lands too;
  *      the ported operator surfaces: `channel` on the plain grant, `history clear --yes`
  *      refused without scope "admin" (naming the purger view + the ADD re-grant) then passing after it.
  *   D. the deny matrix at the operator surface: revoked actor → refused exchange with the reason;
@@ -89,7 +90,7 @@ childEnv.COTAL_ID = "cli_send";
 const { connect, credsAuthenticator, tokenAuthenticator } = await import("@nats-io/transport-node");
 const { jetstreamManager } = await import("@nats-io/jetstream");
 const { channelBucket, chatSubject, isReachable, mintCreds, mintLifecycleUid, newIdentity, presenceBucket } = await import("@cotal-ai/core");
-const { authDir, loadSoleSpaceAuth, loadSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, loadLaunchPersonaFile, loadSoleSpaceAuth, readRenewalRecord, spaceKey, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, deleteIdpSession, establishIdpSession, INTERACTIVE_RETIRE_PATH, loadActorLedger, loadAuthServiceInfo, loadIdpSession } = await import("../src/index.js");
 type CotalMessage = import("@cotal-ai/core").CotalMessage;
 type DeviceLoginPrompt = import("../src/index.js").DeviceLoginPrompt;
@@ -120,7 +121,7 @@ const CLAUDE = join(import.meta.dirname, "..", "..", "..", "extensions", "connec
 /** Run the REAL binary (built dist through bin/cotal.ts) in the sandboxed workspace. ASYNC on
  *  purpose: a sync child would block this process's event loop — and the in-process IdP with it —
  *  deadlocking any subprocess step that calls back into the IdP (the user-mode send does). */
-function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor } = {}): Promise<{ status: number | null; out: string }> {
+function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string | undefined>; sandbox?: SmokeSandboxAnchor; input?: string } = {}): Promise<{ status: number | null; out: string }> {
   return new Promise((resolvePromise) => {
     const options = {
       cwd: opts.cwd ?? root,
@@ -131,6 +132,7 @@ function cotal(args: string[], opts: { cwd?: string; timeoutMs?: number; env?: R
     let out = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString(); });
     child.stderr.on("data", (d: Buffer) => { out += d.toString(); });
+    if (opts.input !== undefined) child.stdin.end(opts.input);
     const t = setTimeout(() => child.kill("SIGKILL"), opts.timeoutMs ?? 120_000);
     child.on("close", (status) => { clearTimeout(t); resolvePromise({ status, out }); });
   });
@@ -271,7 +273,7 @@ try {
   check("browser-origin exchange is rejected (403)", browser.status === 403);
 
   // ---------- C. login + grant + USER-MODE send ----------
-  console.log("C) device login + actor grant + user-mode `cotal send`");
+  console.log("C) device login + actor grant + user-mode `cotal send` and `cotal chat`");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode),
@@ -289,15 +291,38 @@ try {
   const wrongUidBody = await retireWrongUid.json().catch(() => undefined) as { outcome?: unknown } | undefined;
   check("interactive lifecycle retirement refuses a UID other than the current actor row",
     retireWrongUid.status === 409 && wrongUidBody?.outcome === "not-executed", wrongUidBody);
-  // The --full grant is the whole envelope: all channels + spawn + the stock role (the golden path —
-  // login, grant --full, spawn just works; narrowing is the operator's explicit act).
-  check("--full grant takes the full envelope, scope spawn and role:default",
-    field(grant.out, "May read", ">") && field(grant.out, "May post", ">") && field(grant.out, "Capabilities", "spawn, role:default"), grant.out);
+  // The --full grant covers the persona that up actually wrote; an explicit scope still narrows it.
+  check("--full grant takes the full envelope, scope spawn, run and role:default",
+    field(grant.out, "May read", ">") && field(grant.out, "May post", ">") && field(grant.out, "Capabilities", "spawn, run, role:default"), grant.out);
+  const shippedDefault = loadLaunchPersonaFile(join(root, ".cotal", "agents", "default.md"));
+  const defaultIdentity = newIdentity();
+  const defaultLifecycle = mintLifecycleUid();
+  let defaultGranted = false;
+  try {
+    await cotalAuthProvider.grantAgent({
+      store: workspaceSecretStore(root), dir: stateDir, space: SPACE,
+      owner: cliRow!.owner, actor: defaultIdentity.id, lifecycleUid: defaultLifecycle,
+      scope: shippedDefault.capabilities ?? [], role: shippedDefault.role,
+      allowSubscribe: shippedDefault.allowSubscribe ?? [], allowPublish: shippedDefault.allowPublish ?? [],
+      parent: `${cliRow!.owner}.cli`, custody: { kind: "foreground" }, fresh: true,
+    });
+    defaultGranted = true;
+    check("full grant delegates the actual shipped default persona",
+      loadActorLedger(stateDir).some(row => row.actor === defaultIdentity.id && row.scope.includes("run")));
+  } catch (error) {
+    check("full grant delegates the actual shipped default persona", false, String(error));
+  } finally {
+    if (defaultGranted) await cotalAuthProvider.revokeAgent({ dir: stateDir, owner: cliRow!.owner, actor: defaultIdentity.id, lifecycleUid: defaultLifecycle });
+  }
+  const explicitScope = await cotal(["actor", "grant", "explicit_scope_probe", "--sub", sub, "--full", "--scope", "spawn"]);
+  check("explicit scope overrides the full default without gaining run", explicitScope.status === 0 &&
+    loadActorLedger(stateDir).some(row => row.actor === "explicit_scope_probe" && row.scope.join(",") === "spawn"), explicitScope.out);
+  await cotal(["actor", "revoke", "explicit_scope_probe", "--sub", sub]);
 
   // The ENVELOPE rule on the foreground CLI spawn path: NARROW the cli grant explicitly, then an
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the
-  // refusal names the exact widening re-grant for the operator. (`up` seeds no persona, so the
-  // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
+  // refusal names the exact widening re-grant for the operator. Use a role-less probe here so
+  // this refusal isolates the read over-ask rather than the shipped persona's capabilities.
   const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && field(narrow.out, "May read", "general"), narrow.out);
   // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
@@ -334,6 +359,12 @@ try {
   check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
     overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
+  // A persona that names `endpoints`, even an empty list, is refused on a user-auth mesh before any
+  // grant is read, pointing at the service owner's grant instead (SPEC 13.15).
+  writeFileSync(join(root, ".cotal", "agents", "ep-probe.md"), "---\nname: epprobe\nsubscribe: [general]\nendpoints: []\n---\nprobe persona.\n");
+  const epSpawn = await cotal(["spawn", "ep-probe", "--foreground", "--space", SPACE]);
+  check("a foreground spawn of a persona naming endpoints is refused by name on a user-auth mesh",
+    epSpawn.status !== 0 && epSpawn.out.includes("per-user auth mesh endpoint access comes from the service owner's grants") && epSpawn.out.includes("cotal service-endpoint grant"), epSpawn.out);
 
   // The witness: a directly-minted static admin tap (pre-flip static+user coexist) on the chat wire.
   const auth = loadSoleSpaceAuth(authDir(root))!;
@@ -374,6 +405,26 @@ try {
   const arrived = await until(() => got.some((g) => hasText(g, "hello from user mode")));
   const frame = got.find((g) => hasText(g, "hello from user mode"));
   check("the witness receives it AS the derived u_….cli principal", arrived && /^u_[a-z2-7]{26}\.cli$/.test(frame?.from.id ?? ""), frame?.from);
+  // A user-mode chat session connects as its own `chat_` principal. No caller policy can name a
+  // chat session, so the callout mints it the agent leaf with no endpoint capability and never
+  // looks for an actor grant it does not have.
+  const request = (fields: Record<string, unknown>) => `${JSON.stringify({ schemaVersion: 1, ...fields })}\n`;
+  const chat = await cotal(["chat", "general", "--stdio", "--space", SPACE], {
+    input: request({ type: "connection", id: "c0" }) + request({ type: "send", id: "s1", channel: "general", text: "hello from a chat session" }),
+  });
+  type ChatRecord = { type?: string; id?: string; outcome?: string; result?: { state?: string; identity?: { mode?: string; principal?: string } } };
+  const chatRecords = chat.out.split("\n").filter((line) => line.startsWith("{")).flatMap((line): ChatRecord[] => {
+    try { return [JSON.parse(line) as ChatRecord]; } catch { return []; }
+  });
+  const connected = chatRecords.find((r) => r.type === "result" && r.id === "c0");
+  const chatPrincipal = connected?.result?.identity?.principal ?? "";
+  check("a user-mode `cotal chat --stdio` session connects as its own chat principal",
+    chat.status === 0 && connected?.outcome === "ok" && connected.result?.state === "connected" && connected.result.identity?.mode === "user"
+      && /^u_[a-z2-7]{26}\.chat_[a-z2-7]{26}$/.test(chatPrincipal), chat.out);
+  const chatArrived = await until(() => got.some((g) => hasText(g, "hello from a chat session")));
+  const chatFrame = got.find((g) => hasText(g, "hello from a chat session"));
+  check("…and its send reaches the witness as that chat principal",
+    chatRecords.some((r) => r.type === "result" && r.id === "s1" && r.outcome === "stored") && chatArrived && chatFrame?.from.id === chatPrincipal, chatFrame?.from);
   // Own-agent control TIER ROUTING: on a user mesh, `cotal stop`/`attach` ride the operator's own
   // bearer on the SPAWN (privileged) tier — a spawn-scoped grant (no admin) must REACH the manager
   // and get ITS decision back. Before this routing, the CLI published on ctl.admin and the broker
@@ -716,7 +767,7 @@ try {
     other = { root: otherRoot, home: otherHome, env, sandbox: recordSmokeSandbox({ root: otherRoot, cotalHome: otherHome, xdgConfigHome: env.XDG_CONFIG_HOME }) };
     const otherUp = await cotal(["up", "--user-auth", "--idp", base, "--detach", "--server", `nats://127.0.0.1:${await pickFreePort()}`, "--space", SPACE], { cwd: otherRoot, env });
     check("the second root starts the same space on its own broker", otherUp.status === 0, otherUp.out);
-    const otherDown = await cotal(["down"], { cwd: otherRoot, env, sandbox: other.sandbox });
+    const otherDown = await cotal(["down", "--yes"], { cwd: otherRoot, env, sandbox: other.sandbox });
     check("…and stops it, keeping its own signer", otherDown.status === 0 && existsSync(join(otherRoot, ".cotal", "auth")), otherDown.out);
     const refused = await cotal(["supervise", "--space", SPACE, "--server", SERVER], { cwd: otherRoot });
     const text = plain(refused.out);
@@ -915,7 +966,7 @@ try {
     const added = await cotal(["space", "add", "--file", bundleFile, "--root", joinRoot], { cwd: joinRoot, env: joinEnv });
     check("a participant under its own home registers the space from its bundle", added.status === 0, added.out);
     const { sub: joinSub } = await establishIdpSession({ dir: joinHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
-    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
+    const joinGrant = await cotal(["actor", "grant", "cli", "--sub", joinSub, "--full", "--scope", "spawn,run,role:default,supervise"], { cwd: hostRoot, env: hostEnv });
     check("the host grants the participant's signed-in CLI supervise", joinGrant.status === 0, joinGrant.out);
     const trusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: joinEnv });
     check("with NODE_EXTRA_CA_CERTS set, as docs/cli.mdx says, the participant's manager start comes up",
@@ -923,6 +974,48 @@ try {
     const childPid = /^\s*PID:\s+(\d+)$/m.exec(plain(trusted.out))?.[1];
     const childEnvironment = childPid ? readFileSync(`/proc/${childPid}/environ`, "utf8").split("\0") : [];
     check("…and the native child it launched carries NODE_EXTRA_CA_CERTS from that command", childEnvironment.includes(`NODE_EXTRA_CA_CERTS=${caFile}`), { childPid, names: childEnvironment.map((entry) => entry.split("=")[0]) });
+    // Placement needs two actual owned Managers, not synthetic presence rows.
+    const secondHome = mkdtempSync(join(tmpdir(), "cotal-ua-placement-home-"));
+    const secondRoot = mkdtempSync(join(tmpdir(), "cotal-ua-placement-root-"));
+    const secondEnv = { HOME: secondHome, COTAL_HOME: secondHome, XDG_CONFIG_HOME: join(secondHome, "xdg"), NODE_EXTRA_CA_CERTS: caFile, COTAL_NAME: undefined, COTAL_ID: undefined };
+    try {
+      const secondAdded = await cotal(["space", "add", "--file", bundleFile, "--root", secondRoot], { cwd: secondRoot, env: secondEnv });
+      check("placement participant registers the real TLS space", secondAdded.status === 0, secondAdded.out);
+      await establishIdpSession({ dir: secondHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+      const secondStarted = await cotal(["manager", "start", "--name", "placement-second"], { cwd: secondRoot, env: secondEnv });
+      check("placement has a second actual owned Manager", secondStarted.status === 0, secondStarted.out);
+      const selected = await cotal(["use", CA_SPACE], { cwd: secondRoot, env: secondEnv });
+      check("placement participant explicitly selects its space", selected.status === 0, selected.out);
+      await establishIdpSession({ dir: hostHome, idpUrl: base, clientId: CLIENT_ID, onPrompt: (p: DeviceLoginPrompt) => approve(p.userCode) });
+      const hostSelected = await cotal(["use", CA_SPACE], { cwd: hostRoot, env: hostEnv });
+      check("native placement host explicitly selects the signed-in space", hostSelected.status === 0, hostSelected.out);
+      const installed = await cotal(["ext", "add", CLAUDE], { cwd: hostRoot, env: hostEnv });
+      check("placement installs the actual native connector", installed.status === 0, installed.out);
+      const nativeBin = join(secondHome, "bin");
+      mkdirSync(nativeBin);
+      writeFileSync(join(nativeBin, "claude"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi\necho COTAL_PLACEMENT_NATIVE_REACHED\n', { mode: 0o700 });
+      const { cotalPty, clean } = await import("../../cli/smoke/_console-pty.js");
+      const terminalEnv = Object.fromEntries(Object.entries({ ...childEnv, ...hostEnv, HOME: hostHome, COTAL_NAME: undefined, COTAL_ID: undefined, PATH: `${nativeBin}:${childEnv.PATH}` }).filter((entry): entry is [string, string] => entry[1] !== undefined));
+      const terminal = cotalPty(["spawn", "--name", "placement_local"], { cwd: hostRoot, env: terminalEnv, cols: 120 });
+      let terminalOutput = "", terminalExit: number | undefined;
+      terminal.onData((data) => { terminalOutput += data; });
+      terminal.onExit(({ exitCode }) => { terminalExit = exitCode; });
+      try {
+        await until(() => terminalExit !== undefined || /Where should the agent run\?|Which one\?/.test(clean(terminalOutput)), 60_000);
+        const output = clean(terminalOutput);
+        check("foreground spawn with two owned Managers runs in this terminal without a question",
+          terminalExit === 0 && output.includes("COTAL_PLACEMENT_NATIVE_REACHED") && output.includes(`Mesh: ${CA_SPACE}`) &&
+            output.includes("--on joined") && output.includes("--on placement-second") && !/Where should the agent run\?|Which one\?/.test(output), output);
+      } finally { if (terminalExit === undefined) terminal.kill(); }
+      const detached = await cotal(["spawn", "--detach", "--json"], { cwd: secondRoot, env: secondEnv });
+      check("detached spawn with two owned Managers refuses genuine ambiguity in a script",
+        detached.status === 2 && /TARGET_AMBIGUOUS|PERMISSION_DENIED/.test(detached.out) && /manager/i.test(detached.out), detached.out);
+    } finally {
+      const stopped = await cotal(["manager", "stop", "--yes"], { cwd: secondRoot, env: secondEnv });
+      check("placement participant Manager stops", stopped.status === 0, stopped.out);
+      // Keep these private fixture roots for the suite's scratch owner to retire.
+      // A successful stop alone is not a barrier against a new process entering them.
+    }
     const joinStop = await cotal(["manager", "stop", "--yes"], { cwd: joinRoot, env: joinEnv });
     check("…and the participant stops it", joinStop.status === 0 && plain(joinStop.out).includes("Service stopped"), joinStop.out);
     const untrusted = await cotal(["manager", "start", "--name", "joined"], { cwd: joinRoot, env: { ...joinEnv, NODE_EXTRA_CA_CERTS: undefined } });
@@ -975,7 +1068,7 @@ try {
 
   // ---------- F. down + fail-closed re-up ----------
   console.log("F) down stops the auth service; re-up without --user-auth is refused");
-  const down = await cotal(["down"]);
+  const down = await cotal(["down", "--yes"]);
   check("down exits 0 and stops the user-auth service", down.status === 0 && down.out.includes("user-auth service"), down.out);
   check("auth-service pid file is gone", !existsSync(join(root, ".cotal", `auth-service.${spaceKey(SPACE)}.pid`)));
   let brokerGone = false;
@@ -1032,10 +1125,10 @@ try {
   process.exitCode = 1;
 } finally {
   try { await witnessNc?.close(); } catch { /* */ }
-  await cotal(["down"], { timeoutMs: 30_000 }); // idempotent — kills by ITS OWN pid files only
+  await cotal(["down", "--yes"], { timeoutMs: 30_000 }); // idempotent — kills by ITS OWN pid files only
   await cotal(["down", "--yes"], { timeoutMs: 30_000 }); // the controller stack of G, if it is still up
   if (other) {
-    await cotal(["down"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
+    await cotal(["down", "--yes"], { cwd: other.root, env: other.env, sandbox: other.sandbox, timeoutMs: 30_000 }); // E3's second root, if it is still up
     rmSync(other.home, { recursive: true, force: true });
     rmSync(other.root, { recursive: true, force: true });
   }

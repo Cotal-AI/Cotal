@@ -1,5 +1,5 @@
-import { join } from "node:path";
-import { isLoopbackLiteral, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
+import { join, resolve } from "node:path";
+import { isCredentialTransportUrl, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   CommandFailure,
   clearCurrent,
@@ -13,7 +13,9 @@ import {
   type OutputWarning,
   type Report,
   loadMeshes,
+  meshFile,
   readMesh,
+  readMeshRegistry,
   recordMeshes,
   removeMeshes,
   userAuthStateDir,
@@ -32,10 +34,20 @@ export interface CatalogSpace {
   registration: UserBundle;
 }
 
+/** A space the account still belongs to that the catalog cannot serve now, with the catalog's reason. */
+export interface UnavailableCatalogSpace {
+  id: string;
+  slug: string;
+  name: string;
+  kind: string;
+  role: string;
+  unavailable: string;
+}
+
 export interface SpaceCatalogSnapshot {
   v: 1;
   account: { idpUrl: string; issuer: string; sub: string };
-  spaces: CatalogSpace[];
+  spaces: (CatalogSpace | UnavailableCatalogSpace)[];
 }
 
 export interface CatalogDiff {
@@ -44,6 +56,8 @@ export interface CatalogDiff {
   removed: string[];
   unchanged: string[];
   collisions: string[];
+  /** Listed spaces the latest snapshot marks unavailable. A held registration is also `unchanged`. */
+  unavailable: string[];
   selectionInvalidated?: string;
 }
 
@@ -71,7 +85,7 @@ function canonicalIdpUrl(raw: string, what: string): string {
   } catch {
     throw new Error(`${what} is not a valid URL`);
   }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
+  if (!isCredentialTransportUrl(url))
     throw new Error(`${what} must be https (or http on a loopback IP literal for local development)`);
   if (url.username || url.password || url.search || url.hash)
     throw new Error(`${what} must not contain credentials, a query, or a fragment`);
@@ -113,14 +127,21 @@ export function validateCatalogSnapshot(value: unknown, account: AuthSpaceCatalo
     for (const key of ["id", "slug", "name", "kind", "role"] as const)
       if (typeof row[key] !== "string" || row[key].length === 0)
         throw new Error(`space catalog entry ${i + 1} has no ${key}`);
-    const checked = checkBundleDocument(row.registration);
-    if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
-    assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
-    if (checked.value.space !== row.slug)
-      throw new Error(`space catalog entry "${row.name}" (${row.slug}) registration names space "${checked.value.space}"`);
-    if (slugs.has(row.slug)) throw new Error(`space catalog repeats the slug "${row.slug}"`);
-    slugs.add(row.slug);
-    row.registration = checked.value;
+    if ("unavailable" in row) {
+      if (typeof row.unavailable !== "string" || row.unavailable.length === 0)
+        throw new Error(`space catalog entry "${row.name}" is unavailable without a reason`);
+      if ("registration" in row) throw new Error(`space catalog entry "${row.name}" is both unavailable and registered`);
+    } else {
+      const checked = checkBundleDocument(row.registration);
+      if (!checked.ok) throw new Error(`space catalog entry "${row.name}": ${checked.message.replace(/^✗ /, "")}`);
+      assertRegistrationAccountBinding(checked.value, account, `space catalog entry "${row.name}"`);
+      if (checked.value.space !== row.slug)
+        throw new Error(`space catalog entry "${row.name}" (${row.slug}) registration names space "${checked.value.space}"`);
+      row.registration = checked.value;
+    }
+    const slug = row.slug as string;
+    if (slugs.has(slug)) throw new Error(`space catalog repeats the slug "${slug}"`);
+    slugs.add(slug);
   }
 }
 
@@ -155,6 +176,17 @@ function entryFor(account: AuthSpaceCatalogAccount, row: CatalogSpace, prior?: M
   };
 }
 
+/** Import one desired account space without treating the desired set as the full catalog. */
+export function importAccountComputerSpace(account: AuthSpaceCatalogAccount, row: CatalogSpace): void {
+  validateCatalogSnapshot({ v: 1, account, spaces: [row] }, account);
+  const prior = readMesh(row.slug);
+  if (prior && (prior.origin !== "catalog" || prior.catalogOwner !== account.ownerKey))
+    throw new Error("a different local registration owns this space name");
+  const next = entryFor(account, row, prior, new Date().toISOString());
+  writeCatalogCredential(next, row);
+  recordMeshes([next]);
+}
+
 function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   const path = entry.userAuth?.sentinelCredsPath;
   if (!path) throw new Error(`catalog registration for "${entry.space}" has no sentinel credential path`);
@@ -162,21 +194,77 @@ function writeCatalogCredential(entry: MeshEntry, row: CatalogSpace): void {
   writeSecretFileAtomic(path, row.registration.sentinelCreds);
 }
 
+/** Prepare an auth-base origin migration without writing local state. The caller must prove the
+ * new session's audience against the old session's pins before calling. Slugs cannot change.
+ * Commit refuses registry changes since preparation. Credential and individual registry writes
+ * are atomic separately, not as a cross-file transaction. Old sessions and authority stay intact. */
+export function prepareCatalogMigration(oldAccount: AuthSpaceCatalogAccount, newAccount: AuthSpaceCatalogAccount, newSnapshot: unknown): () => void {
+  if (!oldAccount.issuer || !oldAccount.sub || oldAccount.issuer !== newAccount.issuer || oldAccount.sub !== newAccount.sub)
+    throw new Error("catalog migration requires the same issuer and subject");
+  const oldOrigin = new URL(canonicalIdpUrl(oldAccount.idpUrl, "old account IdP URL")).origin;
+  const newOrigin = new URL(canonicalIdpUrl(newAccount.idpUrl, "new account IdP URL")).origin;
+  if (oldOrigin === newOrigin || !oldAccount.ownerKey || !newAccount.ownerKey || oldAccount.ownerKey === newAccount.ownerKey)
+    throw new Error("catalog migration requires a changed auth-base origin and owner");
+  // Detach the plan from the caller's mutable objects, including the validator's normalization.
+  const snapshot: unknown = structuredClone(newSnapshot);
+  validateCatalogSnapshot(snapshot, newAccount);
+  const account = { ...newAccount };
+  const readState = (): MeshEntry[] => {
+    const state = readMeshRegistry();
+    if (state.unusable.length) throw new Error("catalog migration requires an undamaged registry");
+    return state.entries.sort((a, b) => a.space.localeCompare(b.space));
+  };
+  const before = readState();
+  const serialized = JSON.stringify(before);
+  const owned = before.filter((entry) => entry.catalogOwner === oldAccount.ownerKey);
+  const byId = new Map<string, MeshEntry>();
+  for (const entry of owned) {
+    if (entry.origin !== "catalog" || !entry.catalogId || byId.has(entry.catalogId))
+      throw new Error("catalog migration requires unique catalog-owned stable space IDs");
+    byId.set(entry.catalogId, entry);
+  }
+  if (owned.length !== snapshot.spaces.length)
+    throw new Error("catalog migration must preserve the owned space ID set");
+  const seen = new Set<string>();
+  const planned = snapshot.spaces.map((row) => {
+    if (seen.has(row.id)) throw new Error("catalog migration repeats a space ID");
+    seen.add(row.id);
+    const old = byId.get(row.id);
+    if (!old || old.space !== row.slug || old.catalogSlug !== row.slug)
+      throw new Error("catalog migration must preserve owned space IDs and slugs");
+    if ("unavailable" in row) throw new Error("catalog migration cannot migrate an unavailable owned space");
+    if (!old.userAuth || old.userAuth.idp.audience !== row.registration.userAuth.idp.audience)
+      throw new Error("catalog migration must preserve the registration audience");
+    if (!old.userAuth.endpoints?.url)
+      throw new Error("catalog migration requires an old exchange endpoint");
+    assertRegistrationAccountBinding({ ...row.registration, userAuth: { ...old.userAuth, endpoints: { ...old.userAuth.endpoints, url: old.userAuth.endpoints.url } } }, oldAccount, `old catalog entry "${old.space}"`);
+    const next = entryFor(account, row, old);
+    if (old.userAuth.sentinelCredsPath) next.userAuth!.sentinelCredsPath = old.userAuth.sentinelCredsPath;
+    return { next, row };
+  });
+  return () => {
+    if (JSON.stringify(readState()) !== serialized)
+      throw new Error("catalog migration registry changed after preparation");
+    for (const { next, row } of planned) writeCatalogCredential(next, row);
+    recordMeshes(planned.map(({ next }) => next));
+  };
+}
+
 function sameEntry(a: MeshEntry, b: MeshEntry): boolean {
   const clean = (m: MeshEntry) => ({ ...m, ts: undefined, catalogFetchedAt: undefined, catalogError: undefined });
   return JSON.stringify(clean(a)) === JSON.stringify(clean(b));
 }
 
-const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [] });
+const emptyDiff = (): CatalogDiff => ({ added: [], changed: [], removed: [], unchanged: [], collisions: [], unavailable: [] });
 
 /** One account can be applied twice in one preparation: a repair of an interrupted application,
  * then the refreshed snapshot. Report each slug against the registry the command started from, so
- * the first classification of a slug stands. */
+ * the first classification of a slug stands. Availability is the refreshed snapshot's. */
 function mergeDiff(prior: CatalogDiff | undefined, next: CatalogDiff): CatalogDiff {
   if (!prior) return next;
   const lists = ["added", "changed", "removed", "unchanged"] as const;
   const seen = new Set(lists.flatMap((k) => prior[k]));
-  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort() };
+  const merged: CatalogDiff = { ...prior, collisions: [...new Set([...prior.collisions, ...next.collisions])].sort(), unavailable: next.unavailable };
   for (const k of lists) merged[k] = [...prior[k], ...next[k].filter((s) => !seen.has(s))].sort();
   if (!merged.selectionInvalidated && next.selectionInvalidated) merged.selectionInvalidated = next.selectionInvalidated;
   return merged;
@@ -191,8 +279,11 @@ function consume(result: AuthSpaceCatalogResult, force: boolean): CatalogDiff {
 }
 
 function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
-  const loaded = loadMeshes();
-  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey);
+  // A usable legacy entry can coexist with a damaged canonical record. Keep that pair out of
+  // failure-metadata writes and removals. Catalog rows still refuse it at their keyed read below.
+  const { entries: loaded, unusable } = readMeshRegistry();
+  const damagedFiles = new Set(unusable.map((error) => error.file));
+  const before = loaded.filter((m) => m.origin === "catalog" && m.catalogOwner === result.account.ownerKey && !damagedFiles.has(meshFile(m.space)));
   const priorByName = new Map(before.map((m) => [m.space, m]));
   const diff = emptyDiff();
   if (result.state === "failed") {
@@ -226,6 +317,15 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
         continue;
       }
       const prior = priorByName.get(row.slug);
+      // Still listed, so never removed or deselected, but not served now: the registration this
+      // machine holds stays exactly as it is, and none is recorded for a space it does not hold.
+      if ("unavailable" in row) {
+        diff.unavailable.push(row.slug);
+        if (!prior) continue;
+        diff.unchanged.push(row.slug);
+        yield { ...prior, ...(result.fetchedAt ? { catalogFetchedAt: result.fetchedAt } : {}), catalogError: row.unavailable };
+        continue;
+      }
       const next = entryFor(result.account, row, prior, result.fetchedAt);
       writeCatalogCredential(next, row);
       if (!prior) diff.added.push(row.slug);
@@ -235,21 +335,40 @@ function applyResult(result: AuthSpaceCatalogResult): CatalogDiff {
     }
   }
   recordMeshes(entries());
-  for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions]) list.sort();
+  for (const list of [diff.added, diff.changed, diff.removed, diff.unchanged, diff.collisions, diff.unavailable]) list.sort();
   return diff;
 }
 
-export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
+/** The reason a refreshed account snapshot gives for not serving `slug`, when it lists it as
+ *  unavailable. `owner` narrows the search to the account that owns a recorded entry. A failed
+ *  refresh answers nothing here: its own failure decides. Every snapshot a result carries passed
+ *  {@link validateCatalogSnapshot} before the provider kept it. */
+function unavailableReason(results: readonly AuthSpaceCatalogResult[], slug: string, owner?: string): string | undefined {
+  for (const result of results) {
+    if (result.state === "failed" || (owner !== undefined && result.account.ownerKey !== owner)) continue;
+    const row = (result.snapshot as SpaceCatalogSnapshot | undefined)?.spaces.find((s) => s.slug === slug);
+    if (row && "unavailable" in row) return row.unavailable;
+  }
+  return undefined;
+}
+
+export async function prepareCatalogTargets(opts: { idpUrl?: string; force?: boolean; sessionDir?: string } = {}): Promise<{ results: AuthSpaceCatalogResult[]; diffs: CatalogDiff[] }> {
   const provider = resolveAuthProvider();
   if (!provider.prepareSpaceCatalogs)
     throw new Error(`auth provider "${provider.name}" does not support space catalogs`);
+  const dir = opts.sessionDir ?? homeCotalDir();
+  // A separate session home owns its catalog cache, not the shared registry or its credentials.
+  const applyToRegistry = resolve(dir) === resolve(homeCotalDir());
   const applied = new Map<string, CatalogDiff>();
   const results = await provider.prepareSpaceCatalogs({
-    dir: homeCotalDir(),
+    dir,
     ...(opts.idpUrl ? { idpUrl: opts.idpUrl } : {}),
     ...(opts.force ? { force: true } : {}),
     validate: validateCatalogSnapshot,
-    apply: (result) => void applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force)))),
+    apply: (result) => {
+      if (applyToRegistry)
+        applied.set(result.account.ownerKey, mergeDiff(applied.get(result.account.ownerKey), consume(result, Boolean(opts.force))));
+    },
   });
   return { results, diffs: results.map((result) => applied.get(result.account.ownerKey) ?? emptyDiff()) };
 }
@@ -285,9 +404,8 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   try {
     meshes = loadMeshes();
   } catch {
-    // Applying a catalog reads this same registry, so none can apply while a record is unusable.
-    // Refusing here would pre-empt the command's own checks; a command that resolves its target
-    // through the registry still refuses the record by name.
+    // Target resolution still needs a usable registry. Refusing here would pre-empt the
+    // command's own checks, which name the damaged record.
     return;
   }
   const named = requested ? meshes.find((m) => m.space === requested) : undefined;
@@ -318,6 +436,12 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   if (diagnostics) return;
   if (targetCatalog && failures.length)
     throw new CatalogPreparationError(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "), "DEPENDENCY_UNAVAILABLE");
+  // A target its catalog lists as unavailable refuses alone, after its siblings were applied above.
+  // That includes a name this machine never held a registration for.
+  const slug = targetCatalog?.space ?? (requested && !named ? requested : undefined);
+  const reason = slug === undefined ? undefined : unavailableReason(results, slug, targetCatalog?.catalogOwner);
+  if (reason !== undefined)
+    throw new CatalogPreparationError(`space "${slug}" is unavailable in its account catalog: ${reason}`, "DEPENDENCY_UNAVAILABLE");
   // One warning per outage: a failure that continues one an earlier command already warned about
   // stays quiet until the catalog answers again. A failing target still refuses above.
   for (const failure of failures.filter((r) => !r.ongoing))
@@ -335,6 +459,8 @@ interface SyncedAccount {
   readonly removed: readonly string[];
   readonly unchanged: readonly string[];
   readonly collisions: readonly string[];
+  /** Listed spaces the catalog cannot serve now; a held registration is kept and also `unchanged`. */
+  readonly unavailable: readonly string[];
   /** The selected space this refresh removed, so no space is selected now; null otherwise. */
   readonly selectionCleared: string | null;
   readonly error: string | null;
@@ -366,6 +492,7 @@ export async function sync(args: ParsedArgs): Promise<void> {
       removed: d.removed,
       unchanged: d.unchanged,
       collisions: d.collisions,
+      unavailable: d.unavailable,
       selectionCleared: d.selectionInvalidated ?? null,
       error: result.state === "failed" ? (result.error ?? "refresh failed") : null,
     };
@@ -402,6 +529,7 @@ function syncView(r: SyncResult): Report {
         ["removed", names(a.removed)],
         ["unchanged", names(a.unchanged)],
         ["collisions", names(a.collisions)],
+        ["unavailable", names(a.unavailable)],
       ];
       const notes: Cell[] = a.selectionCleared === null ? [] : [{ text: `selected space "${a.selectionCleared}" left its catalog; no space is selected now`, tone: "waiting" }];
       return { title: a.idp, blocks: [{ kind: "fields", rows: fields }, ...(notes.length ? [{ kind: "lines" as const, lines: notes }] : [])] };
@@ -413,6 +541,7 @@ const spaceCatalogConsumer: SpaceCatalogConsumer = {
   kind: "space-catalog-consumer",
   name: "workspace",
   validate: validateCatalogSnapshot,
+  prepareMigration: prepareCatalogMigration,
   apply: (result) => void consume(result, true),
 };
 

@@ -11,9 +11,9 @@
  *
  * Usage: _chat-leave-child.ts <tui|plain|stdio>
  */
-import { closeExitCode, holdSignals } from "../src/commands/chat.js";
+import { cliWords, closeExitCode, holdSignals } from "../src/commands/chat.js";
 import { loadChatFrontEnd } from "../src/chat/frontend.js";
-import type { AdmittedChatSession, Failed, PublishResult, SessionIdentity } from "../src/chat/session.js";
+import type { AdmittedChatSession, Failed, PublishResult, SessionIdentity } from "@cotal-ai/workspace/chat";
 
 const frontEnd = process.argv[2];
 if (frontEnd !== "tui" && frontEnd !== "plain" && frontEnd !== "stdio") throw new Error("usage: _chat-leave-child.ts <tui|plain|stdio>");
@@ -59,7 +59,7 @@ const session: AdmittedChatSession = {
 
 const start = await loadChatFrontEnd(frontEnd);
 const signals = holdSignals();
-const running = start({ session, initialRecipient: { kind: "channel", channel: "general" } });
+const running = start({ session, initialRecipient: { kind: "channel", channel: "general" }, words: cliWords({ raw: [], positionalIndices: [] }) });
 signals.release();
 process.stderr.write("ready\n");
 const close = await running;

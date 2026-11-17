@@ -13,7 +13,19 @@ For normal startup and shutdown, use [Run a mesh](run-a-mesh.mdx).
 ## Find the failure [#when-something-looks-absent]
 
 Run `cotal status` to see which local components are running.
-Inspect these files under the mesh's project folder:
+For a space prepared with `cotal space create` or started with `cotal team boot`, read the controller-owned service logs:
+
+```sh
+cotal service logs stack-manager --space main --tail 30
+cotal service logs stack-delivery --space main --tail 30
+cotal service logs stack-broker --space main --tail 30
+```
+
+Replace `main` with the space name. If selection is ambiguous, run `cotal service --space main --json` and add `--instance <full-id>` for the instance to inspect.
+These logs live in the Cotal home's service-instance store, not the project's `.cotal/`.
+Manager lines begin with their UTC write time.
+
+Only the retained legacy launcher writes these files under the mesh's project folder:
 
 | Log | Component |
 | --- | --- |
@@ -21,12 +33,9 @@ Inspect these files under the mesh's project folder:
 | `.cotal/delivery.<key>.log` | Delivery daemon. |
 | `.cotal/nats.log` | Broker. |
 
-There is one manager and delivery log pair per space.
+The legacy launcher keeps one manager and delivery log pair per space.
 [Project files](config.mdx#project-files) explains the space key.
-Manager lines begin with their UTC write time.
-
-These logs are under the project's `.cotal/`, not `~/.cotal`, unless the home directory is the mesh root.
-`cotal up --detach` redirects child output to those files.
+Its detached starts redirect child output to those project files.
 A systemd unit wrapping that launcher does not put the children's output into its journal, so `journalctl -u <unit>` can be empty while the project log contains the failure.
 
 Permission denials are reported explicitly.
@@ -101,7 +110,10 @@ If that boot cannot run, use [`cotal reconcile-gate`](cli-maintenance.mdx#reconc
 That command also covers a non-manager endpoint or recovery without starting a manager.
 
 Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone: `gone` and `sweepComplete=true`.
-A live holder, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
+For a remote Manager, the host must also prove its separate registration executor gone before changing the gate or its credential family.
+The target gate determines both identities, including when another owner's supervisor requests recovery.
+A live holder or executor, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
+A sweep proves broker connection absence at that observation, not process death or exclusion of a later reconnect during credential refresh.
 Silence is not proof of death, and waiting out a TTL does not reopen the gate.
 
 The recovery result depends on the registration's durable state:

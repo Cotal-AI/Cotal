@@ -1,0 +1,74 @@
+{
+  "suite": [
+    "extensions/connector-claude-code/smoke/anycast-take-wake-auth.smoke.ts"
+  ],
+  "guard": "Claude Code's batch notices count a role request held for its take, on activation and on the retry after a failed push, and a hook that takes and shows held requests pushes no notice for them",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:claude-anycast-take-wake:auth",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=12",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/anycast-take-wake-auth.json",
+  "why": [
+    "A held role request wakes the session but is not in peekInbox until its take is recorded. A batch",
+    "notice that lists peekInbox counts none of them and tells the agent 0 messages are waiting.",
+    "",
+    "The suite imports MeshAgent from the built connector-core dist, so the command builds it",
+    "before each run and the agent.ts mutation rebuilds it after restore."
+  ],
+  "mutations": [
+    {
+      "name": "the batch notice lists only what a read can see",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "    const covered = item ? [item] : batch ?? agent.inboxPending(\"automatic\");",
+      "replace": "    const covered = item ? [item] : batch ?? agent.peekInbox(\"automatic\");",
+      "expectRed": "1b activation announces the held request as one message waiting",
+      "cell": "1b activation announces the held request as one message waiting",
+      "note": "Activation counts none of the held requests and announces 0 messages waiting."
+    },
+    {
+      "name": "the retry after a failed push lists only what a read can see",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      else if (owed() > 0) nudge(undefined, undefined, false, agent.inboxPending(\"automatic\").filter((it) => !announced.has(it)));",
+      "replace": "      else if (owed() > 0) nudge(undefined, undefined, false, agent.peekInbox(\"automatic\").filter((it) => !announced.has(it)));",
+      "expectRed": "2a the retry announces the held request the failed push missed",
+      "cell": "2a the retry announces the held request the failed push missed",
+      "note": "The retry still fires, since owed counts the held request, but its notice lists nothing."
+    },
+    {
+      "name": "a take the hook waits on is announced as a new arrival",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      if (!p.awaited) this.emit(\"incoming\", p.item);",
+      "replace": "      this.emit(\"incoming\", p.item);",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "expectRed": "3b and its takes push no notice on top of it",
+      "cell": "3b and its takes push no notice on top of it",
+      "note": "Each take the hook waits on reaches the wake policy as an arrival it has not announced, so it pushes a notice for a request the same hook frame is showing."
+    },
+    {
+      "name": "a frame chooses once, whatever its takes refused",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "      if (missed.some((i) => open.has(i.recvKey))) break;",
+      "replace": "      break;",
+      "expectRed": "4a the frame carries the second request in the room the cancelled one left",
+      "note": "A refused take leaves its room empty, so the frame carries nothing a choosing again would have fit.",
+      "cell": "4a the frame carries the second request in the room the cancelled one left"
+    },
+    {
+      "name": "a turn that lands during the take is added however long the frame gets",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "late?.once || !fits ? undefined",
+      "replace": "late?.once ? undefined",
+      "expectRed": "5b the frame shows the request its take recorded",
+      "note": "The late turn is added beside messages already taken, the frame runs over the cap, and the cut frame drops the request the take recorded as shown.",
+      "cell": "5b the frame shows the request its take recorded"
+    },
+    {
+      "name": "a held request counts toward a wake while its retry is waited out",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const held = this.mayAskTakes() ? this.gated.filter((p) => !skip?.(p.item)).length : 0;",
+      "replace": "    const held = this.gated.filter((p) => !skip?.(p.item)).length;",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build",
+      "expectRed": "6b the Stop after it pushes no notice, so no new turn starts",
+      "note": "Stop counts the held request as waiting and pushes a notice, the notice starts a turn whose frame can take nothing, and the next Stop pushes again.",
+      "cell": "6b the Stop after it pushes no notice, so no new turn starts"
+    }
+  ]
+}

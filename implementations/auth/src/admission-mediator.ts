@@ -181,14 +181,14 @@ export type CommitValue = { enc: "b64u"; bytes: string } | { enc: "ref"; key: st
  *  `sha256:<hex>` (the same `*Digest` scalar shape §13.7 uses). `commitValue` is RESOLVED and
  *  its canonical digest VERIFIED against `commitDigest` at obtain (before the row can accept),
  *  so a mismatched value/digest can never reach `accepted` and wedge recovery. */
-export interface SelfCommitIntent {
+interface SelfCommitIntent {
   commitKey: string;
   commitBaseRevision: number;
   commitValue: CommitValue;
   commitDigest: string;
 }
 
-export type ObligationState = "provisional" | "accepted" | "rejected" | "terminal";
+type ObligationState = "provisional" | "accepted" | "rejected" | "terminal";
 
 /** One obligation row (CLOSED per-class schema, §13.8). The `decision` class is fixed by the
  *  TRUSTED operation kind ({@link obtainEpfObligation} vs {@link obtainSelfObligation}), never
@@ -247,7 +247,7 @@ function assertMediatedRequest(med: MediatorInternals, request: MediatedRequest)
  *  this admission binds to (omitted = the `ep` sentinel), whether it pins the enforced policy
  *  (§13.6), and the caller-chosen request id (§13.4, a body field, legitimately caller-supplied
  *  because it identifies the REQUEST, not WHO the caller is). At least one of target/policy. */
-export interface AdmissionOp {
+interface AdmissionOp {
   target?: { owner: string; actor: string; lifecycleUid: string };
   policy?: boolean;
   id: string;
@@ -278,7 +278,7 @@ function parseCommitValue(v: unknown, key: string): CommitValue {
 
 /** Validate an obligation row at the consuming boundary: CLOSED per-class schema, at least one
  *  currency pin, class-required fields present and class-foreign fields absent (SPEC 13.8). */
-export function parseObligationRow(raw: Uint8Array, key: string): ObligationRow {
+function parseObligationRow(raw: Uint8Array, key: string): ObligationRow {
   let o: unknown;
   try {
     o = JSON.parse(dec.decode(raw));
@@ -457,7 +457,7 @@ export async function stagePolicySelector(
  *  witness cannot be replayed across spaces (the same content-addressed key elsewhere), across
  *  re-stages (a new mutationOpId), or against a moved govern head (the promote CASes from
  *  `governStageRevision`). A promote CONSUMES the witness (§13.6). */
-export interface DrainQuiescence {
+interface DrainQuiescence {
   readonly space: string;
   readonly endpoint: string;
   readonly pendingPolicyKey: string;
@@ -638,7 +638,7 @@ export async function verifyAdmissionProof(med: AdmissionMediator, proof: Admiss
 
 /** What an obtain returns: the durable obligation coordinates plus the bounded proof. `joined`
  *  reports whether this call created the row or joined an existing winner. */
-export interface ObtainedObligation {
+interface ObtainedObligation {
   key: string;
   row: ObligationRow;
   revision: number;
@@ -1036,7 +1036,7 @@ async function recoverSelfCore(
 // ---- the drains (§13.8: enumerate → settle → re-enumerate → quiescence) -----------------------
 
 /** One enumerated obligation (its key, parsed row, and store revision). */
-export interface EnumeratedObligation {
+interface EnumeratedObligation {
   key: string;
   row: ObligationRow;
   revision: number;

@@ -283,17 +283,9 @@ export async function pickManager(failure: CommandFailure, readRoster: () => Pro
   return choose(newest[picked]!, managers, argv);
 }
 
-/**
- * Where a spawn that names no launch mode runs, asked on this terminal when several of your
- * managers are live on the user-auth mesh `values` resolve to: in this terminal, the default, or
- * launched by one of them and attached here, as `--on` does. The managers are the ones the exchange
- * counts for an unpinned manager selection, read from its refusal, and shown as {@link pickManager}
- * shows them. A selection it grants instead is
- * dropped, and so is any refusal of a manager selection, which leaves the spawn in this terminal; any
- * other failure is thrown. No manager credential is held while the question waits. Undefined when
- * nothing is asked or this terminal is chosen, and null when the question is cancelled.
- */
-export async function askSpawnPlace(values: { space?: unknown; server?: unknown }, argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
+/** Announce live Manager alternatives for a native terminal spawn without asking again.
+ * The terminal is the default. Unresolved detached launches use pickManager instead. */
+export async function askSpawnPlace(values: { space?: unknown; server?: unknown }, _argv: readonly string[]): Promise<ManagerCandidate | null | undefined> {
   const flags = targetFlags(values);
   let mode: string | undefined;
   try { mode = resolveMeshTarget(process.cwd(), flags).mode; } catch { /* not a registered mesh: the spawn resolves its own target */ }
@@ -312,20 +304,10 @@ export async function askSpawnPlace(values: { space?: unknown; server?: unknown 
     throw failure;
   }
   const { managers } = several;
-  const { newest, options } = managerOptions(managers);
   const prompts = await import("./prompts.js");
   if (several.unread) prompts.log.warn(prompts.logLines(several.unread, process.stderr), { output: process.stderr });
-  const picked = await prompts.select({
-    message: `${managers.length} of your managers are live. Where should the agent run?`,
-    options: [{ value: -1, label: "This terminal", hint: "default" }, ...options],
-    initialValue: -1,
-    output: process.stderr,
-  });
-  if (prompts.isCancel(picked)) {
-    prompts.cancel("nothing was done - no place was chosen", { output: process.stderr });
-    return null;
-  }
-  return picked === -1 ? undefined : choose(newest[picked]!, managers, argv);
+  process.stderr.write(`Running in this terminal. To run it on one of your Managers: ${managers.map(manager => `--on ${selectorFor(manager, managers)}`).join(", ")}.\n`);
+  return undefined;
 }
 
 /** A manager with the `--on` value that picks it. */

@@ -72,7 +72,7 @@ try {
     }
   }
   const retained = () => [canonical, legacy].every(file => existsSync(file) && readFileSync(file, "utf8") === "fixed fixture material");
-  const run = (positionals: string[] = []) => down({ positionals, values: {}, raw: [] });
+  const run = (positionals: string[] = []) => down({ positionals, values: { yes: true }, raw: [] });
 
   reset("nats");
   await run();

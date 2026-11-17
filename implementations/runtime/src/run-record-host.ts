@@ -2,7 +2,7 @@ import type { KV, KvEntry } from "@nats-io/kv";
 import { assertIdToken, endpointToken, recordsBucket, recordsKvStreamName, walkKvEntries, type RunHostPlanes } from "@cotal-ai/core";
 import { RunScopeDenied } from "./run-scope-authority.js";
 
-export interface RunRecordValue {
+interface RunRecordValue {
   readonly key: string;
   readonly value: Uint8Array;
   readonly revision: number;

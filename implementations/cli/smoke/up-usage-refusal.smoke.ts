@@ -3,8 +3,10 @@
  * `--max-sessions 0`, `--max-sessions abc` and an unknown `--restore-only` value used to exit 3,
  * "Outcome unconfirmed", which tells a script the run may have had an effect. `--dry-run` without
  * `-f` used to start a real stack. A non-positive `--max-file-store` is refused the same way, as is a `--max-payload` that is
- * not a byte count nats-server starts on, one below the caller floor beside `--service-endpoints`,
- * and one passed to the open broker configuration, which renders no payload limit.
+ * not a byte count nats-server starts on, one below the manager start floor, one below the caller floor beside `--service-endpoints`,
+ * and one passed to the open broker configuration, which renders no payload limit. An
+ * `--account-resolver` other than memory or full refuses too, and so does one passed to the open
+ * broker configuration, which has no accounts to resolve.
  *
  * The same holds where `up` would otherwise start something it cannot stand behind. A prepared root
  * given an option the controller stack has no route for refuses UNSUPPORTED instead of starting the
@@ -13,7 +15,8 @@
  * broker that exits on its bind. `up -f` on a root that holds a controller stack refuses CONFLICT
  * instead of starting a manifest stack beside it. An empty `--store-dir`, which used to open the
  * default store, and one that starts with a `~` no shell expanded, which made a folder named `~`,
- * refuse USAGE_INVALID on `up` and `clean`, the second naming the absolute path.
+ * refuse USAGE_INVALID on `up` and `clean`, the second naming the absolute path. An empty or blank
+ * `--runtime`, which used to start the stack on the default runtime, refuses USAGE_INVALID too.
  *
  * Driven through the built binary in a sandboxed HOME, XDG_CONFIG_HOME and COTAL_HOME, from empty
  * folders outside them. Nothing is started; each refusal comes from validation. A `--server` that no
@@ -93,8 +96,10 @@ const cases: { args: string[]; message: RegExp }[] = [
   { args: ["--max-file-store", "0"], message: /--max-file-store must be a positive integer/ },
   { args: ["--max-payload", "0"], message: /--max-payload must be a positive integer/ },
   { args: ["--max-payload", "67108865"], message: /--max-payload 67108865 is over 67108864 bytes \(64 MiB\), which nats-server refuses to start on/ },
+  { args: ["--max-payload", "263167"], message: /--max-payload 263167 is below 263168 bytes, the least the space's manager starts on/ },
   { args: ["--max-payload", "1048576", "--user-auth", "--service-endpoints"], message: /--max-payload 1048576 is below 2098176 bytes, the least a space with --service-endpoints starts on/ },
-  { args: ["--max-payload", "2098176", "--open"], message: /--max-payload sets the broker's message size limit, which the open broker configuration does not render/ },
+  { args: ["--account-resolver", "cache"], message: /--account-resolver takes memory or full \(got "cache"\)/ },
+  { args: ["--account-resolver", "full", "--open"], message: /--account-resolver sets how the broker resolves space accounts, and the open broker configuration has none/ },
   { args: ["--restore", join(folder, "nonexistent"), "--restore-only", "full"], message: /--restore-only takes registry/ },
   { args: ["--restore-only", "registry"], message: /require --restore/ },
   // Without -f there is no plan to print, and the launch used to start a real stack.
@@ -106,6 +111,35 @@ for (const { args, message } of cases) {
   check(`up ${args.join(" ")} --json is one USAGE_INVALID refusal, exit 1`, json.status === 1 && json.envelope?.outcome === "refused" && json.envelope.error?.code === "USAGE_INVALID" && message.test(json.envelope.error.message ?? ""), shown(json));
   const text = run(["up", ...args]);
   check(`up ${args.join(" ")} prints the error and the help on stderr, nothing on stdout, exit 1`, text.status === 1 && text.stdout === "" && message.test(text.stderr) && /Usage/.test(text.stderr), shown(text));
+}
+
+// First-enable user auth must not leave static signing authority on any startup route.
+for (const route of ["foreground", "detach", "prepared", "manifest"] as const) {
+  for (const idp of [undefined, "not-an-idp", "https://user:secret@example.com/auth"]) {
+    const project = mkdtempSync(join(tmpdir(), "cotal-up-idp-"));
+    process.on("exit", () => rmSync(project, { recursive: true, force: true }));
+    chmodSync(project, 0o700);
+    const space = `idp-${randomUUID().slice(0, 8)}`;
+    if (route === "prepared") run(["space", "create", space, "--root", project]);
+    const control = join(project, ".cotal");
+    const before = existsSync(control) ? readdirSync(control, { recursive: true }).sort() : [];
+    const args = ["up", "--no-manager", "--server", "nats://127.0.0.1:21800"];
+    if (route === "manifest") {
+      const manifest = join(project, "cotal.yaml");
+      writeFileSync(manifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: ${space}\nbroker:\n  auth: user\nchannels: {}\nagents: {}\n`);
+      args.push("-f", manifest);
+    } else args.push("--user-auth", "--space", space, route === "detach" ? "--detach" : "--foreground");
+    if (idp !== undefined) args.push("--idp", idp);
+    const result = run(args, project);
+    check(`${route} user auth with ${idp === undefined ? "missing" : "invalid"} IdP refuses usage before effects`,
+      result.status === 1 && /no stack was prepared|--idp is not a valid URL|--idp must not embed credentials/.test(result.stderr) && !/Outcome unconfirmed|secret/.test(result.stdout + result.stderr) && /--idp|IdP/.test(result.stderr), shown(result));
+    const after = existsSync(control) ? readdirSync(control, { recursive: true }).sort() : [];
+    check(`${route} IdP refusal writes no trust, credentials or store state`, JSON.stringify(after) === JSON.stringify(before), { before, after });
+    if (route !== "prepared") {
+      const mint = run(["auth", "mint", "audit", "--profile", "admin", "--plain"], project);
+      check(`${route} refused root is not a static credential issuer`, mint.status !== 0, shown(mint));
+    }
+  }
 }
 
 const servers: { server: string; message: RegExp; example: string }[] = [
@@ -132,6 +166,12 @@ for (const { value, message, remedy } of storeDirs) {
   check(`up --store-dir ${JSON.stringify(value)} --json is one USAGE_INVALID refusal, exit 1, with its remedy`, json.status === 1 && json.envelope?.error?.code === "USAGE_INVALID" && json.envelope.error.message === message && json.envelope.error.remedy === remedy, shown(json));
   const clean = run(["clean", "store", "--dry-run", "--store-dir", value]);
   check(`clean store --store-dir ${JSON.stringify(value)} refuses the same way, exit 1, with no help`, clean.status === 1 && clean.stderr.includes(message) && clean.stderr.includes(remedy) && !/Usage|Options/.test(clean.stderr), shown(clean));
+}
+
+// An empty --runtime, as an unset variable gives, used to start the stack on the default runtime (#7114).
+for (const value of ["", "  "]) {
+  const json = run(["up", "--runtime", value, "--json"]);
+  check(`up --runtime ${JSON.stringify(value)} --json is one USAGE_INVALID refusal, exit 1, with its remedy`, json.status === 1 && json.envelope?.error?.code === "USAGE_INVALID" && json.envelope.error.message === "--runtime is empty, so it names no runtime; nothing was started or written" && json.envelope.error.remedy === "name a runtime, such as `--runtime pty`, or omit --runtime to use the default", shown(json));
 }
 
 check("nothing was written in the folder", readdirSync(folder).length === 0, readdirSync(folder));
@@ -461,11 +501,11 @@ try {
     const plainUp = run(["up", "--space", "legacyface", "--user-auth", "--idp", "https://idp.example.test/api/auth", "--server", `nats://127.0.0.1:${held}`, "--json"], legacy);
     removeMesh("legacyface");
     delete process.env.COTAL_HOME;
-    const launcher = /retained native launcher, which has no structured or plain receipt/;
-    check("a stopped root the legacy launcher registered with no prepared record keeps that launcher for the public face, not UNSUPPORTED for a prepared root",
-      face.status === 2 && face.envelope?.error?.code === "UNSUPPORTED" && launcher.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
-    check("…and an up that names no legacy-only option there takes that launcher too, writing no stack journal into the root",
-      plainUp.status === 2 && plainUp.envelope?.error?.code === "UNSUPPORTED" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
+    const launcher = /IdP did not serve usable JWKS/;
+    check("a stopped legacy root checks the IdP before its public-face startup",
+      face.status === 2 && face.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && launcher.test(face.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(face));
+    check("…and ordinary user-auth startup there checks the IdP too, writing no stack journal",
+      plainUp.status === 2 && plainUp.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE" && launcher.test(plainUp.envelope.error.message ?? "") && !started(legacy) && !existsSync(join(legacy, ".cotal", "stack-controller.json")), shown(plainUp));
   }
 
   const bind = run(["up", "--server", `nats://127.0.0.1:${held}`], unprepared);

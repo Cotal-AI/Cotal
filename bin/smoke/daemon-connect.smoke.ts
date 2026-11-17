@@ -6,7 +6,7 @@
  * starts nothing. Every cell drives the shipped `serveDaemon` with a temp machine home
  * (`COTAL_HOME`), a mesh record seeded through the stock registry writer, a stock IdP session file,
  * and a loopback HTTP fixture standing in for the space's auth service. The fixture counts every
- * request by method and route. No real credentials and no provider calls.
+ * request by method and route. A loopback IdP accepts or rejects fixture session handles.
  *
  * Cells (each asserts counts):
  *  C1  an unknown space: not-registered, 0 fixture requests, no daemon identity written;
@@ -94,10 +94,30 @@ const errorOf = (f: Frame) => (f.error ?? {}) as Record<string, unknown>;
 // ---------- a loopback fixture for the space's auth service ----------
 type Answer = { status: number; body?: unknown; headers?: Record<string, string> } | "hang";
 let answer: Answer = { status: 404 };
+const fixtureJwt = () => [JSON.stringify({ alg: "EdDSA" }), JSON.stringify({ sub: "smoke-sub", exp: Date.now() / 1000 + 30 })].map((s) => Buffer.from(s).toString("base64url")).join(".") + ".fixture";
+let idpAnswer: Answer | "accepted" = "accepted";
+let tokenRequests = 0;
 const hits: Array<{ method: string; path: string }> = [];
+const accountAnnouncements: string[] = [];
 const authority = createHttpServer(async (req: IncomingMessage, res: ServerResponse) => {
   for await (const _ of req) { /* drain */ }
-  hits.push({ method: req.method ?? "", path: new URL(req.url!, "http://x").pathname });
+  if (req.url === "/api/auth/token") {
+    tokenRequests++;
+    const a = idpAnswer;
+    if (a === "hang") { req.socket.destroy(); return; }
+    if (a === "accepted") { res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ token: fixtureJwt() })); return; }
+    res.writeHead(a.status, { "content-type": "application/json", ...(a.headers ?? {}) });
+    res.end(JSON.stringify(a.body ?? {}));
+    return;
+  }
+  const path = new URL(req.url!, "http://x").pathname;
+  // Account discovery starts with the daemon, independently of connect-check. This fixture
+  // supports only per-space authority, so decline that exact account operation explicitly.
+  if (req.method === "PUT" && /^\/api\/cli\/machines\/[0-9a-f-]+$/.test(path)) {
+    accountAnnouncements.push(path);
+    res.writeHead(404); res.end(); return;
+  }
+  hits.push({ method: req.method ?? "", path });
   const a = answer;
   if (a === "hang") return;
   res.writeHead(a.status, { "content-type": "application/json", ...(a.headers ?? {}) });
@@ -107,7 +127,7 @@ await new Promise<void>((r) => authority.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${(authority.address() as AddressInfo).port}`;
 const gets = () => hits.filter((h) => h.method === "GET").length;
 const posts = () => hits.filter((h) => h.method !== "GET").length;
-const resetHits = () => { hits.length = 0; };
+const resetHits = () => { hits.length = 0; accountAnnouncements.length = 0; };
 
 // A dead loopback port for the unreachable cell.
 const dead = createHttpServer();
@@ -123,7 +143,7 @@ mkdirSync(home, { mode: 0o700 });
 process.env.COTAL_HOME = home;
 const meshRoot = join(root, "mesh");
 mkdirSync(meshRoot, { mode: 0o700 });
-const IDP = "https://idp.example.test/api/auth";
+const IDP = `${base}/api/auth`;
 // Two account-key-shaped values. The daemon only pins and compares them; nothing signs with them.
 const ACCOUNT_A = `A${"B".repeat(55)}`;
 const ACCOUNT_B = `A${"C".repeat(55)}`;
@@ -131,7 +151,7 @@ const ACCOUNT_B = `A${"C".repeat(55)}`;
 // that space's own state dir, which the stock client checks. The file itself is never read by this check.
 const userMesh = (space: string, url: string): MeshEntry => ({
   space, server: "nats://127.0.0.1:4222", root: meshRoot, mode: "user", origin: "manual",
-  userAuth: { provider: "cotal", idp: { url: IDP, issuer: "https://idp.example.test", audience: "https://idp.example.test" }, endpoints: { url }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
+  userAuth: { provider: "cotal", idp: { url: IDP, issuer: base, audience: base }, endpoints: { url }, remote: true, sentinelCredsPath: join(userAuthStateDir(meshRoot, space, { readOnly: true }), "sentinel.creds") },
   ts: new Date().toISOString(),
 });
 recordMesh(userMesh("signedout", base));
@@ -174,6 +194,54 @@ try {
     // From here the machine is signed in to the space's IdP through the stock session writer.
     saveIdpSession(home, IDP, { token: "smoke-session-handle-not-a-secret", expiresAt: Math.floor(Date.now() / 1000) + 3600, sub: "smoke-sub" });
     recordMesh(userMesh("ready", base));
+
+    await cell("C3b cached sessions require an accepted token exchange", async () => {
+      resetHits();
+      for (const expiresAt of [Math.floor(Date.now() / 1000) + 3600, 1]) {
+        saveIdpSession(home, IDP, { token: "rejected-fixture-session", expiresAt, sub: "smoke-sub" });
+        idpAnswer = { status: 401 };
+        const before = tokenRequests;
+        const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+        check(`C3b rejected session with expiry ${expiresAt} needs sign-in`, resultOf(r).outcome === "not-signed-in", r);
+        check("C3b one token exchange, no authority request or identity", tokenRequests === before + 1 && hits.length === 0 && identityFiles().length === 0);
+      }
+      for (const [a, outcome] of [["hang", "unreachable"], [{ status: 503 }, "refused"], [{ status: 200, body: {} }, "refused"]] as const) {
+        idpAnswer = a;
+        const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+        check(`C3b provider failure is ${outcome}, not a rejected sign-in`, resultOf(r).outcome === outcome, r);
+        check("C3b provider failure sends no authority request and pins nothing", hits.length === 0 && identityFiles().length === 0);
+      }
+      idpAnswer = "accepted";
+      // Local expiry is advisory. A provider-accepted session must still work in C4 and C5.
+      saveIdpSession(home, IDP, { token: "accepted-fixture-session", expiresAt: 1, sub: "smoke-sub" });
+    });
+
+    await cell("C3c only a well-shaped expired proof gets the clock diagnosis", async () => {
+      resetHits();
+      const now = Date.now() / 1000;
+      const cases: Array<[string, Record<string, unknown>, Record<string, unknown>, string, string]> = [
+        ["expired", { alg: "EdDSA" }, { sub: "smoke-sub", exp: now - 1 }, "fixture", "credential-expired"],
+        ["missing-exp", { alg: "EdDSA" }, { sub: "smoke-sub" }, "fixture", "refused"],
+        ["invalid-exp", { alg: "EdDSA" }, { sub: "smoke-sub", exp: "old" }, "fixture", "refused"],
+        ["future-nbf", { alg: "EdDSA" }, { sub: "smoke-sub", exp: now - 1, nbf: now + 60 }, "fixture", "refused"],
+        ["missing-sub", { alg: "EdDSA" }, { exp: now - 1 }, "fixture", "refused"],
+        ["unsigned", { alg: "none" }, { sub: "smoke-sub", exp: now - 1 }, "fixture", "refused"],
+        ["missing-signature", { alg: "EdDSA" }, { sub: "smoke-sub", exp: now - 1 }, "", "refused"],
+      ];
+      try {
+        for (const [name, header, claims, signature, outcome] of cases) {
+          saveIdpSession(home, IDP, { token: `shape-${name}`, expiresAt: 1, sub: "smoke-sub" });
+          const token = [header, claims].map(value => Buffer.from(JSON.stringify(value)).toString("base64url")).join(".") + `.${signature}`;
+          idpAnswer = { status: 200, body: { token } };
+          const r = await ask(paths.socket, { op: "connect-check", space: "ready" });
+          check(`C3c ${name} stays fail-closed as ${outcome}`, resultOf(r).outcome === outcome, r);
+          check(`C3c ${name} sends no authority request and pins nothing`, hits.length === 0 && identityFiles().length === 0);
+        }
+      } finally {
+        idpAnswer = "accepted";
+        saveIdpSession(home, IDP, { token: "accepted-fixture-session", expiresAt: 1, sub: "smoke-sub" });
+      }
+    });
 
     await cell("C4 service endpoints off at the space", async () => {
       resetHits();
@@ -289,6 +357,7 @@ try {
       check("C13 the new daemon answers ready-to-register with the first daemon's instance id and account", resultOf(r).outcome === "ready-to-register" && resultOf(r).instanceId === firstInstance && resultOf(r).accountPublicKey === ACCOUNT_A, r);
       check("C13 the identity record is byte-identical and still the only one; 1 GET, 0 POST", identityFiles().length === 1 && readFileSync(join(daemonStateDir, identityFiles()[0]!), "utf8") === recordBefore && gets() === 1 && posts() === 0, { ids: identityFiles(), hits });
     } finally { await d2.close(); }
+    check("C13 startup discovers account support once through a separate machine PUT", accountAnnouncements.length === 1, accountAnnouncements);
   });
 
   // C14: concurrent first checks for one space create exactly one identity.
@@ -307,6 +376,7 @@ try {
       check("C14 exactly one new identity record for the space", identityFiles().length === before + 1, identityFiles());
       check(`C14 ${N} GETs reached the space and 0 POST`, gets() === N && posts() === 0, hits);
     } finally { await d3.close(); }
+    check("C14 concurrent checks share one startup account-support discovery", accountAnnouncements.length === 1, accountAnnouncements);
   });
 } catch (e) {
   fail++;

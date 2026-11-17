@@ -100,6 +100,9 @@ try {
   check("ps names the manager instance and the host it reports", instanceId !== undefined
     && new RegExp(`reported host:\\s*${hostname()}$`, "m").test(ps.stdout + ps.stderr), ps.stdout + ps.stderr);
   const on = instanceId!;
+  const listed = cli("invoke", "manager", "list-dir", "--on", on, "--args", JSON.stringify({ path: inner }));
+  check("generic CLI invokes directory listing on the pinned static Manager",
+    listed.status === 0 && listed.stdout.includes(inner) && listed.stdout.includes('"directories"'), listed.stdout + listed.stderr);
 
   // ── A. the grant the typed-folder arm rides, over the real broker ──
   const resolveCwd = async (cwd: string) => {

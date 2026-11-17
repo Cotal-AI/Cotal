@@ -21,7 +21,11 @@
  *   - SKEW: a retirement that does not narrow (an older manager) against this daemon, with a late join
  *     on the same daemon process, which the in-memory mark refuses;
  *   - READFAIL: a predecessor's post-write ACL read fails, so it takes back only its own write, and a
- *     successor's retry that activated the still-authorized row keeps it until the lifecycle retires.
+ *     successor's retry that activated the still-authorized row keeps it until the lifecycle retires;
+ *   - FAMILY: a lifecycle that follows the family lane.> (#5404) has its family row listed and purged
+ *     by its exact key, like a channel's row;
+ *   - FAMILY-LEFT: a retirement that names concrete channels only, as the auth service's footprint does,
+ *     leaves a family row, and the reader that drops the next post under the family removes it.
  * Every witness must end with 0 rows of the retired lifecycle.
  *
  * Run: pnpm smoke:retire-fence-lifetime (needs nats-server on PATH)
@@ -31,7 +35,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CotalEndpoint, createSpaceAuth, deprovisionAgent, DEV_OWNER, liveKvEntries, memberKey, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry,
+  commitMember, CotalEndpoint, createSpaceAuth, deprovisionAgent, DEV_OWNER, liveKvEntries, memberKey, mintCreds, mintLifecycleUid, newIdentity, openAclRegistry,
   openMembersRegistry, parseMemberKey, principalKey, provisionAgent, readAcl, readMember, setupSpaceStreams, type ControlReply, type DeprovisionResourceAccounting, type Identity,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
@@ -168,6 +172,45 @@ try {
       markRemoved && /no longer within the read ACL/.test(lateOutcome), { markRemoved, lateOutcome });
     check("PRUNE: 0 rows of the retired lifecycle remain", left.length === 0, left);
     console.log(`PRUNE_WITNESS inventoryListed=${listings.get(a.uid)?.channels.length} oldMarkRemoved=${markRemoved} lateJoinAccepted=${lateOutcome === "accepted"} retainedOldRows=${left.length} ms=${Date.now() - t0}`);
+  }
+
+  // FAMILY: the inventory lists the family row as lane.>, and the deprovisioner purges it by its key.
+  {
+    const f = await seat("family-f");
+    await f.ep.durableJoinChannel("lane.>");
+    await f.ep.durableJoinChannel("lane.a");
+    // An inventory the manager cannot accept throws once the deletes ran; the cell reads its accounting.
+    let refused = "";
+    const accounting = await retire(f).catch((e: Error & { accounting?: DeprovisionResourceAccounting }) => { refused = e.message; return e.accounting; });
+    const left = await rows(f);
+    retained += left.length;
+    check("FAMILY: the retirement listed the family row and the channel row, and the deprovisioner purged both",
+      refused === "" && listedOnly(f, ["lane.>", "lane.a"]) && accounting?.members.deleted === 2, { refused, listing: listings.get(f.uid), members: accounting?.members });
+    check("FAMILY: 0 rows of the retired lifecycle remain", left.length === 0, left);
+  }
+
+  // FAMILY-LEFT: the auth service's retirement footprint names concrete channels only, so it leaves a
+  // family row. The next post under the family reaches the retired lifecycle's inbox, and the reader
+  // that drops that entry removes the row the copy names, which is the family's.
+  {
+    const g = await seat("family-left");
+    await g.ep.durableJoinChannel("lane.left.>");
+    const row = await readMember(kv, "lane.left.>", g.principal, g.uid);
+    await retire(g);
+    if (row) await commitMember(kv, row.record);
+    const leftBefore = await rows(g);
+    check("FAMILY-LEFT: a retirement that named no family leaves the family row", leftBefore.length === 1 && leftBefore[0]?.channel === "lane.left.>", leftBefore);
+    const pId = newIdentity();
+    const pUid = mintLifecycleUid();
+    const p = new CotalEndpoint({ space, servers: broker.servers, creds: await provisionAgent(prov, auth, pId, { subscribe: [], allowSubscribe: ["lane.>"], allowPublish: ["lane.left.x"], lifecycleUid: pUid }), lifecycleUid: pUid, card: { id: pId.id, name: "family-left-p", kind: "agent" }, channels: [], consume: false, registerPresence: false, watchPresence: false, watchChannels: false });
+    endpoints.push(p);
+    p.on("error", () => {});
+    await p.start();
+    await p.multicast("after the retirement", { channel: "lane.left.x" });
+    let left = await rows(g);
+    for (let i = 0; i < 100 && left.length !== 0; i++) { await new Promise((r) => setTimeout(r, 100)); left = await rows(g); }
+    retained += left.length;
+    check("FAMILY-LEFT: the post fanned out against the family row, and the reader that dropped its entry removed it: 0 rows remain", left.length === 0, left);
   }
 
   // RESTART: a new daemon boots between the inventory and the deprovisioner; the seat stays connected.

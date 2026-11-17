@@ -250,6 +250,8 @@ export type RunJournalRow =
       readonly lostRace?: string;
       /** What an open pause asks, present only while it is open. */
       readonly asks?: string;
+      /** The schema recorded for an open checkpoint, passed through without interpretation. */
+      readonly schema?: unknown;
       readonly addressee?: string;
       /** When an open pause expires, as its entry records it. */
       readonly deadlineAt?: number;

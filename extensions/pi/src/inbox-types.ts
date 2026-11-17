@@ -36,6 +36,9 @@ export interface InboxItem {
   text: string;
   replyTo?: string;
   contextId?: string;
+  /** Set on a delivery daemon's notice about one of this session's own role requests (`anycast`)
+   *  or about a channel post whose mention it could not deliver (`mention`). */
+  notice?: "anycast" | "mention";
 }
 
 /** An exact-key drain: the items found plus the receive keys that were not present. */
@@ -46,7 +49,6 @@ export interface ExactDrainResult {
 
 // --- drift guard (build-only; not shipped) ---
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
-type Assert<T extends true> = T;
-type _GuardItem = Assert<Exact<InboxItem, import("@cotal-ai/connector-core").InboxItem>>;
-type _GuardScope = Assert<Exact<InboxScope, import("@cotal-ai/connector-core").InboxScope>>;
-type _GuardDrain = Assert<Exact<ExactDrainResult, import("@cotal-ai/connector-core").ExactDrainResult>>;
+true satisfies Exact<InboxItem, import("@cotal-ai/connector-core").InboxItem>;
+true satisfies Exact<InboxScope, import("@cotal-ai/connector-core").InboxScope>;
+true satisfies Exact<ExactDrainResult, import("@cotal-ai/connector-core").ExactDrainResult>;

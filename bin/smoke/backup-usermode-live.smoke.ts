@@ -66,12 +66,6 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
 };
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const until = async (cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<boolean> => {
-  const end = Date.now() + ms;
-  while (Date.now() < end) { if (await cond()) return true; await wait(100); }
-  return false;
-};
 
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
@@ -328,7 +322,7 @@ try {
   console.error("  ✗ scenario threw:", e);
   process.exitCode = 1;
 } finally {
-  await cotal(["down"], 60_000); // idempotent — kills by ITS OWN pid files only
+  await cotal(["down", "--yes"], 60_000); // idempotent — kills by ITS OWN pid files only
   idpSrv.close();
   rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

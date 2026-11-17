@@ -24,6 +24,9 @@
  *   G. Saved preferences: a harness saved for the user or the space is the caller default on both
  *      paths, below COTAL_DEFAULT_AGENT and a persona pin, and a saved persona preference picks the
  *      persona of a bare spawn.
+ *   H. A foreground spawn whose catalog has no default persona writes the shipped one, create-only,
+ *      and launches it; its preview writes nothing, an edited default is kept, and a missing named
+ *      persona is still refused.
  *
  * Throwaway everything: own nats-server on an OS-assigned free port with a scratch store dir, a
  * sandboxed COTAL_HOME, a scratch workspace root, kills only the PIDs it spawns. No live stack is
@@ -32,7 +35,7 @@
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
@@ -284,6 +287,37 @@ try {
     const g7 = await foreground(["unpinned", "--no-events", "--space", SPACE, "--name", "g7"]);
     ok("G7: foreground, a saved user harness builds the launch of an unpinned persona", /spawning g7/.test(g7) && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g7 });
     save("harness", undefined);
+
+    // H — the catalog holds only pinned.md and unpinned.md, as a Cloud catalog that no setup or up
+    // prepared holds no default.md. Stdout is tapped too, because the preview writes its report there.
+    const { DEFAULT_AGENT } = await import("../../implementations/cli/src/lib/default-persona.js");
+    const defaultPath = join(workspaceRoot, ".cotal", "agents", "default.md");
+    const foregroundAll = async (args: string[]): Promise<string> => {
+      const realWrite = process.stdout.write;
+      let printed = "";
+      process.stdout.write = ((chunk: string | Uint8Array) => { printed += String(chunk); return true; }) as typeof process.stdout.write;
+      try { return (await foreground(args)) + printed; }
+      finally { process.stdout.write = realWrite; }
+    };
+    ok("H instrument: the catalog starts with no default persona", !existsSync(defaultPath));
+    const h1 = await foregroundAll(["--dry-run", "--no-events", "--space", SPACE, "--name", "h1"]);
+    ok("H1: a bare foreground preview says the launch writes the shipped default, and writes nothing",
+      /writes the shipped default persona/.test(unstyled(h1)) && !/process\.exit|no default persona/.test(h1) && !existsSync(defaultPath), h1);
+    process.env.COTAL_DEFAULT_AGENT = "other";
+    reset();
+    const h2 = await foreground(["--no-events", "--space", SPACE, "--name", "h2"]);
+    ok("H2: a bare foreground spawn writes the shipped default persona and launches it",
+      /spawning h2/.test(h2) && builds.other.length === 1 && existsSync(defaultPath) && readFileSync(defaultPath, "utf8") === DEFAULT_AGENT, { ...counts(), out: h2 });
+    ok("H2: the written default is private to its owner", existsSync(defaultPath) && (statSync(defaultPath).mode & 0o777) === 0o600);
+    appendFileSync(defaultPath, "\nKeep this edit.\n");
+    const edited = readFileSync(defaultPath, "utf8");
+    reset();
+    const h3 = await foreground(["--no-events", "--space", SPACE, "--name", "h3"]);
+    ok("H3: an existing default persona is launched as it stands, never rewritten", /spawning h3/.test(h3) && readFileSync(defaultPath, "utf8") === edited, h3);
+    const h4 = await foreground(["nosuch", "--no-events", "--space", SPACE, "--name", "h4"]);
+    ok("H4: a missing named persona is still refused and not created", /no persona "nosuch"/.test(h4) && !/spawning h4/.test(h4) && !existsSync(join(workspaceRoot, ".cotal", "agents", "nosuch.md")), h4);
+    delete process.env.COTAL_DEFAULT_AGENT;
+    rmSync(defaultPath, { force: true });
   }
 
   // D — FOREGROUND: same pinned persona, no --agent, env pointing at `other`. The child is

@@ -1,0 +1,394 @@
+name: Windows setup service proof
+on:
+  pull_request:
+    paths:
+      - 'desktop/src-tauri/installers/**'
+      - 'desktop/scripts/prepare-installer.mjs'
+      - 'desktop/src-tauri/src/**'
+      - 'desktop/src-tauri/Cargo.toml'
+      - 'desktop/src-tauri/Cargo.lock'
+      - 'desktop/src-tauri/tauri*.conf.json'
+      - 'bin/daemon-native.ts'
+      - 'bin/daemon/desktop-setup.ts'
+      - 'bin/daemon/desktop.ts'
+      - 'bin/daemon/desktop-path.ts'
+      - 'bin/daemon/install*.ts'
+      - 'bin/daemon/lifetime.ts'
+      - 'bin/daemon/native-log.ts'
+      - 'bin/daemon/ownership-win32.ts'
+      - 'bin/daemon/command.ts'
+      - 'bin/daemon/update-windows*.ts'
+      - 'packages/workspace/src/win32-process.ts'
+      - 'packages/workspace/native/win32-*'
+      - 'bin/package.json'
+      - '.github/workflows/windows-setup-proof.yml'
+      - 'desktop/test/setup-*.mjs'
+      - 'desktop/test/setup-*.ps1'
+      - 'bin/smoke/_fixture-*.mjs'
+      - 'bin/smoke/fixture-seat.smoke.mjs'
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: 'Include the 18 timing repeat cells (running 1..9 and app-tray 1..9)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      expected: ${{ steps.plan.outputs.expected }}
+      version_pr: ${{ steps.plan.outputs.version_pr }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Check published installer selection
+        run: node --test desktop/test/setup-published-installer.test.mjs
+      - name: Plan required proof cells
+        id: plan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $versionPr = ('${{ github.event_name }}' -eq 'pull_request') -and ('${{ github.head_ref }}' -eq 'changeset-release/main')
+          $repeats = ('${{ github.event_name }}' -eq 'workflow_dispatch') -and ('${{ inputs.repeats }}' -eq 'true')
+          $cells = if ($versionPr) {
+            @('running','app-installed-0.164.9','app-installed-latest','app-installed','app-update-mode','installed-candidate-to-next')
+          } else {
+            @('running','occupied','stopped','absent','locker','locker-filtered','locker-short','early','interactive','occupied-ui','interrupted','app-open','app-tray','foreign','fresh','cannot-start','installed-candidate-to-next','app-installed','app-update-mode','app-installed-0.164.9','app-installed-latest','path-probe','external-node-exiting','external-node-exiting-filtered','external-node-elevated','external-node-elevated-filtered','external-node-system','external-node-system-filtered')
+          }
+          $include = @($cells | ForEach-Object { @{ repeat = 0; cell = $_ } })
+          if ($repeats) {
+            foreach ($cell in @('running','app-tray')) {
+              foreach ($repeat in 1..9) {
+                $include += @{ repeat = $repeat; cell = $cell }
+              }
+            }
+          }
+          $expected = @('build','stock-ui-control') + @($include | ForEach-Object { "native ($($_.repeat), $($_.cell))" })
+          "version_pr=$($versionPr.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "matrix=$(@{ include = $include } | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
+          "expected=$($expected | ConvertTo-Json -Compress)" >> $env:GITHUB_OUTPUT
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile
+      - name: Stamp disposable proof version
+        run: pnpm exec node desktop/test/setup-candidate-version.mjs
+      - name: Build stock Windows native bindings
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          if not defined VS exit /b 1
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
+      - run: pnpm --filter cotal-ai seeded-connectors
+      - run: pnpm --dir desktop prepare:runtime
+      - run: pnpm --dir desktop check:runtime
+      - run: pnpm --dir desktop exec tauri build --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-candidate
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+      - name: Build cannot-start helper invalid-input control
+        if: steps.plan.outputs.version_pr != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Remove-Item -Path 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' -Force -ErrorAction SilentlyContinue
+          node desktop/test/setup-invalid-helper.mjs
+          if($LASTEXITCODE -ne 0){throw 'Invalid-helper fixture preparation failed'}
+          pnpm --dir desktop exec tauri build --bundles nsis --config src-tauri/invalid-helper.json
+          if($LASTEXITCODE -ne 0){throw 'Invalid-helper control build failed'}
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.version_pr != 'true'
+        with:
+          name: setup-invalid-helper
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+      - name: Build synthetic next candidate in warm tree
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Remove-Item -Path 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe' -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath 'desktop/src-tauri/runtime' -Recurse -Force
+          Remove-Item -LiteralPath 'desktop/src-tauri/binaries/node-x86_64-pc-windows-msvc.exe' -Force
+          if ((Test-Path -LiteralPath 'desktop/src-tauri/runtime') -or (Test-Path -LiteralPath 'desktop/src-tauri/binaries/node-x86_64-pc-windows-msvc.exe')) {
+            throw 'Staged N runtime or sidecar binary was not removed before N+1 preparation'
+          }
+          git checkout -- bin/package.json
+          if($LASTEXITCODE -ne 0){throw 'Could not reset bin/package.json before next stamp'}
+          pnpm exec node desktop/test/setup-candidate-version.mjs --next
+          if($LASTEXITCODE -ne 0){throw 'Synthetic next candidate version stamping failed'}
+          $nextVersion = ([IO.File]::ReadAllText('bin/package.json',[Text.Encoding]::UTF8).Replace("`r`n","`n") | ConvertFrom-Json).version
+          (Get-Item 'desktop/src-tauri/tauri.conf.json').LastWriteTimeUtc = [DateTime]::UtcNow
+          pnpm --workspace-concurrency=3 --filter cotal-ai... build
+          if($LASTEXITCODE -ne 0){throw 'Synthetic next workspace build failed'}
+          pnpm --filter cotal-ai seeded-connectors
+          if($LASTEXITCODE -ne 0){throw 'Synthetic next seeded-connectors build failed'}
+          pnpm --dir desktop prepare:runtime
+          if($LASTEXITCODE -ne 0){throw 'Synthetic next runtime preparation failed'}
+          $stagedRuntimeVersion = ([IO.File]::ReadAllText('desktop/src-tauri/runtime/desktop-runtime.json',[Text.Encoding]::UTF8).Replace("`r`n","`n") | ConvertFrom-Json).version
+          if ($stagedRuntimeVersion -cne $nextVersion) {
+            throw "Staged desktop-runtime.json version ($stagedRuntimeVersion) does not match N+1 ($nextVersion)"
+          }
+          pnpm --dir desktop exec tauri build --bundles nsis
+          if($LASTEXITCODE -ne 0){throw 'Synthetic next NSIS bundle build failed'}
+          $setup = @(Get-ChildItem 'desktop/src-tauri/target/release/bundle/nsis/*-setup.exe')
+          if ($setup.Count -ne 1 -or $setup[0].Name -cne "Cotal_${nextVersion}_x64-setup.exe") {
+            throw 'Synthetic next setup bundle does not match N+1 version'
+          }
+          $bundledManifest = (& 7z e -so $setup[0].FullName '*desktop-runtime.json' -r) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not extract desktop-runtime.json from synthetic next setup bundle'
+          }
+          $bundledVersion = ($bundledManifest.Replace("`r`n","`n") | ConvertFrom-Json).version
+          if ($bundledVersion -cne $nextVersion) {
+            throw "Synthetic next setup bundle carries desktop-runtime.json version $bundledVersion instead of $nextVersion"
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: setup-synthetic-next
+          path: desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+  native:
+    name: native (${{ matrix.repeat }}, ${{ matrix.cell }})
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJson(needs.build.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build stock bindings for fixture process
+        if: matrix.cell == 'occupied' || matrix.cell == 'occupied-ui' || matrix.cell == 'absent'
+        shell: cmd
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS=%%i"
+          call "%VS%\Common7\Tools\VsDevCmd.bat" -no_logo -arch=amd64 -host_arch=amd64
+          if errorlevel 1 exit /b 1
+          node packages/workspace/scripts/build-native.mjs
+          if errorlevel 1 exit /b 1
+          node packages/seat/scripts/build-native.mjs --host
+          if errorlevel 1 exit /b 1
+      - name: Build workspace packages for fixture suites
+        if: matrix.cell == 'occupied' || matrix.cell == 'occupied-ui' || matrix.cell == 'absent'
+        run: pnpm --workspace-concurrency=3 --filter cotal-ai... build
+      - uses: actions/download-artifact@v4
+        with:
+          name: setup-candidate
+          path: candidate
+      - uses: actions/download-artifact@v4
+        if: matrix.cell == 'installed-candidate-to-next' || matrix.cell == 'app-installed' || matrix.cell == 'app-update-mode'
+        with:
+          name: setup-synthetic-next
+          path: next-candidate
+      - uses: actions/download-artifact@v4
+        if: matrix.cell == 'cannot-start'
+        with:
+          name: setup-invalid-helper
+          path: invalid-candidate
+      - name: Prepare independent published CLI service
+        if: matrix.cell == 'foreign'
+        shell: pwsh
+        run: |
+          npm install --before=2026-11-16T19:38:00.000Z --prefix "$env:RUNNER_TEMP/cli-service" cotal-ai@0.164.7
+          if($LASTEXITCODE -ne 0){throw 'Published CLI fixture install failed'}
+      - name: Verify published installers and fixture broker
+        shell: pwsh
+        env:
+          RELEASE_METADATA_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $cell='${{ matrix.cell }}'
+          $versions=@()
+          if($cell -eq 'app-installed-latest') {
+            $pkg=Invoke-RestMethod -Uri 'https://registry.npmjs.org/cotal-ai/latest' -TimeoutSec 60
+            if(!$pkg -or $pkg.name -cne 'cotal-ai' -or $pkg.version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+              throw 'Could not resolve last published cotal-ai version from npm registry'
+            }
+            $selectedJson = node desktop/test/setup-published-installer.mjs
+            if($LASTEXITCODE -ne 0){throw 'Could not select a published Windows installer'}
+            $selected = $selectedJson | ConvertFrom-Json
+            Write-Host "Selected published Windows installer $($selected.version)"
+            if($selected.version -cne $pkg.version) {
+              Write-Host "Registry latest $($pkg.version) has no installer yet; using published Windows installer $($selected.version)"
+            }
+            "COTAL_SETUP_LATEST_VERSION=$($selected.version)" >> $env:GITHUB_ENV
+            $versions+=,$selected.version
+          } elseif($cell -eq 'app-installed-0.164.9') {
+            $versions+=,'0.164.9'
+          } elseif($cell -eq 'early') {
+            $versions+=,'0.157.0'
+          } elseif($cell -notin @('installed-candidate-to-next','app-installed','app-update-mode','fresh','path-probe')) {
+            $versions+=,'0.164.7'
+          }
+          foreach($version in $versions) {
+            $name="Cotal_${version}_x64-setup.exe"
+            if($cell -eq 'app-installed-latest') {
+              $asset=@($selected)
+            } else {
+              $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} "https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v$version"
+              $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+            }
+            if($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw "Published asset digest unavailable for $version"}
+            $expected=$Matches[1]
+            $path=Join-Path $env:RUNNER_TEMP $name
+            Invoke-WebRequest $asset[0].browser_download_url -OutFile $path
+            if((Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected){throw "Published installer digest mismatch for $version"}
+          }
+          if($cell -in @('occupied','occupied-ui','absent')) {
+            $version='2.12.2'
+            $zip=Join-Path $env:RUNNER_TEMP 'nats.zip'
+            Invoke-WebRequest "https://github.com/nats-io/nats-server/releases/download/v$version/nats-server-v$version-windows-amd64.zip" -OutFile $zip
+            Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'nats')
+            (Join-Path $env:RUNNER_TEMP "nats/nats-server-v$version-windows-amd64") >> $env:GITHUB_PATH
+          }
+          $folder=if($cell -eq 'cannot-start'){'invalid-candidate'}else{'candidate'}
+          $candidate=@(Get-ChildItem "$folder/*-setup.exe")
+          if($candidate.Count -ne 1){throw 'Candidate not singular'}
+          "COTAL_SETUP_CANDIDATE=$($candidate[0].FullName)" >> $env:GITHUB_ENV
+          if($cell -in @('installed-candidate-to-next','app-installed','app-update-mode')) {
+            $next=@(Get-ChildItem 'next-candidate/*-setup.exe')
+            if($next.Count -ne 1){throw 'Synthetic next candidate not singular'}
+            "COTAL_SETUP_NEXT=$($next[0].FullName)" >> $env:GITHUB_ENV
+          }
+      - name: Exercise actual installed setup
+        env:
+          COTAL_SETUP_REPEAT: ${{ matrix.repeat }}
+          COTAL_SETUP_CANDIDATE_KIND: ${{ matrix.cell == 'cannot-start' && 'invalid-helper-control' || 'product' }}
+        run: pnpm exec tsx desktop/test/setup-proof.mjs ${{ matrix.cell }}
+      - name: Existing Windows service lifecycle suites
+        if: always() && matrix.cell == 'absent'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $suites=@('daemon-ownership-imports','daemon-ownership-win32','daemon-install-native','daemon-install-entry','daemon-owned-uninstall','daemon-transport','desktop-setup')
+          foreach($suite in $suites) {
+            pnpm exec tsx "bin/smoke/$suite.smoke.ts"
+            if($LASTEXITCODE -ne 0){throw "$suite failed"}
+          }
+          $env:COTAL_TEST_REAL_SERVICE='1'
+          node bin/smoke/daemon-install-real.smoke.mjs
+          if($LASTEXITCODE -ne 0){throw 'real installed service lifecycle failed'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: setup-proof-${{ matrix.cell }}-${{ matrix.repeat }}
+          path: |
+            ${{ runner.temp }}/setup-proof/
+            ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
+  stock-ui-control:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Exercise unchanged UI driver against published fresh setup
+        shell: pwsh
+        env:
+          RELEASE_METADATA_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if(Test-Path "$env:LOCALAPPDATA/Cotal"){throw 'Control requires a clean installation'}
+          $name='Cotal_0.164.8_x64-setup.exe'
+          $meta=Invoke-RestMethod -Headers @{Authorization="Bearer $env:RELEASE_METADATA_TOKEN"} 'https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v0.164.8'
+          $asset=@($meta.assets|Where-Object {$_.name -ceq $name})
+          if($asset.Count -ne 1 -or $asset[0].digest -notmatch '^sha256:([a-f0-9]{64})$'){throw 'Published control digest unavailable'}
+          $expected=$Matches[1]
+          $installer=Join-Path $env:RUNNER_TEMP $name
+          Invoke-WebRequest $asset[0].browser_download_url -OutFile $installer
+          if((Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected){throw 'Published control digest mismatch'}
+          $output=Join-Path $env:RUNNER_TEMP 'stock-ui-control'
+          $null=New-Item -ItemType Directory -Path $output
+          @{head=$env:GITHUB_SHA;version='0.164.8';sha256=$expected;driverSha256=(Get-FileHash desktop/test/setup-ui.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json | Set-Content "$output/identity.json"
+          & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File desktop/test/setup-ui.ps1 -Installer $installer -Mode install -Output "$output/ui.json" > "$output/stdout.txt" 2> "$output/stderr.txt"
+          $code=$LASTEXITCODE
+          @{exitCode=$code} | ConvertTo-Json | Set-Content "$output/result.json"
+          if($code -ne 0){throw 'Stock published UI control did not complete'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: setup-proof-stock-ui-control
+          path: ${{ runner.temp }}/stock-ui-control/
+          if-no-files-found: error
+  verdict:
+    needs: [build, native, stock-ui-control]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: setup-proof-*
+          path: proof-artifacts
+      - name: Require every planned job and cell to complete with success
+        uses: actions/github-script@v8
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          CONTROL_RESULT: ${{ needs['stock-ui-control'].result }}
+          EXPECTED_JOBS: ${{ needs.build.outputs.expected }}
+        with:
+          script: |
+            const assert = require('node:assert/strict');
+            const fs = require('node:fs');
+            const path = require('node:path');
+            if (fs.existsSync('proof-artifacts')) {
+              for (const artifactDir of fs.readdirSync('proof-artifacts').sort()) {
+                const proofRoot = path.join('proof-artifacts', artifactDir, 'setup-proof');
+                if (!fs.existsSync(proofRoot)) continue;
+                for (const cellName of fs.readdirSync(proofRoot).sort()) {
+                  const resPath = path.join(proofRoot, cellName, 'result.json');
+                  if (!fs.existsSync(resPath)) continue;
+                  const rep = JSON.parse(fs.readFileSync(resPath, 'utf8'));
+                  const checks = Array.isArray(rep.checks) ? rep.checks : [];
+                  const passed = checks.filter(c => c.passed).length;
+                  console.log(`${artifactDir} (${rep.cell ?? cellName}): checks=${passed}/${checks.length}, cleanup: ${rep.cleanupOutcome ?? 'n/a'}`);
+                }
+              }
+            }
+            assert.equal(process.env.BUILD_RESULT, 'success', `build job result was ${process.env.BUILD_RESULT}`);
+            assert.equal(process.env.NATIVE_RESULT, 'success', `native matrix result was ${process.env.NATIVE_RESULT}`);
+            assert.equal(process.env.CONTROL_RESULT, 'success', `stock-ui-control job result was ${process.env.CONTROL_RESULT}`);
+            const expected = JSON.parse(process.env.EXPECTED_JOBS || '[]');
+            assert(Array.isArray(expected) && expected.length >= 8, 'expected job list is missing or incomplete');
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo,
+              run_id: context.runId,
+              filter: 'latest',
+              per_page: 100,
+            });
+            const byName = new Map(jobs.map(job => [job.name, job]));
+            for (const name of expected) {
+              const job = byName.get(name);
+              assert(job, `expected job did not run: ${name}`);
+              assert.equal(job.status, 'completed', `job did not complete: ${name} (${job.status})`);
+              assert.equal(job.conclusion, 'success', `job was not green: ${name} (${job.conclusion})`);
+            }
+            for (const job of jobs) {
+              if (job.name === 'verdict') continue;
+              assert.equal(job.status, 'completed', `unexpected incomplete job: ${job.name} (${job.status})`);
+              assert.equal(job.conclusion, 'success', `skipped, cancelled, or failed job: ${job.name} (${job.conclusion})`);
+            }

@@ -10,7 +10,7 @@ The `codex` connector runs a host process that owns one mesh endpoint and drives
 
 ## Tool connection
 
-Codex has no in-process plugin runtime and its MCP client cannot wake an idle session, so the
+Codex's MCP client cannot wake an idle session, so the managed
 connector runs Codex's own client/server split: a small **host process** embeds the mesh
 endpoint and drives a `codex app-server` thread over JSON-RPC (the same protocol the Codex TUI
 runs on). The app-server runs as an authenticated loopback **listener** rather than a private
@@ -40,7 +40,14 @@ pipe, which is what lets Codex's own TUI attach to the very thread the mesh is d
   broker address and latest connection error; it never opens an offline-looking TUI.
 - **At-least-once delivery.** A turn's surfaced messages are acked (by exact id) when the turn
   completes, and also when the operator interrupts it (Escape in the attached TUI): that dismisses
-  the batch rather than redelivering it. A failed turn retries with backoff, and an unknown terminal
+  the batch rather than redelivering it. A failed turn retries with backoff for three turns total,
+  counting the first attempt and two retries for each buffered message. Broker redelivery of the
+  same nonempty message id does not reset that budget. At the limit, the host log and seat status
+  name the paused message ids and `cotal_inbox` as the way to read them. The messages stay
+  unacknowledged, not discarded or reported as handled, and new messages can still start turns.
+  The pause lasts while those messages remain in this host's bounded inbox, across app-server
+  restarts but not a host-process restart. An empty message id has no cross-delivery identity and
+  cannot share a retry budget across broker copies. An unknown terminal
   outcome (a missing or unrecognized status) leaves the batch un-acked with no retry of its own. If
   the Codex app-server itself dies, the host restarts it in place (same mesh identity, credential,
   and durable) and re-drives the un-acked batch into the new thread; a crash *loop* (more than 3 in
@@ -174,6 +181,10 @@ tightening the workspace over removing the sandbox.
 
 ## Event plane
 
+The shared launch and emitter carry payload-withholding safety controls. This release does not
+qualify Codex payload mapping or native payload acceptance. See the
+[payload rules](claude-connector-reference.mdx#event-plane) for the separate rail and current scope.
+
 A spawned seat publishes a structured account of what it did: run
 boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
 function-call and custom-tool interfaces, each with its start and its end. Tool arguments and
@@ -185,7 +196,9 @@ and how to read it. The launcher sets `COTAL_EVENTS` by default; pass `--no-even
 unrestricted space. A registration that requires events refuses `--no-events`, and its launch
 always carries the flag and the workspace root the event log lives under. A hand-driven user-mode
 launch with `COTAL_EVENTS_REQUIRED=1` arms the plane without that flag.
-Your own `codex` publishes nothing unless its environment arms the plane.
+Your own `codex` publishes nothing unless its environment arms the plane or the Cotal plugin connects
+it. A plugin connection publishes its own activity from the moment you approve it; see
+[your own Codex conversations](connect-codex.mdx#personal).
 
 ```bash
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`

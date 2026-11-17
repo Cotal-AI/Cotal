@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
-import React, { useState } from "react";
+import { useState } from "react";
 import { render } from "ink";
 import type { MeshSnapshot } from "@cotal-ai/workspace/view";
 import { runCommand, type CommandCtx } from "../src/console/commands.js";
@@ -17,7 +17,7 @@ const snapshot = {
   channels: [{ channel: "general", messages: 3 }, { channel: "review", messages: 1 }],
 } as unknown as MeshSnapshot;
 const readManaged = async (): Promise<PsReply> => ({ ok: true,
-  rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0 }],
+  rows: [{ name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" }],
   silent: [], failed: [], answered: [],
 });
 const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
@@ -44,16 +44,16 @@ let query = "";
 let runs: string[] = [];
 let formsOpened = 0;
 type Grants = { canWrite?: boolean; canControl?: boolean };
-function Harness({ initial, managed = readManaged, canWrite = true, canControl = true }: { initial: string; managed?: () => Promise<PsReply> } & Grants) {
+function Harness({ initial, managed = readManaged, canWrite = true, canControl = true, snap = snapshot }: { initial: string; managed?: () => Promise<PsReply>; snap?: MeshSnapshot } & Grants) {
   const [value, setValue] = useState(initial);
   query = value;
-  return <CommandPalette active query={value} snapshot={snapshot} canWrite={canWrite} canControl={canControl} width={120}
+  return <CommandPalette active query={value} snapshot={snap} canWrite={canWrite} canControl={canControl} width={120}
     readManaged={managed} onChange={setValue} onRun={(line) => runs.push(line)}
     onNewAgent={() => { formsOpened++; }} onCancel={() => {}} />;
 }
-async function scenario(initial: string, check: () => Promise<void>, managed?: () => Promise<PsReply>, grants: Grants = {}) {
+async function scenario(initial: string, check: () => Promise<void>, managed?: () => Promise<PsReply>, grants: Grants = {}, snap = snapshot) {
   frame = ""; runs = []; formsOpened = 0;
-  const app = render(<Harness initial={initial} managed={managed} {...grants} />,
+  const app = render(<Harness initial={initial} managed={managed} snap={snap} {...grants} />,
     { stdin, stdout, debug: true, patchConsole: false, exitOnCtrlC: false });
   try { await screen("Commands"); await check(); }
   finally { app.unmount(); app.cleanup(); }
@@ -122,8 +122,8 @@ await scenario("status ", async () => {
   assert.ok(row.includes("mesh working · progress unknown") && !/mesh working(?! · progress unknown)/.test(row), `A working managed seat's suggestion says progress unknown; saw: ${row}`);
   assert.ok(frame.split("\n").some((line) => line.includes("managed_only") && line.includes("mesh offline") && !line.includes("progress unknown")), "Every other presence word passes through unqualified");
 }, async () => ({ ok: true, silent: [], failed: [], answered: [], rows: [
-  { name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0 },
-  { name: "busy_seat", id: "busy-id", agent: "claude", mode: "pty", status: "running", mesh: "working", uptimeMs: 0 },
+  { name: "managed_only", id: "managed-id", agent: "opencode", mode: "pty", status: "running", mesh: "offline", uptimeMs: 0, lifecycleUid: "uid-managed" },
+  { name: "busy_seat", id: "busy-id", agent: "claude", mode: "pty", status: "running", mesh: "working", uptimeMs: 0, lifecycleUid: "uid-busy" },
 ] }));
 await scenario("attach ", async () => {
   await screen("manager unavailable");
@@ -162,4 +162,21 @@ await scenario("msg", async () => {
   assert.equal(runs.length, 0, "CONTROL: with publish permission, msg advances to the channel picker rather than running");
   assert.equal(query, "msg ", "CONTROL: the picker opened");
 });
+const blankSnap = {
+  agents: [
+    { card: { id: "local.blank", name: " \n", role: "worker" }, status: "idle" },
+    { card: { id: "local.ada", name: " ada", role: "reviewer" }, status: "idle" },
+  ],
+  endpoints: [],
+  channels: [],
+} as unknown as MeshSnapshot;
+await scenario("dm", async () => {
+  await key("\r");
+  await screen("@local.blank");
+  const row = frame.split("\n").find((line) => line.includes("@local.blank")) ?? "";
+  assert.ok(row.includes("worker"), row);
+  assert.ok(frame.includes("@ ada"), frame);
+  await key("\r");
+  assert.equal(query, "dm @local.blank ", query);
+}, undefined, {}, blankSnap);
 console.log("✓ Command selection, recipient/seat/channel/role pickers, message entry, manager failure and blocked-action feedback");

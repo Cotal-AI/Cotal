@@ -80,7 +80,7 @@ try {
   for (let i = 0; i < 200; i++) { state = await invoke("cotal_connection_status"); if (state.includes("ready")) break; await wait(50); }
   check("healthy host reports ready", state.includes("ready"), state);
   check("healthy no-turn yield keeps its refusal", (await invoke("cotal_yield", { status: "blocked" })).includes("no turn is active"));
-  check("healthy channel send still succeeds", (await invoke("cotal_send", { channel: "team", text: "healthy-control" })).includes("Sent to #team"));
+  check("healthy channel send still succeeds", (await invoke("cotal_send", { channel: "team", text: "healthy-control" })).includes("Posted to #team"));
   broker.kill("SIGSTOP");
   const uncertain = await invoke("cotal_send", { channel: "team", text: "timed-out-but-stored" });
   check("publish timeout reports unknown outcome without claiming non-delivery", uncertain.includes("send outcome is unknown") && !uncertain.includes("was not sent"), uncertain);

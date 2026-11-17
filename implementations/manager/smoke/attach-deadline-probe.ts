@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { withDeadline } from "../../cli/src/commands/agents.js";
+import { withDeadline } from "../../../packages/workspace/src/attach/attach-seat.js";
 
 const cell = "the deadline probe stays alive until the bound fires";
 

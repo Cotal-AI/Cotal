@@ -60,7 +60,7 @@ const ANNOTATIONS = {
     effect: "publishes to a channel",
     availability: "always (the broker enforces your post ACL)",
     notes:
-      "Fails loud when the channel is outside your `allowPublish`. A pattern such as `team.>` is refused before anything is read or sent, and the refusal names the two ways to reach those agents. A name that is not a channel name, such as `team.**`, is refused the same way rather than rewritten onto another channel. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker. " +
+      "Fails loud when the channel is outside your `allowPublish`. A pattern such as `team.>` is refused before anything is read or sent, and the refusal names the two ways to reach those agents. A name that is not a channel name, such as `team.**`, is refused the same way rather than rewritten onto another channel. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. On success the tool answers `Posted to #<channel>. Agents on it see it; mention one to make it act.`, or with mentions `Posted to #<channel> and mentioned @<name>. Agents on it see it too.` It makes no claim about who woke or how many received the post, since nothing reports that to the sender. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed), but the result calls it a new channel, names close matches when it can, and says `Others see it once they join; tell them where it is.` When the channel does not replay history, it says instead that agents who join later won't see the post. When binding failed, send and DM refusals include the recorded connection failure, including a refused first presence write, rather than advising you to start a broker. " +
       "A channel publish timeout names its NATS subject and reports an unknown storage outcome. The broker may have stored the message without returning an acknowledgement. Check before resending.",
   },
   cotal_dm: {
@@ -71,9 +71,10 @@ const ANNOTATIONS = {
       "A DM publish timeout names its NATS subject and reports an unknown storage outcome. A timeout is not proof that the message was rejected or not delivered. Check before resending.",
   },
   cotal_anycast: {
-    effect: "queues a request for one holder of a role",
-    availability: "always",
-    notes: "When no holder is online the reply says that the request waits on the role's queue.",
+    effect: "queues a request for one holder of a role; with `seq`, reads or cancels one you sent",
+    availability: "always; a read or cancel by `seq` is refused on an open mesh",
+    notes:
+      "When no holder is online the reply says that the request waits on the role's queue. One call does one thing: a send with `role` and `text`, a status read with `seq`, or a cancel with `seq` and `cancel: true`. A call that mixes them changes nothing.",
   },
   cotal_status: {
     effect: "updates your own presence / attention",
@@ -104,12 +105,13 @@ const ANNOTATIONS = {
     availability:
       "capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive",
     notes:
-      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such; a lifecycle barrier that already holds the actor (frozen issuance gate, retiring alias) names the blocked op, head state, opId, and the remedy when one exists, rather than a wait-timeout. A launch that has not joined the mesh within its readiness window returns a pending result instead of an error: it names the allocated agent, its id, and its manager, and says to watch the roster, because spawning again starts a second agent. A launch whose requested `model` pin cannot be read back returns a partial result: the pin read failed or timed out, or the manager answered without reporting a pin. The result names the seat, its id, manager and runtime, says the pin is unaudited, and gives `cotal ps --on <manager>` as the next step; its structured content carries the same facts. Spawning again would start a second agent. A recorded pin that differs from the request, or no recorded pin, is still refused.",
+      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such; a lifecycle barrier that already holds the actor (frozen issuance gate, retiring alias) names the blocked op, head state, opId, and the remedy when one exists, rather than a wait-timeout. A started seat's result names it, any `join` channels, and the next move: `Started <name> on #<channel> (<runtime>). Post the brief there, and mention it only when it must act. Despawn it when its job is done.` A once seat is not told to be despawned, since its manager stops it. Without `join`, the result says the seat starts only on the channels its persona lists, which may be none, and names `join`. The result never names a persona's own channels, which the caller may not be allowed to read. A seat waiting at an operator screen, such as Claude's session picker, is reported as not yet on the mesh. A launch that has not joined the mesh within its readiness window returns a pending result instead of an error: it names the allocated agent, its id, and its manager, and says to watch the roster, because spawning again starts a second agent. A launch whose requested `model` pin cannot be read back returns a partial result: the pin read failed or timed out, or the manager answered without reporting a pin. The result names the seat, its id, manager and runtime, and says the pin is unaudited; its structured content carries the same facts. Spawning again would start a second agent. A recorded pin that differs from the request, or no recorded pin, is still refused.",
   },
   cotal_feedback: {
     effect: "sends data to an external HTTPS intake (network egress)",
     availability: "always",
-    notes: "Keyless submissions need a contact email; never include secrets.",
+    notes:
+      "Keyless submissions need a contact email; never include secrets. A send is confirmed only by the intake's HTTP 202 receipt (`ok`, `id`, and `published`). Any other 2xx is an unconfirmed outcome and is not retried. A redirect is not followed.",
   },
   cotal_despawn: {
     effect: "stops a teammate (or yourself)",
@@ -133,7 +135,7 @@ const ANNOTATIONS = {
     effect: "writes a persona file via the manager (becomes spawnable); posts one message ONLY if you pass `announce`",
     availability: "capability-gated like cotal_spawn",
     notes:
-      "Content only (`prompt`, `model`): role, ACLs, capabilities, and ownership have no slot here; they are policy. " +
+      "Writes content (`prompt`, `model`, role, agent and channel lists) and `capabilities`, which the manager checks against what you hold before it writes; ownership has no slot. A definition that would not load back is refused before anything is written, with `Couldn't define <name>: it would not load: <reason>`. " +
       "Defining is silent by default. `announce` is the only way it emits, and then only to the channel you name.",
   },
   cotal_personas: {
@@ -217,11 +219,19 @@ lines.push(
 );
 lines.push("");
 lines.push(
+  "Hosted HTTP gateways can also implement the draft MCP Events methods through an optional `GatewayRequest.events` adapter. Only an endpoint with that adapter advertises `events` and serves `events/list`, `events/subscribe`, and `events/unsubscribe`. The gateway resolves the account from transport authentication before calling the adapter. Subscription validation, consent, callback verification, delivery, expiry, and revocation belong to the embedding service; the stock gateway does not deliver events by itself.",
+);
+lines.push("");
+lines.push(
   "`cotal_orientation` is the entry point. The card it returns reflects the same gated tool list the connector exposes; it never claims a tool the agent can't call. In auth mode the manager-op tools (`cotal_spawn`, `cotal_persona`, `cotal_personas`) are injected only for personas declaring `capabilities: [spawn]`, and `cotal_run` only for `capabilities: [run]` ([identity & auth](identity-and-auth.md)).",
 );
 lines.push("");
 lines.push(
   "**Arguments are closed.** Every tool accepts only the arguments listed for it and REFUSES any other key, including tools that take no arguments at all. An unlisted key is an error. A call that supplies an identity (`owner`, `actor`, `caller`) is turned away before anything runs. The identity a tool acts under comes from the connector's own credential and can never be supplied as an argument. Every refusal names the offending keys, but its shape depends on who refuses: where the host validates the published schema (Claude Code, Codex, pi) you get that host's own schema error, and where it does not (OpenCode, Hermes) the connector refuses at its own dispatch and additionally lists the arguments the tool does accept, or says it takes none. In both cases the call did not run.",
+);
+lines.push("");
+lines.push(
+  "A manager on another Cotal release can refuse an argument its contract does not declare. A manager-op tool then names the argument and this connector's version, and asks the bound manager for its version. When the manager is older, it names `cotal update --self` on the manager's host and then `cotal manager restart`, or, for an argument you set, calling again without it. When this connector is older, it names `cotal update --self` here and a new session. A request no manager was bound for is treated as an older manager.",
 );
 lines.push("");
 lines.push("| Tool | Does | Side-effect |");
@@ -270,13 +280,19 @@ for (const s of specs) {
   }
   if (s.name === "cotal_dm") {
     lines.push(
-      "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
+      "On success the tool answers `Sent to <name>. Other agents can't read it. If others could use it, post it on the task's channel.`, appending ` duplicate publication.` when the publish was a duplicate. The broker stored the DM; nothing confirms the recipient read it. When the recipient was `offline`, the answer adds `<name> is offline: the DM is delivered when <name> reconnects, and a new agent spawned as <name> does not receive it.` The DM durable belongs to the recipient's lifecycle ([SPEC §8](../SPEC.md#8-nats--jetstream-binding)), so the same session receives the DM when it comes back, and a new spawn under that name starts after it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the answer says it has no roster row. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
     );
     lines.push("");
   }
   if (s.name === "cotal_anycast") {
     lines.push(
-      "On success the tool answers `Request stored as seq <N> on the @<role> queue (<k> holders online at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. A role is one `[A-Za-z0-9_-]` token, and any other spelling, `*` included, is refused before anything is sent. The count is the roster's live seats holding that role a moment before the publish, you included when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the count reads `holders unknown at send: the presence view was not current`, because a partial roster cannot show that no holder exists. Neither the sequence nor the count proves a holder took the request.",
+      "On success a send answers `Request stored as seq <N> on the @<role> queue (<holders>; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue. A role is one `[A-Za-z0-9_-]` token, and any other spelling, `*` included, is refused before anything is sent. `<holders>` names the roster's live seats holding that role a moment before the publish, by name and id, the first eight and then a count of the rest. You are among them when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the holders read as unknown, because a partial roster cannot show that no holder exists. Neither the sequence nor the holders prove a holder took the request.",
+      "",
+      "Except on an open mesh, the answer adds `You get a notice naming the holder that takes it. Read its status with seq <N>, or cancel it with seq <N> and cancel: true while it waits.` A holder's connector records its take with the delivery daemon just before it shows the request to its agent, and it takes only the requests it is about to show, so one still waiting in a holder's buffer behind other mail reads waiting and can be cancelled. The daemon then sends you a notice: `<name> (<id>) took your @<role> request (seq <N>).` If that holder does not confirm the request before its ack wait runs out and another holder takes it, a second notice names both. A notice comes from the delivery daemon and needs no reply.",
+      "",
+      "Give `seq` alone to read the request's status: waiting on the queue, taken (by whom and when), cancelled, or unknown. Add `cancel: true` to cancel it. A cancel succeeds only while the request waits; once a holder took it, the answer names the taker and points you to that holder or to `cotal_run`. Taken means that holder's connector was about to show the request to its agent, and says nothing about whether the work was done. A seq reads only your own requests. When this session sent two requests under one seq, because the role queue was recreated between them, the seq is refused as ambiguous. A session that restarted no longer knows which requests it sent, so a seq then reads whichever of your requests the queue stores at that seq now. Anycast does not follow the work to its end; use [`cotal_run`](#cotal_run) for work you need followed ([SPEC §8.1](../SPEC.md#81-anycast-request-status)).",
+      "",
+      "A restore of the space from a backup brings back the requests the role queues held when the backup was made and recreates their consumers, so delivery counts start over. A request a holder had taken and not yet acked by then is on its queue again, even if that holder finished it afterwards. The broker delivers it again at delivery count 1, as it redelivers any unacked request, so any holder of the role may take it and do the work again, and its status reads waiting until that take.",
     );
     lines.push("");
   }
@@ -294,7 +310,7 @@ const metadata = [
   "---",
   "title: MCP tool catalog",
   "description: Arguments, availability, and effects of the Cotal tools exposed to agent sessions.",
-  "kind: Reference",
+  "kind: \"Reference: the `cotal_*` tool surface every connected agent gets.\"",
   "audience: agents and operators",
   "---",
   "",

@@ -46,6 +46,8 @@
  *      back and gives the shell straight back rather than at the end of the rung.
  *   K. the deadline itself keeps an otherwise idle child alive until the bound fires, without the
  *      PTY and resumed stdin that now mask timer liveness in cell I.
+ *   L. a manager authorization denial during backoff ends the real CLI attach, restores the
+ *      terminal and releases the abandoned session without opening a replacement.
  *   F. the four classifications the loop turns on, as functions.
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
@@ -56,9 +58,10 @@
  * end to end (the mesh preflight refuses at the reconnect step for several attempts there, and the
  * cell asserts its remedy line never reaches the terminal), and cell B drives `heldSessionNotice`'s
  * PRINTING branch the same way, by detaching while the link is still down. Cell F then pins the REMAINING inputs
- * of the same four functions, which no end-to-end fault in this harness can produce: a static
- * single-owner mesh mints an admin instrument for every attach, so the manager has no reason to
- * answer `permission-denied`, and nothing here can drive it to its 64-session ceiling.
+ * of the same four functions. Cell L supplies a denial at the manager's authorization seam:
+ * this static single-owner mesh cannot revoke a user ledger scope. The real attach handler sends
+ * its structured `permission-denied` reply, but this does not prove user-ledger revocation.
+ * Nothing here drives the manager to its 64-session ceiling.
  */
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -73,8 +76,8 @@ import {
   registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
-import { isTransportEnd } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
+import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../../packages/workspace/src/attach/attach-seat.js"; // dev-only cross-package smoke import
+import { isTransportEnd } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-package smoke import
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
@@ -108,7 +111,7 @@ console.log(`broker-url guard: ${BROKER} (manager+seat) / ${PROXY} (attach clien
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const home = join(dir, "home");
-mkdirSync(home, { recursive: true });
+mkdirSync(home, { recursive: true, mode: 0o700 });
 process.env.COTAL_HOME = home; // the CLI's mesh registry lives here, never the operator's real one
 // And the CONNECTOR SEED STORE, which does NOT live under COTAL_HOME: it sits under
 // `globalConfigDir()`, so it is the operator's real `~/.config/cotal` unless XDG_CONFIG_HOME
@@ -230,8 +233,14 @@ type Attached = {
   waitExit: (ms: number) => Promise<boolean>;
   kill: () => void;
 };
-function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT): Attached {
-  const child = pty.spawn(TSX, [BIN, "attach", "--name", seat, "--space", space, "--server", PROXY, ...extra], {
+function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT, probeTerminal = false): Attached {
+  const args = [BIN, "attach", "--name", seat, "--space", space, "--server", PROXY, ...extra];
+  // The shell keeps the same PTY after the CLI exits, so restoration is measured, not inferred
+  // from the child ending (which would close its terminal anyway).
+  const child = pty.spawn(probeTerminal ? "/bin/sh" : TSX, probeTerminal ? [
+    "-c", 'before=$(stty -g); "$@"; code=$?; after=$(stty -g); if [ "$before" = "$after" ]; then printf "\\nTERMINAL_RESTORED\\n"; else printf "\\nTERMINAL_CHANGED\\n"; fi; exit "$code"',
+    "attach-terminal-probe", TSX, ...args,
+  ] : args, {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });
@@ -509,7 +518,10 @@ try {
       return live();
     };
 
-    const before = live();
+    // Cell E stopped the only earlier target. A bridge whose end frame was sent waits for its
+    // bounded end-ACK grace before releasing the session; H must not count that transient tail.
+    const before = await settle(0, 5_000);
+    check("the stopped seat's earlier sessions drain before the silent-seat baseline", before === 0, { before });
     const a = attachUnderPty(root, [], QUIET); started.push(a);
     check("the attach to the silent seat comes up", await a.waitFor(new RegExp(`attached to ${QUIET}`), 90_000), a.seen().slice(-400));
     const withOne = live();
@@ -626,6 +638,61 @@ try {
       const freed = await settle(baseJ, 20_000);
       check("...and the manager is back to the count it started with, with no slot left behind",
         freed === baseJ, { baseJ, freed });
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  console.log("\nL. a manager denial during reconnect ends the attach and restores the terminal");
+  {
+    // Only the authorization decision is controlled. The shipped CLI, real manager attach
+    // handler, structured error envelope and session plane remain on the live path.
+    const gate = manager as unknown as {
+      authorizeNamed: (...args: unknown[]) => Promise<string | undefined>;
+      attachAuthorized: (...args: unknown[]) => Promise<unknown>;
+      sessionPlane?: { liveSessions: number };
+    };
+    const authorize = gate.authorizeNamed;
+    const establish = gate.attachAuthorized;
+    const message = "scope revoked during reconnect backoff";
+    let revoked = false, denials = 0, establishments = 0;
+    const live = () => gate.sessionPlane?.liveSessions ?? -1;
+    const baseline = live();
+    gate.authorizeNamed = async function (...args) {
+      if (revoked) { denials++; return message; }
+      return authorize.apply(this, args);
+    };
+    gate.attachAuthorized = async function (...args) {
+      establishments++;
+      return establish.apply(this, args);
+    };
+    try {
+      const a = attachUnderPty(root, [], "rcquiet", true); started.push(a);
+      const attached = await a.waitFor(/attached to rcquiet/, 90_000);
+      check("denial control first establishes a real session", attached && establishments === 1 && live() === baseline + 1,
+        { establishments, baseline, live: live(), tail: a.seen().slice(-500) });
+      if (!attached) throw new Error("denial control never attached");
+      await sever();
+      const lost = await a.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000);
+      check("authorization changes only after the reconnect backoff begins", lost && a.exit() === undefined,
+        { exit: a.exit(), tail: a.seen().slice(-500) });
+      if (!lost) throw new Error("denial control never entered reconnect");
+      revoked = true;
+      await heal();
+      const ended = await a.waitExit(60_000);
+      check("the manager denial ends the CLI without a timeout", ended && a.exit()?.code !== 0,
+        { exit: a.exit(), tail: a.seen().slice(-700) });
+      check("the real manager handler relays its authorization message", denials === 1 && shown(a).includes(message),
+        { denials, tail: shown(a).slice(-700) });
+      check("the refusal never opens a replacement session or announces success",
+        establishments === 1 && saidReconnected(a) === 0, { establishments, tail: a.seen().slice(-700) });
+      check("the shell observes the original terminal mode after refusal",
+        /TERMINAL_RESTORED/.test(shown(a)) && !/TERMINAL_CHANGED/.test(shown(a)), shown(a).slice(-700));
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline && live() !== baseline) await wait(200);
+      check("the denial leaves no session behind", live() === baseline, { baseline, live: live() });
+    } finally {
+      gate.authorizeNamed = authorize;
+      gate.attachAuthorized = establish;
     }
   }
 

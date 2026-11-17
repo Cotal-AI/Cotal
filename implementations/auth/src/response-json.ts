@@ -7,7 +7,7 @@ export async function readAuthResponseJson(response: Response, face: string): Pr
 }
 
 /** The body of a refused exchange: its sentence, and for a rate limit its code, wait and bucket. */
-export interface ExchangeRefusal {
+interface ExchangeRefusal {
   error?: string;
   code?: unknown;
   retryAfterSeconds?: unknown;

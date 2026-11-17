@@ -25,7 +25,7 @@ import { hermesHookHandle } from "./hermes-hooks.js";
 import { startBridgeServer } from "./bridge.js";
 import { hermesToolDescriptors } from "./tool-schema.js";
 
-export interface Sidecar {
+interface Sidecar {
   agent: MeshAgent;
   config: AgentConfig;
   stop(): Promise<void>;

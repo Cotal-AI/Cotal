@@ -215,6 +215,13 @@ export function runOperatorGrants(space: string, args: RunOperatorGrantArgs, con
     // The run and program records of the endpoint, read through the leader-served point read and
     // the consumer-free walk.
     `$JS.API.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
+    // A run-ps names no run, so it is the only form that lists the space. One message per
+    // STREAM.MSG.GET grows past the caller's fixed budget once a space holds a few hundred
+    // lifetime runs (#5854). The records bucket allows Direct Get, and a batched one returns
+    // 1024 messages a request. The read and answer forms name one run and keep the point read.
+    ...(args.runId === undefined && args.answers === undefined
+      ? [`$JS.API.DIRECT.GET.${recordsKvStreamName(space)}`]
+      : []),
     // The run's admission and revocation rows (SPEC 14.8): a resume, takeback or served read
     // decides on them before any drive. READ only; the admitter writes them.
     `$JS.API.STREAM.MSG.GET.KV_${admissionBucket(space)}`,

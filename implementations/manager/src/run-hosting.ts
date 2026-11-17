@@ -1,3 +1,4 @@
+import { drainAndClose } from "@cotal-ai/core";
 /**
  * The manager as a WORKFLOW-RUN HOST (SPEC 14.3): where a run's driver lives when nobody's
  * terminal is holding it.
@@ -57,6 +58,7 @@ import {
   newTakeoverId,
   admissionBucket,
   createRunAdmission,
+  issuedSpawnerStanding,
   bindAndAdmitRunSubmission, readRunSubmission, submissionFingerprint, newSubmissionRunId, KEYED_SUBMISSION_MAX_DEADLINE_MS,
   canonicalJson,
   type RunSubmissionView, type RemoteRunSubmissionResult,
@@ -101,8 +103,8 @@ import {
   type RunStatusValue,
   type RunStatusView,
   type SpaceAuth,
+  rejectionText,
 } from "@cotal-ai/core";
-import { rejectionText } from "./rejection-text.js";
 
 /** What the host needs from the manager: its coordinates and its trust material. */
 export interface RunHostingContext {
@@ -164,6 +166,8 @@ interface HostedRun {
   /** The caller the run was admitted for, set at launch: whose grant the run's own caller is
    *  checked against ({@link RunHosting.admittedCaller}). */
   caller?: EpCaller;
+  /** The run's admission, set at launch: what bounds the run's spawns ({@link RunHosting.runAdmission}). */
+  admission?: RunAdmission;
   /** Set once the connection is up; a slot reserved before that holds neither. */
   nc?: NatsConnection;
   mediatorNc?: NatsConnection;
@@ -184,6 +188,17 @@ const DEFAULT_CHECKPOINT_TIMEOUT = "1h";
  *  before anything is written, rather than letting a burst of starts pin unbounded connections for
  *  the wait's length. */
 const MAX_LAUNCHING = 8;
+
+
+/** The request subject this host served, rebuilt from the parsed context: what a signerless host
+ *  forwards to the issuing host, which re-parses it. */
+export function servedRequestSubject(space: string, ctx: EpServeContext): string {
+  const p = ctx.subject;
+  return epRequestSubject(space, {
+    route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
+    endpoint: p.endpoint, command: p.command, ...(p.target !== null ? { target: p.target } : {}), caller: p.caller, nonce: p.nonce,
+  });
+}
 
 export class RunHosting {
   private readonly runs = new Map<string, HostedRun>();
@@ -320,7 +335,8 @@ export class RunHosting {
         slot = this.claim(runId, placements);
         const admission: RunAdmission = { version: 1, space: this.ctx.space, endpoint: this.ctx.endpoint,
           runId, instanceId: this.ctx.instanceId, caller, ceiling: resolved.evidence.permissions,
-          provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now() };
+          provenance: { kind: "issued", ref, resolvedRevision: resolved.revision }, admittedAt: Date.now(),
+          ...(issuedSpawnerStanding(resolved.evidence) !== "bounded" ? { spawnExempt: true as const } : {}) };
         result = await this.withAdmitter(runId, (kv, jsm) => bindAndAdmitRunSubmission({ kv, jsm, admission,
           submissionId: ctx.request.id, fingerprint: submissionFingerprint(ctx.request, ctx.subject).fingerprint,
           processEpoch: ctx.identity.epoch, deadline: { requestEndsAt,
@@ -409,6 +425,9 @@ export class RunHosting {
       ceiling: resolved.evidence.permissions,
       provenance: { kind: "issued", ref, resolvedRevision: resolved.revision },
       admittedAt: Date.now(),
+      // Whether the starter's own spawns are bounded, decided now: an instrument's evidence expires
+      // minutes after issue, and the run's spawns may come hours later.
+      ...(issuedSpawnerStanding(resolved.evidence) !== "bounded" ? { spawnExempt: true as const } : {}),
     };
     await this.withAdmitter(runId, (kv) => createRunAdmission(kv, admission));
     return { admission, revoked: undefined };
@@ -428,14 +447,8 @@ export class RunHosting {
     return admission;
   }
 
-  /** The request subject this host served, rebuilt from the parsed context: what a signerless host
-   *  forwards to the issuing host, which re-parses it. */
   private servedSubject(ctx: EpServeContext): string {
-    const p = ctx.subject;
-    return epRequestSubject(this.ctx.space, {
-      route: p.route === "inst" ? { mode: "inst", instanceId: p.instanceId! } : { mode: p.route },
-      endpoint: p.endpoint, command: p.command, ...(p.target !== null ? { target: p.target } : {}), caller: p.caller, nonce: p.nonce,
-    });
+    return servedRequestSubject(this.ctx.space, ctx);
   }
 
   /** On a signerless host a caller's `run-resume` or `run-answer` is forwarded with the subject it
@@ -470,7 +483,7 @@ export class RunHosting {
     try {
       return await fn(await new Kvm(nc).open(admissionBucket(this.ctx.space)), await jetstreamManager(nc));
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
     }
   }
 
@@ -479,6 +492,13 @@ export class RunHosting {
    *  before SPEC 14.8 or by a host that never admitted it, and is not resumed here. */
   private async admitted(runId: string): Promise<RunAdmissionView> {
     return await this.withOperator({ runId }, (planes) => readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId));
+  }
+
+  /** A run's admission and revocation marker, read leader-served as {@link admitted} reads them,
+   *  whether or not this manager hosts the run. The manager reads them before each of the run's
+   *  spawns, a spawn the run placed on this manager included (SPEC 14.8). */
+  async admission(runId: string): Promise<RunAdmissionView> {
+    return await this.admitted(runId);
   }
 
   /** Input precedes serving/reconciliation for cancellation, unlike the keyed commands. */
@@ -993,7 +1013,7 @@ export class RunHosting {
     for (const run of live) run.drive.release("the hosting manager is stopping");
     await Promise.all(live.map(async (run) => {
       const reached = await Promise.race([run.drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
-      if (reached) await run.nc.drain().catch(() => run.nc.close());
+      if (reached) await drainAndClose(run.nc);
       else await run.nc.close();
       await run.mediatorNc?.close();
     }));
@@ -1006,6 +1026,17 @@ export class RunHosting {
       if (run.caller === undefined) continue;
       const derived = runDriverCaller(run.runId, run.caller.owner);
       if (derived.owner === caller.owner && derived.actor === caller.actor && derived.uid === caller.uid) return run.caller;
+    }
+    return undefined;
+  }
+
+  /** The admission of the run this manager drives under `caller`, the run's own derived caller;
+   *  `undefined` for any other caller. A run's spawns are bounded by it (SPEC 14.8). */
+  runAdmission(caller: EpCaller): RunAdmission | undefined {
+    for (const run of this.runs.values()) {
+      if (run.admission === undefined) continue;
+      const derived = runDriverCaller(run.runId, run.admission.caller.owner);
+      if (derived.owner === caller.owner && derived.actor === caller.actor && derived.uid === caller.uid) return run.admission;
     }
     return undefined;
   }
@@ -1100,7 +1131,7 @@ export class RunHosting {
       : undefined;
     // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from
     // these, and the epoch is a per-attempt fact.
-    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, caller: req.admission.admission.caller, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
+    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, caller: req.admission.admission.caller, admission: req.admission.admission, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.
@@ -1130,7 +1161,7 @@ export class RunHosting {
       this.assertNoCancel(req.runId);
     } catch (e) {
       await mediatorNc?.close();
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
       throw e;
     }
     const max = nc.info?.max_payload;
@@ -1174,8 +1205,8 @@ export class RunHosting {
       this.free(holder);
       // The activation wait reads the record over this connection; it finishes before the drain.
       await activation.catch(() => undefined);
-      await nc.drain().catch(() => nc.close());
-      await mediatorNc?.drain().catch(() => mediatorNc?.close());
+      await drainAndClose(nc);
+      if (mediatorNc) await drainAndClose(mediatorNc);
     });
     try {
       await activation;
@@ -1256,7 +1287,7 @@ export class RunHosting {
       const kv = await openRecordsBucket(nc, this.ctx.space);
       return await fn({ nc, js: jetstream(nc), jsm: await jetstreamManager(nc), kv, space: this.ctx.space }, kv, takeoverId);
     } finally {
-      await nc.drain().catch(() => nc.close());
+      await drainAndClose(nc);
     }
   }
 }

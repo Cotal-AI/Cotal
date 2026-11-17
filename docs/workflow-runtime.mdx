@@ -28,7 +28,8 @@ audience: Runtime implementers and workflow authors
   recorded clocks and declaration order, never by a scheduler. A failure the program itself caused
   inside the scope settles the entry under its own catalog code (`fanOut` without a stable key is
   `L3021`, kind `runtime`), so a resume reads the same code the live run threw; a plain failure
-  from the handler records the generic `L4000` `scope-fault`. A value the program throws inside a
+  from the handler, or a branch value that cannot be recorded, records the `L4000` `host` fault
+  `catch` receives for it live. A value the program throws inside a
   branch is recorded with that fault, so `catch` receives the same value on resume, and in a
   migration's dry walk, as it did live.
   A branch may not write to anything declared outside it; return the value and read it out of the
@@ -114,6 +115,9 @@ the edited program's next `spawn` of that persona, which returns the recorded ha
 nothing, so the agent keeps its identity, its worktree and its turn history across the edit. A
 released seat (`--release <name>#<uid>`) is despawned when the migration commits, through the same
 discharge a cancelled branch's seat leaves by, so the record never claims a release nothing did.
+A pending step the edit dropped, such as a `sleep` that is still waiting, has its pause ended
+by that same commit, through the claim a cancelled branch uses, so the record never says nothing
+outlives the step while its timer is still armed. A step that already settled ended its own.
 The spawn that adopts a seat binds the orphaned spawn's goal as its own, so a resume of that step
 reads the same seat back and a cancellation of it despawns the seat it holds.
 
@@ -207,8 +211,9 @@ This split confines broker credentials; it is not process isolation for injected
 The runtime and its effect host share the manager process. A run's channel reach is the admitted
 ceiling ([SPEC §14.8](../SPEC.md#148-run-admission)): the starting caller's issued channel scope,
 recorded once in `cotal_admission_<space>` under a per-run `run-admitter` credential the driver
-never holds, and re-read by the host before every channel effect. Spawn and turn keep their own
-delegated checks; `notify` writes agent-addressed notices and is not channel publication. Treat
+never holds, and re-read by the host before every channel effect. On a static mesh every spawn
+the run makes is bounded by that ceiling too; turn keeps its own delegated check, and `notify`
+writes agent-addressed notices and is not channel publication. Treat
 `run` as program-execution authority bounded by that ceiling, not as sandboxing of the program.
 
 A version-1 fork can replay its settled parent history through the host. Inherited checkpoint
@@ -258,6 +263,12 @@ direction; the repair is to resume on the recorded version, or to fork.
 implementation limit and not a language error: it carries no `L` code, so there is nothing to look
 up in the catalog. It is a floor rather than a warning because the engine's frame plumbing rests on
 `AsyncLocalStorage`, and 22 is the lowest node it has been measured on. The walker has no such floor.
+
+**A thread that disagrees with its host fails only its own run.** An unknown message on the
+thread's port or on the effect bridge refuses that run and ends its thread, saying the two sides
+disagree about the boundary. The host process and its other runs carry on. An in-place upgrade
+under a live manager is the usual way to get here: the next run's thread loads the new code beside
+the old host.
 
 ### Foreign error text
 

@@ -5,7 +5,7 @@
 // TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → fail in the same frame the turn started in;
-// default → complete.
+// WAITEND → hold the turn until FAKE_CODEX_END_MARK exists; default → complete.
 //
 // Like the real thing, this fake is an MCP *client*: the cotal_* tools are not on the
 // websocket at all, they are fetched over the loopback HTTP endpoint named in its own
@@ -289,6 +289,26 @@ async function runTurn(text) {
   }
   notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
 
+  if (text.includes("ACTIVITY-PROBE")) {
+    const steps = [
+      ["item/agentMessage/delta", { delta: "answer" }],
+      ["item/reasoning/summaryTextDelta", { delta: "thinking" }],
+      ["item/reasoning/textDelta", { delta: "reasoning" }],
+      ["item/commandExecution/outputDelta", { delta: "output" }],
+      ["item/fileChange/outputDelta", { delta: "patch" }],
+      ["item/agentMessage/delta", { threadId: "foreign", delta: "other" }],
+      ["item/agentMessage/delta", { delta: "" }],
+      ["thread/tokenUsage/updated", { tokenUsage: { total: { totalTokens: 100 } } }],
+    ];
+    for (let i = 0; i < steps.length; i++) {
+      while (!existsSync(`${process.env.FAKE_CODEX_ACTIVITY_STEP}.${i}`)) await new Promise((r) => setTimeout(r, 25));
+      const [method, fields] = steps[i];
+      notify(method, { threadId: THREAD, turnId, itemId: "activity_item", ...fields });
+      journal({ ev: "activityStep", step: i, at: Date.now() });
+    }
+    while (!existsSync(`${process.env.FAKE_CODEX_ACTIVITY_STEP}.end`)) await new Promise((r) => setTimeout(r, 25));
+  }
+
   if (activeTurnIsRace) {
     // Hold the turn open for a steer window; the steer handler completes it (same-write race).
     // Fallback completion if no steer arrives, so the smoke can't hang.
@@ -349,7 +369,17 @@ async function runTurn(text) {
     await new Promise((r) => setTimeout(r, 200));
     notify("turn/started", { threadId: THREAD, turn: { id: solo, status: "inProgress" } });
     journal({ ev: "soloTuiTurn", id: solo });
-    await new Promise((r) => setTimeout(r, 2500));
+    // What the human's agent does mid-turn (#5688): peek at the DM the host will not steer into a
+    // turn it did not start, then a clearing read, which must leave that DM to the turn loop.
+    const started = Date.now();
+    let peeked;
+    do {
+      await new Promise((r) => setTimeout(r, 100));
+      peeked = await mcpCall("cotal_inbox", { peek: true }).catch((e) => ({ error: String(e) }));
+    } while (!JSON.stringify(peeked).includes("stranded-during-tui") && Date.now() - started < 2500);
+    journal({ ev: "soloPeek", res: peeked });
+    journal({ ev: "soloPull", res: await mcpCall("cotal_inbox", {}).catch((e) => ({ error: String(e) })) });
+    await new Promise((r) => setTimeout(r, 300));
     notify("turn/completed", { threadId: THREAD, turn: { id: solo, status: "completed" } });
     return;
   }
@@ -373,6 +403,11 @@ async function runTurn(text) {
     activeTurn = undefined;
     notify("turn/completed", { threadId: THREAD, turn: { id: turnId, status: "interrupted" } });
     return;
+  }
+  if (text.includes("WAITEND")) {
+    // Hold the turn open until FAKE_CODEX_END_MARK exists, so a smoke decides when it ends.
+    while (!existsSync(process.env.FAKE_CODEX_END_MARK)) await new Promise((r) => setTimeout(r, 25));
+    journal({ ev: "ownEnd", turnId });
   }
   if (text.includes("SLOW")) await new Promise((r) => setTimeout(r, 1200));
   if (text.includes("HANG") && !hangUsed) {
@@ -672,4 +707,27 @@ function onChunk(d) {
         if (id !== undefined) write({ jsonrpc: "2.0", id, error: { code: -32601, message: `unhandled: ${method}` } });
     }
   }
+}
+
+// A turn this host did not start, as the attached TUI produces when a human types: it begins when
+// FAKE_CODEX_FOREIGN_MARK exists and ends when FAKE_CODEX_FOREIGN_END exists. Removing both marks
+// arms it again.
+if (process.env.FAKE_CODEX_FOREIGN_MARK) {
+  let foreign;
+  let armed = true;
+  setInterval(() => {
+    if (!armed && !existsSync(process.env.FAKE_CODEX_FOREIGN_MARK) && !existsSync(process.env.FAKE_CODEX_FOREIGN_END)) armed = true;
+    if (armed && !foreign && existsSync(process.env.FAKE_CODEX_FOREIGN_MARK)) {
+      armed = false;
+      foreign = `turn_foreign_${++turnSeq}`;
+      activeTurn = foreign;
+      journal({ ev: "foreignStart", turnId: foreign });
+      notify("turn/started", { threadId: THREAD, turn: { id: foreign, status: "inProgress" } });
+    } else if (foreign && existsSync(process.env.FAKE_CODEX_FOREIGN_END)) {
+      if (activeTurn === foreign) activeTurn = undefined;
+      journal({ ev: "foreignEnd", turnId: foreign });
+      notify("turn/completed", { threadId: THREAD, turn: { id: foreign, status: "completed" } });
+      foreign = undefined;
+    }
+  }, 25).unref();
 }

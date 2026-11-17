@@ -10,14 +10,16 @@
  *
  * Run: pnpm smoke:runtime-run-command-usage   (no broker)
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EpEnvelopeError, EP_UNANSWERED, LANG_PROBLEM_DETAIL_KIND, registry, type Command, type RunStatusView } from "@cotal-ai/core";
 import { CommandFailure, exitCode, isCommandFailure } from "@cotal-ai/workspace";
 import { runWorkflow } from "../src/index.js";
-import { managerRefusal, renderLangProblem, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
+import { managerRefusal, renderLangProblem, unansweredHostFailure, unansweredManagerRefusal, withMatchingKeys, workflowArguments } from "../src/run-command.js";
 import { printRunDetail } from "../src/workflow-views.js";
+import { sourceOf } from "../src/offline-command.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -237,6 +239,38 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("an unanswered failure whose producer recorded no rail keeps the legacy wording", unmarked.includes("is a manager running for this mesh?"), unmarked);
 }
 
+// A start whose request went out and whose reply never came may have been recorded: the manager
+// started and completed such a run while the CLI printed "Request refused", so a retry ran it twice.
+// Core marks that silence `unknown`; silence before the request, or no responder, stays refused.
+{
+  const sent = (command: string) => new EpEnvelopeError("deadline-exceeded", `no reply to manager.${command} within the 25000ms budget (SPEC 13.5)`,
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command, rail: "ep.v1", requestId: "r1" }], "unknown");
+  for (const command of ["run-start", "run-resume", "run-answer", "run-amend"]) {
+    const f = unansweredHostFailure(command, "s", sent(command));
+    c(`${command} published and unanswered is unknown, exit 3, with the read-before-retry remedy`,
+      f.outcome === "unknown" && f.code === "OPERATION_UNKNOWN" && exitCode(f.outcome, f.code) === 3 && f.message.endsWith("; the manager may already have recorded it")
+      && String(f.remedy).startsWith("read the run with `cotal run show`, or list the runs with `cotal run`, before trying again"), { outcome: f.outcome, code: f.code, message: f.message });
+  }
+  // The describe before a read was answered on the same rail, so the rail and skew wording does not
+  // apply: the read failed, and running it again is safe.
+  for (const command of ["run-status", "run-ps"]) {
+    const read = unansweredHostFailure(command, "s", sent(command));
+    c(`${command} published and unanswered failed, exit 5, and names neither the rail nor a restart`,
+      read.outcome === "failed" && read.code === "OPERATION_FAILED" && exitCode(read.outcome, read.code) === 5
+      && read.message.endsWith("The manager answered on this rail just before, so it runs and did not reply in time")
+      && !read.message.includes("disjoint at the broker") && read.remedy === "a read changes nothing, so it is safe to run again", { outcome: read.outcome, code: read.code, message: read.message });
+  }
+  const readDescribed = unansweredHostFailure("run-ps", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));
+  c("a read whose describe drew no answer stays TARGET_UNAVAILABLE", readDescribed.outcome === "refused" && readDescribed.code === "TARGET_UNAVAILABLE", { outcome: readDescribed.outcome, code: readDescribed.code });
+  const described = unansweredHostFailure("run-start", "s", new EpEnvelopeError("deadline-exceeded", "no describe reply from manager within 10000ms on the ep.v1 rail",
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command: "describe", rail: "ep.v1" }]));
+  c("a start whose describe drew no answer sent nothing and stays TARGET_UNAVAILABLE", described.outcome === "refused" && described.code === "TARGET_UNAVAILABLE", { outcome: described.outcome, code: described.code });
+  const noResponder = unansweredHostFailure("run-start", "s", new EpEnvelopeError("unavailable", "no responder for manager.run-start (SPEC 13.5)",
+    [{ kind: EP_UNANSWERED, endpoint: "manager", command: "run-start", rail: "ep.v1" }], "not-executed"));
+  c("a start the broker saw no responder for was not executed and stays TARGET_UNAVAILABLE", noResponder.outcome === "refused" && noResponder.code === "TARGET_UNAVAILABLE", { outcome: noResponder.outcome, code: noResponder.code });
+}
+
 // A scripted checkpoint result is read by the simulator only for an `expired` status, so a
 // malformed one would simulate as an answer. The results file is refused before the simulation,
 // and a simulation that stops names why.
@@ -306,6 +340,29 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
   c("a simulation's log line is printed, and --json carries it in result.log",
     logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([{ scope: "", values: ["hello", 42] }]), written.join("").slice(0, 400));
+  writeFileSync(program, `
+const items = [1, 2];
+const selected = items.filter((item, index, array) => { array[index] = item + 10; return true; });
+const first = items.find((item, index, array) => { array[index] = 99; return true; });
+const last = items.findLast((item, index, array) => { array[index] = 77; return true; });
+log({ items, selected, first, last });
+const xs = [1, 2];
+const filtered = await filter(xs, async (item, index) => { await 0; xs[index] = item + 10; return true; });
+const found = await find(xs, async (item, index) => { await 0; xs[index] = 99; return index === 1; });
+log({ xs, filtered, found });
+log([].filter(() => true), [].find(() => true) === undefined, [].findLast(() => true) === undefined, await find([], () => true));
+`);
+  written.length = 0;
+  process.stdout.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try { logged = await simulate({}, { json: true }); }
+  finally { process.stdout.write = origWrite; }
+  try { logEnvelope = JSON.parse(written.join("")) as typeof logEnvelope; } catch { logEnvelope = undefined; }
+  c("simulate retains predicate input values for filter, find and findLast, including awaited free builtins",
+    logged === undefined && JSON.stringify(logEnvelope?.result?.log) === JSON.stringify([
+      { scope: "", values: [{ items: [99, 77], selected: [1, 2], first: 11, last: 12 }] },
+      { scope: "", values: [{ xs: [99, 99], filtered: [1, 2], found: 12 }] },
+      { scope: "", values: [[], true, true, null] },
+    ]), { logged, output: written.join("") });
   writeFileSync(program, 'throw "boom";\n');
   const thrown = await simulate({});
   c("a program that throws fails naming what it threw, not an unscripted effect",
@@ -317,6 +374,114 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   c("a list one result short says the second step needs result 2",
     isCommandFailure(short) && short.code === "OPERATION_FAILED" && short.message.includes('the script gives 1 checkpoints result for "go", and step /checkpoint:go#1 needs result 2'), short);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// Handler bytes must reach the simulated program unchanged, just as source bytes do. Reject
+// malformed UTF-8 before parsing JSON, but accept Unicode and an intentionally encoded U+FFFD.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-handler-bytes-"));
+  const program = join(dir, "p.cotal.js"), handler = join(dir, "results.json");
+  writeFileSync(program, 'const answer = await checkpoint("go", "Proceed?");\nlog(answer.value);\n');
+  const prefix = Buffer.from('{"checkpoints":{"go":{"status":"resolved","value":"');
+  const suffix = Buffer.from('","by":"ana"}}}');
+  const simulateBytes = async (bytes: Buffer, mode: Record<string, string | boolean> = {}) => {
+    writeFileSync(handler, bytes);
+    const out: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { out.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const error = await runWorkflow({ values: { handler, ...mode }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+      return { error, out: out.join("") };
+    } finally { process.stdout.write = write; }
+  };
+  const malformed: [string, number[]][] = [
+    ["Latin-1", [0xe9]], ["truncated sequence", [0xf0, 0x9f, 0x98]],
+    ["overlong sequence", [0xc0, 0xaf]], ["surrogate", [0xed, 0xa0, 0x80]],
+    ["out-of-range code point", [0xf4, 0x90, 0x80, 0x80]],
+  ];
+  const modes: Record<string, string | boolean>[] = [{}, { plain: true }, { json: true }];
+  for (const [name, bytes] of malformed) for (const mode of modes) {
+    const { error, out } = await simulateBytes(Buffer.concat([prefix, Buffer.from(bytes), suffix]), mode);
+    c(`simulate refuses ${name} handler bytes before output in ${JSON.stringify(mode)}`,
+      isCommandFailure(error) && error.outcome === "refused" && error.code === "SCHEMA_INVALID"
+      && exitCode(error.outcome, error.code) === 1 && error.message.includes("simulation results script is not valid UTF-8")
+      && (error.target as { file?: string })?.file === handler && error.remedy === `save ${handler} as UTF-8 text`
+      && out === "", { error, out });
+  }
+  const value = "café 😀 � \ufeff";
+  const valid = await simulateBytes(Buffer.concat([prefix, Buffer.from(value), suffix]), { json: true });
+  const envelope = JSON.parse(valid.out) as { result?: { outcome?: string; log?: unknown } };
+  c("simulate preserves multibyte UTF-8 and an intentional U+FFFD in handler results",
+    valid.error === undefined && envelope.result?.outcome === "completed"
+    && JSON.stringify(envelope.result.log) === JSON.stringify([{ scope: "", values: [value] }]), valid);
+  // A leading encoding signature is accepted, but a U+FEFF inside a result stays data.
+  const bom = await simulateBytes(Buffer.concat([Buffer.from('\ufeff'), prefix, Buffer.from(value), suffix]), { json: true });
+  c("simulate accepts a leading UTF-8 BOM and preserves U+FEFF inside a result",
+    bom.error === undefined && JSON.stringify(JSON.parse(bom.out).result.log) === JSON.stringify([{ scope: "", values: [value] }]), bom);
+  for (const [name, bytes] of [["invalid JSON", Buffer.from("{")], ["empty file", Buffer.alloc(0)]] as const) for (const mode of modes) {
+    const { error, out } = await simulateBytes(bytes, mode);
+    c(`simulate refuses ${name} naming the results file and a next step in ${JSON.stringify(mode)}`,
+      isCommandFailure(error) && error.code === "SCHEMA_INVALID"
+      && error.message.includes(handler) && error.message.includes(name === "empty file" ? "is empty" : "is not valid JSON")
+      && (error.target as { file?: string })?.file === handler && error.remedy?.includes(handler) === true && out === "", { error, out });
+  }
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// Reading --handler uses the same regular-file gate as reading the program, before JSON parsing.
+{
+  const dir = mkdtempSync(join(tmpdir(), "run-handler-files-"));
+  const program = join(dir, "p.cotal.js");
+  writeFileSync(program, 'log("ready");\n');
+  const cases = [[join(dir, "missing.json"), "TARGET_NOT_FOUND", "does not exist"],
+    [dir, "USAGE_INVALID", "is a directory"]];
+  if (process.platform !== "win32") {
+    const dangling = join(dir, "dangling.json"), unreadable = join(dir, "unreadable.json");
+    symlinkSync(join(dir, "absent.json"), dangling);
+    cases.push([dangling, "TARGET_NOT_FOUND", "is a link whose target does not exist"]);
+    if (process.getuid?.() !== 0) {
+      writeFileSync(unreadable, "{}");
+      chmodSync(unreadable, 0);
+      cases.push([unreadable, "PERMISSION_DENIED", "is not readable"]);
+    }
+  }
+  try {
+    for (const [handler, code, cause] of cases) for (const mode of [{}, { plain: true }, { json: true }]) {
+      const got = await runWorkflow({ values: { handler, ...mode }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e);
+      c(`simulate refuses ${cause} results as ${code} in ${JSON.stringify(mode)}`,
+        isCommandFailure(got) && got.outcome === "refused" && got.code === code
+        && exitCode(got.outcome, got.code) === (code === "USAGE_INVALID" ? 1 : 2)
+        && got.message.includes(handler) && got.message.includes(cause)
+        && (got.target as { file?: string })?.file === handler && !!got.remedy, got);
+    }
+    if (process.platform !== "win32") {
+      const handler = join(dir, "good.json"), linked = join(dir, "linked.json"), fifo = join(dir, "pipe.json");
+      writeFileSync(handler, "{}");
+      symlinkSync(handler, linked);
+      const write = process.stdout.write;
+      process.stdout.write = (() => true) as typeof process.stdout.write;
+      let got: unknown;
+      try { got = await runWorkflow({ values: { handler: linked, json: true }, positionals: ["simulate", program], raw: [] }).then(() => undefined, (e: Error) => e); }
+      finally { process.stdout.write = write; }
+      c("simulate accepts a symlink to a regular results file", got === undefined, got);
+      const made = spawnSync("mkfifo", [fifo], { encoding: "utf8" });
+      if (made.error) throw made.error;
+      if (made.status !== 0) throw new Error(`mkfifo failed: ${made.stderr}`);
+      const child = `import { runWorkflow } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+        try { await runWorkflow({ values: { handler: process.argv[2] }, positionals: ["simulate", process.argv[1]], raw: [] }); }
+        catch (e) { console.error(e.code + ": " + e.message); process.exitCode = 1; }`;
+      for (const [file, kind] of [[fifo, "a FIFO (named pipe)"], ["/dev/null", "a character device"]]) {
+        const refused = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", child, program, file], { encoding: "utf8", timeout: 10_000 });
+        c(`simulate promptly refuses ${kind} results without reading them`,
+          !refused.error && refused.signal === null && refused.status === 1
+          && refused.stderr.includes("USAGE_INVALID:") && refused.stderr.includes(file) && refused.stderr.includes(`is ${kind}`), refused);
+      }
+    }
+  } finally {
+    const unreadable = join(dir, "unreadable.json");
+    if (cases.some(([file]) => file === unreadable)) chmodSync(unreadable, 0o600);
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 // A validator warning names its code, position, cause and fix, as a problem does. L3021 on a literal
@@ -367,6 +532,41 @@ const VERBS = ["start", "resume", "ps", "journal", "answer", "amend", "revoke", 
   }
   const dash = await attempt(["start", "-"]);
   c("run start - says that - does not mean standard input", isCommandFailure(dash) && dash.code === "TARGET_NOT_FOUND" && dash.message.includes("- does not mean standard input"), dash);
+  const program = join(dir, "ok.cotal.js");
+  const source = "const answer = 1;\n";
+  writeFileSync(program, source);
+  symlinkSync(program, join(dir, "linked.cotal.js"));
+  c("regular workflow sources and symlinks to them keep their text", sourceOf(program) === source && sourceOf(join(dir, "linked.cotal.js")) === source);
+  if (process.platform !== "win32") {
+    for (const verb of ["start", "validate", "plan", "simulate"]) {
+      const got = await runWorkflow({ values: {}, positionals: [verb, "/dev/null"], raw: [] }).then(() => undefined, (e: Error) => e);
+      c(`run ${verb} refuses a character device without suggesting writing into it`,
+        usageRefusal(got, "is a character device") && isCommandFailure(got)
+        && got.remedy === "save the program in a regular file and use that path instead", got);
+    }
+    const fifo = join(dir, "pipe.cotal.js");
+    const made = spawnSync("mkfifo", [fifo], { encoding: "utf8" });
+    if (made.error) throw made.error;
+    if (made.status !== 0) throw new Error(`mkfifo failed: ${made.stderr}`);
+    symlinkSync(fifo, join(dir, "linked-pipe.cotal.js"));
+    // A separate process bounds the regression: the old synchronous read blocks this event loop.
+    const child = `import { runWorkflow } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+      try { await runWorkflow({ values: {}, positionals: process.argv.slice(1), raw: [] }); }
+      catch (e) { console.error(e.code + ": " + e.message); process.exitCode = 1; }`;
+    const refusedPipe = (label: string, path: string, verb: string) => {
+      const got = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", child, verb, path], { encoding: "utf8", timeout: 10_000 });
+      c(`${label}: run ${verb} promptly refuses a FIFO naming its kind`,
+        !got.error && got.signal === null && got.status === 1 && got.stderr.includes("USAGE_INVALID:")
+        && got.stderr.includes(path) && got.stderr.includes("is a FIFO (named pipe)"), got);
+    };
+    for (const verb of ["validate", "start"]) refusedPipe("no writer", fifo, verb);
+    refusedPipe("symlink, no writer", join(dir, "linked-pipe.cotal.js"), "validate");
+    const writer = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
+    try {
+      writeFileSync(writer, source);
+      refusedPipe("writer with readable data", fifo, "validate");
+    } finally { closeSync(writer); }
+  }
   rmSync(dir, { recursive: true, force: true });
 }
 

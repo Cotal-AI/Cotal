@@ -43,8 +43,7 @@
  *
  * Run: pnpm smoke:event-wal
  */
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, statSync, symlinkSync, constants } from "node:fs";
-import { open } from "node:fs/promises";
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

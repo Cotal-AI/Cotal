@@ -1,0 +1,2 @@
+# Credential joins name missing channel grants and mismatched lifecycle UIDs (#6009).
+smoke:join-creds-grants:live

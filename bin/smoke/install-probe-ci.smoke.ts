@@ -108,6 +108,17 @@ check(
   { closureAt, installAt, promoteAt },
 );
 
+// #3285: a census that gives up before the install check after it fails the job, and skips the
+// Release, for a version npm only served late. Both routes give the two the same deadline.
+const deadlineOf = (body: string, script: string): string | undefined =>
+  body.match(new RegExp(`${script} "\\$version"[^\\n]*--deadline-ms=(\\d+)`))?.[1];
+const deadlines = [publishBody, verifyBody].map((body) => [deadlineOf(body, "verify-publish-closure\\.mjs"), deadlineOf(body, "verify-release-installable\\.mjs")]);
+check(
+  "each closure census waits as long as the install check that follows it",
+  deadlines.every(([census, install]) => census !== undefined && census === install),
+  deadlines,
+);
+
 const packBody = csJobs.get("pack") ?? "";
 check("the selected complete plan is staged before the maintained pack action", packBody.indexOf("stage-release-plan.mjs stage") >= 0 && packBody.indexOf("stage-release-plan.mjs stage") < packBody.indexOf("changesets/action/pack@") && /publish-plan-artifact-id:.*steps\.staged-plan\.outputs\.artifact-id/.test(packBody));
 check("packing retains public builds and native assembly without repeated seat TypeScript compilation", /pnpm --filter '!\.\/examples\/\*\*' -r build/.test(csJobs.get("pack") ?? "") && /@cotal-ai\/seat build:native/.test(csJobs.get("native") ?? ""));
@@ -118,7 +129,7 @@ check("direct publishing is default and staging requires explicit opt-in without
 // The mode is frozen once, in the preparing run, and travels with the pack to the publishing run.
 check("direct verification runs outside the publisher queue and staging mode is frozen once", /if: needs\.publish\.outputs\.staged != 'true'/.test(verifyBody) && !/concurrency:/.test(verifyBody) && /published == 'true' && needs\.release\.outputs\.staged == 'true'/.test(publishBody) && (csText.match(/vars\.COTAL_STAGED_RELEASE/g) ?? []).length === 1 && /STAGED: \$\{\{ needs\.select\.outputs\.staged \}\}/.test(packBody) && /staged: \$\{\{ needs\.release\.outputs\.staged \}\}/.test(publishBody));
 
-const EXPECTED = 12;
+const EXPECTED = 13;
 check(`every cell ran (${EXPECTED} before sentinel)`, pass + fail === EXPECTED, pass + fail);
 console.log(`\nINSTALL PROBE CI SMOKE ${fail === 0 ? "OK" : "FAILED"} (${pass} passed, ${fail} failed)`);
 console.log("SUITE COMPLETE");

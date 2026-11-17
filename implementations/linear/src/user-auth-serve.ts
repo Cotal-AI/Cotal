@@ -168,11 +168,13 @@ export async function serveLinearUserAuth(opts: {
     ep.on("error", () => {});
     ep.on("warning", () => {});
     let initialized = false;
-    ep.on("connection", ({ connected }: { connected: boolean }) => {
+    const onReconnect = ({ connected }: { connected: boolean }) => {
       if (initialized && connected && !stopped) void ready().catch(() => {
         failed = true; void stop().catch(() => {});
       });
-    });
+    };
+    ep.on("transport", onReconnect);
+    ep.on("connection", onReconnect);
     await ep.start();
     if (stopped) { await ep.stop(); return; }
     await ready();

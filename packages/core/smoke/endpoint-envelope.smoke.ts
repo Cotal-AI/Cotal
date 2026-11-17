@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import {
   EP_ERROR_CODES, isEpErrorCode, EpEnvelopeError,
-  parseEndpointRequest, parseEndpointReply, parseEndpointEvent,
+  parseEndpointRequest, parseEndpointReply, parseEndpointEvent, controlReplyFrom, controlReplyFromThrown,
   checkRequestSubjectAgreement, assertClassMatches, assertArgsValid, assertOutputValid, authDigest,
   epRequestSubject, parseEpSubject, type ParsedEpRequest,
   compileContractSchema, VOID_SCHEMA, VOID_SCHEMA_DIGEST, SCHEMA_PROFILE,
@@ -159,6 +159,18 @@ rejects("an ok reply with an error is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: true, error: { code: "internal", message: "x" } }));
 rejects("a failed reply with data is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, data: 1, error: { code: "internal", message: "x" } }));
+rejects("a failed reply without an error is bad-request", "bad-request",
+  () => parseEndpointReply({ v: 1, id: "r", ok: false }));
+const acceptance = { name: "allocated", goalId: "goal-1" };
+const followed = controlReplyFrom({ v: 1, id: "followed", ok: false, data: acceptance,
+  error: { code: "uncertain", message: "inspect the allocated agent" }, receipt: "receipt" });
+c("a failed local follow keeps its acceptance in ControlReply",
+  followed.ok === false && followed.data === acceptance && followed.code === "uncertain"
+    && followed.error === "inspect the allocated agent", followed);
+const receiptReply = parseEndpointReply({ v: 1, id: "receipt", ok: false,
+  error: { code: "internal", message: "failed" }, receipt: "receipt" });
+c("a parsed failed reply keeps its receipt and omits data",
+  receiptReply.ok === false && receiptReply.receipt === "receipt" && !("data" in receiptReply), receiptReply);
 rejects("an off-catalog non-reverse-DNS error code is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "Nope", message: "x" } }));
 rejects("a non-reverse-DNS detail kind is bad-request", "bad-request",
@@ -198,6 +210,25 @@ c("toEpError() carries the outcome the fence sets",
   new EpEnvelopeError("failed-precondition", "x", undefined, "not-executed").toEpError().outcome === "not-executed");
 c("...and omits it entirely on a caller-raised refusal, which is not a reply",
   !("outcome" in new EpEnvelopeError("internal", "x").toEpError()));
+
+for (const outcome of ["executed", "not-executed", "unknown"] as const) {
+  const reply = parseEndpointReply({ v: 1, id: "req-control", ok: false,
+    error: { code: "failed-precondition", message: "the operation failed", outcome } });
+  const converted = controlReplyFrom(reply);
+  c(`ControlReply preserves the reply's ${outcome} outcome`,
+    converted.outcome === outcome && converted.code === "failed-precondition", converted);
+  const thrown = controlReplyFromThrown(new EpEnvelopeError("bad-request", "schema refusal", undefined, outcome), "caller context");
+  c(`ControlReply preserves the envelope error's ${outcome} outcome`,
+    thrown.outcome === outcome && thrown.code === "bad-request" && thrown.error === "caller context", thrown);
+}
+const withoutOutcome = controlReplyFrom(errReply);
+c("ControlReply keeps an absent reply outcome absent and preserves details",
+  !("outcome" in withoutOutcome) && withoutOutcome.details === errReply.error?.details, withoutOutcome);
+const thrownWithoutOutcome = controlReplyFromThrown(new EpEnvelopeError("internal", "x"), "caller context");
+c("ControlReply keeps an absent envelope error outcome absent", !("outcome" in thrownWithoutOutcome), thrownWithoutOutcome);
+const successfulControl = controlReplyFrom(okReply);
+c("successful ControlReply keeps its data without inventing an outcome",
+  successfulControl.ok && successfulControl.data === okReply.data && !("outcome" in successfulControl), successfulControl);
 
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);

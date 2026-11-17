@@ -51,8 +51,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, reclaimWithChild, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
+import { LAUNCH_MATERIAL_ENV, createSpaceAuth, discardLaunchArtifacts, discardLaunchMaterial, mintCreds, mintLifecycleUid, newIdentity, readLaunchMaterial, reclaimWithChild, registry, writeLaunchMaterial, type Connector, type LaunchOpts, type UserAuthLaunch } from "@cotal-ai/core";
+import { configFromEnv, controlFromEnv, materialEnv, OPERATOR_ENV_KEEP, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
 import "@cotal-ai/connector-codex";
@@ -285,6 +285,25 @@ if (process.platform !== "win32") {
   assert.equal(ok.servers, SERVERS, "A6: a valid material file no longer reads");
 }
 console.log("✓ A6: a material file that says nothing is refused on read, and a valid one still reads");
+
+// The public named type feeds both writers. Unknown fields remain ignored by the reader; naming
+// the contract must not change the wire material or broaden its validation.
+{
+  const identity: UserAuthLaunch = { owner: "owner", actor: "actor", sentinelCredsPath: join(work, "sentinel.creds"), bearerCmd: ["cotal", "agent-bearer"] };
+  const launchIdentity: NonNullable<LaunchOpts["userAuth"]> = identity;
+  let roundTrips = 0;
+  for (const userAuth of [launchIdentity, { ...launchIdentity, futureField: "ignored" }]) {
+    const paths = [writeLaunchMaterial({ userAuth }), materialEnv({ userAuth }, [])[LAUNCH_MATERIAL_ENV]!];
+    try {
+      for (const path of paths) {
+        assert.deepEqual(readLaunchMaterial(path).userAuth, identity, "A6b: the user-mode identity or unknown-field policy changed");
+        roundTrips++;
+      }
+    } finally { for (const path of paths) discardLaunchMaterial(path); }
+  }
+  assert.equal(roundTrips, 4, "A6b: both writers must be checked with known and wider inputs");
+}
+console.log("✓ A6b: the named user-mode identity keeps all four writer round trips and the unknown-field policy (5 assertions)");
 
 // A8 - half a control pair throws in BOTH directions, from the one place the pair is resolved.
 //

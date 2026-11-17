@@ -1,0 +1,3 @@
+# The delegation bound through the served spawn door: a real issued agent credential calls spawn
+# over the broker, and the caller the bound measures is the one the broker pinned.
+smoke:spawn-grant-door

@@ -1,12 +1,16 @@
 import { LoopLagMeter } from "./watchdog.js";
 
+/** The timer's period, which is also the nominal interval of the meter it ticks. Any difference
+ * between the two is charged to every on-time firing as scheduler lag. */
+const TICK_MS = 250;
+
 /** Delivery's broker coupling, driven by the resident NATS connection rather than a second
  * authenticated connection. A successful credential adoption counts only after the caller has
  * proved it against the broker; a disconnected socket cannot be made healthy by an adoption. */
 export class DeliveryTransportHealth {
   private connected = true;
   private disconnectedAt = 0;
-  private lag = new LoopLagMeter(250);
+  private lag!: LoopLagMeter; // built by each armTimer, whose timer is its only reader
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private expired = false;
@@ -44,7 +48,6 @@ export class DeliveryTransportHealth {
     if (this.stopped || !this.connected) return;
     this.expired = false;
     this.disconnectedAt = 0;
-    this.lag.reset();
     this.clear();
   }
 
@@ -60,9 +63,9 @@ export class DeliveryTransportHealth {
 
   private armTimer(): void {
     if (this.timer !== undefined) return;
-    this.lag = new LoopLagMeter(250);
+    this.lag = new LoopLagMeter(TICK_MS);
     this.lag.tick(this.now());
-    this.timer = setInterval(() => this.evaluate(), 250);
+    this.timer = setInterval(() => this.evaluate(), TICK_MS);
     this.timer.unref?.();
   }
 

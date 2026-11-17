@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { boundedValue, oneLine } from "@cotal-ai/core";
 import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
 import { formatInjection } from "@cotal-ai/connector-core";
 import { InboxTurn } from "./inbox-turn.js";
@@ -11,8 +12,11 @@ const DEFAULT_START_TIMEOUT_MS = 5_000;
 // only exit was a turn nothing in the process could start).
 const CONTINUATION_ATTEMPT_LIMIT = 2;
 const CONTINUATION_BACKOFF_MS = 50;
+// The most characters of Pi's error a held reason repeats, so a provider's long error body does not
+// fill the presence line.
+const ERROR_EXCERPT_LIMIT = 300;
 
-export type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
+type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
 
 export interface CotalBatchDetails {
   version: 1;
@@ -81,12 +85,18 @@ export class PiDriver {
   private nudges: string[] = [];
   private presence = Promise.resolve();
   private activeSignal?: AbortSignal;
+  /** Pi is running a turn: set at its agent start, cleared at its agent end. */
+  private running = false;
   private pendingContinuation = false;
   private overflowRetry = false;
   private continuationAttempts = 0;
   private continuationTimer?: ReturnType<typeof setTimeout>;
   private _state: DriverState = "idle";
   private heldReason?: string;
+  /** A batch's role requests are being taken; the take's own pump dispatches it. */
+  private taking = false;
+  /** A pump forced while a batch was being taken, so the take's own pump is forced too. */
+  private forcedDuringTake = false;
 
   constructor(
     private readonly mesh: MeshAgent,
@@ -109,6 +119,7 @@ export class PiDriver {
 
   onSessionStart(context: PiContextLike): void {
     this.context = context;
+    this.running = false;
     if (this._state === "shuttingDown") {
       context.shutdown();
       return;
@@ -130,7 +141,8 @@ export class PiDriver {
 
   onMentionWake(item: InboxItem): void {
     if (this._state === "shuttingDown") return;
-    const who = item.fromRole ? `${item.fromName}/${item.fromRole}` : item.fromName;
+    const name = item.fromName.trim() ? item.fromName : item.fromId;
+    const who = item.fromRole ? `${name}/${item.fromRole}` : name;
     this.nudges.push(
       `Cotal: you were @mentioned on #${item.channel} by ${who} while focused. ` +
         "The body is held; read it with cotal_inbox and reply with cotal_send if warranted.",
@@ -146,6 +158,7 @@ export class PiDriver {
       return;
     }
     this.activeSignal = context.signal;
+    this.running = true;
     this.overflowRetry = false;
     if (this.pendingContinuation) {
       this.pendingContinuation = false;
@@ -212,14 +225,20 @@ export class PiDriver {
 
   onToolStart(name: string): void {
     if (this._state === "shuttingDown") return;
-    // A transport without after_provider_response confirms nothing before agent end, but Pi runs a
-    // tool only from a clean answer to the request that carried these batches. Their run turns are
-    // seen, and cotal_yield is itself a tool, so it must find them surfaced.
+    // A transport without after_provider_response confirms nothing in onProviderResponse, but Pi runs a
+    // tool only from a clean answer to the request that carried these batches. That answer accepts
+    // them as a 2xx would, so they are confirmed here and the next batch can steer in before the run
+    // ends; left unconfirmed, every later message waited for the whole run. Confirming surfaces their
+    // run turns, and cotal_yield is itself a tool, so it must find them surfaced.
     for (const id of this.requestBatchIds) {
-      const turnIds = this.batches.find((candidate) => candidate.id === id)?.turnIds;
-      if (turnIds) this.mesh.commitSurfacedTurns(turnIds);
+      const batch = this.batches.find((candidate) => candidate.id === id);
+      if (batch && !batch.confirmed) this.confirm(batch);
     }
     this.enqueuePresence("working", `running ${name || "tool"}`);
+    if (this._state !== "held") {
+      this._state = "streaming";
+      this.pump();
+    }
   }
 
   onToolEnd(): void {
@@ -229,10 +248,11 @@ export class PiDriver {
 
   onAgentEnd(messages: readonly unknown[], context: PiContextLike): void {
     if (this._state === "shuttingDown") return;
+    this.running = false;
     const lastAssistant = [...messages]
       .reverse()
       .find((message) => message && typeof message === "object" && (message as { role?: unknown }).role === "assistant") as
-      | { stopReason?: string; usage?: { output?: number } }
+      | { stopReason?: string; errorMessage?: unknown; usage?: { output?: number } }
       | undefined;
     const aborted = this.activeSignal?.aborted === true;
     this.activeSignal = undefined;
@@ -258,7 +278,14 @@ export class PiDriver {
         this.hold("Pi turn was aborted; Cotal delivery is retained until a proven clean continuation completes");
         return;
       }
-      const reasonLabel = `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}`;
+      // Pi's own error names the cause, such as a missing model provider, so the held reason carries
+      // it: without it the presence line said only "ended with error" and pointed at a retry that
+      // could not help.
+      const error =
+        typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
+      const reasonLabel =
+        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` +
+        (error ? ` (${oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT))})` : "");
       if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {
         this.continuationAttempts++;
         this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);
@@ -304,14 +331,20 @@ export class PiDriver {
     await this.presence.catch(() => {});
   }
 
-  private pump(force = false): void {
+  /** Dispatch the next batch. `taken` is a batch whose role requests were just taken for it, which
+   *  goes out ahead of anything else so nothing taken waits behind a later choice. */
+  private pump(force = false, taken?: InboxItem[]): void {
     if (!this.host || !this.context || this._state === "held" || this._state === "shuttingDown") return;
     if (this.batches.some((batch) => !batch.confirmed)) return;
+    if (this.taking && !taken) {
+      if (force) this.forcedDuringTake = true;
+      return;
+    }
 
     this.inbox.discardTombstoned();
     this.inbox.discardMatching((item) => ownChannelEcho(this.mesh, item));
     const reserved = new Set(this.batches.flatMap((batch) => batch.ids));
-    const available = this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey));
+    const available = this.inbox.preview().filter((item) => !reserved.has(item.recvKey));
     // A pending run turn is directed-strength: it justifies a pump on its own, like a wakeable item.
     const turnPeek = this.mesh.peekPendingTurns();
     if (!force && this.nudges.length === 0 && !turnPeek && !available.some((item) => wakeable(this.mesh, item))) {
@@ -321,12 +354,37 @@ export class PiDriver {
 
     let ids: string[] = [];
     let content: string | undefined;
-    if (this.nudges.length > 0) {
+    // A taken batch whose takes left nothing that wakes goes out only when forced or with a run turn.
+    // Otherwise the next batch is chosen again.
+    if (taken?.length && (force || turnPeek || taken.some((item) => wakeable(this.mesh, item)))) {
+      // Only what may be shown now: a request a redelivery sent back to wait for its take is not.
+      const live = new Set(this.inbox.peek("automatic").filter((item) => !reserved.has(item.recvKey)).map((item) => item.recvKey));
+      const items = taken.filter((item) => live.has(item.recvKey));
+      ids = items.map((item) => item.recvKey);
+      // Held for its turn like any other batch, or its ack wait runs out mid-turn (#5637).
+      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;
+      content = items.length > 0 ? formatInjection(items) : undefined;
+    } else if (this.nudges.length > 0) {
       content = this.nudges.splice(0).join("\n");
     } else {
       const items = this.inbox.select(reserved, BATCH_LIMIT);
+      // A role request is shown only once its take is recorded (SPEC §8.1), and only the batch
+      // carrying it takes it. The take answers asynchronously, so its own pump dispatches the batch.
+      if (this.inbox.holdsUntaken(items)) {
+        this.taking = true;
+        void this.inbox.take(items).then((shown) => {
+          const forced = force || this.forcedDuringTake;
+          this.taking = false;
+          this.forcedDuringTake = false;
+          this.pump(forced, shown);
+        });
+        return;
+      }
       if (items.length === 0 && !turnPeek) return;
       ids = items.map((item) => item.recvKey);
+      // The batch stays this seat's until its turn commits it: unheld, a role request's ack wait runs
+      // out mid-turn and the broker hands it to another holder (#5637). At the hold ceiling, defer.
+      if (ids.length > 0 && !this.mesh.holdInFlight(ids)) return;
       content = items.length > 0 ? formatInjection(items) : undefined;
     }
     // The turns' permit, right before the dispatch with no await between. Without it, a once task
@@ -355,7 +413,10 @@ export class PiDriver {
         },
         { triggerTurn: true, deliverAs: "steer" },
       );
-      if (!batch.started) {
+      // Only a dispatch that must start a turn is watched. A steer into a running turn starts at Pi's
+      // next turn boundary, after whatever tool is running, and holding it at the deadline blocked
+      // delivery for the rest of the run; one Pi never takes is caught when the run ends (finalizeEnd).
+      if (!batch.started && !this.running) {
         batch.watchdog = setTimeout(() => {
           if (!batch.started) this.hold(`Pi did not start dispatched Cotal batch ${batch.id}`);
         }, this.startTimeoutMs);
@@ -380,6 +441,7 @@ export class PiDriver {
     const confirmed = this.batches.filter((batch) => batch.confirmed);
     const ids = confirmed.flatMap((batch) => batch.ids);
     this.inbox.commitConfirmed(ids);
+    this.mesh.releaseInFlight(ids);
     this.batches = this.batches.filter((batch) => !batch.confirmed);
 
     if (this.batches.length > 0) {

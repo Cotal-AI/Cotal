@@ -144,7 +144,7 @@ console.log(`broker-url guard: ${BROKER} (manager+seat) / ${PROXY} (attach clien
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const home = join(dir, "home");
-mkdirSync(home, { recursive: true });
+mkdirSync(home, { recursive: true, mode: 0o700 });
 process.env.COTAL_HOME = home;
 // The connector seed store lives under `globalConfigDir()`, not COTAL_HOME, so without this the
 // suite reads the operator's real `~/.config/cotal` and a newer seed generation refuses every cell

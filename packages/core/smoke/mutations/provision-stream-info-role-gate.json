@@ -5,7 +5,7 @@
   "guard": "`$JS.API.STREAM.INFO.TASK` is granted by the `role` gate and by nothing else: a role-carrying agent reads task stream state, a role-less one does not, and neither reads DM, DLV or EPC.",
   "command": "pnpm smoke:provision-stream-info",
   "completionMarker": "PROVISION STREAM.INFO SMOKE",
-  "progressPattern": "^  [✓✗] ",
+  "progressPattern": "^  [\u2713\u2717] ",
   "minTicks": 17,
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/provision-stream-info-role-gate.json   # --config resolves against the repo root, never the cwd",
   "why": [
@@ -35,8 +35,8 @@
     {
       "name": "the role gate stops granting STREAM.INFO on TASK at all",
       "file": "packages/core/src/provision.ts",
-      "find": "      `$JS.API.STREAM.INFO.${TASK}`,\n      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,\n",
-      "replace": "      `$JS.API.CONSUMER.INFO.${TASK}.${svcD}`,\n",
+      "find": "    pubAllow.push(`$JS.API.STREAM.INFO.${TASK}`);\n",
+      "replace": "",
       "expectRed": "STREAM.INFO TASK succeeds for the role-carrying agent",
       "cell": "STREAM.INFO TASK succeeds for the role-carrying agent",
       "note": "The positive direction. Without this the suite would be all deny cells, which an empty grant list also satisfies."

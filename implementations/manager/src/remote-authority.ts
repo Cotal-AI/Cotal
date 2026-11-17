@@ -1,5 +1,7 @@
 import { join } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
 import {
+  assertLifecycleToken,
   credsFromJwt,
   admissionSnapshot,
   revocationSnapshot,
@@ -8,6 +10,7 @@ import {
   type RemoteRunCancelResult,
   type RemoteRunRevokeResult,
   accountFromCreds,
+  isCredentialTransportUrl,
   managedRetirementOpId,
   mintLifecycleUid,
   newIdentity,
@@ -321,6 +324,23 @@ function remoteManagerStateOf(space: string) {
     if (!supervisor || !executor || !serve || !goalWriter || !sessionLedger) return undefined;
     return { v: 1, space, instanceId: o.instanceId, lifecycleUid: o.lifecycleUid, identities: { supervisor, executor, serve, goalWriter, sessionLedger } };
   };
+}
+
+/** Read the recorded instance without creating an identity or returning private key material. */
+export function loadRemoteManagerInstanceId(root: string, space: string): string | undefined {
+  const file = stateFile(root, space);
+  let stat;
+  try { stat = lstatSync(file); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  if (!stat.isFile()) throw new Error("the remote Manager identity is not a regular file");
+  let state: RemoteManagerIdentityState | undefined;
+  try {
+    state = remoteManagerStateOf(space)(JSON.parse(readFileSync(file, "utf8")));
+    if (state) assertLifecycleToken(state.instanceId, "instanceId");
+  }
+  catch { throw new Error("the recorded remote Manager identity could not be read"); }
+  if (!state) throw new Error("invalid recorded remote Manager identity");
+  return state.instanceId;
 }
 
 /** Load or create one participant-owned manager lifecycle identity. Private seeds never leave it. */
@@ -679,6 +699,8 @@ export function remoteManagedAgentEnrollmentRequest(
   registrationProof: string,
   serveEpoch: number,
   target: RemoteManagedAgentEnrollmentRequest["target"],
+  spawn?: RemoteManagedAgentEnrollmentRequest["spawn"],
+  requestId = `enroll${mintLifecycleUid()}`,
 ): RemoteManagedAgentEnrollmentRequest {
   return {
     v: 1,
@@ -687,10 +709,11 @@ export function remoteManagedAgentEnrollmentRequest(
     actor,
     instanceId: state.instanceId,
     managerLifecycleUid: state.lifecycleUid,
-    requestId: `enroll${mintLifecycleUid()}`,
+    requestId,
     registrationProof,
     serveEpoch,
     target,
+    ...(spawn !== undefined ? { spawn } : {}),
     identities: publicIdentities(state),
   };
 }
@@ -743,7 +766,7 @@ export function remoteManagedAgentEnrollmentMaterial(
   let url: URL;
   try { url = new URL(m.agentBearerExchangeUrl); }
   catch { throw new Error(`managed agent enrollment returned no usable agent bearer exchange URL (got ${JSON.stringify(m.agentBearerExchangeUrl)})`); }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]")))
+  if (!isCredentialTransportUrl(url))
     throw new Error(`managed agent enrollment returned a non-HTTPS agent bearer exchange URL (${url.protocol}//) - the actor token must never cross plaintext off this machine`);
   return m;
 }

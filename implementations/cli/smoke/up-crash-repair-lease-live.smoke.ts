@@ -345,7 +345,7 @@ try {
 
   console.log(`\nUP CRASH-REPAIR LEASE LIVE SMOKE OK ✅ (${pass} checks)`);
 } finally {
-  cli("down");
+  cli("down", "--yes");
   rmSync(home, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
 }

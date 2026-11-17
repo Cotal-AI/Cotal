@@ -49,6 +49,7 @@ export async function persona(args: ParsedArgs): Promise<void> {
   if (extra.length || (sub === undefined ? name !== undefined : !name)) throw usage("usage: cotal persona [show|create|edit|remove <name>]");
   if (sub !== "create" && createOnly.some(flag => values[flag] !== undefined)) throw usage("file and definition flags are only accepted by persona create");
   if (sub !== "remove" && values.yes !== undefined) throw usage("--yes is only accepted by persona remove");
+  if (sub === "create" && values.harness !== undefined) checkHarness(values.harness);
   const catalog = personaCatalog(values);
   recordOperationSpace(catalog.space);
   if (sub === undefined) return list(catalog, presentation);

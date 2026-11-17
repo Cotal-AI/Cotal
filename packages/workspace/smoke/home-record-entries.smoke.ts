@@ -5,8 +5,10 @@
 //
 // Run: `pnpm smoke:home-record-entries`
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { rootControlProblem } from "../src/auth-paths.js";
 import { homeRecordEntries } from "../src/cotal-home.js";
 
 const repo = resolve(import.meta.dirname, "../../..");
@@ -15,8 +17,8 @@ const files = execFileSync("git", ["-C", repo, "ls-files", "packages/*/src/**/*.
 const literal = /homeCotalDir\(\),\s*"([^"]+)"/g;
 const found = new Map<string, string[]>();
 for (const file of files) {
-  const text = readFileSync(resolve(repo, file), "utf8");
-  for (const m of text.matchAll(literal)) {
+  const source = readFileSync(resolve(repo, file), "utf8");
+  for (const m of source.matchAll(literal)) {
     const entry = m[1]!.split("/")[0]!;
     found.set(entry, [...(found.get(entry) ?? []), file]);
   }
@@ -29,5 +31,23 @@ const check = (label: string, ok: boolean, detail?: unknown) => {
 };
 check("shipped source writes at least one entry under the Cotal home", found.size > 0, [...found.keys()]);
 check("every entry shipped source writes under the Cotal home is in homeRecordEntries", missing.length === 0, Object.fromEntries(missing));
+// Exercise the same root check space create and up call, without starting a stack or reading
+// process attribution. A redirected home may contain projects beside its machine records.
+const previousHome = process.env.COTAL_HOME;
+const home = realpathSync(mkdtempSync(join(tmpdir(), "cotal-home-records-")));
+try {
+  process.env.COTAL_HOME = home;
+  for (const entry of ["daemon", join("daemon", "retained", "deep"), join("services", "retained")]) {
+    const problem = rootControlProblem(join(home, entry));
+    check(`${entry} is protected as a machine-home record`, problem?.controlDirectory === home && problem.project === undefined, problem);
+  }
+  for (const entry of ["project", "daemon-project", join("projects", "web")]) {
+    const problem = rootControlProblem(join(home, entry));
+    check(`${entry} remains an ordinary project path`, problem === undefined, problem);
+  }
+} finally {
+  if (previousHome === undefined) delete process.env.COTAL_HOME;
+  else process.env.COTAL_HOME = previousHome;
+}
 console.log(`\nhome-record-entries smoke: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

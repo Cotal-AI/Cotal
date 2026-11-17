@@ -4,7 +4,7 @@
  * actual production paths and INSPECTING the real broker footprint.
  *
  *   1. STARTED via real presence — startAgent resolves ok only once the agent's assigned id is live in
- *      presence; its footprint (dm_local-/dlv_local- durables + ACL row + creds file) exists on the broker/disk.
+ *      presence; its DM durable, ACL row and creds file exist. A channel-authorized seat also has a DLV durable.
  *   2. DEPROVISION on despawn — a real despawn tears that footprint down: durables gone, ACL row gone,
  *      creds file gone.
  *   3. FAILED launch — an agent whose process exits on arrival is reported {ok:false} "exited on launch",
@@ -63,7 +63,7 @@ mkdirSync(process.env.COTAL_HOME, { recursive: true });
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // seeds the FS composition; the manager's start() reads it via getSpaceAuth(this.secrets) (FS default)
-for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "bypass1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
+for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "bypass1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n${n === "w2" ? "subscribe: [general]\n" : ""}---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], {
   stdio: "ignore", env: { PATH: process.env.PATH, HOME: process.env.COTAL_HOME, TMPDIR: dir },
@@ -98,7 +98,7 @@ async function until(f: () => Promise<boolean>, want: boolean, ms = 8000): Promi
   while (Date.now() < end) { if ((await f()) === want) return true; await wait(300); }
   return (await f()) === want;
 }
-/** Does the whole local-principal footprint exist? (dm_local- + dlv_local- + acl + creds file) */
+/** Inspect the local-principal footprint, including the optional channel delivery durable. */
 async function footprint(id: string, uid: string, name: string): Promise<{ dm: boolean; dlv: boolean; acl: boolean; creds: boolean }> {
   return {
     dm: await consumerExists(DM, dmDurable(DEV_OWNER, id, uid)),
@@ -178,7 +178,7 @@ try {
   const uid1 = uidOf("w1"); // capture the manager-minted uid while w1 is still managed (despawn clears it)
   const fp1 = await footprint(id1, uid1, "w1");
   check("footprint exists after start — dm_ durable", fp1.dm, fp1);
-  check("footprint exists after start — dlv_ durable", fp1.dlv, fp1);
+  check("channel-less agent has no dlv_ durable after start", !fp1.dlv, fp1);
   check("footprint exists after start — read-ACL row", fp1.acl, fp1);
   check("footprint exists after start — creds file", fp1.creds, fp1);
 
@@ -263,6 +263,7 @@ try {
   const id2 = (r4.data as { id?: string } | undefined)?.id ?? "";
   const uid2 = uidOf("w2"); // capture before stop() clears the managed set
   check("w2 footprint exists before stop", (await footprint(id2, uid2, "w2")).dm, await footprint(id2, uid2, "w2"));
+  check("channel-authorized w2 has a dlv_ durable before stop", (await footprint(id2, uid2, "w2")).dlv);
   await mgr.stop({ withAgents: true }); // awaits teardownManagedAgents → deprovision
   const fp2 = await footprint(id2, uid2, "w2");
   check("w2 dm_ durable gone after explicit stop", !fp2.dm, fp2);

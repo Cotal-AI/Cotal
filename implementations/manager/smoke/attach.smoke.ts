@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { createRuntime, requireRuntimeAdopt } from "../src/index.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import type { AgentHandle, LaunchSpec, Runtime } from "@cotal-ai/core";
-import { detachKey } from "../../cli/src/lib/attach-client.js"; // the operator ws client moved into @cotal-ai/cli (stage 2a); dev-only smoke import
+import { detachKey } from "../../../packages/workspace/src/attach/attach-client.js"; // dev-only cross-package smoke import
 import "@cotal-ai/cmux"; // registers the `cmux` runtime provider
 import "@cotal-ai/tmux"; // registers the `tmux` runtime provider
 

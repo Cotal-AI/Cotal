@@ -11,11 +11,11 @@
  * Fixtures live under a temp cotal config home (XDG_CONFIG_HOME) inside the repo, so each one's
  * `@cotal-ai/core` resolves to the repo copy this smoke also measures against.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { ExtensionRef } from "@cotal-ai/core";
-import { extensionsDir, hostPackageDir, importInstalledExtension, type InstalledExtension } from "@cotal-ai/workspace";
+import { bindExtensionPeers, CorruptExtensionPackageError, extensionPackageDir, extensionsDir, hostPackageDir, importExtensionEntry, importInstalledExtension, installedExtensionPackage, installedExtensionVersion, type InstalledExtension } from "@cotal-ai/workspace";
 // Not on the package's public surface: the same module instance the entry point above loads.
 import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
@@ -134,6 +134,114 @@ try {
     check("installed copy: does not call an installed copy a source checkout", !installed.includes("source checkout"), installed);
     const checkout = upgradeRemedy("/home/someone/Cotal/packages/core", "0.18.0");
     check("source checkout: prescribes a rebuild, never `npm i -g`", checkout.includes("rebuild") && !checkout.includes("npm i -g"), checkout);
+  }
+  // 8. The import uses the same validated metadata snapshot for pin, entry, peers and diagnosis.
+  //    An entry that changes its own package.json cannot make those steps describe different files.
+  //    The original declared floor stays known; no diagnostic-time reread is needed.
+  for (const [label, damage] of [
+    ["corrupt", `writeFileSync(meta, "{corrupt");`],
+    ["directory", `unlinkSync(meta); mkdirSync(meta);`],
+    ["missing", `unlinkSync(meta);`],
+  ] as const) {
+    // The static core import makes Node read and cache the package scope before the file is
+    // changed, as loading a real entry does; otherwise Node's own resolver refuses the later import.
+    const body =
+      `import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";\n` +
+      `import { registry } from "@cotal-ai/core";\n` +
+      `void registry;\n` +
+      `const meta = new URL("./package.json", import.meta.url); ${damage}\n` +
+      `writeFileSync(new URL("./b.mjs", import.meta.url), 'import { notAnExportOfCore } from "@cotal-ai/core";\\nvoid notAnExportOfCore;\\n');\n` +
+      `await import("./b.mjs");\n`;
+    const m = await failureFor({ scope: "@third", version: "1.0.0", peerRange: ">=99.0.0", body });
+    check(`${label} after validation: keeps the original declared floor`, m.includes("The installed @cotal-ai/core is BEHIND") && m.includes(">=99.0.0"), m);
+    check(`${label} after validation: names the missing symbol`, m.includes("`notAnExportOfCore`"), m);
+    check(`${label} after validation: does not reread the damaged metadata`, !m.includes("is corrupt or unreadable"), m);
+    check(`${label} after validation: remedies the peer rather than reinstalling the extension`, m.includes("99.0.0 or newer") && !m.includes("cotal ext add"), m);
+  }
+  {
+    const m = await failureFor({ scope: "@third", version: "1.0.0" });
+    check("no declared range: remains an unrankable pair", m.includes("Neither side can be named as behind") && m.includes("is not a @cotal-ai/* package"), m);
+    check("no declared range: is not reported as damaged metadata", !m.includes("is corrupt or unreadable"), m);
+  }
+  check("all import-remedy assertions ran", passed + failed === 36, { passed, failed });
+
+  // The common reader's absence/corruption policy also governs peer binding and direct entry loads.
+  // These are native private files, not intercepted filesystem calls.
+  {
+    const start = passed + failed;
+    const pkg = "@third/metadata-policy";
+    const dir = extensionPackageDir(pkg);
+    const path = join(dir, "package.json");
+    const missing = "@third/metadata-absent";
+    const meta = { version: "1.0.0", main: "main.mjs", exports: { ".": "./entry.mjs" }, dependencies: { example: "1.0.0" }, peerDependencies: { "@cotal-ai/core": "*" } };
+    mkdirSync(dir, { recursive: true });
+    const write = () => writeFileSync(path, JSON.stringify(meta));
+    const failure = (read: () => unknown): unknown => { try { read(); } catch (e) { return e; } };
+    const corrupt = (e: unknown): boolean => e instanceof CorruptExtensionPackageError && e.message.includes(pkg) && e.message.includes(path);
+    write();
+    const snapshot = installedExtensionPackage(pkg)!;
+    check("metadata: version and main are retained", snapshot.version === meta.version && snapshot.main === meta.main);
+    check("metadata: exports are retained", JSON.stringify(snapshot.exports) === JSON.stringify(meta.exports));
+    check("metadata: dependency declarations are retained", JSON.stringify(snapshot.dependencies) === JSON.stringify(meta.dependencies) && JSON.stringify(snapshot.peerDependencies) === JSON.stringify(meta.peerDependencies));
+    check("metadata: version-only API uses the same reader", installedExtensionVersion(pkg) === meta.version);
+    check("metadata: genuinely missing package remains absent", installedExtensionPackage(missing) === undefined && installedExtensionVersion(missing) === undefined);
+
+    writeFileSync(path, "{corrupt");
+    check("metadata: bad JSON names the package and file", corrupt(failure(() => installedExtensionPackage(pkg))));
+    check("metadata: peer binding uses the same corruption error", corrupt(failure(() => bindExtensionPeers([pkg], pkg))));
+    let entryError: unknown;
+    try { await importExtensionEntry(pkg, meta.version, "fixture remedy"); } catch (e) { entryError = e; }
+    check("metadata: direct entry uses the same corruption error", corrupt(entryError));
+    writeFileSync(path, "{}");
+    check("metadata: missing version remains corruption", corrupt(failure(() => installedExtensionPackage(pkg))));
+
+    rmSync(path);
+    mkdirSync(path);
+    const directoryError = failure(() => installedExtensionPackage(pkg)) as NodeJS.ErrnoException;
+    check("metadata: directory read failure is not absence", directoryError instanceof Error && directoryError.code !== "ENOENT");
+    check("metadata: peer binding preserves the directory read error", (failure(() => bindExtensionPeers([pkg], pkg)) as NodeJS.ErrnoException)?.code === directoryError?.code);
+    rmSync(path, { recursive: true });
+    write();
+    const permissions = process.platform !== "win32" && process.getuid?.() !== 0;
+    if (permissions) {
+      chmodSync(path, 0o000);
+      try {
+        check("metadata: unreadable file preserves EACCES", (failure(() => installedExtensionPackage(pkg)) as NodeJS.ErrnoException)?.code === "EACCES");
+        check("metadata: peer binding preserves EACCES", (failure(() => bindExtensionPeers([pkg], pkg)) as NodeJS.ErrnoException)?.code === "EACCES");
+      } finally { chmodSync(path, 0o600); }
+    } else console.log("  SKIP: native EACCES checks require non-root POSIX");
+
+    const absent: string[] = [];
+    const onAbsent = (owner: string) => { absent.push(owner); };
+    check("metadata: an absent sibling alone can be skipped", bindExtensionPeers([missing], pkg, { onAbsent }).length === 0 && absent.join() === missing);
+    const operationError = failure(() => bindExtensionPeers([missing], missing, { onAbsent }));
+    check("metadata: an absent operation package cannot be skipped", operationError instanceof Error && operationError.message.includes("not installed") && absent.length === 1);
+    rmSync(path);
+    check("metadata: a remaining package directory is not an absent sibling", corrupt(failure(() => bindExtensionPeers([pkg], missing, { onAbsent }))) && absent.length === 1);
+    const links = process.platform !== "win32";
+    if (links) {
+      const dangling = "@third/metadata-dangling";
+      symlinkSync(join(tmp, "missing-target"), extensionPackageDir(dangling), "dir");
+      const error = failure(() => bindExtensionPeers([dangling], pkg, { onAbsent }));
+      check("metadata: a dangling package link is not an absent sibling", error instanceof CorruptExtensionPackageError && absent.length === 1);
+    }
+
+    // A supplied operation snapshot must reach the binder without a second metadata read.
+    writeFileSync(path, "{changed-after-read");
+    const bound = bindExtensionPeers([pkg], pkg, { operationMetadata: snapshot });
+    check("metadata: validated snapshot binds its declared peer without rereading", bound.length === 1 && realpathSync(bound[0]!.destination) === realpathSync(CORE_DIR));
+    check("metadata: existing correct peer is not replaced by default", bindExtensionPeers([pkg], pkg, { operationMetadata: snapshot }).length === 0);
+    check("metadata: force still rebinds the declared peer", bindExtensionPeers([pkg], pkg, { operationMetadata: snapshot, force: true }).length === 1);
+    writeFileSync(join(dir, "entry.mjs"), 'throw new Error("snapshot-entry");\n');
+    writeFileSync(join(dir, "changed.mjs"), 'throw new Error("reread-entry");\n');
+    writeFileSync(path, JSON.stringify({ ...meta, main: "changed.mjs", exports: { ".": "./changed.mjs" } }));
+    let snapshotError: unknown;
+    try { await importExtensionEntry(pkg, meta.version, "fixture remedy", snapshot); } catch (e) { snapshotError = e; }
+    check("metadata: supplied snapshot selects its original export entry", snapshotError instanceof Error && snapshotError.message.includes("snapshot-entry") && !snapshotError.message.includes("reread-entry"));
+    let freshError: unknown;
+    try { await importExtensionEntry(pkg, meta.version, "fixture remedy"); } catch (e) { freshError = e; }
+    check("metadata: standalone entry reads its own current snapshot", freshError instanceof Error && freshError.message.includes("reread-entry"));
+    check("all metadata policy assertions ran", passed + failed - start === 19 + (permissions ? 2 : 0) + (links ? 1 : 0), { checked: passed + failed - start });
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });

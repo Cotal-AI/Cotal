@@ -28,7 +28,7 @@ from gateway.config import Platform, PlatformConfig
 from . import hooks, replies
 from .bridge_client import get_client
 from .resume import seed_chat
-from .framing import format_injection
+from .framing import format_injection, shown_sender
 
 logger = logging.getLogger(__name__)
 # How many delivered messages a turn reply can still name as the one it answers.
@@ -40,11 +40,17 @@ class InjectionRefused(Exception):
     sidecar offers it again later (``deferred``)."""
 
 
+# The chats the delivery daemon's notices run in, one per notice kind. They have no mesh target, so a
+# turn's reply to a notice is not sent: a notice wants no answer, and its sender is the daemon, not a
+# peer.
+NOTICE_KINDS = ("anycast", "mention")
+
+
 def chat_type_for(chat_id: str) -> Optional[str]:
     """The chat type of a chat_id minted on inbound, or None for an id this adapter did not mint."""
     if chat_id.startswith("channel:"):
         return "group"
-    if chat_id.startswith("dm:"):
+    if chat_id.startswith("dm:") or chat_id in tuple(f"notice:{k}" for k in NOTICE_KINDS):
         return "dm"
     return None
 
@@ -188,11 +194,13 @@ class CotalAdapter(BasePlatformAdapter):
 
     async def _inject(self, msg: dict) -> None:
         kind = msg.get("kind")
-        sender = msg.get("fromName") or "peer"
+        sender = shown_sender(msg)
 
         if kind == "channel":
             ch = msg.get("channel") or "general"
             chat_id, chat_name = f"channel:{ch}", f"#{ch}"
+        elif msg.get("notice") in NOTICE_KINDS:
+            chat_id, chat_name = f"notice:{msg['notice']}", f"{msg['notice']} notices"
         else:  # dm / anycast → a turn whose reply goes straight back to the sender
             chat_id, chat_name = f"dm:{msg.get('fromId')}", sender
         chat_type = chat_type_for(chat_id)
