@@ -215,7 +215,8 @@ export function protectedPathPolicy(accounts: AccountDatabase, extendedAcl: (pat
 }
 
 /** Runs a system read from PATH with a 2 second limit and a 4 MiB output limit. Proving a group
- *  takes up to three `getent` reads, and each group-writable path one `getfacl` read. */
+ *  takes up to three `getent` reads, and each group-writable path a `getfacl` read or, when
+ *  getfacl is absent, a Python extended-attribute read. */
 function boundedRead(label: string, command: "getent" | "getfacl" | "python3", args: readonly string[]): string {
   if (process.platform !== "linux") throw new Error("it is checked only on Linux");
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });

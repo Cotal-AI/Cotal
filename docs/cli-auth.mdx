@@ -276,8 +276,10 @@ command when the store cannot be proved. Skipped services do not change the comm
 Logout also clears the local account login even when a service must be skipped.
 Group-writable configuration ancestors are accepted only under the same
 [private-group proof](cli-selection.mdx) used for protected local paths, with no extended ACL.
-If that proof is unavailable, the skip report names a mode change. When `getfacl` is missing,
-it also offers installing the `acl` package. World-writable paths, foreign owners and
+When `getfacl` is missing, `python3 -I` reads the entry's extended attribute names instead.
+Either `system.posix_acl_access` or `system.posix_acl_default` means it has an extended ACL.
+If neither reader is installed or the read fails, the skip report names a mode change
+and offers installing the `acl` package. World-writable paths, foreign owners and
 unproved groups remain refused.
 Hand-made units are not updated automatically;
 their refusal names the selected sign-in store and a command such as
