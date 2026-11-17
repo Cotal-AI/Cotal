@@ -1001,6 +1001,7 @@
     "smoke:up-crash-repair-lease:live": "tsx implementations/cli/smoke/up-crash-repair-lease-live.smoke.ts",
     "smoke:auth-oracle-order:live": "tsx implementations/cli/smoke/auth-oracle-order-live.smoke.ts",
     "smoke:foreground-up-signals:live": "tsx implementations/cli/smoke/foreground-up-signals-live.smoke.ts",
+    "smoke:foreground-broker-crash:live": "tsx implementations/cli/smoke/foreground-broker-crash-live.smoke.ts",
     "smoke:foreground-up-running:live": "tsx implementations/cli/smoke/foreground-up-running-live.smoke.ts",
     "smoke:legacy-root-upgrade:live": "tsx implementations/cli/smoke/legacy-root-upgrade-live.smoke.ts",
     "smoke:stack-settle:live": "tsx implementations/cli/smoke/stack-settle-live.smoke.ts",

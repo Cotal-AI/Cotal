@@ -1,0 +1,2 @@
+# Foreground controller broker death is visible to an OS restart-on-failure policy.
+smoke:foreground-broker-crash:live

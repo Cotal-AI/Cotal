@@ -268,7 +268,7 @@ import {
 } from "../lib/controller-resume.js";
 import { removeRetiredBrokerInstance } from "../lib/controller-restore.js";
 import { acquireStackOperationLock, admittedStackRestore, readStackJournal, refuseControllerCut, STACK_DEFINITION, STACK_ROLES } from "../lib/stack-journal.js";
-import { observeServiceProcess, serviceInstances } from "../lib/service-instances.js";
+import { observeServiceProcess, serviceInstanceStore, serviceInstances } from "../lib/service-instances.js";
 import { serviceDefinitionStore } from "../lib/service-definitions.js";
 import { MissingFlags } from "../lib/missing-flags.js";
 import { serviceSupervisorStore } from "../lib/service-supervision.js";
@@ -798,8 +798,9 @@ function hangupForegroundStack(root: string): never {
  *  exits 129, naming `cotal down`. `start`, when given, is the startup this terminal already holds: a
  *  signal during it lets the start settle, then a stop signal runs that stop and a hangup leaves what
  *  the start left. A failed start still runs the stop, and its failure is thrown once the stop returns.
- *  The hold's end sets the exit code: 0 when another command completed the stop or preserve, 129 after
- *  a hangup, 130 or 143 after a stop signal, whatever the start receipt set. */
+ *  The hold's end sets the exit code: 0 when another command completed the stop or preserve, 1 when
+ *  the broker is lost outside such an operation, 129 after a hangup, 130 or 143 after a stop signal.
+ *  Broker failure retains the records for the OS supervisor's next foreground invocation. */
 export async function holdForegroundStack(root: string, start?: () => Promise<void>): Promise<void> {
   claimForegroundHold(root);
   try { await holdStack(root, start); }
@@ -837,24 +838,44 @@ async function holdStack(root: string, start?: () => Promise<void>): Promise<voi
     // root: a later operation recorded as completed is that evidence. Any other later operation,
     // such as a refresh, keeps the hold. The poll also keeps Node alive, which a pending promise and
     // signal listeners alone do not.
-    const recorded = () => { try { return readStackJournal(root)?.journal.operation; } catch { return undefined; } };
-    const held = recorded()?.id;
+    const recorded = () => readStackJournal(root)?.journal;
+    const held = recorded()?.operation.id;
     let stopping = false;
     const lifetime = setInterval(() => {
-      const operation = recorded();
-      if (stopping || !operation || operation.id === held || operation.phase !== "completed" || operation.kind !== "down" && operation.kind !== "preserve") return;
+      if (stopping) return;
+      try {
+        const journal = recorded(), operation = journal?.operation;
+        if (!journal || !operation) throw new Error("the held stack journal is missing");
+        if (operation.id !== held && operation.phase === "completed" && (operation.kind === "down" || operation.kind === "preserve")) {
+          release();
+          process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
+          process.exitCode = 0;
+          resolveHold();
+          return;
+        }
+        // A stop, preserve or resume owns its intermediate process loss. Do not turn a guarded
+        // operation into a supervisor restart before it has settled, even if it later refuses.
+        if (operation.kind === "down" || operation.kind === "preserve" || operation.phase !== "completed") return;
+        const broker = journal.members.find((member) => member.role === "broker");
+        const instance = broker?.instanceId && serviceInstanceStore(journal.space).read(broker.instanceId);
+        if (!instance || instance.record.value.definition !== STACK_DEFINITION.broker || observeServiceProcess(instance.record.value) !== "running") {
+          throw new Error("the held stack broker is no longer running at its recorded process identity");
+        }
+      } catch (error) {
+        release();
+        process.stderr.write(`Foreground stack failed: ${error instanceof Error ? error.message : "the held broker could not be observed"}. Stack records were retained; inspect \`cotal status\` before a manual repair, or let the OS supervisor restart \`cotal up --foreground\`.\n`);
+        process.exitCode = 1;
+        resolveHold();
+      }
+    }, 1000);
+    const release = () => {
       stopping = true;
       process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
       clearInterval(lifetime);
-      process.stderr.write(`${renderReport({ sections: [{ title: "Foreground stack released", blocks: [{ kind: "lines", lines: [`Another command completed a ${operation.kind === "down" ? "stop" : "preserve"} of this stack (operation ${operation.id}). This terminal no longer holds it.`] }] }] }, "rich", process.stderr)}\n`);
-      process.exitCode = 0;
-      resolveHold();
-    }, 1000);
+    };
     const stop = (signal: "SIGINT" | "SIGTERM") => {
       if (stopping) return;
-      stopping = true;
-      process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); process.off("SIGHUP", hangup);
-      clearInterval(lifetime);
+      release();
       void stopForegroundStack(root, signal).finally(resolveHold);
     };
     const interrupt = () => stop("SIGINT");

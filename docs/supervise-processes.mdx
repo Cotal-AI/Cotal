@@ -48,8 +48,8 @@ ExecStart=/usr/bin/cotal up --foreground --space main --host 0.0.0.0
 Restart=on-failure
 RestartSec=5s
 ```
-`cotal up --foreground` refuses when this folder's stack is already running, for example after a
-manual background `cotal up`. Stop that stack before the unit starts.
+On a controller stack, `cotal up --foreground` can take over a running stack when no other foreground
+launcher holds it. A legacy stack must be stopped before its foreground unit starts.
 
 Set the working directory and binary path for the installation.
 If the host should run only the broker and delivery daemon, add `--no-manager` to `ExecStart`.
@@ -70,6 +70,10 @@ Choose the ownership you need before copying a unit; `Type=simple` alone does no
 
 If the broker crashes under foreground `up`, the launcher retains its mesh record and exits nonzero.
 The unit restart repairs the recorded store rather than creating a second mesh.
+Controller stacks check the recorded broker's process identity once a second. A missing process or
+an unreadable identity ends the foreground lifetime with exit 1, without restarting anything itself.
+A guarded stop or preserve owns its intermediate process loss. A completed whole-stack `down`
+releases the foreground launcher with exit 0, so `Restart=on-failure` does not undo that stop.
 If the manager or delivery daemon crashes, its lease remains until expiry, normally 10 seconds for the manager and 30 seconds for delivery.
 A repair `up` can wait out that lease when it proves the holder is gone.
 It refuses if the lease is still renewed by a live holder.
@@ -77,6 +81,29 @@ It refuses if the lease is still renewed by a live holder.
 Built-in `pty` seats run with `oom_score_adj` set to `500`.
 Under memory pressure, the kernel prefers them over the broker, manager, and delivery daemon, whose scores are unchanged.
 Extension runtimes do not own the seat process and apply no such preference.
+
+### Start without a login
+
+A systemd user unit can restart a failed foreground stack while the user manager runs.
+Enabling it for `default.target` alone does not guarantee startup after a reboot without login.
+Check the account's policy with `loginctl show-user <user> --property=Linger`.
+`Linger=yes` lets its user manager start at boot and stay after logout. If it reports `no`, ask an
+administrator to enable lingering for that account, or use an administrator-owned system unit.
+Cotal does not enable lingering for a manually configured stack unit.
+
+On macOS, use the same foreground command as a LaunchAgent's `ProgramArguments`, with `RunAtLoad`
+and a `KeepAlive` dictionary containing `SuccessfulExit=false`. A per-user LaunchAgent starts at
+login, not unattended boot. A system LaunchDaemon requires an administrator's installation and
+an explicit execution account. Unload the job before an intentional shutdown rather than relying
+on a signal to disable its restart policy.
+
+Windows stack supervision is not installed by `up`. A scheduled task or service wrapper must own
+the foreground command and have an explicit failure-restart and startup policy. The machine daemon's
+own service does not supervise a separate local mesh broker.
+
+Seat memory limits are not enabled by default. Set workload limits only after measuring the runtime's
+process ownership and memory needs. A limit on a whole stack's unit also constrains its infrastructure
+and is not a per-seat bound.
 
 ## Check detached component health
 
