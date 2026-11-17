@@ -23,8 +23,10 @@ async function fixture() {
   assert.ok(address && typeof address !== 'string');
   const accepted = once(server, 'connection');
   const socket = connect(address.port, '127.0.0.1');
+  // The client's connect event can fire before the server's connection event; listen before awaiting either.
+  const connected = once(socket, 'connect');
   const [peer] = await accepted as [Socket];
-  await once(socket, 'connect');
+  await connected;
   const timers = new Map<number, { callback: () => void; ms: number }>();
   let sequence = 0;
   const request = runInNewContext(`${source.slice(start, end)}; createServiceRequester(socket)`, {
