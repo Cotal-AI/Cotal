@@ -108,8 +108,8 @@ if (!brokerDisplayOnly) {
   const args = ["status", "--space", space, "--verbose", "--components"];
   const component = (r: ReturnType<typeof run>, name: string) => r.stdout.split("Component Health")[1]?.split("\n").find(line => line.trimStart().startsWith(`${name} `)) ?? "";
   const missing = run(args, { NO_COLOR: "1" });
-  check("component control: a missing web pidfile is absent or not installed",
-    /web\s+(absent|not-installed)/.test(component(missing, "web")), shown(missing));
+  check("component control: a missing optional web pidfile is not started or not installed",
+    /web\s+(not-started|not-installed)/.test(component(missing, "web")), shown(missing));
   writeFileSync(webPid, " \n");
   const empty = run(args, { NO_COLOR: "1" });
   check("component control: an empty web pidfile has the same classification as a missing file",

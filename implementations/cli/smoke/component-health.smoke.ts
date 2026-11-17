@@ -444,7 +444,11 @@ try {
   const webRefusedText = `${webRefused.stdout}${webRefused.stderr}`;
   check("a live pidfile with no recorded bound address is a probe refusal (3), never a healthy default-port guess",
     webRefused.status === 3 && /web\s+refused/.test(webRefusedText) && webRefusedText.includes("no bound address recorded"), webRefusedText);
-  try { foreignWeb.kill("SIGTERM"); } catch { /* fixture is already gone */ }
+  await stop(foreignWeb);
+  const deadWeb = cli("status", "--components", "--space", SPACE, "--server", server);
+  const deadWebText = `${deadWeb.stdout}${deadWeb.stderr}`;
+  check("a dead dashboard with a stale pidfile remains absent (1), not optional not-started",
+    deadWeb.status === 1 && /web\s+absent.*stale pidfile/.test(deadWebText), deadWebText);
   rmSync(join(root, ".cotal", "web.pid"), { force: true });
 
   // The shipped dashboard, installed and started as an owned service as an operator does, so these
@@ -453,9 +457,14 @@ try {
   // it runs on its own stack in `webRoot`, which these cells stop before the open-mesh cells below.
   const extAdd = cli("ext", "add", join(WT, "implementations", "web"));
   check("the web extension installs into this isolated config", extAdd.status === 0, `${extAdd.stdout}${extAdd.stderr}`);
-  const webUp = cliIn(webRoot, ["up", "--detach", "--no-manager", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
+  const webUp = cliIn(webRoot, ["up", "--detach", "--space", WEB_SPACE, "--server", `nats://127.0.0.1:${await freePort()}`], 120_000);
   webStack = webUp.status === 0;
   check("the dashboard's static-auth stack starts", webStack, `${webUp.stdout}${webUp.stderr}`);
+  const notStarted = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  const notStartedText = `${notStarted.stdout}${notStarted.stderr}`;
+  check("a healthy default stack exits 0 with the installed dashboard not-started",
+    notStarted.status === 0 && /web\s+not-started · optional/.test(notStartedText) &&
+      ["manager", "delivery", "broker"].every(name => new RegExp(`${name}\\s+serving`).test(notStartedText)), notStartedText);
   const creds = join(credsDir, "dashboard.creds");
   // The admin profile is the one the dashboard connected with before it became a service.
   const minted = cliIn(webRoot, ["auth", "mint", "dashboard", "--profile", "admin", "--out", creds, "--space", WEB_SPACE]);
@@ -495,6 +504,9 @@ try {
   // nothing behind. `finally` repeats them only when a failure skipped them.
   const webStop = cliIn(webRoot, ["service", "stop", "web", "--space", WEB_SPACE, "--yes"], 60_000);
   check("service stop stops the dashboard and its close releases web.pid", webStop.status === 0 && !existsSync(webPid), `${webStop.stdout}${webStop.stderr}`);
+  const stoppedWeb = cliIn(webRoot, ["status", "--components", "--space", WEB_SPACE]);
+  check("an intentionally stopped optional dashboard returns to not-started with exit 0",
+    stoppedWeb.status === 0 && /web\s+not-started · optional/.test(`${stoppedWeb.stdout}${stoppedWeb.stderr}`), `${stoppedWeb.stdout}${stoppedWeb.stderr}`);
   const webRemove = cliIn(webRoot, ["service", "remove", "web", "--space", WEB_SPACE, "--yes"]);
   webService = webRemove.status !== 0;
   check("service remove forgets the stopped dashboard", webRemove.status === 0, `${webRemove.stdout}${webRemove.stderr}`);
@@ -524,11 +536,11 @@ try {
   servingManager = await serveManagerWithForeignRefusal();
   const benignRefusal = await cliAsync("status", "--components", "--space", SPACE, "--server", server);
   const benignRefusalText = `${benignRefusal.stdout}${benignRefusal.stderr}`;
-  // No dashboard can run on this open mesh, because the `web` preset refuses an open target, so the
-  // web row is `absent` and sets exit 1. Every other component must still be serving.
+  // No dashboard was started on this open mesh. Its installed extension is optional, so it must
+  // not fail an otherwise serving stack.
   check("benign foreign-owned reconciliation stays serving with exact failure facts",
-    benignRefusal.status === 1 &&
-      /web\s+absent/.test(benignRefusalText) &&
+    benignRefusal.status === 0 &&
+      /web\s+not-started · optional/.test(benignRefusalText) &&
       /delivery\s+serving/.test(benignRefusalText) &&
       /broker\s+serving/.test(benignRefusalText) &&
       /manager\s+serving/.test(benignRefusalText) &&

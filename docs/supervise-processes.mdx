@@ -95,6 +95,8 @@ ExecStart=/usr/bin/cotal status --components --space main
 Run the check from a systemd timer or another monitor and alert on a nonzero exit.
 It distinguishes `absent`, `not-serving`, and `refused` components.
 A dashboard extension that is not installed reports `not-installed` without making the check fail.
+An installed dashboard that has no process record reports `not-started` and also does not fail the check.
+A stale dashboard PID record still reports `absent` and fails the check.
 A sibling's health does not count as proof for the target component.
 This `Type=oneshot` unit is a health check, not a detached launcher.
 
