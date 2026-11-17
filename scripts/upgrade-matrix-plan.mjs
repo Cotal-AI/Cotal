@@ -148,6 +148,8 @@ export function boundedCells(plan) {
   add("linux", "npm", "standalone-stop-consent");
   add("linux", "npm", "foreign-config-recovery");
   for (const platform of ["linux", "darwin"]) add(platform, "npm", "unreachable-registration", null, {
+    sourceVersion: plan.targetVersion, sourceKind: "packed-candidate-A", targetVersion: syntheticNextVersion(plan.targetVersion),
+    targetSource: "packed-next-B", targetSourceSHA: plan.sourceSHA, syntheticVersionRule: "candidate.patch+1000",
     requiredAssertions: ["target-version", "extension-versions", "inventory-preserved", "status-healthy", "no-recovery", "no-manual-intervention", "offline-registration-retained", "stopped-stack-retained"],
   });
   add("linux", "npm", "container-manager");

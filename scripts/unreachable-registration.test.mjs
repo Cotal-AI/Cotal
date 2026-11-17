@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {planRelease,verifyResults} from './upgrade-matrix-plan.mjs';
+import {verifyUnreachablePairIdentity} from './unreachable-registration-pair.mjs';
 import {verifyUnreachableRegistration} from './unreachable-registration-evidence.mjs';
 
 function evidence(){
@@ -30,6 +31,7 @@ test('both POSIX states are required and a known red cannot waive acceptance',()
   const plan=planRelease({eventName:'workflow_dispatch',inputs:{phase,sourceSHA:'a'.repeat(40),targetVersion:'0.165.4'}},{sourceVersion:'0.165.3'});
   const states=plan.cells.filter(cell=>cell.scenario==='unreachable-registration');
   assert.deepEqual(states.map(cell=>cell.platform),['linux','darwin']);
+  assert(states.every(cell=>cell.sourceVersion==='0.165.4'&&cell.targetVersion==='0.165.1004'&&cell.sourceKind==='packed-candidate-A'&&cell.targetSource==='packed-next-B'));
   assert(states.every(cell=>cell.required&&cell.requiredAssertions.includes('offline-registration-retained')&&cell.requiredAssertions.includes('stopped-stack-retained')));
   const results=plan.cells.filter(cell=>cell.required).map(cell=>({id:cell.id,status:'passed',assertions:Object.fromEntries(cell.requiredAssertions.map(name=>[name,true]))}));
   assert.equal(verifyResults(plan.cells,results).acceptance,true);
@@ -67,6 +69,13 @@ test('staged gate rejects in-place and same-version green or substituted registr
   r=>r.target=r.source,
   r=>{const row=JSON.parse(r.unreachableRegistration.before.registry);row.server='nats://127.0.0.1:9999';r.unreachableRegistration.before.registry=JSON.stringify(row)+'\n';r.unreachableRegistration.after.registry=r.unreachableRegistration.before.registry;for(const c of r.calls.filter(c=>c.label.startsWith('registry ')))c.stdout=r.unreachableRegistration.before.registry;},
  ]){const bad=evidence();change(bad.report);assert.throws(()=>verifyUnreachableRegistration(bad));}
+});
+
+test('configured pair requires exact immutable A and B identities',()=>{
+ const cell={sourceSHA:'a'.repeat(40),sourceVersion:'0.165.4',targetVersion:'0.165.1004'};
+ const report={source:cell.sourceVersion,target:cell.targetVersion,candidate:{source:cell.sourceSHA,version:cell.targetVersion},configuredPair:{source:cell.sourceSHA,sourceVersion:cell.sourceVersion,targetVersion:cell.targetVersion,sourceArchives:Array(24).fill({}),targetArchives:Array(24).fill({})}};
+ assert.equal(verifyUnreachablePairIdentity(report,cell).source,cell.sourceSHA);
+ for(const change of [r=>r.configuredPair.source='b'.repeat(40),r=>r.source='0.165.3',r=>r.candidate.version='0.165.4',r=>r.configuredPair.sourceArchives=[]]){const bad=structuredClone(report);change(bad);assert.throws(()=>verifyUnreachablePairIdentity(bad,cell));}
 });
 
 test('workflow invokes real composition and source-bound verifier without acceptance waiver',()=>{

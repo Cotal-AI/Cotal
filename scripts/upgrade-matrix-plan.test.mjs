@@ -20,7 +20,7 @@ test("registry predecessor excludes target, newer versions, prereleases and malf
   assert.throws(() => publishedPredecessor({ versions: {} }, "0.164.8"), /no published stable source/);
   assert.throws(() => publishedPredecessor({ versions: { "0.164.7": { version: "0.164.6" } } }, "0.164.8"), /version mismatch/);
   const plan = planPhase(pr(), { ...context, sourceVersion: "0.164.7", packageManifest: { version: "0.164.8" } });
-  assert(boundedCells(plan).filter(cell => !["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) && !cell.followOnAction && !cell.chain).every(cell => cell.sourceVersion === "0.164.7"));
+  assert(boundedCells(plan).filter(cell => !["unreachable-registration", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) && !cell.followOnAction && !cell.chain).every(cell => cell.sourceVersion === "0.164.7"));
   assert.throws(() => planPhase(pr(), { ...context, sourceVersion: undefined }), /frozen published/);
 });
 
@@ -116,8 +116,8 @@ test("bounded enumeration is deterministic: 24 ordinary + 3 fresh next + 3 stopp
   assert.equal(new Set(cells.map(c => c.id)).size, cells.length);
   for (const cell of cells) {
     assert.equal(cell.sourceSHA, sourceSHA);
-    assert.equal(cell.sourceVersion, cell.chain ? "0.164.10" : (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction) ? "0.164.7" : "0.164.6");
-    assert.equal(cell.targetVersion, (["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction) ? "0.164.1007" : "0.164.7");
+    assert.equal(cell.sourceVersion, cell.chain ? "0.164.10" : (["unreachable-registration", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction) ? "0.164.7" : "0.164.6");
+    assert.equal(cell.targetVersion, (["unreachable-registration", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(cell.scenario) || cell.followOnAction) ? "0.164.1007" : "0.164.7");
     if (cell.followOnAction) assert.equal(cell.finalTargetVersion, "0.164.2007");
     assert.equal(cell.runner, { linux: "ubuntu-24.04", darwin: "macos-15", win32: "windows-2022" }[cell.platform]);
     if (cell.required) for (const assertion of ["status-healthy", "no-recovery", "no-manual-intervention"]) assert.ok(cell.requiredAssertions.includes(assertion));
@@ -292,7 +292,7 @@ test("candidate next-hop owns C to synthetic B at frozen H, separate from option
 test("candidate uses packed target and receipt-pinned installer artifact, candidate A optional", () => {
   const cells = boundedCells(dispatch({ phase: "candidate" }));
   assert.equal(cells.filter(c => c.required).length, 42);
-  assert.ok(cells.filter(c => c.required && c.channel === "npm" && !["candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(c.scenario) && !c.followOnAction).every(c => c.targetSource === "packed-target"));
+  assert.ok(cells.filter(c => c.required && c.channel === "npm" && !["unreachable-registration", "candidate-next-daemon-self", "candidate-next-stopped-daemon-self", "candidate-next-disabled-daemon-self", "candidate-next-stopped-desktop-self"].includes(c.scenario) && !c.followOnAction).every(c => c.targetSource === "packed-target"));
   const installers = cells.filter(c => c.channel === "installer" && c.scenario === "configured-rerun");
   const schedulers = cells.filter(c => c.required && c.scenario === "daemon-scheduler");
   assert.equal(installers.length, 2);

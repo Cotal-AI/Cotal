@@ -59,7 +59,7 @@ product coordinates:
 | Native service installed, manual self-update through npm on all three platforms and POSIX installer layouts | 5 |
 | Linux stand-in agent with public stop consent, separately daemon-hosted and standalone | 2 |
 | Linux paused record pointing to a real snapshot under another config home | 1 |
-| POSIX npm self-update with a stopped local space and an unrelated unreachable manual broker registration | 2 |
+| POSIX candidate-own A-to-B npm self-update with a stopped local space and an unrelated unreachable manual broker registration | 2 |
 | Linux host update with a foreign-UID container's bare `cotal supervise` | 1 |
 | The target release's own manual updater to a synthetic next version, with the service installed, on all three platforms | 3 |
 | The target release's own manual updater to a synthetic next version after stopping the installed native service, on all three platforms | 3 |
@@ -68,7 +68,10 @@ product coordinates:
 | POSIX post-update follow-on actions (second self-update, manual `npm i -g`, and installer rerun) to a second synthetic version | 6 |
 | Permanently pinned source 0.164.10 manual-service escape chains through the target to the synthetic next version | 3 |
 
-The unreachable-registration cells run from a folder with no project marker and clear the selected
+The unreachable-registration cells install the candidate's own build A and run its updater to the
+paired synthetic B from the same immutable source in both phases. This exercises the installed
+floor's read in every release. The ordinary predecessor coordinates are unchanged.
+They run from a folder with no project marker and clear the selected
 space before updating. They create, start and stop a separate local stack through the public CLI,
 then register a dead loopback broker with `space add --force`. Both ports must refuse connections.
 The report retains their timed refusal observations, the neutral command folder and the installed route before and after.
