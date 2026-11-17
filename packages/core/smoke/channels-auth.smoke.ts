@@ -8,7 +8,7 @@ import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-a
 import { pickFreePort } from "./_free-port.js";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable,
-  setupSpaceStreams, seedChannelRegistry, provisionAgent, CotalEndpoint,
+  setupSpaceStreams, seedChannelRegistry, provisionAgent, deprovisionAgent, CotalEndpoint,
   principalKey, DEV_OWNER, mintLifecycleUid,
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
@@ -162,6 +162,11 @@ try {
 
 const nextUid = mintLifecycleUid();
 await dlv.durableJoinFor(agentPrincipal, "incident", UID);
+// One live lifecycle per alias (SPEC 13.1): tear down the earlier one before its successor starts,
+// or every durable join by `next` refuses on two live ACL rows. The teardown names no member
+// channels, so the earlier lifecycle's membership row survives it.
+const dpvCreds = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: ident.id, lifecycleUid: UID } });
+await deprovisionAgent({ servers: server, space, targetId: ident.id, lifecycleUid: UID, creds: dpvCreds });
 const nextCreds = await provisionAgent(mgr, auth, ident, { subscribe: [], allowSubscribe: allowSub, lifecycleUid: nextUid });
 const next = new CotalEndpoint({ space, servers: server, creds: nextCreds, card: { name: "ag1", kind: "agent", id: ident.id }, channels: [], lifecycleUid: nextUid });
 next.on("error", (e: Error) => console.log("next err:", e.message));
@@ -173,14 +178,16 @@ try {
   assert.ok(!(await dlv.ownerMemberships(agentPrincipal, UID)).some((m) => m.channel === "incident"), "new lifecycle leave retires the predecessor row");
   assert.deepEqual(await next.leaveChannel("incident"), { left: false }, "leaving an absent membership reports false");
   await dlv.durableJoinFor(agentPrincipal, "incident", UID);
-  await next.joinChannel("incident");
+  const joined = await next.joinChannel("incident");
+  assert.equal(joined.durable, true, `the new lifecycle's join is durable: ${joined.reason ?? ""}`);
+  assert.ok((await dlv.ownerMemberships(agentPrincipal, nextUid)).some((m) => m.channel === "incident"), "the new lifecycle's join writes its own row");
   assert.deepEqual(await next.leaveChannel("incident"), { left: true }, "join then leave succeeds across lifecycle rows");
   for (const uid of [UID, nextUid]) {
     assert.ok(!(await dlv.ownerMemberships(agentPrincipal, uid)).some((m) => m.channel === "incident"), "join then leave retires every lifecycle row");
   }
   // A daemon before 0.166.0 answers discovery with this lifecycle's rows and no lifecycleUid.
   await dlv.durableJoinFor(agentPrincipal, "incident", UID);
-  await next.joinChannel("incident");
+  assert.equal((await next.joinChannel("incident")).durable, true, "the new lifecycle joins durably again");
   const discover = next.fetchMemberships.bind(next);
   next.fetchMemberships = async () => [{ channel: "incident", generation: 1, activated: true }];
   try {
@@ -189,9 +196,13 @@ try {
     next.fetchMemberships = discover;
   }
   assert.ok(next.joinedChannels().includes("incident"), "a refused leave keeps the channel joined");
-  assert.ok((await dlv.ownerMemberships(agentPrincipal, UID)).some((m) => m.channel === "incident"), "a refused leave keeps the membership open");
+  for (const uid of [UID, nextUid]) {
+    assert.ok((await dlv.ownerMemberships(agentPrincipal, uid)).some((m) => m.channel === "incident"), "a refused leave keeps every lifecycle row open");
+  }
   assert.deepEqual(await next.leaveChannel("incident"), { left: true }, "the leave succeeds once discovery reports lifecycles");
-  assert.ok(!(await dlv.ownerMemberships(agentPrincipal, UID)).some((m) => m.channel === "incident"), "that leave retires the membership");
+  for (const uid of [UID, nextUid]) {
+    assert.ok(!(await dlv.ownerMemberships(agentPrincipal, uid)).some((m) => m.channel === "incident"), "that leave retires every lifecycle row");
+  }
 } finally {
   await next.stop();
 }
