@@ -13,16 +13,17 @@ const repo = fileURLToPath(new URL('../../', import.meta.url));
 const previous = JSON.parse(readFileSync(join(repo, 'bin/package.json'), 'utf8')).version;
 const originalEnv = { ...process.env }, originalCwd = process.cwd();
 const terminal = process.argv.includes('--terminal-output');
-for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto']) {
+for (const scenario of terminal ? ['terminal'] : ['retry', 'retry-runtime', 'rollback', 'paused', 'preflight', 'notarget-manual', 'notarget-auto', 'closure-auto']) {
  const root = mkdtempSync(join(tmpdir(), 'autoupd-repair-'));
  const home = join(root, 'home'), prefix = join(root, 'prefix');
- for (const dir of [home, prefix, join(root, 'config/cotal'), join(root, '.cotal'), join(root, 'payload/package/dist')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+ for (const dir of [home, prefix, join(root, 'runtime'), join(root, 'config/cotal'), join(root, '.cotal'), join(root, 'payload/package/dist')]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+ const retry = scenario.startsWith('retry');
  const notarget = scenario.startsWith('notarget');
  const closure = scenario === 'closure-auto';
  const archives = {};
  for (const version of ['99.0.0', previous]) {
   writeFileSync(join(root, 'payload/package/package.json'), JSON.stringify({ name: 'cotal-ai', version, bin: { cotal: 'dist/cotal.js' } }));
-  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal ? 'console.log("release reconciled")' : scenario === 'retry' ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
+  const code = version === previous ? (scenario === 'paused' ? 'process.exit(43)' : 'console.log("previous reconciled")') : notarget || closure || terminal ? 'console.log("release reconciled")' : retry ? `const fs=require('node:fs');const p=${JSON.stringify(join(root, 'once'))};if(!fs.existsSync(p)){fs.writeFileSync(p,'1');process.exit(42)}console.log('retry reconciled')` : 'process.exit(42)';
   writeFileSync(join(root, 'payload/package/dist/cotal.js'), '#!/usr/bin/env node\n' + code + '\n', { mode: 0o755 });
   assert.equal(spawnSync('tar', ['-czf', join(root, version + '.tgz'), '-C', join(root, 'payload'), 'package']).status, 0);
   archives[version] = readFileSync(join(root, version + '.tgz'));
@@ -42,7 +43,9 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
  });
  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
  origin = 'http://127.0.0.1:' + server.address().port;
- const env = { ...Object.fromEntries(Object.entries(originalEnv).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, XDG_CONFIG_HOME: join(root, 'config'), COTAL_HOME: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_registry: origin, npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off' };
+ const env = { ...Object.fromEntries(Object.entries(originalEnv).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, XDG_CONFIG_HOME: join(root, 'config'), XDG_RUNTIME_DIR: join(root, 'runtime'), COTAL_HOME: home, npm_config_prefix: prefix, npm_config_cache: join(root, 'cache'), npm_config_registry: origin, npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_TELEMETRY: 'off' };
+ // The updater must finish without a daemon, with or without runtime discovery.
+ if (scenario === 'retry') delete env.XDG_RUNTIME_DIR;
  async function run(file, args) {
   const child = spawn(file, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
@@ -157,13 +160,15 @@ for (const scenario of terminal ? ['terminal'] : ['retry', 'rollback', 'paused',
    }
   } else {
    const { code, output } = await command();
-   assert.equal(code, scenario === 'retry' ? 0 : scenario === 'preflight' ? 1 : 42, output);
+   assert.equal(code, retry ? 0 : scenario === 'preflight' ? 1 : 42, output);
+   if (retry) assert.doesNotMatch(output, /machine daemon: waiting up to/, 'no installed daemon service needs a generation wait');
    if (scenario === 'preflight') assert.equal(existsSync(join(prefix, 'lib/node_modules/cotal-ai')), false, output);
    else {
-    assert.equal(installedVersion(), scenario === 'retry' ? '99.0.0' : previous, output);
+    assert.equal(installedVersion(), retry ? '99.0.0' : previous, output);
     if (scenario === 'paused') { assert.equal(recovery().phase, 'paused'); assert.match(output, /Automatic updates are paused/); }
     else assert.equal(recovery(), null);
    }
+   if (retry) console.log(`PASS ${scenario}: repaired 99.0.0, exit 0, recovery cleared, no daemon wait`);
   }
  } finally {
   await updater?.close();
