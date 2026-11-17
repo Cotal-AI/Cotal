@@ -68,10 +68,10 @@ export function connectorConfigDir(): string {
   return record.root;
 }
 
-/** A later installed generation inherits connector state without mutating an earlier retained prefix. */
+/** Each installed generation inherits connector state without mutating an earlier process's prefix. */
 export function inheritConnectorConfig(): void {
   const id = identity();
-  if (id && connectorConfigDir() === globalConfigDir() && previousConfig(id)) retainConnectorConfig();
+  if (id && connectorConfigDir() === globalConfigDir()) retainConnectorConfig();
 }
 
 /** Preserve the original prefix in place and prepare a separate complete prefix for same-version repair. */
