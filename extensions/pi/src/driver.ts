@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { boundedValue, oneLine } from "@cotal-ai/core";
 import type { InboxItem, MeshAgent } from "@cotal-ai/connector-core";
 import { formatInjection } from "@cotal-ai/connector-core";
 import { InboxTurn } from "./inbox-turn.js";
@@ -11,6 +12,9 @@ const DEFAULT_START_TIMEOUT_MS = 5_000;
 // only exit was a turn nothing in the process could start).
 const CONTINUATION_ATTEMPT_LIMIT = 2;
 const CONTINUATION_BACKOFF_MS = 50;
+// The most characters of Pi's error a held reason repeats, so a provider's long error body does not
+// fill the presence line.
+const ERROR_EXCERPT_LIMIT = 300;
 
 type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
 
@@ -237,7 +241,7 @@ export class PiDriver {
     const lastAssistant = [...messages]
       .reverse()
       .find((message) => message && typeof message === "object" && (message as { role?: unknown }).role === "assistant") as
-      | { stopReason?: string; usage?: { output?: number } }
+      | { stopReason?: string; errorMessage?: unknown; usage?: { output?: number } }
       | undefined;
     const aborted = this.activeSignal?.aborted === true;
     this.activeSignal = undefined;
@@ -263,7 +267,14 @@ export class PiDriver {
         this.hold("Pi turn was aborted; Cotal delivery is retained until a proven clean continuation completes");
         return;
       }
-      const reasonLabel = `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}`;
+      // Pi's own error names the cause, such as a missing model provider, so the held reason carries
+      // it: without it the presence line said only "ended with error" and pointed at a retry that
+      // could not help.
+      const error =
+        typeof lastAssistant?.errorMessage === "string" ? lastAssistant.errorMessage.replace(/\s+/g, " ").trim() : "";
+      const reasonLabel =
+        `Pi turn ended with ${lastAssistant?.stopReason ?? "an unknown stop reason"}` +
+        (error ? ` (${oneLine(boundedValue(error, ERROR_EXCERPT_LIMIT))})` : "");
       if (this.continuationAttempts < CONTINUATION_ATTEMPT_LIMIT) {
         this.continuationAttempts++;
         this.hold(`${reasonLabel}; Cotal delivery is retained until a proven clean continuation completes`);

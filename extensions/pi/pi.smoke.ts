@@ -818,6 +818,60 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(host.sent.length === sentBeforeFreshInput, "fresh input cannot dispatch once the continuation budget is spent");
 }
 
+// The error Pi reported reaches the held reason and the presence line, on one bounded line: a turn
+// that fails because Pi has no model provider says so, rather than only "ended with error".
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 200);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  startBatch(driver, host);
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "Unknown provider:\n  unknown" };
+  driver.onAgentStart(ctx);
+  driver.onAgentEnd([failed], ctx);
+  ok(
+    (driver.reason ?? "").startsWith("Pi turn ended with error (Unknown provider: unknown); "),
+    "a retained turn's held reason carries Pi's error on one line",
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const retry = context();
+    driver.onAgentStart(retry);
+    driver.onAgentEnd([failed], retry);
+  }
+  await driver.flushPresence();
+  ok(
+    (driver.reason ?? "").startsWith(
+      "Pi turn ended with error (Unknown provider: unknown) after 2 automatic continuation attempts; ",
+    ),
+    "the spent-attempts held reason carries Pi's error",
+  );
+  ok(
+    /\(Unknown provider: unknown\)/.test(mesh.statuses.at(-1)?.activity ?? ""),
+    "the presence line carries Pi's error",
+  );
+
+  const longMesh = new FakeMesh();
+  longMesh.items = [item("m1")];
+  const long = new PiDriver(longMesh as unknown as MeshAgent, 200);
+  const longHost = new FakeHost();
+  const longCtx = context();
+  long.bind(longHost);
+  long.onSessionStart(longCtx);
+  startBatch(long, longHost);
+  long.onAgentStart(longCtx);
+  long.onAgentEnd([{ role: "assistant", stopReason: "error", errorMessage: `\u001b[2J${"x".repeat(5000)}` }], longCtx);
+  const longReason = long.reason ?? "";
+  ok(
+    longReason.includes("… (5004 characters)") && longReason.includes("\\u001b[2J") && !longReason.includes("\u001b"),
+    "a long error is bounded, and its control character is escaped rather than reaching the presence line",
+  );
+  long.requestShutdown();
+}
+
 // Controls that must not weaken: zero batches still returns to idle on the same error boundary.
 {
   const mesh = new FakeMesh();
