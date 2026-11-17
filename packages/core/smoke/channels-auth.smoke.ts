@@ -192,6 +192,8 @@ try {
   next.fetchMemberships = async () => [{ channel: "incident", generation: 1, activated: true }];
   try {
     await assert.rejects(next.leaveChannel("incident"), /predates lifecycle-aware membership discovery.*restart the daemon at this version/, "an older daemon's answer refuses the leave and names the remedy");
+    const hostedMessage = "this space's host runs an older delivery service, so this durable leave was not applied and the channel stays joined; the host must update the delivery service";
+    await assert.rejects(next.leaveChannel("incident", hostedMessage), { message: hostedMessage }, "the caller selects the remedy without changing the refusal");
   } finally {
     next.fetchMemberships = discover;
   }

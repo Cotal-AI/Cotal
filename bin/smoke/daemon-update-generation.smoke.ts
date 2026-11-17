@@ -132,6 +132,21 @@ function scripted(steps: (Reply | Error)[]) {
   assert.equal(lines.filter(line => line.includes("waiting up to")).length, 1, "the child of an older parent prints the wait once");
 }
 
+// A quiet child's refused wait keeps the progress line its parent will never reach.
+for (const ownership of [false, true]) {
+  const lines: string[] = [];
+  const prior = console.log;
+  console.log = (line?: unknown) => { lines.push(String(line)); };
+  const refusal = new EndpointRefusal("PEER_UID_MISMATCH", "another user answers");
+  try {
+    await assert.rejects(waitForInstalledDaemonGeneration("2.0.0", {
+      installed: () => true, quiet: true, timeoutMs: 50,
+      query: scripted([ownership ? refusal : status("1.0.0")]).query,
+    }), ownership ? error => error === refusal : /did not become ready/);
+  } finally { console.log = prior; }
+  assert.deepEqual(lines, ["machine daemon: waiting up to 0s for Cotal 2.0.0 and its hosted Managers before the continuity check"], "a quiet refusal prints exactly the suppressed wait line");
+}
+
 // A stale recorded service is knowable before either replacement or connector writes.
 for (const self of [true, false]) {
   const state = join(root, `stale-${self}`);

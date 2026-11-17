@@ -4019,7 +4019,10 @@ export class MeshAgent extends EventEmitter {
    *  becomes pull-only, so it enters no later turn. A mention of this agent keeps its lane. */
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     await this.requireConnected();
-    const result = await this.ep.leaveChannel(channel);
+    const legacyDiscoveryMessage = isLocalServer(this.config.servers)
+      ? undefined
+      : "this space's host runs an older delivery service, so this durable leave was not applied and the channel stays joined; the host must update the delivery service";
+    const result = await this.ep.leaveChannel(channel, legacyDiscoveryMessage);
     if (result.left) this.lowerBuffered(channel, false, this.joinedChannels());
     return result;
   }

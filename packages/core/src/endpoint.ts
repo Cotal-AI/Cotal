@@ -3948,8 +3948,9 @@ export class CotalEndpoint extends EventEmitter {
    *  a hard read boundary for the backstop — a pre-leave entry stays deliverable, `seq > leaveCursor` is
    *  denied). FAIL-CLOSED: if the tombstone can't be confirmed the call throws and the leave is NOT
    *  applied (live sub stays up, local mirror intact) so the caller can retry — never close the live
-   *  read while the backstop keeps delivering. */
-  async leaveChannel(channel: string): Promise<{ left: boolean }> {
+   *  read while the backstop keeps delivering. `legacyDiscoveryMessage` lets the caller supply the
+   *  remedy when membership discovery predates lifecycle support, without changing the refusal. */
+  async leaveChannel(channel: string, legacyDiscoveryMessage?: string): Promise<{ left: boolean }> {
     if (!this.jsm) throw new Error(this.notLiveMsg());
     let left = this.channels.includes(channel);
     if (this.readsChannelsOnDemand) await this.readChannels();
@@ -3968,7 +3969,7 @@ export class CotalEndpoint extends EventEmitter {
         // A daemon before 0.166.0 answers with this lifecycle's rows and no lifecycleUid, so it cannot
         // show an earlier lifecycle's row. Refuse with the remedy rather than leave that row open.
         if (member.lifecycleUid === undefined)
-          throw new Error("the delivery daemon predates lifecycle-aware membership discovery, so this durable leave was not applied and the channel stays joined; restart the daemon at this version (`cotal up` runs it)");
+          throw new Error(legacyDiscoveryMessage ?? "the delivery daemon predates lifecycle-aware membership discovery, so this durable leave was not applied and the channel stays joined; restart the daemon at this version (`cotal up` runs it)");
         await this.durableLeaveChannel(channel, member.generation, member.lifecycleUid);
         left = true;
       }

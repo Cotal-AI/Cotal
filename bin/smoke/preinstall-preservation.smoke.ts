@@ -1,0 +1,46 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, unlinkSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { homeCotalDir } from "@cotal-ai/workspace";
+import { preinstallPreservationObservation, preservingPreinstallRefusal } from "../daemon/preinstall-preservation.js";
+import { processStartToken } from "@cotal-ai/core";
+import type { DaemonStatus } from "../daemon/protocol.js";
+import { countedAssert, emitSentinel } from "./sentinel.mjs";
+
+const counted = countedAssert(assert);
+const check: typeof assert = counted.assert as typeof assert;
+const root = mkdtempSync(join(tmpdir(), "preinstall-observation-"));
+process.env.COTAL_HOME = join(root, "state"); mkdirSync(homeCotalDir(), { mode: 0o700 });
+const path = join(homeCotalDir(), ".update-closure.lock");
+const status = { managers: [{ space: "test", pid: process.pid, instanceId: "instance" }], update: { restartEvidence: { prepared: true, managers: [{ space: "test", fenced: true, seats: 0 }] } } } as unknown as DaemonStatus;
+const record = (pid: number, start: string) => { writeFileSync(path, JSON.stringify({ pid, start, nonce: "test-nonce", ts: Date.now() - 2000 }), { mode: 0o600 }); };
+check.equal(preinstallPreservationObservation(status).owner, "unknown");
+record(process.pid, processStartToken(process.pid)!);
+const bytes = readFileSync(path);
+check.equal(preinstallPreservationObservation(status).owner, "transaction");
+check.deepEqual(readFileSync(path), bytes, "observing custody writes nothing");
+check.equal(preinstallPreservationObservation(status).seats, 0);
+const occupied = { ...status, update: { ...status.update!, restartEvidence: { ...status.update!.restartEvidence!, managers: [{ space: "test", fenced: true, seats: 1 }] } } };
+check.equal(preinstallPreservationObservation(occupied).seats, 1);
+const incomplete = { ...status, update: { ...status.update!, restartEvidence: { ...status.update!.restartEvidence!, managers: [] } } };
+check.equal(preinstallPreservationObservation(incomplete).seats, "unknown");
+const foreign = { ...status, update: { ...status.update!, restartEvidence: { ...status.update!.restartEvidence!, managers: [{ space: "other", fenced: true, seats: 0 }] } } };
+check.equal(preinstallPreservationObservation(foreign).seats, "unknown");
+const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
+try {
+  await once(child, "spawn"); const pid = child.pid!; const start = processStartToken(pid)!;
+  record(pid, start);
+  check.equal(preinstallPreservationObservation(status).owner, "live");
+  const ended = once(child, "exit"); child.kill("SIGKILL"); await ended;
+  check.equal(preinstallPreservationObservation(status).owner, "gone");
+  writeFileSync(path, "not-json"); check.equal(preinstallPreservationObservation(status).owner, "unknown");
+  unlinkSync(path); symlinkSync(join(root, "missing"), path);
+  check.equal(preinstallPreservationObservation(status).owner, "unknown");
+  const error = preservingPreinstallRefusal({ owner: "unknown", age: "unknown", seats: "unknown" });
+  check.match(error.message, /hold age unknown; seats unknown; update owner unknown/);
+  check.match(error.message, /cotal update --self/);
+} finally { if (child.exitCode === null && child.signalCode === null) { const ended = once(child, "exit"); child.kill("SIGKILL"); await ended; } }
+emitSentinel({ passed: counted.cells(), failed: 0 });
