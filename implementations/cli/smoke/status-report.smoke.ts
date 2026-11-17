@@ -22,7 +22,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFile
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort } from "@cotal-ai/smoke-kit";
-import { acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
+import { acquireLock, processStartToken, acquireMaintenanceLock, beginMaintenanceCut, canonicalLocalProcessPath, findMesh, recordMesh, releaseMaintenanceLock, renderReport, NATS_PIDFILE, WEB_PIDFILE, writeMaintenanceResumeDocument } from "@cotal-ai/workspace";
 import { statusView } from "../src/commands/status.js";
 import { restoreNextStep } from "../src/lib/restore.js";
 import { displayCmd } from "../src/lib/self-exec.js";
@@ -48,8 +48,9 @@ type Envelope = {
   command: string;
   result: {
     kind: string;
+    nextCommands?: { command: string; description: string }[];
     machine: { nats: string; natsServer: { path: string; version: string | null; skipped?: { path: string; reason: string } } | null; natsProblem: string | null };
-    extensions?: { items: { label: string; version: string }[] | null; seedFailure: { package: string; phase: string; cause: string } | null; seedRecoveryPending: boolean | null };
+    extensions?: { items: { label: string; version: string }[] | null; seedFailure: { package: string; phase: string; cause: string } | null; seedRecoveryPending: boolean | null; seedActivity: string | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
@@ -116,7 +117,7 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const json = run(["status", "--json"]);
   const failure = json.envelope?.result?.extensions?.seedFailure;
   check("status reports the persisted package, phase and complete cause despite matching pins", json.status === 5 && json.envelope?.outcome === "failed" && json.envelope.error?.code === "OPERATION_FAILED" && failure?.package === "web" && failure.phase === "add" && failure.cause === cause, shown(json));
-  check("JSON hints carry seed recovery first and retain other diagnostics afterwards", json.envelope?.result?.hints[0]?.includes("chmod g-w") === true && json.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true && json.envelope.result.hints[2]?.includes("finish connector setup before startup") === true, json.envelope?.result?.hints);
+  check("JSON hints carry seed recovery first and expose ordinary commands separately", json.envelope?.result?.hints[0]?.includes("chmod g-w") === true && json.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true && Array.isArray(json.envelope.result.nextCommands), json.envelope?.result?.hints);
   for (const format of [[], ["--plain"], ["--wide", "--verbose"]]) {
     const text = run(["status", ...format], { NO_COLOR: "1" });
     const next = text.stdout.slice(text.stdout.indexOf("\nNext\n"));
@@ -155,7 +156,7 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const skewText = run(["status", "--plain"]);
   const skewNext = skewText.stdout.split("\nNext\n")[1] ?? "";
   check("Next prints the independent skew remedy after seed repair", skewText.status === 5 && skewNext.includes("update --self") && skewNext.indexOf("ext seed --repair") < skewNext.indexOf("update --self"), shown(skewText));
-  writeFileSync(join(home, ".config", "cotal", "preferences.json"), JSON.stringify({ schemaVersion: 1, revision: 0, defaults: {}, spaces: {} }));
+  writeFileSync(join(home, ".config", "cotal", "preferences.json"), JSON.stringify({ schemaVersion: 1, revision: 1, defaults: {}, spaces: {} }));
   chmodSync(join(home, ".config", "cotal"), 0o777);
   const preferences = run(["status", "--json"]);
   check("seed recovery retains the preferences-folder protection remedy", preferences.status === 5 && preferences.envelope?.result?.hints.slice(2).some(h => h.includes("protect the preferences folder")) === true, preferences.envelope?.result?.hints);
@@ -164,6 +165,29 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const backup = { ...skew.envelope!.result!, maintenance: { root: home, space: "held", state: "claimed", attemptId: "backup-held", next: backupNext }, hints: [...skew.envelope!.result!.hints, backupNext] };
   const backupActions = renderReport(statusView(backup as unknown as Parameters<typeof statusView>[0]), "plain").split("\nNext\n")[1] ?? "";
   check("a held backup's collected recovery step survives the seed-specific Next renderer", backupActions.includes(backupNext) && backupActions.indexOf("ext seed --repair") < backupActions.indexOf(backupNext), backupActions);
+  writeFileSync(cursor, interrupted);
+  const liveLock = acquireLock(join(seed, "reconcile.lock"), { label: "status live seed fixture" });
+  try {
+    const live = run(["status", "--json"]);
+    check("a live reconcile is in progress, not an interrupted seed failure", live.status === 0 && live.envelope?.outcome === "ok" && live.envelope.result?.extensions?.seedFailure === null && live.envelope.result.extensions.seedActivity?.includes("in progress") === true && !live.envelope.result.hints.join("\n").includes("ext seed --repair"), shown(live));
+    const plain = run(["status", "--plain"]);
+    check("live reconcile text advises waiting instead of repair", plain.status === 0 && plain.stdout.includes("in progress") && !plain.stdout.includes("ext seed --repair"), shown(plain));
+  } finally { liveLock.release(); }
+  const childMarker = join(seed, "reconcile.child.json");
+  writeFileSync(childMarker, JSON.stringify({ state: "live", childPid: process.pid, childStart: processStartToken(process.pid), parentPid: process.pid, nonce: "status-live-child", ts: Date.now() }));
+  const liveChild = run(["status", "--json"]);
+  check("a live child without a lock is still installing, not interrupted", liveChild.status === 0 && liveChild.envelope?.result?.extensions?.seedFailure === null && liveChild.envelope.result.extensions.seedActivity?.includes("still installing") === true && !liveChild.envelope.result.hints.join("\n").includes("ext seed --repair"), shown(liveChild));
+  check("live observations leave the interrupted cursor unchanged", readFileSync(cursor, "utf8") === interrupted);
+  rmSync(childMarker);
+  writeFileSync(cursor, original);
+  writeFileSync(canonicalLocalProcessPath(NATS_PIDFILE, { root: home, space: "main", userAuth: false }), `${process.pid}\n`, { mode: 0o600 });
+  writeFileSync(join(home, ".cotal", "nats.log"), `[${process.pid}] 2026/10/23 19:38:44.773287 [INF] Starting nats-server\n[${process.pid}] 2026/10/23 19:38:44.773287 [ERR] Filestore [CHAT_s] Critical write error: write /store/msgs/1.blk: no space left on device\n`, { mode: 0o600 });
+  const server = ["--server", `nats://127.0.0.1:${await freePort()}`];
+  const store = run(["status", ...server, "--json"]);
+  check("seed failure keeps store-write recovery in structured Next commands", store.status === 5 && store.envelope?.result?.store?.state === "write-failed" && store.envelope.result.nextCommands?.some(item => item.command === "cotal down" && item.description.includes("free space")) === true, shown(store));
+  const storeText = run(["status", ...server, "--plain"]);
+  const storeNext = storeText.stdout.split("\nNext\n")[1] ?? "";
+  check("seed failure keeps store-write down/free-space/up route in printed Next", storeText.status === 5 && storeNext.includes("cotal down") && storeNext.includes("free space") && storeNext.indexOf("ext seed --repair") < storeNext.indexOf("cotal down"), shown(storeText));
 }
 if (process.argv.includes("--seed-failure-only")) {
   finish();

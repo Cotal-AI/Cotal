@@ -159,7 +159,7 @@ import { storeWriteProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
-import { readCursor, readRecovery } from "../seed/lock.js";
+import { readCursor, readRecovery, reconcileLockActive, seedChildStatus } from "../seed/lock.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -266,6 +266,7 @@ interface OwnedServiceStatus {
  *  read is null or carries its error, and is named in the warnings. */
 export interface StatusResult {
   kind: "infrastructure";
+  nextCommands?: { command: string; description: string }[];
   machine: {
     version: string;
     node: string;
@@ -286,6 +287,7 @@ export interface StatusResult {
     items: { package: string; label: string; version: string }[] | null;
     seedFailure: { package: string; phase: "copy" | "add"; cause: string } | null;
     seedRecoveryPending: boolean | null;
+    seedActivity: string | null;
   };
   folder: {
     root: string;
@@ -466,7 +468,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
-  const seedProblem = extensions.seedFailure
+  const seedProblem = extensions.seedActivity ? undefined : extensions.seedFailure
     ? `a previous seed did not finish (package "${extensions.seedFailure.package}", phase ${extensions.seedFailure.phase}): ${extensions.seedFailure.cause}`
     : extensions.seedRecoveryPending ? "a previous connector repair did not finish (recovery journal present)" : undefined;
   const seedFailure = seedProblem ? new CommandFailure("failed", "OPERATION_FAILED",
@@ -512,9 +514,13 @@ export async function status(args: ParsedArgs): Promise<void> {
   const store = full ?? logged;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: seedProblem
-    ? [...new Set([`Fix the recorded cause first: ${seedProblem}`, `Then run \`${displayCmd()} ext seed --repair\` to finish connector setup before starting a space`, "Other diagnostics and recovery steps (finish connector setup before startup):", ...hints])]
-    : [...new Set(hints)] };
+  const seedHints = extensions.seedActivity
+    ? [extensions.seedActivity, "Run `cotal status` again when that work finishes; do not repair a live seed"]
+    : seedProblem ? [`Fix the recorded cause first: ${seedProblem}`, `Then run \`${displayCmd()} ext seed --repair\` to finish connector setup before starting a space`] : [];
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: [...new Set([...seedHints, ...hints])] };
+  // Derive command-shaped remedies from the same planner the text report uses. They are not free
+  // hints: keep each command and its explanation distinct in JSON too.
+  result.nextCommands = nextActions(result).blocks.flatMap(block => block.kind === "commands" ? [...block.items] : []);
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
   // An unreadable preferences file is already a gap, so the variables are checked without it.
@@ -755,7 +761,26 @@ function readExtensions(gaps: Gaps): StatusResult["extensions"] {
     seedRecoveryPending = null;
     gaps.add("SEED_RECOVERY_UNREADABLE", `the connector recovery journal could not be read: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null, seedFailure, seedRecoveryPending };
+  let seedActivity: string | null = null;
+  try {
+    if (reconcileLockActive()) seedActivity = "connector setup is in progress: a live reconcile holds the seed lock";
+    else {
+      const child = seedChildStatus();
+      if (child.kind === "live") seedActivity = `connector setup is in progress: a seed child (pid ${child.pid}) is still installing`;
+      else if (child.kind === "ambiguous") {
+        seedActivity = `connector setup may be in progress: the seed child marker ${child.path} cannot be resolved`;
+        gaps.add("SEED_ACTIVITY_UNREADABLE", seedActivity);
+      }
+    }
+  } catch (error) {
+    seedActivity = "connector setup activity could not be read; no interrupted seed was inferred";
+    gaps.add("SEED_ACTIVITY_UNREADABLE", `${seedActivity}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (seedActivity && seedFailure) {
+    seedActivity += ` (package "${seedFailure.package}", phase ${seedFailure.phase})`;
+    seedFailure = null;
+  }
+  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null, seedFailure, seedRecoveryPending, seedActivity };
 }
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
@@ -1906,7 +1931,8 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
     ? r.extensions.items === null ? stateCell("manifest could not be read", "failed") : r.extensions.items.length ? r.extensions.items.map((item) => `${item.label} v${item.version}`).join(" · ") : undefined
     : extensionsCell(r.extensions);
   if (extensions !== undefined) rows.push(["Extensions", extensions]);
-  if (r.extensions.seedFailure) rows.push(["Connector setup", stateCell(`incomplete · ${r.extensions.seedFailure.package} did not finish ${r.extensions.seedFailure.phase}: ${r.extensions.seedFailure.cause}`, "failed")]);
+  if (r.extensions.seedActivity) rows.push(["Connector setup", cell(r.extensions.seedActivity, "hint")]);
+  else if (r.extensions.seedFailure) rows.push(["Connector setup", stateCell(`incomplete · ${r.extensions.seedFailure.package} did not finish ${r.extensions.seedFailure.phase}: ${r.extensions.seedFailure.cause}`, "failed")]);
   else if (r.extensions.seedRecoveryPending) rows.push(["Connector setup", stateCell("incomplete · a previous connector repair did not finish (recovery journal present)", "failed")]);
   return {
     title: "This machine",
@@ -2116,12 +2142,14 @@ function backupRecovery(maintenance: StatusResult["maintenance"]): string | null
 }
 
 function nextActions(r: StatusResult): Section {
-  if (r.extensions.seedFailure || r.extensions.seedRecoveryPending) return {
-    title: "Next",
-    blocks: r.hints.map(hint => ({ kind: "lines", lines: [cell(hint, "hint")] })),
-  };
+  const seedPending = r.extensions.seedFailure || r.extensions.seedRecoveryPending || r.extensions.seedActivity;
+  const seedHints = seedPending ? r.hints.slice(0, 2) : [];
+  const hints = seedPending ? r.hints.slice(2) : r.hints;
+  const prefix: Section["blocks"][number][] = seedPending
+    ? [...seedHints.map(hint => ({ kind: "lines" as const, lines: [cell(hint, "hint")] })), { kind: "lines", lines: [cell("Other diagnostics and recovery steps (finish connector setup before startup):", "hint")] }]
+    : [];
   const recovery = backupRecovery(r.maintenance);
-  if (recovery) return { title: "Next", blocks: [...new Set([recovery, ...r.hints])].map((hint) => ({ kind: "lines", lines: [cell(hint, "hint")] })) };
+  if (recovery) return { title: "Next", blocks: [...prefix, ...[...new Set([recovery, ...hints])].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
   const cmd = displayCmd();
   const items: { command: string; description: string }[] = [];
   const extra: string[] = [];
@@ -2246,7 +2274,7 @@ function nextActions(r: StatusResult): Section {
   // The broker keeps serving a store it found damage in, from what it can still read there.
   if (r.store?.state === "damaged" && r.selected.resolved && r.services?.instances?.some((row) => row.definition === STACK_DEFINITION.broker))
     items.unshift({ command: `${cmd} service logs stack-broker${own ? "" : ` --space ${r.selected.space}`}`, description: "Read what the broker logged about the damage it found in its store; history holds only what it could still read" });
-  return { title: "Next", blocks: [{ kind: "commands", items }, ...[...extra, ...r.hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
+  return { title: "Next", blocks: [...prefix, { kind: "commands", items }, ...[...extra, ...hints].map((hint) => ({ kind: "lines" as const, lines: [cell(hint, "hint")] }))] };
 }
 
 function ownedServicesOverview(services: OwnedServiceStatus | undefined): Section | undefined {

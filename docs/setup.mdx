@@ -132,8 +132,9 @@ Set `COTAL_SKIP_ASSIST=1` to disable these offers.
 
 Run `cotal status` to inspect saved preparation and running services.
 It does not start anything.
-If connector seeding failed or left a cursor, status names the package and cause and exits 5.
-An unfinished connector repair also exits 5 and names its recovery journal.
+If connector seeding failed or left a cursor with no live installer, status names the package and cause and exits 5.
+An unfinished connector repair with no live installer also exits 5 and names its recovery journal.
+While a reconcile or seed child is live, status reports work in progress instead of recommending repair.
 Fix that cause, then run `cotal ext seed --repair` before trying startup again.
 For a recorded permission refusal, follow its permission remedy first.
 For commands, flags, and exit codes, see the [CLI reference](cli.mdx).

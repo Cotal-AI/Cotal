@@ -942,7 +942,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 |---|---|
 | `kind` | `infrastructure` |
 | `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
-| `extensions` | `root`, `items` (each `{package, label, version}`), `seedFailure`: `{package, phase, cause}` for a failed or interrupted seed cursor, otherwise `null`, and `seedRecoveryPending`: whether a repair journal remains, or `null` when unreadable |
+| `extensions` | `root`, `items` (each `{package, label, version}`), `seedFailure`: `{package, phase, cause}` for a failed or interrupted seed cursor with no live writer, otherwise `null`, `seedRecoveryPending`: whether a repair journal remains, or `null` when unreadable, and `seedActivity`: the live or uncertain seed activity observation, otherwise `null` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`), `storedState`, `noManager` (whether this root's controller stack was started with `--no-manager`) and `managerService` (the service of the space, outside that stack, whose process runs this root's manager, as a `manager` preset started there does: its `definition` and `instanceId`, or null), `heldServices` (the services of the space, outside that stack, whose processes run this root's records, as `up` names them before it refuses: each `definition`, `instanceId`, `record` and `pid`; null when those records could not be read) |
 | `meshes` | `current`, `folder` (this folder's running registered space when a command there targets it, else null), `unreadable` (the registry directory, a record, the current-mesh pointer, or the prepared spaces folder or a record in it, that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, account, state, error}`, where `account` is the IdP subject the error line names) |
 | `selected` | `{resolved: false, code, message}` when no mesh resolves, where `message` states why and `hints` carries the step (`code` is `registry-unreadable` when the registry directory or a record could not be read, and a `not-started` prepared space adds its `space` and `root`); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`, and `null` on an open mesh with no delivery lease), `snapshot`, `channels`, `membershipFeed` and `spaceStreams`. `spaceStreams.state` is `present`, `absent` or `not-checked`; it is read for an auth or user space and an open space this machine started. When `absent`, `root` is this machine's stack of the space and `stack` is `running` or `stopped`, each `null` when unknown. `storedBytes` is what the space's account holds in the broker's JetStream file store, `null` when it was not read |
@@ -950,6 +950,7 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `stackManager` | The selected space's running stack manager: `instanceId`, `pid` and `endpoint`, which is `answered`, `not-answering` or `unchecked`. Absent when no stack manager runs |
 | `store` | What the selected space's running local broker logged about its JetStream store: `state` `write-failed` with `pid`, `log`, `at`, `cause`, `path` and `jetStreamDisabled`, true when the broker then disabled JetStream; `full` with `used`, `cap` and `path` when the space holds more than its broker's recorded cap; `damaged` with `pid`, `log`, `at` and the broker's `warning` when it logged damage in a stored file; `none-recorded` with `pid` and `log`; or `not-checked` with a `reason`. Absent when no space resolves |
 | `hints` | The hints, in the order the report prints them |
+| `nextCommands` | The command-shaped Next steps, each `{command, description}`, derived from the same planner as the text report |
 
 `store` covers only a broker whose log is on this machine: a controller stack's `stack-broker`
 instance, or the broker a legacy root records in `.cotal/nats.pid` with its log `.cotal/nats.log`.
@@ -1006,12 +1007,17 @@ then `cotal down --yes`, which kills a member that does not exit, and `cotal up`
 
 ### Partial reads
 
-An existing connector seed cursor or repair journal makes setup incomplete, even when the installed
+With no live reconcile or installer, a connector seed cursor or repair journal makes setup incomplete, even when the installed
 extension versions match. Status names the package, phase and recorded cause for a cursor, or the
 unfinished repair for a journal without a cursor. It returns `failed` with `OPERATION_FAILED` and
 exit 5, and puts the cause and `cotal ext seed --repair` first under Next. Other collected diagnostics
 and recovery steps follow, with a note to finish connector setup before startup.
+This includes command-shaped recovery such as a broker store's down, free-space and restart route.
 The diagnostic neither repairs nor clears either record.
+While the seed lock has a live holder or a seed child is still installing, status reports work in
+progress and asks the operator to inspect it again when that work finishes, without a seed-failure
+exit or a repair instruction. Other unreadable parts can still make the report partial.
+Uncertain seed activity is partial with `SEED_ACTIVITY_UNREADABLE`; it is not called an interruption.
 This exit also takes precedence over component-health exits when `--components` is used.
 An unreadable or corrupt seed cursor is a partial read with `SEED_CURSOR_UNREADABLE` and exit 4.
 An unreadable or corrupt repair journal is a partial read with `SEED_RECOVERY_UNREADABLE` and exit 4.
