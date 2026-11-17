@@ -21,7 +21,7 @@ export const ONCE_HANDOFF_MS = 60_000;
 /** How long a seat that must end itself waits for its own graceful shutdown before it exits. */
 export const ONCE_EXIT_GRACE_MS = 10_000;
 
-export type OnceHandoffState = "pending" | "claimed" | "confirmed" | "sealed";
+type OnceHandoffState = "pending" | "claimed" | "confirmed" | "sealed";
 
 interface OnceProcess {
   handoffs: Map<string, { state: OnceHandoffState; timer?: ReturnType<typeof setTimeout> }>;
@@ -105,7 +105,7 @@ export function onOnceHandoffTimeout(fn: (uid: string, goalId: string) => void):
  *  returns nothing, or answers whether the seat is ending: an adapter whose own process is not the
  *  seat (Claude's MCP server is a child of `claude`) answers false when it cannot end the seat. A
  *  promise must settle, since no forced exit is armed until it does. */
-export type OnceExit = () => void | boolean | Promise<boolean>;
+type OnceExit = () => void | boolean | Promise<boolean>;
 
 /** Register the adapter's graceful shutdown for a once seat that must end itself. */
 export function registerOnceExit(fn: OnceExit): void {
