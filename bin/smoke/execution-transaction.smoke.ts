@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionDescriptorPath, executionStore, selectExecutionProgram } from "../cotal.js";
 import { cleanupExecutionStore } from "../execution-store.js";
+import { recoverExecutionUpdate } from "../daemon/execution-update.js";
 import { repairInstallModes } from "../../implementations/cli/src/lib/install-umask.js";
 import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, repairExecutionInstallModes, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 
@@ -78,6 +79,24 @@ if (["linux", "darwin"].includes(process.platform)) {
     assert.equal(selectExecutionProgram(installed).root, installed);
     assert.equal(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")).version, "0.1.0");
     assert.equal(readFileSync(join(installed, "dist/cotal-program.js"), "utf8"), oldProgram);
+    const identityKey = Symbol.for("cotal.execution.identity"), priorIdentity = Reflect.get(globalThis, identityKey);
+    const installedEntry = join(installed, "dist/cotal.js");
+    Reflect.set(globalThis, identityKey, Object.freeze({ logicalEntry: installedEntry, loadedEntry: installedEntry }));
+    try {
+      const recovery = recoverExecutionUpdate(journal);
+      writeFileSync(join(installed, "dist/cotal-program.js"), "setTimeout(() => console.log('cotal-ai 0.1.0'), 31_000);\n");
+      const started = Date.now();
+      recovery.verify("0.1.0");
+      assert.ok(Date.now() - started >= 31_000, "a valid entry taking longer than the former 30 second budget is accepted");
+      writeFileSync(join(installed, "dist/cotal-program.js"), "console.log('cotal-ai 0.9.0');\n");
+      assert.throws(() => recovery.verify("0.1.0"), /version output "cotal-ai 0.9.0"/);
+      writeFileSync(join(installed, "dist/cotal-program.js"), "process.exit(7);\n");
+      assert.throws(() => recovery.verify("0.1.0"), /exit 7/);
+    } finally {
+      writeFileSync(join(installed, "dist/cotal-program.js"), oldProgram);
+      if (priorIdentity === undefined) Reflect.deleteProperty(globalThis, identityKey);
+      else Reflect.set(globalThis, identityKey, priorIdentity);
+    }
     const plain = join(scratch, "plain/lib/node_modules/cotal-ai"), repo = join(import.meta.dirname, "../..");
     cpSync(join(repo, "bin/dist"), join(plain, "dist"), { recursive: true });
     cpSync(join(repo, "bin/package.json"), join(plain, "package.json"));
