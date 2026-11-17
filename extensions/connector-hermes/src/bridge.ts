@@ -105,7 +105,7 @@ function wireItem(agent: MeshAgent, i: InboxItem): Record<string, unknown> {
   };
 }
 
-export interface BridgeServer {
+interface BridgeServer {
   close(): void;
 }
 

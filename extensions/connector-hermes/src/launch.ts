@@ -275,7 +275,7 @@ export function assertHermesVersion(opts: {
 }
 
 /** What {@link forkHermesSession} returns: the seat's fork and where it came from. */
-export interface HermesFork {
+interface HermesFork {
   source: string;
   fork: string;
   title: string | null;
@@ -291,7 +291,7 @@ export interface HermesFork {
  * opened read-only, and the fork is a new session the way the gateway's `/branch` makes one. A
  * session that cannot be found or read is a {@link LaunchRefused} naming it.
  */
-export function forkHermesSession(opts: { sourceHome: string; source: string; seatHome: string; env?: NodeJS.ProcessEnv }): HermesFork {
+function forkHermesSession(opts: { sourceHome: string; source: string; seatHome: string; env?: NodeJS.ProcessEnv }): HermesFork {
   const env = opts.env ?? process.env;
   mkdirSync(opts.seatHome, { recursive: true });
   // `-P` keeps the plugin directory off sys.path: its tools.py would shadow Hermes' own `tools`.

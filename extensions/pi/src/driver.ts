@@ -12,7 +12,7 @@ const DEFAULT_START_TIMEOUT_MS = 5_000;
 const CONTINUATION_ATTEMPT_LIMIT = 2;
 const CONTINUATION_BACKOFF_MS = 50;
 
-export type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
+type DriverState = "idle" | "dispatching" | "streaming" | "held" | "shuttingDown";
 
 export interface CotalBatchDetails {
   version: 1;
