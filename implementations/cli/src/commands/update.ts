@@ -97,7 +97,10 @@ interface CommandResult {
   readonly stdout: string;
   readonly stderr: string;
   readonly error?: string;
+  readonly errorCode?: string;
 }
+
+const NPM_REMEDY = "Install npm or add it to this command's PATH, then repeat the update command.";
 
 export interface ExecutionReplacement {
   readonly entry: string;
@@ -423,14 +426,16 @@ function checkUpdate(args: ParsedArgs, rt: UpdateRuntime): void {
     warnings.push({ code: "EXTENSION_INVENTORY_UNREADABLE", target: null, message: "The extension inventory could not be read. It was not repaired or treated as empty." });
   }
   const latest = latestVersion(rt);
-  if (!latest.ok) warnings.push({ code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
+  if (!latest.ok) warnings.push(latest.kind === "npm"
+    ? { code: "NPM_UNAVAILABLE", target: null, message: `${latest.error}. Update availability is unknown.` }
+    : { code: "LATEST_VERSION_UNAVAILABLE", target: null, message: "The registry did not return a valid latest version. Update availability is unknown." });
   const comparison = latest.ok ? compareSemver(latest.version, current) : null;
   const pending = readUpdatePending(current);
   if (pending.kind === "unreadable") warnings.push({ code: "RECONCILIATION_UNREADABLE", target: null, message: `Reconciliation state could not be read: ${pending.error}` });
   const result = { kind: "update-check", reconciliation: pending, current, latest: latest.ok ? latest.version : null, updateAvailable: comparison === null ? null : comparison > 0, extensions, scope: "registry version and recorded installation versions", installationChanged: false, processesRestarted: false };
   writeResult(presentationOf(args.values), {
     command: "update", target: null, result, warnings,
-    ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
+    ...(warnings.length ? { completeness: "partial" as const, partial: { message: "Some update information could not be established.", remedy: !latest.ok && latest.kind === "npm" ? `${NPM_REMEDY} Resolve any unreadable inventory reported above.` : "Check registry access or the unreadable inventory and repeat update --check." } } : {}),
   }, (r) => ({ sections: [
     ...(pending.kind === "none" ? [] : [{ title: "Reconciliation", blocks: [{ kind: "lines" as const, lines: [pending.instruction] }] }]),
     { title: "Update availability", blocks: [{ kind: "fields", rows: [["Running CLI", r.current], ["Registry latest", r.latest ?? "not established"], ["CLI update", r.updateAvailable === null ? { text: "unknown", tone: "waiting" } : r.updateAvailable ? { text: "available", tone: "waiting" } : comparison === 0 ? "matches latest tag" : "running version is ahead of latest tag"]] }] },
@@ -485,6 +490,11 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
   if (self) {
     const latest = latestVersion(rt);
     if (!latest.ok) {
+      if (latest.kind === "npm") {
+        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for npm availability", true);
+        rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}. ${NPM_REMEDY}`));
+        return 1;
+      }
       if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
       rt.out("The registry cannot be reached; nothing was changed.");
       return 0;
@@ -954,15 +964,16 @@ export function printLegacyReport(
 
 /** The registry's latest tag, read through a throwaway npm cache with npm's log files and update
  *  notifier off, so the read leaves nothing in npm's own cache, log directory or notifier stamp. */
-function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {
+function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; kind: "npm" | "registry"; error: string } {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
     const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
-    if (result.status !== 0) return { ok: false, error: failure(result) };
+    if (result.error) return { ok: false, kind: "npm", error: result.errorCode === "ENOENT" ? "npm is not on PATH" : `npm could not run: ${failure(result)}` };
+    if (result.status !== 0) return { ok: false, kind: "registry", error: failure(result) };
     try {
       return { ok: true, version: parseNpmVersion(result.stdout) };
     } catch (e) {
-      return { ok: false, error: message(e) };
+      return { ok: false, kind: "registry", error: message(e) };
     }
   } finally {
     rmSync(cache, { recursive: true, force: true, maxRetries: 3 });
@@ -1513,6 +1524,7 @@ function runNpm(args: string[], inherit = false): CommandResult {
       stdout: `${result.stdout ?? ""}`,
       stderr: `${result.stderr ?? ""}`,
       error: result.error?.message,
+      errorCode: (result.error as NodeJS.ErrnoException | undefined)?.code,
     };
   } catch (e) {
     return { status: null, stdout: "", stderr: "", error: message(e) };

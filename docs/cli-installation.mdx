@@ -440,6 +440,12 @@ It performs no install, reconcile or process restart and takes no mesh selection
 afterwards, no log files and no npm update notifier, so it leaves nothing in npm's cache, log
 directory or notifier stamp. Missing registry data or an unreadable extension inventory remains
 unknown or partial, never an empty successful check.
+
+If npm cannot start, `update --self` exits 1 and `update --check` stays partial (exit 4).
+When npm is missing from `PATH`, both commands name it and tell you to install npm or add
+it to the command's `PATH`. Check reports use the `NPM_UNAVAILABLE` warning instead of a
+registry-access warning. A registry query that starts and fails keeps its registry diagnostic.
+
 If the extension manifest is corrupt, the check still reports the running and registry versions,
 leaves the manifest unchanged and exits 4. JSON reports `extensions: null`, partial completeness
 and the `EXTENSION_INVENTORY_UNREADABLE` warning.
