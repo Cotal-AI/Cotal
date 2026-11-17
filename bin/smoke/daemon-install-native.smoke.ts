@@ -639,7 +639,7 @@ try {
       };
       const call = (verb: string, home: string | undefined, flags: string[] = [], plain = false) => {
         const child = invoke(verb, home, [...flags, plain ? "--plain" : "--json"]);
-        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string }; error?: { code: string; remedy?: string } };
+        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string; unit?: string; alreadyInstalled?: boolean }; error?: { code: string; remedy?: string } };
         return { status: child.status, doc, out: child.stdout };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
