@@ -256,12 +256,21 @@ reconcile, named in its log.
 A revoke does not cancel the run. Work that touches no channel, such as a loop of `sleep` and
 `log`, keeps running until the host driving the run stops. A `--local` drive ends with the process
 driving it, which reaches no other run. A hosted run stops with its manager, and so does every
-other run that manager drives: `cotal service restart stack-manager --yes` stops them all, and its
-stop impact names the managed agents in scope. A run that reaches its next step within two seconds
-is recorded `released` and waits for `cotal run resume <runId>`; one still waiting keeps its
-`running` record, and the restarted manager takes it back unless it is revoked. `cotal down` stops
-the whole stack. The `run-cancel` endpoint above cancels one hosted run, and the CLI has no verb
-for it.
+other run that manager drives. On a default local stack started by `cotal up` in an unprepared
+folder, run `cotal down --yes` to stop the drive. This stops the whole stack, including the broker
+and agents. That stack has no manager-only stop or restart.
+
+On a prepared controller stack, `cotal service stop stack-manager --yes` stops the manager and its
+hosted runs; its stop impact names the managed agents in scope. Run `cotal up` to start it again
+with its stack, reusing the running broker. `cotal service restart stack-manager --yes` refuses
+rather than restarting a stack member by itself. A separately saved manager service supports
+`cotal manager stop --yes` and `cotal manager restart --yes`.
+
+A run that reaches its next step within two seconds of the manager stopping is recorded `released`
+and waits for `cotal run resume <runId>`; one still waiting keeps its `running` record, and the
+next manager takes it back unless it is revoked. Revoke first if it must not resume. The
+`run-cancel` endpoint above cancels one hosted run with the required issued credential; the CLI
+has no verb for it.
 
 Bare `cotal run`, hosted or `--local`, reads the marker beside each run record and prints
 `admission revoked` in the `Recorded state` column for a run that carries one, whatever state the
