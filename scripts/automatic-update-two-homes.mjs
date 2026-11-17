@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createServer } from 'node:net';
 import { candidateRegistry } from './automatic-update-platform-baseline.mjs';
 
 /** Two homes share one installed CLI, but each must reconcile its own built-ins before launch. */
@@ -61,8 +62,12 @@ export async function twoHomeUpgrade({ oldDirectory, targetDirectory, root }) {
         writeFileSync(join(fixture, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'two-home-seat',requires:['node'],buildLaunch:o=>({command:process.execPath,args:[${JSON.stringify(join(fixture, 'seat.mjs'))}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_CREDS:String(o.creds),COTAL_ID:String(o.id),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}})});`);
         if (route !== 'up') await ok('B', 'register fixture', ['ext', 'add', fixture]);
         await ok('B', 'prepare space', ['space', 'create', 'twohomes', '--plain']);
+        const probe = createServer();
+        await new Promise(done => probe.listen(0, '127.0.0.1', done));
+        const server = `nats://127.0.0.1:${probe.address().port}`;
+        await new Promise(done => probe.close(done));
         running = true;
-        await ok('B', 'start original space', ['up', '--detach', ...(route === 'launch' ? ['--no-manager'] : [])]);
+        await ok('B', 'start original space', ['up', '--server', server, '--detach', ...(route === 'launch' ? ['--no-manager'] : [])]);
         if (route === 'up') { await ok('B', 'stop original space', ['down', '--yes']); running = false; }
         environments.A.npm_config_registry = target.url;
         await ok('A', 'self update shared installation', ['update', '--self']);
