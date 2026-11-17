@@ -581,7 +581,11 @@ A package directory that is present without a readable `package.json` still fail
 a seed that failed this way in an earlier release, `cotal ext seed --repair` finishes it, and
 `cotal ext remove` then drops the entry.
 
-Removing an extension that owns a running local process is refused with its process or record remedy. There is no command that stops one extension's legacy process. Follow the emitted `stop pid <pid>, then retry`, `delete <pidPath>, then retry`, or resolve instruction before retrying removal, so uninstalling does not strand a process whose provider is gone. While it uninstalls, `remove` reserves each process record the package
+Removing an extension reclaims a pidfile when its recorded PID is proven dead. A running process,
+unreadable or unattributable record, or unconfirmed liveness still refuses removal with its process
+or record remedy. There is no command that stops one extension's legacy process. Follow the emitted
+stop or resolve instruction before retrying removal, so uninstalling does not strand a process
+whose provider is gone. While it uninstalls, `remove` reserves each process record the package
 declares under every mesh root, and a record folder it creates there is mode `0700`, even with a
 group-writable umask.
 
