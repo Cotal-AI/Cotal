@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import type { ControlEndpoint } from "@cotal-ai/core";
 import { startControlServer } from "../src/control.js";
 import type { MeshAgent } from "../src/agent.js";
 import { controlEndpoint } from "../src/runtime.js";
@@ -45,7 +46,7 @@ interface RelayRun {
 }
 
 function launchRelay(
-  endpoint: { path: string; token: string },
+  endpoint: ControlEndpoint,
   event: Record<string, unknown>,
 ): RelayRun {
   const clean = { ...process.env };
@@ -56,6 +57,7 @@ function launchRelay(
       COTAL_NAME: "startup-race-probe",
       COTAL_CONTROL_SOCKET: endpoint.path,
       COTAL_CONTROL_TOKEN: endpoint.token,
+      COTAL_CONTROL_VERSION: String(endpoint.version),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -118,7 +120,7 @@ async function within<T>(promise: Promise<T>, ms: number, what: string): Promise
 }
 
 async function listen(
-  endpoint: { path: string; token: string },
+  endpoint: ControlEndpoint,
   frames: unknown[],
 ): Promise<{ server: Server; delivered: Promise<boolean> }> {
   let resolveDelivered!: (delivered: boolean) => void;
@@ -217,23 +219,25 @@ try {
     { ...laterResult, timedOut: laterTimedOut },
   );
 
-  // POSIX gives a deterministic permanent pre-connect error when an ancestor is a regular file.
-  // Windows covers the production named-pipe shape above; its permanent-error codes share the same
-  // classifier, but there is no filesystem ENOTDIR equivalent for a pipe namespace.
+  // POSIX: a socket whose parent is a regular file can never be bound. The relay checks the socket's
+  // directory before it dials, so this fails open at once, before any dial and without retrying for
+  // two seconds, and says once that the directory is not private. Windows has no filesystem
+  // directory for a pipe name.
   if (process.platform !== "win32") {
     const blocker = join(scratch, "not-a-directory");
     writeFileSync(blocker, "x");
     const permanent = launchRelay(
-      { path: join(blocker, "control.sock"), token: "permanent-error-token" },
+      { path: join(blocker, "control.sock"), token: "permanent-error-token", version: 1 },
       { hook_event_name: "SessionStart", source: "startup" },
     );
+    let dialed = true;
+    permanent.firstDialFailed.catch(() => (dialed = false));
     await within(permanent.ready, 3_000, "permanent-error relay to start");
-    await within(permanent.firstDialFailed, 3_000, "permanent-error relay to attempt its dial");
     const permanentStart = performance.now();
     let permanentResult: Awaited<typeof permanent.done> | undefined;
     let permanentTimedOut = false;
     try {
-      permanentResult = await within(permanent.done, 500, "permanent socket error to fail open immediately");
+      permanentResult = await within(permanent.done, 1_000, "a socket directory that is not one to fail open immediately");
     } catch {
       permanentTimedOut = true;
       permanent.child.kill();
@@ -243,13 +247,14 @@ try {
       .split("\n")
       .filter((line) => line && line !== "RELAY_READY");
     check(
-      "permanent socket error: fail open immediately instead of retrying for two seconds",
+      "socket directory that is not a directory: refused before any dial, fail open immediately",
       !permanentTimedOut &&
+        !dialed &&
         permanentResult.code === 0 &&
         permanentReply.length === 0 &&
-        permanentResult.stderr === "" &&
-        performance.now() - permanentStart < 500,
-      { ...permanentResult, timedOut: permanentTimedOut },
+        /not in a directory private/.test(permanentResult.stderr) &&
+        performance.now() - permanentStart < 1_000,
+      { ...permanentResult, timedOut: permanentTimedOut, dialed },
     );
   }
 

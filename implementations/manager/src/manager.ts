@@ -86,7 +86,7 @@ import {
 } from "@cotal-ai/core";
 import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlEndpoint, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome } from "@cotal-ai/core";
 import {
   createRuntime,
   exitProof,
@@ -1144,7 +1144,7 @@ interface ManagedAgent {
    *  one. Kept in memory only (never persisted — token hygiene) so a graceful stop on a signal-less
    *  runtime (ConPTY/Windows) can send a cooperative `{op:"shutdown"}` over it instead of a hard
    *  kill that would deny the agent its clean mesh-leave. */
-  control?: { path: string; token: string };
+  control?: ControlEndpoint;
   /** Set when `Runtime.spawnDelegated` started this seat outside the manager's filesystem. Its
    *  handle's `stop()` is the fenced close by lifecycle key, which retirement runs only after the
    *  host revoked the grant, never from the stop door. */
@@ -5795,7 +5795,7 @@ export class Manager {
     a: ManagedAgent,
     expected: string,
     handle: AgentHandle = a.handle,
-    control: { path: string; token: string } | undefined = a.control,
+    control: ControlEndpoint | undefined = a.control,
   ): Promise<void> {
     const deadline = Date.now() + 15_000;
     let last = "control endpoint not ready";

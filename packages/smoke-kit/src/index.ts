@@ -27,6 +27,7 @@ export { checkSelection, defaultJobs, runFiles, type FileResult, type RunFilesOp
 export { PortInUseError, freePort, listenOn, onFreePort } from "./free-port.js";
 export { memorySubjectFrontier, type MemorySubjectFrontier } from "./subject-frontier.js";
 export { brokerHeap, heapSnapshotTop, procMem, type BrokerHeap, type BrokerPart, type HeapRow, type ProcMem } from "./memory-profile.js";
+export { controlTranscriptMac } from "./control-transcript.js";
 export { SEAT_MAX_SOCKET_PATH, SEAT_SOCKET_OVERHEAD, makeSeatRoot, rootFits } from "./seat-root.js";
 export {
   SENTINEL_PREFIX,

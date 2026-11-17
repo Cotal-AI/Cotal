@@ -1,8 +1,10 @@
 /**
  * The connector's local control plane: a unix-socket server the lifecycle hooks
  * talk to. Hooks are dumb relays — they forward the raw runtime event JSON (which
- * carries `hook_event_name`) and print whatever we reply. All the logic lives here,
- * in-process, because this is where the live mesh endpoint is.
+ * carries `hook_event_name`) and print our reply once its MAC verifies. All the logic lives here,
+ * in-process, because this is where the live mesh endpoint is. Every connection first runs the
+ * control exchange (`@cotal-ai/core/control-exchange`), which proves both ends hold the endpoint's
+ * key without either sending it.
  *
  * The socket plumbing is platform-agnostic; each connector passes a {@link HookHandle}
  * that maps its runtime's events to presence changes + (for inject-capable events)
@@ -10,7 +12,7 @@
  */
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { lstatSync, unlinkSync, type Stats } from "node:fs";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { assertControlVersion, ensureControlSocketDir, serverExchange, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { fmtDeliveryItem, fmtItem } from "./framing.js";
 
@@ -23,13 +25,12 @@ export interface HookEvent {
 /** Maps one hook event to the JSON reply the runtime applies. */
 export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<string, unknown>>;
 
-/** The authenticated control-plane wire frame (one newline-delimited JSON object per connection):
- *  a hook event the runtime delivered, or the manager's cooperative shutdown — both carry the
- *  endpoint `token` as their first field, validated before anything else runs. Shutdown is an
- *  explicit op, NOT a disguised hook event. */
+/** The request a client MACs in the control exchange (one per connection): a hook event the
+ *  runtime delivered, or one of the manager's ops. Nothing in it is read until the client has proved
+ *  it holds the key. Shutdown is an explicit op, NOT a disguised hook event. */
 type ControlFrame =
-  | { token?: unknown; event?: unknown; handoff?: unknown; op?: undefined }
-  | { token?: unknown; op?: "shutdown" | "session" };
+  | { event?: unknown; handoff?: unknown; op?: undefined }
+  | { op?: "shutdown" | "session" };
 
 /** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
  *  Content is irrelevant — arrival is the signal — but a stable token keeps a transcript readable. */
@@ -79,24 +80,6 @@ export interface ControlServerOpts {
    *  unflushed downstream. Both are why this errs toward at-least-once. `handoff` says which of the
    *  two `delivered` is: true when the client asked for the confirmed handoff. */
   onReply?: (ev: HookEvent, delivered: boolean, handoff: boolean) => void;
-}
-
-/** Hard cap on the first (only) frame: a control request is a token + one small lifecycle event —
- *  kilobytes at most. Generous headroom for a legit event, tiny next to the ~512MB string limit an
- *  unauthenticated spewer would otherwise drive `buf` toward to crash the process. */
-export const MAX_FRAME_BYTES = 1 << 20; // 1 MiB
-/** ABSOLUTE deadline (not an idle timeout — a slow-loris dribbling one byte at a time would keep
- *  resetting an idle timer) for a connection to deliver its complete auth frame. Past it, an
- *  unauthenticated connection is dropped so a local process can't camp on a finite pipe instance.
- *  Cleared the instant a full frame is in hand (the token-bearing client then owns the connection). */
-export const AUTH_DEADLINE_MS = 5_000;
-
-/** Constant-time match of a presented token against the endpoint's. Both sides are SHA-256'd first
- *  so the compare is fixed-length (and length-independent) regardless of the presented value — a
- *  non-string or wrong-length token can never throw `timingSafeEqual` or leak length via timing. */
-export function tokenMatches(presented: unknown, digest: Buffer): boolean {
-  if (typeof presented !== "string") return false;
-  return timingSafeEqual(createHash("sha256").update(presented).digest(), digest);
 }
 
 /** The context block injected into a turn when peer messages are waiting (else undefined).
@@ -157,7 +140,7 @@ export function formatInjection(items: InboxItem[], options: { metadata?: boolea
  *    its output. A close, an error, or the deadline without that receipt is NOT delivered. This is
  *    what closes the large-reply hole: a 6 MiB injection that the relay's 1s stdout backstop kills
  *    mid-flush leaves the batch un-acked, so JetStream redelivers it. */
-function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: boolean): Promise<boolean> {
+function writeReply(sock: Socket, line: string, awaitHandoff: boolean): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (ok: boolean): void => {
@@ -177,7 +160,7 @@ function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: 
       const stall = setTimeout(() => done(false), LEGACY_WRITE_DEADLINE_MS);
       stall.unref?.();
       try {
-        sock.end(JSON.stringify(reply) + "\n", ((err?: Error | null) => {
+        sock.end(line, ((err?: Error | null) => {
           clearTimeout(stall);
           done(!err);
         }) as () => void);
@@ -206,7 +189,7 @@ function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: 
     });
     try {
       // write, not end: the client cannot send its receipt down a connection we have half-closed.
-      sock.write(JSON.stringify(reply) + "\n", (err?: Error | null) => {
+      sock.write(line, (err?: Error | null) => {
         if (!err) return;
         clearTimeout(deadline);
         done(false);
@@ -218,88 +201,68 @@ function writeReply(sock: Socket, reply: Record<string, unknown>, awaitHandoff: 
   });
 }
 
-/** Start the authenticated control server. One newline-delimited JSON {@link ControlFrame} → one
- *  reply per connection. The first thing every connection does is validate its `token` against the
- *  endpoint's (constant-time) — a mismatch is dropped before `handle` (or `onShutdown`) ever runs,
- *  so an unauthenticated local process that finds/guesses the path still can't drive presence,
- *  inject peer messages, or shut the agent down. */
+/** Start the authenticated control server. One proven request → one MAC'd reply per connection.
+ *  Every connection first runs the control exchange: a client that cannot prove it holds the key is
+ *  dropped before `handle` (or `onShutdown`) ever runs, so a local process that finds the path still
+ *  can't drive presence, inject peer messages, or shut the agent down. Off Windows the socket's
+ *  directory is made private (or checked to be) before the bind, and a directory that is not is a
+ *  bind error. */
 export function startControlServer(
   agent: MeshAgent,
-  endpoint: { path: string; token: string },
+  endpoint: ControlEndpoint,
   handle: HookHandle,
   opts: ControlServerOpts = {},
 ): Server {
   const { path } = endpoint;
-  const digest = createHash("sha256").update(endpoint.token).digest();
+  assertControlVersion(endpoint.version, "the control endpoint");
   // A host restart reuses its launch-pinned path. Probe before removing a crash leftover;
   // a live listener must still win, even when it uses a different token.
   const server = createServer((sock) => {
-    let buf = "";
-    let handled = false; // one frame per connection — ignore anything after the first line
-    sock.setEncoding("utf8");
-    // Bound an UNAUTHENTICATED peer: on Windows the named pipe's default DACL lets any local process
-    // connect, so a client that streams bytes with no newline (would grow `buf` toward the ~512MB
-    // string limit → crashes this long-lived process), that connects and sends nothing, OR that
-    // dribbles a byte at a time (a slow-loris) to camp on a finite pipe instance must be cut off
-    // BEFORE auth. MAX_FRAME_BYTES caps a spewing one; an ABSOLUTE deadline (reset-proof, unlike an
-    // idle timeout) reaps a silent/slow one. A legit client sends one small line immediately.
-    const deadline = setTimeout(() => sock.destroy(), AUTH_DEADLINE_MS);
-    deadline.unref?.(); // never hold the process open on an unauthenticated connection
-    sock.on("close", () => clearTimeout(deadline));
-    sock.on("data", async (d) => {
-      if (handled) return;
-      buf += d;
-      if (buf.length > MAX_FRAME_BYTES) {
-        sock.destroy(); // oversized pre-newline — drop hard, never half-close (it keeps spewing)
-        return;
-      }
-      const nl = buf.indexOf("\n");
-      if (nl < 0) return; // wait for the full line
-      handled = true;
-      clearTimeout(deadline); // full frame in hand — the token-bearing client now owns the connection
-      let frame: ControlFrame = {};
-      try {
-        frame = JSON.parse(buf.slice(0, nl) || "{}") as ControlFrame;
-      } catch {
-        /* malformed — fails the auth check below and is dropped */
-      }
-      if (!tokenMatches(frame.token, digest)) {
-        sock.destroy(); // unauthenticated — drop hard before handle/onShutdown (no half-open)
-        return;
-      }
-      const op = (frame as { op?: unknown }).op;
-      if (op === "shutdown") {
-        try {
-          sock.end(JSON.stringify({ ok: true }) + "\n");
-        } catch {
-          /* client gone */
-        }
-        opts.onShutdown?.();
-        return;
-      }
-      if (op === "session") {
-        const sessionId = opts.onSession?.();
-        try {
-          sock.end(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" }) + "\n");
-        } catch {
-          /* client gone */
-        }
-        return;
-      }
-      const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
-      const awaitHandoff = (frame as { handoff?: unknown }).handoff === true;
-      const reply = await handle(agent, ev);
-      // Write FIRST, then report. `opts.onReply?.(ev, await writeReply(...))` short-circuits the
-      // whole call expression when `onReply` is absent — arguments included — so the reply was never
-      // written at all for the callers that do not observe delivery (opencode, hermes, pi, codex).
-      // Answering the client is the server's job; `onReply` only watches it.
-      const delivered = await writeReply(sock, reply, awaitHandoff);
-      opts.onReply?.(ev, delivered, awaitHandoff);
-    });
     sock.on("error", () => {
       /* ignore client errors */
     });
+    // The exchange bounds an UNPROVEN peer: on Windows any local process can open the pipe, so a
+    // client that streams bytes with no newline, sends nothing, or dribbles a byte at a time is cut
+    // off by its size caps and absolute deadline before anything here runs.
+    serverExchange(sock, endpoint, ({ request, seal }) => void serve(sock, request, seal));
   });
+  const serve = async (sock: Socket, request: string, seal: (body: string) => string): Promise<void> => {
+    let frame: ControlFrame;
+    try {
+      frame = JSON.parse(request) as ControlFrame;
+    } catch {
+      sock.destroy(); // a proven client sent a request that is not JSON: answer nothing
+      return;
+    }
+    const op = (frame as { op?: unknown }).op;
+    if (op === "shutdown") {
+      try {
+        sock.end(seal(JSON.stringify({ ok: true })));
+      } catch {
+        /* client gone */
+      }
+      opts.onShutdown?.();
+      return;
+    }
+    if (op === "session") {
+      const sessionId = opts.onSession?.();
+      try {
+        sock.end(seal(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" })));
+      } catch {
+        /* client gone */
+      }
+      return;
+    }
+    const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;
+    const awaitHandoff = (frame as { handoff?: unknown }).handoff === true;
+    const reply = await handle(agent, ev);
+    // Write FIRST, then report. `opts.onReply?.(ev, await writeReply(...))` short-circuits the
+    // whole call expression when `onReply` is absent — arguments included — so the reply was never
+    // written at all for the callers that do not observe delivery (opencode, hermes, pi, codex).
+    // Answering the client is the server's job; `onReply` only watches it.
+    const delivered = await writeReply(sock, seal(JSON.stringify(reply)), awaitHandoff);
+    opts.onReply?.(ev, delivered, awaitHandoff);
+  };
   let bound = false;
   let retried = false;
   // Keep the recoverable bind error inside this server. Callers await both "listening" and
@@ -357,6 +320,14 @@ export function startControlServer(
     // post-bind error is just logged.
     if (opts.fatalBind && !bound) process.exit(1);
   });
+  try {
+    ensureControlSocketDir(path);
+  } catch (e) {
+    // Report it the way a failed bind is reported, after the caller has attached its listeners, so
+    // a managed listener exits rather than serving from a directory another user can enter.
+    process.nextTick(() => server.emit("error", e));
+    return server;
+  }
   server.listen(path, () => {
     bound = true;
     process.stderr.write(`[cotal-connector] control socket: ${path}\n`); // path is leakage-safe; the token never logs

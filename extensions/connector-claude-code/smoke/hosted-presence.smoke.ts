@@ -50,7 +50,7 @@ async function child(): Promise<void> {
       const env: NodeJS.ProcessEnv = {
         HOME: home, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, COTAL_NAME: name,
         COTAL_SPACE: space, COTAL_SERVERS: servers, COTAL_WORKSPACE_ROOT: home,
-        COTAL_CONTROL_SOCKET: join(home, "c.sock"), COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"),
+        COTAL_CONTROL_SOCKET: join(home, "c.sock"), COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"), COTAL_CONTROL_VERSION: "1",
         COTAL_CHANNEL: "0", ...(value === undefined ? {} : { COTAL_ENVIRONMENT: value }),
       };
       const state = { input, output, name, expected: value?.trim() || null, session: undefined as ClaudeSession | undefined };

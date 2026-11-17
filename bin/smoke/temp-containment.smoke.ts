@@ -261,13 +261,14 @@ try {
   console.log("\nPART B — an over-long control socket path fails by name, not by EINVAL");
 
   // The limit the guard applies is the platform's: 108 on Linux, 104 on darwin, and the usable root
-  // budget is that minus the fixed 44-byte socket name (64 on Linux, 60 on darwin). Measured at the
-  // graded head: 64 bytes was the last passing root and 65 CRASHED the suite mid-run. The cell reads
-  // the
-  // same figure back so a run on either platform grades the message it would actually get.
+  // budget is that minus the fixed socket tail, `/cotal-ctl-<uid>/<22-char id>.sock` (43 bytes for a
+  // four-digit uid). When this cell was written the tail was 44 bytes: 64 bytes was the last passing
+  // root and 65 CRASHED the suite mid-run. The cell reads the same figures back so a run on either
+  // platform grades the message it would actually get.
   const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
+  const CONTROL_TAIL_BYTES = "/cotal-ctl-".length + String(process.getuid!()).length + "/".length + 22 + ".sock".length;
   let deep = root;
-  while (deep.length <= 64) deep = join(deep, "dddddddddd");
+  while (Buffer.byteLength(deep) <= SUN_PATH_LIMIT - CONTROL_TAIL_BYTES) deep = join(deep, "dddddddddd");
   mkdirSync(deep, { recursive: true });
 
   process.env.TMPDIR = deep;
@@ -320,7 +321,6 @@ try {
   // carrying an excellent message look nearly identical in captured stdout and are OPPOSITE
   // outcomes. That is why the cells below check that the SUMMARY LINE STILL PRINTS and that TEARDOWN
   // STILL RAN, not merely that the text appeared.
-  const CONTROL_TAIL_BYTES = "/cotal-".length + 32 + ".sock".length;
   const rootBudget = SUN_PATH_LIMIT - CONTROL_TAIL_BYTES;
   const tempRootBytes = Buffer.byteLength(TEMP_ROOT);
   if (tempRootBytes > rootBudget) {

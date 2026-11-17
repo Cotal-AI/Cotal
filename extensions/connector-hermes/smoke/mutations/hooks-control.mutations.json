@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-hermes/smoke/hooks-control.smoke.ts"
   ],
-  "guard": "the hermes Python lifecycle hooks can resolve the control token a managed launch gives them, and say so out loud when they cannot",
+  "guard": "the hermes Python lifecycle hooks can resolve the control key a managed launch gives them, and say so out loud when they cannot",
   "command": "pnpm smoke:hermes-hooks-control",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-hermes/smoke/mutations/hooks-control.mutations.json",
   "why": [
@@ -14,8 +14,9 @@
     "no error anywhere. A reviewer found it by reading the Python.",
     "",
     "M1 IS THE DEFECT ITSELF, restored exactly: delete the material lookup and leave the environment",
-    "read. It must redden H1, the managed-launch case, which is the only leg that exercises a token",
-    "that exists ONLY in the material file.",
+    "read. It must redden H1, the managed-launch case, which is the only leg that exercises a key",
+    "that exists ONLY in the material file. The lookup now lives in `control_exchange.control_key`,",
+    "which the hooks and the bridge client share.",
     "",
     "M2 IS THE HALF THAT MATTERS MORE, and it is why H3 is in the suite at all. Restoring the SILENT",
     "return - no warning on stderr - leaves a hook that still relays nothing and still tells nobody.",
@@ -24,7 +25,8 @@
     "'it fails loudly' a tested property rather than an intention in a commit message.",
     "",
     "NO BUILD STEP IS PREPENDED, deliberately, and it is not an oversight. The suite drives",
-    "`plugin/cotal/hooks.py` through a real `python3` with PYTHONPATH pointed at the plugin source.",
+    "`plugin/cotal/hooks.py` (and the `control_exchange.py` it imports) through a real `python3` with",
+    "PYTHONPATH pointed at the plugin source.",
     "Python has no dist/, so the mutation is read by the interpreter directly and the staleness trap",
     "that forces `pnpm build` on the TypeScript mutations cannot apply here.",
     "",
@@ -36,17 +38,17 @@
   "mutations": [
     {
       "name": "M1 the Python hooks read only the environment, as they did before the fix",
-      "file": "extensions/connector-hermes/plugin/cotal/hooks.py",
-      "find": "    token = os.environ.get(\"COTAL_CONTROL_TOKEN\") or _material_token()",
-      "replace": "    token = os.environ.get(\"COTAL_CONTROL_TOKEN\")",
-      "expectRed": "H1: a managed launch relays one frame with the token from the launch material",
-      "note": "The shipped defect, restored. H2 (standalone, token exported directly) stays green under it, which is the point: the broken build looked healthy on every path anyone was testing."
+      "file": "extensions/connector-hermes/plugin/cotal/control_exchange.py",
+      "find": "    path = os.environ.get(\"COTAL_LAUNCH_MATERIAL\")\n",
+      "replace": "    path = None\n",
+      "expectRed": "H1: a managed launch relays one request proven with the key from the launch material",
+      "note": "The shipped defect, restored: only the environment is read. H2 (standalone, key exported directly) stays green under it, which is the point: the broken build looked healthy on every path anyone was testing."
     },
     {
-      "name": "M2 an unresolvable control token returns silently instead of warning",
+      "name": "M2 an unresolvable control key returns silently instead of warning",
       "file": "extensions/connector-hermes/plugin/cotal/hooks.py",
-      "find": "        _warn_once(\n            \"control socket is configured but no control token could be resolved \"",
-      "replace": "        _quiet_once(\n            \"control socket is configured but no control token could be resolved \"",
+      "find": "        _warn_once(\n            \"control socket is configured but no control key could be resolved \"",
+      "replace": "        _quiet_once(\n            \"control socket is configured but no control key could be resolved \"",
       "expectRed": "H3: and it says so on stderr instead of returning silently (this is the whole defect)",
       "note": "A NameError inside a hook would be caught by the gateway rather than surfacing, so the mutant is a hook that produces nothing and says nothing - which is precisely the failure mode. H3 is the assertion that refuses to accept silence as success."
     }

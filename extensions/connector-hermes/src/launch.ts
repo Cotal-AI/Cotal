@@ -17,9 +17,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, cpSync, rmSync, existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, briefing, type AgentConfig } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
@@ -72,25 +71,18 @@ function processTree(pid: number): number[] {
   return tree;
 }
 
-/** The bridge socket's path id is unpredictable, unlike the control endpoint's: `id` folds in the
- *  launch's own control token alongside space/name/pid, so a same-uid process cannot compute the
- *  path from public identity the way the old `space`+`name` name let it. The token is what
- *  authenticates the socket (see bridge.ts); the path merely stops it being guessed at a glance. */
-function bridgeSocketPath(space: string, name: string, token: string): string {
-  const id = createHash("sha256")
-    .update(`${space}\0${name}\0${process.pid}\0${token}\0bridge`)
-    .digest("base64url")
-    .slice(0, 32);
-  const path = join(tmpdir(), `cotal-hermes-bridge-${id}.sock`);
+/** The bridge socket sits beside the control socket, in the private per-user directory
+ *  `controlEndpoint` made, so another user can create no name for it. Its name extends the control
+ *  socket's unpredictable one. Its first frame carries a token derived from the launch's control
+ *  key (see `bridgeToken` in bridge.ts). */
+function bridgeSocketPath(controlPath: string): string {
+  const path = join(dirname(controlPath), `${basename(controlPath, ".sock")}.bridge.sock`);
   const bytes = Buffer.byteLength(path);
   if (bytes > SUN_PATH_MAX_BYTES) {
-    const tail = `/cotal-hermes-bridge-${id}.sock`.length;
     throw new Error(
       `bridge socket path is ${bytes} bytes, over the ${SUN_PATH_MAX_BYTES}-byte sun_path limit on ` +
         `${process.platform}, so it cannot be bound and the kernel would report only EINVAL: ${path}. ` +
-        `The socket name is a fixed ${tail} bytes, so the temp root must be at most ` +
-        `${SUN_PATH_MAX_BYTES - tail} bytes — TMPDIR is ${Buffer.byteLength(tmpdir())} bytes ` +
-        `(${tmpdir()}). Point TMPDIR at a shorter directory.`,
+        `TMPDIR is ${Buffer.byteLength(tmpdir())} bytes (${tmpdir()}). Point TMPDIR at a shorter directory.`,
     );
   }
   return path;
@@ -348,7 +340,7 @@ async function main(): Promise<void> {
   // Paths shared by the sidecar and the gateway child — set in our env so startSidecar reads
   // them, and forwarded verbatim to the child so the plugin connects to the same sockets/file.
   const control = controlEndpoint(config.space, config.name);
-  const bridgeSock = bridgeSocketPath(config.space, config.name, control.token);
+  const bridgeSock = bridgeSocketPath(control.path);
   const toolsFile = join(home, "cotal-tools.json");
   // This launcher mints the control endpoint itself, so it has to hand the token onward to two
   // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
@@ -370,6 +362,7 @@ async function main(): Promise<void> {
   const material = writeLaunchMaterial({
     ...(inherited ? readLaunchMaterial(inherited) : {}),
     controlToken: control.token,
+    controlVersion: control.version,
   });
   process.env[LAUNCH_MATERIAL_ENV] = material;
   // The inherited copy has been folded into the merged one and has no reader left. Leaving it on

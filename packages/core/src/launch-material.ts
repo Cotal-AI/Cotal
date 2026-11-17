@@ -66,8 +66,12 @@ export type LaunchMaterial = {
   creds?: string;
   /** Auth token (token / open modes). */
   token?: string;
-  /** Shared secret authenticating the first frame on the session's local control socket. */
+  /** The session's local control endpoint key. It keys the exchange's MACs and never crosses the
+   *  socket (see `control-exchange.ts`). Always paired with {@link controlVersion}. */
   controlToken?: string;
+  /** The control exchange version this launch speaks. Travels with the key, so a reader of another
+   *  release refuses the launch instead of falling back. */
+  controlVersion?: number;
   /** The selected registration requires this session's structured event plane. */
   eventsRequired?: boolean;
   /** User-mode launch identity: principal, sentinel creds path, and the exec-able bearer command. */
@@ -162,6 +166,18 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
   str("creds");
   str("token");
   str("controlToken");
+  if (raw.controlVersion !== undefined) {
+    if (!Number.isSafeInteger(raw.controlVersion) || (raw.controlVersion as number) < 1)
+      throw new Error(`launch material: ${path} has a controlVersion that is not a positive integer`);
+    material.controlVersion = raw.controlVersion as number;
+  }
+  // The key and its version travel together. A key with no version is a launcher from before the
+  // exchange carried one, and this reader will not guess which exchange it meant.
+  if ((material.controlToken === undefined) !== (material.controlVersion === undefined))
+    throw new Error(
+      `launch material: ${path} has ${material.controlToken === undefined ? "a controlVersion without a controlToken" : "a controlToken without a controlVersion"}. ` +
+        "The control key and its protocol version travel together; a launcher and connector from different releases refuse each other.",
+    );
   if (raw.eventsRequired !== undefined) {
     if (raw.eventsRequired !== true)
       throw new Error(`launch material: ${path} has eventsRequired that is not exactly true`);

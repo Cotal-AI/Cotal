@@ -32,6 +32,7 @@ import { connect, createServer } from "node:net";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolveOnPath } from "@cotal-ai/workspace";
+import { CONTROL_PROTOCOL_VERSION, controlCall } from "@cotal-ai/core";
 import { launchEnv, controlEndpoint, startControlServer, type MeshAgent } from "@cotal-ai/connector-core";
 import { quoteCmdArg, buildCmdCommandLine, resolveComspec, preparePtyLaunch } from "../src/runtime/windows-launch.js";
 import { controlShutdown } from "../src/control-shutdown.js";
@@ -342,32 +343,14 @@ if (isWin) {
 }
 
 // =================================================================================================
-// F. authenticated control plane — first-frame auth + shutdown routing. Runs EVERYWHERE (node:net
+// F. authenticated control plane — the control exchange + shutdown routing. Runs EVERYWHERE (node:net
 //    abstracts the AF_UNIX socket / named pipe, so the auth + routing logic exercises identically).
 // =================================================================================================
-function sendFrame(path: string, frame: unknown): Promise<string> {
-  return new Promise((resolve) => {
-    const sock = connect(path);
-    let reply = "";
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
-      resolve(reply);
-    };
-    sock.setEncoding("utf8");
-    sock.on("connect", () => sock.write(JSON.stringify(frame) + "\n"));
-    sock.on("data", (d) => (reply += d));
-    sock.on("end", finish);
-    sock.on("close", finish);
-    sock.on("error", finish);
-    setTimeout(finish, 2000);
-  });
+/** One request through the control exchange, keyed with `token`: the proven reply, or "" when the
+ *  two ends do not hold the same key (the connection is dropped before any request is sent). */
+function sendFrame(path: string, frame: { token: string } & Record<string, unknown>): Promise<string> {
+  const { token, ...request } = frame;
+  return controlCall({ path, token, version: CONTROL_PROTOCOL_VERSION }, request, { timeoutMs: 2000 }).catch(() => "");
 }
 function waitListening(server: ReturnType<typeof startControlServer>): Promise<void> {
   return new Promise((resolve) => {

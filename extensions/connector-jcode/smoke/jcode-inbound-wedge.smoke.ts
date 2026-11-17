@@ -113,7 +113,7 @@ async function spawnHost(extra: NodeJS.ProcessEnv, controlSock: string): Promise
       COTAL_JCODE_HOME: root,
       COTAL_JCODE_TUI: "0",
       COTAL_CONTROL_SOCKET: controlSock,
-      COTAL_CONTROL_TOKEN: "jcode-inbound-wedge-control-token",
+      COTAL_CONTROL_TOKEN: "jcode-inbound-wedge-control-token", COTAL_CONTROL_VERSION: "1",
       ...extra,
     },
     stdio: ["ignore", "ignore", "pipe"],

@@ -163,7 +163,7 @@ try {
         COTAL_JCODE_TUI: "0",
         COTAL_JCODE_PROMPT: "KICKOFF-PENDING-ACROSS-RECOVERY",
         COTAL_CONTROL_SOCKET: join(sockRoot, "kickoff-control.sock"),
-        COTAL_CONTROL_TOKEN: "jcode-kickoff-recovery-token",
+        COTAL_CONTROL_TOKEN: "jcode-kickoff-recovery-token", COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -219,7 +219,7 @@ try {
         COTAL_JCODE_TUI: "0",
         COTAL_JCODE_PROMPT: "KICKOFF-AFTER-SECOND-GUARD",
         COTAL_CONTROL_SOCKET: join(sockRoot, "guard-control.sock"),
-        COTAL_CONTROL_TOKEN: "guard-control-token",
+        COTAL_CONTROL_TOKEN: "guard-control-token", COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -277,7 +277,7 @@ try {
         COTAL_JCODE_TUI: "0",
         COTAL_JCODE_PROMPT: "KICKOFF-DISPATCHED-OUTCOME-UNKNOWN",
         COTAL_CONTROL_SOCKET: join(sockRoot, "ambiguous-control.sock"),
-        COTAL_CONTROL_TOKEN: "jcode-ambiguous-kickoff-token",
+        COTAL_CONTROL_TOKEN: "jcode-ambiguous-kickoff-token", COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -324,7 +324,7 @@ try {
         COTAL_JCODE_HOME: root,
         COTAL_JCODE_TUI: "0",
         COTAL_CONTROL_SOCKET: join(sockRoot, "control.sock"),
-        COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-control-token",
+        COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-control-token", COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -447,7 +447,7 @@ try {
         COTAL_JCODE_HOME: root,
         COTAL_JCODE_TUI: "0",
         COTAL_CONTROL_SOCKET: join(sockRoot, "safety-control.sock"),
-        COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-safety-token",
+        COTAL_CONTROL_TOKEN: "jcode-provider-disconnect-safety-token", COTAL_CONTROL_VERSION: "1",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });

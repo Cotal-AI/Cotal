@@ -4,6 +4,7 @@
  * client, zod and yaml on every lifecycle event and use none of them.
  */
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, type LaunchMaterial } from "@cotal-ai/core/launch-material";
+import { assertControlVersion, type ControlEndpoint } from "@cotal-ai/core/control-exchange";
 
 /** The env vars that carry connection material DIRECTLY, for a hand-driven session. A
  *  launcher-spawned seat gets the same material as a file instead, so that a build script, a linter
@@ -24,6 +25,7 @@ const DIRECT_MATERIAL_VARS = [
   // its own explicit token sat unused. That is not hypothetical: it is what a test harness spreading
   // `...process.env` does, and this whole change exists because that spread used to be invisible.
   "COTAL_CONTROL_TOKEN",
+  "COTAL_CONTROL_VERSION",
   // A join link is connection material in one string: it carries the server, the auth and the space.
   // Left off this list, a launch with both a material file and a link resolved the conflict by
   // precedence and said nothing, which is the same silent answer to "who is this session" that the
@@ -50,19 +52,26 @@ export function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined
 
 /**
  * Resolve this session's local control endpoint. The socket path comes from
- * `COTAL_CONTROL_SOCKET`. The token comes from the launch material, or from
- * `COTAL_CONTROL_TOKEN` when no material file is supplied.
+ * `COTAL_CONTROL_SOCKET`. The key and its exchange version come from the launch material, or from
+ * `COTAL_CONTROL_TOKEN` and `COTAL_CONTROL_VERSION` when no material file is supplied.
  *
  * {@link readMaterial} refuses a material file together with direct material variables,
- * including `COTAL_CONTROL_TOKEN`.
+ * including `COTAL_CONTROL_TOKEN` and `COTAL_CONTROL_VERSION`.
  *
- * Returns `undefined` when neither socket path nor token is present. Throws when only one is
- * present.
+ * Returns `undefined` when neither socket path nor key is present. Throws when only one is
+ * present, and when the version is missing or is not the one this build speaks: the version
+ * travels with the key, and there is no fallback.
  */
-export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: string; token: string } | undefined {
+export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): ControlEndpoint | undefined {
   const path = env.COTAL_CONTROL_SOCKET?.trim();
-  const token = readMaterial(env)?.controlToken ?? env.COTAL_CONTROL_TOKEN?.trim();
-  if (path && token) return { path, token };
+  const material = readMaterial(env);
+  const token = material ? material.controlToken : env.COTAL_CONTROL_TOKEN?.trim() || undefined;
+  if (path && token) {
+    const direct = env.COTAL_CONTROL_VERSION?.trim();
+    const version = material ? material.controlVersion : direct && /^\d+$/.test(direct) ? Number(direct) : direct;
+    assertControlVersion(version, material ? "this launch's material" : "COTAL_CONTROL_VERSION");
+    return { path, token, version };
+  }
   if (!path && !token) return undefined;
   if (path)
     throw new Error(

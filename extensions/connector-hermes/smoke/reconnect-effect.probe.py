@@ -17,6 +17,9 @@ Modes:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import inspect
 import json
 import os
@@ -118,11 +121,17 @@ sys.modules.update(
 _tmp = tempfile.mkdtemp()
 _sockpath = os.path.join(_tmp, "bridge.sock")
 os.environ["COTAL_BRIDGE_SOCKET"] = _sockpath
-# The control token the client must present on the first frame of every connect and reconnect.
-# Set before BridgeClient is ever constructed, so its resolution (COTAL_CONTROL_TOKEN or
-# _material_token()) finds this value rather than raising for a missing token.
+# The control key the client derives its bridge token from, presented on the first frame of every
+# connect and reconnect. Set before BridgeClient is ever constructed, so its resolution
+# (COTAL_CONTROL_TOKEN with COTAL_CONTROL_VERSION, or the launch material) finds this value rather
+# than raising for a missing key. The expected token is derived here from the documented bytes, not
+# through the plugin, so the cell also pins the derivation.
 _TOKEN = "reconnect-effect-smoke-token"
 os.environ["COTAL_CONTROL_TOKEN"] = _TOKEN
+os.environ["COTAL_CONTROL_VERSION"] = "1"
+_BRIDGE_TOKEN = base64.urlsafe_b64encode(
+    hmac.new(_TOKEN.encode("utf-8"), b"cotal-hermes-bridge/1", hashlib.sha256).digest()
+).rstrip(b"=").decode("ascii")
 sys.path.insert(0, PLUGIN_PARENT)
 
 _srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -266,7 +275,7 @@ def main() -> None:
     print(
         "FIRST_FRAMES_TOKENED",
         len(_first_frames) >= 2
-        and all(f.get("t") == "subscribe" and f.get("token") == _TOKEN for f in _first_frames),
+        and all(f.get("t") == "subscribe" and f.get("token") == _BRIDGE_TOKEN for f in _first_frames),
     )
 
     if MODE == "subject":

@@ -258,10 +258,11 @@ assert.equal(
 // "redialled and dropped the message".
 assert.equal(subject.PUSHED_WARM, "True", "instrument: the reconnected peer had a socket to push on");
 
-// ---- THE CONTROL TOKEN MUST RIDE THE FIRST FRAME OF EVERY CONNECT AND RECONNECT ---------------
+// ---- THE BRIDGE TOKEN MUST RIDE THE FIRST FRAME OF EVERY CONNECT AND RECONNECT ----------------
 // The real Python client authenticates before it can be trusted: the fake bridge server records
 // the first frame of every accepted connection, and the cold connect plus the post-disconnect
-// reconnect must each open with `{"t":"subscribe","token":<the token>}`. A client that
+// reconnect must each open with `{"t":"subscribe","token":<the bridge token>}`, the token derived
+// from the control key (never the key itself). A client that
 // authenticates once at startup and omits the token on reconnect would still deliver traffic
 // (nothing here depends on the server enforcing it), so this is asserted directly rather than
 // inferred from delivery.
@@ -273,7 +274,7 @@ assert.equal(
 assert.equal(
   subject.FIRST_FRAMES_TOKENED,
   "True",
-  "the real Python client must present the control token on the first frame of every connect and reconnect",
+  "the real Python client must present the bridge token on the first frame of every connect and reconnect",
 );
 
 // ---- REFUSE CONTROL 1: reopen() present but its body emptied ----------------------------------

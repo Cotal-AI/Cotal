@@ -40,6 +40,10 @@
       "types": "./dist/launch-material.d.ts",
       "import": "./dist/launch-material.js"
     },
+    "./control-exchange": {
+      "types": "./dist/control-exchange.d.ts",
+      "import": "./dist/control-exchange.js"
+    },
     "./secret-fs": {
       "types": "./dist/secret-fs-entry.d.ts",
       "import": "./dist/secret-fs-entry.js"

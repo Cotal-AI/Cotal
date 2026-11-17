@@ -134,7 +134,7 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig, control: { path: string; token: string } | undefined): PiRuntime {
+function createRuntime(config: AgentConfig, control: ReturnType<typeof controlFromEnv>): PiRuntime {
   const mesh = new MeshAgent(config);
   const driver = new PiDriver(mesh);
   const runtime: PiRuntime = {
@@ -188,8 +188,8 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   delete process.env.COTAL_PI_FRESH_SESSION;
   delete process.env.COTAL_PI_EXPECTED_SESSION;
   delete process.env.COTAL_PI_SUPERVISED_CWD;
-  // The socket path rides the env; the first-frame token rides the launch material, so a shell this
-  // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub
+  // The socket path rides the env; the control key and version ride the launch material, so a shell
+  // this seat runs cannot pick a control-plane secret out of its own environment. Read BEFORE the scrub
   // below, and read on every load rather than inside createRuntime: a second load reuses the cached
   // runtime, but the first one must not find the pointer already gone. That ordering is not a
   // detail - reversed, it refused every pi launch with the half-pair error `controlFromEnv` throws,

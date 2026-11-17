@@ -48,7 +48,7 @@ try {
     env: {
       HOME: home, TMPDIR: home, PATH: "/usr/local/bin:/usr/bin:/bin", LANG: "C.UTF-8", DO_NOT_TRACK: "1",
       COTAL_NAME: "cold_undici", COTAL_SPACE: "cold_undici", COTAL_SERVERS: `nats://127.0.0.1:${(refusal.address() as { port: number }).port}`,
-      COTAL_CONTROL_SOCKET: join(home, "control.sock"), COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"), COTAL_WORKSPACE_ROOT: home, COTAL_CHANNEL: "0",
+      COTAL_CONTROL_SOCKET: join(home, "control.sock"), COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"), COTAL_CONTROL_VERSION: "1", COTAL_WORKSPACE_ROOT: home, COTAL_CHANNEL: "0",
       COTAL_SMOKE_UNDICI_OUT: seatOut,
     },
     stderr: "ignore",

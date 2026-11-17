@@ -248,6 +248,7 @@
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:broker-redelivery-framing": "tsx extensions/connector-core/smoke/broker-redelivery-framing.smoke.ts",
     "smoke:control-reply": "tsx extensions/connector-core/smoke/control-reply.smoke.ts",
+    "smoke:control-exchange": "tsx extensions/connector-core/smoke/control-exchange.smoke.ts",
     "smoke:control-rebind": "tsx extensions/connector-core/smoke/control-rebind.smoke.ts",
     "smoke:hook-relay-startup": "tsx extensions/connector-core/smoke/hook-relay-startup.smoke.ts",
     "smoke:manager-invoke-verdict": "tsx extensions/connector-core/smoke/manager-invoke-verdict.smoke.ts",

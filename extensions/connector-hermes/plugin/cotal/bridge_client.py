@@ -1,7 +1,10 @@
 """Persistent client to the Cotal sidecar's bridge socket.
 
 The sidecar (``src/sidecar.ts``) owns the mesh endpoint and exposes a unix-socket bridge; this is
-the in-gateway half. One background thread owns a blocking ``AF_UNIX`` connection and dispatches
+the in-gateway half. Every (re)connect opens with a ``subscribe`` carrying the bridge token, which
+``control_exchange.bridge_token`` derives from the launch's control key, so the key itself never
+crosses this socket. The socket sits beside the control socket, in a directory only this user can
+enter, and every dial checks that directory first. One background thread owns a blocking ``AF_UNIX`` connection and dispatches
 frames — inbound mesh messages go to the adapter's callback, tool results resolve pending calls.
 Writes are newline-delimited JSON under a lock; it reconnects with backoff so a sidecar restart
 self-heals (re-subscribing on every (re)connect). Wire format mirrors ``src/bridge.ts``.
@@ -17,7 +20,7 @@ import time
 import uuid
 from typing import Any, Callable, Optional
 
-from .hooks import _material_token
+from .control_exchange import bridge_token, control_key, socket_dir_problem
 
 _BACKOFF_S = 2.0
 
@@ -30,14 +33,15 @@ _REOPEN_JOIN_SECONDS = 2.0
 class BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._path = socket_path
-        # Resolved once, the same pair `hooks.relay` reads: standalone mode exports
-        # COTAL_CONTROL_TOKEN directly; a managed launch carries it in the launch material only.
-        self._token = os.environ.get("COTAL_CONTROL_TOKEN") or _material_token()
-        if not self._token:
+        # Resolved once, the same key `hooks.relay` reads: standalone mode exports COTAL_CONTROL_TOKEN
+        # and COTAL_CONTROL_VERSION directly; a managed launch carries both in the launch material only.
+        key = control_key()
+        if not key:
             raise RuntimeError(
-                "no control token could be resolved (neither COTAL_CONTROL_TOKEN nor a readable "
+                "no control key could be resolved (neither COTAL_CONTROL_TOKEN nor a readable "
                 "COTAL_LAUNCH_MATERIAL with one) — the bridge socket cannot be authenticated"
             )
+        self._token = bridge_token(key)
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[threading.Event, dict]] = {}
@@ -142,6 +146,9 @@ class BridgeClient:
         while not self._stop.is_set():
             if gen is not None and gen != self._gen:
                 return  # retired while dialing: this socket is not wanted
+            if socket_dir_problem(self._path):
+                time.sleep(_BACKOFF_S)  # not up yet, or not private: no endpoint until it is
+                continue
             try:
                 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 s.connect(self._path)

@@ -146,7 +146,58 @@ A local bind address does not isolate applications that share a workstation or O
 Reuse a shipped design:
 
 - The [Codex loopback MCP endpoint](../extensions/connector-codex/src/mcp.ts).
-- The [connector-core control server](../extensions/connector-core/src/control.ts), which exports helpers for another listener in the same process.
+- The [connector-core control server](../extensions/connector-core/src/control.ts), and the
+  [control exchange](#control-exchange) in `@cotal-ai/core`, whose server and client halves another
+  listener can run on its own socket.
+
+### The control exchange [#control-exchange]
+
+A connector's local control endpoint serves its lifecycle hooks and the Manager's cooperative stop
+and session calls. Each connection proves that both ends hold the endpoint's key, and neither end
+sends it. A process that takes the name of a server that has exited receives no key, and nothing it
+sends is used.
+
+The launcher mints the endpoint: a socket path, a random key, and the exchange version. The path
+reaches the child in `COTAL_CONTROL_SOCKET`. The key and version reach it in the launch material
+(`controlToken` and `controlVersion`), never in command arguments, and the Manager keeps all three in
+memory. Off Windows the socket sits in `cotal-ctl-<uid>` under the temp directory, which only its
+user can enter. The launcher and the server create it with mode `0700` and check its owner and mode,
+and every client checks them again before it connects. A directory that fails the check counts as no
+endpoint. On Windows the endpoint is a named pipe in the global namespace, and the exchange is the
+only boundary.
+
+One connection carries four lines:
+
+```text
+C -> S  {"v":1,"nonce":"<Nc>"}
+S -> C  {"v":1,"nonce":"<Ns>","mac":"<Ms>"}
+C -> S  <Mc> <request JSON>
+S -> C  <Mr> <reply JSON>
+```
+
+`Nc` and `Ns` are 32 random bytes each. Every MAC is HMAC-SHA256 keyed with the UTF-8 bytes of the
+key. Nonces and MACs are base64url without padding, 43 characters. The MACs cover these bytes, where
+`\0` is one zero byte and the request and reply are the bytes between the space and the newline:
+
+```text
+Ms = HMAC(K, "cotal-control/1\0server\0" Nc "\0" Ns)
+Mc = HMAC(K, "cotal-control/1\0client\0" Nc "\0" Ns "\0" request)
+Mr = HMAC(K, "cotal-control/1\0reply\0"  Nc "\0" Ns "\0" reply)
+```
+
+MACs are compared in constant time. The exchange authenticates both ends and the request and reply.
+It does not encrypt them.
+
+A client waits at most 1 second from connect for the server's proof. A server drops a connection that
+has not sent a proven request within 5 seconds of accept. A client and a server of different
+versions refuse each other: the version is in the hello, the challenge and every MAC, and nothing is
+negotiated. A launch whose material carries a key without a version, or a version the build does not
+speak, is refused where it is read.
+
+The Hermes bridge socket sits beside the control socket, in the same private directory. Its adapter
+opens each connection with a `subscribe` carrying a token derived from the key: HMAC-SHA256 keyed
+with the key over `cotal-hermes-bridge/1`, base64url without padding. The key itself never crosses
+the bridge socket, and a sidecar of another version derives another token and drops the connection.
 
 ## Package the extension [#packaging-rules-enforced-at-ext-add]
 

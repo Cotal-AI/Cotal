@@ -106,11 +106,11 @@ type Job = ManagerJob | SeatsJob;
 const stubScript = (token: string) =>
   `umask 077; f="$SEAT_HOST_DIR/$COTAL_ID"; env | grep '^COTAL_' > "$f.tmp" && mv "$f.tmp" "$f.seat"; exec sleep 99999.${token}`;
 /** The real seat: the Claude Code connector's MCP server, launched with the node flags its
- *  `.mcp.json` passes, a control socket and token of its own, and the run's token as a trailing
+ *  `.mcp.json` passes, a control socket, token and version of its own, and the run's token as a trailing
  *  argument (ignored by the server) so the sweep can find it. `--heapsnapshot-signal` only arms a
  *  signal handler, so one seat can be snapshotted without changing what any seat holds. */
 const realSeatScript = (token: string, mcp: string) =>
-  `umask 077; export COTAL_CONTROL_SOCKET="$SEAT_HOST_DIR/$COTAL_ID.sock" COTAL_CONTROL_TOKEN="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')"; ` +
+  `umask 077; export COTAL_CONTROL_SOCKET="$SEAT_HOST_DIR/$COTAL_ID.sock" COTAL_CONTROL_TOKEN="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')" COTAL_CONTROL_VERSION=1; ` +
   `exec node --optimize-for-size --max-semi-space-size=1 --heapsnapshot-signal=SIGUSR2 '${mcp}' seatload-${token}`;
 const MB = 1048576;
 /** V8's view of the manager's memory, in MB. */
@@ -736,7 +736,7 @@ const workspaceRoot = join(dir, "ws");
 const seatDir = join(dir, "seats");
 const home = join(dir, "home");
 const seatRoot = mkdtempSync(join(tmpdir(), "s"));
-for (const d of [join(workspaceRoot, ".cotal", "agents"), seatDir, home]) mkdirSync(d, { recursive: true });
+for (const d of [join(workspaceRoot, ".cotal", "agents"), seatDir, home]) mkdirSync(d, { recursive: true, mode: 0o700 });
 const maxSeats = STEPS[STEPS.length - 1];
 for (let i = 0; i < maxSeats; i++)
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `seat${i}.md`), `---\nname: seat${i}\nrole: ${ROLE}\nsubscribe: [${CHANNEL}]\nallowSubscribe: [${CHANNEL}]\nallowPublish: [${CHANNEL}]\n---\n`);

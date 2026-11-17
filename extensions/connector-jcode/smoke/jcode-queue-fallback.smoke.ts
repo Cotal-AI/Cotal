@@ -310,7 +310,7 @@ try {
       COTAL_JCODE_PROMPT: "FX26-KICKOFF-AFTER-BUSY-WINDOW-2029",
       COTAL_JCODE_REQUEST_TIMEOUT_MS: String(softInterruptTimeoutMs),
       COTAL_CONTROL_SOCKET: join(controlDir, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-queue-fallback-control-token",
+      COTAL_CONTROL_TOKEN: "jcode-queue-fallback-control-token", COTAL_CONTROL_VERSION: "1",
     },
     stdio: ["ignore", "ignore", "pipe"],
   });

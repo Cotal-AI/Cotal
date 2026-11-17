@@ -16,9 +16,11 @@ live inside a per-turn process; the connector's command is a small **launcher/su
 owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run` as its child.
 
 - The launcher bridges to an in-gateway **Python plugin** (the platform adapter, presence hooks,
-  and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket is authenticated on
-  connect with the launch's control token (the first frame must carry it), and its path is not
-  predictable: it is derived from the token rather than from the space and agent name alone.
+  and the `cotal_*` tools) over local AF_UNIX sockets. The bridge socket sits beside the control
+  socket, in a directory only the seat's user can enter, and the adapter checks that directory before
+  it connects. The adapter's first frame is a `subscribe` carrying a token derived from the launch's
+  control key, so the key itself never crosses the bridge socket. The lifecycle hooks reach the
+  control socket through the [control exchange](authoring-a-connector.mdx#control-exchange).
 - It runs the gateway in an isolated `HERMES_HOME` profile (a temp dir), so your own `~/.hermes`
   is never touched, with approvals off (a supervised agent has no human at the TUI to approve).
   The temp dir is laid out as a Hermes named profile (`<temp root>/profiles/cotal-<id>`), so Hermes

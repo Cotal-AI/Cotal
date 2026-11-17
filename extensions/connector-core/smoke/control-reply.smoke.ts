@@ -13,6 +13,7 @@
  */
 import { strict as assert } from "node:assert";
 import { connect } from "node:net";
+import { clientExchange, type ControlEndpoint } from "@cotal-ai/core";
 import { startControlServer, HANDOFF_RECEIPT, type ControlServerOpts } from "../src/control.js";
 import { controlEndpoint } from "../src/runtime.js";
 import type { MeshAgent } from "../src/agent.js";
@@ -28,33 +29,27 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const listening = (server: ReturnType<typeof startControlServer>): Promise<void> =>
   new Promise((resolve) => (server.listening ? resolve() : server.once("listening", () => resolve())));
 
-/** Send one frame and read whatever comes back. `handoff` clients answer the reply with a receipt,
- *  which is what lets the server half of that path settle. */
-function sendFrame(path: string, frame: unknown, receipt = false): Promise<string> {
+/** Send one request through the control exchange and read its proven reply ("" when there is none).
+ *  `handoff` clients answer the reply with a receipt, which is what lets the server half of that
+ *  path settle. */
+function sendFrame(ep: ControlEndpoint, frame: Record<string, unknown>, receipt = false): Promise<string> {
   return new Promise((resolve) => {
-    const sock = connect(path);
-    let reply = "";
+    const sock = connect(ep.path);
     let settled = false;
-    const finish = (): void => {
+    const finish = (reply = ""): void => {
       if (settled) return;
       settled = true;
-      try {
-        sock.destroy();
-      } catch {
-        /* ignore */
-      }
+      setTimeout(() => sock.destroy(), receipt ? 50 : 0);
       resolve(reply);
     };
-    sock.setEncoding("utf8");
-    sock.on("connect", () => sock.write(JSON.stringify(frame) + "\n"));
-    sock.on("data", (d) => {
-      reply += d;
-      if (receipt && reply.includes("\n")) sock.write(HANDOFF_RECEIPT);
-    });
-    sock.on("end", finish);
-    sock.on("close", finish);
-    sock.on("error", finish);
-    setTimeout(finish, 2000);
+    sock.on("connect", () =>
+      clientExchange(sock, ep, frame, (reply) => {
+        if (reply !== undefined && receipt) sock.write(HANDOFF_RECEIPT);
+        finish(reply);
+      }),
+    );
+    sock.on("error", () => finish());
+    setTimeout(() => finish(), 2000);
   });
 }
 
@@ -68,7 +63,7 @@ async function replyFor(label: string, opts: ControlServerOpts | undefined, hand
       : startControlServer(stubAgent, ep, async () => ((sawEvent = true), { handled: true }), opts);
   try {
     await listening(server);
-    const r = await sendFrame(ep.path, { token: ep.token, event: { hook_event_name: "SessionStart" }, ...(handoff ? { handoff: true } : {}) }, handoff);
+    const r = await sendFrame(ep, { event: { hook_event_name: "SessionStart" }, ...(handoff ? { handoff: true } : {}) }, handoff);
     // The handler running is NOT the property under test — it ran even while the reply was lost.
     check(`${label}: the handler ran`, sawEvent);
     return r.trim();

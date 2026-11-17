@@ -86,6 +86,7 @@ sys.modules.update(
 os.environ.setdefault("COTAL_BRIDGE_SOCKET", "/nonexistent/cotal-injection-framing.sock")
 # The probe never connects (its socket path does not exist); the token only lets the authenticated client construct.
 os.environ.setdefault("COTAL_CONTROL_TOKEN", "injection-framing-probe-token")
+os.environ.setdefault("COTAL_CONTROL_VERSION", "1")
 sys.path.insert(0, PLUGIN_PARENT)
 
 from cotal.adapter import CotalAdapter  # noqa: E402

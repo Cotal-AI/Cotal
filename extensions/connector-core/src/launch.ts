@@ -23,6 +23,7 @@ import {
   parsePrincipalKey,
   principalKey,
   writeLaunchMaterial,
+  type ControlEndpoint,
   type LaunchMaterial,
   type McpServerSpec,
 } from "@cotal-ai/core";
@@ -266,7 +267,7 @@ export function materialEnv(
     creds?: string;
     servers?: string;
     token?: string;
-    controlToken?: string;
+    control?: ControlEndpoint;
     eventsRequired?: boolean;
     userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
   },
@@ -278,7 +279,10 @@ export function materialEnv(
   if (opts.creds) material.creds = opts.creds;
   if (opts.servers) material.servers = opts.servers;
   if (opts.token) material.token = opts.token;
-  if (opts.controlToken) material.controlToken = opts.controlToken;
+  if (opts.control) {
+    material.controlToken = opts.control.token;
+    material.controlVersion = opts.control.version;
+  }
   if (opts.eventsRequired) material.eventsRequired = true;
   if (opts.userAuth) material.userAuth = opts.userAuth;
   // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
