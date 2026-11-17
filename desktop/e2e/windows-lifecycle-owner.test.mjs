@@ -83,7 +83,7 @@ test('close-window receives launch-pinned PID only after separate duplicate-proc
   assert.match(close, /check\(`single app process before close-window: appCandidates=\$\{JSON\.stringify\(census\.appCandidates\)\}, serviceLauncher=\$\{JSON\.stringify\(census\.serviceLauncher\)\}`/);
   assert.match(close, /census\.appCandidates\?\.length === 1 && census.appCandidates\[0\].pid === windowsAppPid/);
   assert.ok(close.indexOf('single app process before close-window') < close.indexOf('nativeLifecycle(binary, action, env,'));
-  assert.match(close, /nativeLifecycle\(binary, action, env, process\.platform === "win32" \? windowsAppPid : undefined, windowsDaemon\)/);
+  assert.match(close, /nativeLifecycle\(binary, action, env, process\.platform === "win32" \? windowsAppPid : undefined, windowsDaemon, debuggerPort\)/);
   assert.match(caller, /row\.source === "process-argv" && row\.atUnixMs >= launchStarted/);
   const stop = caller.slice(caller.indexOf('const stopDriver ='), caller.indexOf('const open ='));
   assert.match(stop, /process\.platform === "linux" && linuxAppPid !== undefined/);
