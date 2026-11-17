@@ -247,7 +247,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   service: {
     flags: [
       "cwd:string:C", "dry-run:boolean", "exec:string", "file:string:f", "follow:boolean", "foreground:boolean", "instance:string",
-      "json:boolean:j", "new-instance:boolean", "plain:boolean", "preset:string", "space:string:s",
+      "json:boolean:j", "new-instance:boolean", "no-open:boolean", "plain:boolean", "preset:string", "space:string:s",
       "tail:string", "with-agents:boolean", "yes:boolean:y",
     ],
     positionals: true,

@@ -159,7 +159,7 @@ function cookieValue(header: string | undefined, name: string): string | undefin
  *  such request as `unauthenticated` and the operator would never learn that something cross-origin
  *  was talking to their console. The more specific condition wins.
  */
-export function makeAuthGate(port: number, host: string = WEB_HOST) {
+export function makeAuthGate(port: number, host: string = WEB_HOST, launchNonce?: string) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
@@ -191,7 +191,13 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
     launchToken: launchToken!,
     readinessNonce,
     /** `undefined` = let the request through. Otherwise the named condition that refused it. */
-    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | undefined {
+    check(req: IncomingMessage, query: URLSearchParams): { refuse: string } | { exchange: string } | { launchUrl: string } | undefined {
+      if (launchNonce && pathOf(req) === "/api/browser-launch" && req.method === "POST" &&
+          typeof req.headers["x-cotal-browser-launch"] === "string" && secretEquals(req.headers["x-cotal-browser-launch"], launchNonce) &&
+          req.headers.origin === undefined && req.headers["transfer-encoding"] === undefined && Number(req.headers["content-length"] ?? 0) === 0) {
+        launchToken = randomBytes(32).toString("base64url");
+        return { launchUrl: `${webUrl(host, port)}?k=${launchToken}` };
+      }
       const origin = req.headers.origin;
       if (origin !== undefined) {
         // A same-origin fetch from our own page sends no Origin at all for GETs, and sends our own
@@ -1532,15 +1538,13 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // run it, the server lives in `src`, so the page is read from the package's `dist/web` instead.
   const client = clientAssets(join(here, basename(here) === "src" ? "../dist/web" : "web"));
 
-  const gate = makeAuthGate(port, host);
+  const launchNonce = lifecycle ? randomBytes(32).toString("base64url") : undefined;
+  const gate = makeAuthGate(port, host, launchNonce);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = (req.url ?? "/").split("?")[0];
     const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
 
-    // THE GATE RUNS BEFORE EVERY ROUTE, including `/feed` and the static files. Placing it inside a
-    // route, or after the first `if`, is how a surface acquires an unauthenticated corner: the next
-    // person to add a route above it inherits no protection and nothing says so.
     const verdict = gate.check(req, query);
     if (verdict !== undefined && "refuse" in verdict) {
       // #2024: a refused request that announced a body is closed rather than drained; the fact is
@@ -1565,6 +1569,11 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
         location: path,
       });
       return void res.end();
+    }
+
+    if (verdict !== undefined && "launchUrl" in verdict) {
+      res.setHeader("cache-control", "no-store");
+      return json(res, verdict);
     }
 
     // Only the `BODY_ROUTES` read a request body. Refuse an announced body before dispatch
@@ -1902,7 +1911,7 @@ export async function web(args: ParsedArgs, lifecycle?: WebServiceLifecycle): Pr
   // token the operator cannot see is a token they cannot revoke by restarting.
   const launchUrl = `${url}?k=${gate.launchToken}`;
   const boundAddress = httpServer.address() as AddressInfo;
-  const browserSession: WebSession = { launchUrl, readiness: gate.readinessNonce, host: boundAddress.address, port: boundAddress.port };
+  const browserSession: WebSession = { launchUrl, readiness: gate.readinessNonce, host: boundAddress.address, port: boundAddress.port, ...(launchNonce ? { launchNonce } : {}) };
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
   // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
