@@ -11,6 +11,8 @@ export interface GenerationWaitProbe {
   readonly installed?: () => boolean;
   readonly query?: typeof queryDaemon;
   readonly timeoutMs?: number;
+  /** A child whose parent will print the same line waits without printing it. */
+  readonly quiet?: boolean;
   readonly lifecycle?: (paths: DaemonPaths, deadline: number) => Promise<{
     poll(remainingMs: number): Promise<boolean | void>;
     close(): void;
@@ -37,7 +39,7 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
   }
   const query = probe.query ?? queryDaemon;
   const bound = probe.timeoutMs ?? 120_000;
-  console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
+  if (!probe.quiet) console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
   const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
   const lifecycle = await probe.lifecycle?.(paths, deadline);
