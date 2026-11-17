@@ -31,7 +31,7 @@ function read(): UpdatePending {
   const before = hashes();
   const result = readUpdatePending("0.164.0");
   assert.deepEqual(hashes(), before, "diagnostic creates no files and changes no file hashes");
-  if (result.kind !== "none") assert.match(result.instruction, /cotal update --self/);
+  if (result.kind !== "none" && result.kind !== "version-mismatch") assert.match(result.instruction, /cotal update --self/);
   return result;
 }
 
@@ -41,7 +41,10 @@ assert.deepEqual(read(), { kind: "none" }, "third-party skew is not a pending fi
 writeFileSync(manifest, JSON.stringify({ extensions: [{ pkg: "@cotal-ai/tmux", version: "0.161.1", spec: "@cotal-ai/tmux@0.161.1", commands: [] }] }));
 const skew = read();
 assert.equal(skew.kind, "version-mismatch");
-if (skew.kind === "version-mismatch") assert.deepEqual(skew.extensions, [{ package: "@cotal-ai/tmux", version: "0.161.1" }]);
+if (skew.kind === "version-mismatch") {
+  assert.deepEqual(skew.extensions, [{ package: "@cotal-ai/tmux", version: "0.161.1" }]);
+  assert.equal(skew.instruction, "Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI.");
+}
 const recovery = { v: 1, previous: "0.161.1", target: "0.164.0", installed: "0.164.0", phase: "replacing", reason: "replacement pending", recordedAt: "2026-11-13T12:00:00.000Z" };
 writeFileSync(receipt, JSON.stringify(recovery));
 const pending = read();

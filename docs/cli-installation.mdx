@@ -257,6 +257,12 @@ checks npm; after successful reconciliation, a newer binary is an informational 
 `cotal update --self` as the next command, not an automatic install. A refused update keeps its
 recovery guidance instead of suggesting another update that would meet the same refusal.
 
+The extension prefix and seed store belong to each configuration home. When several homes share
+one CLI installation, updating from one home does not write another home's configuration.
+The next command there that needs built-ins reconciles them with the installed CLI before using
+them. `cotal version` stays read-only and reports recorded versions; when they differ, its remedy
+is `cotal update`, not another installation update with `--self`.
+
 
 ### Manager continuity
 

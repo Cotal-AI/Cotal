@@ -416,7 +416,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       }
       const bareDaemon = archivedBare.daemonStatus?.exit === 0 ? JSON.parse(archivedBare.daemonStatus.stdout).result : undefined;
       const bareCliHeader = String(archivedBare.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
-      const bareRemedy = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(String(archivedBare.version?.stdout ?? ''));
+      const bareRemedy = /Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI\./.test(String(archivedBare.version?.stdout ?? ''));
       const bareExtensionsOk = Array.isArray(archivedBare.extensions) && archivedBare.extensions.length >= 8 && archivedBare.extensions.every(entry => {
         const installed = archivedBare.installedExtensions?.find(row => row.pkg === entry.pkg);
         if (!installed || installed.version !== entry.version) return false;
@@ -448,7 +448,7 @@ export function verifyCandidateNextEvidence({report, cell, output, sourceManifes
       const scheduled = archivedBare.scheduledReconcile;
       const scheduledHeader = String(scheduled?.version?.stdout ?? '').trim().split(/\r?\n/, 1)[0] === `cotal-ai ${pair.followOnVersion}`;
       const scheduledTmuxRow = scheduled?.runtimes?.exit === 0 ? JSON.parse(scheduled.runtimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
-      const scheduledOk = /Reconciliation pending: Run `cotal update --self` to reconcile this installation\./.test(String(scheduled?.pendingBefore?.stdout ?? ''))
+      const scheduledOk = /Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI\./.test(String(scheduled?.pendingBefore?.stdout ?? ''))
         && scheduled?.attempt?.version === pair.followOnVersion
         && scheduled?.attempt?.result === `updated to ${pair.followOnVersion}`
         && clean(scheduled?.version) && scheduledHeader

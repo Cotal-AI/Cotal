@@ -106,6 +106,19 @@ const GATE = /refusing to reconcile the operator-global seed store/;
       connectors: [{ name: "claude", requires: [], eventPlane: true, setup: { kind: "connector-setup", name: "claude" } }],
     }],
   }));
+  const manifest = join(xdg, "cotal", "extensions", "extensions.json");
+  const before = readFileSync(manifest);
+  const remedy = "Reconciliation pending: Run `cotal update` to reconcile this configuration home with the installed CLI.";
+  const humanVersion = run(["--version"]);
+  check("version directs a stale configuration home to reconcile without replacing the shared CLI",
+    humanVersion.status === 0 && humanVersion.stdout.includes(remedy) && !humanVersion.stdout.includes("update --self"), shown(humanVersion));
+  const jsonVersion = run(["version", "--json"]);
+  const pending = JSON.parse(jsonVersion.stdout).result.reconciliation;
+  check("version JSON gives the same home-local remedy and keeps the recorded skew",
+    jsonVersion.status === 0 && pending.kind === "version-mismatch" && pending.instruction === remedy
+      && pending.extensions.length === 1 && pending.extensions[0].package === pkg && pending.extensions[0].version === "0.0.1", shown(jsonVersion));
+  check("version leaves the stale manifest unchanged and never imports or seeds its connector",
+    readFileSync(manifest).equals(before) && !existsSync(marker) && !existsSync(join(xdg, "cotal", "seed")));
   const r = run(["status", "--json"]);
   let rows: { name: string; state: string; text: string }[] = [];
   try {
