@@ -1153,6 +1153,10 @@ Already accepted finite replies have up to five seconds to flush before close. D
 are cancelled on close.
 
 `status` with no daemon running refuses `TARGET_UNAVAILABLE` (`NOT_RUNNING`).
+On Linux and macOS, a native service recorded for that daemon home makes Next name
+`cotal daemon start`, retaining `--daemon-home` when selected. Without a recorded service,
+Next names `cotal daemon serve`. Windows keeps its task-start and launch-log guidance.
+An absent endpoint does not establish whether the native service is stopped or still starting.
 SIGTERM and SIGINT shut down cleanly and remove only the daemon's own socket. SIGKILL or SIGHUP,
 including closing the terminal, leaves a stale socket, and the next `serve` recovers it by itself.
 

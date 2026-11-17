@@ -42,6 +42,7 @@ import { automaticUpdates } from "./auto-update.js";
 import { watchDaemonGeneration } from "./generation.js";
 import { SPACE_PATTERN } from "./protocol.js";
 import { nativeDaemonLog } from "./native-log.js";
+import { readReceipt } from "./install-receipt.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
@@ -166,9 +167,11 @@ async function status(args: ParsedArgs): Promise<void> {
   try {
     reply = await queryDaemon({ paths, peerUid, peerPid });
   } catch (e) {
-    if (process.platform === "win32" && e instanceof EndpointRefusal && e.code === "NOT_RUNNING") {
+    if (e instanceof EndpointRefusal && e.code === "NOT_RUNNING" && (process.platform === "win32" || readReceipt(paths))) {
       throw new CommandFailure("refused", "TARGET_UNAVAILABLE", e.message, {
-        remedy: `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`,
+        remedy: process.platform === "win32"
+          ? `start the owned task with ${daemonCommandCopy("start", home)}; read ${nativeDaemonLog(paths.state)} for its last launch output, and inspect the task's state and last result in Task Scheduler if no log was created`
+          : `start the recorded service with ${codeSpan(daemonCommandCopy("start", home))}`,
         native: { code: e.code },
       });
     }

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { shellPath } from "@cotal-ai/workspace";
 import { mkSecretDir } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { renderScheduledTask, scheduledTaskName } from "../daemon/install-win32.js";
@@ -22,6 +23,42 @@ suite.check("the stock scheduled task selects the native entry", task.arguments.
 const compiler = spawnSync(process.execPath, [createRequire(import.meta.url).resolve("typescript/bin/tsc"), "-p", "bin/tsconfig.json", "--showConfig"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
 const files = compiler.status === 0 ? (JSON.parse(compiler.stdout) as { files: string[] }).files : [];
 suite.check("the stock compiler includes the native entry", compiler.status === 0 && files.some((file) => resolve(repo, "bin", file) === join(repo, "bin/daemon-native.ts")), { code: compiler.status });
+
+// Status guidance uses the selected home's receipt, without starting or querying a native job.
+if (process.platform !== "win32") {
+  const fixture = join(root, "status");
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
+  delete env.NODE_OPTIONS;
+  for (const [key, name] of Object.entries({ HOME: "user", XDG_CONFIG_HOME: "config", XDG_RUNTIME_DIR: "r", COTAL_HOME: "operator" })) {
+    const dir = join(fixture, name);
+    mkSecretDir(dir);
+    env[key] = dir;
+  }
+  Object.assign(env, { COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_NO_UPDATE_CHECK: "1", DO_NOT_TRACK: "1", NO_COLOR: "1" });
+  const explicitHome = join(fixture, "daemon 'quoted'");
+  const defaultState = join(env.COTAL_HOME!, "daemon");
+  mkSecretDir(explicitHome);
+  mkSecretDir(defaultState);
+  for (const [label, state, args, start] of [
+    ["default", defaultState, [], "cotal daemon start"],
+    ["explicit", explicitHome, ["--daemon-home", explicitHome], `cotal daemon start --daemon-home ${shellPath(explicitHome)}`],
+  ] as const) {
+    const receiptPath = join(state, "service-unit.json");
+    for (const recorded of [false, true]) {
+      if (recorded) writeFileSync(receiptPath, JSON.stringify({ v: 1, mechanism: process.platform === "darwin" ? "launchd-agent" : "systemd-user", unit: "cotal-daemon", unitPath: join(state, "unit"), unitSha256: "0".repeat(64), installedAt: "2026-11-17T00:00:00Z" }), { mode: 0o600 });
+      const json = spawnSync(process.execPath, [cli, "daemon", "status", ...args, "--json"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
+      const plain = spawnSync(process.execPath, [cli, "daemon", "status", ...args, "--plain"], { cwd: fixture, env, encoding: "utf8", timeout: 15_000 });
+      const body = JSON.parse(json.stdout) as { outcome: string; error: { code: string; cause: { code: string }; remedy: string } };
+      const remedy = recorded ? `start the recorded service with \`${start}\`` : "start it with `cotal daemon serve`";
+      suite.check(`${label}, receipt ${recorded}: status retains the absent-endpoint refusal`, json.status === 2 && body.outcome === "refused" && body.error.code === "TARGET_UNAVAILABLE" && body.error.cause.code === "NOT_RUNNING", body);
+      suite.check(`${label}, receipt ${recorded}: plain and JSON name the matching launch mode`, body.error.remedy === remedy && plain.status === 2 && plain.stderr.includes(remedy), { json: json.stdout, plain: plain.stderr });
+      writeFileSync(join(fixture, `${label}-${recorded}.json`), json.stdout);
+      writeFileSync(join(fixture, `${label}-${recorded}.txt`), plain.stderr);
+      if (recorded) rmSync(receiptPath);
+    }
+  }
+}
 
 for (const [label, entry] of [["native", native], ["ordinary", cli]] as const) {
   const fixture = join(root, label === "native" ? "n" : "c");
