@@ -9,7 +9,7 @@ import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, r
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
@@ -294,7 +294,7 @@ const composed: Command = { ...command, async run(args) {
   // A version-changing update already waited for the installed generation before it returned.
   // Waiting again prints the same line a second time in this process.
   if (!daemonObserved) {
-    if (args.values.self === true && runtime.generationWaited !== true) {
+    if ((args.values.self === true || process.env.COTAL_INSTALL_RECONCILE === "1") && runtime.generationWaited !== true) {
       await waitForInstalledDaemonGeneration(expectedVersion, {
         lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline) : posixGenerationLifecycle(paths),
       });
@@ -309,6 +309,7 @@ const composed: Command = { ...command, async run(args) {
     console.log(`machine daemon: PID ${current.result.pid} runs Cotal ${current.result.version}; no recorded user service, left running`);
     return;
   }
+  if (process.env.COTAL_INSTALL_RECONCILE === "1") reconcileMissingShellRuntime(paths);
   const installation = installedDaemonIdentity(paths);
   if (!installation.same) {
     console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);
