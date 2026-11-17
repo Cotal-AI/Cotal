@@ -74,6 +74,7 @@ then register a dead loopback broker with `space add --force`. Both ports must r
 The registration and stopped stack journal must remain unchanged. Public 0.165.3 to 0.165.4 refuses
 at staged admission as tracked in [#7224](https://github.com/Cotal-AI/Cotal/issues/7224).
 The report labels that measured refusal as known red, but it remains failed in both acceptance fields.
+The installed source performs the first admission read, so a corrected target cannot repair that source's refusal.
 A stopped space selected in the update folder does not exercise this install-wide read.
 
 The manual native-service cells disable automatic updates, install the real service without a Manager
