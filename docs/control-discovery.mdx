@@ -254,7 +254,9 @@ Cancellation before submission reports `not-executed`. Once submission starts, c
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
 refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
 The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
-before the wait deadline, and late read completions cannot settle an expired observation. Its read
+before the wait deadline, and late read completions cannot settle an expired observation. A result
+read that the broker reports had no responder did not run, so the follower reads again until the
+wait deadline. If no terminal arrives by then, the outcome stays unknown. Its read
 callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
 commands and control connections use that signal. An in-flight dial that finishes after cancellation
 closes without publishing. A local reply-subscription failure prevents publication and is observed
