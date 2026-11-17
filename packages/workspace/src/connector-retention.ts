@@ -32,6 +32,20 @@ function ownedAncestors(path: string): void {
     ownedDirectory(parent);
   }
 }
+function previousConfig(id: { entry: string; path: string }): string | undefined {
+  const sets = dirname(id.path);
+  const bytes = readLocalRecordSource(join(sets, "current.json"), 8192, true);
+  if (!bytes) return;
+  ownedAncestors(sets);
+  const record = JSON.parse(bytes.toString("utf8")) as Selection;
+  if (record.v !== 1 || record.entry !== id.entry || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(record.version) || record.root !== join(sets, record.version, "cotal")) throw new Error("invalid previous connector retention selection");
+  ownedAncestors(record.root);
+  for (const name of ["seed", "extensions"]) {
+    const path = join(record.root, name), stat = lstatSync(path, { throwIfNoEntry: false });
+    if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw new Error(`previous connector state is not a real directory: ${path}`);
+  }
+  return record.root;
+}
 
 /** Connector and seed state selected for this installed execution. Legacy processes keep their original paths. */
 export function connectorConfigDir(): string {
@@ -51,20 +65,35 @@ export function connectorConfigDir(): string {
   return record.root;
 }
 
+/** A later installed generation inherits connector state without mutating an earlier retained prefix. */
+export function inheritConnectorConfig(): void {
+  const id = identity();
+  if (id && connectorConfigDir() === globalConfigDir() && previousConfig(id)) retainConnectorConfig();
+}
+
 /** Preserve the original prefix in place and prepare a separate complete prefix for same-version repair. */
 export function retainConnectorConfig(): string {
   const id = identity();
   if (!id) throw new Error("retained connector reconciliation requires an installed POSIX execution");
-  const current = connectorConfigDir();
-  if (current !== globalConfigDir()) return current;
+  const selected = connectorConfigDir();
+  if (selected !== globalConfigDir()) return selected;
+  const current = previousConfig(id) ?? selected;
   const releaseClosure = claimUpdateClosureAccess();
   let releaseWriter = () => {};
   let releaseSeed = () => {};
   try {
     const seed = acquireLock(join(current, "seed", "reconcile.lock"), { label: "retained connector reconciliation", waitMs: 0 });
     releaseSeed = () => seed.release();
-    releaseWriter = claimExtensionMutationLock();
-    if (connectorConfigDir() !== current) return connectorConfigDir();
+    if (current === globalConfigDir()) releaseWriter = claimExtensionMutationLock();
+    else {
+      const pass = acquireLock(join(current, ".extensions.lock.update"), { label: "retained connector pass", waitMs: 0 });
+      try {
+        const writer = acquireLock(join(current, ".extensions.lock"), { label: "retained connector writer", waitMs: 0 });
+        releaseWriter = () => { writer.release(); pass.release(); };
+      } catch (error) { pass.release(); throw error; }
+    }
+    if (connectorConfigDir() !== globalConfigDir()) return connectorConfigDir();
+    if ((previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
     mkdirSync(id.path, { recursive: true, mode: 0o700 });
     ownedAncestors(id.path);
     const root = join(id.path, "cotal");
@@ -85,6 +114,9 @@ export function retainConnectorConfig(): string {
     const temporary = join(id.path, `.selection-${randomBytes(8).toString("hex")}`);
     writeFileSync(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
     renameSync(temporary, join(id.path, "selection.json"));
+    const next = join(dirname(id.path), `.current-${randomBytes(8).toString("hex")}`);
+    writeFileSync(next, JSON.stringify(record), { flag: "wx", mode: 0o600 });
+    renameSync(next, join(dirname(id.path), "current.json"));
     return root;
   } finally { releaseWriter(); releaseSeed(); releaseClosure(); }
 }

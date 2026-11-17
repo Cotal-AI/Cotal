@@ -13,6 +13,7 @@ import {
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
   provenance,
@@ -167,6 +168,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
 }
 
 async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
+  inheritConnectorConfig();
   const generation = seedGeneration();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a
