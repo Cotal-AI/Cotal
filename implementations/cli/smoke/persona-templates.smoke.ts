@@ -62,20 +62,16 @@ for (const raw of blocks) {
   const name = String(fm.name ?? "(unnamed)");
   frontmatter.set(name, fm);
   ok(`${name} declares the channels it reads`, Array.isArray(fm.subscribe), fm.subscribe);
-  ok(`${name} explicitly declares a non-empty post ACL`, Array.isArray(fm.allowPublish) && fm.allowPublish.length > 0, fm.allowPublish);
+  ok(`${name} explicitly declares a non-empty post ACL`, fm.channelGrants === "spawner" || Array.isArray(fm.allowPublish) && fm.allowPublish.length > 0, fm.allowPublish);
 }
 
 const defaultAgent = frontmatter.get("default_agent");
 ok(
-  "default-channel-creation: default stays unsubscribed with wildcard read and post ACLs",
+  "default stays unsubscribed with spawner-relative channel ACLs",
   Array.isArray(defaultAgent?.subscribe) &&
     defaultAgent.subscribe.length === 0 &&
-    Array.isArray(defaultAgent.allowSubscribe) &&
-    defaultAgent.allowSubscribe.length === 1 &&
-    defaultAgent.allowSubscribe[0] === ">" &&
-    Array.isArray(defaultAgent.allowPublish) &&
-    defaultAgent.allowPublish.length === 1 &&
-    defaultAgent.allowPublish[0] === ">",
+    defaultAgent.channelGrants === "spawner" &&
+    defaultAgent.allowSubscribe === undefined && defaultAgent.allowPublish === undefined,
   defaultAgent,
 );
 
@@ -102,9 +98,13 @@ try {
   const upgradedLegacy = readFileSync(legacyPath, "utf8");
   ok(
     "legacy-default-upgrade: the byte-exact legacy template gains wildcard post permission",
-    legacyResult === "migrated" && upgradedLegacy === DEFAULT_AGENT && /allowPublish: \[\">\"\]/.test(upgradedLegacy),
+    legacyResult === "migrated" && upgradedLegacy === DEFAULT_AGENT && upgradedLegacy.includes("channelGrants: spawner"),
     legacyResult,
   );
+
+  const previousPath = join(fixtureRoot, "previous.md");
+  writeFileSync(previousPath, DEFAULT_AGENT.replace("channelGrants: spawner", 'allowSubscribe: [">"]\nallowPublish: [">"]'));
+  ok("previous untouched wildcard template becomes spawner-relative", reconcileDefaultAgent(previousPath) === "migrated" && readFileSync(previousPath, "utf8") === DEFAULT_AGENT);
 
   const spawnOnlyPath = join(fixtureRoot, "spawn-only.md");
   const spawnOnly = DEFAULT_AGENT.replace("capabilities: [spawn, run]", "capabilities: [spawn]");

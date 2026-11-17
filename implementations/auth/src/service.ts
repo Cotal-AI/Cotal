@@ -93,7 +93,7 @@ import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { deregisterUserEndpoint, type EndpointDeregisterGranter } from "./endpoint-deregister.js";
-import { parsePrincipalKey, parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
+import { eventChannelPrincipal, parsePrincipalKey, parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
 import { validateRetainedManagedAgent } from "./continuity.js";
 import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, servedRunCancelRequestSubject, servedSpawnRequestSubjects, serviceCalloutWriterGrants, serviceHostDiscoveryGrants, type AuthorityClient } from "./authority-client.js";
@@ -1738,8 +1738,15 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // enrollment below does: by the caller it observed asking, or the run's starter, through the
       // ledger walk, and for a run also by the grant its admission froze (SPEC 13.6). The read is
       // the set the enrollment provisions; any other list the target omits is measured as empty.
-      const t = r.target;
+      let t = r.target;
       const spawner = await resolveRemoteSpawner({ request: r, owner, takeObserved: takeObservedSpawnRequest, readAdmission: readRunStarterAdmission });
+      if (t.channelGrants === "spawner") {
+        const principal = parsePrincipalKey(spawner.parent);
+        const held = principal && findActorUnified(opts.dir, principal.owner, principal.actor);
+        if (!held) throw new Error("cannot resolve the launching actor's channel grants");
+        t = { ...t, allowSubscribe: t.allowSubscribe ?? held.allowSubscribe.filter(ch => eventChannelPrincipal(ch) === null), allowPublish: t.allowPublish ?? held.allowPublish.filter(ch => eventChannelPrincipal(ch) === null) };
+        r.target = t;
+      }
       const helper = { owner, actor: t.actor, scope: t.capabilities ?? [], allowSubscribe: resolveReadAcl(t.subscribe ?? [], t.allowSubscribe), allowPublish: t.allowPublish ?? [], role: t.role };
       if (spawner.run !== undefined) assertWithinRunDelegation(spawner.run.runId, spawner.run.starter, spawner.run.delegation, helper);
       assertWithinSpawnerGrant(opts.dir, { ...helper, parent: spawner.parent }, "spawn");
@@ -1763,7 +1770,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const subscribe = t.subscribe ?? [];
       // An omitted or empty read list reads the subscribe set, so the bound, the row and the
       // footprint all take the read set it resolves to.
-      const allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);
+      let allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
         // The custody this enrollment attests: the instance the authorized request names, checked
         // against its current registration above. Never a field of the participant's target.
@@ -1780,6 +1787,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         const decided = withManagedGrantTransaction(opts.dir, (tx) => {
           const current = tx.read(owner, t.actor);
           const held = current?.kind === "managed-agent" ? current : undefined;
+          if (t.channelGrants === "spawner") {
+            const principal = parsePrincipalKey(held?.parent ?? spawner!.parent);
+            const parent = principal && tx.read(principal.owner, principal.actor);
+            if (!parent) throw new Error("cannot resolve the launching actor's channel grants");
+            t.allowSubscribe ??= parent.allowSubscribe.filter(ch => eventChannelPrincipal(ch) === null);
+            t.allowPublish ??= parent.allowPublish.filter(ch => eventChannelPrincipal(ch) === null);
+            allowSubscribe = resolveReadAcl(subscribe, t.allowSubscribe);
+          }
           // The token digest names one enrollment. A held row with this request's digest is that
           // enrollment retried, so it answers the same uid; any other held row is a lifecycle that
           // still runs, and taking its grant would strand it.
@@ -3861,6 +3876,7 @@ async function handleVerifyManagedAgentEnrollment(
         authorized: true,
         owner,
         actor: verified.target.actor,
+        ...(verified.target.channelGrants ? { allowSubscribe: verified.target.allowSubscribe, allowPublish: verified.target.allowPublish } : {}),
         instanceId: verified.instanceId,
         serveEpoch: verified.serveEpoch,
         parent,

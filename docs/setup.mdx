@@ -68,13 +68,13 @@ Setup creates `.cotal/agents/default.md` in the project folder.
 Edit that file to change the persona's instructions, name, or role.
 
 A fresh default agent joins no channels at boot.
-Its permissions let it join, create, read, and post to channels when needed.
+Its `channelGrants: spawner` request lets it use channels within the launching member's grants.
 It also declares `spawn` and `run` capabilities, so it can manage teammates and start workflow runs on a static-auth mesh.
 See [Agent files](agent-files.mdx) for the fields and [Workflow runs](workflows.mdx#from-an-agent-session) for workflows.
 
 <Callout title="Edited personas stay unchanged">
 
-Setup repairs only the byte-for-byte legacy default template with an empty publish ACL.
+Setup upgrades the byte-for-byte legacy default templates, including the previous wildcard read and post template.
 It preserves edited personas, including an older default with wildcard publish access and only the `spawn` capability.
 If that persona lacks workflow access, follow the [capability update steps](workflows.mdx#if-cotal_run-is-missing).
 

@@ -2597,7 +2597,10 @@ service that owns the actor ledger and the space's provisioning authority answer
 the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
 a parent the ledger's delegation envelope bounds it by, and then provisions that UID's durables. The
 grant's read is the set those durables read: `target.allowSubscribe`, or `target.subscribe` when
-that list is omitted or empty, and the bound measures the same set. The
+that list is omitted or empty, and the bound measures the same set. An optional
+`target.channelGrants: "spawner"` requests omitted read and post ACLs from the resolved parent's
+current grant before this check. Explicit ACL arrays, including empty arrays, are not replaced.
+The active `subscribe` set is never inherited. The
 parent is the request's supervising actor unless the request carries `spawn: { served, runId? }`, the
 manager `spawn` request subject the participant served and, for a run's spawn, the run id. The host
 reads every manager `spawn` request subject published in the space and takes the caller from a
@@ -2634,8 +2637,9 @@ managed-retire door (POST only, no `Origin`, JSON, the per-start capability, a c
 `{ owner, request }` body). That door MUST derive the caller's capability scope from its own ledger
 and MUST NOT accept a scope from the caller. For an enrollment it decides the parent as above, bounds
 the target by that parent through the ledger's delegation envelope and, for a run's spawn, by the
-admission's `delegation`, refuses an over-wide target, and answers `parent`. It measures a list the
-target omits as empty, so a host that fills an omitted list MUST fill it from no more than the
+admission's `delegation`, refuses an over-wide target, and answers `parent`. For
+`channelGrants: "spawner"` it also answers the resolved `allowSubscribe` and `allowPublish` lists.
+Without that marker it measures a list the target omits as empty, so a host that fills an omitted list MUST fill it from no more than the
 parent's grant. The host MUST record the parent on the grant it writes, so that narrowing or revoking
 the parent reaches the helper. The door decides only: it mints nothing, writes nothing, and returns no
 secret.

@@ -359,6 +359,7 @@ export interface RemoteManagedAgentEnrollmentRequest {
     role?: string;
     label?: string;
     capabilities?: string[];
+    channelGrants?: "spawner";
     subscribe?: string[];
     allowSubscribe?: string[];
     allowPublish?: string[];
@@ -705,7 +706,7 @@ function parseTokenHash(value: unknown, what: string): string {
 function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean): DelegatedUserLaunchTarget {
   if (target === null || typeof target !== "object" || Array.isArray(target)) enrollmentError(what, "requires a target");
   const t = target as Record<string, unknown>;
-  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "subscribe", "allowSubscribe", "allowPublish", "eventPayloads", ...(withTokenHash ? ["tokenHash"] : [])]);
+  const targetAllowed = new Set(["actor", "role", "label", "capabilities", "channelGrants", "subscribe", "allowSubscribe", "allowPublish", "eventPayloads", ...(withTokenHash ? ["tokenHash"] : [])]);
   for (const key of Object.keys(t))
     if (!targetAllowed.has(key)) enrollmentError(what, `target carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (typeof t.actor !== "string" || t.actor.length === 0) enrollmentError(what, "target requires a non-empty actor");
@@ -725,6 +726,7 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
   if (t.eventPayloads !== undefined && t.eventPayloads !== false)
     enrollmentError(what, "target.eventPayloads must be false when present");
   const subscribe = parseEnrollmentList(t.subscribe, what, "subscribe");
+  if (t.channelGrants !== undefined && t.channelGrants !== "spawner") enrollmentError(what, "target.channelGrants must be spawner");
   const allowSubscribe = parseEnrollmentList(t.allowSubscribe, what, "allowSubscribe");
   const allowPublish = parseEnrollmentList(t.allowPublish, what, "allowPublish");
   return {
@@ -733,6 +735,7 @@ function parseLaunchTarget(target: unknown, what: string, withTokenHash: boolean
     ...(t.label !== undefined ? { label: t.label as string } : {}),
     ...(t.capabilities !== undefined ? { capabilities: [...(t.capabilities as string[])] } : {}),
     ...(subscribe !== undefined ? { subscribe } : {}),
+    ...(t.channelGrants === "spawner" ? { channelGrants: "spawner" as const } : {}),
     ...(allowSubscribe !== undefined ? { allowSubscribe } : {}),
     ...(allowPublish !== undefined ? { allowPublish } : {}),
     ...(t.eventPayloads === false ? { eventPayloads: false as const } : {}),

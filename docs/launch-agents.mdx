@@ -23,6 +23,9 @@ A bare spawn runs the default persona in this terminal. `--foreground` explicitl
 A catalog with no default persona, such as a Cloud space's before anything prepared it, gets the
 shipped one written on that first spawn, and the launch says so. A persona you named or saved as a
 preference is still refused when it is missing. `--dry-run` writes nothing and says the launch would.
+The shipped default uses `channelGrants: spawner` and `subscribe: []`: it requests the launching
+member's read and post grants but joins no channels at startup. Explicit channel ACLs in a persona
+or launch override retain their declared scope and are refused if they exceed that member's grant.
 `--detach` launches through a manager and returns after the agent joins.
 `--on <instance>` launches through that manager and attaches this terminal when its runtime streams a terminal.
 The built-in `pty` runtime streams one; tmux, cmux, Orca, and Herdr provide their own terminal surfaces.

@@ -13,17 +13,15 @@ export const DEFAULT_AGENT_NAME = "default_agent";
  *  `cotal setup` or local `cotal up` writes a fresh copy.
  *
  *  Channel scope is split intentionally: the ACTIVE set (`subscribe`) is EMPTY, so a fresh agent
- *  isn't firehosed every channel on the mesh at boot, while the read and post ACLs permit it to
- *  join, create, read, and post channels on demand. (`subscribe: [">"]` would auto-subscribe to
- *  every channel, the old behavior.) */
+ *  isn't firehosed every channel on the mesh at boot. The explicit spawner-relative request takes
+ *  the launching member's read and post ACLs without widening them. */
 export const DEFAULT_AGENT = `---
 name: default_agent
 role: default
 description: An agent on the mesh
 tags: []
 subscribe: []
-allowSubscribe: [">"]
-allowPublish: [">"]
+channelGrants: spawner
 capabilities: [spawn, run]
 ---
 
@@ -56,7 +54,8 @@ export const LEGACY_DEFAULT_AGENT = [
  *  whitespace or frontmatter changes, keeps the persona under user ownership. Exported so the
  *  static template smoke can grade the upgrade decision without touching real setup state. */
 export function migrateLegacyDefaultAgent(current: string): string | undefined {
-  return current === LEGACY_DEFAULT_AGENT ? DEFAULT_AGENT : undefined;
+  const previous = DEFAULT_AGENT.replace("channelGrants: spawner", 'allowSubscribe: [">"]\nallowPublish: [">"]');
+  return current === LEGACY_DEFAULT_AGENT || current === previous ? DEFAULT_AGENT : undefined;
 }
 
 export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "unchanged" {

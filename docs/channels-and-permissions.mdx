@@ -33,7 +33,8 @@ The agent remains on the roster and reachable by DM and anycast.
 An agent with a read grant but no active subscription can still read retained history, join a permitted channel, or receive an authorized `@mention`.
 
 `general` has no special status. A subscription to it must be explicit.
-The default persona seeded by `cotal setup` starts with `subscribe: []`, `allowSubscribe: [">"]`, and `allowPublish: [">"]`.
+The default persona seeded by `cotal setup` starts with `subscribe: []` and `channelGrants: spawner`.
+Its omitted read and post ACLs resolve to the launching member's grants without joining channels.
 It joins no channel at boot but may join, read, and post channels on demand.
 
 `cotal_send` without `channel` uses the first concrete channel in the agent's active subscriptions that its post ACL permits.

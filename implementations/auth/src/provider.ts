@@ -768,6 +768,11 @@ export const cotalAuthProvider: AuthProvider = {
   /** Fresh read across BOTH row spaces (actor names are disjoint between them, so the unified
    *  lookup is unambiguous): the manager's control authorization must see an operator's
    *  `actor grant` scope edit — or a revoke — on the very next stop/attach, hence no caching. */
+  async actorChannels({ dir, owner, actor }) {
+    const row = findActorUnified(dir, owner, actor);
+    return row ? { allowSubscribe: [...row.allowSubscribe], allowPublish: [...row.allowPublish] } : undefined;
+  },
+
   async actorScope({ dir, owner, actor }) {
     const row = findActorUnified(dir, owner, actor);
     return row ? [...row.scope] : undefined;

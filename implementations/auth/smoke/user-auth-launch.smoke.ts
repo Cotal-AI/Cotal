@@ -323,8 +323,8 @@ try {
   // over-ask beyond it is refused at the grant write — before any broker footprint — and the
   // refusal names the exact widening re-grant for the operator. Use a role-less probe here so
   // this refusal isolates the read over-ask rather than the shipped persona's capabilities.
-  const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
-  check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && field(narrow.out, "May read", "general"), narrow.out);
+  const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--full", "--allow-subscribe", "general,events.>", "--allow-publish", "general,events.>", "--label", "smoke human"]);
+  check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && field(narrow.out, "May read", "general, events.>"), narrow.out);
   // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
   // that names only --scope would reset the ACLs a narrow row just set back to the wide default.
   // Two refusals used to print exactly this command as their remedy. Without --full the CLI now
@@ -351,6 +351,12 @@ try {
   // WORKTREE's connector into the sandbox prefix, never the operator store.
   const extAdd = await cotal(["ext", "add", CLAUDE]);
   check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
+  const defaultNative = join(home, "default-native");
+  mkdirSync(defaultNative);
+  writeFileSync(join(defaultNative, "claude"), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 2.1.0; exit 0; fi\necho DEFAULT_NATIVE_REACHED\n', { mode: 0o700 });
+  const narrowDefault = await cotal(["spawn", "--foreground", "--space", SPACE], { env: { PATH: `${defaultNative}:${childEnv.PATH}` } });
+  check("seeded default launches within a narrow member's grant",
+    narrowDefault.status === 0 && narrowDefault.out.includes("DEFAULT_NATIVE_REACHED"), narrowDefault.out);
   // The read list keeps the persona's own `general` (a spawn whose list omits a channel its persona
   // subscribes to is refused on that alone), so `ops.wide` is the only ask beyond the cli grant.
   // `--foreground`: a bare spawn is a managed launch, which needs a terminal to attach and refuses

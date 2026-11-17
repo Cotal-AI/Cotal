@@ -61,6 +61,8 @@ export interface AgentDef {
    *  ACLs). Entries may be wildcard subtrees (`team.>`). Omitted ⇒ **deny** (default-deny):
    *  publishing is the dangerous capability, so it must be declared explicitly. */
   allowPublish?: string[];
+  /** Resolve omitted channel ACLs from the launching principal, without joining its channels. */
+  channelGrants?: "spawner";
   /** Per-channel attention DEFAULT: channels delivered but never waking this agent — per-channel
    *  `dnd`. Concrete channels within the read ACL (`allowSubscribe`). One-way operator default; the runtime toggle is
    *  connector state, never written back here (the file is a shared template). */
@@ -131,7 +133,7 @@ export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
 /** Frontmatter keys {@link AgentDef} models. The parser keeps them out of `meta`, and the writer
  *  refuses a `meta` entry that names one, so a hint can never overwrite a field the file models. */
-const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "quiet", "muted", "agent", "model", "variant", "launchOptions", "eventPayloads", "capabilities", "endpoints", "owner"]);
+const MODELED_KEYS = new Set(["name", "role", "kind", "description", "tags", "subscribe", "allowSubscribe", "allowPublish", "channelGrants", "quiet", "muted", "agent", "model", "variant", "launchOptions", "eventPayloads", "capabilities", "endpoints", "owner"]);
 
 /** Pre-ACL field names the parser refuses outright, so the writer must never emit them from `meta`. */
 const RENAMED_KEYS = ["channels", "publish"];
@@ -212,6 +214,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
         `agent file ${path}: "${key}" is not supported in frontmatter; the working directory comes from the spawn request (use --cwd)`,
       );
 
+  if (fm.channelGrants !== undefined && fm.channelGrants !== "spawner")
+    throw new Error(`agent file ${path}: channelGrants must be spawner when present`);
   const subscribe = list("subscribe");
   const allowSubscribe = list("allowSubscribe");
   const allowPublish = list("allowPublish");
@@ -284,6 +288,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     subscribe,
     allowSubscribe,
     allowPublish,
+    channelGrants: fm.channelGrants as "spawner" | undefined,
     quiet,
     muted,
     model,
@@ -345,6 +350,7 @@ export function saveAgentFile(path: string, def: AgentDef, opts: { createOnly?: 
   if (def.subscribe) fm.subscribe = def.subscribe;
   if (def.allowSubscribe) fm.allowSubscribe = def.allowSubscribe;
   if (def.allowPublish) fm.allowPublish = def.allowPublish;
+  if (def.channelGrants !== undefined) fm.channelGrants = def.channelGrants;
   if (def.quiet?.length) fm.quiet = def.quiet;
   if (def.muted?.length) fm.muted = def.muted;
   if (def.agent) fm.agent = def.agent;
@@ -477,6 +483,7 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
     agent: args.agent ?? fromPrompt?.agent,
     subscribe,
     allowSubscribe: args.allowSubscribe ?? fromPrompt?.allowSubscribe,
+    channelGrants: fromPrompt?.channelGrants,
     allowPublish: args.allowPublish ?? fromPrompt?.allowPublish,
     capabilities: args.capabilities,
     endpoints: args.endpoints,

@@ -1026,6 +1026,13 @@ try {
   check("a persona ROLE outside the spawner's scope is refused (role = delegated capability)",
     roleReply.ok === false && /role "worker" beyond scope/.test(roleReply.error ?? ""), roleReply);
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator", lifecycleUid: cliRow0.lifecycleUid });
+  writeFileSync(join(root, ".cotal", "agents", "relative.md"), "---\nname: relative\nsubscribe: []\nchannelGrants: spawner\n---\nrelative persona.\n");
+  const relativeReply = await manager.startAgent({ name: "relative", agent: "e2e", events: false }, `${OWNER}.cli`);
+  check("spawner-relative managed persona launches for a narrow member", relativeReply.ok === true, relativeReply);
+  if (relativeReply.ok) {
+    const relativeRow = JSON.parse(readFileSync(rowFile("managed", OWNER, "relative"), "utf8"));
+    check("relative managed grant records only the parent's read and post channels", relativeRow.allowSubscribe.join() === "general" && relativeRow.allowPublish.join() === "general", relativeRow);
+  }
   const withinReply: ControlReply = await manager.startAgent(
     { name: "delta", agent: "e2e", events: false, allowSubscribe: ["general"] }, `${OWNER}.cli`);
   check("the same spawn within the envelope (read + role delegated) succeeds", withinReply.ok === true, withinReply);
@@ -2045,7 +2052,7 @@ try {
   // 148 -> 151: D2's spawn and admin views also read ps.
   // One CLI attach denial after the operator loses spawn scope.
   // Eight hosted-enrollment checks include uncommitted attempts, changed authority and refused replay.
-  const EXPECTED = endpointCliFocus ? 71 : 160;
+  const EXPECTED = endpointCliFocus ? 71 : 162;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

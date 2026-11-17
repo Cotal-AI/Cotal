@@ -227,6 +227,10 @@ try {
     check("POSITIVE CONTROL: a current registration with supervise authorizes the enrollment",
       ok.value?.request.target.actor === "worker" && ok.value.request.instanceId === INSTANCE && ok.value.request.target.eventPayloads === false, ok);
     check("the door answers the manager as the parent of an enrollment that names no spawn", ok.value?.parent === `${OWNER}.cli`, ok);
+    const relative = await outcome(() => enroll(enrollment({ target: { actor: "relative", tokenHash: enrollment().target.tokenHash, channelGrants: "spawner", subscribe: [] } })));
+    check("host resolves relative channel grants from the observed parent", relative.value?.request.target.allowSubscribe?.join() === "general" && relative.value?.request.target.allowPublish?.join() === "general", relative);
+    const empty = await outcome(() => enroll(enrollment({ target: { actor: "empty", tokenHash: enrollment().target.tokenHash, channelGrants: "spawner", subscribe: [], allowSubscribe: [], allowPublish: [] } })));
+    check("host preserves explicit empty channel grants", empty.value?.request.target.allowSubscribe?.length === 0 && empty.value?.request.target.allowPublish?.length === 0, empty);
     const wider = await outcome(() => enroll(enrollment({ target: { ...enrollment().target, allowPublish: ["general", "secret"] } })));
     check("the door refuses a helper wider than its parent's grant, naming what the parent lacks",
       wider.value === undefined && /would exceed its spawner's grant/.test(wider.message ?? "") && /secret/.test(wider.message ?? ""), wider);
@@ -336,6 +340,6 @@ try {
   releaseBroker();
 }
 // Counts, not just "no failures": a cell that stops running stops protecting anything.
-const EXPECTED = 37;
+const EXPECTED = 39;
 console.log(`\nMANAGED-AGENT-ENROLLMENT SMOKE ${fail === 0 && pass + fail === EXPECTED ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed, expected ${EXPECTED})`);
 process.exit(fail === 0 && pass + fail === EXPECTED ? 0 : 1);

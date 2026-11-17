@@ -101,6 +101,11 @@ ok("a prose prompt still declares an empty read set", JSON.stringify(prose.subsc
 ok("a prose prompt records that the caller could not choose", prose.meta?.scope_source === "wire-default", prose.meta);
 ok("a prose prompt writes exactly one frontmatter block", [...readFileSync(prosePath, "utf8").matchAll(/^---$/gm)].length === 2);
 
+const relativePath = join(dir, "relative.md");
+saveAgentFile(relativePath, composeWirePersona({ name: "relative", owner: "manager-example", prompt: "---\nsubscribe: []\nchannelGrants: spawner\nallowPublish: []\n---\nrelative" }));
+const relative = loadAgentFile(relativePath);
+ok("relative channel marker survives compose and file roundtrip", relative.channelGrants === "spawner" && relative.allowSubscribe === undefined && relative.allowPublish?.length === 0, relative);
+
 const throwsNamed = (label: string, bad: string) => {
   const path = join(dir, "bad.md");
   let named = false;

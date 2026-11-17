@@ -32,6 +32,7 @@ import {
   registry,
   resolveAuthProvider,
   resolveReadAcl,
+  eventChannelPrincipal,
   runAgentBearer,
   GOAL_ENTITY_RUNNING_DETAIL_KIND,
   EP_UNDECLARED_ARG,
@@ -1505,6 +1506,19 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   let allowPublish = parseCommaList(values["allow-publish"]) ?? def.allowPublish;
+  if (def.channelGrants === "spawner") {
+    let channels = { allowSubscribe: [">"], allowPublish: [">"] };
+    if (target.mode === "user" && !target.userAuth?.remote) {
+      const provider = resolveAuthProvider();
+      const dir = userAuthStateDir(target.root, space);
+      const owner = await provider.ownerForLogin({ store: workspaceSecretStore(target.root), dir, space });
+      const held = await provider.actorChannels?.({ dir, owner, actor: "cli" });
+      if (!held) throw new Error("cannot resolve the launching actor's channel grants");
+      channels = { allowSubscribe: held.allowSubscribe.filter(ch => eventChannelPrincipal(ch) === null), allowPublish: held.allowPublish.filter(ch => eventChannelPrincipal(ch) === null) };
+    }
+    allowSubscribe = resolveReadAcl(subscribe ?? [], parseCommaList(values["allow-subscribe"]) ?? def.allowSubscribe ?? channels.allowSubscribe);
+    allowPublish = parseCommaList(values["allow-publish"]) ?? def.allowPublish ?? channels.allowPublish;
+  }
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
   // roll back. The GRANT cannot be derived yet, because it is keyed on the principal and in user

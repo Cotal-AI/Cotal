@@ -1223,6 +1223,9 @@ function userMeshEndpointsRefusal(door: "spawn" | "define-persona"): string {
  *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
  *  hosted arm. */
 interface ProvisionUserAgentOpts {
+  channelGrants?: "spawner";
+  inheritRead?: boolean;
+  inheritPost?: boolean;
   eventPayloads?: boolean;
   spawner?: string;
   specOwner?: string;
@@ -5506,8 +5509,9 @@ export class Manager {
         label: opts.label,
         ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
         ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-        allowSubscribe: opts.allowSubscribe,
-        ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+        ...(opts.channelGrants ? { channelGrants: opts.channelGrants } : {}),
+        ...(opts.inheritRead ? {} : { allowSubscribe: opts.allowSubscribe }),
+        ...(opts.inheritPost ? {} : opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
         ...(opts.eventPayloads === false ? { eventPayloads: false as const } : {}),
       },
       ...(opts.spawnRequest !== undefined ? { spawn: opts.spawnRequest } : {}),
@@ -7660,6 +7664,19 @@ export class Manager {
       } catch (e) {
         return { ok: false, error: `callerAcl: ${rejectionText(e)}` };
       }
+      if (def.channelGrants === "spawner") {
+        if (this.userMode && !this.remoteAuthority?.enrollManagedAgent) {
+          const caller = authenticatedCaller ?? (spawner ? parsePrincipalKey(spawner) : null);
+          if (!caller) return { ok: false, error: "spawner-relative grants require an authenticated caller" };
+          scoped = await resolveAuthProvider().actorChannels?.({ dir: userAuthStateDir(this.workspaceRoot, this.space), owner: caller.owner, actor: caller.actor });
+          if (!scoped) return { ok: false, error: "cannot resolve the launching actor's channel grants" };
+          scoped = { allowSubscribe: heldChannels("allowSubscribe", scoped.allowSubscribe), allowPublish: heldChannels("allowPublish", scoped.allowPublish) };
+        } else {
+          scoped = this.userMode || bound.kind === "none" ? { allowSubscribe: [], allowPublish: [] }
+            : opts.callerAcl ? { allowSubscribe: heldChannels("allowSubscribe", opts.callerAcl.allowSubscribe), allowPublish: heldChannels("allowPublish", opts.callerAcl.allowPublish) }
+            : bound.kind === "bounded" ? { allowSubscribe: [], allowPublish: [] } : { allowSubscribe: [">"], allowPublish: [">"] };
+        }
+      }
       const base = opts.subscribe ?? def.subscribe;
       ownSubscribe = base;
       subscribe = opts.join?.length ? [...new Set([...(base ?? []), ...opts.join])] : base;
@@ -8033,6 +8050,9 @@ export class Manager {
       let enrolled: ProvisionedUserAgent["enrolled"];
       if (this.userMode) {
         const prep = await this.provisionUserAgent(name, {
+          ...(def?.channelGrants ? { channelGrants: def.channelGrants,
+            inheritRead: opts.allowSubscribe === undefined && def.allowSubscribe === undefined,
+            inheritPost: opts.allowPublish === undefined && def.allowPublish === undefined } : {}),
           eventPayloads,
           spawner,
           specOwner: opts.owner,
@@ -8068,6 +8088,10 @@ export class Manager {
         userLaunch = prep.launch;
         userOwner = prep.owner;
         enrolled = prep.enrolled;
+        if (def?.channelGrants && enrolled) {
+          allowSubscribe = enrolled.material.allowSubscribe;
+          allowPublish = enrolled.material.allowPublish;
+        }
         provisioned = { id: principalKey(prep.owner, name).key, name, lifecycleUid, userOwner: prep.owner, ...(opts.delegatedIntent ? { delegated: true as const } : {}), secretPaths: prep.files, ...(custody ? { runtime: custody } : {}) };
         if (hostedEnrollment) {
           try {
