@@ -31,7 +31,7 @@ export function claudeUserMcpEnvKeys(): string[] {
  *  into the launch. Claude Code binds a `server:<name>` wake channel only to one of these (measured
  *  on 2.1.295: a server named only in `--mcp-config` reads "no MCP server configured with that name"
  *  and the session never wakes on a peer message). */
-export function claudeDeclaredServerNames(cwd: string): Set<string> {
+function claudeDeclaredServerNames(cwd: string): Set<string> {
   const names = new Set(Object.keys(claudeUserMcpServers()));
   const project = join(cwd, ".mcp.json");
   if (!existsSync(project)) return names;

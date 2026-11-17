@@ -19,7 +19,7 @@ const WATCH = { pollMs: 10_000, graceMs: 60_000 };
  *  conversation already holds; an approved request is finished with `cotal_connect` and that id. */
 export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired" | "refused"; id: string }
 
-export interface AppHostOptions {
+interface AppHostOptions {
   cotal: () => readonly string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -32,7 +32,7 @@ export interface AppHostOptions {
   watch?: typeof WATCH;
 }
 
-export interface AppHost extends GatewayHost {
+interface AppHost extends GatewayHost {
   closeAll(): Promise<void>;
   nativeEvent(event: Record<string, unknown>): Promise<void>;
   sessionFor(id: string): string | undefined;

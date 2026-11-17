@@ -96,7 +96,7 @@ function failureCondition(ev: HookEvent): PresenceCondition | undefined {
   };
 }
 
-export interface ClaudeHandleDeps {
+interface ClaudeHandleDeps {
   /** Launch environment for a hosted session's carried-fork record. Omitted uses the process env. */
   env?: NodeJS.ProcessEnv;
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
@@ -658,7 +658,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
 }
 
 /** One `claude/channel` push. A rejection is surfaced to the caller. */
-export type ChannelNotify = (params: { content: string; meta: Record<string, string> | { kind: string } }) => Promise<void>;
+type ChannelNotify = (params: { content: string; meta: Record<string, string> | { kind: string } }) => Promise<void>;
 
 export interface WakePolicy {
   /** Flip once the MCP handshake confirms the client speaks `claude/channel`. */
