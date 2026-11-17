@@ -1,0 +1,89 @@
+name: Darwin verified-connect measurement
+on:
+  push:
+    branches: [measure/darwin-peer-read-disconnect]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  peer-read-frequency:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: 14301813676
+          run-id: 44022566678
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: 14303348518
+          run-id: 44022566678
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/release-next
+      - name: Record exact immutable original pair
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          mkdir -p "$RUNNER_TEMP/peer-frequency"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {readFileSync,writeFileSync} from 'node:fs';
+          import {createHash} from 'node:crypto';
+          const rows=['release-candidate','release-next'].map(name=>{
+            const bytes=readFileSync(process.env.RUNNER_TEMP+'/'+name+'/manifest.json');
+            const manifest=JSON.parse(bytes);
+            assert.equal(manifest.source,'217a1d137f99888303732212fb6b4a596db79a75');
+            assert.equal(manifest.packages.length,24);
+            return {name,manifestSha256:createHash('sha256').update(bytes).digest('hex'),manifest};
+          });
+          writeFileSync(process.env.RUNNER_TEMP+'/peer-frequency/original-pair.json',JSON.stringify({run:44022566678,A:14301813676,B:14303348518,rows}));
+          NODE
+      - name: Sample stock read-only requests after ready and update
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DO_NOT_TRACK=1 COTAL_TELEMETRY=off
+          unset NODE_OPTIONS DARWIN_SOCKET_TRACE_FILE
+          node scripts/automatic-update-platform-baseline.mjs --source 0.165.4 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --expected-target 0.165.1004 --stopped-daemon-before-update true --peer-frequency true --output "$RUNNER_TEMP/peer-frequency/stock"
+      - name: Trace only owned diagnostic sockets with unchanged product checks
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import {readdirSync,readFileSync} from 'node:fs';
+          const root=process.env.RUNNER_TEMP+'/peer-frequency/stock';
+          const reports=readdirSync(root).filter(name=>name.endsWith('.json')).map(name=>JSON.parse(readFileSync(root+'/'+name))).filter(row=>row.tier&&row.assertions);
+          assert.equal(reports.length,1);
+          assert.equal(reports[0].cleanupSafety?.passed,true,'stock cleanup must finish before a second owned composition starts');
+          NODE
+          export DO_NOT_TRACK=1 COTAL_TELEMETRY=off
+          export NODE_OPTIONS="--import=$GITHUB_WORKSPACE/scripts/daemon-socket-trace.mjs"
+          export DARWIN_SOCKET_TRACE_FILE="$RUNNER_TEMP/peer-frequency/socket-trace.ndjson"
+          touch "$DARWIN_SOCKET_TRACE_FILE"
+          chmod 600 "$DARWIN_SOCKET_TRACE_FILE"
+          launchctl setenv NODE_OPTIONS "$NODE_OPTIONS"
+          launchctl setenv DARWIN_SOCKET_TRACE_FILE "$DARWIN_SOCKET_TRACE_FILE"
+          trap 'launchctl unsetenv NODE_OPTIONS; launchctl unsetenv DARWIN_SOCKET_TRACE_FILE' EXIT
+          node scripts/automatic-update-platform-baseline.mjs --source 0.165.4 --layout npm --state daemon --method self --candidate "$RUNNER_TEMP/release-candidate" --candidate-next "$RUNNER_TEMP/release-next" --next-hop-source candidate --next-hop-phase candidate --expected-target 0.165.1004 --stopped-daemon-before-update true --peer-frequency true --output "$RUNNER_TEMP/peer-frequency/traced"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: darwin-peer-frequency-originals
+          path: ${{ runner.temp }}/peer-frequency
+          if-no-files-found: error

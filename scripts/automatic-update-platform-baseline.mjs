@@ -467,13 +467,22 @@ export async function matrixCell(options) {
       if (nextHopMode === 'source-0.164.10' && label === 'upgrade under test' && process.platform === 'darwin' && result.exit === null && result.signal === 'SIGTERM' && result.timeout === true) return { ...result, elapsedMs: entry.elapsedMs };
       throw new Error(`${label}: outcome unknown, retained for disposable runner teardown`);
     }
-    return result;
+    return { ...result, elapsedMs: entry.elapsedMs };
   }
   const npmCall = (label, argv) => call(label, npm, [...npmPrefix, ...argv]);
   const cotal = (label, argv, timeout) => layout === 'installer' ? call(label, launcher, argv, timeout) : call(label, process.execPath, [cli, ...argv], timeout);
   const daemon = (label, argv, timeout) => desktopRuntime
     ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv], timeout)
     : cotal(label, argv, timeout);
+  async function peerFrequency(stage) {
+    if (options['peer-frequency'] !== 'true') return;
+    assert(hosted && process.platform === 'darwin' && state === 'daemon' && method === 'self', 'peer frequency is a hosted Darwin diagnostic only');
+    const { measureDaemonRequests } = await import('./darwin-peer-frequency.mjs');
+    report.peerFrequency ??= [];
+    const observation = await measureDaemonRequests({stage, request: (label, timeout) => daemon(label, ['daemon', 'status', '--json'], timeout)});
+    report.peerFrequency.push(observation);
+    save(join(output, `${id}-${stage}-peer-frequency.txt`), observation);
+  }
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
   async function captureHostedManager(stage, target) {
@@ -754,6 +763,7 @@ export async function matrixCell(options) {
         const status = await daemon('native status before', ['daemon', 'status', '--json']);
         if (status.exit === 0 && JSON.parse(status.stdout).result?.state === 'ready') {
           report.daemonBefore = JSON.parse(status.stdout).result;
+          await peerFrequency('after-ready');
           break;
         }
         await delay(1000);
@@ -1301,7 +1311,7 @@ export async function matrixCell(options) {
           active = await daemon('wait for target native generation', ['daemon', 'status', '--json']);
         }
         check('native daemon remains active at its expected generation', active.exit === 0 && nativeGenerationReady(JSON.parse(active.stdout).result, expectedDaemonVersion), active);
-        if (active.exit === 0) finalDaemon = JSON.parse(active.stdout).result;
+        if (active.exit === 0) { finalDaemon = JSON.parse(active.stdout).result; await peerFrequency('after-update'); }
         if (desktopRuntime) {
           const after = JSON.parse(active.stdout).result;
           check('CLI update preserves desktop daemon version and channel', after?.version === desktopInventory.version && after?.update?.channel === 'desktop' && after?.update?.automatic === false, after);
