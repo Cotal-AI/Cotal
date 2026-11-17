@@ -45,6 +45,7 @@ export async function prepareDeadUpdater(context: Context) {
   const kill = async () => { if (updater && updater.exitCode === null && updater.signalCode === null) { assert.deepEqual(pin(updater.pid!), { pid: e.producer.pid, start: e.producer.start }); updater.kill("SIGKILL"); await ended; } };
   const close = async () => {
     if (closed) return;
+    if (report.calls.some((row: any) => row.timeout || row.signal || row.exit === null)) throw new Error("a harness command outcome is unknown; hosted Managers and fixture retained for runner teardown");
     await kill();
     if (updater && updater.exitCode === null && updater.signalCode === null) throw new Error("updater retirement is unconfirmed; hosted Managers and fixture retained for runner teardown");
     closed = true;
@@ -116,6 +117,7 @@ export async function prepareDeadUpdater(context: Context) {
       } catch (error) { await close(); throw error; }
     },
     async afterUpdate(update: any) {
+      assert(update.signal === null && update.timeout === false && update.exit !== null, "update outcome is unknown; fixture must remain for runner teardown");
       successful(update); e.update = update;
       const version = successful(await cotal("dead updater selected version", ["--version"])); e.selectedVersion = /^cotal-ai ([^\s]+)/.exec(version.stdout)?.[1]; assert.equal(e.selectedVersion, report.target);
       e.after = await query("after default update daemon"); assert.equal(e.after.version, report.target); assert.equal(e.after.update.restartEvidence.prepared, false);

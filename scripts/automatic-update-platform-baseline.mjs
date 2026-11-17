@@ -1407,7 +1407,7 @@ export async function matrixCell(options) {
     }
     if (compositionCleanup && !daemonHostedManager) {
       try { await compositionCleanup(); report.compositionCleanup = 'owned composition stopped before reporting'; }
-      catch (error) { report.cleanupFailure = error.message; report.result = 'failed'; }
+      catch (error) { uncertain = true; report.cleanupFailure = error.message; report.result = 'failed'; }
     }
     if (container) {
       try {
