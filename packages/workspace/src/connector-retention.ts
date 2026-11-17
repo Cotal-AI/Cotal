@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { globalConfigDir } from "@cotal-ai/core";
 import { executionIdentity } from "./execution-identity.js";
@@ -7,6 +7,63 @@ import { acquireLock } from "./advisory-lock.js";
 import { readLocalRecordSource } from "./local-record-source.js";
 import { assertExtensionPrefixIdle, claimExtensionMutationLock } from "./extension-mutation.js";
 import { claimUpdateClosureAccess } from "./update-closure.js";
+import { readMeshRegistry } from "./mesh-registry.js";
+import { homeCotalDir } from "./cotal-home.js";
+import { MANAGER_PIDFILE, localProcessPathCandidates, recordedLocalProcessPaths } from "./local-process.js";
+import { commandIsCotalSupervisor, readProcessRecord } from "./pid.js";
+import { probeLiveness } from "./liveness.js";
+
+function pruneConnectorSets(id: { entry: string; version: string; path: string }, holders?: readonly (string | undefined)[]): void {
+  // Older process records do not pin a connector version. Keep every set while any
+  // recorded holder may still use one, rather than infer its prefix from file age.
+  try {
+    if (previousConfig(id) !== join(id.path, "cotal")) return;
+    // Controller services have a separate protected custody store. Without a
+    // complete controller observation, none of their possible prefixes is idle.
+    if (!holders && existsSync(join(homeCotalDir(), "services"))) return;
+    if (holders?.some(version => version === undefined || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(version))) return;
+    const keep = new Set(holders ?? []);
+    if (!holders) {
+      const registry = readMeshRegistry();
+      if (registry.unusable.length) return;
+      for (const entry of registry.entries) {
+        const paths = new Set(localProcessPathCandidates(MANAGER_PIDFILE, { root: entry.root, space: entry.space }));
+        for (const row of recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root)) {
+          if (row.unread) return;
+          paths.add(row.path);
+        }
+        for (const path of paths) {
+          const record = readProcessRecord(path, commandIsCotalSupervisor);
+          if (!["absent", "dead"].includes(record.state)) return;
+        }
+      }
+      const daemon = readLocalRecordSource(join(homeCotalDir(), "daemon", "daemon.lock"), 4096, true);
+      if (daemon?.length) {
+        const record = JSON.parse(daemon.toString("utf8")) as { v?: number; pid?: number };
+        if (record.v !== 1 || !Number.isInteger(record.pid) || record.pid! <= 0 || probeLiveness(record.pid!) !== "dead") return;
+      }
+    }
+    const sets = dirname(id.path);
+    ownedAncestors(sets);
+    for (const name of readdirSync(sets)) {
+      if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(name)) continue;
+      const path = join(sets, name);
+      if (path === id.path || keep.has(name)) continue;
+      try { ownedAncestors(path); rmSync(path, { recursive: true, force: true }); }
+      catch { console.error(`connector set cleanup: could not remove ${name}; the update remains selected`); }
+    }
+  } catch { /* Unreadable holder state retains all sets. */ }
+}
+
+/** Collect only after the caller authenticates every local Manager and daemon. */
+export function pruneRetainedConnectorConfig(holders: readonly (string | undefined)[]): void {
+  try {
+    const id = identity();
+    if (!id || connectorConfigDir() === globalConfigDir()) return;
+    const release = claimUpdateClosureAccess();
+    try { pruneConnectorSets(id, holders); } finally { release(); }
+  } catch { /* Cleanup must never fail a successful update. */ }
+}
 
 interface Selection { readonly v: 1; readonly entry: string; readonly version: string; readonly root: string }
 function identity(): { entry: string; version: string; path: string } | undefined {
@@ -143,6 +200,7 @@ export function retainConnectorConfig(): string {
     const temporary = join(id.path, `.selection-${randomBytes(8).toString("hex")}`);
     writeFileSync(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
     renameSync(temporary, join(id.path, "selection.json"));
+    pruneConnectorSets(id);
     return root;
   } finally { releaseWriter(); releaseSeed(); releaseClosure(); }
 }
