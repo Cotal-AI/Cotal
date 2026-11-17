@@ -26,6 +26,21 @@ for (const consistent of [false, true]) {
   assert.equal(await executeUpdate(true, denied), 1, "repair-needed or unreadable custody remains a refusal");
   assert.deepEqual(actions, ["custody"]);
 }
+for (const consistent of [false, true]) {
+  const actions: string[] = [], lines: string[] = [];
+  const offline: UpdateRuntime = { ...rt, isCurrent: () => consistent,
+    npm: args => {
+      assert.ok(args.includes("--fetch-retries=0") && args.includes("--fetch-timeout=15000"));
+      return { status: 1, stdout: '{"error":{"code":"EAI_AGAIN"}}', stderr: "npm error EAI_AGAIN" };
+    },
+    reportRunningManager: async () => { actions.push("custody"); return "legacy"; },
+    reconcile: async () => { actions.push("repair"); },
+    out: line => { lines.push(line); }, err: line => { lines.push(line); },
+  };
+  assert.equal(await executeUpdate(true, offline), 0);
+  assert.deepEqual(actions, []);
+  assert.deepEqual(lines, ["The registry cannot be reached; nothing was changed."]);
+}
 const { seedInstallationCurrent } = await import("../src/seed/reconcile.js");
 assert.equal(seedInstallationCurrent(), false, "an unseeded checkout is not proven current");
 emitSentinel({ passed: counted.cells(), failed: 0 });

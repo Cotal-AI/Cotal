@@ -17,7 +17,7 @@ for (const path of [project, join(project, ".cotal"), home, fixture, join(root, 
 const repo = join(import.meta.dirname, "../../..");
 const packed = process.env.COTAL_REMEDY_TEST_ENTRY;
 const entry = packed ?? join(repo, "bin/cotal.ts");
-const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "rt"), TMPDIR: join(root, "tmp"), COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
+const env: NodeJS.ProcessEnv & { COTAL_HOME: string; XDG_CONFIG_HOME: string } = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(root, "cotal"), XDG_CONFIG_HOME: join(root, "config"), XDG_RUNTIME_DIR: join(root, "rt"), TMPDIR: join(root, "tmp"), COTAL_NO_UPDATE_CHECK: "1", COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_TELEMETRY: "off" };
 let latest = "99.0.0";
 const server = createServer(async (request, response) => {
   if (decodeURIComponent(request.url ?? "") === "/cotal-ai") response.end(JSON.stringify({ name: "cotal-ai", "dist-tags": { latest }, versions: { [latest]: { name: "cotal-ai", version: latest } } }));
@@ -79,6 +79,21 @@ try {
   await ok(["setup", "--destination", "local", "--harness", "stack-remedy-seat", "--project", project, "--space", "remedy-proof", "--no-input", "--configure-only"]);
   started = true;
   await ok(["up", "--detach", "--space", "remedy-proof", "--open", "--max-sessions", "7"]);
+  const beforeOffline = records();
+  const registryBefore = env.npm_config_registry;
+  env.npm_config_registry = "http://localhost:1";
+  try {
+    const start = Date.now();
+    const offline = await cli(["update", "--self"]);
+    assert.equal(offline.code, 0, offline.output);
+    assert.equal(offline.output.trim(), "The registry cannot be reached; nothing was changed.");
+    assert.ok(Date.now() - start < 10_000, "an unreachable registry finishes within seconds");
+    assert.deepEqual(records(), beforeOffline, "offline update leaves stack and Manager records untouched");
+    assert.match(await ok(["status", "--space", "remedy-proof"]), /Manager:.*answering/);
+  } finally {
+    if (registryBefore === undefined) delete env.npm_config_registry;
+    else env.npm_config_registry = registryBefore;
+  }
   await report(true, 0);
   await ok(["spawn", "--agent", "stack-remedy-seat", "--name", "remedy-worker", "--detach", "--no-events", "--space", "remedy-proof"]);
   const printed = await report(true, 1);

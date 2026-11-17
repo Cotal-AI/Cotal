@@ -482,7 +482,12 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
 
   if (self) {
     const latest = latestVersion(rt);
-    if (latest.ok && compareSemver(latest.version, current) > 0) {
+    if (!latest.ok) {
+      if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry availability", true);
+      rt.out("The registry cannot be reached; nothing was changed.");
+      return 0;
+    }
+    if (compareSemver(latest.version, current) > 0) {
       const code = await upgradeAndReconcile(latest.version, current, rt, target);
       if (code === 0 && rt.env.COTAL_AUTO_UPDATE !== "1") rt.generationWaited = true;
       return code;
@@ -503,11 +508,6 @@ export async function executeUpdate(self: boolean, rt: UpdateRuntime = updateRun
     }
 
     return reconcileCurrent(current, rt, target, (reconciled, deferred) => {
-      if (!latest.ok) {
-        if (rt.env.COTAL_AUTO_UPDATE === "1") recordUpdateDeferral(current, "waiting for registry or extension closure availability", true);
-        rt.err(c.red(`✗ cotal-ai version check failed: ${latest.error}`));
-        return 1;
-      }
       if (rt.env.COTAL_AUTO_UPDATE === "1") {
         if (reconciled) recordUpdateCompletion(current, `updated to ${current}`, true);
         else if (!deferred) {
@@ -955,7 +955,7 @@ export function printLegacyReport(
 function latestVersion(rt: UpdateRuntime): { ok: true; version: string } | { ok: false; error: string } {
   const cache = mkdtempSync(join(tmpdir(), "cotal-npm-view-"));
   try {
-    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false"]);
+    const result = rt.npm(["view", "cotal-ai@latest", "version", "--json", "--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000"]);
     if (result.status !== 0) return { ok: false, error: failure(result) };
     try {
       return { ok: true, version: parseNpmVersion(result.stdout) };
