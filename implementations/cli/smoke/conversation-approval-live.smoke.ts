@@ -68,7 +68,7 @@ const decide = (requestId: string, decision: { approve: Selection } | "deny" | "
 };
 let originalRegistration: ReturnType<typeof bundle> | undefined;
 let movedRegistration: ReturnType<typeof bundle> | undefined;
-let enforceNames = false;
+let enforceNames = false, terminalNameRefusals = true;
 const retiredActors = new Set<string>();
 const server = createServer({ key, cert: ca }, async (req, res) => {
   const send = (status: number, body: unknown) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
@@ -85,13 +85,19 @@ const server = createServer({ key, cert: ca }, async (req, res) => {
     const digest = canonicalJson(body);
     let a = approvals.get(body.requestId);
     if (a && a.digest !== digest) return send(409, { error: "requestId reused with a different request" });
+    const taken = enforceNames && [...approvals.values()].some((previous) => previous.material &&
+      JSON.parse(previous.digest).label.toLowerCase() === body.label.toLowerCase() && !retiredActors.has(previous.material.actor));
+    const terminal = terminalNameRefusals && req.headers["cotal-conversation-refusals"] === "1";
     if (!a) {
-      if (enforceNames && [...approvals.values()].some((previous) => previous.material &&
-          JSON.parse(previous.digest).label === body.label && !retiredActors.has(previous.material.actor)))
-        return send(409, { error: "name-taken" });
+      if (taken && !terminal) return send(409, { error: "name-taken", reason: "server-secret-canary", agentsUrl: "https://foreign.example/secret" });
       const id = base32(26);
       a = { id, url: `${base}/approve/${id}`, expiresAt: new Date(Date.now() + 600_000).toISOString(), state: "pending", digest, proposed: body.selection ?? null };
       approvals.set(body.requestId, a);
+    }
+    if (taken && (a.state === "pending" || a.state === "approved")) {
+      if (!terminal) return send(409, { error: "name-taken" });
+      a.state = "refused";
+      a.refusal = { v: 1, requestId: body.requestId, status: "refused", error: "name-taken" };
     }
     if (a.state === "pending") {
       const answer = { v: 1, requestId: body.requestId, status: "pending", approval: { id: a.id, url: a.url, expiresAt: a.expiresAt }, proposed: a.proposed };
@@ -504,6 +510,110 @@ try {
     }
     failure = undefined;
   });
+  await check("an opted-in terminal name refusal releases the request, stays refused on replay, and permits another name", async () => {
+    const p = await pendingOf(provisionUserApp(target, "held-name", "session-name-holder", true));
+    decide(p.requestId, { approve: EMPTY });
+    const holder = await connected(provisionUserApp(target, "held-name", "session-name-holder", true));
+    enforceNames = true;
+    const refused = await cli({ name: "HELD-NAME", space: SPACE, session: "session-name-replacement", events: true });
+    const body = posts.at(-1)!;
+    assert.equal(refused.reply.refused, "refused");
+    assert.match(refused.reply.error, /name is already held/);
+    assert.equal(savedFor(body.requestId), undefined);
+    assert(!refused.out.includes("server-secret-canary"));
+    const command = ["app-identity", "provision", "--require-approval", "--space", SPACE,
+      "--session", "session-command-name", "--events", "--name"];
+    const commandRefused = await cotal([...command, "held-name"]);
+    assert.equal(commandRefused.code, 1);
+    assert.equal(JSON.parse(commandRefused.out).refused, "refused");
+    const commandNext = await cotal([...command, "unused-command-name"]);
+    assert.equal(commandNext.code, 1);
+    assert.equal(JSON.parse(commandNext.out).pending, true, "the registered CLI command also reaches fresh approval");
+    await retireUserApp(holder.retire.dir);
+    const replay = await fetch(`${base}/api/spaces/${SPACE}/conversation-identities`, { method: "POST",
+      headers: { authorization: "Bearer isolated-fixture-human-session", "content-type": "application/json", "Cotal-Conversation-Refusals": "1" }, body: JSON.stringify(body) });
+    assert.equal(replay.status, 409);
+    assert.deepEqual(await replay.json(), { v: 1, requestId: body.requestId, status: "refused", error: "name-taken" });
+    const next = await pendingOf(provisionUserApp(target, "unused-name", "session-name-replacement", true));
+    assert.notEqual(next.requestId, body.requestId);
+    decide(next.requestId, { approve: EMPTY });
+    const connection = await connected(provisionUserApp(target, "unused-name", "session-name-replacement", true));
+    await retireUserApp(connection.retire.dir);
+    enforceNames = false;
+  });
+  for (const state of ["creating", "retiring"] as const) {
+    await check(`a legacy ${state} name conflict recovers through a terminal refusal before requesting another name`, async () => {
+      const session = `session-legacy-name-${state}`;
+      const p = await pendingOf(provisionUserApp(target, `held-${state}`, `holder-${state}`, true));
+      decide(p.requestId, { approve: EMPTY });
+      const holder = await connected(provisionUserApp(target, `held-${state}`, `holder-${state}`, true));
+      enforceNames = true;
+      terminalNameRefusals = false;
+      const refused = await cli({ name: `held-${state}`, space: SPACE, session, events: true });
+      const oldRequest = posts.at(-1)!.requestId;
+      assert.equal(refused.reply.refused, undefined);
+      assert.match(refused.reply.error, /name is already held/);
+      assert(!refused.out.includes("server-secret-canary") && !refused.out.includes("foreign.example"));
+      assert(savedFor(oldRequest));
+      if (state === "retiring") {
+        const blocked = await cli({ name: `next-${state}`, space: SPACE, session, events: true });
+        assert.equal(blocked.reply.pending, undefined);
+        assert.equal(JSON.parse(readFileSync(savedFor(oldRequest)!, "utf8")).state, "retiring");
+      }
+      terminalNameRefusals = true;
+      const next = await pendingOf(provisionUserApp(target, `next-${state}`, session, true));
+      assert.notEqual(next.requestId, oldRequest);
+      assert.equal(savedFor(oldRequest), undefined);
+      assert.equal(approvals.get(oldRequest)!.state, "refused");
+      decide(next.requestId, { approve: EMPTY });
+      const connection = await connected(provisionUserApp(target, `next-${state}`, session, true));
+      await retireUserApp(connection.retire.dir);
+      await retireUserApp(holder.retire.dir);
+      enforceNames = false;
+    });
+  }
+  await check("malformed or unbound terminal name answers preserve recovery state without exposing server text", async () => {
+    const p = await pendingOf(provisionUserApp(target, "name-invalid", "session-name-invalid", true));
+    decide(p.requestId, { approve: EMPTY });
+    const answer = { v: 1, requestId: p.requestId, status: "refused", error: "name-taken" };
+    for (const body of [{ ...answer, v: 2 }, { ...answer, requestId: "another-request" }, { ...answer, status: "pending" },
+      { ...answer, error: "another-error" }, { ...answer, reason: "server-secret-canary" }, [answer], { ...answer, v: "1" }]) {
+      failure = { status: 409, body };
+      const refused = await cli({ name: "name-invalid", space: SPACE, session: "session-name-invalid", events: true });
+      assert.equal(refused.reply.refused, undefined);
+      assert.equal(refused.reply.retryable, false);
+      assert(!refused.out.includes("server-secret-canary"));
+      assert(savedFor(p.requestId));
+    }
+    failure = undefined;
+    await retireUserApp(dirname(savedFor(p.requestId)!));
+  });
+  await check("a terminal name answer cannot discard an already-issued identity", async () => {
+    const p = await pendingOf(provisionUserApp(target, "issued-name", "session-issued-name", true));
+    decide(p.requestId, { approve: EMPTY });
+    const connection = await connected(provisionUserApp(target, "issued-name", "session-issued-name", true));
+    failure = { status: 409, body: { v: 1, requestId: p.requestId, status: "refused", error: "name-taken" } };
+    const refused = await cli({ name: "issued-name", space: SPACE, session: "session-issued-name", events: true });
+    failure = undefined;
+    assert.equal(refused.reply.refused, undefined);
+    assert(existsSync(join(connection.retire.dir, "identity.json")));
+    await retireUserApp(connection.retire.dir);
+  });
+  await check("a name taken after approval becomes a terminal refusal without issuing a second identity", async () => {
+    const waiting = await pendingOf(provisionUserApp(target, "approval-race-name", "session-name-race", true));
+    const p = await pendingOf(provisionUserApp(target, "approval-race-name", "session-name-race-holder", true));
+    decide(p.requestId, { approve: EMPTY });
+    const holder = await connected(provisionUserApp(target, "approval-race-name", "session-name-race-holder", true));
+    decide(waiting.requestId, { approve: EMPTY });
+    const before = issued;
+    enforceNames = true;
+    const refused = await cli({ name: "approval-race-name", space: SPACE, session: "session-name-race", events: true });
+    assert.equal(refused.reply.refused, "refused");
+    assert.equal(issued, before);
+    assert.equal(savedFor(waiting.requestId), undefined);
+    await retireUserApp(holder.retire.dir);
+    enforceNames = false;
+  });
   await check("a legacy retiring identity recovers matching original pins and reconnects under the same name", async () => {
     recordMesh(remoteUserEntry(SPACE, target.server, target.root, bundle(), false, false));
     const registeredTarget = await resolveTargetOrThrow({ space: SPACE });
@@ -581,7 +691,7 @@ try {
         userAuth: target.userAuth, policy: target.policy });
     });
   }
-  await check("a name conflict after set-aside explains the earlier identity and both remedies", async () => {
+  await check("a terminal name refusal after set-aside permits fresh approval and keeps the original recovery record", async () => {
     const session = "session-missing-login";
     const p = await pendingOf(provisionUserApp(target, "moved", session, true));
     decide(p.requestId, { approve: EMPTY });
@@ -606,14 +716,20 @@ try {
     writeFileSync(join(unreadable, "identity.json"), "not JSON", { mode: 0o600 });
     const refused = await cli({ name: "moved", space: SPACE, session, events: true });
     assert.equal(refused.code, 1);
-    assert.equal(refused.reply.retryable, false);
-    assert.match(refused.reply.error, /this conversation's earlier identity still holds the name/);
-    assert.match(refused.reply.error, /revoke the offline agent at the authority, or connect under another name/);
+    assert.equal(refused.reply.refused, "refused");
+    assert.match(refused.reply.error, /name is already held/);
     assert.equal(deletes, before, "no retirement credential goes to the replacement");
-    assert(existsSync(join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json")));
+    const preserved = join(home, "app-identities", `unconfirmed-${record.requestId}`, "identity.json");
+    assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
+    const nextTarget = await resolveTargetOrThrow({ space: SPACE });
+    const next = await pendingOf(provisionUserApp(nextTarget, "another-name", session, true));
+    decide(next.requestId, { approve: EMPTY });
+    const connection = await connected(provisionUserApp(nextTarget, "another-name", session, true));
+    assert.equal(connection.env.COTAL_SERVERS, moved.server);
+    assert.deepEqual(JSON.parse(readFileSync(preserved, "utf8")), record);
     enforceNames = false;
   });
-  assert.equal(assertions, 44);
+  assert.equal(assertions, 50);
   console.log(`conversation-approval-live: ${assertions} checks passed; isolated HTTPS fixture authority and fixture human decision, not hosted acceptance`);
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));

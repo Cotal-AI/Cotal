@@ -316,6 +316,16 @@ A permanent HTTP request failure stops automatic approval polling but keeps that
 The native host reports a policy refusal separately from a person's denial, then serves its saved
 explanation through the same name and `approval_id` without another provision call.
 
+The native auth provider sends `Cotal-Conversation-Refusals: 1` on creation and recovery POSTs.
+An authority that supports this opt-in can answer a name conflict with HTTP 409 and only
+`v: 1`, the saved `requestId`, `status: "refused"` and `error: "name-taken"`.
+It must durably bind the refusal to the original request and repeat it on replay, even after the
+name becomes available. An issued identity must never become a name refusal. A matching answer
+releases only an unissued local request, so choosing another name can reach normal approval.
+An older unversioned name conflict explains the failure but retains unknown recovery state.
+Server reason text and action URLs are not displayed. Signed-in and hosted connections do not
+number a conflicting name automatically; open and static local meshes do.
+
 An authority can return a terminal agent-limit refusal with HTTP 409, `v: 1`, the saved `requestId`,
 `status: "refused"`, `error: "agent-cap"` and `cap: "agents"`.
 Its `current` and `limit` are safe integers with `current >= limit >= 1`.
@@ -340,11 +350,11 @@ replacing the public pins. Retirement uses that registration only when its full 
 the saved record. A record without issued material has no saved exchange address and is set aside. If discovery
 is unavailable or the hash differs, or the original authority is
 unavailable or refuses sign-in, the record is set aside without confirming retirement.
-Set-aside records live at `app-identities/unconfirmed-<id>` in the private Cotal home, hold a
-credential, and can be removed by deleting that directory after revoking the old identity at its
-authority. No credential is sent to the replacement authority. The session can request a fresh identity with a new approval.
-If the earlier identity still holds its name, the refusal explains how to free it: revoke the offline
-agent at the authority, or connect under another name.
+Set-aside records live at `app-identities/unconfirmed-<id>` in the private Cotal home. They retain
+credentials and do not confirm retirement. No credential is sent to the replacement authority.
+If the earlier identity still holds its name, a matching terminal refusal releases only the fresh,
+unissued request. The person can then choose another name and approve a new connection, or retire
+an earlier agent they no longer use before reusing its name. Offline alone does not mean unused.
 A different issuer or audience never authorizes reuse of the old request. After each connection, the plugin
 retires the same mesh's saved identities whose plugin server process no longer exists, such as one
 killed before it could retire them. This runs in the background, so the connection does not wait

@@ -9,7 +9,7 @@ import {
 } from "@cotal-ai/core";
 import { checkDiscoveryDocument, discoveryDocumentUrl, pinnedFetch, getSpaceAuth, homeCotalDir, resolveTargetOrThrow, userAuthStateDir, workspaceSecretStore, type MeshTarget } from "@cotal-ai/workspace";
 import {
-  agentCapRefusal, checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, legacyAgentCapRefusal, selectionRefusal, signedInSpace,
+  agentCapRefusal, checkConversationMaterial, conversationRetirementPhase, discoverConversationAuthority, legacyAgentCapRefusal, legacyNameTakenRefusal, nameTakenRefusal, selectionRefusal, signedInSpace,
   type ConversationAuthority, type ConversationMaterial,
 } from "./conversation-identity.js";
 import { withProvisioner } from "./provisioner.js";
@@ -137,6 +137,8 @@ function creationOutcome(
 ): { refused: string; decision: ConversationRefusal["decision"] } | { pending: ConversationPending } | { material: ConversationMaterial } {
   const remote = record.remote!;
   if (!remote.material) {
+    const nameTaken = nameTakenRefusal(response.status, response.body, record.requestId);
+    if (nameTaken) return { refused: nameTaken, decision: "refused" };
     const cap = agentCapRefusal(response.status, response.body, authority, record.requestId);
     if (cap) return { refused: cap, decision: "refused" };
     const refusal = selectionRefusal(response.status, response.body);
@@ -153,7 +155,7 @@ function creationOutcome(
     }
   }
   if (response.status !== 200 && response.status !== 201)
-    throw new ConversationRequestError(legacyAgentCapRefusal(response.status, response.body) ??
+    throw new ConversationRequestError(legacyNameTakenRefusal(response.status, response.body) ?? legacyAgentCapRefusal(response.status, response.body) ??
       `conversation identity ${what} answered HTTP ${response.status}; its original request was retained`,
       response.status >= 500 || [408, 425, 429].includes(response.status));
   return { material: checkConversationMaterial(response.body, authority, record.requestId, record.selection, approvalExpectation(remote)) };
@@ -290,15 +292,6 @@ async function provisionOnSpace(
         throw new Error("the selected mesh does not advertise connection approval v1; the saved request was retained and not sent");
       markUnderApproval(dir, record);
       const response = await request(provider)({ url: authority.url, idpUrl: record.remote.idpUrl, method: "POST", body: creationBody(record) });
-      if (response.status === 409 && response.body !== null && typeof response.body === "object" &&
-          (response.body as { error?: unknown }).error === "name-taken" && readdirSync(root).some((entry) => {
-            if (!entry.startsWith("unconfirmed-") || !existsSync(join(root, entry, RECORD))) return false;
-            try {
-              const earlier = read(join(root, entry));
-              return earlier.session === session && earlier.space === target.space && earlier.label === name;
-            } catch { return false; }
-          }))
-        throw new ConversationRequestError("this conversation's earlier identity still holds the name; revoke the offline agent at the authority, or connect under another name", false);
       const outcome = creationOutcome(record, authority, response, "creation");
       if ("refused" in outcome) {
         discard(dir);

@@ -567,7 +567,8 @@ export const cotalAuthProvider: AuthProvider = {
         method,
         redirect: "manual",
         credentials: "omit",
-        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}) },
+        headers: { authorization: `Bearer ${session.token}`, ...(body ? { "content-type": "application/json" } : {}),
+          ...(method === "POST" ? { "Cotal-Conversation-Refusals": "1" } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(30_000),
       });
