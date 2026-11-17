@@ -81,12 +81,15 @@ const oldEntry = join(oldPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
 const freshEntry = join(freshPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
 const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
-const candidateEntry = process.env.DESKTOP_REPAIR_CLI;
+let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source'].includes(repairCommand), 'unsupported repair entry command');
-if (!candidateEntry) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update'].includes(repairCommand), 'unsupported repair entry command');
+if (!candidateEntry && repairCommand !== 'self-update') assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
+if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
 report.repairCommand = repairCommand;
-const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args]);
+let candidateEnv = env;
+const candidate = (label, args) => call(label, process.execPath, [candidateEntry, ...args], { callEnv: candidateEnv });
+let candidateRegistry;
 let closeParticipant;
 let serviceOwnership;
 let copiedApp;
@@ -161,6 +164,17 @@ try {
   assert.match(report.bundledVersion, /0\.164\.16/);
   const cutoff = { ...env, npm_config_before: '2026-11-16T19:38:00.000Z' };
   await installArchive('historical', '0.164.16', oldPrefix, cutoff);
+  if (repairCommand === 'self-update') {
+    const { candidatePairRegistry } = await import(pathToFileURL(resolve('scripts/candidate-pair-registry.mjs')).href);
+    candidateRegistry = await candidatePairRegistry(resolve(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE), resolve(process.env.DESKTOP_REPAIR_TARGET_CLOSURE));
+    assert.equal(candidateRegistry.identity.source, process.env.GITHUB_SHA, 'both guarded closures must bind to this exact product source');
+    report.selfUpdatePair = candidateRegistry.identity;
+    candidateEnv = { ...env, npm_config_registry: candidateRegistry.url };
+    const installedPrefix = join(root, 'candidate-install');
+    ok(await npm('install real candidate A before app deletion', ['install', '--global', '--prefix', installedPrefix, `cotal-ai@${candidateRegistry.identity.sourceVersion}`, '--no-audit', '--no-fund'], { callEnv: candidateEnv, timeout: 600000 }));
+    candidateEntry = join(installedPrefix, 'lib/node_modules/cotal-ai/dist/cotal.js');
+    assert.equal(JSON.parse(readFileSync(join(installedPrefix, 'lib/node_modules/cotal-ai/package.json'), 'utf8')).version, candidateRegistry.identity.sourceVersion);
+  }
   mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
   const { prepareUpdateParticipant } = await import(pathToFileURL(resolve('implementations/auth/smoke/update-participant.fixture.ts')).href);
   closeParticipant = await prepareUpdateParticipant({ env, project, cotalHome, report });
@@ -203,6 +217,24 @@ try {
       entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
+    if (repairCommand === 'self-update') {
+      candidateRegistry.activateTarget();
+      const update = ok(await candidate('installed candidate update --self repairs missing program first', ['update', '--self']));
+      const updateReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+      const updateSource = readFileSync(plist, 'utf8');
+      assert.equal(updateReceipt.unitSha256, createHash('sha256').update(updateSource).digest('hex'));
+      assert(!updateSource.includes(`${app}/`), 'public self-update must repair before any candidate daemon status');
+      assert(updateSource.includes(candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js')));
+      assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
+      serviceOwnership = { receiptPath, receiptSha256: createHash('sha256').update(readFileSync(receiptPath)).digest('hex'), sha256: updateReceipt.unitSha256 };
+      const job = ok(await nativeAction('self-update repaired native job before status', ['print']));
+      const pid = Number(/^\s*pid = (\d+)\s*$/m.exec(job.stdout)?.[1]);
+      assert(Number.isSafeInteger(pid) && pid > 1 && pid !== before.pid);
+      heldProcesses.push(await identity(pid, 'self-update repaired daemon'));
+      const version = ok(await candidate('installed candidate version after self update', ['--version'])).stdout.split(/\r?\n/, 1)[0];
+      assert.equal(version, `cotal-ai ${candidateRegistry.identity.targetVersion}`);
+      report.selfUpdateRepairAcceptance = { exit: update.exit, pid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true, installedTarget: candidateRegistry.identity.targetVersion };
+    }
     if (repairCommand === 'unreadable-source') {
       await ownedService();
       const sourceIdentity = statSync(plist);
@@ -280,10 +312,11 @@ try {
       }
     }
     if (repairCommand !== 'disabled' && repairCommand !== 'unreadable-source') {
-    const repaired = body(await candidate(repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
+    const repaired = body(await candidate(repairCommand === 'self-update' ? 'candidate status observes self-update-repaired program' : repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
+    if (repairCommand === 'self-update') assert.equal(repaired.pid, report.selfUpdateRepairAcceptance.pid, 'status must observe the native lifetime already started by self-update');
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
     assert.notEqual(repaired.pid, before.pid, 'repair starts a fresh daemon lifetime');
-    assert.equal(repaired.version, report.candidate.version.split(/\r?\n/)[0].replace('cotal-ai ', ''));
+    assert.equal(repaired.version, repairCommand === 'self-update' ? candidateRegistry.identity.targetVersion : report.candidate.version.split(/\r?\n/)[0].replace('cotal-ai ', ''));
     assert(repaired.managers.some(row => row.space === report.participant.space && row.state === 'answering'));
     assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore, 'repair preserves daemon sign-in bytes');
     const currentReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
@@ -372,6 +405,8 @@ try {
     if (report.cleanupBundleProcessRows.length || report.cleanupProcessCensus.exit !== 0) { report.cleanupUnresolvedProcesses = true; process.exitCode = 1; }
   }
   catch (error) { report.cleanupCensusError = publicText(error); process.exitCode = 1; }
+  try { if (candidateRegistry) report.selfUpdateRegistryRequests = await candidateRegistry.close(); }
+  catch (error) { report.cleanupRegistryError = publicText(error); process.exitCode = 1; }
   try { await closeParticipant?.(); }
   catch (error) { report.cleanupParticipantError = publicText(error); process.exitCode = 1; }
   try { if (mounted) await call('cleanup image detach', '/usr/bin/hdiutil', ['detach', mount]); }
