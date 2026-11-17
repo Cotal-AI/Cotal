@@ -271,7 +271,7 @@ export interface ManagerInstanceRecord {
 }
 
 /** Every Manager gate of one owner at one scan. A failed scan is an error, never a partial list. */
-export interface ManagerInstanceCatalog {
+interface ManagerInstanceCatalog {
   v: 1;
   owner: string;
   complete: true;
@@ -585,7 +585,7 @@ export function serviceHostEngineOf(host: ServiceEndpointHost): ServiceHostOpera
 }
 /** Package-internal: the native service callout authority composed with a plane's service host. */
 const SERVICE_CALLOUTS = new WeakMap<ServiceEndpointHost, NativeServiceCalloutAuthority>();
-export function serviceHostCalloutOf(host: ServiceEndpointHost): NativeServiceCalloutAuthority | undefined {
+function serviceHostCalloutOf(host: ServiceEndpointHost): NativeServiceCalloutAuthority | undefined {
   return SERVICE_CALLOUTS.get(host);
 }
 
@@ -2400,7 +2400,7 @@ export function authServiceConfiguration(args: ParsedArgs) {
 }
 
 /** Trusted local embedding hooks. They carry no prepared key material or loopback capability. */
-export interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
+interface AuthDaemonLifecycle extends AuthServiceRuntimeOptions {
   readonly root: string;
   readonly onReady: () => void | Promise<void>;
   readonly onClosed: () => void | Promise<void>;

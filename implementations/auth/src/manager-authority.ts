@@ -315,7 +315,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   };
 }
 
-export function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissionRequest {
+function parseRemoteRunSubmissionRequest(raw: unknown): RemoteRunSubmissionRequest {
   const registered = parseRegisteredRunRequest(raw, "manager-run-submission", "manager keyed submission", ["subject"]);
   const subject = (raw as { subject?: unknown }).subject;
   if (typeof subject !== "string") runRequestError("manager keyed submission", "requires observed subject");
@@ -661,7 +661,7 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
 /** What a served resume or answer asks the host to issue for: a resume names its run, an answer
  *  the endpoint it answers on, the run and step whose pause it answers, and whether it amends
  *  (SPEC 14.8). */
-export type RunRequestOperation =
+type RunRequestOperation =
   | { command: "run-resume"; runId: string }
   | { command: "run-answer"; endpoint: string; runId: string; stepKey: string; amend: boolean };
 
@@ -779,7 +779,7 @@ async function authorizeServedRunCaller(args: {
 
 /** The registered manager's declaration of a served command at a registration revision: the class
  *  and contract its serving endpoint admits. */
-export type RegisteredRunCommand = (
+type RegisteredRunCommand = (
   instanceId: string,
   registrationRevision: number,
   command: RunRequestOperation["command"],
