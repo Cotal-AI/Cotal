@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch', 'crash-prepared-concurrent'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published', 'crash-prepared-mismatch', 'crash-prepared-concurrent', 'crash-prepared-changed-source'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry && repairCommand !== 'self-update' && !repairCommand.startsWith('crash-')) assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand.startsWith('crash-')) assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE, 'crash proof requires a real guarded installed source closure');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
@@ -361,6 +361,56 @@ try {
       assert.equal(readFileSync(hostingPath, 'utf8'), hostingBefore);
       report.interruptedRepair = { phase, captured: interrupted.captured, retryComplete: false, hostingPath, hostingSha256: sourceDigest(hostingBefore) };
       save();
+      if (repairCommand === 'crash-prepared-changed-source') {
+        const { withChangedRepairSource } = await import('./mac-repair-source-fault.mjs');
+        const intentPath = join(cotalHome, 'daemon/service-repair.json');
+        const protectedFiles = [intentPath, receiptPath, sessionPath, hostingPath];
+        const protectedBefore = protectedFiles.map(file => readFileSync(file));
+        const savedSource = readFileSync(plist, 'utf8');
+        const realIntent = readServiceRepair(join(cotalHome, 'daemon'));
+        assertServiceRepairPair(realIntent, JSON.parse(protectedBefore[1]), savedSource);
+        assert.equal(sourceDigest(savedSource), interrupted.captured.sourceSha256);
+        assert.equal(sourceDigest(protectedBefore[1].toString('utf8')), interrupted.captured.receiptSha256);
+        const absent = await call('changed-source fault requires native job absent after actual interruption', '/bin/launchctl', ['print', target], { timeout: 5000 });
+        assert(!absent.timedOut && !absent.signal && absent.exit === 113, 'setup miss: no source fault while any job remains loaded');
+        for (const held of heldProcesses) assert.equal(processBirth(held.pid), undefined, 'setup miss: original daemon or Manager still exists before source fault');
+        report.interruptedRepair.sourceFaultEvents = [];
+        await withChangedRepairSource({
+          file: plist, expected: savedSource,
+          verifyAuthority() {
+            for (const [index, file] of protectedFiles.entries()) assert.deepEqual(readFileSync(file), protectedBefore[index], 'protected authority changed; no source restoration is allowed');
+            const unloaded = spawnSync('/bin/launchctl', ['print', target], { env, encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
+            assert(!unloaded.error && !unloaded.signal && unloaded.status === 113, 'no source fault or restoration while native job absence is unconfirmed');
+            for (const held of heldProcesses) assert.equal(processBirth(held.pid), undefined, 'no source fault or restoration while original process remains live');
+          },
+          record(event) {
+            report.interruptedRepair.sourceFaultEvents.push(event);
+            if (event.event === 'fixture-source-restore-unconfirmed') report.interruptionCleanupUnconfirmed = true;
+            save();
+          },
+          async run(fault) {
+            const rejected = await candidate('public repair rejects actual fixture-changed source', ['daemon', 'install', '--json']);
+            report.interruptedRepair.changedSourceAttempt = { exit: rejected.exit, protectedBytesUnchanged: false, sourceUnchanged: false, nativeAbsent: false };
+            save();
+            const nativeAfter = await call('changed-source refusal native absence', '/bin/launchctl', ['print', target], { timeout: 5000 });
+            assert(!nativeAfter.timedOut && !nativeAfter.signal && nativeAfter.exit === 113);
+            report.interruptedRepair.changedSourceAttempt.nativeAbsent = true;
+            assert.equal(readFileSync(plist, 'utf8'), fault, 'rejected repair must not adopt or rewrite the changed source');
+            report.interruptedRepair.changedSourceAttempt.sourceUnchanged = true;
+            for (const [index, file] of protectedFiles.entries()) assert.deepEqual(readFileSync(file), protectedBefore[index]);
+            report.interruptedRepair.changedSourceAttempt.protectedBytesUnchanged = true;
+            save();
+            assert(!rejected.timedOut && !rejected.signal);
+            assert.equal(rejected.exit, 3);
+            const failure = JSON.parse(rejected.stdout);
+            assert.equal(failure.error?.code, 'OPERATION_UNKNOWN');
+            assert.match(failure.error?.message ?? '', /daemon service source changed outside repair/);
+          },
+        });
+        assert.equal(readFileSync(plist, 'utf8'), savedSource);
+        report.interruptedRepair.changedSourceRestoredForRetry = true;
+        save();
+      }
       if (repairCommand === 'crash-prepared-mismatch') {
         assert(mismatchedEntry, 'different destination must be installed before the repair begins');
         const intentPath = join(cotalHome, 'daemon/service-repair.json');
