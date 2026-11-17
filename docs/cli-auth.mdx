@@ -82,6 +82,9 @@ credentials. Per-user-auth spaces refuse too; a cached login does not replace si
 resolved root supplies the persona ACL, signer and default storage together. A root that cannot be
 resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
 selected-root accounts refuse before issuance.
+After a local static space is stopped, its retained broker configuration and validated signing
+trust still resolve file-only fixed-profile minting. No repeated `--server` or running broker is
+needed. Provisioning and endpoint discovery still require the selected broker.
 
 A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
 takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
