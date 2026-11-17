@@ -376,7 +376,8 @@ function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undef
   try { lstatSync(rendered.unitPath); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
   // A name is not authority. Require this installation's exact protected source and loaded fragment.
-  assertSystemdSource(rendered.unitPath, rendered.sha256);
+  try { assertSystemdSource(rendered.unitPath, rendered.sha256); }
+  catch { throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source does not match this installation's protected unit; nothing was changed"); }
   const names = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload"];
   const read = nativeRun("systemctl", ["--user", "show", rendered.unit, "--all", "--no-pager", ...names.map(name => `--property=${name}`)]);
   const values = new Map<string, string>();
@@ -901,7 +902,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw uncertain("a daemon endpoint still answers"); }
     catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
     // The wait above must not turn a changed source/receipt into deletion authority.
-    const current = recordedUnit(paths, daemonHome).receipt;
+    const current = recordedUnit(paths, daemonHome, nativeRun, recovered === true).receipt;
     if (current.unitSha256 !== receipt.unitSha256 || current.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
     let removedServiceRecords: string[];
     try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }

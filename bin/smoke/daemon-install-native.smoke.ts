@@ -665,7 +665,7 @@ try {
         check(`N7 ${kind} plain preview refuses ${expected}`, plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes(expected), { status: plain.status, stdout: plain.stdout, stderr: plain.stderr });
         check(`N7 ${kind} JSON preview and apply refuse ${expected}`, results.every((r) => r.status === 2 && r.doc.outcome === "refused" && r.doc.error?.code === expected), results);
         const calls = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n").map((line) => JSON.parse(line) as { operation: string });
-        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === 3 && calls.every((c) => c.operation === "directory-read"), calls);
+        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === (kind === "unrecorded-uninspectable" ? 3 : 6) && calls.every((c) => c.operation === "directory-read"), calls);
         const unchanged = kind === "unrecorded-uninspectable" ? readFileSync(join(context.config, "systemd"), "utf8") === foreign
           : kind === "unrecorded-directory" ? lstatSync(unitPath).isDirectory()
           : kind === "unrecorded-symlink" ? lstatSync(unitPath).isSymbolicLink() && readlinkSync(unitPath) === missing && !existsSync(missing)

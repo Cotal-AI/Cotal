@@ -219,6 +219,19 @@ try {
       && (replacement.pid !== second.pid || afterBirth !== beforeBirth) && processStartTime(second.pid) !== beforeBirth);
     check("restart retains the exact task source and receipt", readFileSync(plan.unitPath).equals(sourceBefore) && readFileSync(receipt).equals(receiptBefore));
   }
+  if (process.platform === "linux") {
+    rmSync(home, { recursive: true });
+    uninstallAttempted = true;
+    check("an unchanged Linux service can be removed after its daemon home is lost", ok("uninstall", "--yes").state === "removed");
+    await verifyRemoved();
+    clean = false;
+    uninstallAttempted = false;
+    ok("install");
+    await statusUntil(true);
+    rmSync(home, { recursive: true });
+    check("install restores the receipt of an unchanged surviving Linux service", ok("install").recovered === true && existsSync(receipt));
+    await statusUntil(true);
+  }
   uninstallAttempted = true;
   const removed = ok("uninstall", "--yes");
   check("uninstall confirms the planned service", removed.state === "removed" && removed.unit === plan.unit);
