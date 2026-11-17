@@ -6707,11 +6707,87 @@ then `closed`, and a closed state is final. An accepted answer is never undone.
 **Answers.** The effect of `prompt-answer` is that the agent accepts the answer: the prompt is
 consumed and the answer is handed to the harness. A refusal is `not-executed`, because nothing was
 consumed, and every reply after acceptance is `ok`, `executed`, whatever state it reports. It does
-not mean the harness applied the answer; the returned state says how far it got. A reply is a
-snapshot of the prompt's state, taken when it was sent. The answerer comes from the request's
-subject tokens only. An agent never accepts an answer to its own prompt: a caller principal equal to
-the agent is `permission-denied`, whatever its row. How an agent decides each answer, its expiry and
-its retries is specified with the agent's prompt desk.
+not mean the harness applied the answer; the returned state says how far it got. The answerer comes
+from the request's subject tokens only. An agent never accepts an answer to its own prompt: a caller
+principal equal to the agent is `permission-denied`, whatever its row.
+
+**The prompt desk.** An agent serves this endpoint from one prompt desk per process, the only writer
+of its prompts' states. The desk applies every event in one step, in the order the event reaches it,
+and no step waits for anything: the first event applied wins, and each later one meets the state the
+first one left. An event that arrives while a step runs, such as a harness report made while an
+answer is being checked, is applied after that step.
+
+Every prompt has two bounds, given by the harness adapter when the prompt opens. It is offered for 1 s
+to 7 days: `expiresAt` is `openedAt` plus that bound, and an `open` prompt closes `expired` there. A
+`sent` prompt waits 1 s to 24 h after its accepted answer for evidence of what the harness did (its
+settle bound), and then closes `unconfirmed` with nothing seen. No prompt is offered for ever, and no
+prompt stays `sent` for ever.
+
+The desk holds at most 32 prompts that are `open` or `sent` and opens no more; the harness's own
+dialog answers the next one. It remembers the last 32 of its prompts to close, and forgets an older
+one. It opens no prompt whose canonical content is over 262144 bytes, and none whose tool input
+is `omitted` while an option proceeds, so an omitted input can be refused remotely and approved only
+at the harness. A summary's JSON encoding is at most 4096 bytes of UTF-8 in every state its prompt can
+reach: when a prompt opens, the desk encodes its summary in every state, with the answerer's owner,
+actor and lifecycle UID, the option id and `seen` at their longest legal values, and does not open the
+prompt when the largest is over 4096 bytes. The desk serves only on a connection whose `max_payload` is
+at least 524288 bytes, which holds the largest `prompts` reply (64 summaries) and the largest `prompt`
+reply with their envelopes. It checks this again on every replaced connection, and closes when the
+check fails there, as it does when the broker refuses its subscription. A reply that still does not
+fit is `resource-exhausted`, with its size in `details`.
+
+`prompt-answer` runs these checks in order, as one step. Args that are not I-JSON (a lone surrogate
+in `note` or `values`) are `bad-request` before them. Each refusal is `not-executed` and leaves the
+prompt as it was.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | The caller principal is the agent | `permission-denied` |
+| 2 | `id` is not known to this runtime | `not-found` |
+| 3 | The prompt holds an accepted answer that is the same as this one | `ok`, `executed`, with the current state, at once. Nothing is handed over again. |
+| 4 | The prompt is not `open` | `conflict`, with the state in `details` |
+| 5 | `digest` differs from the prompt's | `failed-precondition`, with the prompt's digest in `details` |
+| 6 | `option` is not one of the prompt's | `bad-request` |
+| 7 | The option needs a note and has none or an empty one, takes no note and has one, submits the form and has no `values`, or takes no `values` and has some | `bad-request` |
+| 8 | `values` do not validate against the form schema, or carry a property it does not declare | `bad-request` |
+| 9 | The harness adapter's own rules refuse the answer | `bad-request`, with the adapter's message |
+| 10 | `expiresAt` has passed | `expired` |
+| 11 | Accept | `sent`, `unconfirmed`: the answer is handed to the harness in the same step |
+
+Two answers are the same when they carry the same `id`, `digest`, `option`, `note` and `values` from
+the same caller triple. The desk keeps the identity of an accepted answer for as long as it remembers
+the prompt, so a caller whose reply was lost sends the same answer again and gets `ok` with the
+current state: while the hand-over is pending, after it ended, and after it proved undelivered. Once
+the prompt is forgotten the same answer is `not-found`, `not-executed`, which is safe because prompt
+ids are never reused. Of two answers that race, the first one applied is accepted; the same answer
+from the same caller then meets check 3, and any other meets check 4.
+
+The reply to an accepted answer is sent once, at the first of these: the prompt closes (the closed
+state), the hand-over returns a receipt (`sent`, `delivered`), the hand-over call fails (`sent`,
+`unconfirmed`), or 10 s pass (`sent`, `unconfirmed`). The 10 s bound changes no state. A reply carries
+the state the desk read right after it applied the event that ended the wait, and a reply at check 3
+the state at that check. A reply is true of the moment it was taken, so two replies to one answer can
+arrive in either order (reader rules).
+
+What else moves a prompt, from the state it is in:
+
+| Event | From `open` | From `sent` |
+| --- | --- | --- |
+| The hand-over returns a receipt from the harness side | (no hand-over yet) | `sent`, `delivered` |
+| The hand-over returns that the harness applied the answer, or the harness confirms it later | no change | `closed`, `answered` |
+| The hand-over proves nothing was handed over, because the exchange had already ended | (no hand-over yet) | `closed`, `undelivered` |
+| The hand-over call fails | (no hand-over yet) | no change |
+| The harness reports an answer from its own dialog | `closed`, `local` | `closed`, `local`, with the accepted answer as `late` |
+| The harness is seen to act on this prompt | `closed`, `local` | `closed`, `unconfirmed`, with that sighting |
+| An action with this prompt's subject is seen, or nothing tied to the prompt | `closed`, `withdrawn`, with that sighting | `closed`, `unconfirmed`, with that sighting |
+| The harness stops waiting | `closed`, `withdrawn`, nothing seen | `closed`, `unconfirmed`, nothing seen |
+| `expiresAt` passes | `closed`, `expired` | no change |
+| The settle bound passes | (not running yet) | `closed`, `unconfirmed`, nothing seen |
+| The desk closes: the agent stops serving | `closed`, `withdrawn`, nothing seen | `closed`, `unconfirmed`, nothing seen |
+
+A `sent` prompt moves to `delivered` at most once, and nothing moves a closed prompt: a harness report
+that meets one is ignored. Once an answer is accepted the desk never gives the dialog back to the
+harness, whatever arrives while the receipt is pending.
 
 `details` entries this endpoint uses:
 
@@ -6734,6 +6810,7 @@ its retries is specified with the agent's prompt desk.
   of a `conflict` or `failed-precondition`, is a snapshot. For one runtime and one prompt id a reader
   ranks them `open`, then `sent` and `unconfirmed`, then `sent` and `delivered`, then `closed`, keeps
   the state further along, whichever reply carried it, and never goes back from `closed`.
+- A caller waits at least 15 s for a `prompt-answer` reply, longer than the desk's 10 s bound.
 - A reader keeps two values per agent: the `(runtime.id, seq)` it last saw in presence (§6) and the
   `(runtime.id, seq)` of its last successful `prompts` reply. It is dirty while they differ. While
   dirty it calls `prompts`: when it first reads presence, on every presence event, and after it
@@ -7813,6 +7890,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-17 | **The agent's prompt desk (§13.22), additive.** An agent serves the `agent` endpoint from one prompt desk per process, the only writer of its prompts' states, which applies every event in one step in the order it arrives. §13.22 now states the two bounds every prompt has (offered for 1 s to 7 days, and settled 1 s to 24 h after an accepted answer), the desk's limits (32 prompts open or sent, the last 32 closed, 262144 bytes of content, 4096 bytes per summary in every state the prompt can reach, and a 524288-byte `max_payload` floor checked on every connection), the eleven `prompt-answer` checks in their order, when two answers are the same, the reply's 10 s bound and what state it carries, what else moves a prompt from each state, and that a caller waits at least 15 s for an answer's reply. No subject or schema changes. |
 | 2026-11-17 | **The principal route and the `agent` endpoint (§6, §13.2, §13.7, §13.9, §13.14, §13.21, §13.22, Appendix B), additive.** A principal serves a core-defined command set about itself on `cotal.<space>.ep.prin.<endpoint>.<pOwner>.<pActor>.<pUid>.<runtimeId>.<command>.<authority>.<cOwner>.<cActor>.<cUid>.<nonce>`, with replies on `ep.prin-reply` and a no-responders sentinel with `_nr` in its five head positions. It needs no registration: the principal's own credential serves it. The authority word is `owner` (the caller's own owner's principals) or `grant` (one granted lifecycle). A cluster command declares the words it admits in `authorities`; such a command is never served on a service route. The auth callout mints serve rows into every agent credential of a ledger row and `owner` rows into those of an interactive row, from the row's kind; grant issuance is not defined yet. Serving is ready only after the broker accepted the subscription, and it binds again on every replaced connection. Revision 1 of the `agent` endpoint (`ai.cotal.agent`) has `prompts`, `prompt` and `prompt-answer` for an agent's harness prompts, with the prompt, form profile, states and reader rules of §13.22, and presence gains `prompts: { open, seq }`. Also corrected: §13.2 counted six authorization-mode tokens where there are seven. |
 | 2026-11-17 | **Harness permission requests are withdrawn (§3, §6, §8, §8.2, §9, §13.7, Appendix B), breaking.** The 2026-11-13 revision below is removed in full: the `perm` answer subject, the `cotal_permissions_<space>` bucket and its per-lifecycle readers, the permission record and its state table, the interactive answer rows, the `request` field on a presence condition and the Manager's `permissionRequests` connector field. A connector no longer holds a harness permission prompt for a remote answer, and the harness's own dialog is the only way to answer one. A space provisioned while that revision was current keeps an unused `cotal_permissions_<space>` bucket, which nothing reads or writes. |
 | 2026-11-13 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. An open mesh holds no prompt. |
