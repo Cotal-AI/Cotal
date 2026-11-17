@@ -133,7 +133,7 @@ import type { RunScopeAuthority } from "./run-scope-authority.js";
 import { askAttemptToken, observeToken, pauseTokens, waitTimeoutToken, waitTimers } from "./pause-tokens.js";
 import { delay } from "./delay.js";
 
-export interface RunMeshServices {
+interface RunMeshServices {
   readonly pauses: RunPauseHost;
   readonly waits: RunWaitHost;
   readonly authority: RunScopeAuthority;
@@ -3035,7 +3035,7 @@ export function canonicalCwd(cwd: string): string {
 
 /** What phase A establishes and the step journal keeps: the canonical directory as the SERVING host
  *  stated it, plus the authoritative identity that stated it. Phase B dispatches `cwd` from here. */
-export interface CwdResolution {
+interface CwdResolution {
   cwd: string;
   endpoint: string;
   instanceId: string;
@@ -3047,7 +3047,7 @@ export interface CwdResolution {
  *  `L4000` is the host declining the request, and it is raised before any submission, so nothing is
  *  bound, allocated or launched. There is no raw-path arm: a fall-back to the caller's string is
  *  fail-OPEN, and launching somewhere plausible is the outcome being removed. */
-export function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
+function cwdResolutionRefusal(persona: string, instanceId: string, cwd: string, cause: string): EffectError {
   return new EffectError("L4000", "spawn",
     `spawn(${persona}) cwd ${JSON.stringify(cwd)} was not resolved by manager instance ${instanceId}: ${cause}; refusing rather than dispatching a path this host never canonicalized`);
 }

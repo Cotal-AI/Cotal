@@ -3,7 +3,7 @@ import { dryRunOutcome, Journal, journalEntryKeyString, LangErrors, validate, ty
 import { CommandFailure, isCommandFailure, oneLine, presentationOf, writeResult, type Report } from "@cotal-ai/workspace";
 import { logLineText } from "./log-line.js";
 
-export interface OfflineValues {
+interface OfflineValues {
   json?: boolean;
   plain?: boolean;
   handler?: string;
