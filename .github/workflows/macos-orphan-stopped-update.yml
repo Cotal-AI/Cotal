@@ -1,0 +1,106 @@
+name: Stopped orphan service self-update measurement
+on:
+  push:
+    branches: [measure/macos-orphan-preinstall]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: macos-orphan-stopped-update
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          ref: 9541212a72e2ccd922e3671e7743ee64219f3b6d
+          path: product
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Check immutable measurement coordinate and disk floor
+        env:
+          SOURCE: 9541212a72e2ccd922e3671e7743ee64219f3b6d
+          VERSION: 0.166.1000
+          ARTIFACT: '14362186672'
+          DIGEST: 762a12d1b1494fbae4c020554b6309098ce4cf518981bce4ca0efac1b0790750
+        run: |
+          test "$SOURCE" = 9541212a72e2ccd922e3671e7743ee64219f3b6d
+          test "$VERSION" = 0.166.1000
+          test "$ARTIFACT" = 14362186672
+          test "$DIGEST" = 762a12d1b1494fbae4c020554b6309098ce4cf518981bce4ca0efac1b0790750
+          test "$(git -C product rev-parse HEAD)" = "$SOURCE"
+          node -e 'const s=require("fs").statfsSync(process.env.RUNNER_TEMP);if(s.bavail*s.bsize<30*1024**3)throw Error("30 GiB floor")'
+      - name: Build exact unchanged target and test authority fixture
+        working-directory: product
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          brew install nats-server
+      - name: Download verified native payload source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/Cotal-AI/Cotal/actions/artifacts/14362186672/zip > "$RUNNER_TEMP/release-native-source.zip"
+          echo '762a12d1b1494fbae4c020554b6309098ce4cf518981bce4ca0efac1b0790750  '"$RUNNER_TEMP/release-native-source.zip" | shasum -a 256 -c -
+          mkdir "$RUNNER_TEMP/release-native-source"
+          unzip -q "$RUNNER_TEMP/release-native-source.zip" -d "$RUNNER_TEMP/release-native-source"
+      - name: Reuse source-matched native payloads and retain normal pack guards
+        working-directory: product
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          const input = join(process.env.RUNNER_TEMP, 'release-native-source');
+          const manifest = JSON.parse(readFileSync(join(input, 'manifest.json')));
+          assert.equal(manifest.source, '472d3bf1a1587422fc8bd749cbd190cebdd9fe3b');
+          for (const [name, destination] of [['@cotal-ai/seat', 'packages/seat'], ['@cotal-ai/workspace', 'packages/workspace']]) {
+            const pkg = manifest.packages.find(row => row.name === name);
+            assert(pkg && /^[^/\\]+\.tgz$/.test(pkg.archive));
+            const archive = join(input, pkg.archive);
+            assert.equal(createHash('sha256').update(readFileSync(archive)).digest('hex'), pkg.sha256);
+            execFileSync('tar', ['-xzf', archive, '--strip-components=1', '-C', destination, 'package/build']);
+          }
+          // Verify every source-hash input against the actual unchanged target tree.
+          for (const platform of ['darwin', 'win32']) for (const arch of ['x64', 'arm64']) {
+            const receipt = JSON.parse(readFileSync(`packages/workspace/build/Release/${platform}-${arch}/build.json`));
+            for (const [path, expected] of Object.entries(receipt.sourceHashes)) {
+              assert.equal(createHash('sha256').update(readFileSync(join('packages/workspace', path))).digest('hex'), expected);
+            }
+          }
+          // These are the normal source-matched pack gates, not a bypass.
+          execFileSync(process.execPath, ['packages/seat/scripts/assert-shipped-natives.mjs'], { stdio: 'inherit' });
+          execFileSync(process.execPath, ['packages/workspace/scripts/assert-shipped-natives.mjs'], { stdio: 'inherit' });
+          NODE
+          node scripts/automatic-update-platform-baseline.mjs --pack "$RUNNER_TEMP/orphan-candidate" --version 0.166.1000 --source-root "$GITHUB_WORKSPACE/product"
+      - name: Measure same public command after daemon stop and program removal
+        working-directory: product
+        env:
+          ORPHAN_PRODUCT_ROOT: ${{ github.workspace }}/product
+          ORPHAN_CANDIDATE: ${{ runner.temp }}/orphan-candidate
+          ORPHAN_SOURCE_SHA: 9541212a72e2ccd922e3671e7743ee64219f3b6d
+        run: |
+          export NPM_BIN="$(command -v npm)"
+          node --import tsx "$GITHUB_WORKSPACE/scripts/mac-stopped-orphan-update.mjs"
+      - name: Retain sanitized original measurement
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/stopped-orphan-update/upload-safe"; then
+            echo 'ORPHAN_UPLOAD_SAFE=true' >> "$GITHUB_ENV"
+          else
+            echo 'No upload-safe receipt, refusing evidence publication.'
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always() && env.ORPHAN_UPLOAD_SAFE == 'true'
+        with:
+          name: stopped-orphan-self-update
+          path: ${{ runner.temp }}/stopped-orphan-update/evidence
+          if-no-files-found: error
+          retention-days: 7
