@@ -666,6 +666,41 @@ try {
         && row(sameList.stdout, "policy") === "#policy  Operations  off  live", { show: shown(same), list: shown(sameList) });
   }
 
+  // Empty wire IDs are independent deliveries, including after a retained snapshot.
+  {
+    const nc = await connect({ servers: openServers });
+    const publish = async (id: string, text: string) => {
+      nc.publish(`cotal.${openSpace}.chat.local.publisher.audit`, JSON.stringify({
+        id, ts: Date.now(), space: openSpace, from: { id: "local.publisher", name: "publisher" },
+        channel: "audit", parts: [{ kind: "text", text }],
+      }));
+      await nc.flush();
+    };
+    const consoleFeed = follow(["console", "--plain", "--space", openSpace]);
+    let historyFeed: ReturnType<typeof follow> | undefined;
+    try {
+      check("empty IDs: console is watching", await consoleFeed.until((line) => line.includes("watching space")), consoleFeed.stderr());
+      await publish("", "empty-first");
+      await publish("", "empty-second");
+      await publish("unique-third", "nonempty-third");
+      check("console shows both empty-ID deliveries", await consoleFeed.until((line) => line.includes("empty-second")) && consoleFeed.lines.some((line) => line.includes("empty-first")), consoleFeed.lines);
+      historyFeed = follow(["history", "audit", "--follow", "--json", "--space", openSpace]);
+      check("empty IDs: follow snapshot contains both retained deliveries", await historyFeed.until((line) => line.includes('"type":"snapshot"') && line.includes("empty-first") && line.includes("empty-second")), historyFeed.lines);
+      await publish("", "follow-empty-first");
+      await publish("", "follow-empty-second");
+      await publish("unique-fourth", "follow-nonempty");
+      await publish("unique-fourth", "duplicate-nonempty");
+      check("history follow shows consecutive empty-ID events after snapshot", await historyFeed.until((line) => line.includes('"type":"event"') && line.includes("follow-empty-second")) && historyFeed.lines.some((line) => line.includes('"type":"event"') && line.includes("follow-empty-first")), historyFeed.lines);
+      check("nonempty follow ID still deduplicates", await historyFeed.until((line) => line.includes("follow-nonempty")), historyFeed.lines);
+      await wait(300);
+      check("duplicate nonempty ID is not surfaced", !historyFeed.lines.some((line) => line.includes("duplicate-nonempty")) && !consoleFeed.lines.some((line) => line.includes("duplicate-nonempty")), { history: historyFeed.lines, console: consoleFeed.lines });
+    } finally {
+      await killAndAwaitExit(consoleFeed.child);
+      if (historyFeed) await killAndAwaitExit(historyFeed.child);
+      await nc.close();
+    }
+  }
+
   // ── channel members on an open mesh, which runs no delivery service to write the feed ─────────
   {
     const members = await run(["channel", "members", "general", "--space", openSpace, "--json"]);
