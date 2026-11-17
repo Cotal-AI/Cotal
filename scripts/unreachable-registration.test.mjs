@@ -92,5 +92,5 @@ test('explicit configured local scratch refuses a shared directory before instal
 test('workflow invokes real composition and source-bound verifier without acceptance waiver',()=>{
  const workflow=readFileSync(new URL('../.github/workflows/automatic-update-platforms.yml',import.meta.url),'utf8');
  for(const text of ['options.prepare = prepareUnreachableRegistration','verifyUnreachableRegistration({ report, cell })','unreachable registration fixture source mismatch','known red ${unreachableEvidence.issue}, not upgrade acceptance'])assert(workflow.includes(text));
- assert(!workflow.includes('knownRefusals.push({ id: cell.id, issue: unreachableEvidence.issue')); 
+ assert(!workflow.includes('knownRefusals.push({ id: cell.id, issue: unreachableEvidence.issue'));
 });
