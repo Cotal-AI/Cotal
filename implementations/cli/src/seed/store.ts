@@ -90,6 +90,7 @@ export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly st
     const referenced = referencedSpecs.some((spec) => spec === genDir || spec.startsWith(genDir + sep));
     if (referenced) continue;
     assertReleasedSeedWriter(keepGeneration, "garbage-collect");
+    writableDirectories(genDir);
     rmSync(genDir, { recursive: true, force: true });
     // Announce the DELETE for the same reason the write above is announced: this store is
     // operator-global, so dropping a generation from it is a machine-wide act performed by a command

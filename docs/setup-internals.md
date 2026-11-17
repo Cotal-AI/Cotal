@@ -432,6 +432,10 @@ validates the version as one safe path segment, and checks that the destination 
 store before it writes anything. `cotal update` compares each installed copy of the shared files
 with the shared one.
 
+After reconciliation, garbage collection removes older generations only when no installed extension
+references them. It makes those generations' directories owner-writable before removal, including
+read-only staging trees left by an older failed seed.
+
 `ext add --install-links` reifies the `file:` dependency from that stable path. A volatile source
 would fail to re-reify. `ext add` then junction-links each `@cotal-ai/*` peer to the binary's own
 copy, and relinks the peers of every other installed package. It skips a recorded package whose
