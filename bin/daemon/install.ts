@@ -701,7 +701,7 @@ export function daemonStartedByOwnedService(paths: DaemonPaths, daemonHome?: str
   if (process.env.COTAL_DAEMON_NATIVE_SERVICE !== "1") return { state: "not-owned", reason: "marker-absent" };
   try {
     const intent = process.platform === "darwin" ? readServiceRepair(paths.state) : undefined;
-    const recorded = recordedUnit(paths, daemonHome, nativeRun, intent !== undefined);
+    const recorded = recordedUnit(paths, daemonHome, nativeRun, false, intent !== undefined);
     if (intent) assertServiceRepairPair(intent, recorded.receipt, readFileSync(recorded.receipt.unitPath, "utf8"));
     if (!recordedDaemonIdentity(recorded).same) return { state: "not-owned", reason: "identity-differs" };
     const { receipt, plan } = recorded;
