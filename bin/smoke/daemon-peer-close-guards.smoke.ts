@@ -41,7 +41,8 @@ if (process.platform !== "darwin" && process.platform !== "linux") {
     const disconnected = Object.assign(new Error("Socket is not connected"), { code: "ENOTCONN" });
     const darwin = process.platform === "darwin";
     await refuses(openVerified({ paths, peerUid: () => { throw disconnected; } }), "PEER_UID_MISMATCH", darwin);
-    await refuses(openVerified({ paths, peerUid: () => uid, peerPid: () => { throw disconnected; } }), darwin ? "PEER_UID_MISMATCH" : "PEER_NOT_LOCK_OWNER", darwin);
+    await refuses(openVerified({ paths, peerUid: () => uid, peerPid: () => { throw disconnected; } }), "PEER_NOT_LOCK_OWNER", darwin);
+    assert.equal(new ClosedPeerRefusal("PEER_NOT_LOCK_OWNER", "closed during pid read").code, "PEER_NOT_LOCK_OWNER"); checks++;
     // Even the typed observation never converts ordinary status into success or NOT_RUNNING.
     const counters = { bytesWritten: 0 };
     await refuses(queryDaemon({ paths, counters, peerUid: () => { throw disconnected; } }), "PEER_UID_MISMATCH", darwin);

@@ -95,7 +95,7 @@ try {
   if (phase === 'pid') assert.equal(uidReadReturned, true, 'the first real uid read must finish before the second-read close');
   if (process.platform === 'darwin') {
     assert.equal(nativeReadReturned, false);
-    assert(failure instanceof Error && failure instanceof ClosedPeerRefusal && (failure as Error & { code?: string }).code === 'PEER_UID_MISMATCH' && failure.message.includes('Socket is not connected'), 'closed Darwin peer remains refused with a typed stopping observation');
+    assert(failure instanceof Error && failure instanceof ClosedPeerRefusal && (failure as Error & { code?: string }).code === (phase === 'uid' ? 'PEER_UID_MISMATCH' : 'PEER_NOT_LOCK_OWNER') && failure.message.includes('Socket is not connected'), 'closed Darwin peer retains its identity read site refusal code');
   } else {
     assert.equal(nativeReadReturned, true, 'Linux control must actually read native peer credentials');
     assert(failure instanceof Error && (failure as Error & { code?: string }).code === 'PEER_NOT_LOCK_OWNER', 'Linux control requires the expected lifetime-owner refusal');
