@@ -70,7 +70,7 @@ import { reportLostOutput } from "./lib/stdout-owner.js";
 import { shellWord } from "./lib/endpoint-errors.js";
 import { GLOBAL_FLAG_WORDS, OUTPUT_FLAG_WORDS } from "./lib/leading-flags.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
-import { didYouMean, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
+import { didYouMean, LEADING_FLAGS, unknownCommandMessage, unknownSubcommandMessage } from "./lib/nearest-word.js";
 import { UnusableFile } from "./lib/unusable-file.js";
 import { armTelemetry, recordTelemetryError, recordTelemetryFailure } from "./telemetry.js";
 
@@ -380,6 +380,14 @@ function usageExit(message: string, cmd?: Command, json = false, plain = false, 
   process.exit(1);
 }
 
+/** The refusal for one of the option `names` or `shorts` typed with a typographic dash pasted from
+ *  typeset text, as `\u2013\u2013json`, naming it with hyphens; undefined when `word` is no such option. */
+function typographicOption(word: string, names: ReadonlySet<string>, shorts: ReadonlySet<string> = new Set()): { message: string; remedy: string } | undefined {
+  const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
+  if (!typed || !(names.has(typed[1]!) || shorts.has(typed[1]!))) return undefined;
+  return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
+}
+
 /** An option the parser would misread without an error: a short option written `-c=value`, which
  *  takes `=value` as its value, or a declared option typed with a typographic dash pasted from typeset
  *  text, which is read as a positional. */
@@ -393,9 +401,8 @@ function misspelledOption(cmd: Command, rest: readonly string[]): { message: str
     const short = /^-([^-=])=(.*)$/su.exec(word);
     const flag = short && cmd.flags?.find((item) => item.short === short[1] && item.type === "string");
     if (short && flag) return { message: `${word} gives -${short[1]} the value "=${short[2]}"`, remedy: `write -${short[1]} ${short[2]} or --${flag.name}=${short[2]}` };
-    const typed = /^[\u2010-\u2015\u2212][-\u2010-\u2015\u2212]*([^=]+)/u.exec(word);
-    if (typed && (names.has(typed[1]!) || shorts.has(typed[1]!)))
-      return { message: `${word} starts with a typographic dash, so it is not an option`, remedy: `type the option with hyphens: ${names.has(typed[1]!) ? "--" : "-"}${typed[1]}` };
+    const typed = typographicOption(word, names, shorts);
+    if (typed) return typed;
   }
   return undefined;
 }
@@ -664,6 +671,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
   const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
+  // A leading flag typed with a typographic dash is read as the command word, so it is refused as the
+  // same word after the command word is.
+  const typed = cmd || awaitingSeed ? undefined : typographicOption(word, new Set(LEADING_FLAGS.map((flag) => flag.slice(2))));
+  if (typed) usageExit(typed.message, undefined, false, false, typed.remedy);
   if (!cmd && !awaitingSeed) usageExit(unknownCommandMessage(commands, word));
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
