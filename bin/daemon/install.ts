@@ -46,7 +46,7 @@ import { assertSystemdSource, assertSystemdSourceDirectory, createSystemdSource,
 import { checkDir, EndpointRefusal, DAEMON_PROTOCOL_VERSION, type DaemonPaths } from "./endpoint.js";
 import { isStoppingLifetime, openVerified, queryDaemon, readLine } from "./client.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
-import { lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
+import { darwinLaunchdJob, lockExclusiveNb, windowsUserSid } from "@cotal-ai/seat";
 import { encode, type DaemonResponse } from "./protocol.js";
 import { launchAgentService, missingLaunchAgentProgram, renderLaunchAgent, xmlText } from "./install-darwin.js";
 import { scheduledTaskName, scheduledTaskService } from "./install-win32.js";
@@ -518,7 +518,9 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     const previousSource = intent?.previousSource ?? readFileSync(receipt.unitPath, "utf8");
     const argv = daemonServeArgv(daemonHome);
     const entry = argv[argv.indexOf("daemon") - 1]!;
-    const version = intent?.version ?? JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
+    const installedVersion = JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
+    const version = intent?.version ?? installedVersion;
+    if (installedVersion !== version) throw new Error("the recorded repair destination version changed; no service was stopped");
     if (intent && JSON.stringify(intent.argv) !== JSON.stringify(argv)) throw new Error("the repair must finish from its recorded Cotal installation");
     let hostedSpaces = intent?.hostedSpaces ?? [];
     // A running process loaded from the deleted bundle is not a replacement installation.
@@ -534,12 +536,14 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
       socket.on("error", () => {});
       const answer = await request("status");
       if (!owner?.start || answer.pid !== owner.pid || processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before service repair");
+      const job = darwinLaunchdJob(receipt.unit);
+      if (job.state !== "loaded" || job.job.pid !== answer.pid) throw new Error("the answering daemon is not the recorded native job");
       if (intent && readFileSync(receipt.unitPath, "utf8") === intent.nextSource && recordedSourceIdentity(receipt, "launchd-agent", intent.argv).same && answer.version === version) {
         if (hostedSpaces.some(space => !answer.managers?.some(manager => manager.space === space && manager.state === "answering"))) throw new Error("the repaired daemon's recorded Managers have not answered yet");
         rmSync(serviceRepairFile(paths.state));
         return true;
       }
-      hostedSpaces = (answer.managers ?? []).filter(manager => manager.pid !== undefined).map(manager => manager.space);
+      hostedSpaces = [...new Set([...hostedSpaces, ...(answer.managers ?? []).filter(manager => manager.pid !== undefined).map(manager => manager.space)])];
       await request("managers-prepare-restart");
       fenced = true;
     } catch (error) {
@@ -589,6 +593,8 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
         if (!fresh?.start || fresh.pid !== answer.result.pid || processBirth(fresh.pid) !== fresh.start || (fresh.pid === owner?.pid && fresh.start === owner.start)) throw new Error("the repaired daemon has no fresh verified lifetime");
         const current = recordedUnit(paths, daemonHome, nativeRun, true);
         if (!recordedSourceIdentity(current.receipt, "launchd-agent", argv).same) throw new Error("the repaired native source no longer names the selected installation");
+        const job = darwinLaunchdJob(current.receipt.unit);
+        if (job.state !== "loaded" || job.job.pid !== answer.result.pid) throw new Error("the repaired endpoint is not the recorded native job");
         if (hostedSpaces.some(space => !answer.result.managers?.some(manager => manager.space === space && manager.state === "answering" && manager.pid !== undefined))) throw new Error("repaired hosted Managers have not answered");
         rmSync(serviceRepairFile(paths.state));
         return true;

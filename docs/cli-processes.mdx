@@ -769,6 +769,12 @@ platform; where none is built or shipped, daemon endpoint operations refuse `UNS
 The default daemon and CLI share the sign-in in the same Cotal home, so signing in through either one does not require a second approval in the other. An explicit `--daemon-home` keeps its own sign-in, separate from the CLI's Cotal home.
 
 `start` starts the recorded, unchanged service without restarting an instance that is already running.
+On macOS, `daemon status`, `daemon install` and an explicit `update --self` repair a recorded
+LaunchAgent whose program is missing. They verify its unchanged plist, receipt and loaded job
+before moving it to the current CLI installation. The repair preserves sign-in and hosting records,
+refuses to stop occupied or unreadable Managers, and keeps an operator-disabled service stopped.
+An interrupted repair retains its source and receipt intent for the next command to finish.
+A modified or unrecorded unit is never adopted by its label.
 `spaces` lists the registry through the daemon; `--refresh` uses the daemon-held sign-in to refresh
 its catalogs. Catalog rows in the `spaces` reply include optional `kind` and `role` fields from the saved catalog entry. Local entries omit these fields. With no cached sign-in, a refresh reports `not-signed-in`; the CLI refuses with
 `AUTH_REQUIRED` (exit 2) and directs you to `cotal daemon login --idp <url>`. Saved spaces remain
