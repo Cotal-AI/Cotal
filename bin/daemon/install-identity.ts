@@ -38,10 +38,15 @@ export function recordedSourceIdentity(receipt: UnitReceipt, mechanism: ServiceM
   if (mechanism === "scheduled-task") installed.entry = installed.entry.replace(/daemon-native\.js$/, "cotal.js");
   if (!installed.executable || !installed.entry) throw new CommandFailure("refused", "CONFLICT", "the recorded daemon installation could not be identified");
   const missing = (path: string) => {
-    try { statSync(path); return false; }
+    let stat;
+    try { stat = statSync(path); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return true; throw error; }
+    if (!stat.isFile()) throw new CommandFailure("refused", "CONFLICT", `the recorded daemon launch path is not a regular file: ${path}; nothing was changed`);
+    return false;
   };
-  const absent = missing(installed.executable) || missing(installed.entry);
+  // Inspect both paths: one absent coordinate cannot hide a present non-file at the other.
+  const executableMissing = missing(installed.executable), entryMissing = missing(installed.entry);
+  const absent = executableMissing || entryMissing;
   const canonical = (path: string) => { try { return realpathSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return path; throw error; } };
   return { same: canonical(installed.executable) === canonical(current.executable!) && canonical(installed.entry) === canonical(current.entry), missing: absent, installed: `${installed.executable} ${installed.entry}`, installedEntry: installed.entry, current: `${current.executable} ${current.entry}` };
 }

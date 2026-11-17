@@ -1,7 +1,7 @@
 /** Live shipped update against an owned daemon socket and recording native service. */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, chmodSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -64,7 +64,18 @@ if (process.argv.includes("--childless")) {
 }
 const old = await serveDaemon({ paths, version: "0.0.0", sessionDir: home });
 let replacement: ChildProcess | undefined;
+const replacements: ChildProcess[] = [];
 const calls: string[] = [];
+const concurrentRepair = process.argv.includes("--repair-concurrent") || process.argv.includes("--repair-concurrent-late");
+const lateConcurrentRepair = process.argv.includes("--repair-concurrent-late");
+let launchTwin: (() => void) | undefined;
+const repairStartFailure = process.argv.includes("--repair-start-fails");
+const repairReloadFailure = process.argv.includes("--repair-reload-fails");
+const repairReceiptFailure = process.argv.includes("--repair-receipt-fails");
+const invalidProgram = process.argv.includes("--program-directory");
+let stops = 0, starts = 0, reloads = 0;
+let firstStart: (() => void) | undefined;
+const started = new Promise<void>(resolve => { firstStart = resolve; });
 async function status(): Promise<any> {
   return new Promise((resolve, reject) => {
     const socket = connect(paths.socket);
@@ -81,14 +92,38 @@ async function status(): Promise<any> {
 const control = createServer(async (request, response) => {
   try {
     calls.push(request.url!);
-    if (request.url === "/stop") await old.close();
-    else if (request.url === "/start") {
+    if (request.url === "/stop") {
+      if (concurrentRepair) {
+        if (++stops === 1) { if (lateConcurrentRepair) launchTwin?.(); await new Promise(resolve => setTimeout(resolve, 2000)); }
+        else await Promise.race([started.then(() => new Promise(resolve => setTimeout(resolve, 500))), new Promise(resolve => setTimeout(resolve, 15_000))]);
+      }
+      await old.close();
+      if (replacement) { await killAndAwaitExit(replacement, "SIGTERM"); replacement = undefined; }
+    } else if (request.url === "/reload") {
+      if (repairReloadFailure && ++reloads === 1) { response.writeHead(500).end("owned native reload denied"); return; }
+    } else if (request.url === "/start") {
+      if (repairStartFailure && ++starts === 1) {
+        // The previous installation may have been restored independently while repair ran.
+        // Make its recorded launch files available so rollback can be observed succeeding.
+        if (!process.argv.includes("--repair-recovery-unavailable")) {
+          mkdirSync(dirname(recordedNode), { recursive: true, mode: 0o700 });
+          if (recordedNode !== process.execPath) symlinkSync(process.execPath, recordedNode);
+          mkdirSync(dirname(foreignEntry), { recursive: true, mode: 0o700 });
+          symlinkSync(join(repo, "bin/dist/cotal.js"), foreignEntry);
+        }
+        response.writeHead(500).end("owned replacement start denied"); return;
+      }
+      if (repairStartFailure && process.argv.includes("--repair-recovery-unavailable")) { response.writeHead(500).end("previous launch program still absent"); return; }
       if (process.argv.includes("--start-fails")) { response.writeHead(500).end("owned native start denied"); return; }
-      replacement = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], { cwd: root, env, stdio: "ignore" });
+      const launch = [...(/^ExecStart=(.*)$/m.exec(readFileSync(unitPath, "utf8"))?.[1] ?? "").matchAll(/"((?:\\.|[^"\\])*)"|(\S+)/g)].map(match => (match[1] ?? match[2]!).replace(/\\([\\"])/g, "$1"));
+      if (launch.length < 2) throw new Error("recorded fixture launch is unreadable");
+      replacement = spawn(launch[0]!, launch.slice(1), { cwd: root, env, stdio: "ignore" });
+      replacements.push(replacement);
       for (let i = 0; ; i++) {
         try { await status(); break; } catch { if (i >= 100) throw new Error("replacement not ready"); }
         await new Promise(resolve => setTimeout(resolve, 100));
       }
+      firstStart?.();
     } else throw new Error("unexpected native operation");
     response.end("ok");
   } catch (error) { response.writeHead(500).end(String(error)); }
@@ -106,7 +141,7 @@ const port = (control.address() as AddressInfo).port;
 env.npm_config_registry = `http://127.0.0.1:${(registry.address() as AddressInfo).port}`;
 const unitStateFile = join(root, "unit-file-state.txt");
 writeFileSync(unitStateFile, "enabled\n", { mode: 0o600 });
-writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nif(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value'){process.stdout.write(fs.readFileSync(${JSON.stringify(unitStateFile)},'utf8'));process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager daemon-reload'){process.exit(0)}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
+writeFileSync(join(native, "systemctl"), `#!${process.execPath}\nconst fs=require('node:fs');\nconst args=process.argv.slice(2);\nif(args.join(' ')==='--user show-environment'){console.log(${JSON.stringify(`XDG_CONFIG_HOME=${join(root, "config")}`)});process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager show cotal-daemon.service --property=UnitFileState --value'){if(${repairReceiptFailure}){const mark=${JSON.stringify(join(root, "shows"))};fs.appendFileSync(mark,'s');if(fs.readFileSync(mark,'utf8').length===2)fs.chmodSync(${JSON.stringify(paths.state)},0o500);}process.stdout.write(fs.readFileSync(${JSON.stringify(unitStateFile)},'utf8'));process.exit(0)}\nif(args.join(' ')==='--user --no-ask-password --no-pager daemon-reload'){${repairReloadFailure ? "fetch('http://127.0.0.1:" + port + "/reload').then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));return;" : "process.exit(0)"}}\nconst op=process.argv.at(-2); if(!['stop','start'].includes(op))process.exit(99);fetch('http://127.0.0.1:${port}/'+op).then(async r=>{if(!r.ok){console.error(await r.text());process.exit(99)}}).catch(()=>process.exit(99));\n`, { mode: 0o700 });
 const missingProgram = process.argv.includes("--missing-program");
 const stoppedMissing = missingProgram && process.argv.includes("--stopped");
 const disabledMissing = missingProgram && process.argv.includes("--disabled");
@@ -117,7 +152,13 @@ if (foreign && !missingProgram) {
   mkdirSync(dirname(foreignEntry), { recursive: true, mode: 0o700 });
   writeFileSync(foreignEntry, "// Present, unrelated installation.\n", { mode: 0o600 });
 }
-const bytes = `[Service]\nExecStart="${missingProgram && !process.argv.includes("--missing-entry") ? join(root, "removed-app/cotal-node") : process.execPath}" "${foreign ? foreignEntry : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
+const recordedNode = invalidProgram || process.argv.includes("--program-symlink") || (missingProgram && !process.argv.includes("--missing-entry")) ? join(root, "removed-app/cotal-node") : process.execPath;
+if (invalidProgram) mkdirSync(recordedNode, { recursive: true, mode: 0o700 });
+else if (process.argv.includes("--program-symlink")) {
+  mkdirSync(dirname(recordedNode), { recursive: true, mode: 0o700 });
+  symlinkSync(process.execPath, recordedNode);
+}
+const bytes = `[Service]\nExecStart="${recordedNode}" "${foreign ? foreignEntry : join(repo, "bin/dist/cotal.js")}" daemon serve\nRestart=always\n`;
 const unitPath = join(root, "config", "systemd", "user", "cotal-daemon.service");
 mkdirSync(dirname(unitPath), { recursive: true, mode: 0o700 });
 writeFileSync(unitPath, bytes, { mode: 0o600 });
@@ -167,12 +208,38 @@ try {
       delete replacementEnv.COTAL_UPDATE_TARGET_VERSION;
       delete replacementEnv.COTAL_UPDATE_PARENT;
       replacement = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "daemon", "serve"], { cwd: root, env: replacementEnv, stdio: "ignore" });
+      replacements.push(replacement);
     })();
   });
   child.stdout.on("data", b => output += String(b)); child.stderr.on("data", b => output += String(b));
+  let twinOutput = "";
+  let twin: ChildProcess | undefined;
+  let twinEnded: Promise<unknown> | undefined;
+  launchTwin = () => {
+    twin = spawn(process.execPath, [join(repo, "bin/dist/cotal.js"), "update", ...(lateConcurrentRepair ? [] : ["--self"])], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+    twin.stdout!.on("data", b => twinOutput += String(b)); twin.stderr!.on("data", b => twinOutput += String(b));
+    twinEnded = new Promise(resolve => twin!.once("exit", resolve));
+  };
+  if (concurrentRepair && !lateConcurrentRepair) launchTwin();
   const code = await new Promise(resolve => child.once("exit", resolve));
+  const twinCode = await twinEnded;
   await transition;
-  if (generationTimeout) {
+  if (repairReceiptFailure || repairReloadFailure || repairStartFailure || invalidProgram) {
+    chmodSync(paths.state, 0o700);
+    const after = await status().catch(() => undefined);
+    console.log("repair failure observation", JSON.stringify({ code, calls, after, output }));
+    const receipt = JSON.parse(readFileSync(join(paths.state, "service-unit.json"), "utf8"));
+    if (code === 0 || readFileSync(unitPath, "utf8") !== bytes || receipt.unitSha256 !== createHash("sha256").update(bytes).digest("hex")) throw new Error("repair failure did not restore recorded source and receipt");
+    if (repairReceiptFailure || repairReloadFailure || invalidProgram) {
+      if (calls.includes("/stop") || after?.result.version !== "0.0.0" || after.result.update?.restartEvidence?.prepared === true) throw new Error("pre-stop repair failure stopped or fenced the original daemon");
+    } else if (calls.join(",") !== "/stop,/start,/start" || (process.argv.includes("--repair-recovery-unavailable") ? after !== undefined || !output.includes("recovery unconfirmed") : !after?.ok)) throw new Error("replacement start failure did not attempt or report the restored recorded service");
+    console.log("PASS repair failure preserves publication and recovers service or retains answering predecessor");
+  } else if (concurrentRepair) {
+    const after = await status().catch(() => undefined);
+    console.log("concurrent repair observation", JSON.stringify({ code, twinCode, calls, after, output, twinOutput }));
+    if (![code, twinCode].includes(0) || calls.join(",") !== "/stop,/start" || after?.result.version !== version) throw new Error("concurrent repairs stopped the replacement or duplicated native operations");
+    console.log("PASS concurrent shipped updates perform one repair and retain answering replacement");
+  } else if (generationTimeout) {
     if (code !== 1 || calls.length || output.includes("Built-in connectors") || !output.includes("did not become ready within 120s") || !output.replaceAll("`", "").includes("then run cotal update again")) throw new Error(`generation timeout did not refuse before writes with recovery: ${output}`);
     console.log("PASS bounded generation wait refuses before connector writes and names recovery");
   } else if (generationRace) {
@@ -264,8 +331,9 @@ try {
   }
   }
 } finally {
+  chmodSync(paths.state, 0o700);
   await old.close();
-  if (replacement) await killAndAwaitExit(replacement, "SIGTERM");
+  for (const daemon of replacements) await killAndAwaitExit(daemon, "SIGTERM");
   await Promise.all([control, registry].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
   if (existsSync(paths.socket) || control.listening || registry.listening) throw new Error("owned update fixture did not close");
   console.log("PASS owned daemon and loopback listeners closed");
@@ -278,7 +346,7 @@ noDaemon.stdout.on("data", chunk => noRuntimeOutput += String(chunk));
 noDaemon.stderr.on("data", chunk => noRuntimeOutput += String(chunk));
 await new Promise(resolve => noDaemon.once("exit", resolve));
 console.log("R2-3 output", noRuntimeOutput);
-if (changedMissing) {
+if (changedMissing || invalidProgram) {
   if (!noRuntimeOutput.includes("installed daemon preflight:") || noRuntimeOutput.includes("Built-in connectors")) throw new Error("changed receipt admitted connector reconciliation without runtime discovery");
   console.log("PASS changed receipt refuses without runtime discovery before connector reconciliation");
 } else {

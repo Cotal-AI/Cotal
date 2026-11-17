@@ -306,12 +306,18 @@ and macOS, when the recorded owned user service is stopped before a manual `cota
 the updater starts the unchanged owned unit or LaunchAgent only when it is enabled and waits for the
 daemon to answer. On Linux and macOS, a manual update also repairs an enabled recorded service whose
 executable or CLI entry is missing, including a removed desktop app bundle. It verifies the receipt,
-unchanged native source and loaded job before making changes. An answering daemon must fence its
-hosted Managers and confirm zero seats before its service is stopped. After the old daemon releases
-its lifetime lock, the updater writes this CLI's launch coordinates with a matching receipt, starts
-the service without changing its enabled state, and waits for the target daemon and its hosted
-Managers. Hosting intents and sign-in state are retained. A disabled service or changed source is
-not repaired. Windows missing-program repair is not supported.
+unchanged native source and loaded job before making changes. Concurrent updates refuse service
+repair, start and restart requests while another updater holds the service repair lock. An answering daemon must
+fence its hosted Managers and confirm zero seats before its service is stopped. The updater retains
+the original source and receipt and stages both replacement files before stopping. Linux publishes
+and reloads the replacement while the old daemon still answers. macOS unloads the verified old job
+before publishing its staged plist. After the old daemon releases its lifetime lock, the updater
+starts the service without changing its enabled state and waits for the target daemon and its hosted
+Managers. On failure it restores the original source and receipt when no replacement answers, and
+attempts to start that recorded service if the old daemon stopped. Recovery that cannot be confirmed
+is reported with the retained repair files for inspection. Hosting intents and sign-in state are
+retained. A disabled service, changed source or present non-file launch path is not repaired.
+Symlinks are resolved when comparing installations. Windows missing-program repair is not supported.
 
 A present service from another installation is not rebound. The updater reads its endpoint before
 reporting it left running. If no daemon answers, it reports `No daemon answers; this update did not start it.`

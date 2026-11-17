@@ -36,7 +36,7 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     let installation = installedDaemonIdentity(paths);
     if (installation.missing && process.platform !== "win32") {
       if (process.env.COTAL_AUTO_UPDATE === "1") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the recorded daemon launch files are missing; run a manual `cotal update --self` from the installation that should own the service");
-      const outcome = await repairMissingInstalledDaemon(paths, undefined, deadline);
+      const outcome = await repairMissingInstalledDaemon(paths, undefined, deadline, version);
       if (!outcome.repaired) {
         if (!probe.quiet) console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; missing-program service not repaired or started`);
         return;
