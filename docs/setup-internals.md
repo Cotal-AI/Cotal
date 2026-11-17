@@ -560,5 +560,11 @@ the interrupted connector before it clears the evidence.
 
 A bare environment flag does not authenticate a seed child. Each seed child carries the live lock's
 nonce and the parent PID. It also records a liveness marker, so a repair after a crash refuses to
-race an orphaned installer. `ext seed --reset` quarantines corrupt manifest and authority state, then
+race an orphaned installer. On Linux, a pending marker records the parent's process start token.
+Once that parent is gone, a process census checks for children carrying the marker's seed nonce.
+If none remain, the next update, repair, or startup clears the marker, reports that recovery in one
+line, and repairs the interrupted connector. A reused parent PID does not count as the original
+process. A live parent or child still blocks recovery. An unreadable census, a corrupt marker, or a
+platform without this census still refuses rather than guessing from elapsed time.
+`ext seed --reset` quarantines corrupt manifest and authority state, then
 rebuilds. See [`cotal ext` in the CLI reference](cli-installation.mdx#ext) for the operator-facing flags.

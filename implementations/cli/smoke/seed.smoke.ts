@@ -12,7 +12,7 @@
  *  - truncated authority never resurrects a removed connector (backup union)
  *  - operator-installed official entry reconciled to running generation on upgrade; semver fail-loud
  *  - a forged `COTAL_EXT_SEEDING` gets no seed-child treatment
- *  - an ambiguous (pending, dead-parent) child marker is fail-loud
+ *  - stale pending children recover, while live or unprovable identities block
  *  - concurrent first boots do not collide or falsely report "interrupted"
  *  - the binary invoked through a bin SYMLINK (how every global install runs) still resolves its
  *    generation and payloads
@@ -162,7 +162,7 @@ try {
     process.exitCode = 1;
   } else {
     const passed = unit.passed + result.results.reduce((sum, row) => sum + row.cells, 0);
-    const expected = process.platform === "win32" ? 90 : 139;
+    const expected = process.platform === "linux" ? 149 : process.platform === "win32" ? 91 : 140;
     if (passed !== expected) throw new Error(`seed smoke: expected ${expected} checks, observed ${passed}`);
     console.log(`seed smoke: ${passed} passed, 0 failed`);
     emitSentinel({ passed, failed: 0 });

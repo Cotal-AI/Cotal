@@ -1,4 +1,4 @@
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { acquireLock, inspectLock, processStartToken, type HeldLock } from "@cotal-ai/workspace";
 import { SEED_BUILTINS, reconcileChildPath, reconcileCursorPath, reconcileLockPath, reconcileRecoveryPath, readJsonFile, writeJsonAtomic } from "./paths.js";
@@ -102,17 +102,17 @@ export function clearCursor(): void {
 /**
  * A seed child's liveness marker. The PARENT records `pending` BEFORE it spawns (so the window never
  * opens ownerless); the CHILD upgrades it to `live` with its own PID + start token as its first act;
- * the parent clears it after the child exits. A `pending` marker whose parent has died is the ambiguous
- * window — the child may or may not have started — and is resolved fail-loud, never by guessing.
+ * the parent clears it after the child exits. On Linux a dead parent's pending marker is stale only
+ * after a process census finds no child carrying its unique seed nonce. Other platforms fail loud.
  */
 export type ChildMarker =
-  | { readonly state: "pending"; readonly parentPid: number; readonly nonce: string; readonly ts: number }
-  | { readonly state: "live"; readonly childPid: number; readonly childStart?: string; readonly parentPid: number; readonly nonce: string; readonly ts: number };
+  | { readonly state: "pending"; readonly parentPid: number; readonly parentStart?: string; readonly nonce: string; readonly ts: number }
+  | { readonly state: "live"; readonly childPid: number; readonly childStart?: string; readonly parentPid: number; readonly parentStart?: string; readonly nonce: string; readonly ts: number };
 
 /** Parent: record intent to spawn a seed child before `spawnSync`, so a crash never leaves a gap a
  *  concurrent repair could race through unaware. */
 export function writePendingChildMarker(nonce: string): void {
-  writeJsonAtomic(reconcileChildPath(), { state: "pending", parentPid: process.pid, nonce, ts: Date.now() });
+  writeJsonAtomic(reconcileChildPath(), { state: "pending", parentPid: process.pid, parentStart: processStartToken(process.pid), nonce, ts: Date.now() });
 }
 
 /** Child: upgrade the parent's pending marker to a live one carrying this child's identity. */
@@ -122,6 +122,7 @@ export function markSeedChildLive(nonce: string, parentPid: number): void {
     childPid: process.pid,
     childStart: processStartToken(process.pid),
     parentPid,
+    parentStart: readJsonFile<ChildMarker>(reconcileChildPath())?.parentStart,
     nonce,
     ts: Date.now(),
   });
@@ -133,13 +134,12 @@ export function clearChildMarker(): void {
 
 export type SeedChildStatus =
   | { readonly kind: "none" }
+  | { readonly kind: "stale" }
   | { readonly kind: "live"; readonly pid: number }
   | { readonly kind: "ambiguous"; readonly path: string };
 
-/** The state of any recorded seed child, for the orphan-vs-repair decision. A `live` child (its parent
- *  SIGKILL'd mid-install → orphan) must not be raced. A `pending` marker whose parent is gone, or a
- *  corrupt marker, is `ambiguous` (cannot tell "never spawned" from "child delayed") and is resolved
- *  fail-loud. A dead/recycled child is `none` (safe to proceed). */
+/** Inspect the recorded process identities. Linux can also identify a not-yet-published child by
+ * its inherited seed nonce. An unreadable census or malformed marker remains ambiguous. */
 export function seedChildStatus(): SeedChildStatus {
   const path = reconcileChildPath();
   let marker: ChildMarker | undefined;
@@ -149,14 +149,52 @@ export function seedChildStatus(): SeedChildStatus {
     return { kind: "ambiguous", path }; // corrupt marker — never silently ignore
   }
   if (!marker) return { kind: "none" };
+  if (!Number.isInteger(marker.parentPid) || marker.parentPid <= 0 ||
+      (marker.parentStart !== undefined && typeof marker.parentStart !== "string")) return { kind: "ambiguous", path };
   if (marker.state === "live") {
     if (typeof marker.childPid !== "number") return { kind: "ambiguous", path };
+    if (pidAliveMatching(marker.parentPid, marker.parentStart)) return { kind: "live", pid: marker.parentPid };
     return pidAliveMatching(marker.childPid, marker.childStart) ? { kind: "live", pid: marker.childPid } : { kind: "none" };
   }
   if (marker.state === "pending" && typeof marker.parentPid === "number") {
-    // Parent still alive ⇒ a reconcile is starting (the caller waits on the lock); parent gone ⇒ the
-    // ambiguous SIGKILL/delayed-start window.
-    return pidAliveMatching(marker.parentPid, undefined) ? { kind: "live", pid: marker.parentPid } : { kind: "ambiguous", path };
+    if (pidAliveMatching(marker.parentPid, marker.parentStart)) return { kind: "live", pid: marker.parentPid };
+    // Before ext add publishes its PID, the re-exec still carries the parent's unique nonce.
+    // Inspect that identity, not elapsed time or a process name. Unknown custody stays fail-loud.
+    if (process.platform !== "linux" || typeof marker.nonce !== "string" || !marker.nonce) return { kind: "ambiguous", path };
+    try {
+      const ancestors = new Set<number>();
+      let ancestor = process.pid;
+      while (ancestor > 0 && !ancestors.has(ancestor)) {
+        ancestors.add(ancestor);
+        const status = readFileSync(`/proc/${ancestor}/status`, "utf8");
+        ancestor = Number(/^PPid:\s+(\d+)/m.exec(status)?.[1] ?? 0);
+      }
+      for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry) || ancestors.has(Number(entry))) continue;
+        const started = processStartToken(Number(entry));
+        if (marker.parentStart && /^\d+$/.test(marker.parentStart) && started &&
+            /^\d+$/.test(started) && BigInt(started) < BigInt(marker.parentStart)) continue;
+        try {
+          const env = readFileSync(`/proc/${entry}/environ`, "utf8").split("\0");
+          if (env.includes(`COTAL_EXT_SEEDING=${marker.nonce}`)) return { kind: "live", pid: Number(entry) };
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code !== "ENOENT" && code !== "ESRCH" && code !== "EACCES" && code !== "EPERM") throw error;
+          // Other users cannot inherit this private seed child's environment.
+          if (code === "EACCES" || code === "EPERM") {
+            const status = readFileSync(`/proc/${entry}/status`, "utf8");
+            // A changed real/effective/saved UID is a privileged session, not an inherited
+            // unprivileged npm child. Same-identity processes must remain inspectable.
+            const ids = /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/m.exec(status)?.slice(1);
+            if (!ids || (ids.every((id) => id === String(process.getuid?.())) &&
+                !/^Kthread:\s+1$/m.test(status))) return { kind: "ambiguous", path };
+          }
+        }
+      }
+      return { kind: "stale" };
+    } catch {
+      return { kind: "ambiguous", path };
+    }
   }
   return { kind: "ambiguous", path };
 }
