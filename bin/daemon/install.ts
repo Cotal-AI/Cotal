@@ -495,7 +495,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     if (!socket || !owner?.start || processBirth(owner.pid) !== owner.start) throw new Error("the pinned daemon lifetime is no longer available");
     const id = randomUUID().replaceAll("-", "");
     socket.write(encode({ v: DAEMON_PROTOCOL_VERSION, id, op }));
-    const reply = JSON.parse(await readLine(socket, 70_000)) as DaemonResponse;
+    const reply = JSON.parse(await readLine(socket, op === "managers-prepare-restart" ? 130_000 : 70_000)) as DaemonResponse;
     if (reply.id !== id || reply.v !== DAEMON_PROTOCOL_VERSION || !reply.ok || "event" in reply || !("version" in reply.result)) throw new Error("the pinned daemon refused service repair preparation");
     return reply.result;
   };
@@ -544,8 +544,8 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
         return true;
       }
       hostedSpaces = [...new Set([...hostedSpaces, ...(answer.managers ?? []).filter(manager => manager.pid !== undefined).map(manager => manager.space)])];
-      await request("managers-prepare-restart");
       fenced = true;
+      await request("managers-prepare-restart");
     } catch (error) {
       if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error;
       if (owner?.start && processBirth(owner.pid) === owner.start) throw new Error("the missing-program daemon is live but cannot be verified; its service was not changed");
@@ -555,6 +555,7 @@ export async function repairMissingInstalledProgram(paths: DaemonPaths, daemonHo
     if (JSON.stringify(current) !== JSON.stringify(receipt) || (!intent && !missingLaunchAgentProgram(current))) throw new Error("the daemon installation changed before repair");
     if (owner?.start && processBirth(owner.pid) !== owner.start) throw new Error("the daemon lifetime changed before repair");
     intent ??= { v: 1, receipt, previousSource, nextSource: next.text, enabled, argv, version, hostedSpaces, phase: "prepared" };
+    intent = { ...intent, hostedSpaces };
     writeSecretFileAtomic(serviceRepairFile(paths.state), `${JSON.stringify(intent)}\n`);
     service!.remove(current, true);
     const deadline = Date.now() + 130_000;
