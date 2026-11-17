@@ -501,7 +501,8 @@ export function registerCotalGatewayTools(
         "review, edit and approve its permissions in Cotal before it receives a connection_id. When approval is pending, show them the " +
         "approval link and stop; never approve for them or poll. After their decision, retry the same request " +
         "as the pending result directs. Keep the returned connection_id and pass it on every other cotal_* " +
-        "call. If a new name is taken, the next free name is chosen (name_2, name_3, ...) and reported. " +
+        "call. A signed-in or hosted connection refuses a taken name; it does not choose a replacement. " +
+        "On an open or static local mesh, the next free name is chosen (name_2, name_3, ...) and reported. " +
         "Never reuse another conversation's connection_id or approval_id." +
         (options.selection ? ` ${SELECTION_TEXT}` : "") +
         (options.space
