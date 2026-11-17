@@ -16,7 +16,7 @@ import { spawn, type ChildProcess } from "node:child_process";
  *  rather than on argv, so the token never appears in the process table. */
 const TOKEN_ENV = "COTAL_CODEX_REMOTE_TOKEN";
 
-export interface TuiOpts {
+interface TuiOpts {
   /** `ws://127.0.0.1:<port>` from the driver's {@link import("./app-server.js").RemoteEndpoint}. */
   url: string;
   token: string;

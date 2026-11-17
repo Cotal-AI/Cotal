@@ -154,7 +154,7 @@ const PRESENCE_CONDITION_CODES: ReadonlySet<string> = new Set<PresenceConditionC
  *  relayed: it is what the Harness reported. A code outside the closed set reads `failed`, with
  *  the native code kept as `source`. Without this the seat read `waiting` with the error only in
  *  its private log (#618). */
-export function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
+function jcodeTurnCondition(error: unknown, since = Date.now()): PresenceCondition | undefined {
   if (!(error instanceof HarnessError)) return undefined;
   const source = String(error.code);
   const code = (PRESENCE_CONDITION_CODES.has(source) ? source : "failed") as PresenceConditionCode;
