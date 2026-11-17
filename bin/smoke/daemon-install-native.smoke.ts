@@ -52,6 +52,8 @@ import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsAr
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }

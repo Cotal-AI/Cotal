@@ -18,6 +18,7 @@ import { pathToFileURL } from "node:url";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { sharedPlacements } from "../src/seed/shared.js";
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 let pass = 0;
 let fail = 0;
 function check(name: string, cond: boolean, extra?: unknown): void {
