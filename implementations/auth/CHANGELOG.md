@@ -1,5 +1,15 @@
 # @cotal-ai/auth
 
+## 0.166.2
+
+### Patch Changes
+
+- f85c802: Release an unissued native connection request only after a matching terminal name refusal, so a conflicting name does not trap later requests. Preserve unknown recovery state and explain legacy name conflicts without displaying server text. Opt in to terminal refusals without changing older clients' behavior, and distinguish hosted name refusal from local automatic numbering.
+- Updated dependencies [e7f9ee0]
+  - @cotal-ai/workspace@0.166.2
+  - @cotal-ai/core@0.166.2
+  - @cotal-ai/lang@0.166.2
+
 ## 0.166.1
 
 ### Patch Changes

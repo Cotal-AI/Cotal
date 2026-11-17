@@ -142,6 +142,22 @@ try {
   let durableUp = false;
   for (let i = 0; i < 20; i++) { if (dagent.ep.hasDurableMembership("fx51-durable")) { durableUp = true; break; } await sleep(500); }
   check("durable membership established (daemon serving)", durableUp);
+  const discover = dagent.ep.fetchMemberships.bind(dagent.ep);
+  dagent.ep.fetchMemberships = async () => [{ channel: "fx51-durable", generation: 1, activated: true }];
+  const originalServers = dcfg.servers;
+  try {
+    for (const hosted of [false, true]) {
+      dcfg.servers = hosted ? "nats://host.example:4222" : originalServers;
+      let message = "";
+      try { await dagent.leaveChannel("fx51-durable"); } catch (error) { message = (error as Error).message; }
+      check(hosted ? "hosted leave names the host update, not cotal up" : "local leave retains the daemon restart remedy",
+        hosted ? message.includes("host must update") && !message.includes("cotal up") : message.includes("restart the daemon at this version"));
+      check("refused leave preserves the joined durable channel", dagent.joinedChannels().includes("fx51-durable") && dagent.ep.hasDurableMembership("fx51-durable"));
+    }
+  } finally {
+    dcfg.servers = originalServers;
+    dagent.ep.fetchMemberships = discover;
+  }
   // Otto also follows the family fx51fam.> from boot: its own membership row covers the durable
   // channel fx51fam.dur, which Otto never joins by name (#5404).
   let familyUp = false;
@@ -385,7 +401,7 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-const EXPECTED_CELLS = 36;
+const EXPECTED_CELLS = 40;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 console.log(`SUITE COMPLETE: ${ran} cells`);
