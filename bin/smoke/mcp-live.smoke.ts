@@ -199,6 +199,31 @@ try {
     await server.end(signal);
     check(`${signal ?? "stdin EOF"} finishes owned identity cleanup`, identities().length === 0);
   }
+  const survivor = new Rpc(staticSpace, "survivor");
+  const killed = new Rpc(staticSpace, "killed");
+  await survivor.initialize();
+  await killed.initialize();
+  assert.ok(text(await survivor.call("cotal_connect", { name: "alice" })).includes("Connected as alice"));
+  assert.ok(text(await killed.call("cotal_connect", { name: "bob" })).includes("Connected as bob"));
+  await until(() => observer!.getRoster().some((p) => p.card.name === "bob" && p.status !== "offline"), "bob presence missing");
+  const abandoned = identities();
+  killed.child.kill("SIGKILL");
+  await killed.exited;
+  await sleep(3_000);
+  const restarted = new Rpc(staticSpace, "restarted");
+  await restarted.initialize();
+  const reclaimed = text(await restarted.call("cotal_connect", { name: "bob" }));
+  console.log(`Restart result: ${reclaimed}`);
+  check("a killed conversation host reclaims its name immediately", reclaimed.startsWith("Connected as bob.\n") && !reclaimed.includes("was taken"));
+  check("restart retires only the abandoned identity", identities().length === 2 && abandoned.filter((dir) => identities().includes(dir)).length === 1);
+  const collision = new Rpc(staticSpace, "collision");
+  await collision.initialize();
+  const occupied = text(await collision.call("cotal_connect", { name: "alice" }));
+  check("a live conversation still owns its name", occupied.includes("Connected as alice_2") && occupied.includes("was taken"));
+  await collision.end();
+  await restarted.end();
+  await survivor.end();
+
   const narrowed = new Rpc(staticSpace, "narrow");
   await narrowed.initialize();
   const bad = await narrowed.call("cotal_connect", { name: "limited", channels: [{ channel: "forbidden", access: "read-post" }] });
