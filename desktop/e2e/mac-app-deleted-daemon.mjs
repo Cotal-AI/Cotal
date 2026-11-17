@@ -125,7 +125,7 @@ try {
   assert(!existsSync(cotalHome), 'fixture requires a fresh disposable account');
   assert(!existsSync(plist), 'refuse to replace a LaunchAgent');
   const absent = await call('preflight service absent', '/bin/launchctl', ['print', target]);
-  assert.notEqual(absent.exit, 0, 'refuse to touch an existing loaded service');
+  assert.equal(absent.exit, 113, 'service absence must be confirmed, not an unreadable GUI domain');
   const metadata = await fetch('https://api.github.com/repos/Cotal-AI/Cotal/releases/tags/v0.164.16', { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(30000) });
   assert(metadata.ok, `release metadata HTTP ${metadata.status}`);
   const release = await metadata.json();
@@ -147,7 +147,7 @@ try {
   assert.match(report.bundledVersion, /0\.164\.16/);
   const cutoff = { ...env, npm_config_before: '2026-11-16T19:38:00.000Z' };
   await installArchive('historical', '0.164.16', oldPrefix, cutoff);
-  mkdirSync(cotalHome, { mode: 0o700 });
+  mkdirSync(cotalHome, { recursive: true, mode: 0o700 });
   const { prepareUpdateParticipant } = await import(pathToFileURL(resolve('implementations/auth/smoke/update-participant.fixture.ts')).href);
   closeParticipant = await prepareUpdateParticipant({ env, project, cotalHome, report });
   const install = await bundled('app shipped install operation', ['daemon', 'desktop'], { input: '{"op":"install"}\n' });
