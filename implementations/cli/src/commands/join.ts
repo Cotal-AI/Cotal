@@ -252,8 +252,7 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
         await withProvisioner({ space, servers: server, auth: spaceAuth }, "join-provisioner", async (prov) => {
           await activateTerminalSeat(seatTarget, thisSeat);
           retireSeat = () => retireTerminalSeat(seatTarget, thisSeat);
-          // Live-only: a bare join isn't under a manager, so no durable Plane-3 backstop
-          // (durableMembership:false) — the console reads live via its core-sub + receives DMs on its dm_<id>.
+          // Record the read ACL so the endpoint can self-join its channel's durable backstop.
           auth.creds = await issueTerminalSeat(seatTarget, thisSeat, expiresAt, (issue) => {
             acceptedToken = issue.issued.acceptedToken;
             return provisionAgent(prov, spaceAuth, identity, {
@@ -261,7 +260,6 @@ async function joinSpace(args: ParsedArgs): Promise<void> {
               allowSubscribe: [channel],
               allowPublish: [channel],
               role: values.role,
-              durableMembership: false,
               lifecycleUid,
               expiresAt: issue.expiresAt,
               issued: issue.issued,

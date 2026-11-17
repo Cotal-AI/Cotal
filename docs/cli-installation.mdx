@@ -453,6 +453,10 @@ harness. Another participant whose name is only whitespace is shown as the id, i
 on an incoming line, and on a DM you send. A `--link` supplies the where and the auth in one value. See
 [Spaces](spaces.mdx) and [Identity and auth](identity-and-auth.mdx).
 
+A bare join on a static-auth mesh provisions its own inboxes and read grant for the landing
+channel. It establishes durable membership when the channel's delivery policy is durable, even
+with replay disabled. A live channel keeps live-only membership.
+
 A `--token` or `--creds` goes to `--server`, or else to the broker the space is registered at,
 keeping that registration's TLS requirement. With no `--space`, an explicit `cotal use` selection
 wins in every folder. An automatically adopted selection yields to the folder's running space.
