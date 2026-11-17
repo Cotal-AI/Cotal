@@ -136,6 +136,8 @@ export interface UpdateRuntime {
   /** Bring what connectors installed in their harnesses to this release; one line per connector. */
   refreshConnectors(): Promise<readonly string[]>;
   reportRunningManager(target: Record<string, unknown>): Promise<"none" | "legacy">;
+  /** Authenticate and retain an installed same-version repair before its connector writes. */
+  prepareReconciliation?(target: Record<string, unknown>): Promise<void>;
   /** The binary may await its daemon's replacement generation before the bound child's read. */
   waitForInstalledGeneration?(version: string): Promise<void>;
   /** Explain whether the machine daemon can act on the saved automatic-update preference. */
@@ -537,6 +539,11 @@ async function reconcileCurrent(
   target: Record<string, unknown>,
   finish: (reconciled: boolean, deferred?: boolean) => number,
 ): Promise<number> {
+  try { await rt.prepareReconciliation?.(target); }
+  catch (error) {
+    rt.err(c.red(`✗ installed connector reconciliation admission: ${refusal(error)}`));
+    return finish(false, true);
+  }
   // OBSERVE BEFORE WRITING. `rt.reconcile()` is `runSeed({force: true})`: it rewrites the
   // operator-global seed store, manifest and npm prefix. It used to run FIRST, so an
   // `update --self` against a mesh that predates this release's authority stores rewrote the store

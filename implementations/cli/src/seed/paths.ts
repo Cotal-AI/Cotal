@@ -2,8 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { globalConfigDir } from "@cotal-ai/core";
-import { SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
+import { connectorConfigDir, SEEDED_EXTENSIONS } from "@cotal-ai/workspace";
 
 /**
  * Filesystem layout + version identity for the connector seeding engine. Everything the reconcile
@@ -22,7 +21,7 @@ export const SEED_BUILTINS: readonly string[] = Object.keys(SEEDED_EXTENSIONS);
 
 /** `<config>/cotal/seed` — the seed engine's own state root (NOT inside the npm prefix). */
 export function seedDir(): string {
-  return join(globalConfigDir(), "seed");
+  return join(connectorConfigDir(), "seed");
 }
 
 /** The monotonic ever-seeded authority: which built-ins were ever seeded (never shrinks). */
