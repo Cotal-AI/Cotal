@@ -48,6 +48,6 @@ export function verifyUnreachableRegistration({report,cell}){
  assert.equal(records[0].server,`nats://127.0.0.1:${state.gonePort}`);assert.equal(records[0].root,state.goneRoot);
  assert.equal(report.cleanupSafety?.passed,true);assert.equal(report.compositionCleanup,'owned composition stopped before reporting');
  assert(!report.error&&!report.cleanupFailure);
- const knownRed=report.source==='0.165.3'&&report.target==='0.165.4'&&update.exit===1&&update.stderr===`staged pre-install check refused: ✗ no broker answered at nats://127.0.0.1:${state.gonePort}; "${state.gone}" is registered here but its mesh is not up - start it where it runs, or \`cotal space forget ${state.gone}\` to unregister it; no installed packages or connector state were changed\n`;
+ const knownRed=(report.source==='0.165.3'&&report.target==='0.165.4'||report.source==='0.165.4'&&report.target==='0.165.1004')&&update.exit===1&&update.stderr===`staged pre-install check refused: ✗ no broker answered at nats://127.0.0.1:${state.gonePort}; "${state.gone}" is registered here but its mesh is not up - start it where it runs, or \`cotal space forget ${state.gone}\` to unregister it; no installed packages or connector state were changed\n`;
  return {passed:true,upgradePassed:update.exit===0,knownRed,issue:knownRed?'https://github.com/Cotal-AI/Cotal/issues/7224':null};
 }

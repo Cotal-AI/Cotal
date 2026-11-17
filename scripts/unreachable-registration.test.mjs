@@ -61,6 +61,9 @@ test('exact measured public refusal is labelled red, never an upgrade pass',()=>
  const input=evidence(),update=input.report.calls.find(call=>call.label==='upgrade under test');update.exit=1;
  update.stderr='staged pre-install check refused: ✗ no broker answered at nats://127.0.0.1:12346; "update-gone" is registered here but its mesh is not up - start it where it runs, or `cotal space forget update-gone` to unregister it; no installed packages or connector state were changed\n';
  const verdict=verifyUnreachableRegistration(input);assert.equal(verdict.knownRed,true);assert.equal(verdict.upgradePassed,false);
+ input.report.source='0.165.4';input.report.target='0.165.1004';input.report.unreachableRegistration.routeBefore.selectedCliVersion='0.165.4';input.report.unreachableRegistration.routeBefore.packageManagerRecordVersion='0.165.4';
+ assert.equal(verifyUnreachableRegistration(input).knownRed,true);
+ input.report.target='0.165.2004';assert.equal(verifyUnreachableRegistration(input).knownRed,false);
  update.stderr+='other failure';assert.equal(verifyUnreachableRegistration(input).knownRed,false);
 });
 test('staged gate rejects in-place and same-version green or substituted registry endpoints',()=>{

@@ -78,6 +78,7 @@ The report retains their timed refusal observations, the neutral command folder 
 A passing update must publish a newer selected target through the staged route, with validated descriptor and inventory hashes.
 The registration and stopped stack journal must remain unchanged. Public 0.165.3 to 0.165.4 refuses
 at staged admission as tracked in [#7224](https://github.com/Cotal-AI/Cotal/issues/7224).
+The published 0.165.4 updater also refuses its paired synthetic 0.165.1004 target in this state.
 The report labels that measured refusal as known red, but it remains failed in both acceptance fields.
 The installed source performs the first admission read, so a corrected target cannot repair that source's refusal.
 A stopped space selected in the update folder does not exercise this install-wide read.
