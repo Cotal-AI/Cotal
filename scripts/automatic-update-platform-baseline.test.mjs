@@ -33,7 +33,7 @@ test('extension observations ask the driven CLI each time and read that root on 
     return { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { kind: 'extensions', root: roots[calls++], items: [{ version: 'untrusted-display' }] } }) };
   };
   for (let i = 0; i < roots.length; i++) {
-    const observed = await baseline.observedExtensions({ config, run });
+    const observed = await baseline.observedExtensions({ config, run, platform: 'linux' });
     assert.equal(observed.root, roots[i]);
     assert.deepEqual(observed.extensions, [entries[i]]);
   }
@@ -44,7 +44,7 @@ test('extension root observation refuses missing or malformed public results wit
   const config = mkdtempSync(join(tmpdir(), 'extension-invalid-'));
   const valid = { exit: 0, signal: null, timeout: false, stdout: JSON.stringify({ result: { kind: 'extensions', root: config } }) };
   for (const change of [{ exit: 1 }, { signal: 'SIGTERM' }, { timeout: true }, { stdout: 'not json' }, { stdout: '{}' }, { stdout: JSON.stringify({ result: { kind: 'extensions', root: 'relative' } }) }]) {
-    await assert.rejects(baseline.observedExtensions({ config, run: async () => ({ ...valid, ...change }) }));
+    await assert.rejects(baseline.observedExtensions({ config, platform: 'linux', run: async () => ({ ...valid, ...change }) }));
   }
   for (const route of [{ platform: 'win32' }, { layout: 'checkout' }]) {
     const observed = await baseline.observedExtensions({ config, ...route, run: async () => assert.fail('unsupported routes must remain canonical') });
@@ -113,14 +113,14 @@ test('owned local fixture keeps its recorded identity and bytes while every othe
   assert.deepEqual(baseline.extensionVersionChecks({...args, fixture: undefined}), {recorded: false, installed: false});
   const selected = structuredClone(args);
   selected.root = '/selected/extensions';
-  selected.installed[0].path = '/selected/extensions/node_modules/' + fixture.pkg;
+  selected.installed[0].path = join(selected.root, 'node_modules', fixture.pkg);
   assert.deepEqual(baseline.extensionVersionChecks(selected), {recorded: true, installed: true});
   selected.installed[0].files['index.js'] = 'changed';
   assert.deepEqual(baseline.extensionVersionChecks(selected), {recorded: true, installed: false});
   const copied = structuredClone(args);
   copied.fixture.realpath = copied.fixture.path;
   copied.root = '/selected/extensions';
-  copied.installed[0].path = copied.installed[0].realpath = '/selected/extensions/node_modules/' + fixture.pkg;
+  copied.installed[0].path = copied.installed[0].realpath = join(copied.root, 'node_modules', fixture.pkg);
   assert.deepEqual(baseline.extensionVersionChecks(copied), {recorded: true, installed: true});
   copied.installed[0].realpath = '/foreign/copied-fixture';
   assert.deepEqual(baseline.extensionVersionChecks(copied), {recorded: true, installed: false});
