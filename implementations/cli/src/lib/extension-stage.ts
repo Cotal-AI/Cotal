@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { globalConfigDir } from "@cotal-ai/core";
-import { claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
+import { connectorConfigDir, claimUpdateClosureAccess, inspectLock, processStartToken, protectedLocalDirectory, assertProtectedFileAccess, readLocalRecordSource } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { repairInstallModes } from "./install-umask.js";
 
@@ -14,7 +13,7 @@ interface Promotion {
   readonly stageIdentity: { readonly dev: string; readonly ino: string; readonly birth: number };
   readonly oldIdentity?: { readonly dev: string; readonly ino: string; readonly birth: number };
 }
-const journalPath = (): string => join(globalConfigDir(), ".extensions-promotion.json");
+const journalPath = (): string => join(connectorConfigDir(), ".extensions-promotion.json");
 function save(record: Promotion): void {
   const path = journalPath(), temp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(temp, JSON.stringify(record), { flag: "wx", mode: 0o600 });
@@ -28,7 +27,7 @@ function checkedRecord(): Promotion | undefined {
   const source = readLocalRecordSource(path, 64 * 1024);
   if (!source) throw new Error("extension promotion journal disappeared");
   const record = JSON.parse(Buffer.from(source).toString("utf8")) as Promotion;
-  const config = resolve(globalConfigDir());
+  const config = resolve(connectorConfigDir());
   if (record.v !== 1 || !record.stageIdentity || resolve(record.root) !== join(config, "extensions") ||
       dirname(record.stage) !== config || !record.stage.startsWith(join(config, ".extensions.stage-")) ||
       dirname(record.old) !== config || !record.old.startsWith(join(config, ".extensions.rollback-"))) throw new Error("invalid extension promotion journal");
@@ -76,7 +75,7 @@ export interface ExtensionStage {
 }
 /** Copy the prefix once. The caller holds the writer throughout staging, verification and promotion. */
 export function stageExtensions(): ExtensionStage {
-  const config = globalConfigDir(), root = join(config, "extensions");
+  const config = connectorConfigDir(), root = join(config, "extensions");
   if (checkedRecord()) throw new Error("an unfinished extension promotion must be recovered before staging");
   mkdirSync(config, { recursive: true, mode: 0o700 });
   protectedLocalDirectory(realpathSync(config));

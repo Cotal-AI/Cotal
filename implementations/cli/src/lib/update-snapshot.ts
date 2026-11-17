@@ -1,7 +1,7 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { ensureDirNoSymlink, globalConfigDir } from "@cotal-ai/core";
-import { protectedLocalDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
+import { ensureDirNoSymlink } from "@cotal-ai/core";
+import { connectorConfigDir, protectedLocalDirectory, readUpdateRecovery, writeUpdateRecovery } from "@cotal-ai/workspace";
 import { claimExtensionMutation } from "./ext-mutation.js";
 import { acquireReconcileLock } from "../seed/lock.js";
 
@@ -13,7 +13,7 @@ export interface UpdateSnapshot {
 
 /** Capture the seed and operator prefix under their native writer barriers. */
 export function snapshotUpdateClosure(existing?: string): UpdateSnapshot {
-  const config = globalConfigDir();
+  const config = connectorConfigDir();
   const missing: string[] = [];
   let ancestor = config;
   while (!lstatSync(ancestor, { throwIfNoEntry: false })) {

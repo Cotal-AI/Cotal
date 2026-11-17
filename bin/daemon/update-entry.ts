@@ -15,7 +15,7 @@ import { waitForInstalledDaemonGeneration } from "./update-generation.js";
 import { cleanupExecutionStore } from "../execution-store.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
-import { logicalExecutionEntry } from "@cotal-ai/workspace";
+import { findMesh, logicalExecutionEntry, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
@@ -72,13 +72,14 @@ const composed: Command = { ...command, async run(args) {
   let daemonObserved = false;
   let preparedRestart = false;
   let currentPackages = false;
+  let retainedReconciliation = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
   let replacementVersion: string | undefined;
   let targetAdmissionChecked = false;
   let recoveryFence = false;
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
-  const reportsRetainedExecution = () => retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
+  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   try {
@@ -94,7 +95,33 @@ const composed: Command = { ...command, async run(args) {
         return execution;
       },
       recoverExecution: recoverExecutionUpdate,
-    } : {}), isCurrent() {
+    } : {}), async prepareReconciliation(flags: Record<string, unknown>) {
+    const entry = logicalExecutionEntry();
+    if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
+    try {
+      const daemon = await queryDaemon({ paths: daemonPaths() });
+      if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
+      return; // Hosted daemon admission and restart handling remain unchanged.
+    } catch (error) {
+      if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
+      if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
+    }
+    const managers = localUpdateManagers(flags, entry);
+    if (!managers.length) return;
+    for (const manager of managers) {
+      if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before reconciliation admission`);
+      await retainedReads({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId });
+      if (assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed during reconciliation admission`);
+    }
+    retainConnectorConfig();
+    retainedReconciliation = true;
+    for (const manager of managers) {
+      const command = findMesh(manager.space)?.userAuth?.remote
+        ? `cotal manager restart --with-agents --yes --space ${shellPath(manager.space)}`
+        : `cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}`;
+      console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: cd ${shellPath(manager.root)} && ${command}`);
+    }
+  }, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {

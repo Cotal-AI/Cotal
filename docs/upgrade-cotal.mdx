@@ -17,6 +17,16 @@ shows its progress and waits up to ten minutes. If the archives are still unavai
 the installed version and exits successfully. Invalid release metadata, failed integrity checks
 and other installation errors still refuse the update.
 
+On an installed POSIX CLI, reconciling the installed release can keep a standalone Manager
+and its seats running. The command authenticates their inventory before selecting a separate
+connector and seed prefix for this installation and release. The earlier prefix stays in place
+for the processes that already loaded it. This does not restore files a prior manual npm install
+already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
+Later releases inherit the selected prefix, including when its publication was interrupted.
+A recorded extension npm child must finish before its source prefix can be copied.
+The first installed reconciliation also selects a separate prefix. A Manager started from another
+copy keeps launching with its original connector generation until it is restarted.
+
 ## Execution generations
 
 The `cotal` entry reads a versioned execution descriptor from its sibling retained-generation store.
