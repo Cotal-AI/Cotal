@@ -559,7 +559,7 @@ try {
   const ids = Object.fromEntries(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"].map((name) => [name, { id: newIdentity().id }]));
   const mgrPrepare = await post(`${PUBLIC}/manager-service-authority`, { idpToken: idpJwt, request: {
     v: 1, kind: "manager-service-authority", operation: "prepare", space: SPACE, actor: "cli",
-    instanceId: mintLifecycleUid(), managerLifecycleUid: mintLifecycleUid(), requestId: `req${mintLifecycleUid()}`, identities: ids,
+    instanceId: mintLifecycleUid(), managerLifecycleUid: mintLifecycleUid(), requestId: `req${mintLifecycleUid()}`, registrationLeaseId: mintLifecycleUid(), identities: ids,
   } });
   check("the public typed manager-authority route accepts supervise scope", mgrPrepare.status === 200 && (mgrPrepare.body.credentials as Record<string, unknown>)?.supervisor !== undefined, mgrPrepare.body);
   const rawProfile = await post(`${PUBLIC}/exchange`, { idpToken: idpJwt, actor: "cli", view: "manager-service" });

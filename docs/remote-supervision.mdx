@@ -156,6 +156,11 @@ Its prepare, activate, and renew operations are replay-safe and bound to that li
 It also issues a one-shot retirement request pinned to the target.
 It never exports the space signer, a static provisioner credential, or generic storage authority.
 Registration publishes the instance revision and process epoch so callers can find it.
+The host and participant must support the same registration lease protocol.
+Prepare acquires a six-minute host-owned lease for a fresh registration attempt.
+The participant renews it every thirty seconds, including while replacing an expired executor.
+It releases the lease only after registration work and its executor connection have settled.
+A failed renewal closes the executor and stops registration. An expired attempt cannot resume with fresh prepare authority.
 
 On restart, registration revokes prior credential rows in batches of at most 16 concurrent writes.
 Each batch settles before any failure is reported. All prior rows must be revoked and their holders

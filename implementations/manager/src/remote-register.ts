@@ -17,6 +17,7 @@ import {
   readEndpointGateGeneration,
   rejectionText,
   recordsBucket,
+  REGISTRATION_LEASE_RENEW_MS,
   registerServingInstance,
   serveIssuanceGateKv,
   standaloneConnectOpts,
@@ -46,7 +47,49 @@ export async function registerRemoteManagerAuthority(args: {
   evict: (principals: readonly string[]) => Promise<boolean[]>;
   /** Host-side guarded repair for a foreign manager slot holder, used once before a retry. */
   reconcileForeignRegistration?: (instanceId: string) => Promise<void>;
+  /** Host-owned lease callbacks. The renewal connection is independent of the expiring executor. */
+  registrationLease?: { renew: () => Promise<void>; release: () => Promise<void> };
 }): Promise<{ registrationRevision: number; processEpoch: number; serveGrant: EpServeGrant }> {
+  let stopped = false;
+  let wake: (() => void) | undefined;
+  let connection: NatsConnection | undefined;
+  let failure: { error: unknown } | undefined;
+  const check = () => { if (failure) throw failure.error; };
+  const renewal = args.registrationLease ? (async () => {
+    while (!stopped) {
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, REGISTRATION_LEASE_RENEW_MS);
+        wake = () => { clearTimeout(timer); resolve(); };
+      });
+      if (stopped) break;
+      try { await args.registrationLease!.renew(); }
+      catch (error) {
+        failure = { error };
+        // No further broker effect may use a lease whose renewal failed.
+        await connection?.close();
+        break;
+      }
+    }
+  })() : undefined;
+  try {
+    const registered = await registerRemoteManagerAttempt(args, check, nc => { connection = nc; check(); });
+    check();
+    return registered;
+  } finally {
+    stopped = true;
+    wake?.();
+    await renewal;
+    // The attempt has closed its executor and settled every effect before releasing exclusion.
+    if (args.registrationLease) await args.registrationLease.release();
+    check();
+  }
+}
+
+async function registerRemoteManagerAttempt(
+  args: Parameters<typeof registerRemoteManagerAuthority>[0],
+  checkLease: () => void,
+  connected: (nc: NatsConnection) => void,
+): Promise<{ registrationRevision: number; processEpoch: number; serveGrant: EpServeGrant }> {
   let prepareCreds = args.prepareCreds;
   const identity = credsClaims(prepareCreds).sub;
   const account = accountFromCreds(prepareCreds);
@@ -59,9 +102,11 @@ export async function registerRemoteManagerAuthority(args: {
     }
   };
   for (;;) {
+    checkLease();
     const expiry = credsClaims(prepareCreds).exp;
     const refresh = async () => {
       const next = await args.refreshPrepareCreds!();
+      checkLease();
       const claims = credsClaims(next);
       if (claims.sub !== identity || accountFromCreds(next) !== account)
         throw new Error("manager registration prepare refresh must keep the same account and executor identity");
@@ -86,6 +131,7 @@ export async function registerRemoteManagerAuthority(args: {
         reconnect: false,
         maxReconnectAttempts: 0,
       });
+      connected(nc);
       const kvm = new Kvm(nc);
       const recordsKv = await kvm.open(recordsBucket(args.space));
       const authKv = await kvm.open(epAuthBucket(args.space));
@@ -156,6 +202,7 @@ export async function registerRemoteManagerAuthority(args: {
       const { registrationRevision, processEpoch, grant } = registered;
       return { registrationRevision, processEpoch, serveGrant: grant };
     } catch (error) {
+      checkLease();
       if (maintenanceFailure) throw maintenanceFailure.error;
       // Retry only an authentication-expiry error or an elapsed credential on a closed connection.
       // Completed row CASes and verified-holder progress belong to the same freeze.

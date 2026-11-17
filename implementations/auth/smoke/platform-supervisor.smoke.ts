@@ -61,6 +61,7 @@ let door: ((request: PlatformSupervisorAuthorityRequest) => Promise<RemoteManage
 let reader: Awaited<ReturnType<typeof openAuthorityClient>> | undefined;
 const wrap = (request: RemoteManagerAuthorityRequest): PlatformSupervisorAuthorityRequest => ({ v: 1, kind: "platform-supervisor-authority", owner, assignmentRevision: 1, request });
 const call = (request: RemoteManagerAuthorityRequest) => door!(wrap(request));
+const registrationLeaseId = mintLifecycleUid();
 try {
   const creds = await mintCreds(a.auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: fx.servers, space: a.space, creds });
@@ -72,7 +73,7 @@ try {
   });
   door = await service.platformSupervisorAuthority!(owner);
   await cell(0, async () => {
-    prepared = await call(remoteManagerClient.remoteManagerAuthorityRequest(state, "cli", "prepare"));
+    prepared = await call(remoteManagerClient.remoteManagerAuthorityRequest(state, "cli", "prepare", { registrationLeaseId }));
     assert.equal(prepared.owner, owner);
     registered = await registerRemoteManagerAuthority({
       space: a.space, server: fx.servers, owner: prepared.owner, instanceId: state.instanceId,
@@ -162,7 +163,7 @@ try {
         assert.equal(resolved.evidence.ref.owner,owner);
       }
     });
-    const changed = remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","prepare");
+    const changed = remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","prepare", { registrationLeaseId });
     changed.identities.supervisor = {id:newIdentity().id};
     await assert.rejects(call(changed),/different ceiling/);
   });
@@ -183,7 +184,7 @@ try {
     } finally { assignment.state = "assigned"; }
     assignment.expiresAt = Math.floor(Date.now()/1000) + 2;
     // Obtain actual short-lived prepare material, then wait for its recorded lifecycle.
-    const short = await call(remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","prepare"));
+    const short = await call(remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","prepare", { registrationLeaseId }));
     await new Promise((resolve) => setTimeout(resolve, 3100));
     const registrationProof = remoteManagerClient.currentRegistrationProof(activated);
     await assert.rejects(call(remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","renew",{registrationProof})),/lifecycle has ended/);

@@ -11,10 +11,15 @@ export async function nativeRemoteManager(args: {
   call: (request: any) => Promise<any>;
 }) {
   const state = r.loadOrCreateRemoteManagerIdentity(args.root, args.space);
-  const prepared: RemoteManagerAuthorityMaterial = await args.call(r.remoteManagerAuthorityRequest(state, "cli", "prepare"));
+  const prepareRequest = r.remoteManagerAuthorityRequest(state, "cli", "prepare");
+  const prepared: RemoteManagerAuthorityMaterial = await args.call(prepareRequest);
   const owner = prepared.owner;
   const registered = await registerRemoteManagerAuthority({ space: args.space, server: args.servers, owner, instanceId: state.instanceId, serveActor: prepared.actors.serve,
     prepareCreds: r.materialCredential(prepared, "executor", state.identities.executor), tlsRequired: false,
+    registrationLease: {
+      renew: async () => { const q = r.remoteManagerMaintenanceRequest(state, "cli", "renew-registration", state.instanceId, undefined, prepareRequest.registrationLeaseId); r.remoteManagerMaintenanceResult(await args.call(q), q, owner); },
+      release: async () => { const q = r.remoteManagerMaintenanceRequest(state, "cli", "release-registration", state.instanceId, undefined, prepareRequest.registrationLeaseId); r.remoteManagerMaintenanceResult(await args.call(q), q, owner); },
+    },
     evict: async (principals) => {
       const q = r.remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", state.instanceId, [...principals]);
       return r.remoteManagerMaintenanceResult(await args.call(q), q, owner).evictions!.map((e) => e.verifiedGone);

@@ -113,7 +113,12 @@ Recovery requires a complete CONNZ sweep proving that the freeze-holder is gone:
 For a remote Manager, the host must also prove its separate registration executor gone before changing the gate or its credential family.
 The target gate determines both identities, including when another owner's supervisor requests recovery.
 A live holder or executor, an incomplete sweep, or an unreachable delivery daemon refuses recovery.
-A sweep proves broker connection absence at that observation, not process death or exclusion of a later reconnect during credential refresh.
+A sweep proves broker connection absence at that observation, not process death.
+Remote registration also holds a host-owned renewable lease across executor credential replacement.
+Recovery refuses with `registration-active` while that lease is active, even when both connections are absent.
+After a crash, recovery must claim the expired or released lease by compare-and-set before revoking any credential.
+That claim fences delayed renewal and prepare refreshes from the old registration.
+Upgrade the host and participant together. A host refuses prepare without a lease id, and refuses remote recovery without lease evidence.
 Silence is not proof of death, and waiting out a TTL does not reopen the gate.
 
 The recovery result depends on the registration's durable state:

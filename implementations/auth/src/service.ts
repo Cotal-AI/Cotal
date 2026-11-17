@@ -92,6 +92,7 @@ import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerParticipation } from "./manager-participation-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
+import { renewRegistrationLease, releaseRegistrationLease } from "@cotal-ai/core";
 import { deregisterUserEndpoint, type EndpointDeregisterGranter } from "./endpoint-deregister.js";
 import { parsePrincipalKey, parseRemoteEndpointDeregisterRequest } from "@cotal-ai/core";
 import { validateRetainedManagedAgent } from "./continuity.js";
@@ -1359,6 +1360,17 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         }),
         issue: async ({ actors, request: r }) => {
           const existing = await observeLegacyManagerGate(r.instanceId);
+          let registrationLease: import("@cotal-ai/core").RegistrationLease | undefined;
+          if (r.operation === "prepare") {
+            if (!r.registrationLeaseId)
+              throw new EpEnvelopeError("failed-precondition", "manager prepare requires a registration lease id; upgrade the participant");
+            if (existing && existing.principal !== remoteManagerServePrincipal(owner, r.instanceId))
+              throw new EpEnvelopeError("permission-denied", "manager prepare gate belongs to another owner");
+            registrationLease = await renewRegistrationLease(authKv, {
+              endpoint: "manager", instanceId: r.instanceId, principal: remoteManagerServePrincipal(owner, r.instanceId),
+              id: r.registrationLeaseId, acquire: true,
+            });
+          }
           if (r.operation === "prepare" && existing === null) {
             await provisionEndpointGateOpen(authKv, {
               endpoint: "manager", instanceId: r.instanceId, principal: remoteManagerServePrincipal(owner, r.instanceId),
@@ -1413,7 +1425,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           if (r.operation === "prepare" || r.operation === "renew") {
             credentials.supervisor = await credential("supervisor", "remote-manager", actors.supervisor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.supervisor },
-              expiresInSeconds: standingTtl,
+              ...(registrationLease ? { expiresAt: Math.floor(registrationLease.until / 1000) } : { expiresInSeconds: standingTtl }),
             });
             // The executor receives the exact instance-scoped registration/maintenance surface under
             // a separate nkey and bounded five-minute lifetime. The participant retains it for the
@@ -1421,7 +1433,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             // before maintenance or deregistration once its retained credential is unhealthy.
             credentials.executor = await credential("executor", "remote-manager", actors.executor, {
               remoteManager: { instanceId: r.instanceId, owner, actor: actors.executor },
-              expiresInSeconds: 5 * 60,
+              expiresAt: Math.min(Math.floor(Date.now() / 1000) + 5 * 60, Math.floor((registrationLease?.until ?? (Date.now() + 5 * 60_000)) / 1000)),
             });
           }
           if (r.operation === "session") {
@@ -1580,7 +1592,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               }),
             };
           }
-          return { credentials };
+          return { credentials, ...(registrationLease ? { registrationLease } : {}) };
         },
       });
       const supervisorExpiresAt = holder.supervisorExpiresAt;
@@ -1665,6 +1677,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         scanner,
         observeManagerGate: observeLegacyManagerGate,
       });
+      if (authorized.operation === "renew-registration" || authorized.operation === "release-registration") {
+        const coordinates = { endpoint: "manager", instanceId: authorized.instanceId,
+          principal: remoteManagerServePrincipal(owner, authorized.instanceId), id: authorized.registrationLeaseId! };
+        const registrationLease = authorized.operation === "renew-registration"
+          ? await renewRegistrationLease(authKv, { ...coordinates, acquire: false })
+          : await releaseRegistrationLease(authKv, coordinates);
+        return completeRemoteManagerMaintenance(authorized, owner, { registrationLease });
+      }
       const evictHolders = makeDeliveryAdminHolderEvictor({ onConnection, space, server, dataAccount, log });
       if (authorized.operation === "evict-family-principal") {
         const evictions = await evictHolders(authorized.principals!);
@@ -1695,6 +1715,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           space,
           endpoint: "manager",
           instanceId: authorized.targetInstanceId,
+          requireRegistrationLease: true,
           probeHolder: async (principal) => {
             const result = await principalOracle(principal);
             return { state: result.state, detail: result.note ?? `delivery-daemon principal sweep, sweepComplete=${String(result.sweepComplete)}` };

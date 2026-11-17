@@ -15,6 +15,9 @@ import {
   mintLifecycleUid,
   newIdentity,
   parseGoalIndexEntry,
+  parseRegistrationLease,
+  registrationLeaseKey,
+  remoteManagerServePrincipal,
   parseRemoteManagedAgentRuntimeResult,
   remoteManagerActors,
   remoteManagerParticipationAuthorizationRequest as coreParticipationAuthorizationRequest,
@@ -364,7 +367,7 @@ export function remoteManagerAuthorityRequest(
   state: RemoteManagerIdentityState,
   actor: string,
   operation: RemoteManagerAuthorityRequest["operation"],
-  coordinates: Pick<RemoteManagerAuthorityRequest, "registrationProof" | "contractArtifacts" | "session" | "retirement" | "transferReader"> = {},
+  coordinates: Pick<RemoteManagerAuthorityRequest, "registrationProof" | "contractArtifacts" | "session" | "retirement" | "transferReader" | "registrationLeaseId"> = {},
 ): RemoteManagerAuthorityRequest {
   const { registrationProof, contractArtifacts, session, retirement, transferReader } = coordinates;
   const requestId = `${operation}${mintLifecycleUid()}`;
@@ -377,6 +380,7 @@ export function remoteManagerAuthorityRequest(
     instanceId: state.instanceId,
     managerLifecycleUid: state.lifecycleUid,
     requestId,
+    ...(operation === "prepare" ? { registrationLeaseId: coordinates.registrationLeaseId ?? mintLifecycleUid() } : {}),
     ...(registrationProof ? { registrationProof } : {}),
     ...(contractArtifacts ? { contractArtifacts } : {}),
     ...(session ? { session } : {}),
@@ -392,6 +396,7 @@ export function remoteManagerMaintenanceRequest(
   operation: RemoteManagerMaintenanceRequest["operation"],
   targetInstanceId: string,
   principals?: string[],
+  registrationLeaseId?: string,
 ): RemoteManagerMaintenanceRequest {
   return {
     v: 1,
@@ -404,6 +409,7 @@ export function remoteManagerMaintenanceRequest(
     requestId: `maintain${mintLifecycleUid()}`,
     identities: publicIdentities(state),
     targetInstanceId,
+    ...(registrationLeaseId ? { registrationLeaseId } : {}),
     ...(principals ? { principals } : {}),
   };
 }
@@ -414,9 +420,10 @@ export function remoteManagerMaintenanceResult(
   request: RemoteManagerMaintenanceRequest,
   expectedOwner: string,
 ): RemoteManagerMaintenanceResult {
-  let resultField: "evictions" | "reconciliation";
+  let resultField: "evictions" | "reconciliation" | "registrationLease";
   if (request.operation === "evict-family-principal") resultField = "evictions";
   else if (request.operation === "reconcile-registration") resultField = "reconciliation";
+  else if (request.operation === "renew-registration" || request.operation === "release-registration") resultField = "registrationLease";
   else {
     const unhandled: never = request.operation;
     throw new Error(`manager maintenance has no result for operation ${unhandled}`);
@@ -424,6 +431,7 @@ export function remoteManagerMaintenanceResult(
   const expectedKeys = [
     "v", "kind", "operation", "space", "owner", "actor", "instanceId", "managerLifecycleUid",
     "requestId", "identities", "targetInstanceId", ...(request.principals ? ["principals"] : []),
+    ...(request.registrationLeaseId ? ["registrationLeaseId"] : []),
     resultField,
   ];
   exactKeys(result, expectedKeys, "manager maintenance");
@@ -432,7 +440,7 @@ export function remoteManagerMaintenanceResult(
       result.instanceId !== request.instanceId || result.managerLifecycleUid !== request.managerLifecycleUid ||
       result.requestId !== request.requestId || result.targetInstanceId !== request.targetInstanceId ||
       JSON.stringify(result.identities) !== JSON.stringify(request.identities) ||
-      JSON.stringify(result.principals) !== JSON.stringify(request.principals))
+      JSON.stringify(result.principals) !== JSON.stringify(request.principals) || result.registrationLeaseId !== request.registrationLeaseId)
     throw new Error("manager maintenance returned different lifecycle, target, principal, or owner coordinates");
   if (request.operation === "evict-family-principal") {
     const evictions = result.evictions;
@@ -463,11 +471,23 @@ export function remoteManagerMaintenanceResult(
         (report.repairCursorCleanup !== "deleted" && report.repairCursorCleanup !== "retained") ||
         !report.liveness || report.liveness.state !== "gone" || typeof report.liveness.detail !== "string")
       throw new Error("manager maintenance returned no closed matching reconciliation report");
+  } else if (request.operation === "renew-registration" || request.operation === "release-registration") {
+    const lease = remoteRegistrationLease(result.registrationLease, request.registrationLeaseId!, expectedOwner, request.instanceId);
+    if (lease.state !== (request.operation === "renew-registration" ? "active" : "released"))
+      throw new Error("manager maintenance returned an unexpected registration lease state");
   } else {
     const unhandled: never = request.operation;
     throw new Error(`manager maintenance has no result for operation ${unhandled}`);
   }
   return result;
+}
+
+/** Validate host evidence without comparing the participant's clock with the host's clock. */
+export function remoteRegistrationLease(value: unknown, id: string, owner: string, instanceId: string) {
+  const lease = parseRegistrationLease(new TextEncoder().encode(JSON.stringify(value)), registrationLeaseKey("manager", instanceId));
+  if (lease.id !== id || lease.principal !== remoteManagerServePrincipal(owner, instanceId))
+    throw new Error("the host returned a registration lease for different operation coordinates");
+  return lease;
 }
 
 export function remoteRetainedAgentValidationRequest(

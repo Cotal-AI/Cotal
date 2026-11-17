@@ -32,7 +32,8 @@ try {
     identityRoot: account.stateDir, identityStore: account.store,
     dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! }, log: console.log });
   const issue = (request: RemoteManagerAuthorityRequest) => plane!.issueManagerServiceAuthority({ owner, scope: ["supervise"], request });
-  const prepare = await issue({ ...base, operation: "prepare", requestId: mintLifecycleUid() });
+  const registrationLeaseId = mintLifecycleUid();
+  const prepare = await issue({ ...base, operation: "prepare", requestId: mintLifecycleUid(), registrationLeaseId });
   assert.deepEqual(Object.keys(prepare.credentials).sort(), ["executor", "supervisor"]);
   const registered = await registerRemoteManagerAuthority({ space, server: fx.servers, owner, instanceId,
     serveActor: actors.serve, tlsRequired: false,

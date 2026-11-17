@@ -21,7 +21,7 @@ let state: "assigned" | "ended" = "assigned";
 const identities = Object.fromEntries(REMOTE_MANAGER_IDENTITY_NAMES.map(name => [name, { id: newIdentity().id }])) as RemoteManagerAuthorityRequest["identities"];
 const request = (): RemoteManagerAuthorityRequest => ({
   v: 1, kind: "manager-service-authority", operation: "prepare", space: account.space,
-  actor: "cli", instanceId, managerLifecycleUid: lifecycleUid, requestId: mintLifecycleUid(), identities,
+  actor: "cli", instanceId, managerLifecycleUid: lifecycleUid, requestId: mintLifecycleUid(), registrationLeaseId: mintLifecycleUid(), identities,
 });
 let service: AuthServiceHandle | undefined;
 let writer: AuthorityClient | undefined;

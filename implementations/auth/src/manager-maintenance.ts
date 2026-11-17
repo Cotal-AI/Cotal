@@ -23,7 +23,7 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
     "v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid",
-    "requestId", "identities", "targetInstanceId", "principals",
+    "requestId", "identities", "targetInstanceId", "principals", "registrationLeaseId",
   ]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (!(REMOTE_MANAGER_MAINTENANCE_OPERATIONS as readonly unknown[]).includes(o.operation))
@@ -39,16 +39,22 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
       requestError(`evict-family-principal requires 1 to ${EVICT_PRINCIPALS_MAX} distinct non-empty principals`);
   } else if (operation === "reconcile-registration") {
     if (o.principals !== undefined) requestError("reconcile-registration must not carry principals");
+  } else if (operation === "renew-registration" || operation === "release-registration") {
+    if (o.principals !== undefined || typeof o.registrationLeaseId !== "string") requestError("registration lease operation requires only registrationLeaseId");
+    assertLifecycleToken(o.registrationLeaseId, "registration lease id");
   } else {
     const unhandled: never = operation;
     requestError(`has no admission rule for operation ${unhandled}`);
   }
+  if (operation !== "renew-registration" && operation !== "release-registration" && o.registrationLeaseId !== undefined)
+    requestError("only registration lease operations carry registrationLeaseId");
   return {
     v: 1,
     kind: "manager-service-maintenance",
     operation,
     ...envelope,
     targetInstanceId: o.targetInstanceId,
+    ...(typeof o.registrationLeaseId === "string" ? { registrationLeaseId: o.registrationLeaseId } : {}),
     ...(Array.isArray(o.principals) ? { principals: [...(o.principals as string[])] } : {}),
   };
 }
@@ -63,18 +69,18 @@ export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHo
   if (r.space !== args.space)
     throw new EpEnvelopeError("permission-denied", `manager maintenance request names space ${r.space}, not this host space ${args.space}`);
   requireManagerAuthorityHolder(args, r.instanceId, 'manager maintenance needs scope "supervise"; spawn/admin do not imply it');
-  // The platform arm reaches only its own assigned instance, for both operations. The human arm may
+  // The platform arm reaches only its own assigned instance, for every operation. The human arm may
   // still reconcile a foreign slot holder in its space.
   if (args.holder === "platform" && r.targetInstanceId !== args.assignment.instanceId)
     throw new EpEnvelopeError("permission-denied", `platform control maintenance may target only assigned instance ${args.assignment.instanceId}, not ${r.targetInstanceId}`);
-  if (r.operation === "evict-family-principal" && r.targetInstanceId !== r.instanceId)
-    throw new EpEnvelopeError("permission-denied", `manager maintenance eviction may target only caller instance ${r.instanceId}, not ${r.targetInstanceId}`);
+  if (r.operation !== "reconcile-registration" && r.targetInstanceId !== r.instanceId)
+    throw new EpEnvelopeError("permission-denied", `manager maintenance ${r.operation} may target only caller instance ${r.instanceId}, not ${r.targetInstanceId}`);
   const gate = await args.observeManagerGate(r.targetInstanceId);
   if (!gate || gate.state === "retired")
     throw new EpEnvelopeError("failed-precondition", `manager maintenance found no live registration gate for instance ${r.targetInstanceId}`);
   if (args.holder === "platform" && gate.principal !== remoteManagerServePrincipal(args.owner, r.targetInstanceId))
     throw new EpEnvelopeError("permission-denied", `platform control maintenance gate belongs to ${gate.principal}, not the platform serve principal`);
-  if (r.operation === "evict-family-principal") {
+  if (r.operation !== "reconcile-registration") {
     const servePrincipal = remoteManagerServePrincipal(args.owner, r.instanceId);
     if (gate.principal !== servePrincipal)
       throw new EpEnvelopeError("permission-denied", `manager maintenance gate belongs to ${gate.principal}, not the caller's server-derived serve principal ${servePrincipal}`);
@@ -99,7 +105,7 @@ export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHo
 export function completeRemoteManagerMaintenance(
   request: RemoteManagerMaintenanceRequest,
   owner: string,
-  result: Pick<RemoteManagerMaintenanceResult, "evictions" | "reconciliation">,
+  result: Pick<RemoteManagerMaintenanceResult, "evictions" | "reconciliation" | "registrationLease">,
 ): RemoteManagerMaintenanceResult {
   return { ...request, owner, ...result };
 }

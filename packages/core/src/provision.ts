@@ -109,6 +109,7 @@ import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGr
 import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey, credentialIdOf } from "./lifecycle-state.js";
+import { registrationLeaseKey } from "./registration-lease.js";
 import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isAccountNkey, isUserNkey, type Identity } from "./identity.js";
 import {
@@ -2930,6 +2931,7 @@ function endpointServeExecutorPermissions(
   const gateKey = epgateKey(pin.endpoint, pin.instanceId);
   const credPrefix = epcredFamilyPrefix(pin.endpoint, pin.instanceId);
   const repairKey = eprepairKey(pin.endpoint, pin.instanceId);
+  const leaseKey = registrationLeaseKey(pin.endpoint, pin.instanceId);
   // The registration writes this ONE instance's spec key plus the endpoint's governance head
   // (`registerServiceInstance` PHASE 1/3b: the slot-take + promote ride the SAME executor), and this
   // instance's own svc STATUS key (the manager writes its CONVERGED `ready` status so it
@@ -2950,6 +2952,7 @@ function endpointServeExecutorPermissions(
         // the key on the subject, so each grant names exactly this instance's keys.
         `$KV.${AUTH}.${gateKey}`,
         `$KV.${AUTH}.${repairKey}`,
+        `$KV.${AUTH}.${leaseKey}`,
         `$KV.${AUTH}.${credPrefix}.>`,
         ...recordKeys.map((k) => `$KV.${REC}.${k}`),
         // §13.7 contract-artifact publication: the registration publishes the

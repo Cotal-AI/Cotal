@@ -50,6 +50,7 @@ import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
 import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerParticipationAuthorizationRequest, remoteManagerParticipationAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
+import { remoteRegistrationLease } from "./remote-authority.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
 type Values = Record<string, string | undefined>;
@@ -388,8 +389,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
         throw new Error("the host returned manager-service material for different lifecycle coordinates");
+      const leaseId = request.registrationLeaseId!;
+      if (remoteRegistrationLease(material.registrationLease, leaseId, material.owner, state.instanceId).state !== "active")
+        throw new Error("the host did not acquire an active registration lease");
       const maintain = async (operation: RemoteManagerMaintenanceRequest["operation"], targetInstanceId: string, principals?: string[]) => {
-        const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals);
+        const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals,
+          operation === "renew-registration" || operation === "release-registration" ? leaseId : undefined);
         const response = await provider.maintainRemoteManager!({ ...providerCall, request: maintenanceRequest });
         return remoteManagerMaintenanceResult(response, maintenanceRequest, material.owner);
       };
@@ -400,14 +405,20 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode, service
         instanceId: state.instanceId,
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
+        registrationLease: {
+          renew: async () => { await maintain("renew-registration", state.instanceId); },
+          release: async () => { await maintain("release-registration", state.instanceId); },
+        },
         refreshPrepareCreds: async () => {
           const refreshed = await provider.managerServiceAuthority!({
-            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare"),
+            ...providerCall, request: remoteManagerAuthorityRequest(state, "cli", "prepare", { registrationLeaseId: leaseId }),
           });
           if (refreshed.owner !== material.owner || refreshed.instanceId !== state.instanceId ||
               refreshed.lifecycleUid !== state.lifecycleUid || JSON.stringify(refreshed.actors) !== JSON.stringify(actors))
             throw new Error("the host returned manager-service material for different lifecycle coordinates");
           const creds = materialCredential(refreshed, "executor", state.identities.executor);
+          if (remoteRegistrationLease(refreshed.registrationLease, leaseId, material.owner, state.instanceId).state !== "active")
+            throw new Error("the host did not renew the active registration lease");
           material = refreshed;
           return creds;
         },
@@ -1002,7 +1013,7 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
     writeResult(presentation, { command: "manager", target, result, ...(native.repairCursorCleanup === "retained" ? { completeness: "partial" as const, partial: { message: "The native gate reopened, but its freeze-bound repair cursor was retained. No cursor cleanup success was inferred." } } : {}) }, (row): Report => ({ sections: [{ title: "Issuance gate reopened", blocks: [{ kind: "fields", rows: [["Space", space], ["Endpoint", endpoint], ["Full instance", instanceId], ["Native operation", row.opId], ["Holder", row.holderPrincipal], ["Liveness", row.liveness], ["Gate generation", String(row.reopenedAtGeneration)], ["Process epoch", String(row.after.processEpoch)], ["Registration revision", String(row.after.registrationRevision)], ["Revoked this attempt", String(row.revokedCredentialIds.length)], ["Verified this attempt", String(row.holdersVerifiedThisAttempt.length)], ["Already verified", String(row.holdersVerifiedBeforeAttempt.length)], ["Unverified holders", String(row.holdersRemaining.length)], ["Repair cursor", row.repairCursorCleanup], ["Manager", "not started"]] }, { kind: "lines", lines: ["This receipt describes the native gate repair. It does not establish that a manager is now running or serving."] }] }] }));
   } catch (error) {
     if (isCommandFailure(error)) throw error;
-    const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
+    const beforeEffects = error instanceof GateReconcileRefused && ["no-gate", "not-frozen", "wrong-op-kind", "holder-alive", "registration-active", "holder-unknown", "liveness-unestablishable"].includes(error.condition);
     // An open gate, or no gate, is a healthy coordinate: there is nothing to repair there.
     const nothing = error instanceof GateReconcileRefused && (error.condition === "not-frozen" || error.condition === "no-gate");
     if (nothing) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${error.condition === "not-frozen" ? `the ${endpoint} gate for instance ${instanceId} is open` : `there is no ${endpoint} gate for instance ${instanceId}`}, so there is nothing to repair`, { target: { ...target, condition: error.condition }, native: { code: error.condition, detail: error.message }, remedy: "nothing to do; if you meant another gate, name it with --endpoint and --instance" });

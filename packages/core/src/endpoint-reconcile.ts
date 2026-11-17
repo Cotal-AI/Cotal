@@ -33,6 +33,7 @@ import { epgateKey, parseEndpointGate, type EndpointGateRow, type EndpointRepair
 import { completeFrozenRegistrationFromSpec } from "./endpoint-service.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { KV } from "@nats-io/kv";
+import { claimRegistrationRecovery, finishRegistrationRecovery } from "./registration-lease.js";
 
 /** Which guard refused. The command prints this verbatim, and the smoke asserts on it, so a refusal
  *  can never be confused with a different refusal — the failure mode where an operator reads
@@ -46,6 +47,8 @@ export type GateReconcileCondition =
   | "wrong-op-kind"
   /** The freeze-holder still holds a live connection. The freeze is protecting a live op. */
   | "holder-alive"
+  /** The host-owned registration lease excludes repair, even with no executor connection. */
+  | "registration-active"
   /** The sweep under-reported (no responder, truncation, unproven single-server mode). May be live. */
   | "holder-unknown"
   /** The oracle could not be consulted at all, or answered unusably (unreachable, unprovisioned,
@@ -126,6 +129,8 @@ export async function reconcileEndpointGate(opts: {
    * The host derives that authority from the observed holder, never the recovery requester.
    * Every verdict other than affirmative gone refuses before any repair mutation. */
   probeRegistrationExecutor?: (holderPrincipal: string) => Promise<HolderLiveness>;
+  /** Remote host registration requires lease evidence, including when both connections are gone. */
+  requireRegistrationLease?: boolean;
   /** Verify-evict a SET of holders in one shared sweep, answering `verifiedGone` per holder in
    *  input order. Throwing means nothing in the set is verified. */
   evictHolders: (holderPrincipals: readonly string[]) => Promise<boolean[]>;
@@ -190,6 +195,19 @@ export async function reconcileEndpointGate(opts: {
       throw new GateReconcileRefused(condition,
         `the registration executor for "${row.principal}" is ${executor.state.toUpperCase()} (${executor.detail}); refusing to reconcile a registration whose executor is not proven gone`);
     }
+  }
+
+  const lease = await claimRegistrationRecovery(kv, {
+    endpoint, instanceId, principal: row.principal, freezeToken, required: opts.requireRegistrationLease,
+  });
+  if (lease === "live")
+    throw new GateReconcileRefused("registration-active", "the host-owned registration lease is active; credential replacement does not authorize recovery");
+  if (lease === "raced")
+    throw new GateReconcileRefused("raced", "registration lease changed while recovery claimed it; nothing was repaired");
+  if (lease === "claimed") {
+    const pinned = await kv.get(key);
+    if (!pinned || pinned.operation !== "PUT" || pinned.revision !== freezeToken)
+      throw new GateReconcileRefused("raced", "the frozen gate moved before recovery claimed its lease; nothing was repaired");
   }
 
   // ---- 3. Only now: the shipped composition, in the §13.1 order, over the DEAD op's own id.
@@ -311,6 +329,8 @@ export async function reconcileEndpointGate(opts: {
         `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`,
       );
   }
+
+  if (lease === "claimed") await finishRegistrationRecovery(kv, { endpoint, instanceId, freezeToken });
 
   // The gate is already open, so cleanup cannot be a correctness precondition. Delete with the
   // cursor's own revision; if it fails, retain the row and rely on its exact freeze-token binding.

@@ -101,7 +101,7 @@ export type IssueRemoteManagerAuthorityArgs = ManagerAuthorityHolder & {
     owner: string;
     actors: ReturnType<typeof remoteManagerActors>;
     request: RemoteManagerAuthorityRequest;
-  }) => Promise<{ credentials: RemoteManagerAuthorityMaterial["credentials"]; nextRegistrationProof?: string }>;
+  }) => Promise<{ credentials: RemoteManagerAuthorityMaterial["credentials"]; nextRegistrationProof?: string; registrationLease?: RemoteManagerAuthorityMaterial["registrationLease"] }>;
   /** The host must fresh-read the assigned account, manager gate and, for a run, activated
    * journal attempt before signing. No callback means the renewal operation is unavailable. */
   authorizeRenewal?: (args: { owner: string; request: RemoteManagerAuthorityRequest }) => Promise<void>;
@@ -123,11 +123,15 @@ export function isRenewal(operation: unknown): operation is (typeof RENEWAL_OPER
 export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPlatform?: boolean } = {}): RemoteManagerAuthorityRequest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) requestError("must be an object");
   const o = raw as Record<string, unknown>;
-  const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run", "transferReader"]);
+  const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run", "transferReader", "registrationLeaseId"]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (!(REMOTE_MANAGER_AUTHORITY_OPERATIONS as readonly unknown[]).includes(o.operation))
     requestError(`operation must be one of ${REMOTE_MANAGER_AUTHORITY_OPERATIONS.join(", ")}`);
   const envelope = parseRemoteManagerEnvelope(o, "manager-service-authority", "manager-service authority", o.operation !== "prepare");
+  if (o.registrationLeaseId !== undefined) {
+    if (o.operation !== "prepare" || typeof o.registrationLeaseId !== "string") requestError("only prepare carries registrationLeaseId");
+    assertLifecycleToken(o.registrationLeaseId, "registration lease id");
+  }
   if (o.operation === "activate" && (!Array.isArray(o.contractArtifacts) || o.contractArtifacts.length === 0 || o.contractArtifacts.length > 64))
     requestError("activate requires 1-64 canonical manager contractArtifacts");
   if (o.operation !== "activate" && o.contractArtifacts !== undefined)
@@ -207,6 +211,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     kind: "manager-service-authority",
     operation: o.operation as RemoteManagerAuthorityRequest["operation"],
     ...envelope,
+    ...(typeof o.registrationLeaseId === "string" ? { registrationLeaseId: o.registrationLeaseId } : {}),
     ...(renewal ? { accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number } : {}),
     ...(run ? { run } : {}),
     ...(session ? { session } : {}),
@@ -276,6 +281,7 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
     expiresAt: Math.min(...exps),
     actors,
     identities: r.identities,
+    ...(issued.registrationLease ? { registrationLease: issued.registrationLease } : {}),
     ...(issued.nextRegistrationProof ? { nextRegistrationProof: issued.nextRegistrationProof } : {}),
     credentials,
   };

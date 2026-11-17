@@ -11,7 +11,7 @@ export const REMOTE_MANAGER_AUTHORITY_OPERATIONS = Object.freeze(["prepare", "ac
 /** The host-owned manager-service maintenance operations. The request type, the host parser, and
  *  the result check all read this list, so an operation added here is admitted by the parser too
  *  and cannot fall through another operation's branch. */
-export const REMOTE_MANAGER_MAINTENANCE_OPERATIONS = Object.freeze(["evict-family-principal", "reconcile-registration"] as const);
+export const REMOTE_MANAGER_MAINTENANCE_OPERATIONS = Object.freeze(["evict-family-principal", "reconcile-registration", "renew-registration", "release-registration"] as const);
 
 /**
  * Closed request for one remote manager-service authority lifecycle.
@@ -31,6 +31,8 @@ export interface RemoteManagerAuthorityRequest {
   instanceId: string;
   managerLifecycleUid: string;
   requestId: string;
+  /** Unique in-process registration attempt, retained by prepare refreshes only. */
+  registrationLeaseId?: string;
   /** Activate/renew proves the registration phase that preceded it. The opaque digest is minted
    * and validated by the host; it never carries permissions itself. */
   registrationProof?: string;
@@ -100,6 +102,7 @@ export interface RemoteManagerAuthorityMaterial {
   instanceId: string;
   lifecycleUid: string;
   requestId: string;
+  registrationLease?: import("./registration-lease.js").RegistrationLease;
   registrationProof?: string;
   accountPublicKey?: string;
   processEpoch?: number;
@@ -143,9 +146,11 @@ export interface RemoteManagerMaintenanceRequest {
   instanceId: string;
   managerLifecycleUid: string;
   requestId: string;
+  /** Required only for renewal/release of this caller's registration lease. */
+  registrationLeaseId?: string;
   identities: RemoteManagerAuthorityRequest["identities"];
-  /** Instance whose frozen gate or credential family the host operation touches. Eviction requires
-   * this to equal `instanceId`; reconciliation may name a foreign slot holder in the same space. */
+  /** Instance whose gate, family or registration lease the host touches. Only reconciliation
+   * may name a foreign slot holder in the same space. */
   targetInstanceId: string;
   /** Required only for `evict-family-principal`: 1 to `EVICT_PRINCIPALS_MAX` distinct
    *  holders, so one host request and one family scan cover a restart's sweep. Membership is
@@ -164,6 +169,8 @@ export interface RemoteManagerMaintenanceResult {
   instanceId: string;
   managerLifecycleUid: string;
   requestId: string;
+  registrationLeaseId?: string;
+  registrationLease?: import("./registration-lease.js").RegistrationLease;
   identities: RemoteManagerAuthorityRequest["identities"];
   targetInstanceId: string;
   principals?: string[];
