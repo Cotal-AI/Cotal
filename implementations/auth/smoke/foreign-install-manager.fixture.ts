@@ -28,9 +28,11 @@ export async function prepareForeignInstallManager(context: Context):Promise<()=
  const close=async()=>{
   try {
    if(child&&child.exitCode===null&&child.signalCode===null){
-    if(ownedIdentity&&'token' in ownedIdentity)assert.equal(assertRecordIdentity(ownedIdentity).kind,'match','only the owned foreign Manager may be stopped');
+    if (ownedIdentity && 'token' in ownedIdentity) assert.equal(assertRecordIdentity(ownedIdentity).kind, 'match', 'only the owned foreign Manager may be stopped');
     const closed=once(child,'close');child.kill('SIGTERM');
-    const timer=setTimeout(()=>{if(ownedIdentity&&'token' in ownedIdentity&&assertRecordIdentity(ownedIdentity).kind==='match')child?.kill('SIGKILL');},10000);
+    const timer = setTimeout(() => {
+     if (ownedIdentity && 'token' in ownedIdentity && assertRecordIdentity(ownedIdentity).kind === 'match') child?.kill('SIGKILL');
+    }, 10000);
     try{await closed;}finally{clearTimeout(timer);}
    }
   }finally{await closeParticipant();}
