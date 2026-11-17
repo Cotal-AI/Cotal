@@ -10,7 +10,7 @@ import {prepareUpdateParticipant} from '../../auth/smoke/update-participant.fixt
 import {recordedUpdateManagers} from '../src/lib/update-managers.js';
 import {readManagerContinuity,reportRunningManagers} from '../src/commands/update.js';
 import {recordMesh,loadMeshes} from '@cotal-ai/workspace';
-import {countedAssert,emitSentinel} from '@cotal-ai/smoke-kit';
+import {SMOKE_BROKER_TOKEN,countedAssert,emitSentinel,killAndAwaitExit,teardownOnSignal} from '@cotal-ai/smoke-kit';
 const counted=countedAssert(assert),check:typeof assert=counted.assert;
 const root=realpathSync(mkdtempSync(join(tmpdir(),'cotal-update-pin-live-')));
 const env:NodeJS.ProcessEnv={...process.env};for(const key of Object.keys(env))if(key.startsWith('COTAL_'))delete env[key];
@@ -26,11 +26,13 @@ try{
  const listener=createServer();await new Promise<void>(resolve=>listener.listen(0,'127.0.0.1',resolve));
  const port=(listener.address() as {port:number}).port;await new Promise<void>(resolve=>listener.close(()=>resolve()));
  const deadServer=`nats://127.0.0.1:${port}`;
- const broker=spawn('nats-server',['-js','-p',String(port),'-sd',join(root,'tmp','broker')],{env,stdio:'ignore'});children.push(broker);
+ const store=mkdtempSync(join(root,'tmp',SMOKE_BROKER_TOKEN));
+ const broker=spawn('nats-server',['-js','-p',String(port),'-sd',store],{env,stdio:'ignore'});children.push(broker);
+ const releaseBroker=teardownOnSignal(broker,store);
  await pause(500);
  const added=spawnSync(process.execPath,[entry,'space','add','gone','--server',deadServer,'--root',deadRoot,'--mode','open','--force'],{env,encoding:'utf8'});
  check.equal(added.status,0,added.stdout+added.stderr);
- const stopped=once(broker,'close');broker.kill('SIGTERM');await stopped;children.splice(children.indexOf(broker),1);
+ await killAndAwaitExit(broker);releaseBroker();children.splice(children.indexOf(broker),1);
  const retained=()=>reportRunningManagers({},flags=>readManagerContinuity(flags,{readOnly:true,retainGraph:true,installedEntry:entry}),flags=>recordedUpdateManagers(flags,entry));
  process.chdir('/');
  for(const server of [deadServer,'nats://unreachable.invalid:4222']){
