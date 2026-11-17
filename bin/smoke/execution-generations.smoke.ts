@@ -237,7 +237,7 @@ try {
   check("a version check from a 0.164.16 or 0.164.17 updater that will refuse its own copy names the manual install and leaves no staging", () => {
     const store = join(scratch, "stuck/lib/.cotal-generations"), staged = join(store, ".installing-AbC123/lib/node_modules/cotal-ai"), abandoned = join(store, ".installing-Zz9999");
     const stage = (): void => { packageAt(staged, "0.3.0", "staged target"); mkdirSync(abandoned, { recursive: true }); writeFileSync(join(abandoned, "left"), "x"); };
-    const under = (umask: string, env: NodeJS.ProcessEnv) => spawnSync("sh", ["-c", `umask ${umask}; exec "$0" "$1" --version`, process.execPath, join(staged, "dist/cotal.js")], { env: { ...process.env, XDG_RUNTIME_DIR: scratch, ...env }, cwd: scratch, encoding: "utf8", timeout: 10_000 });
+    const under = (umask: string, env: NodeJS.ProcessEnv) => spawnSync("sh", ["-c", `umask ${umask}; exec "$0" "$1" --version`, process.execPath, join(staged, "dist/cotal.js")], { env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), XDG_RUNTIME_DIR: scratch, ...env }, cwd: scratch, encoding: "utf8", timeout: 10_000 });
     const probe = spawnSync("sh", ["-c", `umask 002; exec "$0" -e 'const fs=require("fs");fs.mkdirSync("from",{mode:0o700});fs.cpSync("from","to",{recursive:true});process.stdout.write(String(fs.lstatSync("to").mode&0o022))'`, process.execPath], { cwd: mkdtempSync(join(scratch, "probe-")), encoding: "utf8", timeout: 10_000 });
     assert.equal(probe.status, 0, probe.stderr);
     const refuses = probe.stdout !== "0";
