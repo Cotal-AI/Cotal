@@ -16,7 +16,7 @@ import {
 import { managerServiceLaunchSpec, managerServicePreservedExitScope, managerServiceStopScope } from "./service-child.js";
 import { managerServiceReadiness, observeManagerService } from "./service-observation.js";
 
-export const managerPreset: ServicePreset = {
+const managerPreset: ServicePreset = {
   kind: "service-preset", name: "manager", adapter: "manager-service", timeoutMs: 60000,
   summary: "the manager that starts and keeps your agents running in this space",
   defaults: { root: { space: "root" }, runtime: { value: "pty" } },

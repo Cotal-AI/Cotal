@@ -1348,7 +1348,7 @@ export function managerBrowserContractSource(): BrowserContractSource {
  *  manager can run its shared admission chokepoint and derive the caller principal; each returns
  *  the command's output value (the compiled output contract validates it at the serve boundary).
  *  Kept as a narrow interface so the contract module stays broker-free. */
-export interface ManagerServiceHandlers {
+interface ManagerServiceHandlers {
   vitals(ctx: EpServeContext): ManagerVitals | Promise<ManagerVitals>;
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;
