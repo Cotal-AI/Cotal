@@ -310,6 +310,9 @@ ${readFileSync(join(codexHome, "config.toml"), "utf8")}`);
     const remaining = identities(space).find((r) => r.session === b.thread)!;
     await stopped(codex.p);
     await until(() => online("codex_b").length === 0, "B stayed on the mesh after Codex exited", 30_000);
+    // Leaving the mesh precedes process exit. Under concurrent load the server can still be
+    // finishing shutdown when presence disappears, so observe its exit independently.
+    await until(() => !pidAlive(remaining.owner), "B's server stayed alive after Codex exited", 30_000);
     check("Codex exiting ends B's server, and B leaves the mesh", !pidAlive(remaining.owner));
     const later = await appServer(root);
     const c = await later.conversation(`${kind}-c`);
