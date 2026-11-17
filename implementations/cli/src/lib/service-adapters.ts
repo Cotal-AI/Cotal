@@ -23,7 +23,9 @@ export interface LoadedServiceAdapter extends ResolvedServiceAdapter {
 
 /** Resolve only cached data during add, previews and semantic validation. Executable hooks are
  *  materialized separately, under the ordinary version-locked extension import path. `label` gives
- *  how an option reads in a refusal of its value, such as the flag a preset gives it. */
+ *  how an option reads in a refusal of its value, such as the flag a preset gives it. A stop and its
+ *  preview read only the declaration and pass `checkOptions` false, because a launch input such as
+ *  a credential the stack's own stop removed is not something a stop needs (#7111). */
 export function resolveServiceAdapter(name: string, options: Readonly<Record<string, unknown>>, checkOptions = true, label?: (option: string) => string): ResolvedServiceAdapter {
   const registered = registry.all<LocalProcess>("local-process").find((component) => component.name === name);
   const owners = installedExtensionsEnabled() ? loadExtensionsManifest().extensions.filter((extension) => extensionLocalProcesses(extension).some((component) => component.name === name)) : [];
