@@ -335,6 +335,21 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the same space in another folder is CONFLICT, naming where it is prepared", refused(moved, 2, "CONFLICT") && literal(`already prepared in ${dir}`).test(moved.env?.error?.message ?? ""), shown(moved));
 }
 
+// A confirmed scripted local setup creates its explicitly named project folder.
+{
+  const dir = join(home, "new-project");
+  const created = await json([...FULL("new-project", dir), "--yes"]);
+  check("--yes creates a missing local project and prepares its default persona",
+    created.status === 0 && findPreparedSpace("new-project")?.root === dir &&
+      existsSync(join(dir, ".cotal", "agents", "default.md")) &&
+      created.env?.result?.written?.some((w: { what: string }) => w.what === "project folder"), shown(created));
+  const file = join(home, "project-file");
+  writeFileSync(file, "keep");
+  const rejected = await json([...FULL("project-file", file), "--yes"]);
+  check("--yes still refuses an existing non-directory without changing it",
+    refused(rejected, 1, "USAGE_INVALID") && readFileSync(file, "utf8") === "keep", shown(rejected));
+}
+
 // ── A harness whose host tool is missing ──────────────────────────────────────────────────────────
 {
   const dir = project("p-claude");
