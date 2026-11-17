@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, statSync, statfsSync, unlinkSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -153,7 +153,7 @@ export async function observeHostedManager({space, timeoutMs, observations, read
 }
 
 /** Only the explicitly recorded local test fixture may retain its original generation. */
-export function extensionVersionChecks({extensions, before, target, fixture, installed}) {
+export function extensionVersionChecks({extensions, before, target, fixture, installed, root}) {
   const prior = fixture && before.filter(entry => entry.pkg === fixture.pkg);
   const owned = fixture?.pkg === 'cotal-upgrade-native-fixture' && prior?.length === 1
     && prior[0].spec === fixture.spec && prior[0].version === fixture.version
@@ -170,12 +170,33 @@ export function extensionVersionChecks({extensions, before, target, fixture, ins
     if (matches.length !== 1) return false;
     const current = matches[0];
     if (!isFixture(entry)) return current.version === target;
+    const fixturePath = root ? join(root, 'node_modules', fixture.pkg) : fixture.path;
+    const fixtureRealpath = fixture.realpath === fixture.path ? fixturePath : fixture.realpath;
     return entry.spec === fixture.spec && entry.version === fixture.version
-      && current.path === fixture.path && current.realpath === fixture.realpath && current.version === fixture.version
+      && current.path === fixturePath && current.realpath === fixtureRealpath && current.version === fixture.version
       && Object.keys(current.files ?? {}).length === Object.keys(fixture.files).length
       && Object.entries(fixture.files).every(([name, hash]) => current.files?.[name] === hash);
   });
   return {recorded, installed: packages};
+}
+
+/** Ask the same public CLI the cell drives, then verify its manifest and packages on disk. */
+export async function observedExtensions({ config, run, platform = process.platform, layout = 'npm' }) {
+  let root = join(config, 'extensions');
+  if (platform !== 'win32' && layout !== 'checkout') {
+    const reply = await run(['ext', '--json']);
+    assert(reply.exit === 0 && reply.signal === null && reply.timeout === false, 'extension root observation failed');
+    const result = JSON.parse(reply.stdout).result;
+    assert(result?.kind === 'extensions' && typeof result.root === 'string' && isAbsolute(result.root), 'invalid public extension root');
+    root = result.root;
+  }
+  const manifest = join(root, 'extensions.json');
+  return { root, manifest, extensions: existsSync(manifest) ? json(manifest).extensions : [] };
+}
+
+export function extensionSourceInventory(root, extensions) {
+  return [join(root, 'extensions.json'), ...extensions.map(entry => join(root, 'node_modules', entry.pkg, 'package.json'))]
+    .map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
 }
 
 export const hostedManagerCommand = space => ['daemon', 'setup', '--space', space, '--json'];
@@ -474,6 +495,11 @@ export async function matrixCell(options) {
   const daemon = (label, argv, timeout) => desktopRuntime
     ? call(label, desktopNode, [join(desktopRuntime, 'dist/cotal.js'), ...argv], timeout)
     : cotal(label, argv, timeout);
+  const observeExtensions = async label => {
+    const observation = await observedExtensions({ config, layout, run: argv => cotal(label, argv) });
+    (report.extensionRoots ??= []).push({ label, root: observation.root });
+    return observation;
+  };
   function ok(result, label) { assert.equal(result.exit, 0, `${label}: ${result.stdout}${result.stderr}`); return result; }
   function check(name, passed, observed) { report.assertions.push({ name, passed, observed }); }
   async function captureHostedManager(stage, target) {
@@ -679,7 +705,8 @@ export async function matrixCell(options) {
         assert(typeof space === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(space), 'prepared participant must name its space');
         report.managerHost = { mode: 'daemon-hosted', space };
         ok(await cotal('register daemon-hosted stand-in connector', ['ext', 'add', fixture]), 'hosted stand-in registration');
-        const fixturePath = join(config, 'extensions/node_modules/cotal-upgrade-native-fixture');
+        const fixtureRoot = await observeExtensions('hosted fixture extension root');
+        const fixturePath = join(fixtureRoot.root, 'node_modules/cotal-upgrade-native-fixture');
         const fixtureFiles = ['package.json', 'index.js', 'seat.mjs', 'record-seat.mjs'];
         const fixtureMetadata = json(join(fixturePath, 'package.json'));
         assert.equal(fixtureMetadata.name, 'cotal-upgrade-native-fixture');
@@ -784,10 +811,11 @@ export async function matrixCell(options) {
         await waitForSchedulerEligibility(report, remaining => cotal('wait for verified native scheduler custody', ['daemon', 'status', '--json'], remaining));
       }
     }
-    report.extensionsBefore = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
-    const sourceInventory = () => [join(pkg, 'package.json'), cli, join(config, 'extensions/extensions.json'), ...report.extensionsBefore.map(entry => join(config, 'extensions/node_modules', entry.pkg, 'package.json'))].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null }));
-    if (policy) report.policyInventoryBefore = sourceInventory();
-    report.sourceInventoryBeforeAction = sourceInventory();
+    const extensionsBefore = await observeExtensions('extension root before update');
+    report.extensionsBefore = extensionsBefore.extensions;
+    const sourceInventory = root => [join(pkg, 'package.json'), cli].map(path => ({ path, sha256: existsSync(path) ? digest(readFileSync(path)) : null })).concat(extensionSourceInventory(root, report.extensionsBefore));
+    if (policy) report.policyInventoryBefore = sourceInventory(extensionsBefore.root);
+    report.sourceInventoryBeforeAction = sourceInventory(extensionsBefore.root);
     report.targetBeforeAction = report.target;
     report.versionChanging = report.source !== report.target;
     if (nextHopMode && options['next-hop-phase'] === 'published') {
@@ -806,7 +834,7 @@ export async function matrixCell(options) {
       launchdObserver = observeMacHandoff({ home: cotalHome, daemonHome: report.daemonHome, output, id, native, control: killControl, intervalMs: killControl ? 20 : 100 });
       await launchdObserver.sample();
       report.launchdProof = { kind: launchdProof, publicTarget: report.target };
-      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+      if (launchdProof === 'off-before-tick') offInventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(extensionsBefore.manifest) ? digest(readFileSync(extensionsBefore.manifest)) : undefined };
     }
     if (options['stopped-daemon-before-update'] === 'true') {
       const stopCommand = process.platform === 'linux'
@@ -922,10 +950,10 @@ export async function matrixCell(options) {
             npmInstall = ok(await npmCall('manual npm install follow-on target', ['install', '-g', '--prefix', prefix, `cotal-ai@${report.target}`, '--no-audit', '--no-fund']), 'manual npm follow-on install');
             const bareVersion = await cotal('bare manual npm CLI version observation', ['--version']);
             const bareRoute = inspectInstalledUpdateRoute(pkg, process.platform);
-            const bareManifest = join(config, 'extensions/extensions.json');
-            const bareExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const bareObservation = await observeExtensions('bare manual npm extension root');
+            const bareExtensions = bareObservation.extensions;
             const bareInstalledExtensions = bareExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(bareObservation.root, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -955,9 +983,10 @@ export async function matrixCell(options) {
               restoreBrokenRegistry();
               env.npm_config_registry = overlay.url;
             }
-            const refusalExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const refusalObservation = await observeExtensions('refused manual npm extension root');
+            const refusalExtensions = refusalObservation.extensions;
             const refusalInstalledExtensions = refusalExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(refusalObservation.root, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -965,9 +994,10 @@ export async function matrixCell(options) {
             const launchGateVersion = await cotal('bare manual npm version after launch gate', ['--version']);
             const launchGateRuntimes = await cotal('bare manual npm runtimes after launch gate', ['runtimes', '--json']);
             const launchGateTmuxRow = launchGateRuntimes.exit === 0 ? JSON.parse(launchGateRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
-            const launchGateExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const launchGateObservation = await observeExtensions('reconciled manual npm extension root');
+            const launchGateExtensions = launchGateObservation.extensions;
             const launchGateInstalledExtensions = launchGateExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(launchGateObservation.root, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -998,7 +1028,7 @@ export async function matrixCell(options) {
             while (Date.now() < scheduleDeadline) {
               await delay(3000);
               const curAttempt = existsSync(join(cotalHome, 'update-attempt.json')) ? json(join(cotalHome, 'update-attempt.json')) : null;
-              const curExts = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+              const curExts = (await observeExtensions('scheduled manual npm extension root observation')).extensions;
               const launchdBusy = existsSync(join(cotalHome, 'update-launchd.json')) || existsSync(join(cotalHome, 'update-launchd-result.json'));
               if (curAttempt?.version === report.target && curAttempt?.result === `updated to ${report.target}` && !launchdBusy && curExts.length >= 8 && curExts.every(entry => entry.version === report.target)) {
                 scheduledAttempt = curAttempt;
@@ -1009,9 +1039,10 @@ export async function matrixCell(options) {
             const scheduledRuntimes = await cotal('manual npm runtimes after scheduled reconciliation', ['runtimes', '--json']);
             const scheduledTmuxRow = scheduledRuntimes.exit === 0 ? JSON.parse(scheduledRuntimes.stdout).result?.items?.find(row => row.name === 'tmux') : undefined;
             const scheduledDaemonStatus = await daemon('manual npm daemon status after scheduled reconciliation', ['daemon', 'status', '--json']);
-            const scheduledExtensions = existsSync(bareManifest) ? json(bareManifest).extensions : [];
+            const scheduledObservation = await observeExtensions('scheduled manual npm final extension root');
+            const scheduledExtensions = scheduledObservation.extensions;
             const scheduledInstalledExtensions = scheduledExtensions.map(entry => {
-              const path = join(config, 'extensions/node_modules', entry.pkg);
+              const path = join(scheduledObservation.root, 'node_modules', entry.pkg);
               const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
               return { pkg: entry.pkg, version: metadata?.version };
             });
@@ -1100,7 +1131,8 @@ export async function matrixCell(options) {
       } else if (launchdProof === 'off-before-tick') {
         await delay(70000);
         await launchdObserver.sample();
-        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(join(config, 'extensions/extensions.json')) ? digest(readFileSync(join(config, 'extensions/extensions.json'))) : undefined };
+        const offExtensions = await observeExtensions('off control extension root');
+        const inventory = { package: digest(readFileSync(join(pkg, 'package.json'))), cli: digest(readFileSync(cli)), extensions: existsSync(offExtensions.manifest) ? digest(readFileSync(offExtensions.manifest)) : undefined };
         check('off control keeps installation inventory unchanged', JSON.stringify(inventory) === JSON.stringify(offInventory), { before: offInventory, after: inventory });
         check('off control never hands off an updater job', !launchdObserver.observations.some(x => x.records?.['update-launchd.json'] || x.records?.['update-launchd-result.json']), launchdObserver.observations.length);
         report.launchdProof.observationMs = 70000;
@@ -1140,7 +1172,14 @@ export async function matrixCell(options) {
       check('daemon scheduler performed a replacement or reported up to date', report.source === report.target || update.stdout.length > 0, update.stdout);
       }
     }
-    report.sourceInventoryAfterAction = sourceInventory();
+    const extensionsAfter = await observeExtensions('extension root after update');
+    report.sourceInventoryAfterAction = sourceInventory(extensionsAfter.root);
+    if (process.platform !== 'win32' && layout !== 'checkout') {
+      const retained = report.versionChanging && extensionsBefore.root !== extensionsAfter.root;
+      const before = report.sourceInventoryBeforeAction.slice(2);
+      const after = retained ? extensionSourceInventory(extensionsBefore.root, report.extensionsBefore) : before;
+      check('earlier extension prefix unchanged', JSON.stringify(before) === JSON.stringify(after), { required: retained, root: extensionsBefore.root, before, after });
+    }
     if (update.exit !== 0) check('source generation unchanged', JSON.stringify(report.sourceInventoryAfterAction) === JSON.stringify(report.sourceInventoryBeforeAction), { before: report.sourceInventoryBeforeAction, after: report.sourceInventoryAfterAction });
     if (policy) {
       report.update = update;
@@ -1154,7 +1193,7 @@ export async function matrixCell(options) {
         check('unsupported scheduler leaves daemon identity unchanged', nativeGenerationReady(final, report.source) && final.pid === report.daemonBefore.pid && typeof final.startedAt === 'string' && final.startedAt === report.daemonBefore.startedAt, { before: report.daemonBefore, after: final });
       }
       if (policy === 'missing-config') check('missing config remains absent after refused first hop', !existsSync(config), config);
-      check('source inventory unchanged', JSON.stringify(sourceInventory()) === JSON.stringify(report.policyInventoryBefore), sourceInventory());
+      check('source inventory unchanged', JSON.stringify(report.sourceInventoryAfterAction) === JSON.stringify(report.policyInventoryBefore), report.sourceInventoryAfterAction);
       check('source CLI remains selected', cliReportsVersion(ok(await cotal('source version after refusal', ['--version']), 'source version').stdout, report.source), report.source);
       check('all eight first-party extensions recorded before refusal', policy === 'missing-config' ? report.extensionsBefore.length === 0 : report.extensionsBefore.filter(entry => entry.pkg.startsWith('@cotal-ai/')).length === 8, report.extensionsBefore);
       if (policy === 'legacy-seat') check('stand-in fixture remains separately recorded', report.extensionsBefore.length === 9, report.extensionsBefore);
@@ -1171,10 +1210,11 @@ export async function matrixCell(options) {
         check('public installer replaces original prefix with target', json(join(pkg, 'package.json')).version === report.target, prefix);
         const selected = await call('public installer selected launcher', launcher, ['--version']);
         check('public installer launcher selects target', selected.exit === 0 && cliReportsVersion(selected.stdout, report.target), selected);
-        const escapedExtensions = existsSync(join(config, 'extensions/extensions.json')) ? json(join(config, 'extensions/extensions.json')).extensions : [];
+        const escapedObservation = await observeExtensions('public installer escape extension root');
+        const escapedExtensions = escapedObservation.extensions;
         report.installerEscape.extensions = escapedExtensions;
         const seeded = ['connector-claude-code', 'connector-opencode', 'connector-codex', 'connector-hermes', 'connector-jcode', 'pi', 'web'].map(name => `@cotal-ai/${name}`);
-        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(config, 'extensions/node_modules', entry.pkg, 'package.json')) && json(join(config, 'extensions/node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
+        check('public installer records every target built-in connector', JSON.stringify(escapedExtensions.map(entry => entry.pkg).sort()) === JSON.stringify(seeded.sort()) && escapedExtensions.every(entry => entry.version === report.target && existsSync(join(escapedObservation.root, 'node_modules', entry.pkg, 'package.json')) && json(join(escapedObservation.root, 'node_modules', entry.pkg, 'package.json')).version === report.target), escapedExtensions);
         check('public installer status exits zero', (await call('public installer status', launcher, ['status'])).exit === 0, null);
         check('public installer leaves no recovery', !existsSync(join(cotalHome, 'update-recovery.json')), null);
         report.installerEscape.accepted = report.assertions.every(row => row.passed);
@@ -1204,17 +1244,16 @@ export async function matrixCell(options) {
       ? installedRoute.packageManagerRecordVersion === expectedVersion
       : !['npm', 'installer'].includes(options['follow-on-action']) && method !== 'installer' && options['first-install'] !== 'true' && installedRoute.packageManagerRecordVersion === expectedPackageManagerVersion);
     check('CLI version is target', routeMatches, installedRoute.selectedCliVersion);
-    const manifest = join(config, 'extensions/extensions.json');
-    const extensions = existsSync(manifest) ? json(manifest).extensions : [];
+    const extensions = extensionsAfter.extensions;
     report.extensionsAfter = extensions;
     check('every prior extension remains recorded', report.extensionsBefore.every(before => extensions.some(after => after.pkg === before.pkg)), extensions.map(entry => entry.pkg));
     const installedExtensions = extensions.map(entry => {
-      const path = join(config, 'extensions/node_modules', entry.pkg);
+      const path = join(extensionsAfter.root, 'node_modules', entry.pkg);
       const metadata = existsSync(join(path, 'package.json')) ? json(join(path, 'package.json')) : undefined;
       const files = entry.pkg === report.ownedLocalFixture?.pkg ? Object.fromEntries(Object.keys(report.ownedLocalFixture.files).map(name => [name, existsSync(join(path, name)) ? digest(readFileSync(join(path, name))) : null])) : {};
       return {pkg: entry.pkg, path, realpath: existsSync(path) ? realpathSync(path) : null, version: metadata?.version, files};
     });
-    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions});
+    const versions = extensionVersionChecks({extensions, before: report.extensionsBefore, target: expectedVersion, fixture: report.ownedLocalFixture, installed: installedExtensions, root: extensionsAfter.root});
     report.installedExtensionVersions = installedExtensions;
     check('every recorded extension is at target', versions.recorded, extensions.map(({ pkg, version }) => ({ pkg, version })));
     const version = await cotal('selected CLI version assertion', ['--version']);
