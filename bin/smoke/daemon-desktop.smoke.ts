@@ -68,8 +68,8 @@ try {
   check("about returns host metadata without a runtime directory", noRuntime.v === 1 && noRuntime.event === "result" && noRuntime.ok === true && noRuntime.result.version === version && typeof noRuntime.result.memoryBytes === "number");
   const runtimeMessage = "The daemon runtime path is unavailable or too long. On Linux, check XDG_RUNTIME_DIR for the intended operating-system user.";
   for (const op of ["status", "install", "spaces"]) {
-    const refused = await request({ op }, { runtime: false });
-    check(`${op} frames a missing runtime directory without raw diagnostics`, refused.v === 1 && refused.event === "result" && refused.ok === false && refused.error.code === "NO_RUNTIME_DIR" && refused.error.message === runtimeMessage);
+    const refused = await request({ op }, { runtime: join(root, "x".repeat(160)) });
+    check(`${op} frames an unavailable runtime directory without raw diagnostics`, refused.v === 1 && refused.event === "result" && refused.ok === false && refused.error.code === "NO_RUNTIME_DIR" && refused.error.message === runtimeMessage);
   }
   const longRuntime = await request({ op: "status" }, { runtime: join(root, "x".repeat(160)) });
   check("an overlong runtime path gets the same truthful fixed message", longRuntime.ok === false && longRuntime.error.code === "NO_RUNTIME_DIR" && longRuntime.error.message === runtimeMessage);

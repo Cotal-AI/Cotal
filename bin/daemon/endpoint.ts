@@ -117,13 +117,15 @@ export function daemonPaths(env: NodeJS.ProcessEnv = process.env, home: string =
     runtime = host("the daemon runtime directory", darwinUserCacheDir);
   } else {
     assertSupportedPlatform();
+    runtime = env.XDG_RUNTIME_DIR || `/run/user/${euid()}`;
     if (!env.XDG_RUNTIME_DIR) {
-      throw new EndpointRefusal(
-        "NO_RUNTIME_DIR",
-        "XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket",
-      );
+      try {
+        checkDir(runtime);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        throw new EndpointRefusal("NO_RUNTIME_DIR", `${runtime} is absent and XDG_RUNTIME_DIR is not set, so there is no per-user runtime directory to hold the daemon socket`);
+      }
     }
-    runtime = env.XDG_RUNTIME_DIR;
   }
   const dir = join(runtime, "cotal");
   const socket = join(dir, "daemon.sock");
