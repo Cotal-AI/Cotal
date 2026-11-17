@@ -394,6 +394,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
     finally { release?.(); }
   }
   const result = instanceProjection(started.instance);
+  const browserWarnings: { code: string; message: string; target: { space: string; name: string } }[] = [];
+  const noBrowser = () => browserWarnings.push({ code: "BROWSER_NOT_OPENED", target: { space, name }, message: `No browser was opened; use \`cotal service logs web --space ${space}\` for the private session record and open its single-use launchUrl locally.` });
   if (mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && !args.values["no-open"]) {
     try {
       const value = started.instance.record.value;
@@ -402,6 +404,8 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       const session = JSON.parse(bytes!.toString("utf8"));
       if (session.instanceId !== value.instanceId || session.launchRequestId !== value.launchRequestId || session.process?.pid !== value.process?.pid || session.process?.token !== value.process?.token || typeof session.launchNonce !== "string") throw new Error("session mismatch");
       if (observeServiceProcess(value) !== "running" || !["127.0.0.1", "::1"].includes(session.host)) throw new Error("browser launch requires a live local listener");
+      if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) noBrowser();
+      else {
       const response = await fetch(new URL("/api/browser-launch", webBoundUrl(session.host, session.port)), { method: "POST", headers: { "x-cotal-browser-launch": session.launchNonce }, redirect: "manual", signal: AbortSignal.timeout(5000) });
       if (!response.ok) throw new Error("browser handoff refused");
       const { launchUrl } = await response.json() as { launchUrl: string };
@@ -411,11 +415,13 @@ export async function serviceAction(args: ParsedArgs, space: string, root: strin
       const child = spawn(executable, process.platform === "win32" ? ["/c", "start", "", launchUrl] : [launchUrl], { stdio: "ignore", detached: true });
       await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
       child.unref();
-    } catch {
-      throw new CommandFailure("partial", "OPERATION_PARTIAL", "the dashboard is running, but its browser session could not be opened", { target: { space, name, instanceId: result.instanceId }, remedy: `use \`cotal service logs web --space ${space}\` for the private session record, or install a browser opener and retry \`cotal service start web\`; --no-open keeps access manual` });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && (error as NodeJS.ErrnoException).syscall?.startsWith("spawn ")) noBrowser();
+      else throw new CommandFailure("partial", "OPERATION_PARTIAL", "the dashboard is running, but its browser session could not be opened", { target: { space, name, instanceId: result.instanceId }, remedy: `use \`cotal service logs web --space ${space}\` for the private session record, or install a browser opener and retry \`cotal service start web\`; --no-open keeps access manual` });
     }
   }
-  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp }, (row) => {
+  writeResult(presentation, { command: commandName, target: { ...target, instanceId: result.instanceId }, result: { kind: mode === "restart" ? "service-restart" : "service-start", ...result, ...(mode === "restart" ? { originalStopImpact: nativePlan ?? kernelPlan ?? null } : {}), ...(resolved ? { presetDefinition: resolved.saved } : {}) }, noOp: started.noOp && !(mode === "start" && name === "web" && prepared?.adapter?.pin.name === "web-service" && !values.foreground && !args.values["no-open"]), warnings: browserWarnings }, (row) => {
     const view = instanceView(row, started.noOp ? "Already running; nothing was started" : row.nativeEndpoint ? "Owned process running; native adapter readiness recorded" : row.reportedListener ? "Owned broker process reported its listener" : row.readinessObservation === "http-reachable" ? "Owned process running; HTTP reachable" : "Owned service process running");
     // A background child reports how to reach it, such as the dashboard's bootstrap file, in its own log.
     if (values.foreground) return view;

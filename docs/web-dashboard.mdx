@@ -45,6 +45,7 @@ The `host` and `port` definition options default to `127.0.0.1` and 7799. Wildca
 Background `cotal service start web` opens an authenticated browser session for a loopback listener.
 Repeating it reuses the matching process and issues a fresh single-use link without invalidating existing browser sessions.
 It starts no dependency automatically. Use `--no-open` for manual access or a remote listener.
+Without a browser opener, or without a Linux graphical session, startup still succeeds and warns how to find the private session record.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
 A page file that cannot be read returns `500` with the failed read identified.
 
