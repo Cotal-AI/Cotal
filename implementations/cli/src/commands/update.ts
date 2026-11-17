@@ -973,7 +973,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
   if (!names.length) return;
   const staging = mkdtempSync(join(tmpdir(), "cotal-closure-check-"));
   try {
-    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=0", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
+    const result = rt.npm(["install", "--prefix", staging, "--ignore-scripts", "--package-lock=false", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online", ...names.map(name => `${name}@${version}`)]);
     if (result.status !== 0) throw new Error(`installed extension dependency closure is unavailable: ${failure(result)}`);
   } finally {
     rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
@@ -984,7 +984,7 @@ function checkInstalledClosure(version: string, rt: UpdateRuntime): void {
  *  A private cache forces a registry read without changing the installed packages or running scripts. */
 async function checkReleaseArchives(version: string, rt: UpdateRuntime): Promise<void> {
   const cache = mkdtempSync(join(tmpdir(), "cotal-release-check-"));
-  const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=0", "--fetch-timeout=15000", "--prefer-online"];
+  const options = ["--cache", cache, "--logs-max=0", "--update-notifier=false", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000", "--prefer-online"];
   const pending = new Set(["cotal-ai"]);
   const names = ["cotal-ai"];
   try {
@@ -1245,7 +1245,7 @@ async function upgradeAndReconcile(targetVersion: string, current: string, rt: U
   }
   recordUpdateReplacement(targetVersion);
   writeUpdateRecovery({ previous: current, target: targetVersion, installed: current, phase: "replacing", reason: "global replacement in progress", owner: updateClosureOwner(), preparedRestart: rt.preparedRestart?.() ?? false, snapshot: snapshot.path, ...(execution ? { execution: execution.journal } : {}) });
-  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json"]);
+  const npmInstall = cmdSpawnSpec("npm", ["install", "-g", ...prefixArgs, `cotal-ai@${targetVersion}`, "--json", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"]);
   const installStarted = Date.now();
   const installed: CommandResult = execution ? (() => {
     execution.publish();
