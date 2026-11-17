@@ -282,8 +282,8 @@ const exited = (child: ChildProcess) => new Promise<void>((done) => child.exitCo
 
 const prepare = (space: string): string => {
   const root = join(projects, space);
-  // Not group-writable under the umask step 4 sets: such a root needs a private-group proof
-  // (getfacl) that a host without acl cannot give.
+  // Not group-writable under the umask step 4 sets: avoid depending on the host's private-group
+  // proof and ACL reader (getfacl, or python3 when getfacl is absent).
   mkdirSync(root, { mode: 0o755 });
   const created = cli(home, "space", "create", space, "--root", root, "--json");
   check(`space create ${space} prepares its root`, created.status === 0, shown(created));

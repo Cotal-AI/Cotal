@@ -215,12 +215,13 @@ export function protectedPathPolicy(accounts: AccountDatabase, extendedAcl: (pat
 }
 
 /** Runs a system read from PATH with a 2 second limit and a 4 MiB output limit. Proving a group
- *  takes up to three `getent` reads, and each group-writable path one `getfacl` read. */
-function boundedRead(label: string, command: "getent" | "getfacl", args: readonly string[]): string {
+ *  takes up to three `getent` reads, and each group-writable path a `getfacl` read or, when
+ *  getfacl is absent, a Python extended-attribute read. */
+function boundedRead(label: string, command: "getent" | "getfacl" | "python3", args: readonly string[]): string {
   if (process.platform !== "linux") throw new Error("it is checked only on Linux");
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
   const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  if (code === "ENOENT") throw new Error(`${command} is not installed`);
+  if (code === "ENOENT") throw Object.assign(new Error(`${command} is not installed`), { code });
   if (code === "ETIMEDOUT") throw new Error(`${label} timed out`);
   if (result.error || result.signal || result.status !== 0 || typeof result.stdout !== "string") throw new Error(`${label} failed or exceeded its output limit`);
   return result.stdout;
@@ -252,7 +253,17 @@ const systemAccounts: AccountDatabase = {
   group: (gid) => boundedRead("getent group", "getent", ["group", String(gid)]),
   users: () => boundedRead("getent passwd", "getent", ["passwd"]),
 };
-const systemAcl = (path: string) => boundedRead("getfacl", "getfacl", ["--skip-base", "--absolute-names", "--", path]);
+/** Read ACL presence without getfacl, retaining the same fail-closed bounded system read. */
+function pythonAcl(path: string): string {
+  return boundedRead("python3 ACL read", "python3", ["-I", "-c", "import os,sys; attrs=os.listxattr(sys.argv[1], follow_symlinks=False); sys.stdout.write('extended ACL' if any(a in attrs for a in ('system.posix_acl_access', 'system.posix_acl_default')) else '')", path]);
+}
+const systemAcl = (path: string): string => {
+  try { return boundedRead("getfacl", "getfacl", ["--skip-base", "--absolute-names", "--", path]); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return pythonAcl(path);
+  }
+};
 
 let processPolicy: ProtectedPathPolicy | undefined;
 const systemPolicy = (): ProtectedPathPolicy => processPolicy ??= protectedPathPolicy(systemAccounts, systemAcl, process.getuid!());

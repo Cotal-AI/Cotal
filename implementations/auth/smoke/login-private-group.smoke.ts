@@ -34,18 +34,21 @@ try {
   };
   const gap = privateGroupGap({ nameServices: () => readFileSync("/etc/nsswitch.conf", "utf8"), user: uid => read("getent", ["passwd", String(uid)]), group: gid => read("getent", ["group", String(gid)]), users: () => read("getent", ["passwd"]) }, process.getuid!(), process.getgid!());
   const acl = spawnSync("getfacl", ["--skip-base", "--absolute-names", "--", units], { encoding: "utf8" });
+  const aclProof = (acl.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+    ? spawnSync("python3", ["-I", "-c", "import os,sys; attrs=os.listxattr(sys.argv[1], follow_symlinks=False); sys.stdout.write('extended ACL' if any(a in attrs for a in ('system.posix_acl_access', 'system.posix_acl_default')) else '')", units], { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024 })
+    : acl;
   const result = spawnSync(process.execPath, ["--import", "tsx", "bin/cotal.ts", "logout", "--idp", idp, "--local", "--plain"], { env, encoding: "utf8", timeout: 30_000 });
   assert.equal(result.status, 0, "public local logout succeeds independently of optional services");
   const output = result.stdout + result.stderr;
   assert.ok(!output.includes(session.token));
-  if (gap === undefined && acl.status === 0 && acl.stdout === "") {
+  if (gap === undefined && !aclProof.error && aclProof.status === 0 && aclProof.stdout === "") {
     assert.equal(loadIdpSession(store, idp), undefined, "proven private-group ancestors permit public logout to clear shared service session");
     console.log("PASS real CLI private-group ancestors clear shared service session");
   } else {
     assert.equal(readFileSync(join(store, "idp-sessions.json"), "utf8"), before);
     assert.match(output, /chmod g-w/, "unavailable private-group proof prints actionable mode-change remedy");
     assert.ok(output.includes(`chmod g-w ${shellPath(join(home, ".config"))}`), "remedy safely quotes the original path, not a proc descriptor");
-    if (gap === undefined && (acl.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") assert.match(output, /install acl/, "missing getfacl names the acl package");
+    if (gap === undefined && (acl.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") assert.match(output, /install acl/, "unavailable fallback ACL proof names the acl package");
     console.log("PASS real CLI unavailable private-group proof safely skips with actionable remedy");
   }
 } finally { rmSync(root, { recursive: true, force: true }); }
