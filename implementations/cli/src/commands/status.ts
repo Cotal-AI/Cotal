@@ -159,7 +159,7 @@ import { storeWriteProblem } from "../lib/store-dir.js";
 import { stackStoreWarnings } from "../lib/store-identity.js";
 import { natsServerLabel } from "../lib/nats-bin.js";
 import { askManager } from "@cotal-ai/workspace/control";
-import { readCursor } from "../seed/lock.js";
+import { readCursor, readRecovery } from "../seed/lock.js";
 
 /** `--components` is the fail-loud health pass with a machine-readable EXIT DISPOSITION. Bare
  * `status` is a broad, recovery-oriented report: it exits 0, or 4 when it could not read part of what
@@ -285,6 +285,7 @@ export interface StatusResult {
     root: string;
     items: { package: string; label: string; version: string }[] | null;
     seedFailure: { package: string; phase: "copy" | "add"; cause: string } | null;
+    seedRecoveryPending: boolean | null;
   };
   folder: {
     root: string;
@@ -465,8 +466,11 @@ export async function status(args: ParsedArgs): Promise<void> {
   if (preferencesFolder) hints.push(`protect the preferences folder: ${preferencesFolder.remedy}`);
   const machine = await readMachine(selected, gaps, hints);
   const extensions = readExtensions(gaps);
-  const seedFailure = extensions.seedFailure ? new CommandFailure("failed", "OPERATION_FAILED",
-    `connector setup is incomplete: a previous seed failed (package "${extensions.seedFailure.package}", phase ${extensions.seedFailure.phase}): ${extensions.seedFailure.cause}`,
+  const seedProblem = extensions.seedFailure
+    ? `a previous seed did not finish (package "${extensions.seedFailure.package}", phase ${extensions.seedFailure.phase}): ${extensions.seedFailure.cause}`
+    : extensions.seedRecoveryPending ? "a previous connector repair did not finish (recovery journal present)" : undefined;
+  const seedFailure = seedProblem ? new CommandFailure("failed", "OPERATION_FAILED",
+    `connector setup is incomplete: ${seedProblem}`,
     { remedy: `fix the recorded cause first, then run \`${displayCmd()} ext seed --repair\`` }) : undefined;
   const skewedExtensions = extensions.items?.filter((item) => item.package.startsWith("@cotal-ai/") && item.version !== machine.version) ?? [];
   const extensionWarnings: OutputWarning[] = skewedExtensions.length ? [{
@@ -508,8 +512,8 @@ export async function status(args: ParsedArgs): Promise<void> {
   const store = full ?? logged;
   const stackManager = selected.ok ? await readStackManager(selected.target, services) : undefined;
   // Two readers can name the same unreadable record, so each hint is listed once.
-  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: extensions.seedFailure
-    ? [`Fix the recorded cause first: ${extensions.seedFailure.cause}`, `Then run \`${displayCmd()} ext seed --repair\` to finish connector setup before starting a space`]
+  const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, services, bootAttempts, maintenance, ...(store ? { store } : {}), ...(stackManager ? { stackManager } : {}), hints: seedProblem
+    ? [...new Set([`Fix the recorded cause first: ${seedProblem}`, `Then run \`${displayCmd()} ext seed --repair\` to finish connector setup before starting a space`, "Other diagnostics and recovery steps (finish connector setup before startup):", ...hints])]
     : [...new Set(hints)] };
   const parts = gaps.warnings.length;
   // A preference variable `config set` would refuse is named, but it was read, so the run stays complete.
@@ -740,11 +744,18 @@ function readExtensions(gaps: Gaps): StatusResult["extensions"] {
   let seedFailure: StatusResult["extensions"]["seedFailure"] = null;
   try {
     const cursor = readCursor();
-    if (cursor?.failed !== undefined) seedFailure = { package: cursor.package, phase: cursor.phase, cause: cursor.failed };
+    if (cursor) seedFailure = { package: cursor.package, phase: cursor.phase, cause: cursor.failed ?? "the seed was interrupted before it recorded an outcome" };
   } catch (error) {
     gaps.add("SEED_CURSOR_UNREADABLE", `the connector seed cursor could not be read: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null, seedFailure };
+  let seedRecoveryPending: boolean | null;
+  try {
+    seedRecoveryPending = readRecovery() !== undefined;
+  } catch (error) {
+    seedRecoveryPending = null;
+    gaps.add("SEED_RECOVERY_UNREADABLE", `the connector recovery journal could not be read: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { root: extensionsDir(), items: unreadable === undefined ? versions.map((e) => ({ package: e.pkg, label: e.label, version: e.version })) : null, seedFailure, seedRecoveryPending };
 }
 
 /** The lease `holder` the delivery daemon THIS WORKSPACE launched would write, or `undefined` when it
@@ -1895,7 +1906,8 @@ function machineOverview(r: StatusResult, wide: boolean): Section {
     ? r.extensions.items === null ? stateCell("manifest could not be read", "failed") : r.extensions.items.length ? r.extensions.items.map((item) => `${item.label} v${item.version}`).join(" · ") : undefined
     : extensionsCell(r.extensions);
   if (extensions !== undefined) rows.push(["Extensions", extensions]);
-  if (r.extensions.seedFailure) rows.push(["Connector setup", stateCell(`incomplete · ${r.extensions.seedFailure.package} failed during ${r.extensions.seedFailure.phase}: ${r.extensions.seedFailure.cause}`, "failed")]);
+  if (r.extensions.seedFailure) rows.push(["Connector setup", stateCell(`incomplete · ${r.extensions.seedFailure.package} did not finish ${r.extensions.seedFailure.phase}: ${r.extensions.seedFailure.cause}`, "failed")]);
+  else if (r.extensions.seedRecoveryPending) rows.push(["Connector setup", stateCell("incomplete · a previous connector repair did not finish (recovery journal present)", "failed")]);
   return {
     title: "This machine",
     blocks: [
@@ -2104,7 +2116,7 @@ function backupRecovery(maintenance: StatusResult["maintenance"]): string | null
 }
 
 function nextActions(r: StatusResult): Section {
-  if (r.extensions.seedFailure) return {
+  if (r.extensions.seedFailure || r.extensions.seedRecoveryPending) return {
     title: "Next",
     blocks: r.hints.map(hint => ({ kind: "lines", lines: [cell(hint, "hint")] })),
   };

@@ -3,4 +3,4 @@
 ---
 
 Status now reports recorded connector setup failures and the repair step before startup guidance.
-It preserves the failed package, phase and cause in JSON, exits 5 for the incomplete setup, and leaves the seed record unchanged.
+It preserves the package, phase and cause in JSON, reports interrupted seed and repair records too, exits 5 for the incomplete setup, and leaves those records unchanged. Other diagnostic remedies remain available after the seed recovery steps.

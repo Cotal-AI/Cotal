@@ -49,7 +49,7 @@ type Envelope = {
   result: {
     kind: string;
     machine: { nats: string; natsServer: { path: string; version: string | null; skipped?: { path: string; reason: string } } | null; natsProblem: string | null };
-    extensions?: { items: { label: string; version: string }[] | null; seedFailure: { package: string; phase: string; cause: string } | null };
+    extensions?: { items: { label: string; version: string }[] | null; seedFailure: { package: string; phase: string; cause: string } | null; seedRecoveryPending: boolean | null };
     folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
@@ -116,11 +116,11 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const json = run(["status", "--json"]);
   const failure = json.envelope?.result?.extensions?.seedFailure;
   check("status reports the persisted package, phase and complete cause despite matching pins", json.status === 5 && json.envelope?.outcome === "failed" && json.envelope.error?.code === "OPERATION_FAILED" && failure?.package === "web" && failure.phase === "add" && failure.cause === cause, shown(json));
-  check("JSON hints carry the same ordered recovery and no blocked startup", json.envelope?.result?.hints[0]?.includes("chmod g-w") === true && json.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true && !/cotal (?:login|setup|up)\b/.test(json.envelope.result.hints.join("\n")), json.envelope?.result?.hints);
+  check("JSON hints carry seed recovery first and retain other diagnostics afterwards", json.envelope?.result?.hints[0]?.includes("chmod g-w") === true && json.envelope.result.hints[1]?.includes("cotal ext seed --repair") === true && json.envelope.result.hints[2]?.includes("finish connector setup before startup") === true, json.envelope?.result?.hints);
   for (const format of [[], ["--plain"], ["--wide", "--verbose"]]) {
     const text = run(["status", ...format], { NO_COLOR: "1" });
     const next = text.stdout.slice(text.stdout.indexOf("\nNext\n"));
-    check(`status ${format.join(" ") || "human"} puts the permission remedy before seed repair, not ordinary startup`, text.status === 5 && text.stdout.includes("incomplete") && next.includes("chmod g-w") && next.indexOf("chmod g-w") < next.indexOf("cotal ext seed --repair") && !/cotal (?:login|setup|up)\b/.test(next), shown(text));
+    check(`status ${format.join(" ") || "human"} puts the permission remedy before seed repair and other diagnostics`, text.status === 5 && text.stdout.includes("incomplete") && next.includes("chmod g-w") && next.indexOf("chmod g-w") < next.indexOf("cotal ext seed --repair") && next.indexOf("cotal ext seed --repair") < next.indexOf("Other diagnostics"), shown(text));
   }
   const components = run(["status", "--components"], { NO_COLOR: "1" });
   check("component health cannot overwrite the recorded seed failure's exit", components.status === 5 && components.stdout.includes("cotal ext seed --repair"), shown(components));
@@ -129,6 +129,41 @@ if (!brokerDisplayOnly && !pidfileOnly) {
   const corrupt = run(["status", "--json"]);
   check("a corrupt cursor is an explicit partial read, never a healthy seed", corrupt.status === 4 && corrupt.envelope?.outcome === "partial" && corrupt.envelope.warnings.some(w => w.code === "SEED_CURSOR_UNREADABLE"), shown(corrupt));
   check("reading a corrupt cursor does not quarantine or repair it", readFileSync(cursor, "utf8") === "{broken\n");
+  const interrupted = JSON.stringify({ nonce: "status-interrupted-seed", package: "web", phase: "add" });
+  writeFileSync(cursor, interrupted);
+  const stopped = run(["status", "--json"]);
+  check("an interrupted cursor is incomplete with repair first", stopped.status === 5 && stopped.envelope?.outcome === "failed" && stopped.envelope.result?.extensions?.seedFailure?.cause.includes("interrupted") === true && stopped.envelope.result.hints[1]?.includes("ext seed --repair") === true, shown(stopped));
+  check("status leaves the interrupted cursor unchanged", readFileSync(cursor, "utf8") === interrupted);
+  rmSync(cursor);
+  const recovery = join(seed, "reconcile.recovery.json");
+  for (const obligation of [{ rebuildFromDisk: true }, { repairAllSeeded: true }]) {
+    const originalRecovery = JSON.stringify(obligation);
+    writeFileSync(recovery, originalRecovery);
+    const pending = run(["status", "--json"]);
+    check(`recovery obligation ${Object.keys(obligation)[0]} is incomplete without a cursor`, pending.status === 5 && pending.envelope?.outcome === "failed" && pending.envelope.result?.extensions?.seedRecoveryPending === true && pending.envelope.result.hints[1]?.includes("ext seed --repair") === true, shown(pending));
+    check("status leaves the recovery obligation unchanged", readFileSync(recovery, "utf8") === originalRecovery);
+  }
+  writeFileSync(recovery, "{}");
+  const brokenRecovery = run(["status", "--json"]);
+  check("a corrupt recovery journal is a partial read, never absent", brokenRecovery.status === 4 && brokenRecovery.envelope?.warnings.some(w => w.code === "SEED_RECOVERY_UNREADABLE") === true && brokenRecovery.envelope.result?.extensions?.seedRecoveryPending === null, shown(brokenRecovery));
+  rmSync(recovery);
+  writeFileSync(cursor, original);
+  // An independent extension remedy must survive in both JSON hints and the printed Next.
+  writeFileSync(join(prefix, "extensions.json"), JSON.stringify({ extensions: [{ pkg: "@cotal-ai/web", version: "0.0.1", spec: "file:seed", commands: [] }] }));
+  const skew = run(["status", "--json"]);
+  check("seed recovery retains the skew remedy after repair", skew.status === 5 && skew.envelope?.result?.hints.slice(2).some(h => h.includes("update --self")) === true, skew.envelope?.result?.hints);
+  const skewText = run(["status", "--plain"]);
+  const skewNext = skewText.stdout.split("\nNext\n")[1] ?? "";
+  check("Next prints the independent skew remedy after seed repair", skewText.status === 5 && skewNext.includes("update --self") && skewNext.indexOf("ext seed --repair") < skewNext.indexOf("update --self"), shown(skewText));
+  writeFileSync(join(home, ".config", "cotal", "preferences.json"), JSON.stringify({ schemaVersion: 1, revision: 0, defaults: {}, spaces: {} }));
+  chmodSync(join(home, ".config", "cotal"), 0o777);
+  const preferences = run(["status", "--json"]);
+  check("seed recovery retains the preferences-folder protection remedy", preferences.status === 5 && preferences.envelope?.result?.hints.slice(2).some(h => h.includes("protect the preferences folder")) === true, preferences.envelope?.result?.hints);
+  chmodSync(join(home, ".config", "cotal"), 0o700);
+  const backupNext = "release the held backup with `cotal backup recover backup-held --yes`";
+  const backup = { ...skew.envelope!.result!, maintenance: { root: home, space: "held", state: "claimed", attemptId: "backup-held", next: backupNext }, hints: [...skew.envelope!.result!.hints, backupNext] };
+  const backupActions = renderReport(statusView(backup as unknown as Parameters<typeof statusView>[0]), "plain").split("\nNext\n")[1] ?? "";
+  check("a held backup's collected recovery step survives the seed-specific Next renderer", backupActions.includes(backupNext) && backupActions.indexOf("ext seed --repair") < backupActions.indexOf(backupNext), backupActions);
 }
 if (process.argv.includes("--seed-failure-only")) {
   finish();
