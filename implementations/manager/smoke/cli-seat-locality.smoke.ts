@@ -35,14 +35,14 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
+import { bootDeliveryDaemon } from "./_boot-delivery.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
-const BIN = join(repoRoot, "bin", "cotal.ts");
+const BIN = join(repoRoot, "bin", "dist", "cotal.js");
 const STUB = join(here, "e2e-stub.mjs");
 
 const PORT = await freePort();
@@ -63,6 +63,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const UNJOINED = join(dir, "e2e-unjoined.mjs");
 const home = join(dir, "home");
 mkdirSync(home, { recursive: true });
 process.env.COTAL_HOME = home; // the CLI's mesh registry lives here, never the operator's real one
@@ -76,6 +77,8 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 registry.register({ kind: "connector", name: "e2e-stub", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) } as Connector);
+registry.register({ kind: "connector", name: "e2e-unjoined", requires: ["node"], readinessTimeoutMs: 500,
+  buildLaunch: (o): LaunchSpec => ({ command: "node", args: [UNJOINED], env: envFor(o) }) } as Connector);
 
 const mkRoot = (tag: string, agentName: string): string => {
   const r = join(dir, tag);
@@ -91,7 +94,7 @@ const releaseBroker = teardownOnSignal(srv, dir);
 type Run = { status: number | null; out: string };
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
   new Promise((res) => {
-    const child = spawn(TSX, [BIN, ...args], {
+    const child = spawn(process.execPath, [BIN, ...args], {
       cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -105,7 +108,7 @@ const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> =>
 
 const interactiveJoin = (cwd: string): Promise<Run> =>
   new Promise((res) => {
-    const child = pty.spawn(TSX, [BIN, "join", "--space", space, "--server", SERVERS], {
+    const child = pty.spawn(process.execPath, [BIN, "join", "--space", space, "--server", SERVERS], {
       cwd,
       env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       cols: 120,
@@ -136,6 +139,7 @@ const interactiveJoin = (cwd: string): Promise<Run> =>
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
+let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 
 try {
   let up = false;
@@ -144,6 +148,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
 
   const root1 = mkRoot("ws1", "seatA"), root2 = mkRoot("ws2", "seatB");
+  delivery = await bootDeliveryDaemon({ space, servers: SERVERS, auth, reloadStoreIdentity: workspaceSecretStore(root1).identity! });
   // The registry entry the CLI resolves. Written through the product's own recorder so the shape is
   // whatever `up` would have written, not a hand-built approximation.
   const { recordMesh } = await import("@cotal-ai/workspace");
@@ -194,11 +199,48 @@ try {
   check("ps --on B exits 0 and does NOT show it (a real per-instance view, not the class answer)",
     psB.status === 0 && !psB.out.includes("seatA"), { status: psB.status, out: psB.out.slice(-300) });
 
-  console.log("\n3. NEGATIVE CONTROL: a name that exists nowhere must fail from live presence");
+  console.log("\n2b. A running process that never joined remains controllable by name");
+  writeFileSync(UNJOINED, 'process.stdout.write("unjoined terminal ready\\n"); process.stdin.on("data", d => process.stdout.write(d)); setInterval(() => {}, 1000);\n');
+  const unjoinedSeats = ["unjoinedBare", "unjoinedForce", "unjoinedPinned"];
+  for (const name of unjoinedSeats) {
+    writeFileSync(join(root1, ".cotal", "agents", `${name}.md`), `---\nname: ${name}\nrole: worker\n---\n`);
+    await m1.startAgent({ name, agent: "e2e-unjoined", cwd: repoRoot, events: false });
+  }
+  const unjoinedPs = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
+  console.log(`$ cotal ps\n${unjoinedPs.out}`);
+  check("ps lists the running seats with degraded joins", unjoinedPs.status === 0 && unjoinedSeats.every(n => unjoinedPs.out.includes(n)) && unjoinedPs.out.includes("join degraded"), unjoinedPs);
+  for (const pin of [[], ["--on", IID1]]) {
+    const attached = await new Promise<Run>((res) => {
+      const child = pty.spawn(process.execPath, [BIN, "attach", "unjoinedBare", "--no-reconnect", ...pin, "--space", space, "--server", SERVERS], {
+        cwd: root1, env: { ...process.env, COTAL_SERVERS: "", COTAL_CREDS: "", COTAL_SPACE: "", COTAL_SKIP_CONNECTOR_SEED: "1" }, cols: 120, rows: 30,
+      });
+      let out = "", detached = false;
+      child.onData(data => {
+        out += data;
+        if (!detached && out.includes("unjoined terminal ready")) { detached = true; child.write("\x1d"); }
+      });
+      const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
+      child.onExit(({ exitCode }) => { clearTimeout(timer); res({ status: exitCode, out }); });
+    });
+    check(`attach ${pin.length ? "with explicit manager" : "without pin"} streams the unjoined terminal and detaches`, attached.status === 0 && attached.out.includes("unjoined terminal ready"), attached);
+  }
+  const input = await cotal(["input", "unjoinedBare", "hello", "--space", space, "--server", SERVERS], root1);
+  check("input reaches the unjoined seat", input.status === 0, input);
+  for (const [i, name] of unjoinedSeats.entries()) {
+    const flags = i === 1 ? ["--force"] : i === 2 ? ["--on", IID1] : [];
+    const stopped = await cotal(["stop", name, ...flags, "--space", space, "--server", SERVERS], root1);
+    console.log(`$ cotal stop ${name} ${flags.join(" ")}\n${stopped.out}`);
+    check(`stop ${flags.join(" ") || "without pin"} reaches the unjoined seat`, stopped.status === 0, stopped);
+  }
+
+  const unjoinedAfter = await cotal(["ps", "--space", space, "--server", SERVERS], root1);
+  check("all unjoined processes are gone after the acknowledged stops", unjoinedAfter.status === 0 && unjoinedSeats.every(n => !unjoinedAfter.out.includes(n)), unjoinedAfter);
+
+  console.log("\n3. NEGATIVE CONTROL: a name that exists nowhere must fail after a complete manager census");
   const ghost = await cotal(["stop", "--name", "no-such-seat", "--space", space, "--server", SERVERS], root1);
   check("stop on a nonexistent name exits non-zero", ghost.status !== 0, { status: ghost.status, out: ghost.out.slice(-300) });
-  check("...and the error names the live presence lookup, not one manager's view",
-    /no managed agent .* in live presence/.test(ghost.out), ghost.out.slice(-400));
+  check("...and the error names both managers searched",
+    /no managed agent .* on any of the 2 reachable manager/.test(ghost.out) && ghost.out.includes(IID1) && ghost.out.includes(IID2), ghost.out.slice(-600));
   // The same miss with `--on` refuses TARGET_NOT_FOUND, exit 2; the unpinned form refuses the same way.
   check("...as a TARGET_NOT_FOUND refusal, exit 2, with `cotal ps` as the next read",
     ghost.status === 2 && /Code:\s+TARGET_NOT_FOUND/.test(ghost.out) && ghost.out.includes("run `cotal ps` to see the agents each manager runs"), ghost.out.slice(-600));
@@ -236,6 +278,7 @@ try {
 } finally {
   await m1?.stop({ withAgents: true }).catch(() => {});
   await m2?.stop({ withAgents: true }).catch(() => {});
+  await delivery?.stop();
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
