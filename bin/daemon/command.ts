@@ -23,7 +23,7 @@
  */
 import { readFileSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
@@ -76,23 +76,32 @@ const peerPid = defaultPeerPid;
 
 /** The daemon this invocation targets: the default one, or the one whose state lives in an explicit
  *  `--daemon-home`. The home must already exist as a real 0700 directory owned by this uid, and may
- *  not be the Cotal home itself; nothing is created, repaired or migrated. Mesh lookup always stays
+ *  not be the Cotal home itself. Linux install/uninstall may resolve a missing leaf only when its
+ *  surviving native service verifies ownership; other operations never create, repair or migrate it. Mesh lookup always stays
  *  the shared Cotal home's registry. */
 interface Target { readonly paths: DaemonPaths; readonly home?: string }
-function target(args: ParsedArgs): Target {
+function target(args: ParsedArgs, recoverMissingHome = false): Target {
   const raw = (args.values as { "daemon-home"?: string })["daemon-home"];
   if (raw === undefined) return { paths: daemonPaths() };
   if (!raw || !isAbsolute(raw)) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home needs an absolute directory path");
-  checkDir(raw);
-  const home = realpathSync(raw);
+  let home: string;
+  let missing = false;
+  try { checkDir(raw); home = realpathSync(raw); }
+  catch (error) {
+    if (!recoverMissingHome || process.platform !== "linux" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    home = join(realpathSync(dirname(raw)), basename(raw));
+    missing = true;
+  }
   let cotalHome: string | undefined;
   try { cotalHome = realpathSync(homeCotalDir()); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
   if (home === cotalHome) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home cannot be the Cotal home; name a separate directory for this daemon's state");
-  return { paths: daemonPathsFor(home), home };
+  const paths = daemonPathsFor(home);
+  if (missing) planUninstall(paths, home);
+  return { paths, home };
 }
-function resolveTarget(args: ParsedArgs): Target {
+function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
   try {
-    const resolved = target(args);
+    const resolved = target(args, recoverMissingHome);
     // Native user-service tools need the same validated runtime as the socket client.
     if (process.platform === "linux" && !process.env.XDG_RUNTIME_DIR) process.env.XDG_RUNTIME_DIR = `/run/user/${process.geteuid!()}`;
     return resolved;
@@ -342,7 +351,7 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
 async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { "dry-run"?: boolean; yes?: boolean };
-  const { paths, home } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args, true);
   if (op === "install") {
     const dry = values["dry-run"] === true;
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);

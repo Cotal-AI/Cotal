@@ -604,6 +604,8 @@ Relative paths, control characters and malformed quoting are refused.
 
 On Linux, repeating `cotal daemon install` verifies an unchanged recorded service from this installation and reports `Already installed`. It leaves the unit, receipt and running daemon unchanged. A modified source or another installation still refuses.
 
+On Linux, `daemon install` and `daemon uninstall` can recover after the daemon's local home was deleted when the surviving service source matches this installation. They verify the protected unit file and the user manager's loaded fragment, and refuse modified sources or drop-ins. A missing explicit `--daemon-home` leaf can also recover when its parent resolves and the surviving service verifies that same home; other daemon commands still require the directory. Installation restarts that verified service to rebuild its local state.
+
 Connect this computer to Cotal Cloud with `cotal daemon setup --cloud`, or use
 `cotal daemon setup --idp <url>` for another host. With no known provider, bare
 `cotal daemon setup` selects Cotal Cloud in a terminal or a pipe and prints how to choose another host. `--no-browser` keeps approval in the terminal.

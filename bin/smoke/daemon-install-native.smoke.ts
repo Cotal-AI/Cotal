@@ -623,7 +623,7 @@ try {
     check("N6 quoted directories never execute shell text or publish a unit", !existsSync(join(quotedRoot, "NEVER")) && !existsSync(join(quotedRoot, "daemon", "service-unit.json")));
     check("N6 quoted directory previews use only directory and linger reads", readFileSync(quotedCalls, "utf8").trim().split("\n").every(line => ["directory-read", "linger-read"].includes(JSON.parse(line).operation)));
     const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
-    for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home", "unrecorded-default", "unrecorded-managed", "unrecorded-directory", "unrecorded-symlink", "unrecorded-uninspectable"]) {
+    for (const kind of ["default", "managed", "lost-source-stop", "outside-path", "wrong-unit", "copied-home", "unrecorded-default", "unrecorded-managed", "unrecorded-directory", "unrecorded-symlink", "unrecorded-uninspectable"]) {
       const dir = join(root, `${kind}\u2014unicode`); mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "a", "b", "config", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
       const a = join(dir, "a"), b = join(dir, "b");
@@ -665,7 +665,7 @@ try {
         check(`N7 ${kind} plain preview refuses ${expected}`, plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes(expected), { status: plain.status, stdout: plain.stdout, stderr: plain.stderr });
         check(`N7 ${kind} JSON preview and apply refuse ${expected}`, results.every((r) => r.status === 2 && r.doc.outcome === "refused" && r.doc.error?.code === expected), results);
         const calls = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n").map((line) => JSON.parse(line) as { operation: string });
-        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === 3 && calls.every((c) => c.operation === "directory-read"), calls);
+        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === (kind === "unrecorded-uninspectable" ? 3 : 6) && calls.every((c) => c.operation === "directory-read"), calls);
         const unchanged = kind === "unrecorded-uninspectable" ? readFileSync(join(context.config, "systemd"), "utf8") === foreign
           : kind === "unrecorded-directory" ? lstatSync(unitPath).isDirectory()
           : kind === "unrecorded-symlink" ? lstatSync(unitPath).isSymbolicLink() && readlinkSync(unitPath) === missing && !existsSync(missing)
@@ -676,6 +676,17 @@ try {
       const installed = call("install", home, [], true);
       if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
+      if (kind === "lost-source-stop") {
+        rmSync(receiptFile);
+        const sourceBefore = readFileSync(receipt.unitPath, "utf8");
+        writeFileSync(configFile, JSON.stringify({ ...context, changeSourceDuringStop: receipt.unitPath }), { mode: 0o600 });
+        const before = readFileSync(context.calls, "utf8");
+        const recovery = call("install", home);
+        const native = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n").map(line => JSON.parse(line) as { operation: string });
+        check("N7 lost receipt recovery refuses a source changed during native stop", recovery.status === 2 && recovery.doc.error?.code === "CONFLICT", recovery);
+        check("N7 changed source during stop gains no receipt or start", !existsSync(receiptFile) && native.some(row => row.operation === "stop") && !native.some(row => row.operation === "start") && readFileSync(receipt.unitPath, "utf8") !== sourceBefore, native);
+        continue;
+      }
       if (kind === "default" || kind === "managed") {
         const before = effects();
         const receiptBefore = readFileSync(receiptFile, "utf8"), sourceBefore = readFileSync(receipt.unitPath, "utf8");

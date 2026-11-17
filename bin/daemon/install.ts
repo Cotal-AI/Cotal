@@ -256,6 +256,8 @@ interface InstallPlan {
   readonly daemonHome?: string;
   /** The unchanged recorded service already belongs to this installation. */
   readonly alreadyInstalled?: true;
+  /** An exact surviving Linux source was verified after its receipt was lost. */
+  readonly recovered?: true;
 }
 
 /** A directive's value in the bytes that will be written, so a receipt never states a policy the
@@ -295,7 +297,11 @@ export function planInstall(paths: DaemonPaths, daemonHome: string | undefined):
   let present = false;
   try { lstatSync(rendered.unitPath); present = true; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new CommandFailure("refused", "TARGET_UNAVAILABLE", `${rendered.unitPath} could not be inspected; no absent unit was inferred`); }
-  if (present) throw new CommandFailure("refused", "CONFLICT", `${rendered.unitPath} already exists and no install of this daemon recorded it; it was not written over`);
+  if (present) {
+    const recovered = recoveredLinuxUnit(daemonHome);
+    if (!recovered) throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source changed while planning recovery; nothing was changed");
+    return { mechanism: "systemd-user", unit: recovered.unit, unitPath: recovered.unitPath, sha256: recovered.unitSha256, user, lingerAlready: lingerEnabled(user), restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}), recovered: true };
+  }
   assertSystemdSourceDirectory(dirname(rendered.unitPath));
   return { mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, sha256: rendered.sha256, user, lingerAlready: lingerEnabled(user),
     restart: directive(rendered.bytes, "Restart"), wantedBy: directive(rendered.bytes, "WantedBy"), ...(daemonHome !== undefined ? { daemonHome } : {}) };
@@ -330,6 +336,15 @@ export function applyInstall(paths: DaemonPaths, daemonHome: string | undefined,
   }
   const plan = planInstall(paths, daemonHome);
   if (plan.alreadyInstalled) return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
+  if (plan.recovered) {
+    submitSystemdUnitControl("stop", plan.unit);
+    const stopped = recoveredLinuxUnit(daemonHome);
+    if (!stopped || stopped.unitSha256 !== plan.sha256) throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source changed during its native stop; no receipt was restored and it was not started");
+    mkSecretDir(paths.state);
+    writeReceipt(paths, { v: 1, mechanism: "systemd-user", unit: plan.unit, unitPath: plan.unitPath, unitSha256: plan.sha256, installedAt: new Date().toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}), ...omitted });
+    submitSystemdUnitControl("start", plan.unit);
+    return { ...plan, lingerEnabled: plan.lingerAlready, ...omitted, state: "installed" };
+  }
   const rendered = renderDaemonUnit(dirname(plan.unitPath), daemonHome);
   // This daemon's own state directory, which holds the receipt below. It is ours, so it is created
   // 0700 and checked; the user manager's unit directory is the operator's and is only created when
@@ -357,10 +372,32 @@ interface UninstallPlan {
   readonly installedAt: string;
 }
 
+function recoveredLinuxUnit(daemonHome: string | undefined): UnitReceipt | undefined {
+  if (process.platform !== "linux") return undefined;
+  const rendered = renderDaemonUnit(systemdUserUnitDirectory(), daemonHome);
+  try { lstatSync(rendered.unitPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  // A name is not authority. Require this installation's exact protected source and loaded fragment.
+  try { assertSystemdSource(rendered.unitPath, rendered.sha256); }
+  catch { throw new CommandFailure("refused", "CONFLICT", "the surviving daemon source does not match this installation's protected unit; nothing was changed"); }
+  const names = ["Id", "LoadState", "FragmentPath", "DropInPaths", "NeedDaemonReload"];
+  const read = nativeRun("systemctl", ["--user", "show", rendered.unit, "--all", "--no-pager", ...names.map(name => `--property=${name}`)]);
+  const values = new Map<string, string>();
+  for (const line of read.stdout.split("\n").filter(Boolean)) {
+    const at = line.indexOf("="), key = line.slice(0, at);
+    if (at < 1 || !names.includes(key) || values.has(key)) throw new CommandFailure("refused", "CONFLICT", "the surviving daemon unit's native identity is ambiguous; nothing was changed");
+    values.set(key, line.slice(at + 1));
+  }
+  if (read.status !== 0 || values.size !== names.length || values.get("Id") !== rendered.unit || values.get("LoadState") !== "loaded" || values.get("FragmentPath") !== rendered.unitPath || values.get("DropInPaths") !== "" || values.get("NeedDaemonReload") !== "no")
+    throw new CommandFailure("refused", "CONFLICT", "the surviving daemon unit is modified, overridden or not loaded from this installation's exact source; nothing was changed");
+  return { v: 1, mechanism: "systemd-user", unit: rendered.unit, unitPath: rendered.unitPath, unitSha256: rendered.sha256, installedAt: lstatSync(rendered.unitPath).birthtime.toISOString(), ...(daemonHome !== undefined ? { daemonHome } : {}) };
+}
+
 /** The recorded unit, refused unless this OS runs its mechanism and its source and job are unchanged. */
-function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined } {
+function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | undefined, run: NativeRun = nativeRun, recover = false): { receipt: UnitReceipt; plan: UninstallPlan; service: NativeService | undefined; recovered?: boolean } {
   const service = nativeService(run);
-  const receipt = readReceipt(paths);
+  const saved = readReceipt(paths);
+  const receipt = saved ?? (recover ? recoveredLinuxUnit(daemonHome) : undefined);
   if (!receipt) throw new CommandFailure("refused", "TARGET_NOT_FOUND", "this daemon has no installed unit recorded by `cotal daemon install`; nothing was removed");
   const mechanism = receipt.mechanism ?? "systemd-user";
   if (mechanism !== (service ? service.mechanism : "systemd-user")) throw new CommandFailure("refused", "CONFLICT", `the recorded unit ${receipt.unit} is a ${mechanism} unit, which this OS does not run; nothing was removed`);
@@ -380,12 +417,12 @@ function recordedUnit(paths: Pick<DaemonPaths, "state">, daemonHome: string | un
     try { assertSystemdSource(receipt.unitPath, receipt.unitSha256); }
     catch { throw new CommandFailure("refused", "CONFLICT", `${receipt.unitPath} is not the unit this daemon installed; nothing was removed`); }
   }
-  return { receipt, plan: { mechanism, unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt }, service };
+  return { receipt, plan: { mechanism, unit: receipt.unit, unitPath: receipt.unitPath, installedAt: receipt.installedAt }, service, recovered: saved === undefined };
 }
 
 /** The exact recorded unit `uninstall` would remove, refusing a receipt that no longer matches. */
 export function planUninstall(paths: DaemonPaths, daemonHome: string | undefined): UninstallPlan {
-  return recordedUnit(paths, daemonHome).plan;
+  return recordedUnit(paths, daemonHome, nativeRun, true).plan;
 }
 
 /** Update only the PATH field the installer wrote. Windows tasks have no PATH pin. */
@@ -786,7 +823,11 @@ interface UninstallResult extends UninstallPlan {
 /** Stop it, disable autostart, erase its service records under lifetime exclusion, remove the unit
  *  and receipt, and reload the user manager (on macOS and Windows, the adapter's deregistration). */
 export async function applyUninstall(paths: DaemonPaths, daemonHome: string | undefined): Promise<UninstallResult> {
-  const { receipt, plan, service } = recordedUnit(paths, daemonHome);
+  const { receipt, plan, service, recovered } = recordedUnit(paths, daemonHome, nativeRun, true);
+  if (recovered) {
+    submitSystemdUnitControl("stop", plan.unit);
+    mkSecretDir(paths.state);
+  }
   checkDir(paths.state);
   // Pin a kernel-authenticated connection before removing the supervisor. It can
   // stop only that listener, never a reused PID or a later daemon generation.
@@ -863,7 +904,7 @@ export async function applyUninstall(paths: DaemonPaths, daemonHome: string | un
     try { const probe = await openVerified({ paths, timeoutMs: 1000 }); probe.destroy(); throw uncertain("a daemon endpoint still answers"); }
     catch (error) { if (!(error instanceof EndpointRefusal && error.code === "NOT_RUNNING")) throw error; }
     // The wait above must not turn a changed source/receipt into deletion authority.
-    const current = recordedUnit(paths, daemonHome).receipt;
+    const current = recordedUnit(paths, daemonHome, nativeRun, recovered === true).receipt;
     if (current.unitSha256 !== receipt.unitSha256 || current.installedAt !== receipt.installedAt) throw uncertain("the daemon installation changed during shutdown");
     let removedServiceRecords: string[];
     try { removedServiceRecords = removeAllServiceRecords(daemonHome ?? dirname(paths.state)); }
