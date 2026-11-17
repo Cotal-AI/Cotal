@@ -39,7 +39,7 @@ function selectedGraphs(root) {
 }
 
 /** Real legacy installer first hop, installed public CLI, authenticated Manager inventory and one responsive PTY seat. */
-export async function sameInstallReconcileCell({ root, candidate, seedSkip = false, restart = true, expected = 'green' }) {
+export async function sameInstallReconcileCell({ root, candidate, nextCandidate, seedSkip = false, restart = true, expected = 'green' }) {
   assert.equal(process.platform, 'linux', 'native PID/birth acceptance is currently Linux only');
   root = resolve(root);
   for (const name of ['', 'home', 'cotal', 'config', 'data', 'tmp', 'runtime', 'project', 'fixture', 'evidence']) mkdirSync(join(root, name), { recursive: true, mode: 0o700 });
@@ -62,7 +62,7 @@ export async function sameInstallReconcileCell({ root, candidate, seedSkip = fal
   const ok = call => { assert.equal(call.code, 0, call.stdout + call.stderr); return call; };
   const bootstrap = { npm_config_before: '2026-11-16T19:38:00.000Z' };
   const installer = join(root, 'evidence/installer.sh');
-  let started = false, overlay;
+  let started = false, overlay, nextOverlay;
   try {
     ok(await run('fetch-installer', 'curl', ['-fsSL', 'https://get.cotal.ai', '-o', installer]));
     report.installerSha256 = digest(readFileSync(installer));
@@ -115,11 +115,33 @@ export async function sameInstallReconcileCell({ root, candidate, seedSkip = fal
       ok(await publicCall('new-spawn', ['spawn', '--agent', 'reconcile-seat', '--name', 'reconcile_new_worker', '--detach', '--no-events', '--space', 'reconcile-proof']));
       const fresh = JSON.parse(ok(await publicCall('new-ps', ['ps', '--space', 'reconcile-proof', '--json'])).stdout).result; assert.equal(fresh.items.length, 1); assert.notEqual(fresh.items[0].pid, ready.pid);
       const newReady = JSON.parse(readFileSync(readyPath, 'utf8')), ping = `new-${Date.now()}`; assert.equal(await (await fetch(`http://127.0.0.1:${newReady.port}/${ping}`)).text(), `/${ping}`); report.restart = { ps: fresh, ready: newReady, challenge: ping };
+      if (nextCandidate) {
+        const selectedBefore = selectedGraphs(root);
+        assert(selectedBefore.length > 0, 'first hop must have selected a retained prefix');
+        nextOverlay = await candidateRegistry(resolve(nextCandidate), 'B', 'https://registry.npmjs.org/');
+        env.npm_config_registry = nextOverlay.url;
+        report.nextCandidate = nextOverlay.identity;
+        ok(await publicCall('candidate-to-next', ['update', '--self']));
+        const nextVersion = ok(await publicCall('candidate-to-next-version', ['--version']));
+        assert.match(nextVersion.stdout, new RegExp('cotal-ai ' + report.nextCandidate.version.replaceAll('.', '\\.')));
+        assert.doesNotMatch(nextVersion.stdout, /Reconciliation pending/);
+        assert.deepEqual(inventory(join(root, 'config/cotal/extensions')), report.oldPrefix);
+        for (const graph of selectedBefore) assert.deepEqual(inventory(graph.root), graph.inventory, 'next release must not mutate prior selected graph');
+        const nextGraphs = selectedGraphs(root);
+        assert(nextGraphs.some(graph => graph.version === report.nextCandidate.version), 'next release must select its own inherited graph');
+        const nextSeats = JSON.parse(ok(await publicCall('candidate-to-next-ps', ['ps', '--space', 'reconcile-proof', '--json'])).stdout).result;
+        assert.equal(nextSeats.items.length, 1);
+        assert.equal(nextSeats.items[0].lifecycleUid, fresh.items[0].lifecycleUid);
+        const nextPing = `next-${Date.now()}`;
+        assert.equal(await (await fetch(`http://127.0.0.1:${newReady.port}/${nextPing}`)).text(), `/${nextPing}`);
+        report.next = { version: nextVersion.stdout, ps: nextSeats, challenge: nextPing, selectedBefore, selected: nextGraphs, oldPrefix: inventory(join(root, 'config/cotal/extensions')) };
+      }
     }
     report.passed = true;
   } finally {
     if (started) report.cleanup = await publicCall('cleanup-down', ['down', '--with-agents', '--yes']);
     if (overlay) await overlay.close();
+    if (nextOverlay) await nextOverlay.close();
     report.finalNative = nativeProcesses(root);
     report.endedAt = new Date().toISOString();
     writeFileSync(join(root, 'evidence/result.json'), JSON.stringify(report, null, 2));
@@ -129,6 +151,6 @@ export async function sameInstallReconcileCell({ root, candidate, seedSkip = fal
   return report;
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  const [root, candidate] = process.argv.slice(2); assert(root, 'usage: automatic-update-same-install-reconcile.mjs <private-root> [candidate-pack]');
-  console.log(JSON.stringify(await sameInstallReconcileCell({ root, candidate, seedSkip: process.env.RECONCILE_SEED_SKIP === '1', expected: candidate ? 'green' : 'red' })));
+  const [root, candidate, nextCandidate] = process.argv.slice(2); assert(root, 'usage: automatic-update-same-install-reconcile.mjs <private-root> [candidate-pack] [next-candidate-pack]');
+  console.log(JSON.stringify(await sameInstallReconcileCell({ root, candidate, nextCandidate, seedSkip: process.env.RECONCILE_SEED_SKIP === '1', expected: candidate ? 'green' : 'red' })));
 }
