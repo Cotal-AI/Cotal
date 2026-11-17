@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { MANAGED_HANDOFF_FILE_ENV, token, type Command, type ParsedArgs } from "@cotal-ai/core";
 import { CommandFailure, canonicalRoot, localRecordName, protectedLocalDirectory, serviceOperationId } from "@cotal-ai/workspace";
 import { seedGeneration } from "../seed/paths.js";
@@ -10,7 +11,7 @@ import { serviceInstallIntentFor } from "../lib/service-install-intent.js";
 import { serviceUninstallIntentFor } from "../lib/service-uninstall-intent.js";
 import { serviceUnitActionFor } from "../lib/service-unit-action.js";
 import { observeServiceProcess, processServiceHost, requireProcessIdentity, serviceInstanceStore, type ServiceInstance } from "../lib/service-instances.js";
-import { prepareProcessService } from "../lib/service-process.js";
+import { prepareProcessService, serviceReadiness } from "../lib/service-process.js";
 import { observeRecordedSupervisor } from "../lib/service-systemd.js";
 import { serviceSupervisorProjection, serviceSupervisorStore } from "../lib/service-supervision.js";
 
@@ -35,7 +36,7 @@ function validate(args: ParsedArgs): void {
 export const serviceUnitEntry: Command = {
   kind: "command", name: "__service-unit", hidden: true, prepareMeshTarget: false,
   summary: "versioned owned user-unit entry for a recorded direct process definition",
-  flags: ["control-home", "space", "definition", "instance"].map((name) => ({ name, type: "string" as const })),
+  flags: [...["control-home", "space", "definition", "instance"].map((name) => ({ name, type: "string" as const })), { name: "ready", type: "boolean" }],
   validate,
   async run(args) {
     validate(args);
@@ -44,8 +45,17 @@ export const serviceUnitEntry: Command = {
     const space = String(args.values.space), id = serviceOperationId(args.values.instance);
     const definitions = serviceDefinitionStore(space), definition = definitions.read(String(args.values.definition));
     if (!definition || definition.record.value.launch.type !== "process") throw new CommandFailure("refused", "UNSUPPORTED", "this unit entry requires its exact saved direct-process definition; native adapter/caller semantics were not substituted");
-    const hold = definitions.pin(definition);
     const instances = serviceInstanceStore(space);
+    // Type=simple runs ExecStartPost while the main entry is still loading. Do not hold the
+    // definition lock until that entry has published its own invocation and process identity.
+    if (args.values.ready === true) {
+      const deadline = Date.now() + definition.record.value.readiness.timeoutMs;
+      while (instances.read(id)?.record.value.supervisorInvocationId !== process.env.INVOCATION_ID) {
+        if (!process.env.INVOCATION_ID || Date.now() >= deadline) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the native main entry did not publish this invocation before its post-start deadline; no readiness was acknowledged");
+        await delay(50);
+      }
+    }
+    const hold = definitions.pin(definition);
     let prepared: ReturnType<typeof prepareProcessService>;
     try {
       const original = instances.read(id);
@@ -58,13 +68,22 @@ export const serviceUnitEntry: Command = {
       const recorded = serviceSupervisorProjection(original.record.value, host);
       if (action && (action.definition !== definition.name || action.definitionRevision !== definition.record.revision || action.machine !== host.machine || action.uid !== host.uid || action.unit !== recorded.unit || action.unitPath !== recorded.unitPath || action.unitSha256 !== serviceSupervisorStore(space).read(id)?.record.value.unitSha256)) throw new CommandFailure("refused", "CONFLICT", "the retained native start action does not match this exact owned unit and host");
       const unit = observeRecordedSupervisor(original.record.value, recorded);
-      if (recorded.mechanism !== "systemd-user" || unit.state !== "observed" || unit.mainPid !== self.pid || !unit.invocationId || unit.invocationId !== process.env.INVOCATION_ID || unit.daemonReloadRequired || unit.dropInsReported) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the native user manager did not bind this process to the unchanged recorded unit invocation; no process replacement was attempted");
+      const readiness = args.values.ready === true;
+      const mainPid = readiness ? original.record.value.process?.pid : self.pid;
+      if (recorded.mechanism !== "systemd-user" || unit.state !== "observed" || unit.mainPid !== mainPid || !unit.invocationId || unit.invocationId !== process.env.INVOCATION_ID || unit.daemonReloadRequired || unit.dropInsReported) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the native user manager did not bind this process to the unchanged recorded unit invocation; no process replacement was attempted");
       const receipt = serviceSupervisorStore(space).read(id)?.record.value;
       let cli: string[];
       try { cli = selfArgv(); }
       catch { throw new CommandFailure("refused", "UNSUPPORTED", "the native unit entry is not a durable Cotal executable"); }
       if (!receipt || receipt.seededGeneration !== seedGeneration() || cli.length !== 2) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the unit's private store generation does not match this executable; no process replacement was attempted");
       assertPrivateSystemdGeneration(receipt.privateHome, receipt.seededGeneration, cli[1]!);
+      if (readiness) {
+        const value = original.record.value;
+        if (value.state !== "starting" || value.supervisorInvocationId !== unit.invocationId || unit.mainProcessAttribution !== "service-process" || observeServiceProcess(value) !== "running") throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the post-start observation does not belong to the current starting unit process; no readiness was acknowledged");
+        await serviceReadiness(original, definition.record.value);
+        hold.check();
+        return;
+      }
       if (["starting", "stopping", "unknown"].includes(original.record.value.state)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "the original unit attempt has no settled lifecycle outcome; no later invocation replaced its retained request");
       const prior = observeServiceProcess(original.record.value);
       if (!["gone", "previous-boot", "foreign-pid"].includes(prior) && !(prior === "running" && original.record.value.process?.pid === self.pid && original.record.value.process.token === self.token)) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", "a live or unresolved prior service incarnation is retained; the unit entry did not launch beside it");

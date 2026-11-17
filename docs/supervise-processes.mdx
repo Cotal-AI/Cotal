@@ -36,6 +36,19 @@ It does not install the manager preset, broker, or sibling components as units i
 The snippets below are examples of process ownership to adapt for your deployment, not a shipped stack installer.
 See the [service reference](cli-services.mdx#service) for supported definitions.
 
+To use the shipped direct-process installer, save a process definition that runs the absolute Node
+and Cotal entry paths followed by `up --foreground --root <mesh-root> --space <mesh-space>`.
+Keep that definition in a separate prepared operator space, with its `launch.cwd` set to the mesh
+root. Putting the owner in the mesh's own service inventory would make it a live dependency of
+the broker and block whole-stack shutdown. Install and start that saved definition with
+`cotal service install <name> --space <operator-space>` and
+`cotal service start <name> --space <operator-space>`.
+New systemd units use `Restart=on-failure` and `RestartSec=5s`. Their post-start command acknowledges
+each invocation's declared readiness. The OS owns restarts; Cotal adds no restart loop.
+A process-readiness declaration proves the foreground process runs, not that the mesh is serving.
+Check its components as described below. Stop the owner with
+`cotal service stop <name> --space <operator-space> --yes` before uninstalling it.
+
 ## Keep a foreground stack running
 
 For one host, run a foreground launcher so systemd can restart it after failure:
@@ -82,7 +95,7 @@ Built-in `pty` seats run with `oom_score_adj` set to `500`.
 Under memory pressure, the kernel prefers them over the broker, manager, and delivery daemon, whose scores are unchanged.
 Extension runtimes do not own the seat process and apply no such preference.
 
-### Start without a login
+### Start without a login [#start-without-a-login]
 
 A systemd user unit can restart a failed foreground stack while the user manager runs.
 Enabling it for `default.target` alone does not guarantee startup after a reboot without login.

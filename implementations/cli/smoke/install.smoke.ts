@@ -236,6 +236,10 @@ if (process.platform !== "win32") {
   const systemd = renderSystemdServiceUnit({ ...unit, environmentFile: "/home/u/.config/systemd/user/cotal-service/x/environment" });
   check("the systemd unit runs its entry under node --max-semi-space-size=1",
     /^ExecStart="\/usr\/bin\/node" "--max-semi-space-size=1" "\/opt\/cotal\/dist\/cotal\.js" "__service-unit" /m.test(systemd.bytes.toString()));
+  check("the systemd unit restarts only on failure, after five seconds",
+    /^Restart=on-failure\nRestartSec=5s$/m.test(systemd.bytes));
+  check("the systemd unit observes readiness on every native invocation",
+    /^ExecStartPost=.*"__service-unit" .*"--ready"$/m.test(systemd.bytes));
   const launchd = renderLaunchdServiceUnit({ ...unit, privateHome: "/home/u/.cotal/service-launchd/x", searchPath: "/usr/bin:/bin" });
   check("the LaunchAgent preview runs its entry under node --max-semi-space-size=1",
     launchd.bytes.includes("<array><string>/usr/bin/node</string><string>--max-semi-space-size=1</string><string>/opt/cotal/dist/cotal.js</string><string>__service-unit</string>"));

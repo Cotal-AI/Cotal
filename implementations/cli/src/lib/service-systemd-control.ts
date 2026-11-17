@@ -71,8 +71,10 @@ export async function controlSystemdService(definition: ServiceDefinitionSnapsho
       do {
         const current = instances.read(id), projected = current && instanceProjection(current);
         const native = current && observeRecordedSupervisor(current.record.value, projected!.supervisorRecord);
-        if (current && current.record.value.launchRequestId !== selected.record.value.launchRequestId && current.record.value.state === "starting" && projected!.observedProcess === "running" && native?.state === "observed" && native.activeState === "active" && native.mainProcessAttribution === "service-process" && native.invocationId === current.record.value.supervisorInvocationId) {
-          settled = await serviceReadiness(current, definition.record.value);
+        if (current && current.record.value.launchRequestId !== selected.record.value.launchRequestId && ["starting", "running"].includes(current.record.value.state) && projected!.observedProcess === "running" && native?.state === "observed" && native.activeState === "active" && native.mainProcessAttribution === "service-process" && native.invocationId === current.record.value.supervisorInvocationId) {
+          // New units acknowledge readiness in ExecStartPost, including unattended restarts.
+          // Older unchanged installed units still need this explicit caller's observation.
+          settled = current.record.value.state === "running" ? current : await serviceReadiness(current, definition.record.value);
           break;
         }
         await delay(100);

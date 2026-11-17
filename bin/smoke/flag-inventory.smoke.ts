@@ -445,7 +445,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: false,
   },
-  "__service-unit": { flags: ["control-home:string", "definition:string", "instance:string", "space:string"], positionals: false },
+  "__service-unit": { flags: ["control-home:string", "definition:string", "instance:string", "ready:boolean", "space:string"], positionals: false },
   "__setup-start": { flags: ["expected-version:string", "root:string", "space:string"], positionals: false },
   // The guarded exit from an issuance gate left frozen by a crashed manager restart (#391), and the
   // custody records an earlier Linux pty manager left (#1391). Both are hidden: `manager reconcile`

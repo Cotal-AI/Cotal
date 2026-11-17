@@ -1,0 +1,2 @@
+# Installed native units expose broker failure and settle readiness on unattended restart.
+smoke:service-failure-restart:live

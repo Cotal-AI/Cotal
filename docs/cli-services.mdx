@@ -238,7 +238,14 @@ which removes them with the space.
 
 `install` writes an owned systemd user unit for a saved direct-process definition with no
 `envRefs` or `credentialRef`, and enables it without starting it. It is Linux only. `uninstall`
-removes that unit. A preset is not installed as a unit in this release, the manager included:
+removes that unit. New units restart a failed process after five seconds, subject to systemd's
+start limits. A native post-start observation records each invocation's declared readiness, even
+when no `service start` command is waiting. A retained unknown start or stop still blocks a new
+invocation. A clean exit and an explicit native stop do not trigger failure restart.
+Existing installed units keep their recorded bytes until explicitly uninstalled and installed again.
+Enabled user units need the account's user manager to run; enabling alone does not establish
+unattended boot. See [boot policy](supervise-processes.mdx#start-without-a-login).
+A preset is not installed as a unit in this release, the manager included:
 `install` of one refuses `UNSUPPORTED`, allocates nothing, and for a preset that runs in the
 foreground names the `ExecStart=` line, `cotal service start <name> --foreground`, for a unit of
 your own.
