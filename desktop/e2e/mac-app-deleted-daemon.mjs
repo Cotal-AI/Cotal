@@ -1,6 +1,6 @@
 /** Measure a released app's deleted-bundle service on a disposable macOS runner. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager', 'crash-prepared', 'crash-published'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry && repairCommand !== 'self-update') assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
 report.repairCommand = repairCommand;
@@ -247,6 +247,59 @@ try {
       entrySha256: createHash('sha256').update(readFileSync(candidateEntry)).digest('hex') };
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
+    if (repairCommand.startsWith('crash-')) {
+      await ownedService();
+      const { interruptRepairAtPhase } = await import('./mac-repair-interruption.mjs');
+      const { readServiceRepair, assertServiceRepairPair, sourceDigest } = await import(pathToFileURL(resolve('bin/dist/daemon/service-repair.js')).href);
+      const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
+      const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
+      const hostingBefore = readFileSync(hostingPath, 'utf8');
+      const phase = repairCommand.slice('crash-'.length);
+      const version = report.candidate.version.split(/\r?\n/, 1)[0].replace('cotal-ai ', '');
+      report.interruptionEvents = [];
+      assert(!readServiceRepair(join(cotalHome, 'daemon')), 'no preexisting repair intent can count as this child capture');
+      const interrupted = await interruptRepairAtPhase({
+        file: process.execPath, args: [candidateEntry, 'daemon', 'install', '--json'], cwd: project, env: candidateEnv,
+        phase, birth: processBirth,
+        inspect() {
+          const intent = readServiceRepair(join(cotalHome, 'daemon'));
+          if (!intent) return undefined;
+          const actualReceipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+          const actualSource = readFileSync(plist, 'utf8');
+          assertServiceRepairPair(intent, actualReceipt, actualSource);
+          assert.deepEqual(intent.receipt, receipt, 'real intent must bind original owned receipt');
+          assert.equal(intent.previousSource, source);
+          assert.equal(intent.version, version);
+          assert.equal(intent.enabled, true);
+          assert(!intent.nextSource.includes(`${app}/`));
+          assert(intent.nextSource.includes(candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js')));
+          assert.deepEqual(intent.argv, [process.execPath, '--max-semi-space-size=1', candidateEntry, 'daemon', 'serve'], 'real repair destination must match this direct installed CLI invocation');
+          assert(intent.hostedSpaces.includes(report.participant.space));
+          if (intent.phase === 'published') {
+            assert.equal(actualSource, intent.nextSource);
+            assert.equal(actualReceipt.unitSha256, sourceDigest(intent.nextSource));
+          }
+          return { phase: intent.phase, sourceSha256: sourceDigest(actualSource), receiptSha256: sourceDigest(readFileSync(receiptPath, 'utf8')), sourceState: actualSource === source ? 'previous' : 'next', receiptState: actualReceipt.unitSha256 === receipt.unitSha256 ? 'previous' : 'next', destination: intent.argv, version: intent.version };
+        },
+        confirmStopped(pid, birth) {
+          assert.equal(processBirth(pid), birth, 'public repair child changed before native stop observation');
+          const stopped = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'stat='], { env, encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
+          assert(!stopped.error && !stopped.signal && stopped.status === 0 && /^T/.test(stopped.stdout.trim()), 'setup miss: public repair child did not confirm suspended state');
+          assert.equal(processBirth(pid), birth, 'public repair child changed during native stop observation');
+        },
+        observeNative() {
+          const job = spawnSync('/bin/launchctl', ['print', target], { env, encoding: 'utf8', timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 });
+          assert(!job.error && !job.signal && [0, 113].includes(job.status), 'suspended native job must be readable or confirmed absent');
+          return { exit: job.status, signal: job.signal, stdout: publicText(job.stdout), stderr: publicText(job.stderr) };
+        },
+        record(event) { report.interruptionEvents.push(event); if (event.event === 'cleanup-unconfirmed') report.interruptionCleanupUnconfirmed = true; save(); },
+      });
+      assert.equal(interrupted.signal, 'SIGKILL');
+      assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
+      assert.equal(readFileSync(hostingPath, 'utf8'), hostingBefore);
+      report.interruptedRepair = { phase, captured: interrupted.captured, retryComplete: false, hostingPath, hostingSha256: sourceDigest(hostingBefore) };
+      save();
+    }
     if (repairCommand === 'self-update') {
       candidateRegistry.activateTarget();
       const update = ok(await candidate('installed candidate update --self repairs missing program first', ['update', '--self']));
@@ -418,6 +471,11 @@ try {
     }
     if (!['disabled', 'unreadable-source', 'unreadable-manager', 'occupied-manager'].includes(repairCommand)) {
     const repaired = body(await candidate(repairCommand === 'self-update' ? 'candidate status observes self-update-repaired program' : repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
+    if (repairCommand.startsWith('crash-')) {
+      const { sourceDigest } = await import(pathToFileURL(resolve('bin/dist/daemon/service-repair.js')).href);
+      assert.equal(sourceDigest(readFileSync(report.interruptedRepair.hostingPath, 'utf8')), report.interruptedRepair.hostingSha256);
+      assert(!existsSync(join(cotalHome, 'daemon/service-repair.json')), 'same-candidate public retry must clear the actual interrupted intent');
+    }
     if (repairCommand === 'self-update') assert.equal(repaired.pid, report.selfUpdateRepairAcceptance.pid, 'status must observe the native lifetime already started by self-update');
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
     assert.notEqual(repaired.pid, before.pid, 'repair starts a fresh daemon lifetime');
@@ -432,6 +490,10 @@ try {
     assert(currentSource.includes(candidateEntry.replace(/cotal\.js$/, 'daemon-cwd.js')));
     heldProcesses.push(await identity(repaired.pid, 'repaired daemon'));
     for (const row of repaired.managers) if (row.pid) heldProcesses.push(await identity(row.pid, 'repaired Manager'));
+    if (repairCommand.startsWith('crash-')) {
+      const retriedJob = ok(await nativeAction('same-candidate retry exact native job', ['print']));
+      assert.equal(Number(/^\s*pid = (\d+)\s*$/m.exec(retriedJob.stdout)?.[1]), repaired.pid);
+    }
     const repeated = await candidate('repaired service repeated install remains unchanged', ['daemon', 'install', '--json']);
     assert.equal(repeated.exit, 2, 'baseline repeated install preserves its existing conflict contract');
     assert.equal(JSON.parse(repeated.stdout).error.code, 'CONFLICT');
@@ -443,6 +505,7 @@ try {
     heldProcesses.push(await identity(restarted.pid, 'restarted repaired daemon'));
     for (const row of restarted.managers ?? []) if (row.pid) heldProcesses.push(await identity(row.pid, 'restarted repaired Manager'));
     report.repairAcceptance = { freshPid: repaired.pid, restartedPid: restarted.pid, version: restarted.version, programOutsideApp: true, credentialsPreserved: true };
+    if (repairCommand.startsWith('crash-')) report.interruptedRepair.retryComplete = true;
     }
     report.outcome = 'repair-measured';
   } else {
@@ -484,7 +547,7 @@ try {
       report.cleanupOccupiedSeatStopped = true;
     } catch (error) { report.cleanupOccupiedSeatError = publicText(error); process.exitCode = 1; }
   }
-  if (serviceOwnership && !report.cleanupOccupiedSeatError) {
+  if (serviceOwnership && !report.cleanupOccupiedSeatError && !report.interruptionCleanupUnconfirmed) {
     try {
       await nativeAction('cleanup exact service bootout', ['bootout']);
       for (let attempt = 0; attempt < 50; attempt++) {
@@ -514,7 +577,7 @@ try {
     } catch (error) { report.cleanupUnknownService = true; report.cleanupUnknownError = publicText(error); process.exitCode = 1; }
   }
   try {
-    if (report.cleanupOccupiedSeatError) throw new Error('occupied seat cleanup is unconfirmed; no daemon or Manager process signal is authorized');
+    if (report.cleanupOccupiedSeatError || report.interruptionCleanupUnconfirmed) throw new Error('owned seat or public repair CLI cleanup is unconfirmed; no daemon or Manager process signal is authorized');
     for (const held of heldProcesses) {
     const current = await call(`cleanup pinned process ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
     if (current.exit === 0 && current.stdout === held.process.stdout && held.birth && processBirth(held.pid) === held.birth) {
