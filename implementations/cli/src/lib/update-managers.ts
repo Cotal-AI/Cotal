@@ -94,12 +94,16 @@ export function recordedUpdateManagers(
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
   const result = new Map<string, UpdateManager>();
-  realpathSync(installedEntry);
+  const ownEntry = realpathSync(installedEntry);
+  const ownUid = process.getuid?.() ?? 0;
   const add = (root: string, space: string, server: string, process: ProcessIdentityRecord) => {
     if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(server)) return;
     if (assertRecordIdentity(process).kind !== "match") blocked(`Manager pid ${process.pid} changed before its record read`);
     const command = readProcessCommand(process.pid);
     if (command.kind === "gone") return;
+    // A Manager that loaded another installation keeps its files when this one is replaced, so it
+    // is no custody of this update. The process census applies the same rule.
+    if (command.kind === "command" && supervisorInstallScope(process.pid, ownUid, command.command, ownEntry) === "foreign") return;
     const instanceId = readUpdateManagerIdentity(root, space);
     if (typeof flags.on === "string" && flags.on !== instanceId) return;
     const key = JSON.stringify([brokerAddressKey(server) ?? server, space, instanceId]);
