@@ -24,6 +24,9 @@ It rejects other major versions.
 
 No OpenCode-side Cotal installation is needed.
 The OpenCode choice in `cotal setup` records your preference, and the connector injects its plugin at launch.
+If `opencode` is missing from PATH, setup saves preparation and points to dependency repair before startup.
+A foreground spawn checks the executable before issuing launch credentials and refuses with
+`DEPENDENCY_UNAVAILABLE` if it is missing. Install OpenCode on this machine, then run the same command again.
 
 ## Launch OpenCode [#spawn-it]
 

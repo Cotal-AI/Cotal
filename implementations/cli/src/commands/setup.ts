@@ -701,7 +701,9 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     runtimes: runtimes.rows,
     written,
     startup,
-    next: local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
+    next: candidate.missing.length > 0
+      ? { command: `install or repair ${candidate.missing.join(", ")}, then run the same setup again`, cwd: inputs.project }
+      : local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}${opts.managerInstanceId ? ` --on ${opts.managerInstanceId}` : ""}`, cwd: null },
   };
   const problems: Problem[] = [
     ...(candidate.missing.length > 0
