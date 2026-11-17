@@ -36,11 +36,27 @@ export function verifyDeadUpdaterEvidence({report, cell, output}) {
   for (const key of ['daemon', 'manager']) assert(native(e.before[key]));
   assert.equal(typeof e.before.manager.instanceId, 'string'); assert(e.before.manager.instanceId);
   assert.deepEqual(e.recovered, e.before, 'same daemon and Manager must survive autonomous recovery');
+  const observations = label => { const rows = e.observations.filter(row => row.label === label); assert.equal(rows.length, 1, `missing or duplicate observation ${label}`); return rows[0].value; };
+  const initialDaemon = observations('initial daemon');
+  const recoveredDaemon = observations('autonomous daemon recovery');
+  for (const [capture, identity] of [[initialDaemon, e.before], [recoveredDaemon, e.recovered]]) {
+    assert.equal(capture.pid, identity.daemon.pid);
+    const managers = capture.managers.filter(row => row.space === e.space);
+    assert.equal(managers.length, 1);
+    assert.equal(managers[0].pid, identity.manager.pid);
+    assert.equal(managers[0].instanceId, identity.manager.instanceId);
+  }
+  const preparedDaemon = observations('live owner held daemon');
+  assert.deepEqual(preparedDaemon.update.restartEvidence, e.prepared);
+  const spaces = preparedDaemon.managers.filter(row => row.pid !== undefined).map(row => row.space).sort();
+  assert.deepEqual(e.prepared.managers.map(row => row.space).sort(), spaces);
+  assert.equal(new Set(spaces).size, spaces.length);
+  assert(spaces.includes(e.space));
   const calls = report.calls;
   const one = label => { const rows = calls.filter(row => row.label === label); assert.equal(rows.length, 1, `missing or duplicate ${label}`); return rows[0]; };
   const bind = (call, observed) => { for (const key of ['exit', 'signal', 'timeout', 'stdout', 'stderr']) assert.equal(call[key], observed[key], `${call.label} ${key} changed`); assert(time(call.finishedAt) >= time(call.startedAt)); };
   const ps = (call, observed) => { bind(call, observed); assert.deepEqual(call.argv.slice(-4), ['ps', '--space', e.space, '--json']); };
-  const initial = one('dead updater initial ps'); assert(clean(initial));
+  const initial = one('dead updater initial ps'); assert(clean(initial)); assert.deepEqual(initial.argv.slice(-4), ['ps', '--space', e.space, '--json']);
   const stopped = one('dead updater native stopped state'); bind(stopped, e.stoppedProcess); assert(clean(stopped));
   assert.deepEqual(stopped.argv, ['-o', 'stat=', '-p', String(e.producer.pid)]); assert.match(stopped.stdout.trim(), /^T/);
   assert(time(stopped.startedAt) >= e.heldObservedAt && time(stopped.finishedAt) <= e.killedAt);
@@ -51,12 +67,18 @@ export function verifyDeadUpdaterEvidence({report, cell, output}) {
   const recovered = calls.filter(row => /^dead updater recovery ps [1-9][0-9]*$/.test(row.label));
   assert(recovered.length > 0); assert(clean(recovered.at(-1))); ps(recovered.at(-1), e.recoveredPs);
   for (const row of recovered) assert(time(row.startedAt) >= e.killedAt && time(row.finishedAt) <= e.recoveredAt);
-  const active = one('autonomous Manager active'); assert(clean(active));
+  const statusCall = observed => {
+    assert.deepEqual(observed.argv.slice(0, 2), ['--input-type=module', '-e']);
+    assert.equal(observed.argv.length, 3);
+    assert(observed.argv[2].includes(e.sourceEntry.slice(0, -'/dist/cotal.js'.length)));
+    assert(observed.argv[2].includes('managerStatus'));
+    assert(observed.argv[2].includes(JSON.stringify(e.space)));
+  };
+  const active = one('autonomous Manager active'); assert(clean(active)); statusCall(active);
   const status = JSON.parse(active.stdout); assert.deepEqual(status, e.recoveredStatus);
   assert.equal(status.ok, true); assert.equal(status.data.instanceId, e.before.manager.instanceId); assert.equal(status.data.agentCount, 0);
   assert.equal(status.data.stopImpact.maintenance, 'active'); assert.equal(status.data.stopImpact.resumeRequired, false); assert.equal(status.data.stopImpact.stopping, false);
   assert(time(active.startedAt) >= e.killedAt && time(active.finishedAt) <= e.recoveredAt);
-  const observations = label => { const rows = e.observations.filter(row => row.label === label); assert.equal(rows.length, 1); return rows[0].value; };
   assert.equal(observations('live owner still prepared').update.restartEvidence.prepared, true);
   assert.equal(observations('autonomous daemon recovery').update.restartEvidence.prepared, false);
   const update = one('upgrade under test'); bind(update, e.update); assert(clean(update));
@@ -65,9 +87,10 @@ export function verifyDeadUpdaterEvidence({report, cell, output}) {
   assert(time(update.startedAt) >= e.recoveredAt, 'normal update must follow autonomous recovery');
   const between = calls.filter(row => time(row.startedAt) >= e.killedAt && time(row.startedAt) < time(update.startedAt));
   assert(between.every(row => /^dead updater recovery ps [1-9][0-9]*$/.test(row.label) || row.label === 'autonomous Manager active'), 'unexpected repair command before next update');
+  assert.deepEqual(observations('after default update daemon'), e.after);
   assert.equal(e.selectedVersion, cell.targetVersion); assert.equal(e.after.version, cell.targetVersion);
   assert.equal(e.after.update.restartEvidence.prepared, false); assert.equal(e.recovery, null);
   assert(e.after.managers.some(row => row.space === e.space && row.state === 'answering'));
-  const after = one('dead updater after ps'); assert(clean(after)); assert(time(after.startedAt) >= time(update.finishedAt));
+  const after = one('dead updater after ps'); assert(clean(after)); assert.deepEqual(after.argv.slice(-4), ['ps', '--space', e.space, '--json']); assert(time(after.startedAt) >= time(update.finishedAt));
   return {passed: true, assertions: {'dead-updater-release': true, 'live-owner-held': true, 'next-update-alone': true}};
 }

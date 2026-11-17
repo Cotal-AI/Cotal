@@ -14,16 +14,20 @@ function fixture() {
   const at = offset => new Date(base + offset).toISOString();
   const command = (label, offset, argv, extra = {}) => ({label, file: '/node', argv: [sourceEntry, ...argv], exit: 0, signal: null, timeout: false, stdout: '', stderr: '', startedAt: at(offset), finishedAt: at(offset + 10), ...extra});
   const before = {daemon: {pid: 100, start: 'daemon-birth'}, manager: {pid: 101, start: 'manager-birth', instanceId: 'instance'}};
-  const prepared = {prepared: true, managers: [{fenced: true, seats: 0}]};
+  const prepared = {prepared: true, managers: [{space: 'test', fenced: true, seats: 0}]};
   const recoveredStatus = {ok: true, data: {instanceId: 'instance', agentCount: 0, stopImpact: {maintenance: 'active', resumeRequired: false, stopping: false}}};
   const initial = command('dead updater initial ps', -100, ['ps', '--space', 'test', '--json']);
   const stopped = command('dead updater native stopped state', 2420, [], {argv: ['-o', 'stat=', '-p', '102'], stdout: 'T'});
   const held = command('dead updater held ps', 2500, ['ps', '--space', 'test', '--json'], {exit: 2, stderr: 'Manager preserving'});
   const recovered = command('dead updater recovery ps 1', 2700, ['ps', '--space', 'test', '--json']);
-  const status = command('autonomous Manager active', 2800, ['--input-type=module', '-e', 'installed status'], {stdout: JSON.stringify(recoveredStatus)});
+  const status = command('autonomous Manager active', 2800, [], {argv: ['--input-type=module', '-e', `const p=${JSON.stringify(sourceEntry.slice(0,-'/dist/cotal.js'.length))};control({space:"test"},'managerStatus')`], stdout: JSON.stringify(recoveredStatus)});
   const update = command('upgrade under test', 3000, ['update', '--self']);
   const after = command('dead updater after ps', 3100, ['ps', '--space', 'test', '--json']);
   const e = {mode: 'dead-updater', space: 'test', sourceEntry, sourceVersion: '0.165.1', sourceEntrySha256: 'a'.repeat(64), producer: {pid: 102, start: 'updater-birth', argv: [sourceEntry, 'update', '--self'], stdout: 'Saving update recovery snapshot', stderr: '', pausedAt: base, signal: 'SIGKILL', exit: null}, stoppedProcess: stopped, killRequestedAt: base + 2590, heldObservedAt: base + 2400, killedAt: base + 2600, recoveredAt: base + 2900, prepared, before, recovered: structuredClone(before), heldPs: held, recoveredPs: recovered, recoveredStatus, update, selectedVersion: '0.165.2', after: {version: '0.165.2', update: {restartEvidence: {prepared: false}}, managers: [{space: 'test', state: 'answering'}]}, recovery: null, observations: [{label: 'live owner still prepared', value: {update: {restartEvidence: prepared}}}, {label: 'autonomous daemon recovery', value: {update: {restartEvidence: {prepared: false}}}}]};
+  const daemon = {pid: 100, version: '0.165.1', managers: [{space: 'test', pid: 101, instanceId: 'instance'}], update: {restartEvidence: {prepared: false, managers: []}}};
+  e.observations.unshift({label: 'initial daemon', value: structuredClone(daemon)}, {label: 'live owner held daemon', value: {...structuredClone(daemon), update: {restartEvidence: structuredClone(prepared)}}});
+  e.observations.find(row => row.label === 'autonomous daemon recovery').value = structuredClone(daemon);
+  e.observations.push({label: 'after default update daemon', value: structuredClone(e.after)});
   const report = {source: '0.165.1', candidateSourceInvocation: {path: sourceEntry, sha256: 'a'.repeat(64)}, deadUpdater: e, calls: [initial, held, recovered, status, update, after, stopped]};
   const cell = {deadUpdater: true, platform: 'linux', targetVersion: '0.165.2'};
   function archive() { const {artifact, ...saved} = e; const bytes = Buffer.from(JSON.stringify(saved)); writeFileSync(join(output, 'evidence.json'), bytes, {mode: 0o600}); e.artifact = {name: 'evidence.json', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex')}; }
@@ -34,6 +38,10 @@ test('complete synthetic dead-updater evidence carries the three required assert
   const f = fixture(); try { assert.deepEqual(verifyDeadUpdaterEvidence(f), {passed: true, assertions: {'dead-updater-release': true, 'live-owner-held': true, 'next-update-alone': true}}); } finally { f.close(); }
 });
 for (const [name, alter] of [
+  ['both identity tuples fabricated together', f => { f.report.deadUpdater.before.daemon.pid = 999; f.report.deadUpdater.recovered.daemon.pid = 999; }],
+  ['prepared space changed', f => { f.report.deadUpdater.prepared.managers[0].space = 'foreign'; }],
+  ['final daemon capture absent', f => { f.report.deadUpdater.observations = f.report.deadUpdater.observations.filter(row => row.label !== 'after default update daemon'); }],
+  ['status command replaced', f => { f.report.calls.find(row => row.label === 'autonomous Manager active').argv = ['--version']; }],
   ['not actually stopped', f => { f.report.deadUpdater.stoppedProcess.stdout = 'S'; }],
   ['short live hold', f => { f.report.deadUpdater.heldObservedAt = f.report.deadUpdater.producer.pausedAt + 2300; }],
   ['live owner read succeeds', f => { f.report.deadUpdater.heldPs.exit = 0; }],

@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { inspectInstalledUpdateRoute } from "./daemon-cell-diagnostics.mjs";
 import { prepareUpdateParticipant } from "../implementations/auth/smoke/update-participant.fixture.js";
 
 export interface Context { env: NodeJS.ProcessEnv; project: string; pkg: string; root: string; config: string; cotalHome: string; prefix: string; cli: string; output: string; options: Record<string, any>; report: Record<string, any>; call(label: string, file: string, argv: string[], timeout?: number): Promise<any>; cotal(label: string, argv: string[], timeout?: number): Promise<any>; check(name: string, passed: boolean, observed: unknown): void }
@@ -42,7 +43,17 @@ export async function prepareDeadUpdater(context: Context) {
   };
   let updater: ReturnType<typeof spawn> | undefined, ended: Promise<void> | undefined, closed = false;
   const kill = async () => { if (updater && updater.exitCode === null && updater.signalCode === null) { assert.deepEqual(pin(updater.pid!), { pid: e.producer.pid, start: e.producer.start }); updater.kill("SIGKILL"); await ended; } };
-  const close = async () => { if (closed) return; closed = true; try { await kill(); } finally { try { await managerViaDaemon({ paths }, { op: "managers-stop" }); } finally { try { await participant(); } finally { for (const key of Object.keys(process.env)) if (!(key in prior)) delete process.env[key]; Object.assign(process.env, prior); } } } };
+  const close = async () => {
+    if (closed) return;
+    await kill();
+    if (updater && updater.exitCode === null && updater.signalCode === null) throw new Error("updater retirement is unconfirmed; hosted Managers and fixture retained for runner teardown");
+    closed = true;
+    try { await managerViaDaemon({ paths }, { op: "managers-stop" }); }
+    finally {
+      try { await participant(); }
+      finally { for (const key of Object.keys(process.env)) if (!(key in prior)) delete process.env[key]; Object.assign(process.env, prior); }
+    }
+  };
   return Object.assign(close, {
     customDaemon: false,
     async beforeUpdate() {
@@ -85,6 +96,8 @@ export async function prepareDeadUpdater(context: Context) {
         assert.deepEqual(pin(producer.pid), { pid: producer.pid, start: producer.start });
         assert.equal((await query("live owner still prepared")).update.restartEvidence.prepared, true);
         assert.equal(JSON.parse(readFileSync(join(pkg, "package.json"), "utf8")).version, report.source);
+        e.pausedExecution = inspectInstalledUpdateRoute(pkg, process.platform);
+        e.pausedRecovery = existsSync(join(cotalHome, "update-recovery.json")) ? JSON.parse(readFileSync(join(cotalHome, "update-recovery.json"), "utf8")) : null;
         e.killRequestedAt = Date.now(); await kill(); e.killedAt = Date.now();
         let recovered = false, attempt = 0;
         while (Date.now() - e.killedAt < 15000) {
