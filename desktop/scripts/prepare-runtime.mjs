@@ -111,7 +111,19 @@ const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--vers
 });
 if (probe.status !== 0 || !probe.stdout.trim().startsWith(`cotal-ai ${version}`)) throw new Error('The deployed stock CLI did not report the expected version.');
 writeFileSync(join(deploy, 'desktop-runtime.json'), JSON.stringify({ schema: 1, version, target, node: process.versions.node, files: hashes }, null, 2) + '\n');
-renameSync(stagedBinary, binary);
+function renameProbedBinary(source, destination) {
+  const deadline = performance.now() + 5_000;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try { renameSync(source, destination); return; }
+    catch (error) {
+      const remaining = deadline - performance.now();
+      if (process.platform !== 'win32' || error.code !== 'EBUSY' || remaining <= 0) throw error;
+      Atomics.wait(signal, 0, 0, Math.min(50, remaining));
+    }
+  }
+}
+renameProbedBinary(stagedBinary, binary);
 renameSync(deploy, output);
 rmSync(staging, { recursive: true, force: true });
 console.log(`Prepared stock cotal-ai ${version} and Node ${process.versions.node} for ${target}. No service was installed or started.`);
