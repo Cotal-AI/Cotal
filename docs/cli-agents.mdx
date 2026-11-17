@@ -606,7 +606,10 @@ requires the caller's native spawn authority.
 When the manager writes the file into this root's catalog, the receipt's `Local files` line names
 it and JSON `localFilesChanged` is true. On a static space the manager records an owner only for
 one of its own seats. The CLI mints a new caller for each call, so its card is operator-owned, as a
-local `persona create` writes it, and the manager does not show it over `--on`. The receipt then
+local `persona create` writes it, and the manager does not show it over `--on`. A repeated create
+is reported as `PERMISSION_DENIED` (exit 2), with a known `not-executed` outcome,
+and leaves the file unchanged. When the catalog is local, the refusal names
+`cotal persona edit <name>` on the manager's host. The receipt for a successful create
 offers `cotal p show <name>` for a file in this root, as the `--on` listing's Next does, and a
 `show --on` that the manager answers not-found names that command when this root's catalog holds
 the file. A peer joined with its own

@@ -476,6 +476,24 @@ try {
   check("persona create --on writes this root's catalog file with no owner, and its JSON says local files changed",
     createdJson.status === 0 && created?.outcome === "ok" && created.result?.localFilesChanged === true && created.result.perCallCaller === true && existsSync(remoteRev) && !/^owner:/m.test(readFileSync(remoteRev, "utf8")),
     { status: createdJson.status, stdout: createdJson.stdout.slice(-600) });
+  const savedPersona = readFileSync(remoteRev, "utf8");
+  const repeatedJson = await cotal(["persona", "create", "remote-rev", "--prompt", "Second private prompt", "--subscribe", "", "--on", IID2, "--space", space, "--json"], root2);
+  mustHaveRun(repeatedJson, "repeated `persona create --on --json`");
+  let repeated: { outcome?: string; error?: { code?: string; message?: string; remedy?: string; cause?: { code?: string; outcome?: string } } } | undefined;
+  try { repeated = JSON.parse(repeatedJson.stdout); } catch { repeated = undefined; }
+  check("a repeated static create is a known ownership refusal with a local edit remedy, not an unknown write",
+    repeatedJson.status === 2 && repeated?.outcome === "refused" && repeated.error?.code === "PERMISSION_DENIED" &&
+      repeated.error.cause?.code === "permission-denied" && repeated.error.cause.outcome === "not-executed" &&
+      repeated.error.message?.includes("operator-owned") === true && repeated.error.remedy?.includes("cotal persona edit remote-rev") === true &&
+      repeated.error.remedy.includes("manager's host") && !repeatedJson.out.includes("Second private prompt"),
+    { status: repeatedJson.status, stdout: repeatedJson.stdout });
+  const repeatedText = await cotal(["persona", "create", "remote-rev", "--prompt", "Second private prompt", "--subscribe", "", "--on", IID2, "--space", space], root2);
+  mustHaveRun(repeatedText, "repeated `persona create --on`");
+  check("the text refusal explains ownership and names the edit on the manager's host without printing the prompt",
+    repeatedText.status === 2 && /operator-owned/.test(strip(repeatedText.out)) &&
+      strip(repeatedText.out).includes("cotal persona edit remote-rev") && strip(repeatedText.out).includes("manager's host") &&
+      !repeatedText.out.includes("Second private prompt"), { status: repeatedText.status, out: strip(repeatedText.out) });
+  check("both refused creates leave the original persona bytes unchanged", readFileSync(remoteRev, "utf8") === savedPersona);
   const createdText = await cotal(["persona", "create", "remote-rev2", "--prompt", "review", "--subscribe", "", "--on", IID2, "--space", space], root2);
   mustHaveRun(createdText, "`persona create --on`");
   const receipt = strip(createdText.out);

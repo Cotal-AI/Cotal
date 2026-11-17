@@ -4836,7 +4836,7 @@ export class Manager {
     // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
     // only — the action model gives failures a typed channel.
     const unwrap = (r: ControlReply): unknown => {
-      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details);
+      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, r.outcome);
       return r.data;
     };
     // The admin-family serve gate: every `manager.admin`-class
@@ -13280,7 +13280,11 @@ export class Manager {
         }
         if (!admin && existing.owner !== caller) {
           const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
-          return { reply: { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` } };
+          return { reply: {
+            ok: false, code: "permission-denied", outcome: "not-executed",
+            error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can`,
+            details: [{ kind: "ai.cotal.persona-ownership-refused", operatorOwned: existing.owner === undefined }],
+          } };
         }
       }
       try {
