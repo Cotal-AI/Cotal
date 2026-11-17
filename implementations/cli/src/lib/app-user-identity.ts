@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   acquireLock, assertLifecycleToken, canonicalJson, checkConversationApprovalPending, checkConversationPendingAnswer,
@@ -19,6 +19,8 @@ interface SavedIdentity {
   space: string;
   root: string;
   trust: string;
+  /** Original registration pins, used only to retire at the authority that issued this request. */
+  retirementTarget?: MeshTarget;
   session: string;
   requestId: string;
   label: string;
@@ -235,8 +237,8 @@ async function provisionOnSpace(
       await retireUserApp(dir);
     }
   }
-  // A reconnect first finishes the previous explicit departure. Only a confirmed terminal
-  // retirement can release this session key for a new request and a new secret.
+  // A reconnect first finishes the previous explicit departure, or preserves an older record
+  // whose original registration is unavailable before releasing its session key.
   if (existsSync(join(dir, RECORD)) && read(dir).state === "retiring") {
     try { await retireUserApp(dir); }
     catch (error) {
@@ -268,7 +270,7 @@ async function provisionOnSpace(
       if (readdirSync(dir).length) throw new Error("conversation identity state is incomplete; it was retained for recovery");
       const token = randomBytes(32).toString("base64url");
       record = {
-        v: 1, space: target.space, root: target.root, trust: trust(target), session,
+        v: 1, space: target.space, root: target.root, trust: trust(target), retirementTarget: target, session,
         requestId: randomBytes(24).toString("base64url"), label: name, token, state: "creating",
         consumer: { pid: process.ppid, start: processStartToken(process.ppid) }, ...(selection ? { selection } : {}),
         remote: { url: authority.url, idpUrl: target.userAuth!.idp.url, approval: {} },
@@ -340,7 +342,8 @@ export function isUserAppDir(dir: string): boolean {
   return dirname(resolve(dir)) === resolve(identityRoot()) && /^[a-f0-9]{64}$/.test(basename(dir));
 }
 
-/** Retain the record and secret until exact lifecycle revocation and footprint cleanup are observed. */
+/** Retain the record and secret until exact cleanup is observed, or preserve an older record
+ *  separately when its original registration is no longer available. */
 export function retireUserApp(dir: string): Promise<void> {
   return retire(dir);
 }
@@ -366,8 +369,18 @@ async function retire(dir: string, when?: (record: SavedIdentity) => boolean): P
   try {
     const record = read(dir);
     if (when && !when(record)) return;
-    const target = await resolveTargetOrThrow({ space: record.space });
-    if (trust(target) !== record.trust) throw new Error("conversation identity mesh trust changed; retirement was not sent");
+    const target = record.retirementTarget ?? await resolveTargetOrThrow({ space: record.space });
+    if (record.retirementTarget && trust(target) !== record.trust)
+      throw new Error("conversation identity retirement pins do not match its saved trust; retirement was not sent");
+    if (trust(target) !== record.trust) {
+      // Older records lack the original registration. Preserve their recovery state outside the
+      // active session key without sending their credentials to the replacement registration.
+      record.state = "retiring";
+      save(dir, record);
+      renameSync(dir, join(identityRoot(), `unconfirmed-${record.requestId}`));
+      if (process.platform !== "win32") syncFile(identityRoot());
+      return;
+    }
     const provider = resolveAuthProvider();
     record.state = "retiring";
     save(dir, record);
