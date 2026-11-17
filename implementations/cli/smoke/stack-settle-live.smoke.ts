@@ -106,6 +106,8 @@
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
  *     and reuses it, and its notice says the earlier up was interrupted with every member running.
  *     After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
+ *     A live manager accepts its existing ceiling and refuses a higher or lower one before any
+ *     journal, definition, instance or registration changes, including its default ceiling of 64.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and another declaration, as a changed option description
  *     makes, `service logs` reads the broker, `down` stops the running stack, `up` starts it again
@@ -1293,12 +1295,49 @@ try {
   //    manager instance with the old definition and launches a replacement. Once the replacement's
   //    process is pinned it is frozen, so its readiness cannot be recorded, and the up is killed; the
   //    replacement then resumes and serves with nothing recording it.
+  {
+    const space = "sessionceiling", root = prepare(space);
+    const first = cli(root, "up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-sessions", "8", "--json");
+    track(space);
+    check("the open controller manager starts at eight sessions", first.status === 0, shown(first));
+    const manager = serviceInstances(space, "stack-manager")[0];
+    for (const requested of [12, 4]) {
+      const journal = readStackJournal(root)?.sha256;
+      const definition = serviceDefinitionStore(space).read("stack-manager");
+      const registration = JSON.stringify(findMesh(space));
+      const changed = cli(root, "up", "--max-sessions", String(requested), "--json");
+      check(`a live ceiling change from eight to ${requested} refuses with its actual value and stop/start remedy`,
+        changed.status === 2 && changed.env?.outcome === "refused" && changed.env.error?.code === "LIFECYCLE_BLOCKED" &&
+        changed.env.error.message.includes("uses --max-sessions 8") && changed.env.error.remedy === `stop the stack with \`cotal down --yes\`, then run \`cotal up --max-sessions ${requested}\``, shown(changed));
+      check("the refused ceiling leaves the journal, saved definition, instance and registration unchanged",
+        readStackJournal(root)?.sha256 === journal && serviceDefinitionStore(space).read("stack-manager")?.record.revision === definition?.record.revision &&
+        serviceInstances(space, "stack-manager")[0]?.record.revision === manager?.record.revision && JSON.stringify(findMesh(space)) === registration &&
+        manager?.record.value.process !== undefined && alive(manager.record.value.process.pid));
+    }
+    for (const args of [[], ["--max-sessions", "8"]]) {
+      const same = cli(root, "up", ...args, "--json");
+      check("a bare or matching ceiling refresh reuses the same manager", same.status === 0 && same.env?.outcome === "no-op" && serviceInstances(space, "stack-manager")[0]?.name === manager?.name, shown(same));
+    }
+    const down = cli(root, "down", "--yes", "--json");
+    const changed = cli(root, "up", "--max-sessions", "4", "--json");
+    track(space);
+    const launch = serviceDefinitionStore(space).read("stack-manager")?.record.value.launch;
+    check("after the requested stop, a lower ceiling applies to the replacement definition and registration", down.status === 0 && changed.status === 0 && launch?.type === "adapter" && launch.options["max-sessions"] === 4 && findMesh(space)?.maxSessions === 4, { down: shown(down), up: shown(changed) });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("the session-ceiling stack stops cleanly", stopped.status === 0 && gone(space, "stack-manager"), shown(stopped));
+  }
   const interruptRedefinition = async (space: string): Promise<{ root: string; replacement?: string }> => {
     const root = prepare(space);
     const port = await freePort();
     const first = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
     track(space);
     const retired = serviceInstances(space, "stack-manager")[0]?.name;
+    if (space === "redefdown") {
+      const same = cli(root, "up", "--max-sessions", "64", "--json");
+      check("an explicit default ceiling reuses a manager started without the flag", same.status === 0 && same.env?.outcome === "no-op" && serviceInstances(space, "stack-manager")[0]?.name === retired, shown(same));
+      const changed = cli(root, "up", "--max-sessions", "32", "--json");
+      check("changing an implicit default ceiling refuses naming 64", changed.status === 2 && changed.env?.error?.code === "LIFECYCLE_BLOCKED" && changed.env.error.message.includes("uses --max-sessions 64"), shown(changed));
+    }
     const clean = cli(root, "down", "--yes", "--json");
     check(`${space}: a clean up and down leave the manager instance a redefinition retires`, first.status === 0 && clean.status === 0 && retired !== undefined, { up: shown(first), down: shown(clean) });
     const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--max-sessions", "32", "--json"], { cwd: root, env, stdio: "ignore" });
