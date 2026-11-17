@@ -9,6 +9,7 @@ import {
   classifyJoinTarget,
   findCotalRoot,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   homeCotalDir,
   listSpaceAccounts,
@@ -439,7 +440,7 @@ function portAnswer(host: string, port: number): Promise<"accepted" | "silent" |
  *  when there is no usable one, and never silently redirect a default that still resolves. */
 export function writeRecord(entry: MeshEntry): { adoptedCurrent: boolean; keptCurrent?: string } {
   const cur = getCurrent();
-  const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording
+  const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording
   recordMesh(entry);
   if (!usableCurrent) {
     setAdoptedCurrent(entry.space);
