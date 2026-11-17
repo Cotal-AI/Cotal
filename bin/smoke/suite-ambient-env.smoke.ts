@@ -733,6 +733,18 @@ assert.deepEqual(
  * shape has to be re-measured, which is why the reason and not just the path is recorded.
  */
 const REVIEWED: Record<string, string> = {
+  "bin/smoke/auto-update-repair.smoke.mjs":
+    "originalEnv is only a restoration snapshot; every child receives env filtered of COTAL_ and given private fixture homes",
+  "bin/smoke/connector-activity.smoke.ts":
+    "originalEnv is only restored in finally; env(name) strips COTAL_ and sets the fixture identity before each connector, including the codex child spread",
+  "implementations/auth/smoke/logout-session-race.smoke.ts":
+    "originalEnv is only restored in finally; the suite strips COTAL_ before setting private homes and makes no child from the snapshot",
+  "implementations/auth/smoke/service-session-isolation.smoke.ts":
+    "originalEnv is only restored in finally; the try block strips COTAL_ before setting private homes, and the lock-holder child copies that scrubbed environment",
+  "implementations/cli/smoke/controller-migration-baseline.smoke.ts":
+    "originalEnv is only restored in finally; process.env is cleared and replaced by the explicit private fixture env before any child runs",
+  "implementations/manager/smoke/cross-root-transcript-name.smoke.ts":
+    "childEnv is never passed to a child; module scope strips COTAL_ before main, and only self-reentered auth-service, agent-bearer and seat modes restore the fixture values their parent supplied",
   "bin/smoke/suite-ambient-env.smoke.ts": "this census itself: its ambient spreads occur only in fixture strings and it spawns nothing",
   "bin/smoke/suite-ambient-env-self.smoke.ts":
     "the in-process sibling of this census: its ambient spreads occur only in fixture strings it feeds to a parser, and it spawns nothing",
