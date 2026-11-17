@@ -1,5 +1,19 @@
 # Upgrading a running deployment
 
+## Durable channel leave after 0.166.0
+
+From 0.166.0 a channel leave retires every open durable membership the principal holds on that
+channel, including rows an earlier lifecycle wrote. The agent asks the delivery daemon for those
+rows, and only a daemon at 0.166.0 or later reports each row's lifecycle.
+
+### What changes for you
+
+- Restart the delivery daemon at this version along with the clients. `cotal up` runs it.
+- Until then, an agent on the new connector that holds any durable membership cannot leave a
+  durable channel. The leave reports
+  `the delivery daemon predates lifecycle-aware membership discovery`, and the channel stays
+  joined with its memberships open.
+
 ## Harness permission requests withdrawn
 
 Releases 0.165.0 to 0.165.2 let a Claude Code connector hold a permission prompt for its owner

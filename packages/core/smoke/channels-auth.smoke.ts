@@ -178,6 +178,20 @@ try {
   for (const uid of [UID, nextUid]) {
     assert.ok(!(await dlv.ownerMemberships(agentPrincipal, uid)).some((m) => m.channel === "incident"), "join then leave retires every lifecycle row");
   }
+  // A daemon before 0.166.0 answers discovery with this lifecycle's rows and no lifecycleUid.
+  await dlv.durableJoinFor(agentPrincipal, "incident", UID);
+  await next.joinChannel("incident");
+  const discover = next.fetchMemberships.bind(next);
+  next.fetchMemberships = async () => [{ channel: "incident", generation: 1, activated: true }];
+  try {
+    await assert.rejects(next.leaveChannel("incident"), /predates lifecycle-aware membership discovery.*restart the daemon at this version/, "an older daemon's answer refuses the leave and names the remedy");
+  } finally {
+    next.fetchMemberships = discover;
+  }
+  assert.ok(next.joinedChannels().includes("incident"), "a refused leave keeps the channel joined");
+  assert.ok((await dlv.ownerMemberships(agentPrincipal, UID)).some((m) => m.channel === "incident"), "a refused leave keeps the membership open");
+  assert.deepEqual(await next.leaveChannel("incident"), { left: true }, "the leave succeeds once discovery reports lifecycles");
+  assert.ok(!(await dlv.ownerMemberships(agentPrincipal, UID)).some((m) => m.channel === "incident"), "that leave retires the membership");
 } finally {
   await next.stop();
 }

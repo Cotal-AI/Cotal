@@ -3965,8 +3965,10 @@ export class CotalEndpoint extends EventEmitter {
       if (memberships === undefined && this.plane3Channels.has(channel))
         await this.durableLeaveChannel(channel, this.plane3Channels.get(channel));
       for (const member of memberships ?? []) {
+        // A daemon before 0.166.0 answers with this lifecycle's rows and no lifecycleUid, so it cannot
+        // show an earlier lifecycle's row. Refuse with the remedy rather than leave that row open.
         if (member.lifecycleUid === undefined)
-          throw new Error("durable leave requires lifecycle-aware channel membership discovery from the delivery daemon");
+          throw new Error("the delivery daemon predates lifecycle-aware membership discovery, so this durable leave was not applied and the channel stays joined; restart the daemon at this version (`cotal up` runs it)");
         await this.durableLeaveChannel(channel, member.generation, member.lifecycleUid);
         left = true;
       }
