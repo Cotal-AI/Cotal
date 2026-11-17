@@ -47,7 +47,7 @@ export interface DaemonServiceIdentity {
 }
 
 /** Where this machine's daemon keeps its identity for `space`. */
-export function daemonIdentityFile(space: string, home: string = homeCotalDir()): string {
+function daemonIdentityFile(space: string, home: string = homeCotalDir()): string {
   return join(home, "daemon", spaceSegment(space), "service-identity.json");
 }
 

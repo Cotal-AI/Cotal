@@ -6,7 +6,7 @@ import { captureMigrationNode, verifyMigrationNode, type MigrationNodeRecord } f
 import { executionBinding, executionInventory, executionRecord, executionSha256, executionStore } from "./cotal.js";
 import { retainExecutionGeneration, type RetainedExecutionGeneration } from "./execution-store.js";
 
-export interface MigrationExecutionReference {
+interface MigrationExecutionReference {
   generation: RetainedExecutionGeneration;
   node: MigrationNodeRecord;
 }

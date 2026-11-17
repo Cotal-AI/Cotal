@@ -45,7 +45,7 @@ import { nativeDaemonLog } from "./native-log.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
-export const daemonFlags = [
+const daemonFlags = [
   jsonFlag,
   plainFlag,
   { name: "cloud", type: "boolean", description: "sign in to Cotal Cloud" },

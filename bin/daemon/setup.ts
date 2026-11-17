@@ -59,7 +59,7 @@ interface InstallOptions {
   readonly report: (line: string, progress?: SetupStep) => void;
 }
 
-export interface SetupOptions extends InstallOptions {
+interface SetupOptions extends InstallOptions {
   readonly space: string;
   readonly idp?: string;
   readonly clientId?: string;

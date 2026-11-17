@@ -55,7 +55,7 @@ export function windowsArgument(arg: string): string {
   return `"${arg}${"\\".repeat(/\\*$/.exec(arg)![0].length)}"`;
 }
 
-export interface ScheduledTaskInput {
+interface ScheduledTaskInput {
   readonly sid: string;
   readonly argv: readonly string[];
   readonly workingDirectory: string;
@@ -146,7 +146,7 @@ const READ_TASK = [
 ].join("\n");
 
 /** Windows refresh pauses the owned task without deleting its installation. */
-export interface WindowsTaskService extends NativeService {
+interface WindowsTaskService extends NativeService {
   pause(receipt: UnitReceipt): Promise<void>;
   resume(receipt: UnitReceipt): void;
   inspect(receipt: UnitReceipt): { present: boolean; enabled?: boolean; instances?: number };
