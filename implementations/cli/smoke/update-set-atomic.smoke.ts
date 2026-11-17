@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
-import { delimiter, join, resolve } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { emitSentinel, skipSuite } from '@cotal-ai/smoke-kit';
 
 // Real CLI/natives/npm path. Only the second requested package install is refused by a transparent
 // package-manager fixture, so the failure happens after the first connector's ordinary transaction.
 if (process.platform === 'win32') {
-  console.log('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
+  skipSuite('update set atomic refusal fixture: not run on Windows, POSIX npm shim required');
 } else {
 const root = mkdtempSync(join(tmpdir(), 'update-set-'));
 try {
@@ -16,12 +17,16 @@ const home = join(root, 'home'), config = join(root, 'config'), tools = join(roo
 for (const dir of [home, config, tools]) mkdirSync(dir, { mode: 0o700 });
 const bin = resolve('bin/dist/cotal.js');
 const generation = (JSON.parse(readFileSync(resolve('bin/package.json'), 'utf8')) as { version: string }).version;
-const env = { ...process.env, HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
+const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('COTAL_'))), HOME: home, COTAL_HOME: join(home, '.cotal'), XDG_CONFIG_HOME: config,
   COTAL_ALLOW_CHECKOUT_SEED: '1', COTAL_SKIP_CONNECTOR_SEED: '1', COTAL_NO_UPDATE_CHECK: '1' };
 const run = (args: string[], extra = {}) => spawnSync(process.execPath, [bin, ...args], { cwd: root, env: { ...env, ...extra }, encoding: 'utf8', timeout: 120000 });
 const seed = run(['ext', 'seed']);
 assert.equal(seed.status, 0, seed.stderr);
-const prefix = join(config, 'cotal/extensions');
+const key = createHash('sha256').update(bin).digest('hex');
+const selectionPath = join(config, 'cotal/installs', key, 'sets', generation, 'selection.json');
+const selected = existsSync(selectionPath) ? (JSON.parse(readFileSync(selectionPath, 'utf8')) as { root: string }).root : join(config, 'cotal');
+assert.equal(dirname(selected), existsSync(selectionPath) ? dirname(selectionPath) : config);
+const prefix = join(selected, 'extensions');
 for (const pkg of ['connector-claude-code', 'connector-opencode']) writeFileSync(join(prefix, 'node_modules/@cotal-ai', pkg, 'damage.txt'), 'previous damaged bytes\n');
 const digest = (directory: string): string => {
   const hash = createHash('sha256');
@@ -52,5 +57,6 @@ for (const pkg of ['connector-claude-code', 'connector-opencode']) assert(!readd
 console.log('whole-set successful update repairs every selected package');
 const packageRecord = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
 assert.equal(packageRecord.dependencies['@cotal-ai/connector-claude-code'], `file:../seed/store/${generation}/claude`);
+emitSentinel({ passed: 2, failed: 0 });
 } finally { rmSync(root, { recursive: true, force: true }); }
 }

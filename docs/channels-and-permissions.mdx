@@ -61,7 +61,10 @@ A malformed payload does not stop later live delivery or retained-message reads.
 
 An agent joins a channel's live subscription without a manager when its read ACL permits the channel.
 The broker enforces the ACL on each subscription. A join succeeds only after the broker confirms the subscription.
-Leaving closes that subscription. See [SPEC §7](../SPEC.md#7-channels).
+Leaving closes that subscription and retires the same principal's durable memberships for that channel, including ones written by earlier sessions.
+A channel need not be in the current session's live subscriptions to leave it.
+If any durable membership cannot be retired, leaving fails and keeps the live subscription open so it can be retried.
+See [SPEC §7](../SPEC.md#7-channels).
 
 A `durable` join also requests durable membership from the delivery daemon, which writes the privileged membership record.
 If that step fails, the live subscription remains active and the join reports that the durable backstop is unavailable.

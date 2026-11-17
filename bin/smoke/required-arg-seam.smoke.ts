@@ -556,7 +556,15 @@ const SEAMS: Seam[] = [
   // foreground-issuance-live adds an admin reader, managed-event-payloads adds an observer,
   // event-payload-legacy provisions a broker without the payload stream, and backup-event-payload
   // reads the fixture's native stream. Each explicitly states `tls: false` for its local broker.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 444, untypecheckedSites: 354 },
+  // 444/354 -> 448/357: book four existing calls. bin/daemon/manager.ts carries the
+  // resolved TLS decision on each auth arm. Three smoke calls state `tls: false` for their
+  // local brokers: history-read's teardown, gate-reconcile-auth's registration executor,
+  // and remote-registration-expiry's liveness observer.
+  // 448/357 -> 449/358: reconnect-missing-inbox-auth adds its target-pinned teardown connection,
+  // which states `tls: false` for the suite's loopback broker.
+  // 451/359 -> 452/360: agui-egress-acl-auth adds its payload-rail subscriber connection, which
+  // states `tls: false` for the suite's loopback broker.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 452, untypecheckedSites: 360 },
 ];
 
 const SITE_COUNTS = JSON.parse(readFileSync(new URL("./required-arg-sites.json", import.meta.url), "utf8")) as Record<string, number>;

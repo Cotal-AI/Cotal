@@ -2,8 +2,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
-import { globalConfigDir } from "@cotal-ai/core";
+import { connectorConfigDir, loadExtensionsManifest, logicalExecutionEntry, updateActivationBlocked } from "@cotal-ai/workspace";
 import { selectExecutionProgram } from "../cotal.js";
 import { fileURLToPath } from "node:url";
 
@@ -26,7 +25,7 @@ export async function reconcileHostedConnectors(version: string): Promise<void> 
   const installed = installedGenerationVersion();
   if (installed !== version) throw new ReplacedDaemonGeneration(version, installed);
   try {
-    const stamp = JSON.parse(readFileSync(join(globalConfigDir(), "seed", "stamp.json"), "utf8"));
+    const stamp = JSON.parse(readFileSync(join(connectorConfigDir(), "seed", "stamp.json"), "utf8"));
     const skewed = loadExtensionsManifest().extensions.some((entry) => entry.pkg.startsWith("@cotal-ai/") && entry.version !== version);
     if (stamp?.generation === version && !skewed) return;
   } catch (error) {
@@ -47,7 +46,7 @@ function packageFile(): string {
   throw new Error("the daemon's CLI package is not identifiable");
 }
 
-export async function reconcileInstalledGeneration(): Promise<void> {
+async function reconcileInstalledGeneration(): Promise<void> {
   const file = packageFile();
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, [join(dirname(file), "dist", "cotal.js"), "ext", "seed"], { env: { ...process.env, COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });

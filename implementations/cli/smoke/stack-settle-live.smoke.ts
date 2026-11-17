@@ -27,7 +27,11 @@
  *     address makes its bare `up` name stopping that space, and it keeps the address. A first `up`
  *     refused at a port another program holds names another `--server`, records no broker instance
  *     and pins nothing: `down --yes` stops nothing and the next `up` starts at another address. The
- *     refusal says the stack started no member. A running broker keeps its file store cap; a stopped
+ *     refusal says the stack started no member. When another process binds the websocket port `up`
+ *     chose before the broker binds it, the broker exits and `up` launches it again on a new port the
+ *     manager is given, also when the broker writes its own `--log-file`; a process that takes every
+ *     port it chooses fails the `up` after four relaunches, which it names.
+ *     A running broker keeps its file store cap; a stopped
  *     one takes a new `--max-file-store`. With no stream reservations, a recorded one-byte cap lets
  *     the empty streams start, then delivery's first write fails and keeps the broker as a partial
  *     start, whose Next, like `status`'s, names only a larger cap; stopping that broker lets a
@@ -68,9 +72,9 @@
  *     STORE_SHARED warning, and `reset store`, its dry run, `reset space` and `clean store` refuse it
  *     CONFLICT with the hand-removal step and remove nothing. A recorded store removed by hand starts
  *     empty with a STORE_MISSING warning.
- *  4. Orphan manager. With the broker suspended under a live manager, `down` refuses
- *     TARGET_UNAVAILABLE naming the broker's pid and `kill -CONT`, and stops nothing; `up` refuses the
- *     same way before it writes the journal or records the broker's readiness again. With the broker
+ *  4. Orphan manager. With the broker suspended under a live manager, confirmed `down` resumes its
+ *     exact owned process and stops the stack; `up` refuses TARGET_UNAVAILABLE with `kill -CONT`
+ *     before it writes the journal or records the broker's readiness again. With the broker
  *     killed under a live manager, `down` refuses before any stop
  *     and names `cotal up --space`, from the operator's shell and from a managed seat's; following
  *     it, `up` then `down` stop both. While the broker is live, its refusal of a seat's credential
@@ -106,6 +110,8 @@
  *     adopts the journaled replacement and stops it; in a second stack the next bare `up` adopts it
  *     and reuses it, and its notice says the earlier up was interrupted with every member running.
  *     After a `down`, a bare `up` there keeps the `--max-sessions` that redefined it.
+ *     A live manager accepts its existing ceiling and refuses a higher or lower one before any
+ *     journal, definition, instance or registration changes, including its default ceiling of 64.
  *  8. An upgrade. Each member record pins its built-in adapter at the release that wrote it. With
  *     every pin set to an earlier release and another declaration, as a changed option description
  *     makes, `service logs` reads the broker, `down` stops the running stack, `up` starts it again
@@ -127,6 +133,8 @@
  *     `TARGET_NOT_FOUND`, says no member retains a stop request and names `cotal up`.
  * 10. A repeated `down --with-agents --yes`. After one that completed it is a no-op, exit 0. After a
  *     `down` without `--with-agents` it still refuses `LIFECYCLE_BLOCKED`.
+ * 10b. After a clean whole-stack stop removed delivery's credential, `down delivery --dry-run` exits
+ *     0, `down delivery --yes` is a no-op and `down manager delivery --dry-run` exits 0.
  * 11. A first `up` under `ulimit -n 32`. Its broker cannot create the space's streams, so the `up`
  *     stops that broker again and fails `OPERATION_FAILED`, naming the open-file limit. The next `up`
  *     under the normal limit starts the stack.
@@ -190,7 +198,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
 import { CotalEndpoint, mintCreds, mintLifecycleUid, newIdentity } from "@cotal-ai/core";
-import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
+import { agentLifecycleSecretFilePaths, canonicalLocalProcessPath, findMesh, getSpaceAuth, isCommandFailure, processStopped, workspaceSecretStore, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, readServiceStopRequest, spaceSegment, stopReservationPath, acquireMaintenanceLock, releaseMaintenanceLock } from "@cotal-ai/workspace";
 
 const WT = resolve(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
@@ -274,8 +282,8 @@ const exited = (child: ChildProcess) => new Promise<void>((done) => child.exitCo
 
 const prepare = (space: string): string => {
   const root = join(projects, space);
-  // Not group-writable under the umask step 4 sets: such a root needs a private-group proof
-  // (getfacl) that a host without acl cannot give.
+  // Not group-writable under the umask step 4 sets: avoid depending on the host's private-group
+  // proof and ACL reader (getfacl, or python3 when getfacl is absent).
   mkdirSync(root, { mode: 0o755 });
   const created = cli(home, "space", "create", space, "--root", root, "--json");
   check(`space create ${space} prepares its root`, created.status === 0, shown(created));
@@ -368,6 +376,18 @@ try {
     const added = cli(root, "up", "--json");
     track(space);
     check("bare up adds the manager to the running stack", added.status === 0 && pidOf(space, "stack-manager") !== null, shown(added));
+    // #7057: on the running stack, `manager start` reports its manager running and starts no second
+    // one, as the docs say. `manager restart` refused with `cotal up` as its Next, which reuses the
+    // running manager; it names the stop and the `up` that restart it.
+    const managerPid = pidOf(space, "stack-manager");
+    const startRunning = cli(root, "manager", "start", "--space", space, "--json");
+    check("manager start on the running stack reports its manager running, exit 0, and starts nothing",
+      startRunning.status === 0 && startRunning.env?.outcome === "no-op" && pidOf(space, "stack-manager") === managerPid, shown(startRunning));
+    const restartRunning = cli(root, "manager", "restart", "--space", space, "--yes", "--json");
+    check("manager restart --yes on it refuses LIFECYCLE_BLOCKED, stops nothing, and names manager stop then up",
+      restartRunning.status === 2 && restartRunning.env?.error?.code === "LIFECYCLE_BLOCKED"
+        && restartRunning.env.error.remedy === "stop it with `cotal manager stop --yes`, then run `cotal up` to start it again with its stack"
+        && managerPid !== null && pidOf(space, "stack-manager") === managerPid && alive(managerPid), shown(restartRunning));
     // The rows followed the store's order, by random instance ID, so they moved whenever a member
     // started under a new one.
     const statusInstances = (cli(root, "status", "--json").env?.result?.services as { instances?: { definition: string; instanceId: string }[] } | undefined)?.instances ?? [];
@@ -794,10 +814,14 @@ try {
       { filled: filled && shown(filled), store });
     const managerPid = pidOf(space, "stack-manager");
     const down = cli(root, "down", "--yes", "--json");
-    check("down --yes refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the unanswered stop, the logged failure and the manager's SIGTERM, and stops nothing",
+    const nativeDetail = down.env?.error?.cause?.detail;
+    const timeout = nativeDetail === "timeout";
+    check("down --yes refuses DEPENDENCY_UNAVAILABLE, exit 2, naming the failed issuance, logged cause and manager's SIGTERM, and stops nothing",
       down.status === 2 && down.env?.error?.code === "DEPENDENCY_UNAVAILABLE"
-        && /^the manager's stop got no answer \(timeout\), and the broker logged a store write failure at .+: file too large; no member was stopped$/.test(down.env.error.message)
-        && down.env.error.message.includes(`KV_cotal_issued_${space}`) && down.env.error.cause?.detail === "timeout"
+        && (timeout ? /^the manager's stop got no answer \(timeout\),/.test(down.env.error.message)
+          : typeof nativeDetail === "string" && nativeDetail.includes(`KV_cotal_issued_${space}`) && /file too large$/.test(nativeDetail) && down.env.error.message.startsWith(`the manager's stop was refused (${nativeDetail}),`))
+        && /and the broker logged a store write failure at .+: file too large; no member was stopped$/.test(down.env.error.message)
+        && down.env.error.message.includes(`KV_cotal_issued_${space}`)
         && (down.env.error.remedy ?? "").startsWith(`end the manager on this host with kill -TERM ${managerPid}, which stops its agents by its default policy, then run \`cotal down\`; `)
         && managerPid !== null && alive(managerPid) && !gone(space, "stack-delivery") && !gone(space, "stack-broker"), shown(down));
     if (managerPid !== null) process.kill(managerPid, "SIGTERM");
@@ -950,6 +974,66 @@ try {
     await new Promise<void>((done) => holder.close(() => done()));
   }
 
+  // 3k. The websocket port `up` chose is free when it is chosen, but nothing holds it until the broker
+  //     binds it. A process that binds it first, as one on a busy host can, takes it from the broker.
+  {
+    const configOf = (root: string) => join(root, ".cotal", "auth", "server.conf");
+    const wsPortIn = (config: string) => Number(/^websocket \{\n  host: .+\n  port: (\d+)$/m.exec(readFileSync(config, "utf8"))?.[1]);
+    const holders: ReturnType<typeof createServer>[] = [];
+    // Bind the websocket port each broker configuration `up` writes at `root` names, once it is
+    // written: only the first one, or every one.
+    const takeWebsocketPorts = (root: string, every: boolean) => {
+      const config = configOf(root), before = statSync(config, { throwIfNoEntry: false })?.mtimeMs;
+      const taken: number[] = [];
+      const timer = setInterval(() => {
+        let port: number;
+        try { if (statSync(config).mtimeMs === before) return; port = wsPortIn(config); } catch { return; }
+        if (!port || taken.includes(port)) return;
+        taken.push(port);
+        const holder = createServer();
+        holders.push(holder);
+        holder.on("error", () => { /* the broker bound it first; holder.listening stays false */ });
+        holder.listen(port, "127.0.0.1");
+        if (!every) clearInterval(timer);
+      }, 1);
+      return { taken, stop: () => clearInterval(timer) };
+    };
+    // A first up whose websocket port another process takes starts on a new one, which the manager is given.
+    const takenOnce = async (space: string, ...args: string[]) => {
+      const root = prepare(space);
+      const once = takeWebsocketPorts(root, false);
+      const started = await cliAsync(root, "up", "--server", `nats://127.0.0.1:${await freePort()}`, ...args, "--json");
+      once.stop();
+      track(space);
+      const listed = (started.env?.result?.listeners as { name: string; port: unknown }[] | undefined)?.find((listener) => listener.name === "websocket")?.port;
+      const managerLaunch = serviceDefinitionStore(space).read("stack-manager")?.record.value.launch;
+      const holder = holders.at(-1);
+      check(`${space}: up starts the stack when another process took the websocket port it chose first, on a newly chosen port the manager is given`,
+        started.status === 0 && started.env?.outcome === "ok" && once.taken.length === 1 && holder?.listening === true && typeof listed === "number" && listed !== once.taken[0]
+          && wsPortIn(configOf(root)) === listed && managerLaunch?.type === "adapter" && managerLaunch.options["ws-port"] === listed,
+        { up: shown(started), taken: once.taken, holding: holder?.listening, listed, manager: managerLaunch });
+      check(`${space}: down --yes stops it`, cli(root, "down", "--yes", "--json").status === 0);
+      return root;
+    };
+    const root = await takenOnce("wstaken");
+    // With --log-file the broker logs the failed bind there instead of in its startup log.
+    const logFile = join(storeDirs, "wstakenlog-broker.log");
+    await takenOnce("wstakenlog", "--log-file", logFile);
+    check("wstakenlog: the broker's own log names the bind the taken port failed", readFileSync(logFile, "utf8").includes("[FTL] Unable to listen for websocket connections: "));
+    const every = takeWebsocketPorts(root, true);
+    const failed = await cliAsync(root, "up", "--json");
+    every.stop();
+    track("wstaken");
+    check("a process that takes every websocket port up chooses fails the up after four relaunches, which the failure names",
+      failed.status !== 0 && failed.env?.error?.code === "OPERATION_FAILED" && every.taken.length === 5 && holders.every((holder) => holder.listening)
+        && failed.env.error.message.includes(`Unable to listen for websocket connections: listen tcp 127.0.0.1:${every.taken[4]}: bind: address already in use`)
+        && failed.env.error.message.endsWith("; the broker was launched again on 4 other websocket ports and nothing else was retried"),
+      { up: shown(failed), taken: every.taken });
+    check("no broker runs after it", gone("wstaken", "stack-broker"));
+    check("down --yes there exits 0", cli(root, "down", "--yes", "--json").status === 0);
+    await Promise.all(holders.map((holder) => new Promise<void>((done) => holder.close(() => done()))));
+  }
+
   // 4. An orphan manager, member names and the delivery-aware marker (B2-01, B2-03, B2-07, B2-08).
   {
     process.umask(0o002);
@@ -1019,7 +1103,7 @@ try {
         && gone(space, "stack-manager") && firstManager !== null && await until(() => !alive(firstManager), 10_000), shown(presetName));
     // The stack's own start brings the manager back; the stopped record stays beside the new one.
     const restarted = cli(root, "up", "--json");
-    const manager = serviceInstances(space, "stack-manager").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
+    let manager = serviceInstances(space, "stack-manager").find((row) => observeServiceProcess(row.record.value) === "running")?.record.value.process?.pid ?? null;
     if (manager !== null) owned.add(manager);
     const states = Object.fromEntries(((restarted.env?.result?.members ?? []) as { role: string; state: string }[]).map((member) => [member.role, member.state]));
     check("up then starts the manager again and reuses the broker and delivery",
@@ -1027,7 +1111,7 @@ try {
     const brokerFirst = cli(root, "down", "stack-broker", "--space", space, "--yes", "--json");
     check("the broker stop refusal names its stack dependants", brokerFirst.status === 2 && brokerFirst.env?.error?.code === "LIFECYCLE_BLOCKED" && brokerFirst.env.error.message.includes("stack-manager") && !brokerFirst.env.error.message.includes("legacy"), shown(brokerFirst));
 
-    const broker = pidOf(space, "stack-broker");
+    let broker = pidOf(space, "stack-broker");
     // A managed seat's shell dials the broker with its own credential first. The seat context is set
     // by hand, with a credential from another root of this suite that this broker does not trust.
     const uid = mintLifecycleUid();
@@ -1040,10 +1124,10 @@ try {
     const seat = { ...env, COTAL_NAME: "settle-seat", COTAL_ID: "settle-seat", COTAL_LIFECYCLE_UID: uid, COTAL_SPACE: space, COTAL_ACCEPTED_TOKEN: "settle-token" };
     const rejected = cliAs(seat, root, "down", "--yes", "--json");
     check("a live broker's refusal of a managed seat's credential is kept, not reported as a registry mismatch, and nothing stops", rejected.status !== 0 && rejected.env?.error?.message === "Authorization Violation" && broker !== null && alive(broker) && manager !== null && alive(manager), shown(rejected));
-    // A suspended broker takes the connection and sends nothing; down reads its stopped state instead.
+    // Up and an unconfirmed down leave the suspended broker alone; a confirmed down resumes it.
     if (broker !== null) process.kill(broker, "SIGSTOP");
     const hungAt = Date.now();
-    const hung = cli(root, "down", "--yes", "--json");
+    const hung = cli(root, "down", "--json");
     const hungMs = Date.now() - hungAt;
     // Up refuses the same way, before it writes the journal or records the broker's readiness again.
     const readyAt = () => serviceInstances(space, "stack-broker")[0]?.record.value.adapterReadiness?.observedAt;
@@ -1052,13 +1136,21 @@ try {
     const upHung = cli(root, "up", "--json");
     const upMs = Date.now() - upAt;
     const readyAfter = readyAt(), journalAfter = readStackJournal(root)?.sha256;
-    if (broker !== null) process.kill(broker, "SIGCONT");
     check("up with a suspended broker refuses within 10s naming its pid and kill -CONT, and records nothing",
       upMs < 10_000 && upHung.status === 2 && upHung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(upHung.env.error.message.includes(`pid ${broker}`))
         && upHung.env.error.remedy === `resume it with kill -CONT ${broker} and run \`cotal up\` again` && readyBefore !== undefined && readyAfter === readyBefore && journalAfter === journalBefore,
       { upMs, readyBefore, readyAfter, journalChanged: journalAfter !== journalBefore, ...shown(upHung) });
-    check("down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
-    check("down with a suspended broker refuses naming its pid and kill -CONT, and stops nothing", hung.status === 2 && hung.env?.error?.code === "TARGET_UNAVAILABLE" && Boolean(hung.env.error.message.includes(`pid ${broker}`)) && Boolean(hung.env.error.remedy?.includes(`kill -CONT ${broker}`)) && broker !== null && alive(broker) && manager !== null && alive(manager), shown(hung));
+    check("unconfirmed down with a suspended broker refuses within 10s, before any read through it", hungMs < 10_000, { hungMs });
+    check("unconfirmed down leaves its broker suspended and its manager running", hung.status === 1 && broker !== null && processStopped(broker) && manager !== null && alive(manager), shown(hung));
+    const resumed = cli(root, "down", "--yes", "--json");
+    check("confirmed down resumes its suspended broker and stops the manager before the broker",
+      resumed.status === 0 && resumed.env?.outcome === "ok" && broker !== null && !alive(broker) && manager !== null && !alive(manager)
+        && gone(space, "stack-delivery") && serviceInstances(space, "stack-broker")[0]?.record.value.kernelStop?.observation === "exact-process-exit", shown(resumed));
+    const resumedStart = cli(root, "up", "--json");
+    track(space);
+    broker = runningPidOf(space, "stack-broker");
+    manager = runningPidOf(space, "stack-manager");
+    check("up starts the stack again for the dead-broker refusal", resumedStart.status === 0 && broker !== null && manager !== null, shown(resumedStart));
     if (broker !== null) process.kill(broker, "SIGKILL");
     await until(() => gone(space, "stack-broker"), 10_000);
     const blocked = cli(root, "down", "--yes", "--json");
@@ -1279,12 +1371,49 @@ try {
   //    manager instance with the old definition and launches a replacement. Once the replacement's
   //    process is pinned it is frozen, so its readiness cannot be recorded, and the up is killed; the
   //    replacement then resumes and serves with nothing recording it.
+  {
+    const space = "sessionceiling", root = prepare(space);
+    const first = cli(root, "up", "--open", "--server", `nats://127.0.0.1:${await freePort()}`, "--max-sessions", "8", "--json");
+    track(space);
+    check("the open controller manager starts at eight sessions", first.status === 0, shown(first));
+    const manager = serviceInstances(space, "stack-manager")[0];
+    for (const requested of [12, 4]) {
+      const journal = readStackJournal(root)?.sha256;
+      const definition = serviceDefinitionStore(space).read("stack-manager");
+      const registration = JSON.stringify(findMesh(space));
+      const changed = cli(root, "up", "--max-sessions", String(requested), "--json");
+      check(`a live ceiling change from eight to ${requested} refuses with its actual value and stop/start remedy`,
+        changed.status === 2 && changed.env?.outcome === "refused" && changed.env.error?.code === "LIFECYCLE_BLOCKED" &&
+        changed.env.error.message.includes("uses --max-sessions 8") && changed.env.error.remedy === `stop the stack with \`cotal down --yes\`, then run \`cotal up --max-sessions ${requested}\``, shown(changed));
+      check("the refused ceiling leaves the journal, saved definition, instance and registration unchanged",
+        readStackJournal(root)?.sha256 === journal && serviceDefinitionStore(space).read("stack-manager")?.record.revision === definition?.record.revision &&
+        serviceInstances(space, "stack-manager")[0]?.record.revision === manager?.record.revision && JSON.stringify(findMesh(space)) === registration &&
+        manager?.record.value.process !== undefined && alive(manager.record.value.process.pid));
+    }
+    for (const args of [[], ["--max-sessions", "8"]]) {
+      const same = cli(root, "up", ...args, "--json");
+      check("a bare or matching ceiling refresh reuses the same manager", same.status === 0 && same.env?.outcome === "no-op" && serviceInstances(space, "stack-manager")[0]?.name === manager?.name, shown(same));
+    }
+    const down = cli(root, "down", "--yes", "--json");
+    const changed = cli(root, "up", "--max-sessions", "4", "--json");
+    track(space);
+    const launch = serviceDefinitionStore(space).read("stack-manager")?.record.value.launch;
+    check("after the requested stop, a lower ceiling applies to the replacement definition and registration", down.status === 0 && changed.status === 0 && launch?.type === "adapter" && launch.options["max-sessions"] === 4 && findMesh(space)?.maxSessions === 4, { down: shown(down), up: shown(changed) });
+    const stopped = cli(root, "down", "--yes", "--json");
+    check("the session-ceiling stack stops cleanly", stopped.status === 0 && gone(space, "stack-manager"), shown(stopped));
+  }
   const interruptRedefinition = async (space: string): Promise<{ root: string; replacement?: string }> => {
     const root = prepare(space);
     const port = await freePort();
     const first = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
     track(space);
     const retired = serviceInstances(space, "stack-manager")[0]?.name;
+    if (space === "redefdown") {
+      const same = cli(root, "up", "--max-sessions", "64", "--json");
+      check("an explicit default ceiling reuses a manager started without the flag", same.status === 0 && same.env?.outcome === "no-op" && serviceInstances(space, "stack-manager")[0]?.name === retired, shown(same));
+      const changed = cli(root, "up", "--max-sessions", "32", "--json");
+      check("changing an implicit default ceiling refuses naming 64", changed.status === 2 && changed.env?.error?.code === "LIFECYCLE_BLOCKED" && changed.env.error.message.includes("uses --max-sessions 64"), shown(changed));
+    }
     const clean = cli(root, "down", "--yes", "--json");
     check(`${space}: a clean up and down leave the manager instance a redefinition retires`, first.status === 0 && clean.status === 0 && retired !== undefined, { up: shown(first), down: shown(clean) });
     const child = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, "up", "--max-sessions", "32", "--json"], { cwd: root, env, stdio: "ignore" });
@@ -1484,6 +1613,25 @@ try {
     const spared = cli(root, "down", "--yes", "--json");
     const refused = cli(root, "down", "--with-agents", "--yes", "--json");
     check(`${space}: after a down without --with-agents it still refuses LIFECYCLE_BLOCKED`, restarted.status === 0 && spared.status === 0 && refused.status === 2 && refused.env?.error?.code === "LIFECYCLE_BLOCKED", { up: shown(restarted), down: shown(spared), refused: shown(refused) });
+  }
+
+  // 10b. Named stops of a member a clean whole-stack stop already stopped (#7111). That stop removed
+  // delivery's launch credential, and a stop reads only the adapter's declaration.
+  {
+    const space = "namedafter";
+    const root = prepare(space);
+    const port = await freePort();
+    const started = cli(root, "up", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const stopped = cli(root, "down", "--yes", "--json");
+    const creds = join(root, ".cotal", spaceSegment(space), "delivery.creds");
+    check(`${space}: the whole-stack stop removed delivery's credential`, started.status === 0 && stopped.status === 0 && gone(space, "stack-delivery") && !existsSync(creds), { up: shown(started), down: shown(stopped) });
+    const preview = cli(root, "down", "delivery", "--space", space, "--dry-run", "--json");
+    const stop = cli(root, "down", "delivery", "--space", space, "--yes", "--json");
+    const setPreview = cli(root, "down", "manager", "delivery", "--space", space, "--dry-run", "--json");
+    check(`${space}: down delivery previews and stops the stopped member, and a set preview names both, without that credential`,
+      preview.status === 0 && preview.env?.outcome === "ok" && stop.status === 0 && stop.env?.outcome === "no-op" && setPreview.status === 0 && !existsSync(creds),
+      { preview: shown(preview), stop: shown(stop), set: shown(setPreview) });
   }
 
   // 11. A first up whose broker cannot create the space's streams.
@@ -1825,6 +1973,32 @@ try {
     track(space);
     const final = cli(root, "down", "--yes", "--json");
     check(`${space}: up then down cycle the stack`, restarted.status === 0 && final.status === 0 && gone(space, "stack-broker"), { up: shown(restarted), down: shown(final) });
+  }
+  // An open broker-only stack needs no manager read, but its SIGTERM still needs it resumed.
+  if (process.platform === "linux") {
+    const space = "suspended-open", root = prepare(space), port = await freePort();
+    const started = cli(root, "up", "--open", "--no-manager", "--server", `nats://127.0.0.1:${port}`, "--json");
+    track(space);
+    const broker = runningPidOf(space, "stack-broker");
+    check("the open broker-only stack starts", started.status === 0 && broker !== null, shown(started));
+    if (broker !== null) process.kill(broker, "SIGSTOP");
+    check("its owned broker is suspended", broker !== null && await until(() => processStopped(broker), 5000));
+    const before = readStackJournal(root)?.sha256;
+    const preview = cli(root, "down", "--dry-run", "--json");
+    check("a suspended broker's dry run leaves it suspended and writes no journal",
+      preview.status === 0 && broker !== null && processStopped(broker) && readStackJournal(root)?.sha256 === before, shown(preview));
+    const unconfirmed = cli(root, "down", "--json");
+    check("down without confirmation leaves the broker suspended and writes no journal",
+      unconfirmed.status === 1 && broker !== null && processStopped(broker) && readStackJournal(root)?.sha256 === before, shown(unconfirmed));
+    const blocked = cli(root, "down", "--with-agents", "--yes", "--json");
+    check("a broker-only stop with an agent policy refuses without resuming the broker",
+      blocked.status === 2 && blocked.env?.error?.code === "LIFECYCLE_BLOCKED" && broker !== null && processStopped(broker), shown(blocked));
+    const stopped = cli(root, "down", "--yes", "--json");
+    const members = stopped.env?.result?.members as { role: string; state: string }[] | undefined;
+    check("confirmed down resumes and stops its open broker with an exact-exit receipt",
+      stopped.status === 0 && stopped.env?.outcome === "ok" && (stopped.env.result?.operation as { phase?: string } | undefined)?.phase === "completed"
+        && members?.find((member) => member.role === "broker")?.state === "stopped" && broker !== null && !alive(broker)
+        && serviceInstances(space, "stack-broker")[0]?.record.value.kernelStop?.observation === "exact-process-exit", shown(stopped));
   }
 } finally {
   for (const root of roots) cli(root, "down", "--yes", "--json");

@@ -137,11 +137,13 @@ directories owned by you or root, with no symlinks. World write refuses. Group w
 on a directory you own whose group is your user private group, the Debian and Ubuntu default, and
 that has no extended ACL. On Linux, `getent` must show that the group is your primary group, lists
 no other member and is no other account's primary group, and `getfacl` must show no ACL entries
-beyond the base ones. That account list counts only when `/etc/nsswitch.conf` names `files` and
+beyond the base ones. When `getfacl` is not installed, `python3 -I` reads the entry's extended
+attribute names without following symlinks instead. Either `system.posix_acl_access` or
+`system.posix_acl_default` means an extended ACL and refuses; unrelated attributes do not. That account list counts only when `/etc/nsswitch.conf` names `files` and
 `systemd` alone for passwd and group. A directory source such as LDAP or SSSD can list part of its
-accounts, so with one configured, group write refuses. `getent` and `getfacl` run from your PATH
-with a 2 second limit each, so the first check in a process can take a few seconds. A proven group
-holds for the life of the process. When a read is unavailable, group write refuses; install the
+accounts, so with one configured, group write refuses. `getent`, `getfacl` and `python3` run from your PATH
+with a 2 second limit and a 4 MiB output limit each, so the first check in a process can take a few seconds. A proven group
+holds for the life of the process. When neither ACL reader is installed, or the selected read fails, group write refuses; install the
 `acl` package for `getfacl`, or remove group write. Root-owned sticky temporary directories are
 allowed. New control directories, the persona catalog `.cotal/agents` included, use mode 0700,
 even with a group-writable umask. An unsafe existing path refuses before the
@@ -169,7 +171,7 @@ space's root, and the home folder, whose `.cotal` holds this machine's own recor
 folder that is, or is in, a control directory, which is a project's `.cotal` or the Cotal home,
 judged by the path given and by the path its links lead to, with `CONFLICT` and nothing written. A
 home `COTAL_HOME` redirects may hold project folders beside its records, so under it only the home
-itself and its record entries (`meshes`, `prepared`, `services` and the like) are control paths. The
+itself and its record entries (`daemon`, `meshes`, `prepared`, `services` and the like) are control paths. The
 next step names the project folder that `.cotal` belongs to. A project folder inside another project,
 outside its `.cotal`, is a project of its own. For a folder
 another space uses, the next step names creating it in another folder with `--root <dir>`, and
@@ -256,7 +258,10 @@ In open or static-auth mode, an unanswered `--server` address that differs from 
 retained by target resolution gives `TARGET_UNAVAILABLE`, naming the address that did not answer.
 Its Next names the recorded broker and says to drop `--server` to reach it. If resolution retained
 no registration, the Next says to check the address instead. The request is not sent to the
-recorded broker in its place. Target resolution given `--server` probes only records at that address,
+recorded broker in its place. A trailing slash or scheme case change in `--server` retains the
+registered space. Matching preserves the URL's transport scheme and TLS intent. If equivalent
+addresses name several registered spaces, pass `--space` to choose one.
+Target resolution given `--server` probes only records at that address,
 including when `--space` is omitted. `status --all` still checks every recorded address because
 `--all` asks for that scope. This refusal wording does not describe the infrastructure report from
 `status`.
@@ -954,6 +959,7 @@ nats-server reports a stream's write error natively only through `healthz`, whic
 system-account user, so `status` reads a bounded tail of that log instead and keeps only lines tagged
 with the running broker's process ID since its last start. When the broker logged a store write
 failure, such as a full disk, the selected space shows a `Store` row with its time, cause and file.
+This includes the broker's permission-denied warning and stream-write errors from a file-size limit.
 The broker keeps that error until it restarts, so messages sent meanwhile are not stored. The first
 Next is `cotal down`, to run once the logged cause is fixed: write access to the store again for a
 permission error, or free space for a full disk. Then `cotal up` starts the broker again. When the
@@ -1079,7 +1085,8 @@ no `--json`, `--plain` or `--all`. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
-state wins). An optional component that is not installed prints `not-installed`, which exits `0`.
+state wins). The optional dashboard prints `not-installed` when its extension is not installed,
+or `not-started` when it is installed but has no process record. Both exit `0`.
 That exit replaces the report's own, so a partial report followed by a clean pass exits 0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
@@ -1094,6 +1101,8 @@ That exit replaces the report's own, so a partial report followed by a clean pas
   broker-accepted adoption stay distinct facts. A root-only `renewal.json` left by an older build
   names no space and is never read as any space's verdict (`doctor auth` names it as a leftover).
 - **web**: `not-installed` when the dashboard extension is not installed and no PID record exists.
+  An installed dashboard with no PID record is `not-started`, which does not fail the check.
+  A dead PID with a stale record is still `absent` and exits `1`.
   Otherwise, the local PID record, then the `/api/meta` response at the address the dashboard
   recorded once it was listening, which must name the same PID. The holder of `web.pid` picks the record, as
   on the `Web process` row: a service-run dashboard's own session record, found through its web

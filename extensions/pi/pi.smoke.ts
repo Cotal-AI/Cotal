@@ -818,6 +818,60 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
   ok(host.sent.length === sentBeforeFreshInput, "fresh input cannot dispatch once the continuation budget is spent");
 }
 
+// The error Pi reported reaches the held reason and the presence line, on one bounded line: a turn
+// that fails because Pi has no model provider says so, rather than only "ended with error".
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("m1")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 200);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  startBatch(driver, host);
+  const failed = { role: "assistant", stopReason: "error", errorMessage: "Unknown provider:\n  unknown" };
+  driver.onAgentStart(ctx);
+  driver.onAgentEnd([failed], ctx);
+  ok(
+    (driver.reason ?? "").startsWith("Pi turn ended with error (Unknown provider: unknown); "),
+    "a retained turn's held reason carries Pi's error on one line",
+  );
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const retry = context();
+    driver.onAgentStart(retry);
+    driver.onAgentEnd([failed], retry);
+  }
+  await driver.flushPresence();
+  ok(
+    (driver.reason ?? "").startsWith(
+      "Pi turn ended with error (Unknown provider: unknown) after 2 automatic continuation attempts; ",
+    ),
+    "the spent-attempts held reason carries Pi's error",
+  );
+  ok(
+    /\(Unknown provider: unknown\)/.test(mesh.statuses.at(-1)?.activity ?? ""),
+    "the presence line carries Pi's error",
+  );
+
+  const longMesh = new FakeMesh();
+  longMesh.items = [item("m1")];
+  const long = new PiDriver(longMesh as unknown as MeshAgent, 200);
+  const longHost = new FakeHost();
+  const longCtx = context();
+  long.bind(longHost);
+  long.onSessionStart(longCtx);
+  startBatch(long, longHost);
+  long.onAgentStart(longCtx);
+  long.onAgentEnd([{ role: "assistant", stopReason: "error", errorMessage: `\u001b[2J${"x".repeat(5000)}` }], longCtx);
+  const longReason = long.reason ?? "";
+  ok(
+    longReason.includes("… (5004 characters)") && longReason.includes("\\u001b[2J") && !longReason.includes("\u001b"),
+    "a long error is bounded, and its control character is escaped rather than reaching the presence line",
+  );
+  long.requestShutdown();
+}
+
 // Controls that must not weaken: zero batches still returns to idle on the same error boundary.
 {
   const mesh = new FakeMesh();
@@ -993,6 +1047,59 @@ for (const assistant of [
   confirm(driver, details);
   driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
   ok(mesh.drained.join() === "slow", "late lifecycle confirmation remains associated with the original batch");
+}
+
+// A steer into a running turn starts after the running tool, so the start watchdog does not hold it.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("first")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 5);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const first = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  confirm(driver, first);
+  driver.onToolStart("bash");
+  mesh.items.push(item("steer"));
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "steer", "a message that arrives during a tool is steered into the run");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  ok(driver.state !== "held", "a steer waiting behind a running tool is not held by the start watchdog");
+  driver.onToolEnd();
+  confirm(driver, startBatch(driver, host));
+  mesh.items.push(item("later"));
+  driver.onIncoming();
+  ok(host.sent.at(-1)?.details.ids.join() === "later", "a later message still steers into the same run");
+  confirm(driver, startBatch(driver, host));
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(mesh.drained.join() === "first,steer,later", "the run's terminal boundary commits every steered batch");
+}
+
+// Without a provider response hook, a tool start confirms the answered request's batches, so the next
+// batch steers in during the run instead of waiting for it to end.
+{
+  const mesh = new FakeMesh();
+  mesh.items = [item("first")];
+  const host = new FakeHost();
+  const ctx = context();
+  const driver = new PiDriver(mesh as unknown as MeshAgent, 20);
+  driver.bind(host);
+  driver.onSessionStart(ctx);
+  const first = startBatch(driver, host);
+  driver.onAgentStart(ctx);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details: first }]);
+  mesh.items.push(item("second"));
+  driver.onIncoming();
+  ok(host.sent.length === 1, "a batch in a request with no answer yet still holds back the next one");
+  driver.onToolStart("bash");
+  ok(host.sent.at(-1)?.details.ids.join() === "second", "a tool start confirms the answered batch and the next one steers in");
+  driver.onToolEnd();
+  const second = startBatch(driver, host);
+  driver.onContext([{ role: "custom", customType: "cotal-inbox", details: second }]);
+  driver.onAgentEnd([{ role: "assistant", stopReason: "stop" }], ctx);
+  ok(mesh.drained.join() === "first,second", "the run's terminal boundary commits both batches");
 }
 
 // Presence writes complete in callback invocation order despite asynchronous operations.

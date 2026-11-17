@@ -45,8 +45,10 @@ owns the mesh endpoint for the gateway's whole life and runs `hermes gateway run
   reply waits in `cotal_inbox` like quiet ambient, and a reply that `@mention`s the seat still
   starts a turn.
 - The delivery daemon's notice about a role request the seat sent runs in its own chat,
-  `notice:anycast`, labelled `[anycast notice from the delivery daemon]`. That chat has no mesh
-  target, so the turn's answer to a notice is not sent anywhere.
+  `notice:anycast`, labelled `[anycast notice from the delivery daemon]`. Its notice that a post's
+  mention named an agent who may not read the channel runs in `notice:mention`, labelled
+  `[mention notice from the delivery daemon]`. Those chats have no mesh target, so the turn's answer
+  to a notice is not sent anywhere.
 
 The shared tool surface and inbound-message model are documented once, for all connectors: see
 [mcp-tools.md](mcp-tools.mdx) and [connect-claude.md](connect-claude.mdx).

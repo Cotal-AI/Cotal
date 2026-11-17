@@ -40,7 +40,7 @@ export function parseRemoteManagerAdminAuthorizationRequest(raw: unknown, opts: 
   };
 }
 
-export type ServeTimeManagerArgs = {
+type ServeTimeManagerArgs = {
   space: string;
   managerOwner: string;
   proofSecret: string | Uint8Array;

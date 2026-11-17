@@ -12,7 +12,7 @@ import { definitionRootMatch, execServiceDefinition, importServiceDefinition, se
 import { serviceAction } from "./service-actions.js";
 import { followRecordedLog } from "./service-log-follow.js";
 import { managerLogPath } from "../lib/manager-proc.js";
-import { serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
+import { observeServiceProcess, serviceInstanceId, serviceInstances, instanceProjection } from "../lib/service-instances.js";
 import { readLocalServiceAttempts } from "../lib/service-census.js";
 import { readOwnedLogTail, readinessAddressSurvivors, removableServiceInstances, removeServiceLogs, removeStoppedInstanceRecord, removeStoppedInstanceRecords } from "../lib/service-process.js";
 import { addedDefinitionStep, isStackMember, STACK_ADAPTER, STACK_DEFINITION } from "../lib/stack-journal.js";
@@ -28,6 +28,7 @@ export const serviceFlags = [spaceFlag, jsonFlag, plainFlag,
   { name: "yes", short: "y", type: "boolean", description: "stop/restart/remove/uninstall: confirm the exact selected local target" },
   { name: "instance", type: "string", value: "<full-id>", description: "select one full owned service instance ID, not a prefix; remove: forget only that stopped instance record" },
   { name: "new-instance", type: "boolean", description: "start: explicitly allocate another process-driver instance" },
+  { name: "no-open", type: "boolean", description: "start web: keep browser authentication manual" },
   { name: "foreground", type: "boolean", description: "start: keep the owned process in this terminal; not a detachable view" },
   { name: "with-agents", type: "boolean", description: "stop/restart: request the declared native agent-stop policy; never generic descendant signals" },
   { name: "dry-run", type: "boolean", description: "start/stop/restart: preview an effect; install/uninstall: inspect native unit impact without changing it" },
@@ -53,6 +54,7 @@ export function validateServiceArguments(args: ParsedArgs): void {
   if (args.values.yes !== undefined && !["remove", "stop", "restart", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--yes belongs to service stop, restart, remove or uninstall");
   if (args.values.instance !== undefined) { if (!["start", "stop", "restart", "status", "logs", "install", "uninstall", "remove"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--instance belongs to a service instance operation or remove"); serviceInstanceId(String(args.values.instance)); }
   if (args.values["new-instance"] && (mode !== "start" || args.values.instance !== undefined)) throw new CommandFailure("refused", "USAGE_INVALID", "--new-instance belongs to start and cannot be combined with --instance");
+  if (args.values["no-open"] !== undefined && (mode !== "start" || name !== "web")) throw new CommandFailure("refused", "USAGE_INVALID", "--no-open belongs to service start web");
   if (args.values.foreground && (mode !== "start" || args.values.json)) throw new CommandFailure("refused", "USAGE_INVALID", "--foreground belongs to start and cannot produce a JSON receipt stream");
   if (args.values["with-agents"] !== undefined && !["stop", "restart"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--with-agents belongs to service stop or restart with a declared native policy");
   if (args.values["dry-run"] && !["start", "stop", "restart", "install", "uninstall"].includes(mode)) throw new CommandFailure("refused", "USAGE_INVALID", "--dry-run belongs to service start, stop, restart, install or uninstall");
@@ -113,8 +115,19 @@ export async function service(args: ParsedArgs, commandName = "service"): Promis
     if (resolved) announcePresetTarget(resolved, space, presentation);
     // A preset name reaches the stack member built on it. Starting that member by itself launches
     // its process and leaves the space unregistered, so it refuses before the start saves or launches.
-    if ((mode === "start" || mode === "restart") && isStackMember(space, resolved?.name ?? suppliedName!))
-      throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${resolved?.name ?? suppliedName} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: { space, name: resolved?.name ?? suppliedName, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) }, remedy: "start the stack with `cotal up`" });
+    // A running member needs no start: the start reports it running, as for any running service.
+    // A restart of a running member names the stop and the `cotal up` that restart it (#7057).
+    const member = resolved?.name ?? suppliedName!;
+    if ((mode === "start" || mode === "restart") && isStackMember(space, member)) {
+      const memberTarget = { space, name: member, ...(resolved && resolved.requested !== resolved.name ? { requested: resolved.requested } : {}) };
+      // Running as recorded and as observed: a member whose stop is retained is `stopping`, and its
+      // start stays refused here.
+      const live = serviceInstances(space, member).some((row) => row.record.value.state === "running" && observeServiceProcess(row.record.value) === "running");
+      if (mode === "restart" && live)
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, which \`cotal up\` starts, and it is not restarted by itself; nothing was stopped or started`, { target: memberTarget, remedy: `stop it with \`${commandName === "manager" ? "cotal manager stop --yes" : `cotal service stop ${member} --yes`}\`, then run \`cotal up\` to start it again with its stack` });
+      if (!live)
+        throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `${member} is a member of this space's controller stack, and a start of it by itself does not register the space; nothing was started`, { target: memberTarget, remedy: "start the stack with `cotal up`" });
+    }
     if (resolved?.saved === null && mode === "start" && args.values["dry-run"] && !store.read(resolved.name)) return previewPresetStart(resolved, space, root, args, presentation, commandName);
     try { return await serviceAction(resolved ? { ...args, positionals: [mode, resolved.name] } : args, space, root, commandName, resolved); }
     catch (error) {

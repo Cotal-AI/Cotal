@@ -1441,7 +1441,7 @@ export function cotalToolSpecs(
           .array(z.string())
           .optional()
           .describe(
-            'The names of agents who must act on this post, for example `mentions: ["reviewer"]`. Only this field counts. Writing @reviewer in the text is not a mention. A mention wakes the agent even in dnd. Never mention anyone in thanks or sign-offs.',
+            'The names of agents who must act on this post, for example `mentions: ["reviewer"]`. Only this field counts. Writing @reviewer in the text is not a mention. A mention wakes the agent even in dnd. A mention does not give the post to an agent who may not read the channel; on an authenticated mesh the delivery daemon then sends you a mention notice naming them, so reach them another way. Never mention anyone in thanks or sign-offs.',
           ),
       },
       async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
@@ -1696,8 +1696,8 @@ export function cotalToolSpecs(
       title: "Cotal: silence or mute a channel",
       description:
         "Set how a single channel interrupts you: your per-channel attention, more specific than cotal_status. " +
-        "quiet = ambient stays buffered and pull-only (read it with cotal_inbox); it never enters another turn, while an @mention still wakes and injects. " +
-        "muted = you stop receiving this channel entirely, including @mentions (DMs still reach you). " +
+        "quiet = ambient stays buffered and pull-only (read it with cotal_inbox); it never enters another turn, including ambient already waiting, while an @mention still wakes and injects. " +
+        "muted = you stop receiving this channel entirely, including @mentions (DMs still reach you); what is already waiting from it stays readable with cotal_inbox and enters no turn. " +
         "normal = clear the override; the channel follows your global attention. " +
         "Runtime + per-instance: resets when your session restarts. An operator can set a lasting default in your agent file. See your current settings with cotal_channels.",
       schema: {
@@ -1776,7 +1776,7 @@ export function cotalToolSpecs(
       name: "cotal_leave",
       title: "Cotal: leave a channel",
       description:
-        "Leave a channel when you are done with its task. You stay reachable by DM and anycast.",
+        "Leave a channel when you are done with its task. You stay reachable by DM and anycast. Posts already waiting from it stop entering your turns and stay readable with cotal_inbox; a mention of you still does.",
       schema: {
         channel: z.string().describe("The channel or family to leave."),
       },
@@ -1912,6 +1912,12 @@ export function cotalToolSpecs(
           // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
           // failed launch, and the caller's retry starts a second agent on the same work.
           const pending = reply.code === "uncertain";
+          const accepted = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
+          if (!reply.ok && !pending && reply.outcome === "unknown" && accepted?.goalId && !accepted.submissionUnknown) {
+            const goalId = accepted.goalId;
+            const message = `Spawn for ${name} was accepted as goal "${goalId}", but its outcome is not known yet. It may still be starting or may already have succeeded. An identical retry in this session returns the same goal instead of submitting another spawn. Inspect 'ps'/'inspect' or read manager goal-result for this goal as the same caller.`;
+            return { text: message, structured: { status: "unknown", name, goalId, manager: reply.instanceId, message } };
+          }
           const submission = reply.data as { goalId?: string; submissionUnknown?: boolean } | undefined;
           if (!reply.ok && submission?.submissionUnknown && submission.goalId) {
             const goalId = submission.goalId;
@@ -1921,7 +1927,7 @@ export function cotalToolSpecs(
           }
           if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
           const d = reply.data as {
-            name?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
+            name?: string; goalId?: string; mode?: string; model?: string; id?: string; actor?: string; executor?: { lifecycleUid: string };
             pinAudit?: { requested: string; error: string; unreported?: true };
             once?: { goalId: string; deadlineAt?: number }; waitingFor?: string; startupNotice?: string;
           } | undefined;
@@ -1941,18 +1947,21 @@ export function cotalToolSpecs(
             const manager = d.executor?.lifecycleUid ?? reply.instanceId;
             const state = pending ? "it has not joined the mesh within its readiness window and may still be booting" : "it joined the mesh";
             const audit = unreported ? "was not reported by this manager" : "could not be audited";
-            const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""}): ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
-              `Do not spawn it again: a retry starts a second agent.`;
+            const message = `${lead} (id ${id}, manager ${manager}${mode ? `, runtime ${mode}` : ""})${d.goalId ? `, accepted goal "${d.goalId}"` : ""}: ${state}, but its model pin ${JSON.stringify(requested)} ${audit} (${error}). ` +
+              (pending ? "An identical retry in this session while it is starting returns the same goal. Inspect this seat rather than submitting different spawn options." : "Do not spawn it again: a retry starts a second agent.");
             return {
               text: message,
               structured: {
-                status: "partial", name: actual, id, manager, ...(mode ? { runtime: mode } : {}), joined: !pending,
+                status: "partial", name: actual, id, manager, goalId: d.goalId, ...(mode ? { runtime: mode } : {}), joined: !pending,
                 model: { requested, audited: false, reported: !unreported, error }, message,
               },
             };
           }
-          if (pending)
-            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${shownSpawnName(actual, seatId)}, and cotal_despawn it if it never joins.`);
+          if (pending) {
+            const goalId = d?.goalId;
+            const message = `${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}): accepted${goalId ? ` as goal "${goalId}"` : ""}, but its readiness outcome is not known yet. It may still be starting. An identical retry by this caller while it is starting returns this same goal, not another seat. Watch cotal_roster for ${shownSpawnName(actual, seatId)} or inspect it before deciding what to do.`;
+            return { text: message, structured: { status: "starting", name: actual, goalId, id: seatId, manager: reply.instanceId, message } };
+          }
           // A once spawn names its task, so the spawner can read how it ended.
           const task = d?.once
             ? ` Its task is goal ${JSON.stringify(d.once.goalId)}, ${d.once.deadlineAt !== undefined ? `with a deadline of ${new Date(d.once.deadlineAt).toISOString()}` : "with no deadline"}; it is stopped when the task ends. Read the outcome with cotal_invoke(endpoint="manager", command="goal-result", args={"goalId":${JSON.stringify(d.once.goalId)}}).`
@@ -2421,7 +2430,7 @@ export function cotalToolSpecs(
       name: "cotal_reconnect",
       title: "Cotal: reconnect to the mesh",
       description:
-        "Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status. If channel drop tracking is exhausted, reports transport recovery with persistent channel degradation and the need to restart the session. Direct messages, anycast and fresh unmuted mentions remain available.",
+        "Tear down and rebuild this session's mesh connection in-process: the manual recovery path when the connection has wedged (the counterpart to Claude Code's /mcp reconnect, and a complement to the automatic self-heal). Zero-argument and local only; it does not ride the mesh link. Returns a one-line status. If channel drop tracking is exhausted, reports transport recovery with persistent channel degradation and the need to restart the session. Direct messages, anycast and fresh unmuted mentions remain available. On an authenticated mesh, if this session's direct-message inbox is gone from the broker, reports that reconnecting cannot restore it and that restarting or respawning the session does.",
       async run(agent) {
         const r = await agent.reconnect();
         return r.ok ? ok(r.message) : err(r.message);

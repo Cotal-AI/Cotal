@@ -14,7 +14,7 @@ export function storedSessionsPath(jcodeHome: string): string {
   return join(jcodeHome, "sessions");
 }
 
-export type StoredSessionsInspection =
+type StoredSessionsInspection =
   | { kind: "absent"; path: string }
   | { kind: "empty-directory"; path: string }
   | { kind: "populated"; path: string; entries: number }

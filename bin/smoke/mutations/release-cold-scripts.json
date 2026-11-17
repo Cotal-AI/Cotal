@@ -14,15 +14,15 @@
     {
       "name": "Cold candidate reintroduces a tar inspection subprocess",
       "file": "scripts/pack-cold-candidate.mjs",
-      "find": "    const files = {};",
-      "replace": "    const files = {};\n    exec(\"tar\", [\"-tf\", archive]);",
+      "find": "    const { metadata: info, files } = inspectCandidateArchive(archive);",
+      "replace": "    exec(\"tar\", [\"-tf\", archive]);\n    const { metadata: info, files } = inspectCandidateArchive(archive);",
       "expectRed": "FAIL cold candidate inspects archives without tar subprocesses",
       "cell": "cold candidate inspects archives without tar subprocesses"
     },
     {
       "name": "Cold candidate accepts repeated archive entries",
-      "file": "scripts/pack-cold-candidate.mjs",
-      "find": "      if (Object.hasOwn(files, name)) throw new Error(`cold candidate has a repeated archive entry: ${entry.path}`);\n",
+      "file": "scripts/inspect-candidate-archive.mjs",
+      "find": "    if (!name || files.has(name)) throw new Error(`candidate has a repeated archive entry: ${entry.path}`);\n",
       "replace": "",
       "expectRed": "FAIL cold candidate refuses repeated archive entries",
       "cell": "cold candidate refuses repeated archive entries"

@@ -97,7 +97,7 @@ import {
   renderOnceTask,
   shownSpawner,
 } from "@cotal-ai/core";
-import { loadLaunchPersonaFile, PersonaSourceError } from "@cotal-ai/workspace";
+import { loadLaunchPersonaFile, PersonaSourceError, retainConnectorSeat } from "@cotal-ai/workspace";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DEFAULT_SEAT_CAP, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, probeLiveness, remintDaemonCreds, resolveAgentType, resolveOnPath, runtimeInstallHint, createManagerInstanceIdentity, SEAT_CAP_UNLIMITED, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type ManagerInstanceIdentity, type MeshEntry, type RenewalRecord, type SeatCap, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, EpCapability, PersonaEndpoint, RunAdmission, RunRevocation, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DelegatedGrant, DeliveryLeaseInfo, EpCaller, EpErrorCode, EpErrorDetail, GrantOverreach, InlinePersona, IssuedSubjectPermissions, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeProvider, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth, StartupOutcome, UserAuthLaunch } from "@cotal-ai/core";
 import {
@@ -157,7 +157,7 @@ import {
 // The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
-import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
+import { ManagerSessionPlane, openSessionLedgerKv, type AttachEndReason, type SessionServing } from "./session/index.js";
 // The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
@@ -370,7 +370,9 @@ export const RUNTIME_NO_TERMINAL_DETAIL = "ai.cotal.manager.runtime-no-terminal"
  * covered by the caller invoking `renewDaemonCreds` once synchronously before starting the timer,
  * so no separate floor is needed. The pass is idempotent, since `renewDaemonCreds` no-ops each
  * credential when its state is `healthy`, so a tick that lands before the window costs one health
- * check per owner. */
+ * check per owner. A managed seat's credential is judged as of the next tick instead, because the
+ * seat re-reads its file only once a minute and nothing pushes the renewal to it: a tick that
+ * lands in the window's last minute can come too late for the seat to adopt it. */
 export function credRenewIntervalMs(ttlSeconds: number): number {
   return Math.max(1, Math.floor((ttlSeconds / 4) * 1000));
 }
@@ -764,7 +766,7 @@ export type ManagerMaintenanceState = "active" | "preserving" | "preserved";
  *  inside the cause so the reap line can say who asked, not just that a stop happened: on a shared
  *  host several principals hold stop authority, and `u_alice.actor`'s despawn must not read
  *  identically to `u_bob.actor`'s. */
-export type FreeSlotStopCause =
+type FreeSlotStopCause =
   | { kind: "stopped-requested"; requester: string }
   | { kind: "stopped-self" }
   | { kind: "stopped-reap"; parent: string }
@@ -805,6 +807,24 @@ const FREE_SLOT_CAUSE_TEXT: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, st
   "resume-custody-unrecorded": "this manager stopped it: its custody reference could not be recorded on resume",
   "supervise-record-failed": "this manager stopped it: its supervise policy could not be recorded for a manager restart",
   "inline-snapshot-changed": "this manager retired it instead of restarting it: its inline persona snapshot changed after launch",
+};
+
+/** The SPEC 13.6 end reason a live attach session gets when this cause frees its seat. The causes
+ *  that free the slot in the same step that saw the seat's own process exit report `process-exit`.
+ *  A failed recovery frees it later, after its own stop, so it reports `target-despawn` with every
+ *  manager stop. */
+const FREE_SLOT_ATTACH_END: Record<Exclude<FreeSlotCause, FreeSlotStopCause>, AttachEndReason> = {
+  "process-exit": "process-exit",
+  "pi-crash-loop": "process-exit",
+  "supervise-crash-loop": "process-exit",
+  "inline-snapshot-changed": "process-exit",
+  "pi-recovery-failed": "target-despawn",
+  "supervise-recovery-failed": "target-despawn",
+  "session-bind-failed": "target-despawn",
+  "resume-session-rebind-failed": "target-despawn",
+  "carried-fork-refused": "target-despawn",
+  "resume-custody-unrecorded": "target-despawn",
+  "supervise-record-failed": "target-despawn",
 };
 
 /** The stop family's sentences — the same job {@link FREE_SLOT_CAUSE_TEXT} does for the string
@@ -854,7 +874,7 @@ export type ManagerResumeIdentity =
 
 /** A resumed seat's fork provenance: the session it forked, that session's title when it has one,
  *  and the SHA-256 the connector took over the source transcript it read. */
-export interface ForkProvenance {
+interface ForkProvenance {
   source: string;
   title?: string;
   transcriptSha256: string;
@@ -1332,6 +1352,10 @@ interface ManagedAgent {
    *  control ops refuse and no later renewal is admitted. A renewal already admitted drains before
    *  the durable terminal begins, so its row and material are included in revocation and cleanup. */
   terminalizing?: boolean;
+  /** Why this manager stopped the seat, set with {@link terminalizing} by the first stop. The exit
+   *  watcher frees the slot with it, so an exit the stop caused is not logged or ended as the
+   *  seat's own. */
+  stopCause?: FreeSlotCause;
   /** Set while the manager has logged this seat off the mesh with its slot still held (#1208);
    *  cleared when the seat is logged back on. */
   offMesh?: boolean;
@@ -1457,7 +1481,7 @@ export interface SpawnAcceptance {
 /** The `turn` acceptance floor: the resolved seat incarnation the payload is addressed to, the
  *  goal coordinates the caller follows to the terminal, and the ABSOLUTE deadline the goal-bound
  *  hold is armed at — a follower bounds its wait on `deadlineAt`, never a relative window. */
-export interface TurnAcceptance {
+interface TurnAcceptance {
   name: string;
   owner: string;
   actor: string;
@@ -2643,7 +2667,8 @@ export class Manager {
           }
         } catch {}
       }
-      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), credRenewIntervalMs(standingTtl));
+      // A refused family needs another pass inside the final quarter of its lifetime.
+      const intervalMs = Math.min(credRenewIntervalMs(5 * 60), Math.max(1, Math.floor(standingTtl * 1000 / 8)));
       this.resumeCredRenewal = () => {
         if (this.credRenewTimer || this.leaseStopping) return;
         this.credRenewTimer = setInterval(async () => {
@@ -3004,11 +3029,16 @@ export class Manager {
   }
 
   /** #2073: the shared bounded-retry shape for a closed standing connection: wait out each of
-   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. A stop landing while
-   *  this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
-  private async boundedReconnect(label: string, attempt: () => Promise<boolean>): Promise<boolean> {
+   *  {@link STATIC_RECONCILE_RETRY_DELAYS_MS}, trying `attempt` after each. Waiting does not repair
+   *  two closes, so they skip the first delay. One that closes while an all-duty renewal is in flight,
+   *  as one the broker expires just before adoption, tries when that renewal adopts. One whose
+   *  credential has `expired` tries at once, because its attempt renews the credential. A stop landing
+   *  while this loop waits is not a fault this loop reports (the caller re-checks `leaseStopping`). */
+  private async boundedReconnect(label: string, attempt: () => Promise<boolean>, expired = false): Promise<boolean> {
+    let first = this.remoteBundleAdoption ?? (expired ? Promise.resolve() : undefined);
     for (const delayMs of STATIC_RECONCILE_RETRY_DELAYS_MS) {
-      await new Promise((r) => setTimeout(r, delayMs));
+      await (first ?? new Promise((r) => setTimeout(r, delayMs)));
+      first = undefined;
       if (this.leaseStopping) return true;
       try {
         if (await attempt()) return true;
@@ -3081,6 +3111,14 @@ export class Manager {
       // incarnation; a copied credential cannot drive this and is stranded at its own row's TTL).
       // Same class-2 mechanics as the daemon creds: re-sign the file for the SAME nkey; the
       // agent endpoint's 75% source re-read adopts it.
+      //
+      // Each credential is judged as of the NEXT pass, so one whose renewal point falls before it
+      // is re-signed now, ahead of the endpoint's re-read. Judged as of now, a credential whose
+      // renewal point lands just after a pass waited a whole interval: the endpoint warned every
+      // minute that the file still held the old generation, and when the next pass came in the
+      // credential's last minute, the endpoint's one-minute retry could miss it and the connection
+      // expired.
+      const nextPassSec = Math.floor(Date.now() / 1000) + Math.ceil(credRenewIntervalMs(STANDING_RENEWABLE_TTL_SEC) / 1000);
       if (!this.userMode) {
         for (const a of [...this.agents.values()]) {
           // The `terminalizing` test here is an OPTIMISATION, NOT THE GUARD. There are awaits below
@@ -3093,7 +3131,7 @@ export class Manager {
           try {
             const stored = await this.secrets.get(agentSecretKeyForFile(a.secretPaths.creds, this.space));
             if (stored === undefined) continue; // no materialized cred (never minted here) - nothing to renew
-            const health = inspectCredHealth(stored);
+            const health = inspectCredHealth(stored, nextPassSec);
             if (health.state === "healthy") continue;
             if (health.state === "unbounded" || health.state === "unreadable") {
               console.error(`! managed cred renewal ${a.name}: credential is ${health.state}${health.error ? ` (${health.error})` : ""} - not renewed (a pre-TTL credential stays as minted until respawn)`);
@@ -3775,7 +3813,7 @@ export class Manager {
         this.agents.delete(a.name);
         this.dropSeatRecord(a);
       }
-      const refused = this.stopHandle(a, true);
+      const refused = this.stopHandle(a, true, { kind: "stopped-shutdown" });
       if (refused === undefined) stopped.push(a);
       else failures.push(`${a.name}: stop failed: ${refused}`);
     }
@@ -4804,7 +4842,7 @@ export class Manager {
     // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
     // only — the action model gives failures a typed channel.
     const unwrap = (r: ControlReply): unknown => {
-      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details);
+      if (!r.ok) throw new EpEnvelopeError((r.code ?? "failed-precondition") as EpErrorCode, r.error ?? "the operation failed", r.details, r.outcome);
       return r.data;
     };
     // The admin-family serve gate: every `manager.admin`-class
@@ -5193,7 +5231,7 @@ export class Manager {
     if (process.platform === "win32" && target.handle.kind === "pty") {
       return this.stopWindowsSeat(target, graceful, true, { kind: "stopped-self" }).then(() => ({ ok: true, data: { name: target.name, stopped: true, graceful } }));
     }
-    this.stopHandle(target, graceful);
+    this.stopHandle(target, graceful, { kind: "stopped-self" });
     this.trackStoppedHandle(target, true, { kind: "stopped-self" });
     return { ok: true, data: { name: target.name, stopped: true, graceful } };
   }
@@ -5215,11 +5253,12 @@ export class Manager {
    *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged and
    *  returned: a caller that must prove exit (shutdown, a failed resume) reports it as the cause at
    *  once instead of waiting out a stop the runtime already refused. */
-  private stopHandle(a: ManagedAgent, graceful: boolean): string | undefined {
+  private stopHandle(a: ManagedAgent, graceful: boolean, cause: FreeSlotCause): string | undefined {
     // The TERMINALIZING latch: flipped SYNCHRONOUSLY, before any await anywhere on
     // this stop path — later renewals refuse, while an already-admitted renewal drains before the
     // durable terminal begins.
     a.terminalizing = true;
+    a.stopCause ??= cause;
     try {
       // A delegated seat's close runs only inside its retirement, after the host revoked its grant,
       // so stopping it starts that retirement. Every exit wait on a stop path then settles on that
@@ -5239,7 +5278,7 @@ export class Manager {
   /** Windows PTY stops release their name only after the captured process cohort and PTY exited. */
   private async stopWindowsSeat(a: ManagedAgent, graceful: boolean, floor: boolean, cause: FreeSlotStopCause): Promise<void> {
     if (a.once) a.once.stopReason ??= onceStopReason(cause);
-    const failure = this.stopHandle(a, graceful);
+    const failure = this.stopHandle(a, graceful, cause);
     this.lifecycleInFlight++;
     try {
       if (failure !== undefined) throw new Error(failure);
@@ -5718,10 +5757,10 @@ export class Manager {
     // with nothing left for that manager to adopt.
     if (!this.releasedSeatPending(a)) this.dropSeatRecord(a);
     if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
-    // End any live §13.6 attach session bound to THIS incarnation with the honest
-    // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
-    // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
-    this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, "target-despawn");
+    // End any live §13.6 attach session bound to THIS incarnation with the reason its cause names.
+    // Fires once per agent on every free path (despawn / self-stop / reap / exit) via the `agents`
+    // guard above; a no-op when no plane or no live session for the target.
+    this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, typeof cause === "string" ? FREE_SLOT_ATTACH_END[cause] : "target-despawn");
     // The turn relay's reap hook: every pending turn addressed to THIS incarnation is stamped
     // with the death, and its deadline terminal carries it as `agentDownAt`. The addressee is gone
     // and no successor may answer for it; the terminal is still the deadline's, not a new reason.
@@ -6197,8 +6236,9 @@ export class Manager {
     for (const child of [...this.agents.values()]) {
       if (child.spawner !== parentId) continue;
       this.reapChildrenOf(this.managedPrincipal(child));
-      this.stopHandle(child, false);
-      this.trackStoppedHandle(child, true, { kind: "stopped-reap", parent: parentId }, true);
+      const cause = { kind: "stopped-reap", parent: parentId } as const;
+      this.stopHandle(child, false, cause);
+      this.trackStoppedHandle(child, true, cause, true);
     }
   }
 
@@ -6305,7 +6345,7 @@ export class Manager {
     const refused = await this.refuseCarriedFork(a, timeoutMs);
     if (refused === undefined || a.terminalizing || a.handle.status() === "exited") return;
     console.error(`! ${refused}; stopping it`);
-    this.stopHandle(a, false);
+    this.stopHandle(a, false, "carried-fork-refused");
     this.trackStoppedHandle(a, true, "carried-fork-refused");
   }
 
@@ -6539,10 +6579,11 @@ export class Manager {
     })();
   }
 
-  /** A managed agent's process exited on its own (crash, /exit, finished). Continuation-capable Pi
-   *  seats restart in place after readiness; a spawn carrying `supervise` restarts any connector
-   *  the same way, without classifying a session-state file. Every other exit follows the existing
-   *  terminal path. */
+  /** A managed agent's process exited: on its own (crash, /exit, finished), or after a stop this
+   *  manager started, whose recorded cause then frees the slot. Continuation-capable Pi seats
+   *  restart in place after readiness; a spawn carrying `supervise` restarts any connector the same
+   *  way, without classifying a session-state file. Every other exit follows the existing terminal
+   *  path. */
   private onAgentExit(a: ManagedAgent): void {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
@@ -6567,7 +6608,7 @@ export class Manager {
         console.error(`! ${a.name}: cannot classify Pi process exit for recovery: ${rejectionText(error)} - retiring the seat`);
       }
     }
-    this.freeSlot(a, true, "process-exit");
+    this.freeSlot(a, true, a.stopCause ?? "process-exit");
     this.reapChildrenOf(this.managedPrincipal(a));
   }
 
@@ -7376,6 +7417,15 @@ export class Manager {
           `Drop these from the persona or the spawn, or have the operator widen the spawner's own persona.`;
   }
 
+  /** Ordinary static control seats can read their holding instance. A run's recorded ceiling is
+   *  authoritative, so its helpers receive no additional instance reads. */
+  private managedStaticInstanceReads(capabilities: readonly string[] | undefined): EpCapability[] {
+    if (this.meshMode !== "static" || !this.managerInstanceId || !capabilities?.some(c => c === "spawn" || c === "run" || c === "admin")) return [];
+    return ["describe", "inspect"].map(command => ({
+      endpoint: MANAGER_ENDPOINT, command, instanceId: this.managerInstanceId, instanceOnly: true,
+    }));
+  }
+
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
@@ -7640,6 +7690,11 @@ export class Manager {
     if (this.eventPayloadsWithheld && opts.eventPayloads === true)
       return { ok: false, error: "space policy withholds event payloads" };
     const eventPayloads = !this.eventPayloadsWithheld && (opts.eventPayloads ?? def?.eventPayloads) !== false;
+    if (run === undefined) {
+      const reads = this.managedStaticInstanceReads(capabilities);
+      if (bound.kind === "exempt" || (bound.kind === "bounded" && !grantOverreach(this.space, bound.caller, bound.ceiling, { endpoints: reads }).length))
+        endpoints.push(...reads);
+    }
     // THE DELEGATION BOUND, on the grant as it will be minted: every channel and capability the
     // helper gets, from the persona, the raw overrides and the `callerAcl` default alike, and its own
     // event plane, so no door reaches the mint around it. Before any reserve or mint, so a refusal
@@ -8153,10 +8208,12 @@ export class Manager {
         if (this.delegatedLaunched.has(lifecycleUid))
           throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${runtime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
+        const holder = retainConnectorSeat(this.managerInstanceId, name);
         handle = runtime.spawnDelegated(
           { agent, persona: readFileSync(configPath, "utf8"), managerInstanceId: this.managerInstanceId, role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events, eventPayloads },
           handoff,
         );
+        this.watchConnectorHolder(handle, holder);
       } else {
         if (carried) {
           seatHome = join(this.workspaceRoot, ".cotal", "seat-homes", lifecycleUid);
@@ -8337,7 +8394,7 @@ export class Manager {
         const refused = await this.refuseCarriedFork(managed, readinessTimeoutMs);
         if (refused !== undefined && managed.terminalizing) { hooks?.onTerminalDeferred?.(); return { ok: false, error: refused }; }
         if (refused !== undefined) {
-          this.stopHandle(managed, false);
+          this.stopHandle(managed, false, "carried-fork-refused");
           this.trackStoppedHandle(managed, true, "carried-fork-refused");
           await hooks?.onOutcome?.({ kind: "failed", data: { error: refused } });
           return { ok: false, error: refused };
@@ -8360,7 +8417,7 @@ export class Manager {
             }
           } catch (error) {
             const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${rejectionText(error)}`;
-            this.stopHandle(managed, false);
+            this.stopHandle(managed, false, "session-bind-failed");
             this.trackStoppedHandle(managed, true, "session-bind-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
@@ -8373,7 +8430,7 @@ export class Manager {
             this.recordSeat(managed);
           } catch (error) {
             const detail = `${managed.name} joined, but supervise cannot cover a manager restart for it: ${rejectionText(error)}`;
-            this.stopHandle(managed, false);
+            this.stopHandle(managed, false, "supervise-record-failed");
             this.trackStoppedHandle(managed, true, "supervise-record-failed");
             await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
             return { ok: false, error: detail };
@@ -9108,7 +9165,7 @@ export class Manager {
    *  would reap it: it is freed only once its exit is proved, and otherwise stays managed until it
    *  exits or the manager stops it. */
   private async stopFailedResume(managed: ManagedAgent, cause: FreeSlotCause, detail: string): Promise<ControlReply> {
-    const refused = this.stopHandle(managed, false);
+    const refused = this.stopHandle(managed, false, cause);
     const unproven = refused === undefined
       ? await this.awaitHandleExit(managed.handle).then(() => undefined, rejectionText)
       : `stop failed: ${refused}`;
@@ -9492,8 +9549,9 @@ export class Manager {
         return { ok: true, data: { name: a.name, stopped: true, graceful } };
       });
     }
-    this.stopHandle(a, graceful);
-    this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
+    const cause = { kind: "stopped-requested", requester: caller } as const;
+    this.stopHandle(a, graceful, cause);
+    this.trackStoppedHandle(a, trackNonAdmin, cause);
     void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // Cancel a live spawn goal
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }
@@ -10253,7 +10311,7 @@ export class Manager {
       await this.dialGoalWriter(gw);
       console.error("manager goal-writer re-dialed");
       return true;
-    });
+    }, inspectCredHealth(gw?.creds ?? "").state === "expired");
     if (this.leaseStopping || recovered) return;
     console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
   }
@@ -10364,7 +10422,7 @@ export class Manager {
       await this.dialSessionLedgerConnection(sw, identity);
       console.error("manager session-ledger re-dialed");
       return true;
-    });
+    }, inspectCredHealth(sw?.creds ?? "").state === "expired");
     if (this.leaseStopping || recovered) return;
     console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
   }
@@ -11792,8 +11850,9 @@ export class Manager {
    *  stop frees the slot first, so this stop reaps them itself. */
   private stopOnceSeat(a: ManagedAgent, reason: string): void {
     this.reapChildrenOf(this.managedPrincipal(a));
-    this.stopHandle(a, true);
-    this.trackStoppedHandle(a, false, { kind: "stopped-once", reason });
+    const cause = { kind: "stopped-once", reason } as const;
+    this.stopHandle(a, true, cause);
+    this.trackStoppedHandle(a, false, cause);
     void this.cancelAgentGoal(a.name, "graceful");
   }
 
@@ -12039,7 +12098,9 @@ export class Manager {
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   private async spawnCustodied(runtime: Runtime, name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
+    const holder = retainConnectorSeat(this.managerInstanceId, name);
     const handle = runtime.spawn(name, spec, cwd, reserved);
+    this.watchConnectorHolder(handle, holder);
     if (reserved === undefined) return handle;
     const got = handle.reference;
     if (got?.kind === reserved.kind && got.id === reserved.id) return handle;
@@ -12072,6 +12133,15 @@ export class Manager {
       `runtime "${runtime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
         `${got ? `${got.kind}:${got.id}` : "a handle with no reference"}; the recorded reference would address no seat, so ${disposal}`,
     );
+  }
+
+  /** Keep launch provenance independent of status and runtime wire contracts. */
+  private watchConnectorHolder(handle: AgentHandle, holder: ReturnType<typeof retainConnectorSeat>): void {
+    if (!holder.active) return;
+    holder.launched(handle.pid);
+    // A released handle may outlive its Manager. Only an authoritative exit removes
+    // identity-less holders, never a release or a failed stop request.
+    watchProvedExit(handle, () => holder.ended(), () => true);
   }
 
   /** Persist what a successor needs to take this seat back if this process ends without stopping
@@ -12650,6 +12720,17 @@ export class Manager {
     // ceiling, which `confirm` verifies against the recorded evidence before the ledger append. A
     // changed ceiling is refused there: that is a fresh issuance on a new connection, never a renewal.
     const issued = a.issued;
+    const endpoints = lowerPersonaEndpoints(a.launch.endpoints);
+    const reads = this.managedStaticInstanceReads(a.launch.capabilities);
+    if (reads.length) {
+      // Resolve this incarnation's original issuance, not its current spawner or a reconstructed
+      // run admission. Old seats and run helpers keep the exact ceiling they were minted with.
+      const caller = { owner: DEV_OWNER, actor: a.id, uid: a.lifecycleUid, generation: issued.generation };
+      const { evidence } = await withIssuerSession({ servers: this.servers ?? DEFAULT_SERVER, space: this.space, auth: this.auth!, tls: false }, (s) =>
+        s.store.resolve({ space: this.space, ...caller }, s.sourceIsLive));
+      if (!grantOverreach(this.space, caller, evidence.permissions, { endpoints: reads }).length)
+        endpoints.push(...reads);
+    }
     const creds = await this.withIssuer((i) =>
       mintCreds(this.auth!, { id: a.id, seed: a.seed! }, "agent", {
         eventPayloads: this.eventPayloadsWithheld ? false : a.launch.eventPayloads,
@@ -12657,7 +12738,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         role: a.role,
         capabilities: a.launch.capabilities,
-        ...(a.launch.endpoints?.length ? { endpointCapabilities: lowerPersonaEndpoints(a.launch.endpoints) } : {}),
+        ...(endpoints.length ? { endpointCapabilities: endpoints } : {}),
         lifecycleUid: a.lifecycleUid,
         expiresAt: exp,
         issued,
@@ -13208,7 +13289,11 @@ export class Manager {
         }
         if (!admin && existing.owner !== caller) {
           const owner = existing.owner ? `owned by ${existing.owner}` : "operator-owned (legacy file - no agent owner)";
-          return { reply: { ok: false, error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can` } };
+          return { reply: {
+            ok: false, code: "permission-denied", outcome: "not-executed",
+            error: `not authorized to redefine ${name}: ${owner}; only its owner or an operator can`,
+            details: [{ kind: "ai.cotal.persona-ownership-refused", operatorOwned: existing.owner === undefined }],
+          } };
         }
       }
       try {

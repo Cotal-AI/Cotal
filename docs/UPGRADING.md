@@ -1,5 +1,38 @@
 # Upgrading a running deployment
 
+## Durable channel leave after 0.166.0
+
+From 0.166.0 a channel leave retires every open durable membership the principal holds on that
+channel, including rows an earlier lifecycle wrote. The agent asks the delivery daemon for those
+rows, and only a daemon at 0.166.0 or later reports each row's lifecycle.
+
+### What changes for you
+
+- Restart the delivery daemon at this version along with the clients. `cotal up` runs it.
+- Until then, an agent on the new connector that holds any durable membership cannot leave a
+  durable channel. The leave reports
+  `the delivery daemon predates lifecycle-aware membership discovery`, and the channel stays
+  joined with its memberships open.
+
+## Harness permission requests withdrawn
+
+Releases 0.165.0 to 0.165.2 let a Claude Code connector hold a permission prompt for its owner
+to answer from another session. This release removes that. Claude Code's own dialog is again the
+only way to answer a prompt.
+
+The removal reaches an agent once its connector runs this release. `cotal update` replaces the
+installed files. A running Claude session keeps the plugin it already loaded, so reload plugins
+or reopen the session. Until then the session runs the 0.165 connector. No shipped command or
+dashboard answered a held prompt in 0.165, and none does now. Claude Code's own dialog answers
+the prompt as before.
+
+A space set up on 0.165 keeps its `cotal_permissions_<space>` bucket. This release neither reads
+nor writes it, and each record ages out 30 days after it was written.
+
+The Manager cluster advances to revision 51. A `status.connectors` row no longer carries
+`permissionRequests`, and the closed status schema rejects a row that does. Upgrade Managers and
+their callers together. `@cotal-ai/core` no longer exports `./permissions`.
+
 ## Tool payload publication
 
 Upgrading starts publishing mapped tool inputs and results by default for Claude and Jcode seats
@@ -76,7 +109,8 @@ root runs `cotal update --self` there, the other accounts can no longer start `c
 reports that permission is denied, or the command ends with an access error for a file under
 `lib/.cotal-generations`. Root installs the current version once with
 `npm install -g cotal-ai@latest`. From 0.164.18 the update keeps such an installation readable by
-the accounts that run it.
+the accounts that run it. A manually reinstalled CLI starts from its installed files when an old
+root-owned generation store is unreadable. It leaves that store and its descriptors untouched.
 
 A machine that reached 0.164.16 or 0.164.17 through `cotal update --self` has a second fault. Its
 daemon's automatic update ends with `staged update requires an installed npm or pnpm package`, and
@@ -84,17 +118,14 @@ daemon's automatic update ends with `staged update requires an installed npm or 
 there too, with the same two commands. From 0.164.18 the daemon starts its updater at the installed
 command and automatic updates continue.
 
-## Memory-backed derived membership after 0.163.0
+## Memory-backed derived membership after 0.163.4
 
 New spaces create `KV_cotal_membership_<space>` in Memory because the feed is rebuilt from the
-broker connection view and durable members registry. Existing File-backed membership stores are not
-deleted during an ordinary upgrade. From that deployment's project root, explicitly name its
-recorded space when stopping the stack and converting the derived feed:
-
-```bash
-cotal down --space <space> --yes
-cotal up --space <space> --recreate-membership-store
-```
+broker connection view and durable members registry. When plain `cotal up` starts its own local
+broker for a stopped stack, it converts a legacy File-backed membership feed before starting the
+space's services and prints one conversion line. Durable members, channel metadata and message
+history are kept. A running stack, remote broker or adopted listener is not converted automatically.
+Stop the stack before using the still-supported `cotal up --recreate-membership-store` flag.
 
 The command uses one exact short-lived credential to inspect and delete only the membership stream,
 then the ordinary provisioner creates and verifies the empty Memory replacement. Delivery and

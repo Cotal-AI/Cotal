@@ -96,6 +96,20 @@ const liveProbe: Connector = {
   buildLaunch: (o: LaunchOpts): LaunchSpec => { captured.push(o); return { command: "/bin/true", args: [], env: {} }; },
 };
 registry.register(liveProbe);
+const binaryProbe: Connector = { ...liveProbe, name: "fg-probe-binary", requires: ["opencode"] };
+registry.register(binaryProbe);
+// A probe whose child ends the way `--opt` says: `exit <code>`, or killed by `<signal>` (#7043).
+const exitProbe: Connector = {
+  kind: "connector",
+  name: "fg-probe-exit",
+  requires: [],
+  buildLaunch: (o: LaunchOpts): LaunchSpec => {
+    const signal = o.launchOptions?.signal;
+    const finish = signal ? `kill -${Number(signal)} $$` : `exit ${Number(o.launchOptions?.code ?? 0)}`;
+    return { command: "/bin/sh", args: ["-c", finish], env: {} };
+  },
+};
+registry.register(exitProbe);
 
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 const persona = join(root, ".cotal", "agents", "probe.md");
@@ -185,6 +199,25 @@ const openRun = (extra: string[]): Promise<{ opts?: LaunchOpts; exited?: number;
 console.log("cotal spawn (foreground): the launch bag an armed session needs");
 
 try {
+  {
+    const path = process.env.PATH;
+    const pin = process.env.COTAL_OPENCODE_BIN;
+    process.env.PATH = "";
+    delete process.env.COTAL_OPENCODE_BIN;
+    try {
+      const missing = await openRun(["--agent", "fg-probe-binary"]);
+      check("a missing harness refuses before launch construction", missing.opts === undefined && missing.exited === 2, missing.stderr);
+      process.env.COTAL_OPENCODE_BIN = process.execPath;
+      const pinned = await openRun(["--agent", "fg-probe-binary"]);
+      check("a valid executable pin outside PATH still launches", pinned.opts !== undefined && pinned.exited === undefined, pinned.stderr);
+      process.env.COTAL_OPENCODE_BIN = join(root, "missing-opencode");
+      const invalid = await openRun(["--agent", "fg-probe-binary"]);
+      check("an invalid executable pin refuses before launch construction", invalid.opts === undefined && invalid.exited === 2, invalid.stderr);
+    } finally {
+      if (path === undefined) delete process.env.PATH; else process.env.PATH = path;
+      if (pin === undefined) delete process.env.COTAL_OPENCODE_BIN; else process.env.COTAL_OPENCODE_BIN = pin;
+    }
+  }
   // CONTROL FIRST. Without it every assertion below could be passing because the launch never
   // reached the connector at all, which is exactly how the first draft of this suite fooled itself.
   {
@@ -242,6 +275,24 @@ try {
     check("foreground --share-tools none reaches the connector as an exclusive empty selection", none.opts?.mcpServersExclusive === true && Object.keys(none.opts.mcpServers ?? {}).length === 0, none.stderr.slice(0, 300));
     const named = await openRun(["--agent", "fg-probe-emitter", "--share-tools", "alpha"]);
     check("foreground named sharing reaches the connector as an exclusive selection", named.opts?.mcpServersExclusive === true && Object.keys(named.opts.mcpServers ?? {}).join() === "alpha", named.stderr.slice(0, 300));
+  }
+
+  // ── #7043: the foreground exit status is the application's ──────────────────────────────────────
+  {
+    const exitOf = async (opt: string): Promise<number | string | undefined> => {
+      process.exitCode = undefined;
+      await openRun(["--agent", "fg-probe-exit", "--no-events", "--opt", opt]);
+      const code = process.exitCode;
+      process.exitCode = undefined;
+      return code;
+    };
+    // CONTROL: an ordinary exit already came through, so a cell below that goes red is about the signal.
+    const ordinary = await exitOf("code=7");
+    check("CONTROL: an application's own exit code is the spawn's exit code", ordinary === 7, ordinary);
+    const term = await exitOf("signal=15");
+    check("an application killed by SIGTERM exits 143, not 0", term === 143, term);
+    const kill = await exitOf("signal=9");
+    check("an application killed by SIGKILL exits 137, not 0", kill === 137, kill);
   }
 
   // ── #1837: the user-auth departure sentence names its own arm's cleanup ────────────────────────
@@ -320,7 +371,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 17;
+const EXPECTED = 23;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

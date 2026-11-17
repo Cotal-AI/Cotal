@@ -1,5 +1,37 @@
 # @cotal-ai/linear
 
+## 0.166.1
+
+No changes in this release.
+
+## 0.166.0
+
+### Patch Changes
+
+- 9b75f60: Keep unused dashboard and Linear implementation helpers private without changing the public package APIs.
+
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+No changes in this release.
+
 ## 0.164.18
 
 No changes in this release.

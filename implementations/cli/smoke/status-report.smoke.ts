@@ -53,7 +53,7 @@ type Envelope = {
     meshes: { current: string | null; folder?: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; server?: string | null; connection?: string };
     maintenance?: { root: string; space: string | null; state: string; attemptId: string | null; next: string | null } | null;
-    store?: { state: string; at?: string; cause?: string; path?: string | null };
+    store?: { state: string; at?: string; cause?: string; path?: string | null; jetStreamDisabled?: boolean };
     hints: string[];
   } | null;
   warnings: { code: string; target: unknown; message: string }[];
@@ -108,8 +108,8 @@ if (!brokerDisplayOnly) {
   const args = ["status", "--space", space, "--verbose", "--components"];
   const component = (r: ReturnType<typeof run>, name: string) => r.stdout.split("Component Health")[1]?.split("\n").find(line => line.trimStart().startsWith(`${name} `)) ?? "";
   const missing = run(args, { NO_COLOR: "1" });
-  check("component control: a missing web pidfile is absent or not installed",
-    /web\s+(absent|not-installed)/.test(component(missing, "web")), shown(missing));
+  check("component control: a missing optional web pidfile is not started or not installed",
+    /web\s+(not-started|not-installed)/.test(component(missing, "web")), shown(missing));
   writeFileSync(webPid, " \n");
   const empty = run(args, { NO_COLOR: "1" });
   check("component control: an empty web pidfile has the same classification as a missing file",
@@ -518,6 +518,14 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
   appendFileSync(log, `[${pid}] ${stamp} [ERR] Filestore [CHAT_s] Critical write error: open /store/msgs/2.blk: permission denied\n`);
   const denied = run(["status", ...server, "--plain"]);
   check("for a permission denied, Next makes the store writable by this account again and says nothing of disk space", /cotal down +First make \S+ writable by this account again/.test(denied.stdout) && !/Free space|free space/.test(denied.stdout), denied.stdout);
+  appendFileSync(log, `[${pid}] ${stamp} [WRN] Filesystem permission denied while writing msg, disabling JetStream: open .cotal/nats/jetstream/A/streams/CHAT_s/msgs/2.blk: permission denied\n`);
+  const permission = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("the native permission warning records its relative path and disabled JetStream", permission?.state === "write-failed" && permission.cause === "open .cotal/nats/jetstream/A/streams/CHAT_s/msgs/2.blk: permission denied" && permission.jetStreamDisabled === true, permission);
+  appendFileSync(log, `[${pid}] ${stamp} [INF] Starting JetStream\n[${pid}] ${stamp} [ERR] JetStream failed to store a msg on stream 'A > KV_cotal_issued_s': write .cotal/nats/jetstream/A/streams/KV_cotal_issued_s/msgs/1.blk: file too large\n`);
+  const limited = run(["status", ...server, "--json"]).envelope?.result?.store;
+  check("the native stream-write error preserves the issuance path and leaves JetStream enabled", limited?.state === "write-failed" && limited.cause === "write .cotal/nats/jetstream/A/streams/KV_cotal_issued_s/msgs/1.blk: file too large" && limited.jetStreamDisabled === false, limited);
+  appendFileSync(log, `[1] ${stamp} [WRN] Filesystem permission denied while writing msg, disabling JetStream: open /foreign: permission denied\n`);
+  check("another broker's native warning cannot replace the owned broker's observation", run(["status", ...server, "--json"]).envelope?.result?.store?.cause === limited?.cause);
 }
 
 // ── damage the running local broker found in a stored file is shown in its own words ────────────

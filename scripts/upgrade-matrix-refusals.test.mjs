@@ -2,17 +2,10 @@ import assert from 'node:assert/strict';
 import {knownRefusals, knownRefusalFor, matchKnownRefusal} from './upgrade-matrix-refusals.mjs';
 import test from 'node:test';
 
-// Small exact transcript samples from the public refusals:
-// https://github.com/Cotal-AI/Cotal/issues/6802
+// Small exact transcript samples from the historical public refusals:
 // https://github.com/Cotal-AI/Cotal/issues/6785
 // https://github.com/Cotal-AI/Cotal/issues/6747
 const transcripts = [
-  ['  upgrade-proof: reading local Manager sdz0a0f5fxj1ct3pzd181eaqvdozem1 (pid 2699)\n' +
-   '! legacy manager custody: PTY continuity is impossible; this update is not a hot update\n' +
-   '  Manager sdz0a0f5fxj1ct3pzd181eaqvdozem1 in space "upgrade-proof": 1 seats\n' +
-   '  upgrade-proof-worker: drain-only\n' +
-   "  Cannot determine this Manager's original hosting command. Obtain its exact stop and start commands before stopping it; do not infer a service instance from its Manager identity.\n" +
-   '  Next: stop this Manager through its original host, ending any seats listed above; run `cotal update --self`, then restart through that host with the original start command. This is a cold update, including for a Manager with 0 seats.\n', ''],
   ['  update-participant-a-1794633286189: a manager for this mesh runs on this machine; reading its custody\n',
    '✗ running manager continuity check: ✗ signed in, but the exchange for actor "cli" (view "manager-caller") was refused: manager-caller selection found no manager candidate for owner u_wdhhojionrz2rav4mearesx4ou\n'],
   ['', 'Outcome unconfirmed\n  invalid update snapshot directory\n  Outcome: unknown\n  Code:    OPERATION_UNKNOWN\n'],
@@ -21,19 +14,15 @@ const transcripts = [
 function fixture(index) {
   const entry = knownRefusals[index];
   const cell = {id: entry.id, phase: 'candidate', sourceVersion: '0.164.6'};
-  const update = {exit: index === 2 ? 3 : 1, signal: null, timeout: false,
+  const update = {exit: index === 1 ? 3 : 1, signal: null, timeout: false,
     stdout: transcripts[index][0], stderr: transcripts[index][1]};
   const report = {source: cell.sourceVersion, sourceRequested: cell.sourceVersion, result: 'failed', update,
     assertions: [...entry.failedAssertions.map(name => ({name, passed: false,
       ...(name === 'upgrade exits successfully' ? {observed: structuredClone(update)} : {})})),
     ...entry.requiredAssertions.map(name => ({name, passed: true}))]};
   report.cleanupSafety = {passed: true};
-  if (index === 1) report.participant = {remote: true, localManagerStarted: false,
+  if (index === 0) report.participant = {remote: true, localManagerStarted: false,
     space: 'update-participant-a-1794633286189', owner: 'u_wdhhojionrz2rav4mearesx4ou'};
-  if (index === 0) {
-    report.managerHost = {space: 'upgrade-proof', mode: 'standalone'};
-    report.agentHost = 'standalone';
-  }
   report.extensionsBefore = [{pkg: '@cotal-ai/core', version: cell.sourceVersion}];
   report.extensionsAfter = structuredClone(report.extensionsBefore);
   report.assertions.find(a => a.name === 'CLI version is target').observed = cell.sourceVersion;
@@ -44,16 +33,45 @@ function changeCommand(report, key, value) {
   report.assertions.find(a => a.name === 'upgrade exits successfully').observed[key] = value;
 }
 test('Manager refusal IDs follow the core base36 padding range including the observed 30-character ID', () => {
-  const original = 'sdz0a0f5fxj1ct3pzd181eaqvdozem1';
+  const managerEntry = {
+    id: 'linux-npm-standalone-stop-consent',
+    phases: ['candidate', 'published'],
+    since: '0.164.6',
+    fixedIn: '0.164.16',
+    issue: 'https://github.com/Cotal-AI/Cotal/issues/6802',
+    exit: 1,
+    stdout: '  {{space}}: reading local Manager {{manager}} (pid {{pid}})\n  Manager {{manager}} in space "{{space}}"\n',
+    stderr: '',
+    failedAssertions: knownRefusals[0].failedAssertions,
+    requiredAssertions: ['every prior extension remains recorded', 'cotal status exits zero', 'source generation unchanged', 'no paused recovery record', 'owned local stack cleanup succeeds'],
+  };
+  const makeManagerFixture = manager => {
+    const cell = {id: managerEntry.id, phase: 'candidate', sourceVersion: '0.164.6'};
+    const update = {exit: 1, signal: null, timeout: false, stdout: `  upgrade-proof: reading local Manager ${manager} (pid 2699)\n  Manager ${manager} in space "upgrade-proof"\n`, stderr: ''};
+    const report = {
+      source: cell.sourceVersion,
+      sourceRequested: cell.sourceVersion,
+      result: 'failed',
+      update,
+      cleanupSafety: {passed: true},
+      managerHost: {space: 'upgrade-proof', mode: 'standalone'},
+      agentHost: 'standalone',
+      extensionsBefore: [{pkg: '@cotal-ai/core', version: cell.sourceVersion}],
+      extensionsAfter: [{pkg: '@cotal-ai/core', version: cell.sourceVersion}],
+      assertions: [
+        ...managerEntry.failedAssertions.map(name => ({name, passed: false, ...(name === 'upgrade exits successfully' ? {observed: structuredClone(update)} : name === 'CLI version is target' ? {observed: cell.sourceVersion} : {})})),
+        ...managerEntry.requiredAssertions.map(name => ({name, passed: true})),
+      ],
+    };
+    return {cell, report};
+  };
   for (const manager of ['ariq2ikye7ds69yt3kek8ez5pcwmx2', 'a'.repeat(26), 'b'.repeat(31)]) {
-    const {cell, report} = fixture(0);
-    changeCommand(report, 'stdout', report.update.stdout.replaceAll(original, manager));
-    assert.equal(matchKnownRefusal(cell, report), knownRefusals[0]);
+    const {cell, report} = makeManagerFixture(manager);
+    assert.equal(matchKnownRefusal(cell, report, [managerEntry]), managerEntry);
   }
   for (const manager of ['a'.repeat(25), 'a'.repeat(32), 'A'.repeat(30)]) {
-    const {cell, report} = fixture(0);
-    changeCommand(report, 'stdout', report.update.stdout.replaceAll(original, manager));
-    assert.throws(() => matchKnownRefusal(cell, report), /changed refusal transcript/);
+    const {cell, report} = makeManagerFixture(manager);
+    assert.throws(() => matchKnownRefusal(cell, report, [managerEntry]), /changed refusal transcript/);
   }
 });
 for (let i = 0; i < knownRefusals.length; i++) {
@@ -80,7 +98,7 @@ for (let i = 0; i < knownRefusals.length; i++) {
     rejects(r => {r.cleanupSafety.passed = 'true';});
     rejects(r => {r.error = 'unexpected failure';});
     rejects(r => {r.cleanupFailure = 'down failed';});
-    if (i === 1) {
+    if (i === 0) {
       rejects(r => {delete r.participant;});
       rejects(r => {r.participant.remote = false;});
       rejects(r => {r.participant.localManagerStarted = true;});
@@ -88,15 +106,6 @@ for (let i = 0; i < knownRefusals.length; i++) {
       rejects(r => {delete r.participant.owner;});
       rejects(r => {r.participant.owner = 'u_other';});
       rejects(r => {r.participant.space = 'other';});
-    }
-    if (i === 0) {
-      rejects(r => {delete r.managerHost;});
-      rejects(r => {delete r.managerHost.space;});
-      rejects(r => {delete r.managerHost.mode;});
-      rejects(r => {delete r.agentHost;});
-      rejects(r => {r.agentHost = 'daemon';});
-      rejects(r => {r.managerHost.mode = 'daemon-hosted';});
-      rejects(r => {r.managerHost.space = 'other';});
     }
     rejects(r => {r.extensionsAfter[0].version = '0.164.7';});
     rejects(r => {r.extensionsBefore = null;});
@@ -118,32 +127,27 @@ for (let i = 0; i < knownRefusals.length; i++) {
 }
 test('exact coordinates, phase, source range and explicit future retirement', () => {
   const {cell, report} = fixture(0);
-  for (const id of ['linux-npm-agent-stop-consent', 'linux-npm-fresh', 'darwin-npm-standalone-stop-consent']) {
+  for (const id of ['linux-npm-agent-stop-consent', 'linux-npm-standalone-stop-consent', 'linux-npm-fresh', 'darwin-npm-standalone-stop-consent']) {
     assert.equal(matchKnownRefusal({...cell, id}, report), null);
   }
+  assert.equal(knownRefusalFor({id: 'linux-npm-standalone-stop-consent', phase: 'candidate', sourceVersion: '0.164.16'}), null);
+  assert.equal(knownRefusalFor({id: 'linux-npm-standalone-stop-consent', phase: 'published', sourceVersion: '0.164.16'}), null);
   assert.equal(knownRefusalFor({...cell, phase: 'published'}), knownRefusals[0]);
   assert.equal(knownRefusalFor({...cell, phase: 'unlisted'}), null);
-  assert.equal(knownRefusalFor({...cell, sourceVersion: '1.0.0'}), knownRefusals[0]);
-  assert.equal(knownRefusalFor({...cell, id: 'linux-npm-fresh', sourceVersion: '1.0.0'}), null);
-  assert.equal(knownRefusalFor({...cell, sourceVersion: '0.164.5'}), null);
-  assert.equal(knownRefusalFor({...cell, sourceVersion: '0.164.7'}), knownRefusals[0]);
-  assert.equal(knownRefusalFor({...fixture(1).cell, sourceVersion: '0.164.7'}), null);
-  assert.equal(knownRefusalFor({...fixture(2).cell, sourceVersion: '0.164.7'}), knownRefusals[2]);
-  assert.equal(knownRefusalFor({...fixture(2).cell, phase: 'published', sourceVersion: '0.164.5'}), knownRefusals[2]);
-  assert.equal(knownRefusalFor({...fixture(0).cell, phase: 'published', sourceVersion: '0.164.5'}), null);
-  const hypothetical = [{...knownRefusals[2], fixedIn: '0.999.0'}];
-  assert.equal(knownRefusalFor({...fixture(2).cell, sourceVersion: '0.999.0'}, hypothetical), null);
+  assert.equal(knownRefusalFor({...cell, sourceVersion: '0.164.7'}), null);
+  assert.equal(knownRefusalFor({...fixture(1).cell, sourceVersion: '0.164.7'}), knownRefusals[1]);
+  assert.equal(knownRefusalFor({...fixture(1).cell, phase: 'published', sourceVersion: '0.164.5'}), knownRefusals[1]);
+  assert.equal(knownRefusalFor({...fixture(1).cell, sourceVersion: '0.164.8'}), null);
+  const hypothetical = [{...knownRefusals[1], fixedIn: '0.999.0'}];
+  assert.equal(knownRefusalFor({...fixture(1).cell, sourceVersion: '0.999.0'}, hypothetical), null);
   assert.throws(() => knownRefusalFor({...cell, sourceVersion: 'latest'}));
   assert.throws(() => knownRefusalFor(cell, [knownRefusals[0], knownRefusals[0]]));
 });
 test('typed substitutions have no free text wildcard and repeated identity stays equal', () => {
   const {cell, report} = fixture(0);
-  report.managerHost.space = 'owned-test';
-  changeCommand(report, 'stdout', report.update.stdout.replaceAll('upgrade-proof', 'owned-test').replaceAll('2699', '4123'));
+  report.participant.space = 'owned-test';
+  changeCommand(report, 'stdout', report.update.stdout.replaceAll('update-participant-a-1794633286189', 'owned-test'));
   assert.equal(matchKnownRefusal(cell, report), knownRefusals[0]);
-  changeCommand(report, 'stdout', report.update.stdout.replace('pid 4123', 'pid unknown'));
+  changeCommand(report, 'stderr', report.update.stderr.replace('owner u_wdhhojionrz2rav4mearesx4ou', 'owner invalid-owner'));
   assert.throws(() => matchKnownRefusal(cell, report));
-  const mismatch = fixture(0);
-  changeCommand(mismatch.report, 'stdout', mismatch.report.update.stdout.replace('in space "upgrade-proof"', 'in space "other"'));
-  assert.throws(() => matchKnownRefusal(mismatch.cell, mismatch.report));
 });

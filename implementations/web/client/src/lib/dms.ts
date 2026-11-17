@@ -4,7 +4,7 @@ import type { RosterEntry } from "../api/types.js";
 import type { StoredMessage } from "../state/types.js";
 import { displayNameOf, nameIndex } from "./names.js";
 
-export interface DmConversation {
+interface DmConversation {
   key: string;
   with: string;
   messages: StoredMessage[];

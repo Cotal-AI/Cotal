@@ -2,12 +2,13 @@
  * Run: pnpm smoke:setup-start:live
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertSmokeSandboxDown, createSuite, recordSmokeSandbox, type SmokeSandboxAnchor } from "@cotal-ai/smoke-kit";
+import { resolveOnPath } from "@cotal-ai/workspace";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 const BIN = join(ROOT, "bin", "dist", "cotal.js");
@@ -17,7 +18,7 @@ const env: Record<string, string | undefined> = { ...host, HOME: home, USERPROFI
 for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
 Object.assign(process.env, env);
 const { check, finish } = createSuite();
-interface Receipt { outcome: string; error?: { code: string; message: string }; result?: { server?: string; startup?: { state: string; failure?: { code: string; message?: string } } } }
+interface Receipt { outcome: string; error?: { code: string; message: string }; result?: { server?: string; next?: { command: string }; startup?: { state: string; failure?: { code: string; message?: string } } } }
 const unconfirmed = new Set<string>();
 const anchors = new Map<string, SmokeSandboxAnchor>();
 const run = (cwd: string, ...args: string[]) => {
@@ -49,6 +50,34 @@ try {
   const held = join(home, "held"); mkdirSync(held, { mode: 0o700 }); mkdirSync(join(held, ".cotal"), { mode: 0o700 });
   const reserve = run(held, "space", "add", "held", "--server", "nats://127.0.0.1:4222", "--root", held, "--mode", "open", "--force", "--yes");
   check("a real space-add command reserves the default address without a listener", reserve.status === 0, shown(reserve));
+  if (!selected || selected === "missing-opencode") {
+    const path = env.PATH;
+    const tools = join(home, "tools"); mkdirSync(tools);
+    for (const name of ["node", "npm", "nats-server", "sh", "ps"]) {
+      const executable = name === "node" ? process.execPath : resolveOnPath(name);
+      if (!executable) throw new Error(`missing fixture tool: ${name}`);
+      symlinkSync(executable, join(tools, name));
+    }
+    env.PATH = tools;
+    try {
+      const seeded = spawnSync(process.execPath, [BIN, "ext", "seed"], { cwd: home, env: { ...env, COTAL_SKIP_CONNECTOR_SEED: "", COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8", timeout: 300_000 });
+      check("the real OpenCode connector is seeded into the isolated home", seeded.status === 0, seeded.stderr.slice(-1000));
+      const root = project("missing-opencode");
+      const setup = run(root, "setup", "--destination", "local", "--harness", "opencode", "--project", root, "--space", "missing-opencode", "--no-input");
+      check("missing OpenCode leaves setup saved with dependency repair as its next step", setup.status === 4 && setup.receipt?.result?.next?.command === "install or repair opencode, then run the same setup again", shown(setup));
+      active.push(root);
+      const started = run(root, "up", "--detach");
+      check("the prepared authenticated stack starts without OpenCode", started.status === 0, shown(started));
+      const credentials = join(root, ".cotal", "auth", "creds");
+      const credentialFiles = () => JSON.stringify(existsSync(credentials) ? readdirSync(credentials, { recursive: true }) : []);
+      const before = credentialFiles();
+      const refused = spawnSync(process.execPath, [BIN, "spawn"], { cwd: root, env, encoding: "utf8", timeout: 120_000 });
+      check("bare spawn reports the missing application without an uncaught exception", refused.status === 2 && /DEPENDENCY_UNAVAILABLE/.test(refused.stderr) && /opencode needs opencode on PATH/.test(refused.stderr) && /install or repair opencode/.test(refused.stderr) && !/ENOENT|node:internal|at launch/.test(refused.stderr), refused.stderr);
+      check("the refused spawn issues no credentials or connector state", credentialFiles() === before && !existsSync(join(root, ".cotal", "opencode")) && !/wrote creds|retired creds/.test(refused.stderr));
+      const status = run(root, "status");
+      check("the stack remains available after the dependency refusal", status.status === 0, shown(status));
+    } finally { env.PATH = path; }
+  }
 
   if (!selected || selected === "address") {
     const root = project("second");

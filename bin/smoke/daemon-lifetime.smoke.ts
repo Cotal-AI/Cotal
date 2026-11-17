@@ -495,11 +495,11 @@ try {
     const receiptBefore = readFileSync(receipt, "utf8");
     try {
       const again = await shippedCli("install", "--dry-run", "--json"), againPlain = await shippedCli("install", "--dry-run", "--plain");
-      check("L6 with a recorded unit it refuses CONFLICT, exit 2", again.status === 2 && again.doc.error?.code === "CONFLICT", { status: again.status, out: again.out.slice(0, 300) });
-      check("L6 that refusal gives the exact uninstall remedy in plain and --json alike", again.doc.error?.remedy === "remove it with `cotal daemon uninstall` before installing again" && againPlain.status === 2 && sameText(again, againPlain), { error: again.doc.error, plain: againPlain.out + againPlain.err });
+      check("L6 a receipt naming a missing unit is refused without claiming an existing install", again.status === 2 && again.doc.error?.code === "TARGET_NOT_FOUND", { status: again.status, out: again.out.slice(0, 300) });
+      check("L6 the missing-source refusal is identical in plain and JSON", againPlain.status === 2 && `${againPlain.out}${againPlain.err}`.includes(again.doc.error?.message), { error: again.doc.error, plain: againPlain.out + againPlain.err });
       const explicit = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--json");
       const explicitPlain = await shippedCli("install", "--daemon-home", paths.state, "--dry-run", "--plain");
-      check("L6 an explicit target stays in the exact uninstall remedy in plain and --json alike", explicit.status === 2 && explicit.doc.error?.code === "CONFLICT" && explicit.doc.error?.remedy === `remove it with \`cotal daemon uninstall --daemon-home ${paths.state}\` before installing again` && explicitPlain.status === 2 && sameText(explicit, explicitPlain), { error: explicit.doc.error, plain: explicitPlain.out + explicitPlain.err });
+      check("L6 an explicit target retains the same missing-source refusal", explicit.status === 2 && explicit.doc.error?.code === "TARGET_NOT_FOUND" && explicitPlain.status === 2 && `${explicitPlain.out}${explicitPlain.err}`.includes(explicit.doc.error?.message), { result: explicit.doc.result, plain: explicitPlain.out + explicitPlain.err });
       check("L6 refused installs preserve the receipt and write no unit", readFileSync(receipt, "utf8") === receiptBefore && !existsSync(r.doc.result.unitPath) && !existsSync(join(root, "cotal-daemon.service")));
     } finally {
       rmSync(receipt, { force: true });
@@ -508,9 +508,9 @@ try {
 
   await cell("L7 uninstall refuses with no effect", async () => {
     const r = await cli("uninstall", "--yes", "--json");
-    check("L7 with no recorded unit it refuses TARGET_NOT_FOUND, exit 2", r.status === 2 && r.doc.error?.code === "TARGET_NOT_FOUND", { status: r.status, out: r.out.slice(0, 300) });
+    check("L7 without a receipt or reachable native manager uninstall refuses without guessing ownership", r.status === 2 && r.doc.error?.code === "DEPENDENCY_UNAVAILABLE", { status: r.status, out: r.out.slice(0, 300) });
     const plain = await cli("uninstall", "--yes", "--plain");
-    check("L7 that refusal names `cotal daemon install` in backticks, in plain and --json alike", String(r.doc.error?.message).includes("no installed unit recorded by `cotal daemon install`") && plain.status === 2 && `${plain.out}${plain.err}`.includes(r.doc.error.message), { message: r.doc.error?.message, plain: plain.out + plain.err });
+    check("L7 the native discovery refusal is identical in plain and JSON", plain.status === 2 && sameText(r, plain), { message: r.doc.error?.message, plain: plain.out + plain.err });
     check("L7 no unit receipt was created", !existsSync(join(home, "daemon", "service-unit.json")));
     const noYes = await cli("uninstall", "--json");
     check("L7 outside a terminal without --yes it refuses USAGE_INVALID, exit 1", noYes.status === 1 && noYes.doc.error?.code === "USAGE_INVALID", { status: noYes.status, out: noYes.out.slice(0, 300) });

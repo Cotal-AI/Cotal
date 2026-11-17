@@ -13,7 +13,7 @@ For a terminal display or authorized operator controls, use the [console](consol
 ## Configure the service [#web-dashboard]
 
 The supported dashboard is the `@cotal-ai/web` service preset.
-It needs a registered static-auth root, a protected credential file, and explicit read-only intent.
+It needs a registered static-auth root and a protected observer credential file. Read-only is the default.
 `cotal up` mints the credential for the space as its `web.creds`, and the preset uses that file unless you pass `--creds`.
 It is separate from stack startup.
 
@@ -42,25 +42,51 @@ A user-auth root or a root containing only a stripped signer is unsupported. Bro
 The service preserves the broker's registered TLS requirement.
 Its browser listener is HTTP, so broker TLS does not protect remote browser traffic.
 The `host` and `port` definition options default to `127.0.0.1` and 7799. Wildcard hosts and port 0 are refused.
-It opens no browser and starts no dependency automatically.
+Background `cotal service start web` opens an authenticated browser session for a loopback listener.
+Repeating it reuses the matching process and issues a fresh single-use link without invalidating existing browser sessions.
+It starts no dependency automatically. Use `--no-open` for manual access or a remote listener.
+Without a browser opener, or without a Linux graphical session, startup still succeeds and warns how to find the private session record.
 Readiness confirms the HTTP listener and signal handlers, not a new authenticated endpoint reply.
 A page file that cannot be read returns `500` with the failed read identified.
 
+### Authorize posting
+
+Read-only remains the default. To enable the composer, mint a separate protected credential
+with only the channels the dashboard should post to, then save the service with both
+`--no-read-only` and `--posting-creds`:
+
+```bash
+cotal auth mint dashboard --space main --no-persona --allow-subscribe general --allow-publish general --out /absolute/private/dashboard-posting.creds
+cotal service add web --preset web --space main --no-read-only --posting-creds /absolute/private/dashboard-posting.creds
+cotal service start web --space main
+```
+
+Select #general in Channels, enter text in the composer, and choose Send.
+Posts use the separate credential's identity, labelled `operator`, and preserve mentions.
+The broker enforces that file's grants. A broader observer credential cannot authorize a refused post.
+The posting file must name a different identity from the observer file and pass the same
+signature, issuer, private-file and validity checks. No ambient operator credential or signer is used.
+Renew an expired posting credential explicitly and restart the service to load it.
+Channel deletion stays unavailable in both modes. User-auth and open targets remain unsupported.
+Anyone holding the private browser session can exercise the configured posting authority.
+
 ### Open the private session
 
-Read the owner-private session file named in the service log, then open its single-use link in the browser profile you intend to use.
+For `cotal service start web --no-open` or a foreground service, read the owner-private session file named in the service log, then open its single-use link in the browser profile you intend to use.
 The file is create-only and bound to the full service instance and launch request.
 Logs contain only its reference path.
 
 <Callout type="warn" title="Keep the session file private">
 
 Do not upload the session file or paste its contents into logs.
-Opening its link exchanges the bootstrap token for an HttpOnly, same-site session cookie.
+Opening its link exchanges the bootstrap token for an HttpOnly session cookie with `SameSite=Lax`.
 A spent token cannot open another session.
 
 </Callout>
 
 The session belongs to its origin. A localhost name and a literal loopback address do not share it.
+A link to the dashboard on another site, such as a homepage tile, opens it with the session.
+A request that another site's page sends, such as a fetch or a POST, is refused with 403 `cross-origin`, and the browser does not attach the cookie to it.
 Confirmed native shutdown removes only the unchanged original private record.
 
 This service hides delete controls and refuses channel-delete requests before acquiring mutation authority or trying another transport.
@@ -217,6 +243,7 @@ Invalid names are refused rather than rewritten into a different channel.
 
 Read routes accept no body. An announced body receives `413`, and the connection closes before reading it.
 The older embedded web handler has a separate delete route limited to 8 KiB with no wildcard targets.
+Its complete body must arrive within ten seconds. Otherwise it returns `408`, closes the connection and leaves the channel unchanged.
 That route is not an action in the current service. Use the console or authorized CLI `channel remove` instead. A session-gate refusal also closes a request with an announced body.
 Ordinary bodyless requests keep their connection. The configured read-only service refuses deletion before reaching its mutation handler.
 

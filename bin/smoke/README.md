@@ -24,6 +24,17 @@ checksum-verified binary through `COTAL_BROKER_LOG_NATS`. This does not replace 
 PATH for other suites. To run the logging suite locally, set that variable to the absolute path
 of a NATS 2.15.1 binary after building the workspace.
 
+## Fixture registry homes
+
+`pnpm smoke:fixture-space-home` checks the desktop space helper with a real loopback broker,
+auth and delivery. The caller selects its machine home before entering the helper. A mismatch
+with `machineHome` refuses before creating fixture state. The check covers a private override
+and the platform default under a private home, without starting a manager or native service.
+
+`prepareUpdateParticipant` selects its supplied private `COTAL_HOME` until its close callback
+restores the previous environment. Its standalone smoke selects a private home before its own
+registry calls and keeps temporary files under `TMPDIR`.
+
 ## Daemon entry checks
 
 After building the workspace and the platform's daemon host primitives, run
@@ -112,6 +123,12 @@ covered pass.
 with a line break. Structured count and skip records take precedence over legacy tallies,
 regardless of their position. The last structured record wins; without one, the last legacy
 tally wins. Per-row counting is used only when neither is present.
+
+Serial and pooled runners refuse a tally followed by more assertion-result rows unless a later
+final tally covers them. These rows are indented check/cross marks, TAP `ok`/`not ok` lines and
+`FAIL` rows. An unindented check mark in a product notice is not an assertion record. Diagnostic
+output after the tally is allowed. This checks premature tally acceptance, not omitted assertions,
+assertions that print no result row, or unmarked output.
 
 ## Shared hosts
 

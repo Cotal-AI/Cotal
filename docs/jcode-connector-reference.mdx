@@ -186,6 +186,15 @@ queued depth and age, while the native session stays alive. The connector does n
 messages ran, acknowledge them, or keep submitting copies. A genuine connection close still uses
 the bounded private-instance recovery described above.
 
+Jcode acknowledges a message before it checks whether the API connection is still processing an
+earlier one, and then refuses the busy send with `Already processing a message`. When that refusal
+answers the connector's latest send on the connection, the manager turns in that send go back to
+waiting and are sent again once the running native turn ends. The seat therefore never yields
+`done` for a turn its model did not receive. If a later message went out on the same connection,
+the refusal may belong to that message, so the earlier send's turns stay with the running native
+turn. The seat shows each refusal as a `failed` condition, which clears when a later send starts a
+turn.
+
 Jcode currently supports **stdio** MCP servers. The connector writes only its own `cotal` entry to
 the private `JCODE_HOME/mcp.json`. Jcode starts this package's stdio MCP bridge for that entry, and
 the bridge relays its calls
@@ -327,6 +336,8 @@ During that readiness turn, `provider_auth_refused` names an OpenAI-compatible H
 `provider_payment_required` names an HTTP 402 response, such as an exhausted provider balance.
 `provider_forbidden` names an HTTP 403 response. `provider_rate_limited` names an HTTP 429
 response that Jcode's own retries did not outlast.
+`provider_client_error` names any other OpenAI-compatible HTTP 4xx readiness response, unless
+the model-refusal diagnostic above applies. It reports only the status class, never response text.
 `provider_request_failed` means Jcode could not send the OpenAI-compatible request. It does not
 establish whether the cause was a stopped provider, routing, or another transport failure.
 These fixed codes reach the workflow step error and `cotal run show`. Provider URLs,

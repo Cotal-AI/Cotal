@@ -143,6 +143,7 @@ async function askManagerEp(
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   // No class-queue read may stand in for the manager that presence says holds this seat.
+  // An explicit instance can inspect its own live seats even before they join the mesh.
   if (!selected && !auth.bearer && (mapped.command === "inspect" || mapped.targeted)) {
     const name = String(args?.name ?? "").trim();
     if (!name) return { ok: false, code: "bad-request", error: `${op} requires a name` };
@@ -152,11 +153,13 @@ async function askManagerEp(
       selected = seat.expectedSeat;
     } catch (error) {
       if (!isCommandFailure(error)) throw error;
-      const code = error.code === "TARGET_NOT_FOUND" ? "not-found" : error.code === "TARGET_AMBIGUOUS" ? "failed-precondition" : "unavailable";
-      const targetRefusal = error.code === "TARGET_AMBIGUOUS" ? "TARGET_AMBIGUOUS"
-        : error.code === "TARGET_NOT_FOUND" ? "TARGET_NOT_FOUND"
-        : error.code === "USAGE_INVALID" ? "USAGE_INVALID" : "TARGET_UNAVAILABLE";
-      return { ok: false, code, error: error.message, preSubmitRefusal: true, nativeOutcome: "not-executed", targetRefusal };
+      if (error.code !== "TARGET_NOT_FOUND" || instanceId === undefined) {
+        const code = error.code === "TARGET_NOT_FOUND" ? "not-found" : error.code === "TARGET_AMBIGUOUS" ? "failed-precondition" : "unavailable";
+        const targetRefusal = error.code === "TARGET_AMBIGUOUS" ? "TARGET_AMBIGUOUS"
+          : error.code === "TARGET_NOT_FOUND" ? "TARGET_NOT_FOUND"
+          : error.code === "USAGE_INVALID" ? "USAGE_INVALID" : "TARGET_UNAVAILABLE";
+        return { ok: false, code, error: error.message, preSubmitRefusal: true, nativeOutcome: "not-executed", targetRefusal };
+      }
     }
   }
   if (selected) args = { ...args, name: selected.name };

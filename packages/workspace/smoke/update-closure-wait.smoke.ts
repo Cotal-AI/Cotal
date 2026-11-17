@@ -29,7 +29,7 @@ async function waiter(holdMs: number | undefined): Promise<{ code: number | null
   const lock = holdMs === undefined ? undefined : acquireLock(join(home, ".update-closure.lock"), { label: "fixture closure writer" });
   const t0 = Date.now();
   const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url), "wait"], {
-    env: { ...process.env, COTAL_HOME: home, COTAL_CLOSURE_WAIT_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_HOME: home, COTAL_CLOSURE_WAIT_HOME: home }, stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "", stderr = "";
   child.stdout.on("data", (d) => (stdout += d));

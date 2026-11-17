@@ -2,18 +2,20 @@
  * Managed-static renewal and terminalization have one order: an admitted renewal drains before
  * retirement enumerates, revokes, and cleans its credential family; a later renewal refuses. The
  * fixture exercises both terminal entry paths (despawn and natural process exit), and reaches the
- * renewal once directly and once through the production half-TTL sweep.
+ * renewal once directly and once through the production half-TTL sweep. The sweep judges a seat as
+ * of its next pass: it re-signs a credential that is healthy now but past its renewal point before
+ * that pass, and leaves one that stays healthy past it.
  *
  * Run: pnpm smoke:renewal-terminal-race
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  createSpaceAuth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, credentialIdOf,
+  createSpaceAuth, inspectCredHealth, gateObserve, headCandidate, mintCreds, newIdentity, principalKey, credentialIdOf,
   standaloneConnectOpts, registry, DEV_OWNER, setupSpaceStreams, recordsBucket, epAuthBucket,
   parseLedgerRow, credRowKey, type AgentHandle, type AttachSession,
   type Connector, type LaunchSpec, type Presence, type CredentialLedgerRow,
@@ -31,7 +33,7 @@ const SCENARIOS = [
   { name: "racer_despawn", renewal: "direct", terminal: "despawn" },
   { name: "racer_exit", renewal: "sweep", terminal: "natural-exit" },
 ] as const;
-const SCENARIO_CELLS = SCENARIOS.length * 25;
+const SCENARIO_CELLS = SCENARIOS.length * 25 + 4;
 let pass = 0;
 let fail = 0;
 
@@ -173,7 +175,7 @@ const { servers, stop: stopBroker } = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-renewal-race-"));
 const secrets = new PausingSecretStore();
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-for (const { name } of SCENARIOS)
+for (const name of [...SCENARIOS.map((s) => s.name), "ahead_seat"])
   writeFileSync(
     join(workspaceRoot, ".cotal", "agents", `${name}.md`),
     `---\nname: ${name}\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n`,
@@ -246,9 +248,8 @@ async function openLifecycleView(alias: string, actor: string, uid: string): Pro
   };
 }
 
-async function stageExpiringCredential(agent: Agent, transport: LifecycleStateTransport, key: string, path: string): Promise<number> {
+async function stageCredential(agent: Agent, transport: LifecycleStateTransport, key: string, path: string, exp: number): Promise<number> {
   if (!agent.seed) throw new Error(`${agent.name}: no static seed`);
-  const exp = Math.floor(Date.now() / 1_000) + 1;
   const creds = await mintCreds(auth, { id: agent.id, seed: agent.seed }, "agent", {
     allowSubscribe: agent.launch.allowSubscribe,
     allowPublish: agent.launch.allowPublish,
@@ -299,7 +300,7 @@ try {
     let pause: ReturnType<PausingSecretStore["armNextPut"]> | undefined;
     try {
       if (scenario.renewal === "sweep") {
-        const exp = await stageExpiringCredential(agent, view.transport, secretKey, credsPath);
+        const exp = await stageCredential(agent, view.transport, secretKey, credsPath, Math.floor(Date.now() / 1_000) + 1);
         await until(() => Math.floor(Date.now() / 1_000) >= exp, 2_000);
       } else {
         await enterNextEpochSecond();
@@ -389,6 +390,30 @@ try {
       pause?.release();
       await view.nc.drain().catch(() => view.nc.close());
     }
+  }
+
+  console.log("\nahead_seat: the sweep renews ahead of its next pass");
+  const ahead = await mgr.startAgent({ name: "ahead_seat", agent: "smoke-race", events: false });
+  check("ahead_seat: spawn succeeds", ahead.ok, ahead);
+  const aheadAgent = M.agents.get("ahead_seat");
+  const aheadPath = aheadAgent?.secretPaths?.creds;
+  if (!aheadAgent || !aheadPath) throw new Error("ahead_seat: setup failed");
+  const aheadView = await openLifecycleView("ahead_seat", aheadAgent.id, aheadAgent.lifecycleUid);
+  try {
+    // A four-hour credential reaches its renewal point in three hours, before the next pass six
+    // hours away, so this pass re-signs it.
+    await stageCredential(aheadAgent, aheadView.transport, agentSecretKeyForFile(aheadPath, space), aheadPath, Math.floor(Date.now() / 1_000) + 4 * 3600);
+    const staged = readFileSync(aheadPath, "utf8");
+    check("ahead_seat: the staged credential is healthy now", inspectCredHealth(staged).state === "healthy", inspectCredHealth(staged));
+    await enterNextEpochSecond();
+    await M.renewDaemonCreds();
+    const renewed = readFileSync(aheadPath, "utf8");
+    check("ahead_seat: a pass re-signs a credential whose renewal point falls before the next pass", renewed !== staged && (inspectCredHealth(renewed).exp ?? 0) > Math.floor(Date.now() / 1_000) + 20 * 3600, inspectCredHealth(renewed));
+    await enterNextEpochSecond();
+    await M.renewDaemonCreds();
+    check("ahead_seat: a pass leaves a credential that stays healthy past the next pass", readFileSync(aheadPath, "utf8") === renewed);
+  } finally {
+    await aheadView.nc.drain().catch(() => aheadView.nc.close());
   }
 } finally {
   await mgr.stop({ withAgents: true }).catch(() => {});

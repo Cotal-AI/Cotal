@@ -5,7 +5,7 @@ import {
 } from "@cotal-ai/core";
 import { assertPinnedFetchUrl } from "@cotal-ai/workspace";
 
-export interface ServiceAuthorityCallOptions { timeoutMs?: number; signal?: AbortSignal }
+interface ServiceAuthorityCallOptions { timeoutMs?: number; signal?: AbortSignal }
 interface ServiceAuthorityBudget { signal: AbortSignal; check(): void; remainingMs(): number }
 const isMutation = (operation: ServiceAuthorityRequest["operation"]) => operation !== "status" && operation !== "describe-view";
 

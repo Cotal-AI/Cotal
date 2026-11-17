@@ -3,14 +3,16 @@ import { existsSync } from "node:fs";
 import { CommandFailure, homeCotalDir } from "@cotal-ai/workspace";
 import { queryDaemon } from "./client.js";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
-import { installedDaemonIdentity, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, reconcileMissingShellRuntime, unitReceiptFile } from "./install.js";
 import { daemonManagerIntentFile } from "./manager.js";
 
 /** Test hooks: the installed-service check, the daemon query and the wait bound. */
-export interface GenerationWaitProbe {
+interface GenerationWaitProbe {
   readonly installed?: () => boolean;
   readonly query?: typeof queryDaemon;
   readonly timeoutMs?: number;
+  /** A child whose parent will print the same line waits without printing it. */
+  readonly quiet?: boolean;
   readonly lifecycle?: (paths: DaemonPaths, deadline: number) => Promise<{
     poll(remainingMs: number): Promise<boolean | void>;
     close(): void;
@@ -29,15 +31,17 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     if (!probe.installed()) return;
   } else {
     if (!existsSync(unitReceiptFile(paths))) return;
+    reconcileMissingShellRuntime(paths);
     const installation = installedDaemonIdentity(paths);
     if (!installation.same) {
-      console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+      if (!probe.quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
       return;
     }
   }
   const query = probe.query ?? queryDaemon;
   const bound = probe.timeoutMs ?? 120_000;
-  console.log(`machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`);
+  const waitLine = `machine daemon: waiting up to ${Math.round(bound / 1000)}s for Cotal ${version} and its hosted Managers before the continuity check`;
+  if (!probe.quiet) console.log(waitLine);
   const deadline = Date.now() + bound;
   let waiting = "the recorded daemon has not answered";
   const lifecycle = await probe.lifecycle?.(paths, deadline);
@@ -76,5 +80,8 @@ export async function waitForInstalledDaemonGeneration(version: string, probe: G
     }
     await new Promise(resolve => setTimeout(resolve, Math.min(250, Math.max(0, deadline - Date.now()))));
   }
+  } catch (error) {
+    if (probe.quiet) console.log(waitLine);
+    throw error;
   } finally { lifecycle?.close(); }
 }

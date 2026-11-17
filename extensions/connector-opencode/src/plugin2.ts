@@ -56,7 +56,7 @@ const guard = globalThis as { __cotalOpencodeSetup?: SetupState };
  *  route and body. An empty listing during location boot is polled every 200 ms until the
  *  provider appears rather than refused on the first read. The wait is bounded: a server that
  *  never lists anything within the deadline is a real refusal, not a hang. */
-export const MODEL_LIST_SETTLE_MS = 10_000;
+const MODEL_LIST_SETTLE_MS = 10_000;
 
 /** The bare nudge a focus @mention wake submits; the mention itself is read with cotal_inbox. */
 const MENTION_NUDGE = "📨 You were mentioned — read it with cotal_inbox.";
@@ -232,6 +232,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   const batch = new SurfacedBatch(agent); // the batch the current turn carries, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let started: OpenCode2Event["durable"]; // log position of the running execution's start
+  let workAt: OpenCode2Event["durable"]; // newest work event, so replay cannot manufacture fresh progress
   let unorderedEnds = 0; // ends of this session with no log position, which no submission can order itself against
   // A focus @mention wake that `drive` could not submit (a turn was running). Its body was acked at
   // ingest, so this is all that carries it until a turn end delivers it (#3859).
@@ -428,6 +429,7 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
   // Surface the running tool as presence activity — parity with 1.x's `tool.execute.before`.
   await ctx.tool.hook("execute.before", (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
+    agent.noteActivity();
     void safeStatus("working", e.tool);
   });
 
@@ -515,9 +517,17 @@ async function setupSession(ctx: OpenCode2Context): Promise<() => Promise<void>>
             // submitted, and a session created before it resolves is adopted above. Taking another
             // session's start here would set `execution` for an end this guard then drops (#3848).
             if (data.sessionID !== sessionID || replayed(ev) || replayed(ev, started)) break;
+            agent.noteActivity();
             execution = "running";
             started = ev.durable;
+            workAt = ev.durable;
             await safeStatus("working");
+            break;
+          }
+          case "session.step.ended": {
+            if (data.sessionID !== sessionID || execution !== "running" || replayed(ev) || replayed(ev, workAt)) break;
+            workAt = ev.durable;
+            agent.noteActivity();
             break;
           }
           case "session.execution.succeeded": {

@@ -3,7 +3,8 @@ import { existsSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, basename } from "node:path";
 import { logicalExecutionEntry, executionIdentity, cmdSpawnSpec } from "@cotal-ai/workspace";
 import { updateRuntime, verifyGlobalEntry, type ExecutionReplacement } from "@cotal-ai/cli/update";
-import { assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
+import { cleanupExecutionStore } from "../execution-store.js";
+import { completeExecutionTransaction, assertExecutionDestination, executionStagingPrefix, journalExecutionTransaction, publishExecutionTransaction, readExecutionTransaction, retainExecutionGeneration, retireSupersededExecutionDescriptor } from "../execution-transaction.js";
 import { executionCopyModesEnv, executionInventory, executionSha256 } from "../cotal.js";
 import { daemonServeArgv } from "./install.js";
 import { readExecutionPreinstall } from "./execution-preinstall.js";
@@ -36,7 +37,7 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
   const staging = executionStagingPrefix(installed);
   let generation: ReturnType<typeof retainExecutionGeneration>;
   try {
-    const npm = cmdSpawnSpec("npm", ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=0", "--fetch-timeout=15000"]);
+    const npm = cmdSpawnSpec("npm", ["install", "-g", "--prefix", staging, `cotal-ai@${version}`, "--ignore-scripts", "--no-audit", "--no-fund", "--fetch-retries=2", "--fetch-retry-mintimeout=1000", "--fetch-retry-maxtimeout=2000", "--fetch-timeout=15000"]);
     const result = await updateRuntime.spawnGlobal(globalRoot, "install", npm.file, npm.args, process.env, false, npm.windowsVerbatimArguments);
     if (result.status !== 0) throw new Error(`target staging failed: ${result.error ?? result.stderr ?? result.stdout}`);
     const source = join(staging, "lib/node_modules/cotal-ai");
@@ -69,6 +70,11 @@ export async function prepareExecutionUpdate(version: string, globalRoot: string
     },
     restore() { if (!journal) throw new Error("execution transaction has no rollback journal"); publishExecutionTransaction(installed, journal, true); },
     verify(expected) { verifySelected(installed, expected); },
+    complete() {
+      try { if (journal) completeExecutionTransaction(installed, journal); }
+      catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish publication journal"}\n`); return; }
+      cleanupExecutionStore(installed);
+    },
     discard() { if (!journal) rmSync(dirname(generation.root), { recursive: true, force: true }); },
   };
 }
@@ -82,6 +88,11 @@ export function recoverExecutionUpdate(path: string): ExecutionReplacement {
     async preflight() { throw new Error("a recovering execution transaction cannot be prepared again"); },
     publish() { throw new Error("a recovering execution transaction cannot publish a new target"); },
     restore() { publishExecutionTransaction(installed, path, true); },
+    complete() {
+      try { completeExecutionTransaction(installed, path); }
+      catch (error) { process.stderr.write(`execution store cleanup: ${error instanceof Error ? error.message.replace(/[\r\n]+/g, " ") : "could not finish recovery journal"}\n`); return; }
+      cleanupExecutionStore(installed);
+    },
     verify(version) {
       if (version !== previous) throw new Error("execution recovery previous version differs");
       verifySelected(installed, version);

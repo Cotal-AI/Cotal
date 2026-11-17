@@ -259,8 +259,10 @@ try {
   check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
   check("a hosted gateway does not offer native space selection", tools.find((t) => t.name === "cotal_connect")?.inputSchema.properties?.space === undefined);
   const plainConnect = tools.find((t) => t.name === "cotal_connect");
-  check("without selection a hosted connect offers no permission request",
-    ["channels", "role", "capabilities"].every((k) => plainConnect?.inputSchema.properties?.[k] === undefined) && !plainConnect?.description?.includes("Ask for what"),
+  check("without selection a hosted connect offers no permission request or automatic replacement name",
+    ["channels", "role", "capabilities"].every((k) => plainConnect?.inputSchema.properties?.[k] === undefined) && !plainConnect?.description?.includes("Ask for what") &&
+      !!plainConnect?.description?.includes("A signed-in or hosted connection refuses a taken name") &&
+      !!plainConnect?.description?.includes("On an open or static local mesh"),
     plainConnect?.inputSchema.properties);
   const selecting = await clientFor("tok-a", selectionUrl);
   const selectingConnect = (await selecting.listTools()).tools.find((t) => t.name === "cotal_connect");

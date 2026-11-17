@@ -560,8 +560,9 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
 
   return {
     async follow(snapshot: HistoryItem[], match: (item: HistoryItem) => boolean, presentation: "json" | "rich" | "plain", target: unknown, names: Map<string, string>, stopped: () => boolean): Promise<void> {
-      const seen = new Set(snapshot.map((item) => item.id));
+      const seen = new Set(snapshot.map((item) => item.id).filter((id) => id !== ""));
       const remember = (id: string) => {
+        if (!id) return;
         seen.add(id);
         if (seen.size > SEEN_IDS) seen.delete(seen.values().next().value!);
       };

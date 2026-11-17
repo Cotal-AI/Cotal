@@ -315,7 +315,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values, root: string, spac
  * A root with no `.cotal/` is not a workstation and gets no record — a hosted composition has none,
  * and creating one here would plant a stray workspace root wherever the daemon happened to run.
  */
-export function recordDeliveryPid(root: string, space: string): () => void {
+function recordDeliveryPid(root: string, space: string): () => void {
   if (!existsSync(join(root, ".cotal"))) {
     console.error(`• delivery: no ${join(root, ".cotal")} here, so this daemon is not recorded in a pidfile (nothing local will find it by pid)`);
     return () => {};

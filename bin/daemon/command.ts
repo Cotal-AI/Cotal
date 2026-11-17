@@ -22,11 +22,12 @@
  * and verified; it says nothing about any mesh or Cloud connection.
  */
 import { readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registry, type Command, type FlagSpec, type ParsedArgs } from "@cotal-ai/core";
-import { CommandFailure, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
-import { openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
+import { CommandFailure, logicalExecutionEntry, codeSpan, homeCotalDir, keptCatalogCredentials, jsonFlag, plainFlag, presentationOf, recordOperationContext, renderReport, writeResult, type Report } from "@cotal-ai/workspace";
+import { cloudAuthUrl, openLoginBrowser, isDiscoveryName, resolveDiscoveryLogin } from "@cotal-ai/workspace";
 import { chooseAccountChoice, IdpConfigurationError, normalizeIdpUrl } from "@cotal-ai/auth";
 import { EndpointRefusal, defaultPeerUid, defaultPeerPid, checkDir, daemonPaths, daemonPathsFor, type DaemonPaths, type EndpointProblemCode } from "./endpoint.js";
 import { serveDaemon } from "./server.js";
@@ -44,7 +45,7 @@ import { nativeDaemonLog } from "./native-log.js";
 import { liveUpdateClosureOwner, readUpdateRecovery } from "@cotal-ai/workspace";
 import type { ConnectCheckResult, DaemonStatus, RegisterResult, ServiceConnectionResult } from "./protocol.js";
 
-export const daemonFlags = [
+const daemonFlags = [
   jsonFlag,
   plainFlag,
   { name: "cloud", type: "boolean", description: "sign in to Cotal Cloud" },
@@ -75,22 +76,36 @@ const peerPid = defaultPeerPid;
 
 /** The daemon this invocation targets: the default one, or the one whose state lives in an explicit
  *  `--daemon-home`. The home must already exist as a real 0700 directory owned by this uid, and may
- *  not be the Cotal home itself; nothing is created, repaired or migrated. Mesh lookup always stays
+ *  not be the Cotal home itself. Linux install/uninstall may resolve a missing leaf only when its
+ *  surviving native service verifies ownership; other operations never create, repair or migrate it. Mesh lookup always stays
  *  the shared Cotal home's registry. */
 interface Target { readonly paths: DaemonPaths; readonly home?: string }
-function target(args: ParsedArgs): Target {
+function target(args: ParsedArgs, recoverMissingHome = false): Target {
   const raw = (args.values as { "daemon-home"?: string })["daemon-home"];
   if (raw === undefined) return { paths: daemonPaths() };
   if (!raw || !isAbsolute(raw)) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home needs an absolute directory path");
-  checkDir(raw);
-  const home = realpathSync(raw);
+  let home: string;
+  let missing = false;
+  try { checkDir(raw); home = realpathSync(raw); }
+  catch (error) {
+    if (!recoverMissingHome || process.platform !== "linux" || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    home = join(realpathSync(dirname(raw)), basename(raw));
+    missing = true;
+  }
   let cotalHome: string | undefined;
   try { cotalHome = realpathSync(homeCotalDir()); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
   if (home === cotalHome) throw new CommandFailure("refused", "USAGE_INVALID", "--daemon-home cannot be the Cotal home; name a separate directory for this daemon's state");
-  return { paths: daemonPathsFor(home), home };
+  const paths = daemonPathsFor(home);
+  if (missing) planUninstall(paths, home);
+  return { paths, home };
 }
-function resolveTarget(args: ParsedArgs): Target {
-  try { return target(args); }
+function resolveTarget(args: ParsedArgs, recoverMissingHome = false): Target {
+  try {
+    const resolved = target(args, recoverMissingHome);
+    // Native user-service tools need the same validated runtime as the socket client.
+    if (process.platform === "linux" && !process.env.XDG_RUNTIME_DIR) process.env.XDG_RUNTIME_DIR = `/run/user/${process.geteuid!()}`;
+    return resolved;
+  }
   catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new CommandFailure("refused", "TARGET_NOT_FOUND", "the --daemon-home directory does not exist; create it with mode 0700 first");
     throw asFailure(e);
@@ -173,6 +188,10 @@ async function daemonAccountChoice(args: ParsedArgs) {
     const discoveryPins = await resolveDiscoveryLogin(idp);
     return { url: discoveryPins.url, discoveryPins };
   }
+  if (typeof idp === "string") {
+    try { return { url: normalizeIdpUrl(cloudAuthUrl(idp)) }; }
+    catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
+  }
   return chooseAccountChoice({ ...args, positionals: [] }, "login");
 }
 
@@ -182,9 +201,7 @@ async function login(args: ParsedArgs): Promise<void> {
   const values = args.values as { idp?: string; "client-id"?: string };
   const chosen = await daemonAccountChoice(args);
   if (chosen === undefined) return;
-  let idp: string;
-  try { idp = normalizeIdpUrl(chosen.url); }
-  catch { throw new CommandFailure("refused", "USAGE_INVALID", "use an HTTPS provider auth URL, or an HTTP loopback IP URL, without embedded credentials, a query or a fragment"); }
+  const idp = normalizeIdpUrl(chosen.url);
   recordOperationContext({ target: { idp } });
   if (values["client-id"] !== undefined && !values["client-id"].trim()) throw new CommandFailure("refused", "USAGE_INVALID", "--client-id cannot be empty");
   const { paths } = resolveTarget(args);
@@ -334,12 +351,12 @@ async function serviceCommand(args: ParsedArgs, op: "service-connect" | "service
 async function unitCommand(args: ParsedArgs, op: "install" | "uninstall"): Promise<void> {
   const presentation = presentationOf(args.values);
   const values = args.values as { "dry-run"?: boolean; yes?: boolean };
-  const { paths, home } = resolveTarget(args);
+  const { paths, home } = resolveTarget(args, true);
   if (op === "install") {
     const dry = values["dry-run"] === true;
     const r = dry ? { ...planInstall(paths, home), state: "would-install" as const } : applyInstall(paths, home);
     writeResult(presentation, { command: "daemon install", target: { unit: r.unit }, result: r }, () => ({ sections: [
-      { title: dry ? "Would install" : "Installed", blocks: [
+      { title: r.alreadyInstalled ? "Already installed" : dry ? "Would install" : "Installed", blocks: [
         { kind: "fields", rows: [["Unit", r.unit], ["Path", r.unitPath], ["Digest", r.sha256], ["User", r.user], ...(r.mechanism === "systemd-user" ? [["Linger", r.lingerAlready ? "already enabled" : dry ? "would be enabled" : "enabled by this install"] as [string, string]] : []), ["Restart", r.restart], ["Started by", r.wantedBy], ...(r.daemonHome ? [["Daemon home", r.daemonHome] as [string, string]] : [])] },
         { kind: "lines", lines: [{ text: dry
           ? "Nothing was written, enabled or started."
@@ -457,7 +474,8 @@ async function setupUnderClosure(args: ParsedArgs): Promise<void> {
 
 async function serve(args: ParsedArgs): Promise<void> {
   const { recoverInterruptedUpdate, updateRuntime } = await import("@cotal-ai/cli/update");
-  const { recoverExecutionUpdate } = await import("./execution-update.js");
+  const { recoverExecutionUpdate, executionInstallRoot } = await import("./execution-update.js");
+  const { cleanupExecutionStore } = await import("../execution-store.js");
   // Unusable abandoned records retire under the updater lock. Unknown owners remain paused
   // without blocking startup. A valid snapshot whose restoration failed still waits for repair.
   let automaticCustodyPaused = false;
@@ -470,6 +488,7 @@ async function serve(args: ParsedArgs): Promise<void> {
   const observedLiveUpdater = !automaticCustodyPaused && deferredRecovery !== undefined && liveUpdateClosureOwner(deferredRecovery);
   const recoveryRuntime = { ...updateRuntime, recoverExecution: recoverExecutionUpdate };
   if (!automaticCustodyPaused && await recoverInterruptedUpdate(recoveryRuntime, true)) throw new Error("interrupted update restored the previous installation; restart the daemon with the restored CLI");
+  if (!updateRuntime.checkout() && logicalExecutionEntry()) cleanupExecutionStore(executionInstallRoot());
   const { paths, home } = resolveTarget(args);
   let running;
   let updates: ReturnType<typeof automaticUpdates> | undefined;
@@ -505,6 +524,16 @@ async function serve(args: ParsedArgs): Promise<void> {
     throw asFailure(e);
   }
   updates = automaticUpdates({ version: binVersion(), eligible: () => home === undefined && owned, prepare: async () => { const seats = await running.generationSeats(); if (seats.some(row => row.seats > 0)) throw new Error("running agents remain"); }, abort: async () => {}, report: line => process.stderr.write(`${line}\n`) });
+  if (process.platform === "linux" && process.env.COTAL_DAEMON_NATIVE_SERVICE === "1" && process.env.NOTIFY_SOCKET) {
+    // The helper stays in this unit's cgroup. NotifyAccess=all permits its readiness
+    // message, and the default notification barrier waits for systemd to consume it.
+    const notified = spawnSync("/usr/bin/systemd-notify", ["--ready"], { timeout: 5000, stdio: "pipe" });
+    if (notified.error || notified.status !== 0) {
+      await updates.close();
+      await running.close();
+      throw new Error("could not notify systemd that the daemon is ready");
+    }
+  }
   process.stdout.write(`daemon ready at ${running.paths.socket}\n`);
   const ownership = observe();
   await new Promise<void>((resolve, reject) => {
@@ -644,12 +673,12 @@ const daemonCommand: Command = {
     { name: "spaces", usage: "cotal daemon spaces [--refresh] [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon spaces", note: "list registered spaces" }, { command: "cotal daemon spaces --refresh", note: "refresh catalogs before listing spaces" }], summary: "list registered spaces; optionally refresh catalogs using the daemon-held sign-in", flagNames: ["refresh", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "start", usage: "cotal daemon start [--daemon-home <dir>] [--json|--plain]", examples: [{ command: "cotal daemon start", note: "start the recorded daemon service" }], summary: "start the unchanged, recorded daemon service without restarting a running instance", flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "desktop", usage: "cotal daemon desktop [--daemon-home <dir>]", examples: [{ command: "cotal daemon desktop < request.json", note: "serve one desktop request from a file" }], summary: "serve one bounded JSON request from the desktop app on stdin; credentials remain in the daemon", flagNames: ["daemon-home"], prepareMeshTarget: false },
-    { name: "setup", usage: "cotal daemon setup [--cloud | --idp <url>] [--no-browser] [--space <s>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "connect this computer to an account, or rerun using its sole signed-in provider; with --space, host its Manager (--no-manager and --wait require --space)", examples: [{ command: "cotal daemon setup", note: "refresh apps using the sole signed-in provider" }, { command: "cotal daemon setup --idp <url>", note: "connect your account, then enable spaces in the dashboard" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "cloud", "no-browser", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "setup", usage: "cotal daemon setup [--cloud | --idp <auth URL or name>] [--no-browser] [--space <s>] [--client-id <id>] [--no-manager [--wait <seconds>]] [--daemon-home <dir>] [--json|--plain]", summary: "connect this computer to an account, or rerun using its sole signed-in provider; with --space, host its Manager (--no-manager and --wait require --space)", examples: [{ command: "cotal daemon setup", note: "refresh apps using the sole signed-in provider" }, { command: "cotal daemon setup --idp <url>", note: "connect your account, then enable spaces in the dashboard" }, { command: "cotal daemon setup --space <space> --no-manager --wait 0", note: "report machine-service approval without hosting a Manager" }], flagNames: ["space", "cloud", "no-browser", "idp", "client-id", "wait", "no-manager", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "status", usage: "cotal daemon status [--space <s>] [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon for its status and hosted Managers over the local endpoint", examples: [{ command: "cotal daemon status", note: "ask the running daemon for its status" }, { command: "cotal daemon status --json", note: "the same as one JSON document" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "serve", usage: "cotal daemon serve [--daemon-home <dir>] [--json|--plain]", summary: "run the daemon in the foreground and serve its local endpoint (refusals honor --json)", examples: [{ command: "cotal daemon serve", note: "run the machine daemon in this terminal" }], flagNames: ["daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "install", usage: "cotal daemon install [--daemon-home <dir>] [--dry-run] [--json|--plain]", summary: "install the daemon as this platform's user service; Linux also enables linger", examples: [{ command: "cotal daemon install", note: "run it as a persistent user service" }, { command: "cotal daemon install --dry-run", note: "show the unit it would write" }], flagNames: ["daemon-home", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "uninstall", usage: "cotal daemon uninstall [--daemon-home <dir>] [--yes|--dry-run] [--json|--plain]", summary: "stop the daemon's user service, disable autostart and remove its unit", examples: [{ command: "cotal daemon uninstall", note: "remove its login unit" }], flagNames: ["daemon-home", "yes", "dry-run", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
-    { name: "login", usage: "cotal daemon login [--cloud | --idp <auth base URL>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["cloud", "no-browser", "idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
+    { name: "login", usage: "cotal daemon login [--cloud | --idp <auth URL or name>] [--no-browser] [--client-id <id>] [--daemon-home <dir>] [--json|--plain]", summary: "sign the running daemon in to a provider with device approval; the daemon keeps the session", examples: [{ command: "cotal daemon login --idp <url>", note: "sign the daemon in with device approval" }], flagNames: ["cloud", "no-browser", "idp", "client-id", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "connect-check", usage: "cotal daemon connect-check --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon whether it could register with a space as its own service; registers nothing", examples: [{ command: "cotal daemon connect-check --space <space>", note: "check whether it could register" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], reads: true, prepareMeshTarget: false },
     { name: "register", usage: "cotal daemon register --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "ask the running daemon to request its own service registration with a space; the space owner must approve it, and it does not connect", examples: [{ command: "cotal daemon register --space <space>", note: "ask a space to approve it as a service" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },
     { name: "service-connect", usage: "cotal daemon service-connect --space <s> [--daemon-home <dir>] [--json|--plain]", summary: "connect the running daemon to a space as its own approved service; succeeds only when the broker accepts the connection and the space accepts it as ready", examples: [{ command: "cotal daemon service-connect --space <space>", note: "connect it to a space" }], flagNames: ["space", "daemon-home", "json", "plain"], outputs: ["json", "plain"], prepareMeshTarget: false },

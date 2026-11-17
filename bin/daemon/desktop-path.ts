@@ -14,7 +14,7 @@ const run = (command: string, args: string[], remedy: string, timeoutRemedy = re
   });
 });
 
-export interface DiscoveredApplicationPath {
+interface DiscoveredApplicationPath {
   readonly path: string;
   readonly omittedRelativeEntries: readonly string[];
 }

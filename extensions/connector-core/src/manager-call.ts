@@ -42,9 +42,6 @@ function rememberLegacyRail(key: string): void {
   if (legacyRail.size > LEGACY_RAIL_MAX) legacyRail.delete(legacyRail.keys().next().value!);
 }
 
-/** Forget every remembered legacy-rail verdict. For tests that reuse a process across stacks. */
-export function forgetLegacyRail(): void { legacyRail.clear(); }
-
 /** Runs a call's submission under a goal follow. `prepare` runs the bearer command, opens the
  *  control connection and resolves the manager by the follow's deadline. It publishes nothing, so
  *  its failures surface as their own: a describe that draws no reply reports itself as unanswered,

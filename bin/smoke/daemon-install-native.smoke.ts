@@ -52,6 +52,8 @@ import { renderScheduledTask, scheduledTaskName, scheduledTaskService, windowsAr
 
 import { recoverPausedTask } from "../daemon/restart-recovery.js";
 
+for (const key of Object.keys(process.env)) if (key.startsWith("COTAL_")) delete process.env[key];
+
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
@@ -111,6 +113,7 @@ try {
     process.argv[1] = join(process.cwd(), "bin", "dist", "cotal.js");
     try {
       const unit = renderDaemonUnit(join(root, "units"), undefined);
+      check("systemd bounds startup and accepts the in-unit readiness helper", unit.bytes.includes("Type=notify\nNotifyAccess=all\nTimeoutStartSec=60\n"));
       check("systemd allows retirement and signals only daemon first", unit.bytes.includes("TimeoutStopSec=90\n") && unit.bytes.includes("KillMode=mixed\n"));
     } finally { process.argv[1] = entry!; process.execArgv = execArgv; process.env.PATH = path; }
   }
@@ -582,8 +585,45 @@ try {
   if (process.platform === "linux") {
     const cli = fileURLToPath(new URL("../dist/cotal.js", import.meta.url));
     const tool = readFileSync(new URL("fixtures/daemon-systemd-tool.mjs", import.meta.url), "utf8");
+    const quotedRoot = join(root, "quoted"); mkdirSync(quotedRoot, { mode: 0o700 });
+    const quotedNative = join(quotedRoot, "native"); mkdirSync(quotedNative, { mode: 0o700 });
+    const quotedHome = join(quotedRoot, "home with space"); mkdirSync(quotedHome, { mode: 0o700 });
+    const quotedRuntime = join(quotedRoot, "runtime"); mkdirSync(quotedRuntime, { mode: 0o700 });
+    mkdirSync(join(quotedRoot, "daemon"), { mode: 0o700 });
+    const quotedContext = join(quotedRoot, "context.json"), quotedCalls = join(quotedRoot, "calls.jsonl");
+    for (const name of ["systemctl", "loginctl"]) writeFileSync(join(quotedNative, name), `#!${process.execPath}\n${tool}`, { mode: 0o700 });
+    const quote = (value: string) => `$'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+    const special = join(quotedHome, "config 'quote' \\ café $(touch NEVER)");
+    const quotedCases: Array<{ name: string; environment: string; expected?: string; refusal?: string }> = [
+      { name: "quoted HOME", environment: `HOME=${quote(quotedHome)}`, expected: join(quotedHome, ".config") },
+      { name: "quoted XDG takes precedence", environment: `HOME=/wrong\nXDG_CONFIG_HOME=${quote(special)}`, expected: special },
+      { name: "octal UTF-8", environment: `HOME=$'${quotedHome}/caf\\303\\251'`, expected: join(quotedHome, "café", ".config") },
+      { name: "empty quoted XDG uses manager HOME", environment: `HOME=${quote(quotedHome)}\nXDG_CONFIG_HOME=$''`, expected: join(quotedHome, ".config") },
+      { name: "unterminated quote", environment: "HOME=$'/broken", refusal: "SCHEMA_INVALID" },
+      { name: "trailing shell content", environment: "HOME=$'/home';touch NEVER", refusal: "SCHEMA_INVALID" },
+      { name: "unknown escape", environment: "HOME=$'/home/\\q'", refusal: "SCHEMA_INVALID" },
+      { name: "invalid UTF-8", environment: "HOME=$'/home/\\377'", refusal: "SCHEMA_INVALID" },
+      { name: "escaped newline", environment: "HOME=$'/home/\\nname'", refusal: "TARGET_UNAVAILABLE" },
+      { name: "escaped NUL", environment: "HOME=$'/home/\\000name'", refusal: "TARGET_UNAVAILABLE" },
+      { name: "relative quoted path", environment: "HOME=$'relative home'", refusal: "TARGET_UNAVAILABLE" },
+      { name: "duplicate directory", environment: `HOME=${quote(quotedHome)}\nHOME=/other`, refusal: "SCHEMA_INVALID" },
+    ];
+    for (const cell of quotedCases) {
+      writeFileSync(quotedContext, JSON.stringify({ home: quotedHome, calls: quotedCalls, environmentOutput: cell.environment }), { mode: 0o600 });
+      const env = { ...process.env, HOME: quotedHome, USER: "smoke", LOGNAME: "smoke", COTAL_HOME: join(quotedRoot, "cotal"), XDG_CONFIG_HOME: "/wrong-shell-config", XDG_RUNTIME_DIR: quotedRuntime, PATH: `${quotedNative}:/usr/bin:/bin`, DAEMON_UNIT_FIXTURE: quotedContext, DO_NOT_TRACK: "1", NO_COLOR: "1" };
+      for (const format of ["--plain", "--json"]) {
+        const child = spawnSync(process.execPath, [cli, "daemon", "install", "--daemon-home", join(quotedRoot, "daemon"), "--dry-run", format], { cwd: quotedRoot, env, encoding: "utf8", timeout: 30_000 });
+        const output = `${child.stdout}${child.stderr}`;
+        const doc = format === "--json" ? JSON.parse(child.stdout) as { result?: { unitPath?: string }; error?: { code?: string } } : undefined;
+        check(`N6 ${cell.name} ${format}`, !child.error && !child.signal && (cell.refusal
+          ? child.status === (cell.refusal === "SCHEMA_INVALID" ? 1 : 2) && (doc ? doc.error?.code === cell.refusal : output.includes(cell.refusal))
+          : child.status === 0 && (doc ? doc.result?.unitPath === join(cell.expected!, "systemd", "user", `cotal-daemon-${sha(join(quotedRoot, "daemon")).slice(0, 16)}.service`) : output.includes(cell.expected!))), { status: child.status, output });
+      }
+    }
+    check("N6 quoted directories never execute shell text or publish a unit", !existsSync(join(quotedRoot, "NEVER")) && !existsSync(join(quotedRoot, "daemon", "service-unit.json")));
+    check("N6 quoted directory previews use only directory and linger reads", readFileSync(quotedCalls, "utf8").trim().split("\n").every(line => ["directory-read", "linger-read"].includes(JSON.parse(line).operation)));
     const runtime = join(root, "rt"); mkdirSync(runtime, { mode: 0o700 });
-    for (const kind of ["default", "managed", "outside-path", "wrong-unit", "copied-home", "unrecorded-default", "unrecorded-managed", "unrecorded-directory", "unrecorded-symlink", "unrecorded-uninspectable"]) {
+    for (const kind of ["default", "managed", "lost-source-stop", "outside-path", "wrong-unit", "copied-home", "unrecorded-default", "unrecorded-managed", "unrecorded-directory", "unrecorded-symlink", "unrecorded-uninspectable"]) {
       const dir = join(root, `${kind}\u2014unicode`); mkdirSync(dir, { mode: 0o700 });
       for (const name of ["home", "cotal", "a", "b", "config", "native"]) mkdirSync(join(dir, name), { mode: 0o700 });
       const a = join(dir, "a"), b = join(dir, "b");
@@ -599,7 +639,7 @@ try {
       };
       const call = (verb: string, home: string | undefined, flags: string[] = [], plain = false) => {
         const child = invoke(verb, home, [...flags, plain ? "--plain" : "--json"]);
-        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string }; error?: { code: string; remedy?: string } };
+        const doc = (plain ? {} : JSON.parse(child.stdout)) as { outcome?: string; result?: { state: string; unitPath: string; unit?: string; alreadyInstalled?: boolean }; error?: { code: string; remedy?: string } };
         return { status: child.status, doc, out: child.stdout };
       };
       const effects = (): number => existsSync(context.calls) ? readFileSync(context.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { operation: string }).filter((c) => !["directory-read", "linger-read"].includes(c.operation)).length : 0;
@@ -625,7 +665,7 @@ try {
         check(`N7 ${kind} plain preview refuses ${expected}`, plain.status === 2 && `${plain.stdout}${plain.stderr}`.includes(expected), { status: plain.status, stdout: plain.stdout, stderr: plain.stderr });
         check(`N7 ${kind} JSON preview and apply refuse ${expected}`, results.every((r) => r.status === 2 && r.doc.outcome === "refused" && r.doc.error?.code === expected), results);
         const calls = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n").map((line) => JSON.parse(line) as { operation: string });
-        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === 3 && calls.every((c) => c.operation === "directory-read"), calls);
+        check(`N7 ${kind} reads only the manager directory before refusing`, calls.length === (kind === "unrecorded-uninspectable" ? 3 : 6) && calls.every((c) => c.operation === "directory-read"), calls);
         const unchanged = kind === "unrecorded-uninspectable" ? readFileSync(join(context.config, "systemd"), "utf8") === foreign
           : kind === "unrecorded-directory" ? lstatSync(unitPath).isDirectory()
           : kind === "unrecorded-symlink" ? lstatSync(unitPath).isSymbolicLink() && readlinkSync(unitPath) === missing && !existsSync(missing)
@@ -636,10 +676,22 @@ try {
       const installed = call("install", home, [], true);
       if (installed.status !== 0) throw new Error(`N6 ${kind} install fixture refused ${JSON.stringify(installed.doc)}`);
       const receipt = JSON.parse(readFileSync(receiptFile, "utf8")) as UnitReceipt;
+      if (kind === "lost-source-stop") {
+        rmSync(receiptFile);
+        const sourceBefore = readFileSync(receipt.unitPath, "utf8");
+        writeFileSync(configFile, JSON.stringify({ ...context, changeSourceDuringStop: receipt.unitPath }), { mode: 0o600 });
+        const before = readFileSync(context.calls, "utf8");
+        const recovery = call("install", home);
+        const native = readFileSync(context.calls, "utf8").slice(before.length).trim().split("\n").map(line => JSON.parse(line) as { operation: string });
+        check("N7 lost receipt recovery refuses a source changed during native stop", recovery.status === 2 && recovery.doc.error?.code === "CONFLICT", recovery);
+        check("N7 changed source during stop gains no receipt or start", !existsSync(receiptFile) && native.some(row => row.operation === "stop") && !native.some(row => row.operation === "start") && readFileSync(receipt.unitPath, "utf8") !== sourceBefore, native);
+        continue;
+      }
       if (kind === "default" || kind === "managed") {
         const before = effects();
+        const receiptBefore = readFileSync(receiptFile, "utf8"), sourceBefore = readFileSync(receipt.unitPath, "utf8");
         const repeats = [call("install", home, ["--dry-run"]), call("install", home)];
-        check(`N7 recorded ${kind} install refuses another preview or apply`, repeats.every((r) => r.status === 2 && r.doc.error?.code === "CONFLICT") && effects() === before, repeats);
+        check(`N7 recorded ${kind} install succeeds without native effects or rewrites`, repeats.every((r) => r.status === 0 && r.doc.result?.alreadyInstalled === true) && effects() === before && readFileSync(receiptFile, "utf8") === receiptBefore && readFileSync(receipt.unitPath, "utf8") === sourceBefore, repeats);
         const again = call("install", home);
         const suffix = home ? ` --daemon-home '${home}'` : "";
         check(`N6 ${kind} install hints retain the selected daemon`, installed.out.includes(`Read it with \`cotal daemon status${suffix}\`, and remove it with \`cotal daemon uninstall${suffix}\`.`), installed.out);
@@ -648,9 +700,9 @@ try {
         const copied = spawnSync("/bin/sh", ["-c", `cotal() { exec "$COPY_NODE" "$COPY_CLI" "$@"; }\n${printed} --dry-run --json`], { cwd: dir, env: { ...env, COPY_NODE: process.execPath, COPY_CLI: cli }, encoding: "utf8", timeout: 30_000 });
         const copiedDoc = JSON.parse(copied.stdout) as { result?: { unit?: string; state?: string } };
         check(`N6 copied ${kind} install hint reaches its recorded Unicode-home unit`, copied.status === 0 && copiedDoc.result?.unit === receipt.unit && copiedDoc.result.state === "would-remove", copiedDoc);
-        check(`N6 repeat ${kind} install names the selected uninstall`, again.status === 2 && again.doc.error?.code === "CONFLICT" && again.doc.error.remedy === `remove it with \`cotal daemon uninstall${suffix}\` before installing again`, again.doc);
+        check(`N6 repeat ${kind} install reports the same verified unit`, again.status === 0 && again.doc.result?.alreadyInstalled === true && again.doc.result?.unit === receipt.unit, again.doc);
         const retry = spawnSync(process.execPath, [cli, "daemon", "install", ...(home ? ["--daemon-home", home] : []), "--plain"], { cwd: dir, env, encoding: "utf8", timeout: 30_000 });
-        check(`N6 repeat ${kind} install prints its Next in plain output`, retry.status === 2 && retry.stderr.includes(again.doc.error!.remedy!), retry.stderr);
+        check(`N6 repeat ${kind} install acknowledges the existing service in plain output`, retry.status === 0 && retry.stdout.includes("Already installed") && !retry.stderr.includes("before installing again"), { stdout: retry.stdout, stderr: retry.stderr });
 
         check(`N6 valid ${kind} receipt plans and starts`, call("uninstall", home, ["--dry-run"]).status === 0 && call("start", home).status === 0);
         const machineHome = home ?? env.COTAL_HOME!;

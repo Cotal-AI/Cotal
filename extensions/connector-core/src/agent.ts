@@ -14,6 +14,7 @@ import {
   peerLabel,
   shownPeerName,
   CotalEndpoint,
+  DmDurableMissingError,
   acquireLocalConsumer,
   type HeldLock,
   BASELINE_LIFECYCLE_ENDPOINT,
@@ -37,7 +38,9 @@ import {
   type AnycastStatus,
   type AnycastTakeOutcome,
   ANYCAST_NOTICE_KEY,
+  MENTION_NOTICE_KEY,
   partsToText,
+  canonicalJson,
   assertValidRole,
   type MessageMeta,
   type Presence,
@@ -130,8 +133,10 @@ export interface MeshAgentOptions {
    *  so `meta.cwd` stays unknown until the harness reports it through {@link MeshAgent.setCwd}. */
   withholdProcessCwd?: boolean;
   /** The connector already decided to arm the event plane, then removed `COTAL_EVENTS` from the
-   *  process environment. The card follows this decision instead of reading the scrubbed environment. */
+   *  process environment. The card and startup check follow this decision. */
   eventsArmed?: boolean;
+  /** The event state root read by the connector before it scrubbed the process environment. */
+  eventsWorkspaceRoot?: string;
   /** A once task this seat pulled and did not claim within {@link ONCE_HANDOFF_MS} is sealed and
    *  reported. For a connector whose wake for the task is a push it cannot confirm, so a dead push
    *  cannot hold a served task. */
@@ -183,9 +188,10 @@ export interface InboxItem {
    *  unacked past its ack wait and may have run, here or on another reader. */
   deliveryCount?: number;
   /** Set on a DM from the space's delivery daemon about one of this session's own role requests
-   *  (SPEC §8.1): its sender was checked against the delivery lease holder. A notice asks for no
-   *  reply and answers no question. */
-  notice?: "anycast";
+   *  (`anycast`, SPEC §8.1) or about a channel post whose mention the daemon could not deliver
+   *  (`mention`, SPEC §8): its sender was checked against the delivery lease holder. A notice asks
+   *  for no reply and answers no question. */
+  notice?: DeliveryNotice;
 }
 
 /** A bounded, non-consuming view of the currently buffered inbox for presentation-only surfaces. */
@@ -215,7 +221,8 @@ interface Pending {
    *  holds that copy. Both absent on a live copy. */
   redelivery?: Delivery["redelivery"];
   ownedUntil?: number;
-  /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
+  /** Delivery class, set at receive time. Quiet ambient stays pull-only even if the mode later
+   *  changes, and an automatic entry becomes pull-only when its channel is quieted, muted or left. */
   pullOnly: boolean;
   /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
   receivedAt: number;
@@ -401,10 +408,18 @@ export interface ExactDrainResult {
 
 import { createHash, randomUUID } from "node:crypto";
 
-/** Whether a DM carries a delivery daemon's anycast notice part (SPEC §8.1). Its sender is still to
- *  be checked against the delivery lease. */
-function carriesAnycastNotice(m: CotalMessage): boolean {
-  return m.parts.some((p) => p.kind === "data" && typeof p.data === "object" && p.data !== null && !Array.isArray(p.data) && ANYCAST_NOTICE_KEY in p.data);
+/** What a delivery daemon's notice is about. */
+export type DeliveryNotice = "anycast" | "mention";
+
+/** Which delivery daemon notice part a DM carries, anycast (SPEC §8.1) or mention (SPEC §8), if any.
+ *  Its sender is still to be checked against the delivery lease. */
+function deliveryNoticeOf(m: CotalMessage): DeliveryNotice | undefined {
+  for (const p of m.parts) {
+    if (p.kind !== "data" || typeof p.data !== "object" || p.data === null || Array.isArray(p.data)) continue;
+    if (ANYCAST_NOTICE_KEY in p.data) return "anycast";
+    if (MENTION_NOTICE_KEY in p.data) return "mention";
+  }
+  return undefined;
 }
 
 /** #662: what an id-less channel delivery shares with its stream copy. Both are the same published
@@ -740,9 +755,12 @@ export class MeshAgent extends EventEmitter {
       watchPresence: false,
       beforeBind: async () => {
         const env = this.launchEnv ?? process.env;
-        if (this.eventStartupChecked || !eventPlaneArmed(config, env)) return;
+        if (this.eventStartupChecked || !(options.eventsArmed ?? eventPlaneArmed(config, env))) return;
         try {
-          await checkEventStartup(this.ep, env);
+          await checkEventStartup(this.ep, {
+            ...env,
+            COTAL_WORKSPACE_ROOT: options.eventsWorkspaceRoot ?? env.COTAL_WORKSPACE_ROOT,
+          });
           this.eventStartupChecked = true;
         } catch (error) {
           // A space that requires events cannot admit a seat whose transcript cannot start.
@@ -771,7 +789,8 @@ export class MeshAgent extends EventEmitter {
       },
     });
     this.ep.on("message", (m: CotalMessage, d: Delivery, meta?: MessageMeta) => {
-      if (meta?.kind === "dm" && carriesAnycastNotice(m)) void this.ingestNotice(m, d, meta);
+      const notice = meta?.kind === "dm" ? deliveryNoticeOf(m) : undefined;
+      if (notice !== undefined) void this.ingestNotice(m, d, meta!, notice);
       else this.ingest(m, d, meta);
     });
     this.ep.on("error", (e: Error) => this.handleEndpointError(e));
@@ -1256,6 +1275,10 @@ export class MeshAgent extends EventEmitter {
         : `Reconnected ✓ (${this.config.name}@${this.config.space})`;
       return { ok: true, message: `${message}${stalled}` };
     } catch (e) {
+      if (e instanceof DmDurableMissingError) {
+        this.handleEndpointWarning(e);
+        return { ok: false, message: `Reconnect failed: ${missingInboxIssue(e)}` };
+      }
       return { ok: false, message: `Reconnect failed: ${(e as Error).message || (e as Error).name}. Still retrying automatically — or run /reconnect to retry now.` };
     }
   }
@@ -1264,12 +1287,12 @@ export class MeshAgent extends EventEmitter {
 
   /** A DM shaped as a delivery daemon's notice is one only when its authenticated sender holds the
    *  space's delivery lease. Any other sender's copy is an ordinary DM. */
-  private async ingestNotice(m: CotalMessage, delivery: Delivery, meta: MessageMeta): Promise<void> {
+  private async ingestNotice(m: CotalMessage, delivery: Delivery, meta: MessageMeta, notice: DeliveryNotice): Promise<void> {
     const holder = await this.ep.deliveryLeaseHolder(0);
-    this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id);
+    this.ingest(m, delivery, meta, holder !== undefined && holder === m.from.id ? notice : undefined);
   }
 
-  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice = false): void {
+  private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta, notice?: DeliveryNotice): void {
     // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
     // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
     // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
@@ -1318,7 +1341,7 @@ export class MeshAgent extends EventEmitter {
     if (!meta)
       throw new Error(`message ${m.id} delivered without MessageMeta — its class is unauthenticated`);
     const item = this.toInboxItem(m, meta.kind, meta.historical);
-    if (notice) item.notice = "anycast";
+    if (notice) item.notice = notice;
     // A notice asks for nothing and answers nothing. A role request awaiting its take is recorded
     // as asked of us only once it is taken, since a refused take drops it unseen.
     else if (!delivery.take) this.noteDirected(item);
@@ -2248,9 +2271,10 @@ export class MeshAgent extends EventEmitter {
    *  the whole map to presence (best-effort; advisory). Per-instance + runtime: it NEVER writes the
    *  agent file (a shared template) and resets on restart.
    *
-   *  **Prospective only:** it does NOT purge messages already buffered from that channel — those were
-   *  already received and still drain/wake per their original handling. Muting changes what arrives
-   *  next, not what's already in the inbox. */
+   *  It does not purge messages already buffered from that channel. Quiet makes its buffered ambient
+   *  pull-only, and muted makes everything buffered from it pull-only, mentions included, so neither
+   *  enters another turn and both stay readable with cotal_inbox. `normal` makes nothing automatic
+   *  again. */
   async setChannelMode(channel: string, mode: ChannelMode | "normal"): Promise<void> {
     if (!isConcreteChannel(channel))
       throw new Error(`"${channel}" must be a concrete channel (no wildcard) to set its attention`);
@@ -2258,9 +2282,25 @@ export class MeshAgent extends EventEmitter {
       throw new Error(`"${channel}" is not within your read ACL (allowSubscribe) [${this.config.allowSubscribe.join(", ")}]`);
     await this.inOrder(() => {
       if (mode === "normal") this.channelModes.delete(channel);
-      else this.channelModes.set(channel, mode);
+      else {
+        this.channelModes.set(channel, mode);
+        this.lowerBuffered(channel, mode === "muted");
+      }
       return this.ep.setChannelModes(this.channelModeEntries());
     });
+  }
+
+  /** Make the automatic entries buffered from `channel` (a concrete channel or a pattern) pull-only,
+   *  mentions of this agent too when `mentions` is set, except on a channel `keep` still covers. An
+   *  entry a host is handing over keeps its lane, since the turn carrying it acks it. */
+  private lowerBuffered(channel: string, mentions: boolean, keep: string[] = []): void {
+    for (const p of this.inbox) {
+      if (p.pullOnly || p.item.kind !== "channel" || !p.item.channel || !channelInAllow([channel], p.item.channel)) continue;
+      if (channelInAllow(keep, p.item.channel)) continue;
+      if ((p.item.mentionsMe && !mentions) || this.inFlightIds.has(p.item.recvKey)) continue;
+      p.pullOnly = true;
+      this.excludeFromFocus(p.item);
+    }
   }
 
   /** Set the attention mode. Entering `focus` captures the chat frontier as the focus-watermark
@@ -2652,6 +2692,8 @@ export class MeshAgent extends EventEmitter {
 
   // ---- supervision ---------------------------------------------------------
 
+  private readonly pendingSpawns = new Map<string, Promise<ControlReply & { instanceId?: string }>>();
+
   /** Ask the manager to spawn a new teammate into this space (its `spawn` action).
    *  The request uses {@link SPAWN_TIMEOUT_MS} as its floor; after acceptance, core follows through
    *  the exact connector-selected readiness budget carried by the acceptance.
@@ -2701,10 +2743,31 @@ export class MeshAgent extends EventEmitter {
     const args = { name, role, agent: opts?.agent, model: requested || undefined, variant: opts?.variant, launchOptions: opts?.launchOptions, cwd: opts?.cwd, prompt: opts?.prompt, events: opts?.events, runtime: opts?.runtime, join: opts?.join, persona: opts?.persona, callerAcl: { allowSubscribe: this.config.allowSubscribe, allowPublish: this.config.allowPublish }, once: opts?.once };
     // P2 item 2 (2b): spawn is an ACTION — follow the acceptance to the terminal so cotal_spawn
     // stays synchronous (the MCP reply carries the live outcome, not the pre-launch acceptance).
-    const reply = await this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
+    const key = canonicalJson(JSON.parse(JSON.stringify({ ...args, instance, caller: this.ep.principal, lifecycleUid: this.config.lifecycleUid })));
+    const previous = this.pendingSpawns.get(key);
+    if (previous) {
+      const pending = await previous;
+      const allocation = pending.data as { name?: string; uid?: string } | undefined;
+      // Only an exact-incarnation join or confirmed absence releases this retry claim. A failed
+      // read is not evidence that the previous launch vanished.
+      if (allocation?.name && allocation.uid) {
+        const inspected = await this.managerInvoke("ps", undefined, pending.instanceId ? { instanceId: pending.instanceId } : {});
+        const rows = Array.isArray(inspected.data) ? inspected.data as Array<{ name?: string; lifecycleUid?: string; presenceIdentityVerified?: boolean; status?: string }> : undefined;
+        const row = rows?.find(r => r.name === allocation.name);
+        if (inspected.ok && rows && (!row || typeof row.lifecycleUid === "string" && row.lifecycleUid !== allocation.uid || row.lifecycleUid === allocation.uid && (row.presenceIdentityVerified === true || row.status === "exited"))) {
+          if (this.pendingSpawns.get(key) === previous) this.pendingSpawns.delete(key);
+        } else return pending;
+      } else return pending;
+    }
+    const invoking = this.managerInvoke("spawn", args, { deadlineMs: SPAWN_TIMEOUT_MS, follow: true, ...(instance !== undefined ? { instanceId: instance } : {}) });
+    this.pendingSpawns.set(key, invoking);
+    const reply = await invoking;
+    if (reply.ok || reply.code !== "uncertain" && reply.outcome !== "unknown") {
+      if (this.pendingSpawns.get(key) === invoking) this.pendingSpawns.delete(key);
+    }
     // There is no allocated name to inspect before acceptance. Preserve the submission's goal
     // rather than auditing the requested persona alias and discarding the unknown result.
-    if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown) return reply;
+    if ((reply.data as { submissionUnknown?: boolean } | undefined)?.submissionUnknown || !reply.ok && reply.outcome === "unknown") return reply;
     // The record is forwarded as written and the manager records its model as written, so the
     // inline model is audited as sent.
     const pinned = requested || opts?.persona?.model;
@@ -3321,6 +3384,16 @@ export class MeshAgent extends EventEmitter {
       // A sealed once task is not surfaced: its handoff ended unconfirmed and has been reported.
       if (t?.once !== undefined && !confirmOnceHandoff(this.onceUid(), id)) continue;
       if (t) t.surfaced = true;
+    }
+  }
+
+  /** Undo {@link commitSurfacedTurns} for run turns whose dispatch the harness refused after
+   *  acknowledging it. The model never saw them, so they are offered again rather than yielding
+   *  `done` at the next turn boundary. A once task's confirmed handoff is never undone. */
+  unsurfaceTurns(goalIds: readonly string[]): void {
+    for (const id of goalIds) {
+      const t = this.activeTurns.get(id);
+      if (t && t.once === undefined) t.surfaced = false;
     }
   }
 
@@ -3942,10 +4015,13 @@ export class MeshAgent extends EventEmitter {
     return this.ep.joinChannel(channel);
   }
 
-  /** Leave a channel mid-session (refuses to leave the last one). */
+  /** Leave a channel mid-session (refuses to leave the last one). Ambient already buffered from it
+   *  becomes pull-only, so it enters no later turn. A mention of this agent keeps its lane. */
   async leaveChannel(channel: string): Promise<{ left: boolean }> {
     await this.requireConnected();
-    return this.ep.leaveChannel(channel);
+    const result = await this.ep.leaveChannel(channel);
+    if (result.left) this.lowerBuffered(channel, false, this.joinedChannels());
+    return result;
   }
 
   // ---- internals -----------------------------------------------------------
@@ -4014,6 +4090,9 @@ export class MeshAgent extends EventEmitter {
   }
 
   private handleEndpointWarning(error: Error): void {
+    // The rebind loop reports a failed attempt as a warning. A missing DM durable fails every attempt
+    // until the session is replaced, so it is the current connection failure, not a passing one.
+    if (error instanceof DmDurableMissingError && !this._connected && !this._stopping) this.lastConnectionError = missingInboxIssue(error);
     this.logEndpointNotice("warning", error);
   }
 
@@ -4047,6 +4126,14 @@ export interface RosterRead {
  *  one failure differently. */
 export function presenceReadCondition(failure: Error): string {
   return `the presence read failed (${failure.message})`;
+}
+
+/** Why an authenticated session whose DM durable is gone cannot reconnect, and what restores it. The
+ *  route comes first because the orientation card shows only the first 300 characters. */
+function missingInboxIssue(e: DmDurableMissingError): string {
+  return "this session's direct-message inbox is missing on the broker, and on an authenticated mesh only a new launch " +
+    "creates one, so reconnecting cannot restore it. Restart this session, or respawn it if a manager launched it. " +
+    `Missing durable "${e.durable}" on stream "${e.stream}". Retries continue in case a broker restore brings it back.`;
 }
 
 /** Names already known that differ from `channel` by one insertion, deletion, or substitution. */

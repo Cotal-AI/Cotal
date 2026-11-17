@@ -12,7 +12,7 @@ import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-m
 import { withInstallUmask } from "../lib/install-umask.js";
 import { runSeed } from "../seed/reconcile.js";
 import { assertStageVerifier, stageExtensions } from "../lib/extension-stage.js";
-import { globalConfigDir } from "@cotal-ai/core";
+import { connectorConfigDir } from "@cotal-ai/workspace";
 import { inspectLock, extensionNpmMutationPath } from "@cotal-ai/workspace";
 import { selfArgv } from "../lib/self-exec.js";
 import { spawnSync } from "node:child_process";
@@ -73,7 +73,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
   // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
   if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
+  if (sub === "add" && rest.length === 1 && rest[0]) return addExtension(atThisVersion(rest[0])).catch(exitOnInterruptedAdd);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
@@ -88,7 +88,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     for (const line of lines) console.log(line);
     return;
   }
-  if (sub === "remove" && rest[0]) return remove(rest[0]);
+  if (sub === "remove" && rest.length === 1 && rest[0]) return remove(rest[0]);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
@@ -222,7 +222,7 @@ export async function installExtensionSet(
   opts?: { isolate?: boolean },
 ): Promise<void> {
   if (!requests.length) return;
-  const ownerConfig = globalConfigDir();
+  const ownerConfig = connectorConfigDir();
   const owner = inspectLock(join(ownerConfig, ".extensions.lock"));
   if (owner.state !== "active" || owner.owner.pid !== process.pid) throw new Error("extension set requires its caller's prefix writer lock");
   const stage = stageExtensions();
@@ -582,9 +582,22 @@ async function removeUnlocked(pkg: string): Promise<void> {
   if (!entry) throw new Error(`no installed extension "${pkg}" - see \`cotal ext list\``);
   assertExtensionServiceInstancesStopped(pkg);
   const processes = await extensionProcesses(entry);
-  const recorded = processes.filter(({ pidPath }) => existsSync(pidPath));
+  const recorded = processes.filter(({ pidPath }) => {
+    if (!existsSync(pidPath)) return false;
+    const before = lstatSync(pidPath);
+    if (!before.isFile()) return true;
+    const raw = readFileSync(pidPath, "utf8");
+    const pid = parsePid(raw);
+    if (pid === undefined || probeLiveness(pid) !== "dead") return true;
+    // A concurrent startup may have replaced the stale record. Reclaim only the file we probed;
+    // the create-only reservations below still fence startup for the duration of uninstall.
+    const current = lstatSync(pidPath);
+    if (current.dev !== before.dev || current.ino !== before.ino || readFileSync(pidPath, "utf8") !== raw) return true;
+    rmSync(pidPath);
+    return false;
+  });
   if (recorded.length)
-    throw new Error(`${pkg} still owns recorded local processes:\n${recorded.map(describeProcess).map((item) => `  ${item}`).join("\n")}\nStop or clean them from the listed mesh roots before removing the extension.`);
+    throw new Error(`${pkg} still owns recorded local processes: ${recorded.map(describeProcess).join("; ")}. Stop or clean them from the listed mesh roots before removing the extension.`);
 
   // Reserve every provider pidfile through uninstall. A concurrent extension startup then loses
   // its own atomic pid claim instead of coming online after the liveness scan but before removal.

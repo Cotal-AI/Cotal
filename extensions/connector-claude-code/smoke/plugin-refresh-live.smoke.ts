@@ -65,8 +65,8 @@ const TERMINAL: NodeJS.ProcessEnv = Object.fromEntries(
 /** The cotal server Claude Code would start in `dir`, as `claude mcp list` resolves and connects it. */
 function startedIn(dir: string): string {
   const out = spawnSync("claude", ["mcp", "list"], { cwd: dir, encoding: "utf8", timeout: 120_000, env: TERMINAL });
-  const line = `${out.stdout}${out.stderr}`.split("\n").find((l) => l.startsWith("plugin:cotal:cotal:"));
-  assert.ok(line, `claude mcp list in ${dir} names the cotal plugin's server:\n${out.stdout}${out.stderr}`);
+  const line = `${out.stdout}${out.stderr}`.split("\n").find((l) => l.startsWith("cotal:"));
+  assert.ok(line, `claude mcp list in ${dir} names the installed cotal server:\n${out.stdout}${out.stderr}`);
   return line;
 }
 
@@ -125,7 +125,7 @@ try {
   ok("refresh rewrites the copy every project runs, and installs nothing new", () => {
     assert.notEqual(folderVersion(), first);
     assert.deepEqual(folderCli(), cli("two"));
-    assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; reload plugins or reopen Claude to load it in running sessions`);
+    assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; reload plugins or reopen Claude to load it in running sessions; user MCP entry cotal current`);
     assert.deepEqual(installs(), ["user"]);
   });
   ok("after the refresh both projects start the rewritten copy, which is the one Claude Code resolves", () => {

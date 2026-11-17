@@ -1286,9 +1286,16 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  48 = `list-dir` lists bounded child directory names on the selected Manager's host.
  *
  *  49 = `spawn` takes `eventPayloads` to withhold tool arguments and results. The input schema
- *  is closed, so a revision-48 contract rejects this field. */
+ *  is closed, so a revision-48 contract rejects this field.
+ *
+ *  50 = every `status.connectors` row required `permissionRequests`, for the harness permission
+ *  requests that revision 51 withdraws.
+ *
+ *  51 = `status.connectors` rows no longer carry `permissionRequests`. The status output schema is
+ *  closed, so a revision-50 contract rejects a row without the field and this one rejects a row
+ *  with it. The number moves forward because revision 50 was published. */
 export function managerClusterDocument(): ClusterDocument {
-  return buildClusterDocument(MANAGER_CLUSTER_URN, 49, ROWS);
+  return buildClusterDocument(MANAGER_CLUSTER_URN, 51, ROWS);
 }
 
 /** Revision, count, and names from the shipped cluster document. Reached smokes derive surface pins from this. */
@@ -1339,7 +1346,7 @@ export function managerBrowserContractSource(): BrowserContractSource {
  *  manager can run its shared admission chokepoint and derive the caller principal; each returns
  *  the command's output value (the compiled output contract validates it at the serve boundary).
  *  Kept as a narrow interface so the contract module stays broker-free. */
-export interface ManagerServiceHandlers {
+interface ManagerServiceHandlers {
   vitals(ctx: EpServeContext): ManagerVitals | Promise<ManagerVitals>;
   status(ctx: EpServeContext): ManagerStatus | Promise<ManagerStatus>;
   ps(ctx: EpServeContext): unknown | Promise<unknown>;

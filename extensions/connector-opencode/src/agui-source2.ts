@@ -58,7 +58,7 @@ export interface OpenCode2MessagePage {
 
 /** Fetches the newest page, or the page after the one whose `cursor.next` is passed. Injected so the
  *  source can be read without a server. */
-export type FetchMessagePage = (next: string | undefined) => Promise<OpenCode2MessagePage>;
+type FetchMessagePage = (next: string | undefined) => Promise<OpenCode2MessagePage>;
 
 /** One element of an assistant message at its position, or a message with no element at `-1`. */
 export interface OpenCode2Record {
@@ -98,7 +98,7 @@ function isSettled(record: OpenCode2Record, turnEnded: boolean): boolean {
   return message.time.streamed !== undefined;
 }
 
-export interface OpenCode2SessionSourceOptions {
+interface OpenCode2SessionSourceOptions {
   page: FetchMessagePage;
   /** Called once per cursor whose record is no longer in the session, which is what a revert does.
    *  The read stays correct without it, because the cursor is compared as an order. */

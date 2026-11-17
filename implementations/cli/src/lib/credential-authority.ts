@@ -5,8 +5,8 @@ import {
 } from "@cotal-ai/workspace";
 
 /** Offline resolution retains stale registrations instead of repairing the selected target. */
-export function resolveMintTarget(values: { space?: string; server?: string }): MeshTarget {
-  try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true }); }
+export function resolveMintTarget(values: { space?: string; server?: string }, allowStoppedLocal = false): MeshTarget {
+  try { return resolveMeshTarget(process.cwd(), { ...values, readOnly: true, allowStoppedLocal }); }
   catch (error) {
     if (!isWorkspaceTargetError(error)) throw error;
     const { remedy } = workspaceErrorParts({ kind: "target", error });
@@ -15,8 +15,8 @@ export function resolveMintTarget(values: { space?: string; server?: string }): 
 }
 
 /** Fixed profiles and endpoint callers share the same explicit local signing authority. */
-export async function staticMintAuthority(values: { space?: string; server?: string }, reportTarget: Record<string, unknown>) {
-  const target = resolveMintTarget(values), { root, space } = target;
+export async function staticMintAuthority(values: { space?: string; server?: string }, reportTarget: Record<string, unknown>, allowStoppedLocal = false) {
+  const target = resolveMintTarget(values, allowStoppedLocal), { root, space } = target;
   const currentRoot = findCotalRoot(), store = workspaceSecretStore(root);
   const auth = await getSpaceAuth(store, space);
   const currentAuth = canonicalRoot(currentRoot) === canonicalRoot(root) ? auth : await getSoleSpaceAuth(workspaceSecretStore(currentRoot), authDir(currentRoot));

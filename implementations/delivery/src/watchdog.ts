@@ -27,7 +27,7 @@ export type LeaseReading =
  * What the daemon does about it. `keep-serving` never ends the process; `reacquire` attempts the
  * atomic re-create and only then decides; `exit` is a genuine loss of the single-holder slot.
  */
-export type LeaseAction = "keep-serving" | "reacquire" | "exit";
+type LeaseAction = "keep-serving" | "reacquire" | "exit";
 
 /**
  * Turn a lease reading into an action.

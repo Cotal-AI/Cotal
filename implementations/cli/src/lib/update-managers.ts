@@ -1,11 +1,12 @@
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { endianness } from "node:os";
 import { assertLifecycleToken } from "@cotal-ai/core";
 import {
   assertRecordIdentity, brokerAddressKey, commandIsCotalSupervisor, identityRecord,
   MANAGER_PIDFILE, readMeshRegistry, readProcessCommand, recordedLocalProcessPaths,
   readProcessRecord, spaceKey, spaceSegment, type ProcessIdentityRecord,
+  localProcessPathCandidates, verifyIdentityPin,
 } from "@cotal-ai/workspace";
 import { entryScript } from "../seed/paths.js";
 import { observeServiceProcess, serviceInstances } from "./service-instances.js";
@@ -85,12 +86,70 @@ function unprovenManagerEntry(pid: number, uid: number, pin: ProcessIdentityReco
   throw new Error(`local Manager continuity cannot be established: Manager pid ${pid}, user ${uid}, verb supervise has no proven CLI entry for this installation; started ${managerStarted("token" in pin ? pin.token : undefined)}; stop it through its original host or run \`kill -TERM ${pid}\` as user ${uid} before retrying; a missing path does not prove another installation because it may have been a symlink into this one; no Manager instance was guessed`);
 }
 
+/** Local records pin a Manager before an exchange, including hosts without a process-table census. */
+export function recordedUpdateManagers(
+  flags: { space?: unknown; server?: unknown; on?: unknown } = {},
+  installedEntry: string = entryScript(),
+): UpdateManager[] {
+  const registry = readMeshRegistry();
+  if (registry.unusable.length) throw registry.unusable[0];
+  const result = new Map<string, UpdateManager>();
+  const ownEntry = realpathSync(installedEntry);
+  const ownUid = process.getuid?.() ?? 0;
+  const add = (root: string, space: string, server: string, process: ProcessIdentityRecord) => {
+    if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(server)) return;
+    if (assertRecordIdentity(process).kind !== "match") blocked(`Manager pid ${process.pid} changed before its record read`);
+    const command = readProcessCommand(process.pid);
+    if (command.kind === "gone") return;
+    // A Manager that loaded another installation keeps its files when this one is replaced, so it
+    // is no custody of this update. The process census applies the same rule.
+    if (command.kind === "command" && supervisorInstallScope(process.pid, ownUid, command.command, ownEntry) === "foreign") return;
+    const instanceId = readUpdateManagerIdentity(root, space);
+    if (typeof flags.on === "string" && flags.on !== instanceId) return;
+    const key = JSON.stringify([brokerAddressKey(server) ?? server, space, instanceId]);
+    const previous = result.get(key);
+    if (previous && (previous.pid !== process.pid || previous.root !== root)) blocked(`conflicting live records for Manager ${instanceId}`);
+    result.set(key, { pid: process.pid, root, space, server, instanceId, process });
+  };
+  for (const entry of registry.entries) {
+    if (typeof flags.space === "string" && flags.space !== entry.space || typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(entry.server)) continue;
+    const paths = new Map(recordedLocalProcessPaths(MANAGER_PIDFILE, entry.root).map(row => [row.path, row]));
+    for (const path of localProcessPathCandidates(MANAGER_PIDFILE, { root: entry.root, space: entry.space })) {
+      if (!paths.has(path)) paths.set(path, { path, ...(basename(path) === "manager.pid" && registry.entries.filter(row => row.root === entry.root).length > 1 ? {} : { space: entry.space }) });
+    }
+    for (const row of paths.values()) {
+      if (row.unread) blocked(`${row.path}: ${row.unread}`);
+      if (row.space && row.space !== entry.space) continue;
+      const record = readProcessRecord(row.path, commandIsCotalSupervisor);
+      if (record.state === "unknown" || record.state === "unattributable") blocked(`unresolved process record ${row.path}`);
+      if (record.state !== "alive") continue;
+      if (!row.space) blocked(`Manager record ${row.path} has no proven space`);
+      const pin = verifyIdentityPin(row.path);
+      if (pin.kind !== "match" || pin.record.pid !== record.pid) blocked(`Manager record ${row.path} has no matching process creation identity`);
+      add(entry.root, entry.space, entry.server, pin.record);
+    }
+    for (const row of serviceInstances(entry.space)) {
+      const instance = row.record.value;
+      const definition = serviceDefinitionStore(entry.space).read(instance.definition)?.record.value;
+      if (definition?.launch.type !== "adapter" || definition.launch.adapter !== "manager-service") continue;
+      const state = observeServiceProcess(instance);
+      if (["unreadable", "unresolved-launch", "members-running"].includes(state)) blocked(`unresolved Manager service ${instance.instanceId}`);
+      if (state !== "running" || !instance.process) continue;
+      const root = definition.root ?? definition.launch.options.root;
+      if (typeof root !== "string") blocked(`Manager service ${instance.instanceId} has no root`);
+      const server = definition.launch.options.server;
+      add(root, entry.space, typeof server === "string" ? server : entry.server, instance.process);
+    }
+  }
+  return [...result.values()];
+}
+
 /** Install-wide candidates, independent of the selected mesh. Records supply roots, not liveness. */
 export function localUpdateManagers(
   flags: { space?: unknown; server?: unknown; on?: unknown } = {},
   installedEntry: string = entryScript(),
 ): UpdateManager[] {
-  if (process.platform !== "linux") throw new Error("install-wide Manager process census is supported only on Linux");
+  if (process.platform !== "linux") return recordedUpdateManagers(flags, installedEntry);
   const registry = readMeshRegistry();
   if (registry.unusable.length) throw registry.unusable[0];
   const entries = registry.entries;

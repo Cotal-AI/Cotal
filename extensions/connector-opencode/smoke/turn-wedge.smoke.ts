@@ -176,18 +176,25 @@ try {
   const pulledAgain = await inboxExecute({}, {});
   check("a repeated cotal_inbox pull does not repeat cleared quiet traffic", !pulledAgain.includes("quiet buffered"), pulledAgain);
 
-  // Receive-time automatic classification survives a later normal→quiet toggle while the item is
-  // held behind a busy turn. The idle boundary must still drive it.
+  // A normal→quiet toggle makes an item still waiting behind a busy turn pull-only. The idle
+  // boundary drives the other channel's waiting post without it, and cotal_inbox reads it.
   const modeExecute = (hooks.tool as Record<string, { execute: (...args: any[]) => Promise<string> }>).cotal_channel_mode!.execute;
   await modeExecute({ channel: "quiet", mode: "normal" }, {});
   await fire(hooks, { type: "session.status", properties: { sessionID: SID, status: { type: "busy" } } });
   await pub.multicast("automatic before quiet toggle", { channel: "quiet" });
+  await pub.multicast("team post behind the busy turn", { channel: "team" });
   await sleep(200);
   await modeExecute({ channel: "quiet", mode: "quiet" }, {});
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
   await waitForPrompts(2);
-  check("normal→quiet does not strand an already-automatic item", prompts.length === 2 && promptText(prompts[1]).includes("automatic before quiet toggle"), prompts);
+  check(
+    "normal→quiet leaves an item waiting behind a busy turn out of the next turn",
+    prompts.length === 2 && promptText(prompts[1]).includes("team post behind the busy turn") && !promptText(prompts[1]).includes("automatic before quiet toggle"),
+    prompts,
+  );
   await fire(hooks, { type: "session.idle", properties: { sessionID: SID } });
+  const pulledToggled = await inboxExecute({}, {});
+  check("cotal_inbox reads the item the toggle made pull-only", pulledToggled.includes("automatic before quiet toggle"), pulledToggled);
 
   // A directed DM auto-drives an unattended prompt_async. If that turn errors, the pending inbox id
   // is deduped and would not emit another `incoming`; the connector must schedule a delayed retry.

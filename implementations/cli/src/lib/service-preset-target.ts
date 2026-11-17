@@ -146,7 +146,8 @@ export function resolvePresetService(space: string, root: string, requested: str
 
 /** Save `row` again with the options a start named, when they differ from the saved ones. Only a
  *  definition with no running, supervised or retained instance is saved again, as `service remove`
- *  requires; the stack's own definitions keep the options `up` gave them. */
+ *  requires; the stack's own definitions keep the options `up` gave them. A dry run makes the same
+ *  checks and saves nothing (#7072). */
 function redefine(space: string, root: string, preset: ServicePreset, row: ServiceDefinitionSnapshot, requested: string, options: readonly string[], values: ParsedArgs["values"]): PresetServiceTarget {
   const launch = row.record.value.launch;
   if (launch.type !== "adapter") throw new CommandFailure("refused", "CONFLICT", "a preset service's saved definition is not an adapter launch; it was not changed");
@@ -159,6 +160,7 @@ function redefine(space: string, root: string, preset: ServicePreset, row: Servi
   removableServiceInstances(space, row.name);
   const next: ServiceDefinitionInput = { ...row.record.value, launch: { ...launch, options: Object.fromEntries(Object.entries({ ...launch.options, ...Object.fromEntries(changed.map((name) => [name, fresh.options[name]])) }).filter(([, value]) => value !== undefined)) } };
   const checked = validateServiceDefinition(next, space);
+  if (values["dry-run"]) return { requested, name: row.name, preset: preset.name, saved: null };
   const store = serviceDefinitionStore(space, addedDefinitionStep);
   store.commit(row.name, row, undefined, () => removeStoppedInstanceRecords(space, row.name));
   store.commit(row.name, undefined, checked);

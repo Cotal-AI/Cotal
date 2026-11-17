@@ -106,14 +106,14 @@ const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafe
 /** One endpoint's EXACT pool list for the cleaner step — the cleaner profile's grant is minted
  *  from these (§13.9: never a pool wildcard). The barrier DISCOVERS this inventory from the
  *  target's own accepted pool obligations (#F); it takes no caller-supplied hint. */
-export interface RetirementPoolSpec {
+interface RetirementPoolSpec {
   endpoint: string;
   pools: string[];
 }
 
 /** The durable retirement intent at `stage.<opId>` — captured BEFORE the freeze; every resumed
  *  step works from these SAME coordinates ({@link resumeAgentRetirement}). */
-export interface RetirementIntent {
+interface RetirementIntent {
   kind: "retirement";
   lifecycleUid: string;
   owner: string;
@@ -229,7 +229,7 @@ export interface RetirementDeps extends TakeoverDeps {
 // ---- the exact-pool terminal cleaner (§13.9 matrix row) ---------------------------------------
 
 /** What one pool's cleaning pass settled. */
-export interface PoolCleanResult {
+interface PoolCleanResult {
   /** Messages ACKed because their item was ALREADY durably terminal. */
   ackedTerminal: number;
   /** Items this run settled `expired` (their own `workExpiry` passed). */
@@ -241,7 +241,7 @@ export interface PoolCleanResult {
 /** Executor-authority settlement seam. The cleaner supplies only delivery identity/bytes and a
  *  requested disposition; the implementation is closed over the durable retirement intent and
  *  independently re-derives every authority coordinate before touching the lease. */
-export type SettleRetirementPoolItem = (args: {
+type SettleRetirementPoolItem = (args: {
   ref: WorkItemRef;
   itemBytes: Uint8Array;
   disposition: "expired" | "retired";

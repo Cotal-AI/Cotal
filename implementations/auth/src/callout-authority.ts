@@ -31,7 +31,7 @@ import type { UserTokenSession, ValidatedUserToken } from "./token.js";
 export type ManagerGateVerdict = "candidate" | "unknown" | "not open" | "not this owner's" | "not registered";
 
 /** Leader reads of one manager instance's issuance gate and its registered service records. */
-export interface ManagerGateReads {
+interface ManagerGateReads {
   observeManagerGate(instanceId: string): Promise<EpGateState | null>;
   /** The gate of a legacy manager. An environment-manager gate refuses. */
   observeLegacyManagerGate(instanceId: string): Promise<EpGateState | null>;
@@ -104,7 +104,7 @@ export interface CalloutAuthority {
   ) => Promise<UserTokenSession>;
 }
 
-export interface CalloutAuthorityDeps {
+interface CalloutAuthorityDeps {
   space: string;
   /** The issuer session this process holds for user-caller issuance. Its owner closes it. */
   issuer: HeldIssuerSession;

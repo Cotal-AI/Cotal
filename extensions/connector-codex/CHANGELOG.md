@@ -1,5 +1,44 @@
 # @cotal-ai/connector-codex
 
+## 0.166.1
+
+No changes in this release.
+
+## 0.166.0
+
+### Patch Changes
+
+- cdf1c43: Keep internal Codex and Jcode connector helpers and types module-private without changing their published APIs.
+
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Patch Changes
+
+- 23db6ee: Pause automatic redelivery after a Codex message has failed three turns.
+  
+  The first turn and two retries share one budget across broker redelivery while the message remains buffered. Exhausted messages stay unacknowledged and readable with cotal_inbox. The host log and seat status name them, and unrelated messages can still run. A host-process restart starts a new budget. Model output alone never acknowledges a message.
+- a97aade: Report harness work timestamps across the Claude Code, Codex, Hermes, OpenCode and pi connectors.
+  
+  Relay work events into the existing presence `activeAt` field so roster and operator surfaces can date the last reported work separately from heartbeats. No new wire field or progress verdict is added. Boundary-only hosts report less frequently than streaming hosts, and work age cannot distinguish a slow provider from a hung one.
+
 ## 0.164.18
 
 No changes in this release.

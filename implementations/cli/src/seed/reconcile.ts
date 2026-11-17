@@ -13,8 +13,10 @@ import {
   extensionPackageDir,
   extensionsDir,
   installedExtensionPackage,
+  inheritConnectorConfig,
   isBundledDesktopRuntime,
   loadExtensionsManifest,
+  logicalExecutionEntry,
   provenance,
   quarantineExtensionsManifest,
   type InstalledExtension,
@@ -167,6 +169,7 @@ async function reconcile(mode: Mode): Promise<ReconcileResult> {
 }
 
 async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
+  inheritConnectorConfig();
   const generation = seedGeneration();
   // Cheap lock-free pre-check: the steady state (stamp current, authority intact) is the common case
   // on EVERY command and must not pay a lock acquire. Health checks run FIRST so a lost authority or a
@@ -184,6 +187,10 @@ async function reconcileUnderClosure(mode: Mode): Promise<ReconcileResult> {
         if (child.kind === "ambiguous")
           throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it, then run \`cotal ext seed --repair\``);
         const migration = cursor ? interruptedUpgrade(cursor, generation) : undefined;
+        if (child.kind === "stale") {
+          await reconcile("repair");
+          return NOOP;
+        }
         if (migration && cursor) {
           console.error(
             c.dim(
@@ -334,13 +341,17 @@ function officialExtensionsCurrent(generation: string): boolean {
 
 async function runUnderLocks(mode: Mode, generation: string, nonce: string, refreshInstalls: () => Promise<void>): Promise<ReconcileResult> {
   // Refuse to touch the prefix while an orphaned seed child (a crashed parent's still-running
-  // installer) is mutating it — reclaiming the lock does not stop that process. An ambiguous marker
-  // (pending with a dead parent, or corrupt) is fail-loud: we cannot prove no installer is running.
+  // installer) is mutating it. Reclaiming the lock does not stop that process. An unprovable
+  // pending marker or corrupt record stays fail-loud.
   const child = seedChildStatus();
   if (child.kind === "live")
     throw new Error(`a connector seed child (pid ${child.pid}) is still installing - retry once it finishes`);
   if (child.kind === "ambiguous")
     throw new Error(`a connector seed may be mid-flight (marker ${child.path}) - if no cotal process is running, remove it and retry`);
+  if (child.kind === "stale") {
+    clearChildMarker();
+    console.error(c.dim("cleared an interrupted connector seed child marker: parent and installer are gone"));
+  }
 
   // REFUSE TO WRITE A GENERATION OLDER THAN THE STORE'S. An older binary run against a store stamped
   // newer misses the fast path (its generation is not the stamp), refreshes NOTHING (the refresh below
@@ -757,6 +768,10 @@ function seedOne(name: string, generation: string, nonce: string, force: boolean
   // The pending marker records intent to spawn BEFORE the spawn, so the orphan window never opens
   // ownerless: a repair after a parent SIGKILL sees it and fails loud rather than racing the installer.
   const [bin, ...argv] = selfArgv();
+  // A seed child must mutate the same installed selection as its parent, not one
+  // keyed by the immutable retained entry that the bootstrap loaded.
+  const logical = logicalExecutionEntry();
+  if (logical) argv[argv.length - 1] = logical;
   const started = Date.now();
   console.error(c.dim(`Reconciling built-in ${name}@${generation}`));
   writeCursor({ nonce, package: name, phase: "copy" });

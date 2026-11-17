@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/registry",
   "description": "Cotal registry: the registered endpoint that answers discovery questions, starting with the endpoints a caller's recorded grants cover.",
-  "version": "0.164.18",
+  "version": "0.166.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -25,9 +25,9 @@
   },
   "dependencies": {
     "@cotal-ai/core": "workspace:*",
-    "@nats-io/jetstream": "^3.4.0",
-    "@nats-io/transport-node": "^3.4.0",
-    "@nats-io/kv": "^3.4.0"
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
+    "@nats-io/kv": "3.4.0"
   },
   "files": [
     "dist"

@@ -252,6 +252,15 @@ from membership; a client SHOULD distinguish "joined" (actively subscribed) from
 mention-reachable" (in `allowSubscribe`) so an unjoined channel is not treated as "cannot reach me
 here."
 
+**Mention notice.** In auth mode, when a post on either delivery class mentions a resolved target
+whose `allowSubscribe` does not cover the channel, the delivery daemon sends the post's sender a DM
+from its own principal that names those targets. The message has a text part and a data part
+`{ "cotalMentionNotice": { channel, message, names } }`, where `message` is the post's `id`. Its
+`id`, which is also its JetStream message id, is `mention.<seq>.<id>` for the post's CHAT stream
+sequence and `id`, so a fan-out redelivered after a crash sends a duplicate the DM stream drops. A
+receiver MUST treat it as a notice only under the delivery lease check an anycast notice uses
+(§8.1). A notice is not a question and needs no answer.
+
 A message delivered both live and durable is **one logical delivery**: receivers MUST deduplicate
 by `id` across classes (§8); the durable copy owns ack/commit; and a previously seen `id` MUST NOT
 be treated as authorization for a later durable copy (for example one that arrives after a leave).
@@ -603,7 +612,12 @@ used as a send authorization gate.
 
 On a `durable` channel, membership carries the member's **join cursor** (the CHAT frontier captured
 at join, the same watermark used to deconflict the live tail and the backfill) and, on leave, a
-**leave cursor/tombstone**. The durable backstop is at-least-once (within retention)
+**leave cursor/tombstone**. An explicit channel leave MUST retire all open memberships for that
+channel owned by the authenticated principal, including earlier lifecycle rows, before closing the
+live subscription. The delivery service's `listMemberships` request MAY include a concrete channel
+or channel family in `channel` to discover those rows with their `lifecycleUid` and `generation`.
+Without `channel`, discovery remains lifecycle-exact. Each tombstone retains its generation guard.
+The durable backstop is at-least-once (within retention)
 for messages whose stream sequence is **> the member's join cursor and ≤ its leave cursor**, where each
 cursor is the CHAT frontier (the last sequence) captured at that transition; messages published before a
 join or after a leave are not redelivered as durable and are reachable only via an ACL-bounded history
@@ -1060,8 +1074,10 @@ path. Broken and non-directory symlinks MUST be omitted. Roots MUST list existin
 Windows (a root whose inspection fails MUST be omitted), `/` and `/Volumes` on macOS, and `/` on other hosts. Invalid or inaccessible directories
 MUST refuse with `failed-precondition`. Delegated execution MUST refuse before any filesystem
 lookup with the same execution-mode refusal as `resolve-cwd`; NONE MUST refuse with `unimplemented`.
-The Manager cluster revision is 49. The closed `spawn` input accepts optional boolean
-`eventPayloads`; revision 48 rejects this field.
+The Manager cluster revision is 51. The closed `spawn` input accepts optional boolean
+`eventPayloads`; revision 48 rejects this field. Revision 50 required `permissionRequests` on every
+`status.connectors` row. Revision 51 removes that field, and its closed status schema rejects a row
+that carries it.
 
 On such a runtime, a caller-supplied persona `config` override MUST be refused before resolving,
 checking or reading its host path. Every path shape MUST receive `failed-precondition` and the
@@ -3400,7 +3416,11 @@ action command's submissions are `class: journal` (§13.3).
    the goal; the goal is not rewritten and its status does not linger non-terminal. An owner
    that observed the entity still running when the deadline passed MAY add a detail of kind
    `ai.cotal.goal.entity-running` to the `uncertain` result's `details`, and a caller then
-   reports the action as still starting.
+   reports the action as still starting. A client's observation failure after acceptance
+   retains the acceptance data, including `goalId`, beside the unknown-outcome error. That
+   data is a claim on the submitted goal, not proof of its success. A connector may reuse
+   that claim for an identical spawn while its allocated entity is still starting; this
+   does not change the goal's terminal fact or grant a new submission authority.
 7. Goals bind the target's `(principal, lifecycleUid)` (§13.1): a goal accepted against a
    lifecycle is not redeemable, cancellable, or effectful against a same-name successor. A
    restarted instance (same `instanceId`/UID, advanced epoch) recovers its goals from journal
@@ -3991,11 +4011,11 @@ target's current screen, then streams live output in order. A degenerate or unpa
 dropped, never a session teardown.
 
 **Termination is honest and distinct**: every teardown surfaces an `end` frame naming a bounded reason,
-`process-exit` (the target exited), `closed` (a party closed), `expired` (the session TTL elapsed),
-`target-despawn` (the target lifecycle retired), `manager-restart` (the serving incarnation advanced its
-epoch). The session binds the target's `(principal, lifecycleUid)` and the serving epoch (§13.1): a
-successor incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct
-session.
+`process-exit` (the target's process exited on its own, even when its lifecycle then retires), `closed`
+(a party closed), `expired` (the session TTL elapsed), `target-despawn` (the target lifecycle was stopped
+or retired for any other cause), `manager-restart` (the serving incarnation advanced its epoch). The
+session binds the target's `(principal, lifecycleUid)` and the serving epoch (§13.1): a successor
+incarnation (advanced epoch) refuses old-epoch grants, and a same-name successor is a distinct session.
 
 ### 13.7 Contracts and discovery
 
@@ -4068,6 +4088,9 @@ the persona would carry that the definer does not hold under the same delegation
 includes a saved list a redefine keeps by omitting the field. The check and the write MUST see the
 same catalog entry. A spawn of the persona is bounded again against its spawner. Revision 45 of the manager cluster adds both fields; both inputs
 are closed, so a revision-44 contract rejects either.
+An ownership refusal of `define-persona` MUST carry `permission-denied` with outcome
+`not-executed`. The reference manager includes an `ai.cotal.persona-ownership-refused` error detail with
+`operatorOwned: boolean`, so a client can explain the refusal without copying persona content.
 `endpoints`, on the inline record, on `define-persona` and in a catalog file, is a list of closed
 `{ endpoint, commands, instanceId? }` entries naming the endpoint commands the helper is handed. The
 manager MUST refuse, whatever the caller's standing, a single-label endpoint (§13.2), a reserved
@@ -4192,7 +4215,8 @@ ordinary conformance sets defined by the reference implementation; core knows on
 "endpoint".
 
 **Schemas.** Contract schemas are JSON Schema **2020-12**, validated by a real 2020-12
-validator (the reference implementation pins `ajv`), under this normative resource profile: a
+validator (the reference implementation pins `json-schema-library` for instances and uses `ajv`
+for schema meta-validation), under this normative resource profile: a
 schema is a **closed resource bundle**, either fully self-contained (local `$defs`/`#/…`
 refs) or referencing other contract-store artifacts **by digest** only. `$id`/`$anchor`/
 `$dynamicRef` resolve deterministically within the bundle; ambient HTTP/file/URI resolution
@@ -7424,6 +7448,8 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-11-17 | **Harness permission requests are withdrawn (§3, §6, §8, §8.2, §9, §13.7, Appendix B), breaking.** The 2026-11-13 revision below is removed in full: the `perm` answer subject, the `cotal_permissions_<space>` bucket and its per-lifecycle readers, the permission record and its state table, the interactive answer rows, the `request` field on a presence condition and the Manager's `permissionRequests` connector field. A connector no longer holds a harness permission prompt for a remote answer, and the harness's own dialog is the only way to answer one. A space provisioned while that revision was current keeps an unused `cotal_permissions_<space>` bucket, which nothing reads or writes. |
+| 2026-11-13 | **A harness permission prompt reaches the agent's owner (§3, §6, §8, §8.2, §9, §13.7, Appendix B), additive.** In auth mode a connector MAY hold each permission prompt its harness raises while the agent's owner answers it from an interactive session. The harness's own dialog keeps working, and the first answer applies. The holder keeps one closed-schema record per prompt in the new `cotal_permissions_<space>` bucket, which space setup creates in its final shape and refuses when reshaped, and serves answers on the new request/reply rail `cotal.<space>.perm.<agentOwner>.<agentActor>.<runtimeId>.<owner>.<actor>`, addressed to the one process its record names. A holder never replies for a prompt it does not hold, and an answerer waits longer than the holder's 10-second handoff bound. Every agent serves answers to its own prompts and writes only its own records, and no agent mint may create a consumer on the bucket. Only an interactive ledger row may answer its owner's agents, as itself, and read its owner's records, by binding its own lifecycle's `perm_` pull consumer, which the provisioner opens with capped pulls. The auth callout grants that right from the row's kind and never from a scope token, and a static mint refuses it. A native answer settles only prompts of its own harness scope, one run to one prompt. The `approval` presence condition gains an optional opaque `request` id. Every Manager `status.connectors` row requires `permissionRequests: boolean`, true only on a user-auth mesh, and the Manager cluster advances to revision 50. An open mesh holds no prompt. |
 | 2026-11-13 | **An agent with no read channels keeps the info row on its delivery consumer (§8, Appendix B), additive.** The consumer is still not provisioned and the fetch and ack rows are still withheld. A client older than 0.163.0 asks `CONSUMER.INFO` during start and treats only an absent consumer as nothing to bind, so a refused read stopped its start. |
 | 2026-11-12 | **Tool payload rail (§13.19).** Separately authorized event payloads publish by default where mapped, with explicit withholding, registered Cotal-tool exclusions, bounded cut markers and durable sibling publication. The private consent path remains separate and its activation prerequisites are unchanged. |
 | 2026-11-12 | **Incarnation-scoped responder queues (§13.2), clarification.** Scatter and instance responders may use a queue group per incarnation to overlap serving connections during renewal. Distinct instances use distinct groups so scatter still reaches each instance. Credential grants are unchanged. |

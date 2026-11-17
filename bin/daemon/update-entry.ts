@@ -3,23 +3,32 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { registry, type Command } from "@cotal-ai/core";
-import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, updateManagerPin } from "@cotal-ai/cli/update";
+import { update, updateRuntime, installedCliVersion, localUpdateManagers, readManagerContinuity, updateManagerPin, repairInstallModes } from "@cotal-ai/cli/update";
 import { withIdpSessionDir, withRemoteExchangeRetry } from "@cotal-ai/auth";
 import { brokerAddressKey, assertRecordIdentity, CommandFailure, homeCotalDir, readUpdateRecovery, claimUpdateClosureAccess, resolveControlTarget } from "@cotal-ai/workspace";
 import { askManager } from "@cotal-ai/workspace/control";
 import { daemonPaths, EndpointRefusal, type DaemonPaths } from "./endpoint.js";
 import { managerViaDaemon, queryDaemon } from "./client.js";
-import { installedDaemonIdentity, preflightInstalledDaemon, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
+import { installedDaemonIdentity, preflightInstalledDaemon, reconcileMissingShellRuntime, restartInstalled, startEnabledInstalled, unitReceiptFile } from "./install.js";
 import { excludeLifetime, processBirth, readLifetimeRecord } from "./lifetime.js";
 import { waitForInstalledDaemonGeneration } from "./update-generation.js";
+import { cleanupExecutionStore } from "../execution-store.js";
+import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
-import { logicalExecutionEntry } from "@cotal-ai/workspace";
+import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
 
-async function posixGenerationLifecycle(paths: DaemonPaths): Promise<{ poll(): Promise<boolean | void>; close(): void }> {
+/** A reconcile child of a parent that said it waits after the child and prints the line. A parent
+ *  from before that marker never waits there, so its child keeps the line. */
+export function currentParentWaits(env: NodeJS.ProcessEnv, parentPid: number, journaled: boolean): boolean {
+  const parent = env.COTAL_UPDATE_PARENT;
+  return env.COTAL_UPDATE_PARENT_WAITS === "1" && parent !== undefined && /^\d+$/.test(parent) && Number(parent) === parentPid && journaled;
+}
+
+async function posixGenerationLifecycle(paths: DaemonPaths, quiet = false): Promise<{ poll(): Promise<boolean | void>; close(): void }> {
   const initial = readLifetimeRecord(paths.lock);
   let observedLive = Boolean(initial?.start && processBirth(initial.pid) === initial.start);
   let started = false;
@@ -33,14 +42,14 @@ async function posixGenerationLifecycle(paths: DaemonPaths): Promise<{ poll(): P
       }
       const installation = installedDaemonIdentity(paths);
       if (!installation.same) {
-        console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
+        if (!quiet) console.log(`machine daemon: the background service belongs to another Cotal installation (${installation.installedEntry}). This update left it stopped.`);
         started = true;
         return false;
       }
       started = true;
       const outcome = await startEnabledInstalled(paths, undefined);
       if (!outcome.started) {
-        console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; not started`);
+        if (!quiet) console.log(`machine daemon: ${outcome.unit}: service is ${outcome.state}; not started`);
         return false;
       }
     },
@@ -57,6 +66,43 @@ function assertDaemonReachable(): void {
     throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
 }
 
+async function collectConnectorSets(): Promise<void> {
+  try {
+    const entry = logicalExecutionEntry();
+    if (!entry || updateRuntime.checkout()) return;
+    const release = claimUpdateClosureAccess();
+    try {
+      const holders: (string | undefined)[] = [];
+      const managers = localUpdateManagers({}, entry);
+      for (const manager of managers) {
+        if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") return;
+        const target = await resolveControlTarget({ space: manager.space, server: manager.server }, "control-caller-admin", manager.instanceId, { onRefusal: "throw", readOnly: true });
+        const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+        if (!reply.ok || assertRecordIdentity(manager.process).kind !== "match") return;
+        const version = (reply.data as { version?: unknown } | undefined)?.version;
+        holders.push(typeof version === "string" ? version : undefined);
+      }
+      try {
+        const paths = daemonPaths();
+        const reply = await queryDaemon({ paths });
+        if (!reply.ok) return;
+        const lifetime = readLifetimeRecord(paths.lock);
+        if (!lifetime?.start || lifetime.pid !== reply.result.pid || processBirth(lifetime.pid) !== lifetime.start) return;
+        // Hosted Managers can remain on an earlier generation than their daemon.
+        // Their separate records must all have appeared in the authenticated inventory.
+        if ((reply.result.managers ?? []).some(row => row.pid !== undefined && !managers.some(manager => manager.pid === row.pid && manager.instanceId === row.instanceId))) return;
+        holders.push(reply.result.version);
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return;
+        if (error.code === "NO_RUNTIME_DIR" && existsSync(join(homeCotalDir(), "daemon", "daemon.lock"))) return;
+        assertDaemonReachable();
+      }
+      if (managers.some(manager => !manager.process || assertRecordIdentity(manager.process).kind !== "match")) return;
+      pruneRetainedConnectorConfig(holders);
+    } finally { release(); }
+  } catch { /* An incomplete inventory or failed collection never fails the update. */ }
+}
+
 const command = registry.resolve<Command>("command", "update");
 registry.unregister("command", "update");
 const composed: Command = { ...command, async run(args) {
@@ -64,18 +110,22 @@ const composed: Command = { ...command, async run(args) {
   let daemonObserved = false;
   let preparedRestart = false;
   let currentPackages = false;
+  let retainedReconciliation = false;
   let askedToStop = false;
   let targetReceipt: ExecutionPreinstallReceipt | undefined;
   let replacementVersion: string | undefined;
   let targetAdmissionChecked = false;
   let recoveryFence = false;
   const retainsExecution = () => targetReceipt !== undefined || readUpdateRecovery()?.execution !== undefined;
+  const reportsRetainedExecution = () => retainedReconciliation || retainsExecution() || (currentPackages && logicalExecutionEntry() !== undefined && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin"));
   const retainedReads = (flags: Record<string, unknown>) => readManagerContinuity(flags, { readOnly: true, retainGraph: true, installedEntry: logicalExecutionEntry() });
   const retainedReport = (flags: Record<string, unknown>) => reportRunningManagers(flags, retainedReads, selected => localUpdateManagers(selected, logicalExecutionEntry()));
   try {
-  await update(args, { ...updateRuntime,
+  if (logicalExecutionEntry() && !updateRuntime.checkout() && args.values.check !== true && !args.values.auto && !args.values.notify && !process.env.COTAL_UPDATE_PARENT) cleanupExecutionStore(executionInstallRoot());
+  const runtime = { ...updateRuntime,
     ...(logicalExecutionEntry() && !updateRuntime.checkout() && (process.platform === "linux" || process.platform === "darwin") ? {
       preflightExecution: preflightExecutionUpdate,
+      repairInstallModes: (root: string) => repairExecutionInstallModes(executionInstallRoot(), () => repairInstallModes(root)),
       executionGlobalRoot: () => dirname(executionInstallRoot()),
       prepareExecution: async (version: string, root: string) => {
         assertDaemonReachable();
@@ -84,7 +134,33 @@ const composed: Command = { ...command, async run(args) {
         return execution;
       },
       recoverExecution: recoverExecutionUpdate,
-    } : {}), isCurrent() {
+    } : {}), async prepareReconciliation(flags: Record<string, unknown>) {
+    const entry = logicalExecutionEntry();
+    if (!entry || updateRuntime.checkout() || !["linux", "darwin"].includes(process.platform) || process.env.COTAL_UPDATE_PARENT || readUpdateRecovery()) return;
+    try {
+      const daemon = await queryDaemon({ paths: daemonPaths() });
+      if (!daemon.ok) throw new Error(`machine daemon custody is unreadable: ${daemon.error.message}`);
+      return; // Hosted daemon admission and restart handling remain unchanged.
+    } catch (error) {
+      if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) throw error;
+      if (error.code === "NO_RUNTIME_DIR") assertDaemonReachable();
+    }
+    const managers = localUpdateManagers(flags, entry);
+    if (!managers.length) return;
+    for (const manager of managers) {
+      if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before reconciliation admission`);
+      await retainedReads({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId });
+      if (assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed during reconciliation admission`);
+    }
+    retainConnectorConfig();
+    retainedReconciliation = true;
+    for (const manager of managers) {
+      const command = findMesh(manager.space)?.userAuth?.remote
+        ? `cotal manager restart --with-agents --yes --space ${shellPath(manager.space)}`
+        : `cotal down --with-agents --yes --space ${shellPath(manager.space)} && cotal up --space ${shellPath(manager.space)}`;
+      console.log(`Manager ${manager.instanceId} keeps its agents on the previous version and takes the installed version at its next restart. When their work is finished, restart from its recorded folder: cd ${shellPath(manager.root)} && ${command}`);
+    }
+  }, isCurrent() {
     currentPackages = updateRuntime.isCurrent?.() === true;
     return currentPackages;
   }, async automaticUpdateAdvice() {
@@ -131,11 +207,15 @@ const composed: Command = { ...command, async run(args) {
         if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "PEER_NOT_LOCK_OWNER"].includes(error.code)) throw error;
       }
     };
-  }, waitForInstalledGeneration: async version => {
+  }, waitForInstalledGeneration: async (version: string) => {
+    // A current parent waits after this child and prints the line. An older parent prints nothing,
+    // so this child keeps the line. The wait itself runs either way.
+    const currentParent = currentParentWaits(process.env, process.ppid, readUpdateRecovery() !== undefined);
     await waitForInstalledDaemonGeneration(version, {
-      lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
+      lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline, currentParent) : posixGenerationLifecycle(paths, currentParent),
+      quiet: currentParent,
     });
-  }, reportRunningManager: (flags) => withRemoteExchangeRetry(async () => {
+  }, reportRunningManager: (flags: Record<string, unknown>) => withRemoteExchangeRetry(async () => {
     const recovery = readUpdateRecovery();
     if (recovery?.preparedRestart && process.env.COTAL_UPDATE_PARENT === String(process.ppid) && process.env.COTAL_UPDATE_TARGET_VERSION === updateRuntime.version() && recovery?.owner?.pid === process.ppid && recovery.owner.nonce === process.env.COTAL_UPDATE_CLOSURE_NONCE && recovery.owner.start === process.env.COTAL_UPDATE_CLOSURE_START) {
       const release = claimUpdateClosureAccess();
@@ -178,7 +258,7 @@ const composed: Command = { ...command, async run(args) {
     } catch (error) {
       if (error instanceof EndpointRefusal && ["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) {
         if (error.code === "NOT_RUNNING" && process.platform === "win32") await captureWindowsGeneration(daemonPaths());
-        return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+        return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
       }
       throw error;
     }
@@ -188,7 +268,7 @@ const composed: Command = { ...command, async run(args) {
     }
     const active = managers.filter((manager) => manager.pid !== undefined);
     hostedSpaces = active.map((manager) => manager.space);
-    if (!active.length) return retainsExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
+    if (!active.length) return reportsRetainedExecution() ? retainedReport(flags) : updateRuntime.reportRunningManager(flags);
     const blockedAgents: { space: string; describe: string; stop(): Promise<void> }[] = [];
     for (const manager of active) {
       // A failed earlier observation is not proof that a retained child's endpoint cannot answer.
@@ -245,7 +325,7 @@ const composed: Command = { ...command, async run(args) {
         if (typeof flags.server === "string" && brokerAddressKey(flags.server) !== brokerAddressKey(manager.server)) continue;
         if (on !== undefined && on !== manager.instanceId) continue;
         if (manager.process && assertRecordIdentity(manager.process).kind !== "match") throw new Error(`local Manager ${manager.instanceId} changed before its continuity read`);
-        if (await (retainsExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
+        if (await (reportsRetainedExecution() ? retainedReads : readManagerContinuity)({ ...flags, space: manager.space, server: manager.server, on: manager.instanceId }) === "legacy") localVerdict = "legacy";
       }
     }
     if (process.platform !== "linux" && typeof flags.space !== "string") {
@@ -270,17 +350,21 @@ const composed: Command = { ...command, async run(args) {
       for (const row of blockedAgents) await row.stop();
     }
     return localVerdict;
-  }) });
+  }) };
+  await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
+  await collectConnectorSets();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (process.env.COTAL_AUTO_UPDATE === "1") return;
   // This process keeps the release it loaded. The daemon must run the selected or installed release.
   const expectedVersion = replacementVersion ?? installedCliVersion();
+  // A version-changing update already waited for the installed generation before it returned.
+  // Waiting again prints the same line a second time in this process.
   if (!daemonObserved) {
-    if (args.values.self === true) {
+    if ((args.values.self === true || process.env.COTAL_INSTALL_RECONCILE === "1") && runtime.generationWaited !== true) {
       await waitForInstalledDaemonGeneration(expectedVersion, {
-        lifecycle: process.platform === "win32" ? windowsGenerationLifecycle : posixGenerationLifecycle,
+        lifecycle: (paths: DaemonPaths, deadline: number) => process.platform === "win32" ? windowsGenerationLifecycle(paths, deadline) : posixGenerationLifecycle(paths),
       });
     }
     return;
@@ -293,6 +377,7 @@ const composed: Command = { ...command, async run(args) {
     console.log(`machine daemon: PID ${current.result.pid} runs Cotal ${current.result.version}; no recorded user service, left running`);
     return;
   }
+  if (process.env.COTAL_INSTALL_RECONCILE === "1") reconcileMissingShellRuntime(paths);
   const installation = installedDaemonIdentity(paths);
   if (!installation.same) {
     console.log(`machine daemon: ${installation.installed} runs Cotal ${current.result.version}; another installation was left running`);

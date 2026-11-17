@@ -410,6 +410,9 @@ export class AnycastRequestAuthority {
    *  request has left the queue, and drop rows that left more than {@link ANYCAST_RECORD_RETENTION_MS}
    *  ago. It reads the queue only at the seqs the rows name. */
   async sweep(): Promise<void> {
+    // keys() creates a scan consumer even for an empty bucket. Status uses stream info only.
+    // A row created after this read is maintained by its write path and the next pass.
+    if ((await this.deps.kv.status()).values === 0) return;
     const keys: string[] = [];
     for await (const k of await this.deps.kv.keys("r.>")) keys.push(k);
     for (const key of keys) {

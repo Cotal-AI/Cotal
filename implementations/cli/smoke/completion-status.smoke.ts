@@ -104,9 +104,8 @@ function groupGap(gid: number): string | undefined {
 }
 const primaryGap = groupGap(process.getgid?.() ?? -1);
 
-/** A PATH that still has getent but not `command`, so a missing-tool refusal is that tool's. */
-function pathWithout(command: string): string | undefined {
-  if (spawnSync("sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).status !== 0) return undefined;
+/** A PATH with getent but neither ACL reader, to exercise the missing-tool refusal. */
+function pathWithoutAclReaders(): string | undefined {
   const bin = mkdtempSync(join(tmpdir(), "cotal-completion-path-"));
   roots.push(bin);
   const getent = spawnSync("sh", ["-c", "command -v getent"], { encoding: "utf8" }).stdout.trim();
@@ -305,19 +304,24 @@ if (process.platform !== "win32" && process.getuid?.() !== 0) {
 }
 
 // A startup file left group-writable by umask 002 is accepted when its group is the caller's proven
-// user private group and it has no extended ACL. getfacl has to be installed, and the primary group
-// has to be provably private. Otherwise assert the account-proof refusal before ACL inspection.
-if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status === 0) {
+// user private group and either getfacl or the Python fallback proves it has no extended ACL.
+// Otherwise assert the account-proof or ACL-read refusal.
+if (process.platform === "linux" && process.getuid?.() !== 0) {
   const s = sandbox("/bin/bash");
   const rc = join(s.home, ".bashrc");
   writeFileSync(rc, "# mine\n");
   chmodSync(rc, 0o664);
   const status = s.run(["completion"]);
   const installed = s.run(["completion", "install", "bash"]);
-  if (primaryGap === undefined) {
+  const acl = spawnSync("getfacl", ["--skip-base", "--absolute-names", "--", rc], { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024 });
+  const proof = (acl.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT"
+    ? spawnSync("python3", ["-I", "-c", "import os,sys; attrs=os.listxattr(sys.argv[1], follow_symlinks=False); sys.stdout.write('extended ACL' if any(a in attrs for a in ('system.posix_acl_access', 'system.posix_acl_default')) else '')", rc], { encoding: "utf8", timeout: 2000, maxBuffer: 4 * 1024 * 1024 })
+    : acl;
+  const aclClean = !proof.error && proof.status === 0 && proof.stdout === "";
+  if (primaryGap === undefined && aclClean) {
     check("install accepts a group-writable rc in the caller's proven private group", status.status === 0 && !status.stderr.includes("group-writable") && installed.status === 0 && readFileSync(rc, "utf8").includes("completion.bash"), { status: shown(status), install: shown(installed) });
   } else {
-    check("an unproven primary group refuses install without changing the rc or writing a stub", status.status === 4 && status.stderr.includes(primaryGap) && installed.status === 2 && installed.stderr.includes(primaryGap) && readFileSync(rc, "utf8") === "# mine\n" && !existsSync(join(s.xdg, "cotal")), { status: shown(status), install: shown(installed) });
+    check("an unproven primary group refuses install without changing the rc or writing a stub", status.status === 4 && status.stderr.includes(primaryGap ?? (proof.status === 0 && !proof.error ? "extended ACL" : "private-group proof is unavailable")) && installed.status === 2 && installed.stderr.includes(primaryGap ?? (proof.status === 0 && !proof.error ? "extended ACL" : "private-group proof is unavailable")) && readFileSync(rc, "utf8") === "# mine\n" && !existsSync(join(s.xdg, "cotal")), { status: shown(status), install: shown(installed) });
   }
   const group = supplementaryGroup();
   if (group) {
@@ -326,7 +330,7 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
     const original = "# private-group startup\n";
     writeFileSync(startup, original);
     // Keep the replacement/group/mode regression live even when group write cannot be proven safe.
-    const mode = primaryGap === undefined ? 0o664 : 0o644;
+    const mode = primaryGap === undefined && aclClean ? 0o664 : 0o644;
     chmodSync(startup, mode);
     const gid = statSync(startup).gid;
     check("the setgid regression has a supplementary-group parent", assignedGroup(group, [inherited.home]));
@@ -340,7 +344,7 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
     check("uninstall also preserves the group, mode and original text",
       uninstall.status === 0 && statSync(startup).gid === gid && (statSync(startup).mode & 0o777) === mode && readFileSync(startup, "utf8") === original, shown(uninstall));
   }
-  const barePath = pathWithout("getfacl");
+  const barePath = pathWithoutAclReaders();
   if (barePath) {
     const bare = sandbox("/bin/bash");
     const bareRc = join(bare.home, ".bashrc");
@@ -348,11 +352,11 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
     chmodSync(bareRc, 0o664);
     const bareStatus = bare.run(["completion"], { PATH: barePath });
     const bareNext = bareStatus.stdout.slice(bareStatus.stdout.indexOf("Next"));
-    check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes(primaryGap ?? "getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
+    check("without either ACL reader, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes(primaryGap ?? "python3 is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
     const bareInstall = bare.run(["completion", "install", "bash"], { PATH: barePath });
-    check("without getfacl, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
+    check("without either ACL reader, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
   }
-  if (spawnSync("setfacl", ["--version"], { encoding: "utf8" }).status === 0) {
+  if (acl.status === 0 && spawnSync("setfacl", ["--version"], { encoding: "utf8" }).status === 0) {
     const acl = sandbox("/bin/bash");
     const aclRc = join(acl.home, ".bashrc");
     writeFileSync(aclRc, "# mine\n");
@@ -368,20 +372,6 @@ if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfa
       check("an extended ACL offers chmod before install and install writes nothing", aclStatus.status === 4 && aclStatus.stderr.includes(primaryGap ?? "extended ACL") && aclNext.indexOf(`chmod g-w ${aclRc}`) >= 0 && aclNext.indexOf(`chmod g-w ${aclRc}`) < aclNext.indexOf("cotal completion install bash") && aclInstall.status === 2 && !existsSync(join(acl.xdg, "cotal")) && readFileSync(aclRc, "utf8") === "# mine\n" && spawnSync("getfacl", ["--skip-base", "--absolute-names", "--", aclRc], { encoding: "utf8" }).stdout === aclBefore.stdout, { status: shown(aclStatus), install: shown(aclInstall) });
     }
   }
-}
-
-// The acceptance above needs getfacl. When it is not installed, a group-writable file in the proven
-// private group is still refused, and the status offers its chmod before install.
-if (process.platform === "linux" && process.getuid?.() !== 0 && spawnSync("getfacl", ["--version"], { encoding: "utf8" }).status !== 0) {
-  const bare = sandbox("/bin/bash");
-  const bareRc = join(bare.home, ".bashrc");
-  writeFileSync(bareRc, "# mine\n");
-  chmodSync(bareRc, 0o664);
-  const bareStatus = bare.run(["completion"]);
-  const bareNext = bareStatus.stdout.slice(bareStatus.stdout.indexOf("Next"));
-  check("without getfacl, Next offers chmod before install", bareStatus.status === 4 && bareStatus.stderr.includes(primaryGap ?? "getfacl is not installed") && bareNext.indexOf(`chmod g-w ${bareRc}`) >= 0 && bareNext.indexOf(`chmod g-w ${bareRc}`) < bareNext.indexOf("cotal completion install bash"), shown(bareStatus));
-  const bareInstall = bare.run(["completion", "install", "bash"]);
-  check("without getfacl, install refuses and writes nothing", bareInstall.status === 2 && !existsSync(join(bare.xdg, "cotal")), shown(bareInstall));
 }
 
 // ── a config folder a shared group can write, with nothing installed, is one named warning and a complete report ─

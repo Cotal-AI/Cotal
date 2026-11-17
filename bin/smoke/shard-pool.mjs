@@ -6,7 +6,7 @@ import { availableParallelism, homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 import { reapRunCustodians, reportCustodians } from "./reap-seat-custodians.mjs";
-import { parseSentinel } from "./sentinel.mjs";
+import { hasPostTallyAssertions, parseSentinel } from "./sentinel.mjs";
 
 const COHORT = new Map([
   ["pnpm smoke:attach-stdin", "tsx implementations/manager/smoke/attach-stdin.smoke.ts"],
@@ -140,7 +140,7 @@ export async function runPool(commands, { jobs, runMarker, indices, onStart }) {
         const sentinel = parseSentinel(out);
         r.cells = sentinel?.cells ?? 0;
         r.skipped = sentinel?.kind === "skipped" ? sentinel.reason : undefined;
-        const reason = r.status !== 0 ? `exit ${r.status}` : !sentinel ? "no sentinel" : sentinel.kind !== "skipped" && sentinel.cells === 0 ? "zero cells" : undefined;
+        const reason = r.status !== 0 ? `exit ${r.status}` : !sentinel ? "no sentinel" : hasPostTallyAssertions(out) ? "assertion results after final tally" : sentinel.kind !== "skipped" && sentinel.cells === 0 ? "zero cells" : undefined;
         if (!r.stopped && reason) failure ??= { cmd, reason, status: r.status || 1 };
         if (r.stopped) r.status = r.status || 1;
         // Reap and record attributable leaks before sweeping the remaining process group.

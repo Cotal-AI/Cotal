@@ -232,7 +232,9 @@ exits, the next connection on this computer retires what that server held. A plu
 `cotal setup` did not install has no record, and `cotal_connect` names that remedy.
 
 Personal native Code sessions can join a signed-in mesh whose authority offers connection approval.
-The plugin binds the real native session and transcript before requesting an identity. Each
+The plugin binds the real native session and transcript before requesting an identity. It does not
+change the connect call's arguments. When that call names no session, the server uses the one native
+session it has bound. Each
 conversation gets a separate actor. A new identity is issued only after a person approves it in the
 authority's signed-in web page. A model's tool arguments, a client flag or a native tool approval
 never approve it. The request first comes back pending with the page's address and its expiry.
@@ -314,6 +316,16 @@ A permanent HTTP request failure stops automatic approval polling but keeps that
 The native host reports a policy refusal separately from a person's denial, then serves its saved
 explanation through the same name and `approval_id` without another provision call.
 
+The native auth provider sends `Cotal-Conversation-Refusals: 1` on creation and recovery POSTs.
+An authority that supports this opt-in can answer a name conflict with HTTP 409 and only
+`v: 1`, the saved `requestId`, `status: "refused"` and `error: "name-taken"`.
+It must durably bind the refusal to the original request and repeat it on replay, even after the
+name becomes available. An issued identity must never become a name refusal. A matching answer
+releases only an unissued local request, so choosing another name can reach normal approval.
+An older unversioned name conflict explains the failure but retains unknown recovery state.
+Server reason text and action URLs are not displayed. Signed-in and hosted connections do not
+number a conflicting name automatically; open and static local meshes do.
+
 An authority can return a terminal agent-limit refusal with HTTP 409, `v: 1`, the saved `requestId`,
 `status: "refused"`, `error: "agent-cap"` and `cap: "agents"`.
 Its `current` and `limit` are safe integers with `current >= limit >= 1`.
@@ -330,7 +342,20 @@ conversations stay connected. When the mesh reports retirement pending or does n
 conversation stays disconnected and keeps its saved record. Every tool then reports the same
 unfinished cleanup with the mesh's retirement phase. Calling `cotal_disconnect` again retries it at
 once. `cotal_connect` retries it too, and connects with a new identity once the mesh confirms
-retirement. A restarted plugin server recovers the same way. After each connection, the plugin
+retirement. A restarted plugin server recovers the same way. New recovery records retain the original
+registration pins, so retirement still goes to that authority after the registered addresses change.
+After a registration change, an older issued record without those pins first reads discovery at its
+saved exchange address. Reconstruction keeps the saved root and local registration fields while
+replacing the public pins. Retirement uses that registration only when its full trust hash matches
+the saved record. A record without issued material has no saved exchange address and is set aside. If discovery
+is unavailable or the hash differs, or the original authority is
+unavailable or refuses sign-in, the record is set aside without confirming retirement.
+Set-aside records live at `app-identities/unconfirmed-<id>` in the private Cotal home. They retain
+credentials and do not confirm retirement. No credential is sent to the replacement authority.
+If the earlier identity still holds its name, a matching terminal refusal releases only the fresh,
+unissued request. The person can then choose another name and approve a new connection, or retire
+an earlier agent they no longer use before reusing its name. Offline alone does not mean unused.
+A different issuer or audience never authorizes reuse of the old request. After each connection, the plugin
 retires the same mesh's saved identities whose plugin server process no longer exists, such as one
 killed before it could retire them. This runs in the background, so the connection does not wait
 for it. A server process that still exists keeps its identity, and a retirement that does not finish
@@ -505,7 +530,10 @@ with `cotal_channel_mode` or as agent-file defaults (`quiet:` / `muted:`,
 [agent files](agent-files.mdx)). A per-channel override is the final word for that channel.
 Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, or other
 connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
-`@mention` remains automatic and injects normally.
+`@mention` remains automatic and injects normally. Setting a channel quiet also makes its ambient
+already waiting pull-only, and muting it makes everything already waiting from it pull-only,
+mentions included. After `cotal_leave`, ambient already waiting from the channel is pull-only too.
+A message a host is already handing to the agent keeps its lane.
 
 A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
 receivable window (direct messages and role requests first, then channel traffic, replayed history

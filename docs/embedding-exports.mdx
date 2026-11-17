@@ -80,10 +80,16 @@ plus `CANCEL_INPUT_SCHEMA` and `TURN_YIELD_OUTPUT_SCHEMA` beside the turn pair. 
 runtime test stand-ins compile these same deeply frozen objects. Moving these definitions does not
 change the manager's registered contract digests.
 
-`compileContract` keeps each closure's schemas, IDs and references in its own compiler. The default
-meta-schema and Ajv's built-in meta-schema keys share a lazily compiled validator. Other `$schema`
-values resolve on the closure's compiler. Meta-validation and registration refusals still apply to
-every compile; this reuse does not cache caller schemas.
+`compileContract` validates instances with `json-schema-library` 11.6.16. Each closure has its own
+schema and reference registry. Authored IDs and digest retrieval aliases name the same resource.
+Ajv remains responsible only for schema meta-validation, including closure-local `$schema` values.
+Its built-in meta-schemas share a lazily compiled validator, without caching caller schemas.
+
+`CompiledContract.validate` and `compileContractSchema` return `ContractValidator`, a synchronous
+boolean callable with `schema` and `errors`. A successful call sets `errors` to `null`. Each failure
+has `code`, an escaped JSON Pointer `instancePath`, and `message`. An undeclared property also has
+`additionalProperty`, preserving its original name. Ajv metadata such as `schemaEnv`, `params` and
+`schemaPath` is no longer exposed. Error text and ordering can change between validator versions.
 
 ## Package entry points [#the-export-surface]
 
@@ -91,7 +97,8 @@ Everything below is a real export of a published package, reachable from the pac
 package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
 `@cotal-ai/connector-claude-code` also publishes `./mcp`, which hosts managed Claude Code sessions
 in one process ([Connect Claude](connect-claude.mdx#host-sessions-in-one-process)).
-`@cotal-ai/core` also publishes `./browser-control` and `./browser-validators-build`
+`@cotal-ai/core` also publishes `./browser-control`, `./browser-validators-build` and the node-free
+`./contract-validator` interpreter
 ([Browser control](embedding.mdx#browser-control)). Type-only names are marked; import them with `import type`.
 
 ## Endpoint presence metadata
@@ -255,6 +262,26 @@ broker's authorization deadline. The returned `done` waits for admitted hooks wh
 ends and rejects an unexpected worker failure after those hooks settle.
 
 
+### Migration execution custody
+
+On Linux, `@cotal-ai/cli/migration-node` exports `captureMigrationNode` and
+`verifyMigrationNode`. They copy the running Node executable to an exclusive private `node`
+file beside a native execution generation, then verify its bytes and version without resolving
+its original path. The composition root's `migration-execution` adapter retains the caller's
+verified complete package with the existing generation store and binds both receipts in
+`launch.migrationExecution` of the existing maintenance resume document, leaving the Manager's
+inventory and its preserved-exit digest unchanged. It holds the root
+maintenance lock and the installation/update locks while recording that receipt. It changes no
+active execution descriptor, package version, daemon or connector set.
+
+These primitives do not remove retained copies. The coordinator must keep Node through rollback
+and remove its copy under the same locks only when the maintenance journal closes complete,
+not when forward migration commits. An unreferenced failed-attempt copy must be inventoried on
+the next run and removed only after proving no journal references it. That coordinator cleanup,
+full host capture and public activation are not implemented by these primitives. Other platforms
+refuse. `pnpm smoke:migration-execution:live` needs npm access, installs a published fixture in a
+private prefix, drives its ordinary updater, and retains its fixture and private command logs.
+
 ### Composition APIs
 
 **Seams and the wire** (all `@cotal-ai/core` unless noted)
@@ -263,6 +290,7 @@ ends and rejects an unexpected worker failure after those hooks settle.
 |---|---|
 | `SecretStore` *(type)* | the durable hosted-secret seam (get/put/create/delete). `create` writes only while the key is absent and reports whether it did, so it must be one atomic step in the backend. `get()` returns raw seeds/keys into process memory, so it is a blob seam, not HSM/KMS signing. |
 | `FsSecretStore`, `workspaceSecretStore(root)` | the filesystem default. **These live in `@cotal-ai/workspace`, not core.** |
+| `assertMaintenanceLock(lock, root?)` | check a retained maintenance lock's root and current token without releasing it. Throws if the lock was lost. This does not stop writers or prove a completed cut. **Lives in `@cotal-ai/workspace`.** |
 | `replaceSpaceAccountAuth(store, spaceAccount)` | replace one space's existing account record in a `SecretStore` with a single put of that record, to persist a signing-key rotation or roll one back. It never writes the broker record the spaces share and creates nothing: a missing or invalid broker or account record refuses, and so does a replacement that is another account or outside the broker's chain. It reads the record back after the put. Not atomic across keys, so the host keeps other writers of the space's trust records out for the call. **Lives in `@cotal-ai/workspace`.** |
 | `AuthProvider` *(type)*, `Connector` *(type)*, `Runtime` *(type)*, `Command` *(type)* | the extension contracts; implementations self-register on import. |
 | `registry` | the shared registry a composition root pulls surfaces into. |

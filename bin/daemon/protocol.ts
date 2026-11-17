@@ -17,8 +17,8 @@ import type { AccountComputerStatus } from "./account-state.js";
 import { normalizeIdpUrl } from "@cotal-ai/auth";
 import { DAEMON_PROTOCOL_VERSION, MAX_LINE_BYTES } from "./endpoint.js";
 
-export const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
-export type DaemonOp = (typeof DAEMON_OPS)[number];
+const DAEMON_OPS = ["update-settings", "update-check", "name", "daemon-stop", "space-intent", "status", "spaces", "manager-start", "manager-status", "managers-stop", "managers-prepare-restart", "managers-abort-restart", "login-start", "login-cancel", "logout", "connect-check", "register", "service-connect", "service-disconnect", "service-status"] as const;
+type DaemonOp = (typeof DAEMON_OPS)[number];
 
 /** The fields each op takes besides `v`, `id` and `op`. Required ones must be present. */
 const OP_FIELDS: Record<DaemonOp, { readonly required: readonly string[]; readonly optional: readonly string[] }> = {
@@ -48,7 +48,7 @@ export type LogoutChange =
   | { readonly kind: "local-login"; readonly idp: string; readonly cleared: true }
   | { readonly kind: "idp-session"; readonly idp: string; readonly revoked: true };
 
-export type LogoutResult =
+type LogoutResult =
   | { readonly kind: "logout"; readonly localLogin: "absent"; readonly serverRevoked: null }
   | { readonly kind: "logout"; readonly serverRevoked: boolean; readonly localLoginCleared: true; readonly removedRegistrations: readonly string[]; readonly skippedServices: readonly string[] };
 
@@ -74,7 +74,7 @@ export type DaemonRequest =
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "service-disconnect"; readonly space: string }
   | { readonly v: typeof DAEMON_PROTOCOL_VERSION; readonly id: string; readonly op: "service-status"; readonly space: string };
 
-export type ProtocolErrorCode =
+type ProtocolErrorCode =
   | "BAD_JSON" | "NOT_OBJECT" | "BAD_VERSION" | "UNKNOWN_FIELD" | "BAD_ID" | "UNKNOWN_OP" | "LINE_TOO_LONG"
   | "SCHEMA_INVALID" | "OPERATION_UNKNOWN" | "OPERATION_PARTIAL"
   | "BAD_FIELD" | "LOGIN_IN_PROGRESS" | "TOO_MANY_REQUESTS" | "DEPENDENCY_UNAVAILABLE" | "SPACES_UNAVAILABLE" | "MANAGER_UNAVAILABLE" | "SEATS_ACTIVE" | "GENERATION_PENDING";
@@ -225,7 +225,7 @@ export type DaemonResponse =
 const ENVELOPE_KEYS = new Set(["v", "id", "op"]);
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 /** An attempt id is daemon-minted: 22 characters of base64url. */
-export const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+const ATTEMPT_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const MAX_CLIENT_ID = 128;
 /** A space name as it appears in a subject token. */
 export const SPACE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -235,7 +235,7 @@ export function isDaemonSpaceName(space: unknown): space is string {
   return typeof space === "string" && SPACE_PATTERN.test(space);
 }
 
-export type ParsedRequest = { readonly ok: true; readonly request: DaemonRequest } | { readonly ok: false; readonly id: string | null; readonly code: ProtocolErrorCode; readonly message: string };
+type ParsedRequest = { readonly ok: true; readonly request: DaemonRequest } | { readonly ok: false; readonly id: string | null; readonly code: ProtocolErrorCode; readonly message: string };
 
 const bad = (id: string | null, message: string): ParsedRequest => ({ ok: false, id, code: "BAD_FIELD", message });
 

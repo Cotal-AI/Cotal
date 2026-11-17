@@ -87,7 +87,7 @@ export async function readDesktopRequest(input: Readable): Promise<DesktopReques
   } finally { clearTimeout(timer); }
 }
 
-export interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "peerPid"> {
+interface DesktopBridgeOptions extends Pick<QueryOptions, "peerUid" | "peerPid"> {
   readonly version: string;
   /** Resolve only for a valid request that needs the daemon, inside the framed error boundary. */
   readonly resolveTarget: () => { readonly paths: QueryOptions["paths"]; readonly home?: string };

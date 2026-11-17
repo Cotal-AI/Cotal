@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command, CommandExample, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
-import { globalConfigDir } from "@cotal-ai/core";
+import { connectorConfigDir } from "./connector-retention.js";
 import { inspectLock } from "./advisory-lock.js";
 import { globalConfigDirProblem } from "./cotal-config.js";
 import { canonicalLocalProcessPath, localProcessPath, type LocalProcess } from "./local-process.js";
@@ -91,7 +91,7 @@ export interface ExtensionsManifest {
 
 /** The extensions prefix: `<config>/cotal/extensions` — its own npm installation root. */
 export function extensionsDir(): string {
-  return join(globalConfigDir(), "extensions");
+  return join(connectorConfigDir(), "extensions");
 }
 
 export function extensionsManifestPath(): string {

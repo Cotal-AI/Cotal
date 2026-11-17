@@ -681,10 +681,10 @@ repair_install_modes() {
 link_node_bin() {
   _nb="$INSTALL_DIR/nodebin"
   mkdir -p "$_nb"
-  ln -sf "$NODE_BIN" "$_nb/node"
-  ln -sf "$NPM_BIN" "$_nb/npm"
+  ln -sf "$(resolved_target "$NODE_BIN")" "$_nb/node"
+  ln -sf "$(resolved_target "$NPM_BIN")" "$_nb/npm"
   _npx=$(dirname "$NPM_BIN")/npx
-  [ -e "$_npx" ] && ln -sf "$_npx" "$_nb/npx"
+  [ -e "$_npx" ] && ln -sf "$(resolved_target "$_npx")" "$_nb/npx"
   return 0
 }
 
@@ -1205,10 +1205,10 @@ main() {
   ok_line "Cotal $INSTALLED_VERSION"
 
   write_launcher
-  if [ -n "$PREVIOUS_VERSION" ]; then
-    if ! "$BIN_DIR/cotal" update --self; then
+  if [ -n "$PREVIOUS_VERSION" ] || [ -e "${COTAL_HOME:-$HOME/.cotal}/daemon/service-unit.json" ]; then
+    if ! COTAL_INSTALL_RECONCILE=1 "$BIN_DIR/cotal" update; then
       die "Cotal was installed, but reconciliation did not complete." \
-        "Run $(shquote "$BIN_DIR/cotal") update --self to finish this update."
+        "Run $(shquote "$BIN_DIR/cotal") update to finish this update."
     fi
   fi
   setup_path

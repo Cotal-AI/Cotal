@@ -1,5 +1,5 @@
 {
- "$comment": "Capability census owner map, read by bin/smoke/capability-census.smoke.ts. One row per item that bin/smoke/census/sources.ts lists. An owner is \"current:<command> [words] [--flag ...]\" for a registered command that performs the item today, \"pending:<command> [words] [--flag ...]\" for the command the CLI redesign adds for it, or \"internal:<reason>\" for machinery that is not a user capability. An item that more than one entry point issues lists each owner. The checklist covers prose sources the extractor cannot read.",
+ "$comment": "Capability census owner map, read by bin/smoke/capability-census.smoke.ts. One row per item that bin/smoke/census/sources.ts lists. An owner is \"current:<command> [words] [--flag ...]\" for a registered command that performs the item today, \"pending:<command> [words] [--flag ...]\" for the command the CLI redesign adds for it, or \"internal:<reason>\" for machinery that is not a user capability. An item that more than one entry point issues lists each owner. The checklist covers prose sources the extractor cannot read. Coverage: cli:service--no-open is exercised by smoke:dogfood:live; cli:__service-web--posting-creds by smoke:web-send; env:COTAL_UPDATE_PARENT_WAITS by smoke:daemon-update-generation.",
  "owners": {
   "agent-file:agent": "current:personas",
   "agent-file:allowPublish": "current:personas",
@@ -128,6 +128,7 @@
   "cli:__service-web--host": "internal:native service child that service start execs under controller custody",
   "cli:__service-web--launch-request": "internal:native service child that service start execs under controller custody",
   "cli:__service-web--port": "internal:native service child that service start execs under controller custody",
+  "cli:__service-web--posting-creds": "internal:native service child posting credential exercised by smoke:web-send",
   "cli:__service-web--read-only": "internal:native service child that service start execs under controller custody",
   "cli:__service-web--ready-file": "internal:native service child that service start execs under controller custody",
   "cli:__service-web--root": "internal:native service child that service start execs under controller custody",
@@ -346,6 +347,8 @@
    "current:channel defaults --window"
   ],
   "cli:channel--yes": "current:channel remove --yes",
+  "cli:mcp": "current:mcp",
+  "cli:mcp--space": "current:mcp --space",
   "cli:chat": "current:chat",
   "cli:chat--creds": "pending:chat --creds",
   "cli:chat--kind": "current:chat --kind",
@@ -952,6 +955,7 @@
   ],
   "cli:service--json": "current:service --json",
   "cli:service--new-instance": "current:service start --new-instance",
+  "cli:service--no-open": "current:service start --no-open",
   "cli:service--plain": "current:service --plain",
   "cli:service--preset": "current:service add --preset",
   "cli:service--space": "current:service",
@@ -1354,6 +1358,7 @@
   "env:COTAL_TOKEN": "current:join --token",
   "env:COTAL_TOOLS_FILE": "internal:seat session variable the launcher writes for a spawned seat",
   "env:COTAL_UPDATE_PARENT": "internal:handoff between a Cotal process and the child it starts",
+  "env:COTAL_UPDATE_PARENT_WAITS": "internal:waiting update parent marker exercised by smoke:daemon-update-generation",
   "env:COTAL_UPDATE_TARGET_VERSION": "internal:handoff between a Cotal process and the child it starts",
   "env:COTAL_VARIANT": "current:spawn --variant",
   "env:COTAL_VERSION": "internal:handoff between a Cotal process and the child it starts",

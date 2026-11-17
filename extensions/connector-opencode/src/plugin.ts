@@ -178,7 +178,7 @@ export { settleWithin };
  * The buffered-inbox + pending-run-turn composition that goes out ahead of a native prompt, read by
  * {@link SurfacedBatch.inject}. Returns `undefined` when there is nothing to prepend.
  */
-export function computeInjection(agent: MeshAgent): {
+function computeInjection(agent: MeshAgent): {
   prefix: string;
   surfacedIds: string[];
   turnIds: string[];
@@ -1472,6 +1472,7 @@ export const cotal: Plugin = async () => {
           const s = event.properties.status;
           // Presence only — session.idle owns ack + drive (so a duplicate idle can't mis-ack).
           if (s.type === "busy") {
+            agent.noteActivity();
             busy = true;
             await safeStatus("working");
           } else if (s.type === "idle") {
@@ -1548,6 +1549,10 @@ export const cotal: Plugin = async () => {
           // the source then reads the durable store and decides what is settled enough to publish.
           const partSession = (event.properties as { part?: { sessionID?: string } }).part?.sessionID;
           if (!ours(partSession)) return;
+          const part = event.properties.part;
+          const delta = event.properties.delta;
+          if (busy && (part.type === "tool" || ((part.type === "text" || part.type === "reasoning") && typeof delta === "string" && delta.length > 0)))
+            agent.noteActivity();
           eventsFor(sessionID)?.flush(sessionID);
           break;
         }
@@ -1566,6 +1571,7 @@ export const cotal: Plugin = async () => {
     // Surface the running tool as presence activity (parity with Claude's PreToolUse).
     "tool.execute.before": async (input) => {
       if (!ours(input.sessionID)) return;
+      agent.noteActivity();
       await safeStatus("working", input.tool);
     },
   } satisfies Partial<Hooks>;

@@ -1,0 +1,12 @@
+packages:
+  - "packages/*"
+  - "extensions/*"
+  - "implementations/*"
+  - "examples/*"
+  - "examples/*/*"
+  - "bin"
+allowBuilds:
+  "@google/genai": false
+  esbuild: true
+  msgpackr-extract: false
+  protobufjs: false

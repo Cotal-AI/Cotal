@@ -25,6 +25,7 @@ const surfaces = {
   runtime: () => import("@cotal-ai/runtime"), // `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
   auth: () => import("@cotal-ai/auth"), // login / logout — per-user IdP sessions (device-code sign-in)
   docs: () => import("./docs.js"), // `docs`; the docs bundle loads only when `docs` runs
+  mcp: () => import("./mcp.js"), // stock stdio gateway for hosts without a native connector
   daemon: () => import("./daemon/command.js"), // `daemon`: the local machine daemon's authenticated control endpoint (Linux)
   // The `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event frame instead
   // of `[unrenderable part kind "ag-ui.frame"]`.
@@ -57,10 +58,11 @@ registry.provide({ provides: commands("auth-service", "__daemon-auth-service", "
 registry.provide({ provides: [{ kind: "registry-service", name: "builtin" }], load: () => import("@cotal-ai/registry") });
 registry.provide({ provides: commands("__service-unit"), load: () => import("@cotal-ai/cli/service-unit") });
 registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth") });
+registry.provide({ provides: commands("mcp"), load: importing("mcp") });
 
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.
-const { commandWord, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
+const { commandWord, completeFileWrites, runCli, stdoutError } = await import("@cotal-ai/cli/dispatch");
 const { executionIdentity } = await import("@cotal-ai/workspace");
 const identity = executionIdentity();
 if (identity && identity.logicalEntry === identity.loadedEntry) {
@@ -81,8 +83,11 @@ if (word === "update") await import("./daemon/update-entry.js");
 // or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
 // closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
 // 0. A command that must close something first, such as a chat session, owns stdout's errors while
-// it runs, and this listener stands down for it. Registered before any command can write.
+// it runs, and this listener stands down for it. Registered before any command can write. A stdout
+// redirected to a file writes each chunk whole or fails into this listener, so a file-size limit or
+// a full disk cannot cut an export short and still exit 0.
 process.stdout.on("error", stdoutError);
+completeFileWrites();
 
 // The four agent connectors (claude/opencode/hermes/pi) are NOT imported here: they are removable,
 // install-seeded `cotal ext` plugins loaded through the manifest, exactly like a third-party

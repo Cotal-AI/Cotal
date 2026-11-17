@@ -205,7 +205,7 @@ try {
         id, name: "multi-agent", space: SPACE, servers: url, lifecycleUid: mintLifecycleUid(),
         kind: "agent", subscribe: [], allowSubscribe: [], allowPublish: [], tls: false,
         ...(eventsRequired ? { eventsRequired: true } : {}),
-      }, { ...process.env, COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: stateRoot });
+      }, { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_"))), COTAL_EVENTS: "1", COTAL_WORKSPACE_ROOT: stateRoot });
       let ready = false;
       let errorName: string | undefined;
       let issue: string | undefined;

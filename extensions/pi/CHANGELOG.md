@@ -1,5 +1,45 @@
 # @cotal-ai/pi
 
+## 0.166.1
+
+### Patch Changes
+
+- bf3d2f0: A pi turn that fails now shows pi's own error in the agent's presence line, for example `Pi turn ended with error (Unknown provider: unknown) after 2 automatic continuation attempts`. Before this, the line said only that the turn ended with an error. When pi had no model provider set up, the user was told to start a new turn or replace the seat, and neither step helps. The error is put on one line and cut to 300 characters.
+- 9541212: A Pi seat now receives messages that arrive during a long run at its next turn boundary instead of only when the run ends. On transports without a provider response hook, such as the Codex subscription, Pi running a tool from an answer now confirms the batch that request carried. A steer sent while a tool runs no longer trips the dispatch watchdog's hold, which used to block every later message for the rest of the run.
+
+## 0.166.0
+
+### Patch Changes
+
+- c23de83: Keep internal connector helpers and types module-private while preserving the published package exports.
+
+## 0.165.4
+
+No changes in this release.
+
+## 0.165.3
+
+No changes in this release.
+
+## 0.165.2
+
+No changes in this release.
+
+## 0.165.1
+
+### Patch Changes
+
+- 78aa32d: Pin the NATS client packages (`@nats-io/nats-core`, `transport-node`, `jetstream`, `kv`, `obj`) to 3.4.0, the versions every suite runs against. They were declared as `^3.4.0`, so an install made after their 3.5.0 release ran a client the product was never tested with.
+
+## 0.165.0
+
+### Patch Changes
+
+- a97aade: Report harness work timestamps across the Claude Code, Codex, Hermes, OpenCode and pi connectors.
+  
+  Relay work events into the existing presence `activeAt` field so roster and operator surfaces can date the last reported work separately from heartbeats. No new wire field or progress verdict is added. Boundary-only hosts report less frequently than streaming hosts, and work age cannot distinguish a slow provider from a hung one.
+- 18d2cda: A channel post that mentions an agent who may not read the channel no longer drops that mention silently. On an authenticated mesh the delivery daemon sends the post's sender a mention notice that names those agents, so the sender can reach them another way. The connectors show it as `[mention notice from the delivery daemon]`, and Hermes runs it in its own `notice:mention` chat.
+
 ## 0.164.18
 
 No changes in this release.

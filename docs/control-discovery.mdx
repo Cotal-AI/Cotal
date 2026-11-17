@@ -18,6 +18,20 @@ nonce, so the broker polices who is calling in the subject grammar itself. See
 [SPEC §13.2](../SPEC.md#132-grammar) for the grammar and [§13.5](../SPEC.md#135-verbs) for
 the verbs (`call`, `cast`, `watch`, `claim`, `scatter`).
 
+## Journal action coverage
+
+The core journal action rail is public API, but the shipped manager does not use it for
+`spawn` or `launch`. Both commands remain `ephemeral` and accept through `serveSpawnGoal`,
+not through journal submission, decision facts and goal binding. This is an implementation
+limit, not a claim that the journal action contract is available through those commands.
+
+The `ep-journal`, `ep-goaleff`, `ep-epname`, `ep-effects` and `goal-epoch-fence` smoke suites
+exercise the rail's functions and guards with their own inputs. Passing them does not prove
+that a shipped spawn or launch reaches those guards. The `journal-declaration` and
+`journal-model-b` suites separately pin the current command declarations and manager source
+wiring. A green result from those two suites confirms the existing path, not a journal cutover.
+Those source checks do not establish runtime reachability outside the files they inspect.
+
 ## Lifecycle identity
 
 A principal `owner.actor` is a reusable routing alias: a despawn frees the actor name and a
@@ -246,7 +260,9 @@ Cancellation before submission reports `not-executed`. Once submission starts, c
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
 refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
 The follower owns its subscription, timers and read cancellation signal. Reconciliation begins
-before the wait deadline, and late read completions cannot settle an expired observation. Its read
+before the wait deadline, and late read completions cannot settle an expired observation. A result
+read that the broker reports had no responder did not run, so the follower reads again until the
+wait deadline. If no terminal arrives by then, the outcome stays unknown. Its read
 callback receives the accepting caller triple, remaining budget and abort signal; borrowed bearer
 commands and control connections use that signal. An in-flight dial that finishes after cancellation
 closes without publishing. A local reply-subscription failure prevents publication and is observed

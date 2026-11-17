@@ -6,6 +6,8 @@ import { existsSync, readFileSync, realpathSync, writeFileSync, copyFileSync } f
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { performance } from 'node:perf_hooks';
+import { inspectCandidateArchive } from './inspect-candidate-archive.mjs';
 import { isMainEntry } from './main-entry.mjs';
 
 export const NEXT_PATCH_OFFSET = 1000;
@@ -14,6 +16,18 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
 const inside = (parent, child) => { const path = relative(parent, child); return path === '' || (!path.startsWith('..') && !isAbsolute(path)); };
+const phase = (label, work) => {
+  console.log(`Candidate next: ${label} started`);
+  const start = performance.now();
+  try {
+    const result = work();
+    console.log(`Candidate next: ${label} completed in ${((performance.now() - start) / 1000).toFixed(3)}s`);
+    return result;
+  } catch (error) {
+    console.log(`Candidate next: ${label} failed after ${((performance.now() - start) / 1000).toFixed(3)}s`);
+    throw error;
+  }
+};
 
 export function nextCandidateVersion(version, offset = NEXT_PATCH_OFFSET) {
   assert([NEXT_PATCH_OFFSET, FOLLOW_ON_PATCH_OFFSET].includes(offset), 'offset must be 1000 or 2000');
@@ -53,7 +67,7 @@ export async function packCandidateNext({ sourceRoot, candidate, output, offset 
       assert.equal(pkg.version, version, 'lockstep candidate version');
       assert.match(pkg.archive, /^[^/\\]+\.tgz$/);
       assert.equal(sha(readFileSync(join(directory, pkg.archive))), pkg.sha256, `archive hash ${pkg.name}`);
-      const metadata = JSON.parse(String(run('tar', ['-xOf', join(directory, pkg.archive), 'package/package.json'])));
+      const { metadata, files } = inspectCandidateArchive(join(directory, pkg.archive), 32 * 1024 * 1024);
       assert.equal(metadata.name, pkg.name);
       assert.equal(metadata.version, version);
       for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
@@ -61,12 +75,13 @@ export async function packCandidateNext({ sourceRoot, candidate, output, offset 
           if (expected.includes(name)) assert(range === version || (field === 'peerDependencies' && (range === '*' || (range === '>=0.1.0' && version.split('.').slice(0, 2).some(part => Number(part) > 0)))), `packed fixed-group dependency ${pkg.name}/${field}/${name}=${range}`);
         }
       }
-      assert.equal(pkg.files?.['package.json'], sha(run('tar', ['-xOf', join(directory, pkg.archive), 'package/package.json'], { encoding: 'buffer' })), 'package metadata file hash');
+      assert.equal(pkg.files?.['package.json'], files['package.json'], 'package metadata file hash');
       assert(pkg.files && Object.keys(pkg.files).some(name => name.startsWith('dist/')), 'built distribution hashes required');
       for (const [name, hash] of Object.entries(pkg.files)) {
         assert(!name.split('/').includes('..') && !isAbsolute(name) && !name.includes('\\'), 'safe archive member');
-        assert.equal(sha(run('tar', ['-xOf', join(directory, pkg.archive), `package/${name}`], { encoding: 'buffer' })), hash, `file hash ${pkg.name}/${name}`);
+        assert.equal(files[name], hash, `file hash ${pkg.name}/${name}`);
       }
+      assert.deepEqual(Object.keys(files).sort(), Object.keys(pkg.files).sort(), `archive member census ${pkg.name}`);
       const stamped = JSON.parse(pkg.sourceManifest);
       assert.equal(stamped.name, pkg.name);
       assert.equal(stamped.version, version);
@@ -82,7 +97,7 @@ export async function packCandidateNext({ sourceRoot, candidate, output, offset 
   };
   const aVersion = json(join(candidate, 'manifest.json')).packages?.[0]?.version;
   const version = nextCandidateVersion(aVersion, offset);
-  const a = verify(candidate, aVersion);
+  const a = phase('verify A', () => verify(candidate, aVersion));
   const rows = JSON.parse(run('pnpm', ['list', '-r', '--include-workspace-root', '--depth', '-1', '--json']));
   const manifests = rows.map(row => {
     const path = realpathSync(join(row.path, 'package.json'));
@@ -93,7 +108,7 @@ export async function packCandidateNext({ sourceRoot, candidate, output, offset 
   const guards = () => {
     for (const pkg of ['seat', 'workspace']) run(process.execPath, [join(root, 'packages', pkg, 'scripts/assert-shipped-natives.mjs')], { stdio: 'inherit' });
   };
-  guards();
+  phase('native guards before build', guards);
   const changes = [];
   try {
     for (const row of manifests) {
@@ -108,18 +123,18 @@ export async function packCandidateNext({ sourceRoot, candidate, output, offset 
       writeFileSync(row.path, JSON.stringify(after, null, 2) + '\n');
     }
     const guardedExec = (file, args, options) => exec(file, args, { ...options, env: { ...process.env, PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'warn', PNPM_CONFIG_WORKSPACE_CONCURRENCY: '3' } });
-    guardedExec('pnpm', ['--workspace-concurrency', '3', 'build'], { cwd: root, stdio: 'inherit', timeout: 1_800_000 });
-    guards();
+    phase(`build ${version}`, () => guardedExec('pnpm', ['--workspace-concurrency', '3', 'build'], { cwd: root, stdio: 'inherit', timeout: 1_800_000 }));
+    phase('native guards after build', guards);
     assert.equal(git(['rev-parse', 'HEAD']), source, 'source HEAD changed during build');
     const { packColdCandidate } = await import(pathToFileURL(join(root, 'scripts/pack-cold-candidate.mjs')).href);
-    const manifest = packColdCandidate({ root, output, exec: guardedExec });
+    const manifest = phase(`pack ${version}`, () => packColdCandidate({ root, output, exec: guardedExec }));
     assert.equal(manifest.source, source);
     copyFileSync(join(root, 'install.sh'), join(output, 'installer.sh'));
     save(join(output, 'installer.json'), { source, sha256: sha(readFileSync(join(output, 'installer.sh'))) });
     save(join(output, 'bootstrap.json'), { source, version, label: 'candidate-only version metadata; no installed file edits; never publish', changes });
-    const b = verify(output, version);
+    const b = phase('verify output', () => verify(output, version));
     assert.notEqual(a.sha256, b.sha256, 'distinct A/B manifests required');
-    assert.deepEqual(verify(candidate, aVersion), a, 'A must remain unchanged');
+    assert.deepEqual(phase('recheck unchanged A', () => verify(candidate, aVersion)), a, 'A must remain unchanged');
     save(join(output, 'next.json'), { source, rule: `A.patch+${offset}`, offset, candidate: { version: aVersion, manifestSha256: a.sha256 }, next: { version, manifestSha256: b.sha256 } });
     return manifest;
   } finally {

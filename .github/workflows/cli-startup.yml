@@ -24,6 +24,71 @@ jobs:
           node-version: 22
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter "cotal-ai..." build
+      - name: Build the daemon host primitives for the native probe
+        run: pnpm --filter @cotal-ai/seat build:native
+      - name: Build stock macOS process identity for the real service
+        run: node packages/workspace/scripts/build-native.mjs
+      - name: Typecheck peer-close regression smokes
+        run: pnpm exec tsc --noEmit --target es2022 --module nodenext --strict --noUnusedLocals --types node bin/smoke/daemon-peer-close.smoke.ts bin/smoke/daemon-peer-close-guards.smoke.ts
+      - name: Reproduce peer credential read after native socket close
+        id: peer-close
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          scratch=$(mktemp -d /private/tmp/cotal-peer-XXXXXX)
+          printf 'scratch=%s\n' "$scratch" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$scratch" > "$RUNNER_TEMP/peer-close-scratch.txt"
+          pnpm exec tsx bin/smoke/daemon-peer-close.smoke.ts "$GITHUB_WORKSPACE" "$scratch" > "$RUNNER_TEMP/peer-close-result.log" 2>&1
+          cat "$RUNNER_TEMP/peer-close-result.log"
+      - name: Verify native peer close during the second identity read
+        id: peer-pid-close
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          scratch=$(mktemp -d /private/tmp/cotal-peer-XXXXXX)
+          printf 'scratch=%s\n' "$scratch" >> "$GITHUB_OUTPUT"
+          pnpm exec tsx bin/smoke/daemon-peer-close.smoke.ts "$GITHUB_WORKSPACE" "$scratch" pid > "$RUNNER_TEMP/peer-pid-close-result.log" 2>&1
+          cat "$RUNNER_TEMP/peer-pid-close-result.log"
+      - name: Verify live peer identity refusals on Darwin
+        run: pnpm exec tsx bin/smoke/daemon-peer-close-guards.smoke.ts
+      - name: Verify real recorded daemon uninstall
+        env:
+          COTAL_TEST_REAL_SERVICE: '1'
+        run: node bin/smoke/daemon-install-real.smoke.mjs
+      - name: Upload real public uninstall evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-uninstall-darwin
+          path: ${{ runner.temp }}/daemon-service-result.json
+          if-no-files-found: error
+      - name: Upload peer-close reproduction evidence
+        if: always() && steps.peer-close.outputs.scratch != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-peer-close-darwin
+          path: |
+            ${{ runner.temp }}/peer-close-result.log
+            ${{ runner.temp }}/peer-close-scratch.txt
+            ${{ steps.peer-close.outputs.scratch }}/reservation/owner.json
+            ${{ steps.peer-close.outputs.scratch }}/peer-*/identity.json
+            ${{ steps.peer-close.outputs.scratch }}/peer-*/closed.json
+            ${{ steps.peer-close.outputs.scratch }}/peer-*/outcome.json
+          if-no-files-found: error
+      - name: Upload second-read peer-close evidence
+        if: always() && steps.peer-pid-close.outputs.scratch != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-peer-pid-close-darwin
+          path: |
+            ${{ runner.temp }}/peer-pid-close-result.log
+            ${{ steps.peer-pid-close.outputs.scratch }}/reservation/owner.json
+            ${{ steps.peer-pid-close.outputs.scratch }}/peer-*/identity.json
+            ${{ steps.peer-pid-close.outputs.scratch }}/peer-*/closed.json
+            ${{ steps.peer-pid-close.outputs.scratch }}/peer-*/outcome.json
+          if-no-files-found: error
       - name: Read macOS process identity through the native binding
         run: pnpm exec tsx packages/workspace/smoke/darwin-process-native.smoke.ts
       - name: Start, query, refresh and stop both project routes

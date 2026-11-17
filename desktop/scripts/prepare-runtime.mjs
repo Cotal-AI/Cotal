@@ -37,7 +37,7 @@ function traceEsm(entry) {
     if (visited.has(cur)) continue;
     visited.add(cur);
     const src = readFileSync(cur, 'utf8');
-    for (const match of src.matchAll(/(?:(?:import|export)\s+[^"']*from\s+|import\s+)["']([^"']+)["']/g)) {
+    for (const match of src.matchAll(/(?:(?:import|export)\s*[^"']*from\s*|import\s*)["']([^"']+)["']/g)) {
       if (match[1].startsWith('.')) {
         const next = resolve(dirname(cur), match[1]);
         if (existsSync(next) && statSync(next).isFile()) queue.push(next);
@@ -47,6 +47,7 @@ function traceEsm(entry) {
   return visited;
 }
 const esToolkitKeep = traceEsm(join(deploy, 'node_modules', 'es-toolkit', 'dist', 'compat', 'index.mjs'));
+const jsonSchemaLibraryKeep = traceEsm(join(deploy, 'node_modules', 'json-schema-library', 'dist', 'index.mjs'));
 
 function shouldPruneFile(rel, abs) {
   if (rel.startsWith('seeded-connectors/')) return false;
@@ -63,6 +64,7 @@ function shouldPruneFile(rel, abs) {
   if (rel.startsWith('node_modules/ses/dist/') || rel.startsWith('node_modules/ses/src-xs/')) return true;
   if (rel.startsWith('node_modules/@modelcontextprotocol/sdk/dist/cjs/')) return true;
   if (rel.startsWith('node_modules/es-toolkit/') && rel !== 'node_modules/es-toolkit/package.json' && rel !== 'node_modules/es-toolkit/LICENSE' && !esToolkitKeep.has(abs)) return true;
+  if (rel.startsWith('node_modules/json-schema-library/') && rel !== 'node_modules/json-schema-library/package.json' && !jsonSchemaLibraryKeep.has(abs)) return true;
   return false;
 }
 
@@ -109,7 +111,19 @@ const probe = spawnSync(stagedBinary, [join(deploy, 'dist', 'cotal.js'), '--vers
 });
 if (probe.status !== 0 || !probe.stdout.trim().startsWith(`cotal-ai ${version}`)) throw new Error('The deployed stock CLI did not report the expected version.');
 writeFileSync(join(deploy, 'desktop-runtime.json'), JSON.stringify({ schema: 1, version, target, node: process.versions.node, files: hashes }, null, 2) + '\n');
-renameSync(stagedBinary, binary);
+function renameProbedBinary(source, destination) {
+  const deadline = performance.now() + 5_000;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try { renameSync(source, destination); return; }
+    catch (error) {
+      const remaining = deadline - performance.now();
+      if (process.platform !== 'win32' || error.code !== 'EBUSY' || remaining <= 0) throw error;
+      Atomics.wait(signal, 0, 0, Math.min(50, remaining));
+    }
+  }
+}
+renameProbedBinary(stagedBinary, binary);
 renameSync(deploy, output);
 rmSync(staging, { recursive: true, force: true });
 console.log(`Prepared stock cotal-ai ${version} and Node ${process.versions.node} for ${target}. No service was installed or started.`);

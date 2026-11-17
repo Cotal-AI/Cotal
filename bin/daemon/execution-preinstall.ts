@@ -6,6 +6,8 @@ import { askManager } from "@cotal-ai/workspace/control";
 import { queryDaemon } from "./client.js";
 import { daemonPaths, EndpointRefusal } from "./endpoint.js";
 import { preflightInstalledDaemon } from "./install.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { preinstallPreservationObservation, preservingPreinstallRefusal } from "./preinstall-preservation.js";
 import { processBirth, readLifetimeRecord } from "./lifetime.js";
 
 export interface ExecutionPreinstallRequest {
@@ -34,13 +36,53 @@ export async function readExecutionPreinstall(request: ExecutionPreinstallReques
     const lifetime = readLifetimeRecord(paths.lock);
     if (!lifetime?.start || lifetime.pid !== reply.result.pid || processBirth(lifetime.pid) !== lifetime.start) throw new Error("machine daemon lifetime changed during pre-install check");
     const active = (reply.result.managers ?? []).filter(manager => manager.pid !== undefined);
+    let preservingDeadline: number | undefined;
+    const hostedIdentity = (status: typeof reply.result) => {
+      if (!Array.isArray(status.managers)) throw new Error("hosted Manager inventory is unknown during preserving observation");
+      return JSON.stringify(status.managers.filter(row => row.pid !== undefined).map(row => [row.space, row.pid, row.instanceId]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))));
+    };
+    const initialHostedIdentity = hostedIdentity(reply.result);
     let occupied = 0;
     for (const manager of active) {
       if (!manager.instanceId) throw new CommandFailure("refused", "LIFECYCLE_BLOCKED", `hosted Manager ${manager.space} has no verified instance identity`);
+      const managerBirth = processBirth(manager.pid!);
+      if (!managerBirth) throw new Error("hosted Manager lifetime is unreadable during pre-install check");
       await withIdpSessionDir(homeCotalDir(), async () => {
         const target = await resolveControlTarget({ space: manager.space }, "control-caller-privileged", manager.instanceId, { onRefusal: "throw", readOnly: true });
-        const status = await askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
-        if (!status.ok) throw new Error(status.error ?? "hosted Manager status did not answer");
+        let observed = reply.result;
+        const pin = () => {
+          if (processBirth(lifetime.pid) !== lifetime.start || observed.pid !== lifetime.pid || hostedIdentity(observed) !== initialHostedIdentity) throw new Error("machine daemon or hosted Manager identities changed during preserving observation");
+          if (!Array.isArray(observed.managers)) throw new Error("hosted Manager inventory is unknown during preserving observation");
+          const current = observed.managers.find(row => row.space === manager.space && row.instanceId === manager.instanceId);
+          if (!current || current.pid !== manager.pid || processBirth(manager.pid!) !== managerBirth) throw new Error("hosted Manager lifetime changed during preserving observation");
+        };
+        const bounded = async <T>(read: () => Promise<T>): Promise<T> => {
+          const remaining = preservingDeadline! - Date.now();
+          if (remaining <= 0) throw preservingPreinstallRefusal(preinstallPreservationObservation(observed));
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const result = await Promise.race([read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(preservingPreinstallRefusal(preinstallPreservationObservation(observed))), remaining); })]);
+            if (Date.now() >= preservingDeadline!) throw preservingPreinstallRefusal(preinstallPreservationObservation(observed));
+            return result;
+          } finally { clearTimeout(timer); }
+        };
+        let status;
+        for (;;) {
+          pin();
+          const ask = () => askManager({ versionSkew: (text: string) => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", preservingDeadline === undefined ? 3000 : Math.max(1, Math.min(3000, preservingDeadline - Date.now())), { instanceId: manager.instanceId });
+          status = preservingDeadline === undefined ? await ask() : await bounded(ask);
+          if (status.ok) break;
+          if (!/manager is in preserving mode/.test(status.error ?? "")) throw new Error(status.error ?? "hosted Manager status did not answer");
+          preservingDeadline ??= Date.now() + 5000;
+          const custody = preinstallPreservationObservation(observed);
+          if (custody.seats !== 0 || !["gone", "transaction"].includes(custody.owner) || Date.now() >= preservingDeadline) throw preservingPreinstallRefusal(custody);
+          await delay(Math.min(100, Math.max(1, preservingDeadline - Date.now())));
+          const fresh = await bounded(() => queryDaemon({ paths, timeoutMs: Math.max(1, Math.min(1000, preservingDeadline! - Date.now())) }));
+          if (!fresh.ok) throw new Error("machine daemon custody is unreadable during preserving observation");
+          observed = fresh.result;
+        }
+        pin();
+        if ((status.data as { instanceId?: unknown }).instanceId !== manager.instanceId) throw new Error("hosted Manager instance changed before pre-install receipt");
         const count = (status.data as { agentCount?: unknown }).agentCount;
         if (!Number.isSafeInteger(count) || (count as number) < 0) throw new Error("hosted Manager returned an invalid agent count");
         occupied += count as number;

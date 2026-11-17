@@ -19,7 +19,7 @@ const WATCH = { pollMs: 10_000, graceMs: 60_000 };
  *  conversation already holds; an approved request is finished with `cotal_connect` and that id. */
 export interface ApprovalNotice { name: string; status: "approved" | "denied" | "expired" | "refused"; id: string }
 
-export interface AppHostOptions {
+interface AppHostOptions {
   cotal: () => readonly string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -32,7 +32,7 @@ export interface AppHostOptions {
   watch?: typeof WATCH;
 }
 
-export interface AppHost extends GatewayHost {
+interface AppHost extends GatewayHost {
   closeAll(): Promise<void>;
   nativeEvent(event: Record<string, unknown>): Promise<void>;
   sessionFor(id: string): string | undefined;
@@ -194,6 +194,10 @@ export function createAppHost(o: AppHostOptions): AppHost {
     w.timer.unref();
   };
   const open = async (name: string, context?: string, selection?: ConversationSelection, approvalId?: string, space?: string): Promise<GatewayConnection> => {
+    // The native hook binds this conversation before the connect call. It does not put the session
+    // into the call's arguments: a host that blocks a hook for changing tool input would refuse the
+    // first connect. One bound session is this server's conversation. More than one is not a guess.
+    if (context === undefined && bindings.size === 1) context = bindings.keys().next().value;
     const binding = context ? bindings.get(context) : undefined;
     if (context && !binding) throw new Error("the native conversation has not bound its lifecycle and transcript; no identity was requested");
     const refusal = context ? refusals.get(context) : undefined;

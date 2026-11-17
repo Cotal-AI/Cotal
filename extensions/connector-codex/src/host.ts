@@ -16,7 +16,8 @@
  *    when the turn reaches `completed`, and also when an OPERATOR interrupts it (Escape in the
  *    attached TUI) — that dismisses the batch rather than redelivering it, matching the OpenCode
  *    connector's explicit-Stop semantics. A `failed` turn (transient model/upstream error) leaves
- *    them un-acked and retries with bounded backoff; an `unknown` terminal (a missing or
+ *    them un-acked and retries with backoff for at most three failed turns per buffered message;
+ *    exhausted messages stay paused and readable with cotal_inbox. An `unknown` terminal (a missing or
  *    unrecognized status) leaves them un-acked too, without backoff. The ONE `interrupted` this
  *    host itself issues — `shutdown()`'s own `driver.interrupt()` — keeps today's un-acked
  *    outcome: that is a retirement, not a restart, and redelivery to a later same-name spawn is
@@ -86,6 +87,7 @@ import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
+const MAX_BATCH_TURNS = 3;
 /** App-server crash recovery budget: more than MAX_RESTARTS crashes inside the window is a crash
  *  loop, not a blip, and the host dies loudly rather than respawning forever. */
 const RESTART_WINDOW_MS = 120_000;
@@ -573,6 +575,24 @@ export async function runCodexHost(): Promise<void> {
   // terminal handler waits on it so an accepted-but-unrecorded steer can never mis-ack
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
+  // The bounded inbox owns these keys. A broker redelivery replaces its handle, not its budget.
+  const failedTurns = new Map<string, number>();
+  const paused = (item: InboxItem): boolean => (failedTurns.get(item.recvKey) ?? 0) >= MAX_BATCH_TURNS;
+  function pruneFailedTurns(): void {
+    const pending = new Set(agent.inboxKeys());
+    for (const key of failedTurns.keys()) if (!pending.has(key)) failedTurns.delete(key);
+  }
+  function pausedMessage(): string | undefined {
+    const items = agent.inboxPreview().filter(paused);
+    if (!items.length) return undefined;
+    return `Delivery paused after 3 turns for message ids ${items.map(item => item.id || `[receive ${item.recvKey}]`).join(", ")}; still unacknowledged. Read them with cotal_inbox.`;
+  }
+  async function reportPaused(): Promise<void> {
+    const message = pausedMessage();
+    if (!message) return;
+    await safeStatus("waiting", message, true);
+    await safeCondition({ code: "failed", source: "delivery-attempt-limit", message });
+  }
 
   function clearErrorRetry(resetDelay = false): void {
     if (errorRetryTimer) clearTimeout(errorRetryTimer);
@@ -581,7 +601,7 @@ export async function runCodexHost(): Promise<void> {
   }
 
   function scheduleErrorRetry(): void {
-    if (shuttingDown || errorRetryTimer || (agent.pendingWake() === 0 && !pendingPullHint)) return;
+    if (shuttingDown || errorRetryTimer || (agent.pendingWake(paused) === 0 && !pendingPullHint)) return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
@@ -590,7 +610,7 @@ export async function runCodexHost(): Promise<void> {
       // The latched pull hint has NO buffered inbox copy (its body was ack-dropped at ingest), so
       // pendingWake() can't see it — retry it explicitly, ahead of ordinary batches.
       if (pendingPullHint) void drive(pendingPullHint);
-      else if (agent.pendingWake() > 0) void drive();
+      else if (agent.pendingWake(paused) > 0) void drive();
     }, delay);
     errorRetryTimer.unref?.();
   }
@@ -605,6 +625,7 @@ export async function runCodexHost(): Promise<void> {
     if (shuttingDown || !ready || driving || driver.busy || awaitingTurnEnd) return;
     driving = true;
     try {
+      pruneFailedTurns();
       const parts: string[] = [];
       let ids: string[] = [];
       let turnIds: string[] = [];
@@ -615,11 +636,11 @@ export async function runCodexHost(): Promise<void> {
         parts.push(override);
       } else {
         // A role request is shown only once its take is recorded (SPEC §8.1).
-        const items = await agent.takeChosen("automatic", (preview) => preview);
+        const items = await agent.takeChosen("automatic", (preview) => preview.filter(item => !paused(item)));
         // The take awaits, so the checks above are made again: when a turn began meanwhile, such as
         // one the attached TUI started, its boundary drives the batch.
         if (shuttingDown || driver.busy || awaitingTurnEnd) return;
-        if (items.length === 0 && !turnPeek) return;
+        if (items.length === 0 && !turnPeek) { await reportPaused(); return; }
         if (items.length > 0) {
           ids = items.map((i) => i.recvKey);
           const inj = formatInjection(items);
@@ -669,7 +690,7 @@ export async function runCodexHost(): Promise<void> {
         const surfacedSet = new Set(surfaced);
         // `surfaced` holds receive keys, so an empty-id item already in the turn is not steered twice.
         const items = await agent.takeChosen("automatic", (preview) =>
-          preview.filter((i) => !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe)));
+          preview.filter((i) => !paused(i) && !surfacedSet.has(i.recvKey) && (i.kind !== "channel" || i.mentionsMe)));
         // The take awaits: a turn of ours that ended meanwhile leaves the items to its boundary drive,
         // even when a turn this host did not start is running now.
         if (items.length === 0 || !driver.busy || !awaitingTurnEnd) return;
@@ -699,8 +720,9 @@ export async function runCodexHost(): Promise<void> {
    *  `interrupted` this host itself asks for is `shutdown()`'s own `driver.interrupt()`, which
    *  sets `shuttingDown` first; that one keeps the un-acked outcome, because it is a retirement,
    *  not a restart (see the shutdown note below on what that does and does not promise). `failed`
-   *  (a transient model/upstream error) leaves the ids un-acked so the batch redelivers with
-   *  backoff, so a permanently failing batch can't hot-loop; `unknown` (a missing or unrecognized
+   *  (a transient model/upstream error) leaves the ids un-acked and retries with backoff up to
+   *  three failed turns per buffered message. Exhausted keys stay paused across broker redelivery;
+   *  `unknown` (a missing or unrecognized
    *  terminal status) also leaves them un-acked, without backoff — the protocol surprise gets no
    *  benefit of the doubt, but it isn't punished as a failure either. Waits for any in-flight
    *  steer RPC first, so the ack set is settled. */
@@ -723,7 +745,8 @@ export async function runCodexHost(): Promise<void> {
         // happens to wake the loop. `drive()` is self-guarding, so this cannot double-drive.
         if (driver.busy) return;
         if (pendingPullHint) void drive(pendingPullHint);
-        else if (agent.pendingWake() > 0) void drive();
+        else if (agent.pendingWake(paused) > 0) void drive();
+        else await reportPaused();
       })();
       return;
     }
@@ -739,6 +762,17 @@ export async function runCodexHost(): Promise<void> {
       // — the sole discriminator between an operator's dismiss and a retirement's redeliver.
       const dismissed = status === "completed" || (status === "interrupted" && !shuttingDown);
       if (wasOpen && ids.length > 0 && dismissed) agent.drainInboxDeliveries(ids); // the sole ack site
+      if (wasOpen && status === "failed") {
+        for (const id of new Set(ids)) {
+          const count = (failedTurns.get(id) ?? 0) + 1;
+          failedTurns.set(id, count);
+          if (count === MAX_BATCH_TURNS) {
+            const item = agent.inboxPreview().find(item => item.recvKey === id);
+            log(`Delivery paused after 3 turns for message id ${item?.id || id}; still unacknowledged. Read it with cotal_inbox.`);
+          }
+        }
+      }
+      if (dismissed) for (const id of ids) failedTurns.delete(id);
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {
@@ -747,9 +781,10 @@ export async function runCodexHost(): Promise<void> {
         if (gen !== boundaryGen) return;
         if (pendingPullHint) {
           void drive(pendingPullHint); // the latched focus pull — drive() consumes the latch only on ACCEPT
-        } else if (status !== "failed" && agent.pendingWake() > 0) {
+        } else if (status !== "failed" && agent.pendingWake(paused) > 0) {
           void drive(); // failed batches wait for the backoff timer instead of hot-looping
         }
+        if (!driver.busy) await reportPaused();
       })();
     });
   }
@@ -879,6 +914,7 @@ export async function runCodexHost(): Promise<void> {
   };
 
   driver.on("turnStarted", () => {
+    agent.noteActivity();
     flushEvents();
     // Invalidate any prior turn's still-pending async boundary tail: a new turn owning presence
     // now means T(n-1)'s flush/status/pump must no longer publish a stale `idle` over this
@@ -900,6 +936,7 @@ export async function runCodexHost(): Promise<void> {
     completeTurn(status, owned);
   });
   driver.on("itemStarted", (item: ThreadItem) => {
+    agent.noteActivity();
     if (item.type === "commandExecution" && typeof item.command === "string") {
       feed(`$ ${item.command}`);
       void safeStatus("working", item.command.slice(0, 120));
@@ -909,9 +946,11 @@ export async function runCodexHost(): Promise<void> {
     }
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
+    agent.noteActivity();
     flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
+  driver.on("work", () => agent.noteActivity());
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
    *  replacement. From that moment the tail owns NOTHING: continuing would set the context id,

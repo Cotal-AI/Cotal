@@ -82,6 +82,9 @@ credentials. Per-user-auth spaces refuse too; a cached login does not replace si
 resolved root supplies the persona ACL, signer and default storage together. A root that cannot be
 resolved refuses with its next step, such as `cotal up`. Conflicting current-folder and
 selected-root accounts refuse before issuance.
+After a local static space is stopped, its retained broker configuration and validated signing
+trust still resolve file-only fixed-profile minting. No repeated `--server` or running broker is
+needed. Provisioning and endpoint discovery still require the selected broker.
 
 A label takes letters, digits and `_`, since `-` separates the parts of a principal's name. `--role`
 takes letters, digits, `_` and `-`. A label or role with any other character, or an empty one,
@@ -273,8 +276,10 @@ command when the store cannot be proved. Skipped services do not change the comm
 Logout also clears the local account login even when a service must be skipped.
 Group-writable configuration ancestors are accepted only under the same
 [private-group proof](cli-selection.mdx) used for protected local paths, with no extended ACL.
-If that proof is unavailable, the skip report names a mode change. When `getfacl` is missing,
-it also offers installing the `acl` package. World-writable paths, foreign owners and
+When `getfacl` is missing, `python3 -I` reads the entry's extended attribute names instead.
+Either `system.posix_acl_access` or `system.posix_acl_default` means it has an extended ACL.
+If neither reader is installed or the read fails, the skip report names a mode change
+and offers installing the `acl` package. World-writable paths, foreign owners and
 unproved groups remain refused.
 Hand-made units are not updated automatically;
 their refusal names the selected sign-in store and a command such as
@@ -416,7 +421,7 @@ spaces refuses with `TARGET_AMBIGUOUS` (exit 2) and names them. In a folder whos
 the report is partial (exit 4) and its next step is to run it in a space's root, which `cotal space`
 lists. Without `--space`, in the root of a space `cotal space create` prepared and no `cotal up`
 started, the step is to start it with `cotal up`, then run the same command again. In the root of a
-space registered as open, the report says that the space issues no
+space registered as open, with or without `--fix`, the report says that the space issues no
 credentials, so there are none to check, and the result is a no-op (exit 0). With `--space` naming
 a space whose signing trust this root does not hold, it refuses `AUTH_REQUIRED` (exit 2) and reads
 no other root. Its next step names the folder that space is registered at, where the same command

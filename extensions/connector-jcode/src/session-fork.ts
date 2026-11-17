@@ -34,7 +34,7 @@ export function jcodeForkRecordPath(seatHome: string): string {
   return join(seatHome, MARKER);
 }
 
-export interface JcodeForkSource {
+interface JcodeForkSource {
   sessionId: string;
   title?: string;
   /** sha256 over the source snapshot bytes followed by its journal bytes, as read. */
@@ -266,7 +266,7 @@ export interface JcodeFork {
   briefed: boolean;
 }
 
-export interface ForkMarker {
+interface ForkMarker {
   source: string;
   fork: string;
   title?: string;

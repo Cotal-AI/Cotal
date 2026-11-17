@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { generateKeyPair, exportJWK, SignJWT } from 'jose';
 import { composeSpaceAuth, createBrokerAuth, createSpaceAccountAuth, isReachable, mintCreds, mintLifecycleUid, mkSecretDir, newIdentity, serverConfig, setupSpaceStreams, globalConfigDir, mintMembershipObserverCreds, mintConnectionEvictorCreds } from '@cotal-ai/core';
 import { deriveOwnerForIdpSubject, ensureCalloutAuth, ensureIssuer, ensureOwnerSecret, ensurePinnedIdp, grantActor, loadOwnerSecret, saveIdpSession, saveServiceKeys, startAuthService } from '@cotal-ai/auth';
-import { recordMesh, userAuthStateDir, deliveryCredsKey, membershipRwCredsKey, membershipObserverCredsKey, connectionEvictorCredsKey } from '@cotal-ai/workspace';
+import { homeCotalDir, recordMesh, userAuthStateDir, deliveryCredsKey, membershipRwCredsKey, membershipObserverCredsKey, connectionEvictorCredsKey } from '@cotal-ai/workspace';
 import { startDeliveryService } from '@cotal-ai/delivery';
 import { freePort, killAndAwaitExit, teardownOnSignal, SMOKE_BROKER_TOKEN } from '@cotal-ai/smoke-kit';
 
@@ -22,7 +22,9 @@ class MemoryStore {
   async create(key, value) { if (this.values.has(key)) return false; this.values.set(key, value); return true; }
   async delete(key) { this.values.delete(key); }
 }
+/** The caller selects the machine home before entering; this helper never redirects its registry. */
 export async function createFixtureSpace({ root, machineHome, runtime, node, env }) {
+  assert.equal(homeCotalDir(), machineHome, 'fixture registry must use the caller-selected machine home');
   const space = 'desktop-upgrade-fixture';
   const participant = join(root, 'participant');
   const authState = join(root, 'authority');
