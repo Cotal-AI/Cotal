@@ -439,6 +439,34 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
     mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
     writeFileSync(join(home, "..", ".cotal", "agents", "x.md"), "---\nname: x\n---\nhi\n");
   };
+  for (const [sub, words, flags] of [
+    ["list", ["x"], []],
+    ["show", ["x", "y"], []],
+    ["edit", ["x", "y"], []],
+    ["new", ["x", "y"], ["--prompt", "Instructions", "--subscribe", "", "--force"]],
+    ["rm", ["x", "y"], ["--force"]],
+  ] as const) {
+    let file = "";
+    const r = cotal(["personas", sub, ...words, ...flags], (home) => {
+      persona(home);
+      file = join(home, "..", ".cotal", "agents", "x.md");
+    }, noSeed);
+    check(`personas ${sub} refuses surplus names before changing the catalog`,
+      r.status === 1 && r.stderr.includes("usage: cotal personas") &&
+        existsSync(file) && readFileSync(file, "utf8") === "---\nname: x\n---\nhi\n" &&
+        readdirSync(join(file, "..")).join() === "x.md", shown(r));
+  }
+  let createdFile = "";
+  const created = cotal(["personas", "new", "valid", "--prompt", "Instructions", "--subscribe", ""], (home) => {
+    createdFile = join(home, "..", ".cotal", "agents", "valid.md");
+  }, noSeed);
+  check("control: personas new still creates one named persona", created.status === 0 && existsSync(createdFile), shown(created));
+  let removedFile = "";
+  const removed = cotal(["personas", "rm", "x", "--force"], (home) => {
+    persona(home);
+    removedFile = join(home, "..", ".cotal", "agents", "x.md");
+  }, noSeed);
+  check("control: personas rm still removes one named persona", removed.status === 0 && !existsSync(removedFile), shown(removed));
   const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
   const edited = cotal(["personas", "edit", "x"], persona, editor);
   check("control: personas edit runs the editor, and a draft left as it was saves nothing", edited.status === 0 && edited.stdout.includes('"x" is unchanged, so nothing was saved'), shown(edited));
