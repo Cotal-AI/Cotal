@@ -372,7 +372,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 40
+      max-parallel: 42
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
@@ -482,19 +482,23 @@ jobs:
           sudo systemctl start "user@$(id -u).service"
           printf 'XDG_RUNTIME_DIR=/run/user/%s\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$(id -u)" "$(id -u)" >> "$GITHUB_ENV"
       - name: Prepare owned broker fixture dependencies
-        if: matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent')
+        if: (matrix.platform == 'linux' && (matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'standalone-stop-consent')) || matrix.scenario == 'foreign-install-manager'
         shell: bash
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/matrix-broker"
           mkdir -p "$work"
-          curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/nats-server-v2.14.0-linux-amd64.tar.gz -o "$work/nats-server.tar.gz"
+          platform=linux
+          arch=amd64
+          if [ "$RUNNER_OS" = macOS ]; then platform=darwin; arch=arm64; fi
+          archive="nats-server-v2.14.0-$platform-$arch.tar.gz"
+          curl -fsSL "https://github.com/nats-io/nats-server/releases/download/v2.14.0/$archive" -o "$work/nats-server.tar.gz"
           curl -fsSL https://github.com/nats-io/nats-server/releases/download/v2.14.0/SHA256SUMS -o "$work/SHA256SUMS"
-          (cd "$work" && awk '$2 == "nats-server-v2.14.0-linux-amd64.tar.gz" {print $1 "  nats-server.tar.gz"}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && sha256sum -c selected.sha256)
+          (cd "$work" && awk -v archive="$archive" '$2 == archive {print $1 "  nats-server.tar.gz"}' SHA256SUMS > selected.sha256 && test -s selected.sha256 && shasum -a 256 -c selected.sha256)
           tar -xzf "$work/nats-server.tar.gz" -C "$work"
-          echo "$work/nats-server-v2.14.0-linux-amd64" >> "$GITHUB_PATH"
+          echo "$work/nats-server-v2.14.0-$platform-$arch" >> "$GITHUB_PATH"
       - name: Build only the signed-in participant fixture dependencies
-        if: matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent'
+        if: matrix.scenario == 'container-manager' || matrix.scenario == 'agent-stop-consent' || matrix.scenario == 'foreign-install-manager'
         shell: bash
         run: |
           node --input-type=module -e "import {statfsSync} from 'node:fs'; const d=statfsSync('.'); if(d.bavail*d.bsize<20*1024**3) throw Error('Less than 20 GiB before fixture build');"
@@ -514,7 +518,7 @@ jobs:
           const directory = process.env.RUNNER_TEMP + '/upgrade-evidence';
           mkdirSync(directory, { recursive: true });
           writeFileSync(directory + '/coordinate.json', JSON.stringify(cell));
-          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+          const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured', 'foreign-install-manager': 'configured' };
           const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
           const args = ['scripts/automatic-update-platform-baseline.mjs', '--source', cell.sourceVersion, '--layout', cell.channel, '--state', states[cell.scenario], '--method', method, '--expected-target', cell.targetVersion, '--output', directory];
           const paired = cell.scenario === 'candidate-next-daemon-self' || cell.scenario === 'candidate-next-stopped-daemon-self' || cell.scenario === 'candidate-next-disabled-daemon-self' || cell.scenario === 'candidate-next-stopped-desktop-self' || Boolean(cell.followOnAction) || cell.chain === true;
@@ -547,6 +551,10 @@ jobs:
           if (['container-manager', 'agent-stop-consent'].includes(cell.scenario)) {
             const { prepareUpdateParticipant } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/update-participant.fixture.ts'));
             options.prepare = prepareUpdateParticipant;
+          }
+          if (cell.scenario === 'foreign-install-manager') {
+            const { prepareForeignInstallManager } = await import(pathToFileURL(process.cwd() + '/implementations/auth/smoke/foreign-install-manager.fixture.ts'));
+            options.prepare = prepareForeignInstallManager;
           }
           const report = await matrixCell(options);
           assert.equal(report.environment?.hostedDisposable, true);
@@ -618,6 +626,7 @@ jobs:
           import { verifyResults } from './scripts/upgrade-matrix-plan.mjs';
           import { matchKnownRefusal } from './scripts/upgrade-matrix-refusals.mjs';
           import { evaluateManualDaemonState } from './scripts/daemon-manual-acceptance.mjs';
+          import { verifyForeignInstallManager } from './scripts/foreign-install-manager-evidence.mjs';
           const root = process.env.RUNNER_TEMP + '/upgrade-results';
           mkdirSync(root, { recursive: true });
           const plan = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/upgrade-plan/plan.json'));
@@ -659,7 +668,7 @@ jobs:
               const harness = execFileSync('git', ['show', report.harnessSource + ':scripts/automatic-update-platform-baseline.mjs']);
               const nativeHarness = report.platform === 'win32' ? Buffer.from(harness.toString().replaceAll('\r\n', '\n').replaceAll('\n', '\r\n')) : harness;
               assert.equal(report.harnessSha256, digest(nativeHarness), 'raw harness source hash mismatch');
-              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured' };
+              const states = { fresh: 'fresh', configured: 'configured', 'stale-self': 'stale-extensions', 'configured-rerun': 'configured', 'daemon-scheduler': 'daemon', 'daemon-self': 'daemon', 'candidate-next-daemon-self': 'daemon', 'candidate-next-stopped-daemon-self': 'daemon', 'candidate-next-disabled-daemon-self': 'daemon', 'candidate-next-stopped-desktop-self': 'daemon', 'candidate-next-second-self': 'daemon', 'candidate-next-manual-npm': 'daemon', 'candidate-next-installer-rerun': 'daemon', 'source-0.164.10-daemon-self-chain': 'daemon', 'agent-stop-consent': 'agent', 'standalone-stop-consent': 'agent', 'foreign-config-recovery': 'recovery', 'container-manager': 'configured', 'foreign-install-manager': 'configured' };
               const method = cell.scenario === 'configured-rerun' ? 'installer' : cell.scenario === 'daemon-scheduler' ? 'scheduler' : 'self';
               assert.equal(report.layout, cell.channel);
               assert.equal(report.state, states[cell.scenario]);
@@ -671,7 +680,7 @@ jobs:
               assert.equal(report.sourceRequested, cell.sourceVersion);
               assert.equal(report.target, cell.finalTargetVersion ?? cell.targetVersion);
               if (!paired) {
-                assert.equal(cell.sourceVersion, plan.sourceVersion);
+                assert.equal(cell.sourceVersion, cell.scenario === 'foreign-install-manager' ? '0.162.0' : plan.sourceVersion);
                 assert.equal(cell.targetVersion, plan.targetVersion);
               }
               if (paired) {
@@ -747,6 +756,7 @@ jobs:
                 pairedEvidence = verifyCandidateNextEvidence({ report, cell, output: directory, sourceManifestSha256: origin.sourceManifestSha256, targetManifestSha256: origin.targetManifestSha256, followOnManifestSha256: origin.followOnManifestSha256 });
               }
               const assertions = {
+                'foreign-install-manager-preserved': cell.scenario === 'foreign-install-manager' && verifyForeignInstallManager({report,cell,output:directory}).passed === true && ok('foreign installation Manager remains answering with unchanged native identity'),
                 'candidate-source-identity': pairedEvidence?.sourceIdentity === true,
                 'candidate-next-target': report.candidateNext?.targetVersion === (cell.followOnAction ? cell.targetVersion : finalTarget),
                 'next-hop-success': pairedEvidence?.nextHopSuccess === true,
