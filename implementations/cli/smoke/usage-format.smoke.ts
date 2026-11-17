@@ -150,6 +150,9 @@ for (const args of [["space", "create", "--help"], ["history", "general", "--hel
   check(`control: ${args.join(" ")} prints its help`, r.status === 0 && /Usage/.test(r.stdout), shown(r));
 }
 
+const createHelp = run(["space", "create", "--help"]);
+check("space create help documents adopt in usage and options", createHelp.status === 0 && /Usage\n[^\n]*\[--adopt\]/.test(createHelp.stdout) && /--adopt\s+create: take over the stack journal a copied or moved project folder holds/.test(createHelp.stdout), shown(createHelp));
+
 // A subcommand's help gives its whole usage, name argument included, and only its own options.
 for (const [args, usage, foreign] of [
   [["help", "channel", "set"], "cotal channel set <name> ", /--purge|--follow/],
