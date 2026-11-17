@@ -243,7 +243,8 @@ command that takes a channel reads it with or without its `#`.
 daemon, it reads them the way `cotal history` does.
 
 A message posted on a channel carries the `@<name>` words its text holds as mentions, as
-`cotal send -c` does, so it wakes the agents it names. A `--stdio` `send` carries only the
+`cotal send -c` does, so it wakes the agents it names. An `@` inside a word, as in an email
+address, or right after a `/` starts no mention. A `--stdio` `send` carries only the
 `mentions` its request lists.
 
 A direct message to an agent the roster shows offline is stored, and the view adds the same
