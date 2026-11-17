@@ -16,7 +16,7 @@ import { cleanupExecutionStore } from "../execution-store.js";
 import { repairExecutionInstallModes } from "../execution-transaction.js";
 import { prepareExecutionUpdate, preflightExecutionUpdate, recoverExecutionUpdate, executionInstallRoot } from "./execution-update.js";
 import type { ExecutionPreinstallReceipt } from "./execution-preinstall-client.js";
-import { findMesh, logicalExecutionEntry, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
+import { findMesh, logicalExecutionEntry, pruneRetainedConnectorConfig, retainConnectorConfig, shellPath } from "@cotal-ai/workspace";
 import { reportRunningManagers } from "@cotal-ai/cli/update";
 import { adoptAutomaticUpdateChild } from "./update-scope.js";
 import { captureWindowsGeneration, closeWindowsGeneration, windowsGenerationLifecycle } from "./update-generation-win32.js";
@@ -64,6 +64,43 @@ function assertDaemonReachable(): void {
   const lifetime = readLifetimeRecord(join(homeCotalDir(), "daemon", "daemon.lock"));
   if (lifetime?.start && processBirth(lifetime.pid) === lifetime.start)
     throw new Error("the machine daemon is running and this session has no XDG_RUNTIME_DIR to reach it; run the update from a login session of this account, or leave it to the daemon's automatic update");
+}
+
+async function collectConnectorSets(): Promise<void> {
+  try {
+    const entry = logicalExecutionEntry();
+    if (!entry || updateRuntime.checkout()) return;
+    const release = claimUpdateClosureAccess();
+    try {
+      const holders: (string | undefined)[] = [];
+      const managers = localUpdateManagers({}, entry);
+      for (const manager of managers) {
+        if (!manager.process || assertRecordIdentity(manager.process).kind !== "match") return;
+        const target = await resolveControlTarget({ space: manager.space, server: manager.server }, "control-caller-admin", manager.instanceId, { onRefusal: "throw", readOnly: true });
+        const reply = await askManager({ versionSkew: text => text, roster: async () => [] }, manager.space, target.server, "managerStatus", undefined, target.auth, "owner", 3000, { instanceId: manager.instanceId });
+        if (!reply.ok || assertRecordIdentity(manager.process).kind !== "match") return;
+        const version = (reply.data as { version?: unknown } | undefined)?.version;
+        holders.push(typeof version === "string" ? version : undefined);
+      }
+      try {
+        const paths = daemonPaths();
+        const reply = await queryDaemon({ paths });
+        if (!reply.ok) return;
+        const lifetime = readLifetimeRecord(paths.lock);
+        if (!lifetime?.start || lifetime.pid !== reply.result.pid || processBirth(lifetime.pid) !== lifetime.start) return;
+        // Hosted Managers can remain on an earlier generation than their daemon.
+        // Their separate records must all have appeared in the authenticated inventory.
+        if ((reply.result.managers ?? []).some(row => row.pid !== undefined && !managers.some(manager => manager.pid === row.pid && manager.instanceId === row.instanceId))) return;
+        holders.push(reply.result.version);
+      } catch (error) {
+        if (!(error instanceof EndpointRefusal) || !["NOT_RUNNING", "NO_RUNTIME_DIR"].includes(error.code)) return;
+        if (error.code === "NO_RUNTIME_DIR" && existsSync(join(homeCotalDir(), "daemon", "daemon.lock"))) return;
+        assertDaemonReachable();
+      }
+      if (managers.some(manager => !manager.process || assertRecordIdentity(manager.process).kind !== "match")) return;
+      pruneRetainedConnectorConfig(holders);
+    } finally { release(); }
+  } catch { /* An incomplete inventory or failed collection never fails the update. */ }
 }
 
 const command = registry.resolve<Command>("command", "update");
@@ -316,6 +353,7 @@ const composed: Command = { ...command, async run(args) {
   }) };
   await update(args, runtime);
   if (args.values.check === true || args.values.auto || args.values.notify || process.exitCode) return;
+  await collectConnectorSets();
   // The daemon started this update and restarts itself once this process has exited. A restart
   // asked for from here would stop this process with the rest of the service.
   if (process.env.COTAL_AUTO_UPDATE === "1") return;

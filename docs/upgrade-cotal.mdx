@@ -24,6 +24,12 @@ for the processes that already loaded it. This does not restore files a prior ma
 already replaced. Source checkouts, Windows and version-changing update checks are unchanged.
 Later releases inherit the selected prefix, including when its publication was interrupted.
 A recorded extension npm child must finish before its source prefix can be copied.
+After the complete new prefix is selected, unused earlier release sets are removed on a best-effort basis.
+A successful update authenticates every recorded local Manager and the daemon before collecting sets, and keeps each release they still use.
+An unreadable inventory or a holder without a known release keeps all sets. Removal failure does not fail the update.
+Each newly created set records its launched seats in private holder files. A seat keeps its set after its Manager exits until its recorded child identity is proved gone or its Manager observes its exit. A holder without a child identity, an unreadable holder, or a set created before holder support keeps the set. No process-list search is used to infer a seat's release.
+To remove an older unmarked set manually, first stop all local Managers, the daemon and their surviving seats, then delete only that release directory under the installation's `cotal/installs/<installation-key>/sets/` directory in your configuration home. Do not delete the selected release or remove holder files to force collection while seats may still be running.
+The original shared seed and extension folders remain for legacy processes.
 The first installed reconciliation also selects a separate prefix. A Manager started from another
 copy keeps launching with its original connector generation until it is restarted.
 
