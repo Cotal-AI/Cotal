@@ -29,8 +29,19 @@ jobs:
         run: |
           export NPM_BIN="$(command -v npm)"
           node --import tsx desktop/e2e/mac-app-deleted-daemon.mjs
-      - name: Retain command receipts
+      - name: Check evidence publication gate
+        id: evidence
         if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/mac-app-deleted-daemon/upload-safe"; then
+            echo 'safe=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'safe=false' >> "$GITHUB_OUTPUT"
+            echo 'Evidence upload refused because the secret scan did not finish.'
+          fi
+      - name: Retain command receipts
+        if: always() && steps.evidence.outputs.safe == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: mac-app-deleted-daemon

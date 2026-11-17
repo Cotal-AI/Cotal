@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,7 +19,7 @@ const cotalHome = join(homedir(), '.cotal');
 const domain = `gui/${process.getuid()}`;
 const target = `${domain}/ai.cotal.daemon`;
 const report = { schema: 1, source: process.env.GITHUB_SHA, startedAt: new Date().toISOString(), calls: [], snapshots: [], outcome: 'incomplete' };
-const save = () => writeFileSync(join(output, 'result.json'), JSON.stringify(report, null, 2));
+const save = () => writeFileSync(join(output, 'result.json'), publicText(JSON.stringify(report, null, 2)));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('COTAL_') && !['NODE_OPTIONS', 'NODE_PATH', 'npm_config_before', 'NPM_CONFIG_BEFORE'].includes(key)));
 Object.assign(env, { DO_NOT_TRACK: '1', COTAL_TELEMETRY: 'off', NO_COLOR: '1', COTAL_HOME: cotalHome, TMPDIR: join(root, 'tmp'), XDG_CONFIG_HOME: join(homedir(), '.config'), XDG_CACHE_HOME: join(homedir(), '.cache') });
 for (const dir of [root, env.TMPDIR, env.XDG_CONFIG_HOME, env.XDG_CACHE_HOME]) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -30,6 +30,10 @@ function publicText(value) {
   return String(value).replace(/eyJ[A-Za-z0-9_.-]+/g, '<redacted>')
     .replace(/(Bearer\s+)[^\s"\\]+/gi, '$1<redacted>')
     .replace(/("(?:token|accessToken|refreshToken|accessBearer|renewalProof|sentinelCreds|password)"\s*:\s*")[^"]*/gi, '$1<redacted>')
+    .replace(/-----BEGIN[^\n]*(?:NKEY|CREDS|PRIVATE KEY|JWT|SEED)[\s\S]*?-----END[^\n]*-----/g, '<redacted credentials>')
+    .replace(/\bS[UA][A-Z2-7]{56}\b/g, '<redacted seed>')
+    .replace(/(https?:\/\/)[^/\s@]+@/g, '$1<redacted>@')
+    .replace(/(https?:\/\/[^\s"#]+)#[^\s"]+/g, '$1#<redacted>')
     .replace(/update-participant-private-test-session/g, '<redacted>')
     .replace(/([?&](?:token|code|key|secret)=)[^&\s"]+/gi, '$1<redacted>');
 }
@@ -49,7 +53,7 @@ async function call(label, file, args, { input, timeout = 180000, callEnv = env,
   });
   Object.assign(row, result, { stdoutSha256: createHash('sha256').update(result.stdout).digest('hex'), stderrSha256: createHash('sha256').update(result.stderr).digest('hex'), stdout: publicText(result.stdout), stderr: publicText(result.stderr), finishedAt: new Date().toISOString() });
   report.calls.push(row);
-  writeFileSync(join(output, `${String(++sequence).padStart(3, '0')}.json`), JSON.stringify(row, null, 2));
+  writeFileSync(join(output, `${String(++sequence).padStart(3, '0')}.json`), publicText(JSON.stringify(row, null, 2)));
   save();
   console.log(`${label}: exit ${result.exit}, signal ${result.signal}, timeout ${result.timedOut}`);
   return row;
@@ -57,6 +61,17 @@ async function call(label, file, args, { input, timeout = 180000, callEnv = env,
 function ok(row) { assert.equal(row.timedOut, false, row.label); assert.equal(row.signal, null, row.label); assert.equal(row.exit, 0, `${row.label}: ${row.stderr}`); return row; }
 function body(row) { return JSON.parse(ok(row).stdout).result; }
 const npm = (label, args, options) => call(label, process.env.NPM_BIN, args, options);
+async function installArchive(label, version, prefix, callEnv = env) {
+  const metadata = JSON.parse(ok(await npm(`${label} archive metadata`, ['view', `cotal-ai@${version}`, 'dist', '--json'])).stdout);
+  assert.match(metadata.integrity, /^sha512-[A-Za-z0-9+/=]+$/);
+  const packed = JSON.parse(ok(await npm(`${label} verified download`, ['pack', `cotal-ai@${version}`, '--pack-destination', root, '--json'])).stdout);
+  assert.equal(packed.length, 1);
+  assert.match(packed[0].filename, /^cotal-ai-[0-9.]+\.tgz$/);
+  const archive = join(root, packed[0].filename);
+  assert.equal(`sha512-${createHash('sha512').update(readFileSync(archive)).digest('base64')}`, metadata.integrity);
+  report[`${label}Archive`] = { version, ...metadata, archiveSha256: createHash('sha256').update(readFileSync(archive)).digest('hex') };
+  ok(await npm(`${label} official CLI install`, ['install', '--global', '--prefix', prefix, archive], { callEnv, timeout: 600000 }));
+}
 const bundledNode = join(app, 'Contents/MacOS/cotal-node');
 const bundledEntry = join(app, 'Contents/Resources/runtime/dist/cotal.js');
 const bundled = (label, args, options) => call(label, bundledNode, [bundledEntry, ...args], options);
@@ -68,7 +83,21 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let closeParticipant;
 let serviceOwnership;
-let copiedApp = false;
+let copiedApp;
+async function deleteOwnedApp() {
+  assert(copiedApp, 'no copied app identity');
+  const current = statSync(app);
+  assert.equal(current.dev, copiedApp.dev);
+  assert.equal(current.ino, copiedApp.ino);
+  ok(await call('verify copied bundle before removal', '/usr/bin/codesign', ['--verify', '--deep', '--strict', app]));
+  const retired = join(root, 'retired-owned-app');
+  assert(!existsSync(retired));
+  renameSync(app, retired);
+  const held = statSync(retired);
+  assert.equal(held.dev, copiedApp.dev);
+  assert.equal(held.ino, copiedApp.ino);
+  rmSync(retired, { recursive: true });
+}
 let heldProcesses = [];
 let mounted = false;
 const mount = join(root, 'mounted');
@@ -110,16 +139,14 @@ try {
   assert.equal(createHash('sha256').update(readFileSync(dmg)).digest('hex'), asset.digest.slice(7));
   mkdirSync(mount, { mode: 0o700 });
   ok(await call('mount released app', '/usr/bin/hdiutil', ['attach', dmg, '-mountpoint', mount, '-nobrowse', '-readonly'])); mounted = true;
-  ok(await call('install released app', '/usr/bin/ditto', [join(mount, 'Cotal.app'), app])); copiedApp = true;
+  ok(await call('install released app', '/usr/bin/ditto', [join(mount, 'Cotal.app'), app])); copiedApp = { dev: statSync(app).dev, ino: statSync(app).ino };
   ok(await call('detach released image', '/usr/bin/hdiutil', ['detach', mount])); mounted = false;
   ok(await call('verify released signature', '/usr/bin/codesign', ['--verify', '--deep', '--strict', app]));
   assert(existsSync(bundledNode) && existsSync(bundledEntry));
   report.bundledVersion = ok(await bundled('released bundled version', ['--version'])).stdout;
   assert.match(report.bundledVersion, /0\.164\.16/);
   const cutoff = { ...env, npm_config_before: '2026-11-16T19:38:00.000Z' };
-  report.oldArchive = JSON.parse(ok(await npm('historical CLI archive metadata', ['view', 'cotal-ai@0.164.16', 'dist', '--json'])).stdout);
-  assert.match(report.oldArchive.integrity, /^sha512-/);
-  ok(await npm('install official historical CLI', ['install', '--global', '--prefix', oldPrefix, 'cotal-ai@0.164.16'], { callEnv: cutoff, timeout: 600000 }));
+  await installArchive('historical', '0.164.16', oldPrefix, cutoff);
   mkdirSync(cotalHome, { mode: 0o700 });
   const { prepareUpdateParticipant } = await import(pathToFileURL(resolve('implementations/auth/smoke/update-participant.fixture.ts')).href);
   closeParticipant = await prepareUpdateParticipant({ env, project, cotalHome, report });
@@ -152,15 +179,15 @@ try {
   const baseline = await snapshot('before-delete', before.pid, manager.pid);
   for (const row of [baseline.daemon, baseline.manager]) ok(row.process);
   assert.equal(createHash('sha256').update(readFileSync(plist)).digest('hex'), report.service.sha256);
-  rmSync(app, { recursive: true });
+  await deleteOwnedApp();
   assert(!existsSync(app));
   await delay(3000);
   await snapshot('after-delete', before.pid, manager.pid);
   await old('old CLI plain self update after deletion', ['update', '--self']);
   await snapshot('after-old-update', before.pid, manager.pid);
-  report.freshArchive = JSON.parse(ok(await npm('fresh CLI archive metadata', ['view', 'cotal-ai@latest', 'dist', '--json'])).stdout);
-  assert.match(report.freshArchive.integrity, /^sha512-/);
-  ok(await npm('fresh official CLI install without app', ['install', '--global', '--prefix', freshPrefix, 'cotal-ai@latest'], { timeout: 600000 }));
+  const latestVersion = JSON.parse(ok(await npm('resolve fresh exact version', ['view', 'cotal-ai@latest', 'version', '--json'])).stdout);
+  assert.match(latestVersion, /^\d+\.\d+\.\d+$/);
+  await installArchive('fresh', latestVersion, freshPrefix);
   await fresh('fresh CLI version', ['--version']);
   await fresh('fresh CLI daemon status before recovery', ['daemon', 'status', '--json']);
   await fresh('fresh CLI plain self update without app', ['update', '--self']);
@@ -181,8 +208,15 @@ try {
       report.cleanupService = await call('cleanup service absence', '/bin/launchctl', ['print', target]);
       if (report.cleanupService.exit === 0) process.exitCode = 1;
     } catch (error) { report.cleanupOwnershipError = publicText(error); process.exitCode = 1; }
-  } else if (existsSync(plist)) { report.cleanupUnknownService = true; process.exitCode = 1; }
-  for (const held of heldProcesses) {
+  } else {
+    try {
+      const loaded = await call('unconfirmed install service observation', '/bin/launchctl', ['print', target]);
+      report.cleanupUnknownService = existsSync(plist) || existsSync(join(cotalHome, 'daemon/service-unit.json')) || loaded.exit !== 113;
+      if (report.cleanupUnknownService) process.exitCode = 1;
+    } catch (error) { report.cleanupUnknownService = true; report.cleanupUnknownError = publicText(error); process.exitCode = 1; }
+  }
+  try {
+    for (const held of heldProcesses) {
     const current = await call(`cleanup pinned process ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
     if (current.exit === 0 && current.stdout === held.process.stdout) {
       try { process.kill(held.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') { report.cleanupSignalError = publicText(error); process.exitCode = 1; } }
@@ -193,13 +227,28 @@ try {
         if (attempt === 49) { report.cleanupOutstanding = held.pid; process.exitCode = 1; }
       }
     }
+    }
+  } catch (error) { report.cleanupProcessError = publicText(error); process.exitCode = 1; }
+  try {
+    report.cleanupProcessCensus = await call('final process census without arguments', '/bin/ps', ['-axo', 'pid=,ppid=,lstart=,comm=']);
+    report.cleanupBundleProcessRows = report.cleanupProcessCensus.stdout.split('\n').filter(line => line.includes(`${app}/`));
+    if (report.cleanupBundleProcessRows.length || report.cleanupProcessCensus.exit !== 0) { report.cleanupUnresolvedProcesses = true; process.exitCode = 1; }
   }
-  report.cleanupProcessCensus = await call('final process census without arguments', '/bin/ps', ['-axo', 'pid=,ppid=,lstart=,comm=']);
+  catch (error) { report.cleanupCensusError = publicText(error); process.exitCode = 1; }
   try { await closeParticipant?.(); }
   catch (error) { report.cleanupParticipantError = publicText(error); process.exitCode = 1; }
   try { if (mounted) await call('cleanup image detach', '/usr/bin/hdiutil', ['detach', mount]); }
   finally {
-    if (copiedApp && existsSync(app) && !report.cleanupUnknownService && !report.cleanupOwnershipError) rmSync(app, { recursive: true });
+    try {
+      if (copiedApp && existsSync(app) && !report.cleanupUnknownService && !report.cleanupOwnershipError) await deleteOwnedApp();
+    } catch (error) { report.cleanupAppError = publicText(error); process.exitCode = 1; }
     report.finishedAt = new Date().toISOString(); save();
+    let secrets = false;
+    for (const file of readdirSync(output)) {
+      const text = readFileSync(join(output, file), 'utf8');
+      if (/\bS[UA][A-Z2-7]{56}\b|eyJ[A-Za-z0-9_-]{8,}\.|-----BEGIN[^\n]*(?:JWT|SEED|PRIVATE KEY)|update-participant-private-test-session/.test(text)) secrets = true;
+    }
+    if (!secrets) writeFileSync(join(root, 'upload-safe'), 'Evidence secret scan passed.\n');
+    else { report.artifactRefused = true; process.exitCode = 1; save(); }
   }
 }
