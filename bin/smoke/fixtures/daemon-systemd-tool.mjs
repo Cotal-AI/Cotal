@@ -27,7 +27,7 @@ if (basename(process.argv[1]) === "loginctl") {
   } else process.exit(88);
 } else if (args.includes("show-environment")) {
   operation = "directory-read";
-  console.log(`HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
+  console.log(context.environmentOutput ?? `HOME=${context.home}\nXDG_CONFIG_HOME=${context.config}`);
 } else {
   operation = ["daemon-reload", "enable", "disable", "start", "stop"].find((op) => args.includes(op));
   if (!operation || (operation !== "daemon-reload" && !context.units.includes(args.at(-1)))) process.exit(89);
