@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.166.2
+
+### Patch Changes
+
+- e7f9ee0: Remove unused retained connector release sets after publication while keeping releases used by local Managers, the daemon and surviving seats, and preserving older sets with unknown seat provenance.
+- Updated dependencies [e7f9ee0]
+  - @cotal-ai/workspace@0.166.2
+  - @cotal-ai/core@0.166.2
+  - @cotal-ai/seat@0.166.2
+
 ## 0.166.1
 
 ### Patch Changes
