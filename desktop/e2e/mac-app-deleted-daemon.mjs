@@ -204,7 +204,7 @@ try {
     const sessionPath = join(cotalHome, 'idp-sessions.json');
     const stateBefore = readFileSync(sessionPath, 'utf8');
     if (repairCommand === 'disabled') {
-      const { spaceSegment } = await import('@cotal-ai/workspace');
+      const { spaceSegment } = await import(pathToFileURL(resolve('packages/workspace/dist/index.js')).href);
       const hostingPath = join(cotalHome, 'daemon', spaceSegment(report.participant.space), 'manager-host.json');
       const hostingBefore = readFileSync(hostingPath, 'utf8');
       report.disabledHosting = { path: hostingPath, sha256: createHash('sha256').update(hostingBefore).digest('hex') };
