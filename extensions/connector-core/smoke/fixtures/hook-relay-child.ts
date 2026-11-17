@@ -18,7 +18,6 @@ let reported = false;
 syncBuiltinESMExports();
 
 const { runHookRelay } = await import("../../src/relay.js");
-const held = process.env.RELAY_HOLDS;
 process.stdout.write("RELAY_READY\n", () => {
-  void runHookRelay(undefined, undefined, { holds: (event) => (event as { hook_event_name?: unknown }).hook_event_name === held }).catch(() => process.exit(0));
+  void runHookRelay().catch(() => process.exit(0));
 });
