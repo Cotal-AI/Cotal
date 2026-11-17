@@ -25,6 +25,7 @@ const surfaces = {
   runtime: () => import("@cotal-ai/runtime"), // `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
   auth: () => import("@cotal-ai/auth"), // login / logout — per-user IdP sessions (device-code sign-in)
   docs: () => import("./docs.js"), // `docs`; the docs bundle loads only when `docs` runs
+  mcp: () => import("./mcp.js"), // stock stdio gateway for hosts without a native connector
   daemon: () => import("./daemon/command.js"), // `daemon`: the local machine daemon's authenticated control endpoint (Linux)
   // The `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event frame instead
   // of `[unrenderable part kind "ag-ui.frame"]`.
@@ -57,6 +58,7 @@ registry.provide({ provides: commands("auth-service", "__daemon-auth-service", "
 registry.provide({ provides: [{ kind: "registry-service", name: "builtin" }], load: () => import("@cotal-ai/registry") });
 registry.provide({ provides: commands("__service-unit"), load: () => import("@cotal-ai/cli/service-unit") });
 registry.provide({ provides: commands("daemon"), load: importing("daemon", "auth") });
+registry.provide({ provides: commands("mcp"), load: importing("mcp") });
 
 // The dispatch module reads the command word as `runCli` will, and loads no command. A word a
 // provider declares imports that provider's surfaces; any other word imports them all.

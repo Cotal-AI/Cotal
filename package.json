@@ -302,6 +302,7 @@
     "smoke:focus-drop-exhaustion": "tsx extensions/connector-core/smoke/focus-drop-exhaustion.smoke.ts",
     "smoke:focus-exclusion-mention": "tsx extensions/connector-core/smoke/focus-exclusion-mention.smoke.ts",
     "smoke:gateway": "tsx extensions/connector-core/smoke/gateway.smoke.ts",
+    "smoke:mcp:live": "pnpm --filter cotal-ai... build && tsx bin/smoke/mcp-live.smoke.ts",
     "smoke:discovery-addressing": "tsx extensions/connector-core/smoke/discovery-addressing.smoke.ts",
     "smoke:injection-framing": "tsx extensions/connector-core/smoke/injection-framing.smoke.ts",
     "smoke:spawn-blank-name": "tsx extensions/connector-core/smoke/spawn-blank-name.smoke.ts",
