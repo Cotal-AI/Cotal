@@ -17,13 +17,14 @@ type Entry = {
   kind: CandidateKind;
   anchor: string;
   class: Classification;
-  rationale: string;
+  rationale?: string;
   proof?: { path: string; anchor: string };
 };
 type Renderer = { name: string; path: string; anchor: string; rationale: string };
 type Manifest = {
   expected: Record<"total" | Classification, number>;
   renderers: Renderer[];
+  classRationales: Partial<Record<Classification, string>>;
   entries: Entry[];
 };
 type Candidate = { path: string; kind: CandidateKind; anchor: string };
@@ -347,10 +348,28 @@ const proofAnchors = new Map<string, string>([
   ["implementations/tui/src/screen.ts", tuiOverviewStatusAnchor],
 ]);
 
+// Entries with the same exclusion mechanics inherit their class reason. An exception
+// supplies its own reason instead. Repeated wording is allowed and has no count limit.
+function exclusionRationale(entry: Pick<Entry, "class" | "rationale">, defaults: Manifest["classRationales"]): string {
+  const rationale = entry.rationale ?? defaults[entry.class];
+  assert.ok(typeof rationale === "string" && rationale.trim().length >= 12, `manifest rationale is missing or too short for ${entry.class}`);
+  return rationale;
+}
+const sharedReason = "Status routing does not assert human work progress.";
+assert.equal(exclusionRationale({ class: "non-render/control" }, { "non-render/control": sharedReason }), sharedReason);
+assert.equal(exclusionRationale({ class: "non-render/control", rationale: "HTTP response status is not peer progress." }, { "non-render/control": sharedReason }), "HTTP response status is not peer progress.");
+assert.throws(() => exclusionRationale({ class: "non-render/control" }, {}), /rationale is missing or too short/);
+assert.throws(() => exclusionRationale({ class: "non-render/control", rationale: " " }, { "non-render/control": sharedReason }), /rationale is missing or too short/);
+assert.throws(() => exclusionRationale({ class: "non-render/control" }, { "non-render/control": "short" }), /rationale is missing or too short/);
+for (const [classification, rationale] of Object.entries(manifest.classRationales)) {
+  assert.ok(Object.hasOwn(manifest.expected, classification) && classification !== "total", `unknown rationale class: ${classification}`);
+  exclusionRationale({ class: classification as Classification, rationale }, {});
+}
+
 const entryKeys = new Set<string>();
 const counts: Record<Classification, number> = { "honest-text": 0, "presence-only-glyph/count": 0, "command-ack": 0, "non-render/control": 0 };
 for (const entry of manifest.entries) {
-  assert.ok(entry.rationale.trim().length >= 12, `manifest rationale is missing or too short for ${entry.path}: ${entry.anchor}`);
+  exclusionRationale(entry, manifest.classRationales);
   const key = candidateKey(entry);
   assert.ok(!entryKeys.has(key), `manifest duplicates candidate ${entry.path}: ${entry.anchor}`);
   entryKeys.add(key);
