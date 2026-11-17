@@ -4,8 +4,8 @@
  * `--harness nosuch` got the same "no connector is installed" refusal as a real connector name.
  *
  * Driven through the built binary of this checkout in a sandboxed HOME, XDG_CONFIG_HOME and
- * COTAL_HOME with COTAL_SKIP_CONNECTOR_SEED=1, so no connector is installed. Nothing is seeded or
- * written.
+ * COTAL_HOME with COTAL_SKIP_CONNECTOR_SEED=1 for the empty-inventory checks. Then seed and remove
+ * the built-ins through the CLI and follow the recommended targeted recovery.
  *
  * Run: pnpm smoke:setup-no-connector
  */
@@ -49,9 +49,27 @@ check("rig: no connector is installed in the sandbox", official.status === 2 && 
 check("from a checkout the remedy does not send the operator to a refused cotal ext seed alone", /not a released install/.test(official.envelope?.error?.remedy ?? "") && /COTAL_ALLOW_CHECKOUT_SEED=1/.test(official.envelope?.error?.remedy ?? ""), official.envelope?.error);
 
 const optedIn = setup("claude", { COTAL_ALLOW_CHECKOUT_SEED: "1" });
-check("control: where the seed would run, the remedy is cotal ext seed", optedIn.status === 2 && optedIn.envelope?.error?.remedy === "run `cotal ext seed`", optedIn.envelope?.error);
+check("an official harness names its targeted install", optedIn.status === 2 && optedIn.envelope?.error?.remedy === "run `cotal ext add @cotal-ai/connector-claude-code`", optedIn.envelope?.error);
 
 check("nothing was written to the project", !existsSync(join(project, ".cotal")));
+
+// Exercise the supported removal path, not just an initially empty manifest.
+const seededEnv = { ...env, COTAL_SKIP_CONNECTOR_SEED: "0", COTAL_ALLOW_CHECKOUT_SEED: "1" };
+const command = (...args: string[]) => spawnSync(process.execPath, [BIN, ...args], { cwd: project, env: seededEnv, encoding: "utf8", timeout: 180_000 });
+check("seed the built-ins", command("ext", "seed").status === 0);
+for (const pkg of ["connector-claude-code", "connector-opencode", "connector-codex", "connector-hermes", "connector-jcode", "pi"]) {
+  const removed = command("ext", "remove", `@cotal-ai/${pkg}`);
+  check(`remove ${pkg}`, removed.status === 0, removed.stderr);
+}
+const removed = setup("opencode", seededEnv);
+check("removed connectors name a targeted recovery", removed.status === 2 && removed.envelope?.error?.remedy === "run `cotal ext add @cotal-ai/connector-opencode`", shown(removed));
+check("ordinary seed still succeeds", command("ext", "seed").status === 0);
+const stillRemoved = setup("opencode", seededEnv);
+check("ordinary seed preserves removals", stillRemoved.envelope?.error?.code === "DEPENDENCY_UNAVAILABLE", shown(stillRemoved));
+const restored = command("ext", "add", "@cotal-ai/connector-opencode");
+check("the exact recommended add succeeds", restored.status === 0, restored.stderr);
+const recovered = setup("opencode", seededEnv);
+check("repeating setup passes connector discovery", !/no connector is installed/.test(recovered.envelope?.error?.message ?? "") && recovered.envelope !== undefined, shown(recovered));
 
 finish();
 process.exit(process.exitCode ?? 0);
