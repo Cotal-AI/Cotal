@@ -1,0 +1,47 @@
+name: Control exchange (Windows) before the fix
+
+# Temporary: the same stand-in check run against main before the control exchange existed, to show
+# the leak it closes. Not merged anywhere.
+
+# A connector's control endpoint on Windows is a named pipe in the global namespace, so once its
+# server exits any local user can take the name. This job proves on a real Windows host that the
+# control exchange holds there: the exchange smoke (stand-in servers and clients, refused versions),
+# then a second local user, created for the run, takes a dead server's pipe name while the built
+# Claude hook fires at it. The job fails if that user receives the endpoint key or the hook prints
+# anything it sent. Broker-free; the runner's administrator rights are needed only to create and
+# delete the second user.
+
+on:
+  push:
+    branches: [claude/control-exchange-4016-windows-before]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DO_NOT_TRACK: 1
+
+jobs:
+  standin:
+    name: Control exchange / Windows stand-ins
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # Only what the exchange, the hook bundle and the victim server need; none of it is native.
+      - name: Build
+        run: pnpm --filter @cotal-ai/core --filter @cotal-ai/connector-core --filter @cotal-ai/connector-claude-code build
+      - name: A second local user on a dead server's pipe name
+        shell: pwsh
+        run: ./bin/smoke/control-standin/windows.ps1
