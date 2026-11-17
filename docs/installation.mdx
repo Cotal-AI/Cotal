@@ -52,6 +52,9 @@ If you already have Node.js 22.10 or newer, run:
 npm install -g cotal-ai
 ```
 
+On Linux, this route also requires glibc. npm installation refuses Alpine and other musl distributions
+because the bundled terminal library cannot run there.
+
 Use this route on Windows.
 The shell installer does not support Windows shells.
 You can also use the shell installer inside WSL.
