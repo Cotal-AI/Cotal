@@ -98,6 +98,16 @@ export function retainConnectorConfig(): string {
     assertExtensionPrefixIdle(current);
     if (connectorConfigDir() !== globalConfigDir()) return connectorConfigDir();
     if ((previousConfig(id) ?? globalConfigDir()) !== current) throw new Error("connector retention source changed before its copy; retry reconciliation");
+    if (current !== globalConfigDir()) {
+      const sourcePath = dirname(current);
+      const sourceSelection = join(sourcePath, "selection.json");
+      if (!readLocalRecordSource(sourceSelection, 8192, true)) {
+        const sourceRecord: Selection = { v: 1, entry: id.entry, version: sourcePath.split("/").at(-1)!, root: current };
+        const pending = join(sourcePath, `.selection-${randomBytes(8).toString("hex")}`);
+        writeFileSync(pending, JSON.stringify(sourceRecord), { flag: "wx", mode: 0o600 });
+        renameSync(pending, sourceSelection);
+      }
+    }
     mkdirSync(id.path, { recursive: true, mode: 0o700 });
     ownedAncestors(id.path);
     const root = join(id.path, "cotal");
