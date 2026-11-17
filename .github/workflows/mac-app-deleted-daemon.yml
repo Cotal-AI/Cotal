@@ -24,6 +24,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+          pnpm exec tsx bin/smoke/daemon-repair-replies.smoke.ts
           pnpm --filter @cotal-ai/seat build:native
           brew install nats-server
           pnpm --filter cotal-ai seeded-connectors
