@@ -395,7 +395,7 @@ export async function recoverInterruptedUpdate(rt: UpdateRuntime = updateRuntime
 /** Check mode is installation metadata only; target and mutation inputs are never ignored. */
 export function validateUpdateArguments(args: ParsedArgs): void {
   presentationOf(args.values);
-  if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires cotal update --self");
+  if (args.values["stop-agents"] && args.values.self !== true) throw new CommandFailure("refused", "USAGE_INVALID", "--stop-agents requires `cotal update --self`");
   if (args.values.auto || args.values.notify) {
     if (args.values.auto && args.values.notify || args.values.self || args.values.check || args.values.json || args.values.plain || args.values.space || args.values.server || args.values.creds || args.values.on || args.positionals.length > 1 || args.positionals.some(value => value !== "on" && value !== "off"))
       throw new CommandFailure("refused", "USAGE_INVALID", "use `cotal update --auto [off|on]` or `cotal update --notify [off|on]` without other update flags");

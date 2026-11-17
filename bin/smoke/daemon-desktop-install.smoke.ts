@@ -116,7 +116,7 @@ try {
     (err: { code?: string; message?: string; remedy?: string }) => {
       assert.equal(err.code, "DEPENDENCY_UNAVAILABLE");
       assert.equal(err.message, "the account's application PATH could not be read; no service was changed");
-      assert.equal(err.remedy, "choose Try again, or run cotal daemon install in a terminal for diagnostics");
+      assert.equal(err.remedy, "choose Try again, or run `cotal daemon install` in a terminal for diagnostics");
       assert.ok(!String(err.remedy).includes("login shell"), "Windows remedy must not mention a login shell");
       return true;
     },
