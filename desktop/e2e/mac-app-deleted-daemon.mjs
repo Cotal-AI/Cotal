@@ -83,7 +83,7 @@ const old = (label, args) => call(label, process.execPath, [oldEntry, ...args]);
 const fresh = (label, args) => call(label, process.execPath, [freshEntry, ...args]);
 let candidateEntry = process.env.DESKTOP_REPAIR_CLI;
 const repairCommand = process.env.DESKTOP_REPAIR_COMMAND ?? 'status';
-assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager'].includes(repairCommand), 'unsupported repair entry command');
+assert(['status', 'install', 'disabled', 'unreadable-source', 'self-update', 'unreadable-manager', 'occupied-manager'].includes(repairCommand), 'unsupported repair entry command');
 if (!candidateEntry && repairCommand !== 'self-update') assert.equal(repairCommand, 'status', 'entry-command proof requires a candidate');
 if (repairCommand === 'self-update') assert(process.env.DESKTOP_REPAIR_SOURCE_CLOSURE && process.env.DESKTOP_REPAIR_TARGET_CLOSURE, 'self-update proof requires two real guarded installed package closures');
 report.repairCommand = repairCommand;
@@ -94,6 +94,9 @@ let closeParticipant;
 let serviceOwnership;
 let copiedApp;
 let disabledOverrideChanged = false;
+let occupiedSeat;
+let occupiedInstance;
+const occupiedName = 'repair_occupied_worker';
 async function readDisabled(label) {
   const read = ok(await call(label, '/bin/launchctl', ['print-disabled', domain]));
   const block = /^\s*disabled services = \{([\s\S]*)\}\s*$/.exec(read.stdout);
@@ -202,11 +205,32 @@ try {
   const connector = join(root, 'connector');
   mkdirSync(connector, { mode: 0o700 });
   writeFileSync(join(connector, 'package.json'), JSON.stringify({ name: 'deleted-app-fixture', version: '1.0.0', type: 'module', main: 'index.js', peerDependencies: { '@cotal-ai/core': '*' } }));
-  writeFileSync(join(connector, 'index.js'), "import {registry} from '@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch(){throw Error('this measurement launches no seats')}});\n");
+  if (repairCommand === 'occupied-manager') {
+    const core = pathToFileURL(join(oldPrefix, 'lib/node_modules/cotal-ai/node_modules/@cotal-ai/core/dist/index.js')).href;
+    const seat = join(connector, 'seat.mjs');
+    const seatReceipt = join(connector, 'seat-process.json');
+    writeFileSync(seat, `import{CotalEndpoint}from${JSON.stringify(core)};import{readFileSync,writeFileSync}from'node:fs';import{execFile}from'node:child_process';const e=process.env;const cmd=JSON.parse(e.COTAL_BEARER_CMD);const bearer=()=>new Promise((resolve,reject)=>execFile(cmd[0],cmd.slice(1),(error,stdout)=>error?reject(error):resolve(stdout.trim())));const ep=new CotalEndpoint({space:e.COTAL_SPACE,servers:e.COTAL_SERVERS,bearer,sentinelCreds:readFileSync(e.COTAL_SENTINEL_CREDS,'utf8'),card:{owner:e.COTAL_OWNER,actor:e.COTAL_ACTOR,name:e.COTAL_NAME,role:'worker',kind:'agent'},lifecycleUid:e.COTAL_LIFECYCLE_UID,channels:[],consume:false,registerPresence:true});ep.on('error',console.error);await ep.start();writeFileSync(${JSON.stringify(seatReceipt)},JSON.stringify({pid:process.pid,lifecycleUid:e.COTAL_LIFECYCLE_UID,name:e.COTAL_NAME}),{mode:0o600});setInterval(()=>{},1000);for(const s of['SIGINT','SIGTERM'])process.on(s,()=>ep.stop().finally(()=>process.exit(0)));`);
+    writeFileSync(join(connector, 'index.js'), `import{registry}from'@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch:o=>{if(!o.userAuth)throw Error('occupied proof requires actual user-auth launch');return{command:process.execPath,args:[${JSON.stringify(seat)}],env:{...process.env,COTAL_SPACE:o.space,COTAL_SERVERS:String(o.servers),COTAL_OWNER:o.userAuth.owner,COTAL_ACTOR:o.userAuth.actor,COTAL_SENTINEL_CREDS:o.userAuth.sentinelCredsPath,COTAL_BEARER_CMD:JSON.stringify(o.userAuth.bearerCmd),COTAL_NAME:o.name,COTAL_LIFECYCLE_UID:String(o.lifecycleUid)}}}});`);
+  } else {
+    writeFileSync(join(connector, 'index.js'), "import {registry} from '@cotal-ai/core';registry.register({kind:'connector',name:'deleted-app-fixture',requires:['node'],buildLaunch(){throw Error('this measurement launches no seats')}});\n");
+  }
   ok(await bundled('register local available connector', ['ext', 'add', connector]));
   const setup = body(await bundled('host real Manager through app runtime', ['daemon', 'setup', '--space', report.participant.space, '--json']));
   assert.equal(setup.manager.state, 'answering');
   heldProcesses.push(await identity(setup.manager.pid, 'installed Manager'));
+  if (repairCommand === 'occupied-manager') {
+    occupiedInstance = setup.manager.instanceId;
+    ok(await bundled('spawn real owned occupied proof seat', ['spawn', '--agent', 'deleted-app-fixture', '--on', occupiedInstance, '--name', occupiedName, '--detach', '--no-events', '--space', report.participant.space]));
+    const receiptFile = join(connector, 'seat-process.json');
+    const until = Date.now() + 20000;
+    while (!existsSync(receiptFile) && Date.now() < until) await delay(100);
+    const launched = JSON.parse(readFileSync(receiptFile, 'utf8'));
+    assert.equal(launched.name, occupiedName);
+    assert(typeof launched.lifecycleUid === 'string' && launched.lifecycleUid.length > 0);
+    occupiedSeat = { ...await identity(launched.pid, 'owned occupied proof seat'), lifecycleUid: launched.lifecycleUid };
+    assert(occupiedSeat.birth);
+    report.occupiedSeatBefore = { pid: occupiedSeat.pid, birth: occupiedSeat.birth, lifecycleUid: occupiedSeat.lifecycleUid, instanceId: occupiedInstance };
+  }
   const before = body(await bundled('baseline daemon status', ['daemon', 'status', '--json']));
   const manager = before.managers.find(row => row.instanceId === setup.manager.instanceId);
   assert.equal(manager.state, 'answering');
@@ -240,6 +264,29 @@ try {
       const version = ok(await candidate('installed candidate version after self update', ['--version'])).stdout.split(/\r?\n/, 1)[0];
       assert.equal(version, `cotal-ai ${candidateRegistry.identity.targetVersion}`);
       report.selfUpdateRepairAcceptance = { exit: update.exit, pid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true, installedTarget: candidateRegistry.identity.targetVersion };
+    }
+    if (repairCommand === 'occupied-manager') {
+      await ownedService();
+      assert(occupiedSeat?.birth && occupiedInstance === manager.instanceId);
+      const sourceBefore = readFileSync(plist, 'utf8');
+      const receiptBefore = readFileSync(receiptPath, 'utf8');
+      const seatBefore = body(await old('public original-instance occupied seat before repair', ['ps', '--on', occupiedInstance, '--space', report.participant.space, '--json']));
+      assert(seatBefore.items?.some(row => row.name === occupiedName && row.lifecycleUid === occupiedSeat.lifecycleUid), 'public inventory must bind the live owned seat lifecycle');
+      const refused = await candidate('occupied real Manager refuses install repair', ['daemon', 'install', '--json']);
+      assert.equal(refused.timedOut, false);
+      assert.equal(refused.signal, null);
+      assert.notEqual(refused.exit, 0);
+      assert.match(JSON.parse(refused.stdout).error?.message ?? '', /active seat|repair preparation/i);
+      assert.equal(readFileSync(plist, 'utf8'), sourceBefore);
+      assert.equal(readFileSync(receiptPath, 'utf8'), receiptBefore);
+      assert.equal(readFileSync(sessionPath, 'utf8'), stateBefore);
+      assert(!existsSync(join(cotalHome, 'daemon/service-repair.json')));
+      assert.equal(processBirth(occupiedSeat.pid), occupiedSeat.birth, 'refused repair must not stop the live agent');
+      const seatAfter = body(await old('public original-instance occupied seat after repair', ['ps', '--on', occupiedInstance, '--space', report.participant.space, '--json']));
+      assert(seatAfter.items?.some(row => row.name === occupiedName && row.lifecycleUid === occupiedSeat.lifecycleUid));
+      assert(seatAfter.managers?.some(row => row.instanceId === occupiedInstance && row.state === 'answered'));
+      await ownedService();
+      report.occupiedManagerAcceptance = { repairRefused: true, sourceAndReceiptUnchanged: true, credentialsPreserved: true, sameSeatBirthAndLifecycle: true, originalInstanceAnswered: true, newLifecycleWorkMeasured: false };
     }
     if (repairCommand === 'unreadable-manager') {
       await ownedService();
@@ -369,7 +416,7 @@ try {
       report.installRepairAcceptance = { state: installed.state, pid: installedPid, sourceOutsideAppBeforeStatus: true, credentialsPreserved: true };
       }
     }
-    if (!['disabled', 'unreadable-source', 'unreadable-manager'].includes(repairCommand)) {
+    if (!['disabled', 'unreadable-source', 'unreadable-manager', 'occupied-manager'].includes(repairCommand)) {
     const repaired = body(await candidate(repairCommand === 'self-update' ? 'candidate status observes self-update-repaired program' : repairCommand === 'install' ? 'candidate status observes install-repaired program' : 'candidate daemon status repairs missing program', ['daemon', 'status', '--json']));
     if (repairCommand === 'self-update') assert.equal(repaired.pid, report.selfUpdateRepairAcceptance.pid, 'status must observe the native lifetime already started by self-update');
     if (repairCommand === 'install') assert.equal(repaired.pid, report.installRepairAcceptance.pid, 'status observes the already repaired native lifetime');
@@ -419,7 +466,21 @@ try {
 } catch (error) {
   report.outcome = 'blocked'; report.error = publicText(error.stack ?? error); process.exitCode = 1;
 } finally {
-  if (serviceOwnership) {
+  if (occupiedInstance) {
+    try {
+      const stop = await old('stop only fixture-owned occupied seat through original Manager', ['stop', occupiedName, '--on', occupiedInstance, '--space', report.participant.space, '--json']);
+      ok(stop);
+      if (occupiedSeat) {
+        const until = Date.now() + 20000;
+        while (processBirth(occupiedSeat.pid) === occupiedSeat.birth && Date.now() < until) await delay(100);
+        assert.notEqual(processBirth(occupiedSeat.pid), occupiedSeat.birth, 'owned seat must exit before native Manager cleanup');
+      } else {
+        throw new Error('occupied launch process identity was not captured; cleanup remains unconfirmed even after public stop');
+      }
+      report.cleanupOccupiedSeatStopped = true;
+    } catch (error) { report.cleanupOccupiedSeatError = publicText(error); process.exitCode = 1; }
+  }
+  if (serviceOwnership && !report.cleanupOccupiedSeatError) {
     try {
       await nativeAction('cleanup exact service bootout', ['bootout']);
       for (let attempt = 0; attempt < 50; attempt++) {
@@ -449,6 +510,7 @@ try {
     } catch (error) { report.cleanupUnknownService = true; report.cleanupUnknownError = publicText(error); process.exitCode = 1; }
   }
   try {
+    if (report.cleanupOccupiedSeatError) throw new Error('occupied seat cleanup is unconfirmed; no daemon or Manager process signal is authorized');
     for (const held of heldProcesses) {
     const current = await call(`cleanup pinned process ${held.pid}`, '/bin/ps', ['-p', String(held.pid), '-o', 'pid=,lstart=,comm=']);
     if (current.exit === 0 && current.stdout === held.process.stdout && held.birth && processBirth(held.pid) === held.birth) {
