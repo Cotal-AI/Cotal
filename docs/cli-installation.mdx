@@ -219,7 +219,9 @@ cotal update --check [-j|--json|--plain]
 
 On a user-auth mesh where you run several managers, the exchange refuses to pick one and names `--on`; pass this machine's manager.
 Update reads the recorded mesh inventory without refreshing account space catalogues. An expired
-login to a remote mesh does not block the software update. Local manager continuity checks still
+login to a remote mesh does not block the software update. An unreachable registered broker does
+not block either update flow when no local Manager of this installation serves that space. The
+liveness check keeps the registration unchanged. Local manager continuity checks still
 apply before changing the installation.
 
 After `update --self` replaces the installation, its verified replacement waits up to 120 seconds

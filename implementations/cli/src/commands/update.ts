@@ -800,7 +800,8 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
     const server = typeof flags.server === "string" ? flags.server : undefined;
     let peek: MeshTarget | undefined;
     try {
-      offline = space || options.readOnly ? [] : (await pruneStaleMeshes(server)).offline;
+      // This sweep only probes. Read-only staged checks need the same liveness verdict.
+      offline = (await pruneStaleMeshes(server)).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e)) throw e;
@@ -843,6 +844,9 @@ export async function readManagerContinuity(flags: Record<string, unknown>, opti
       }
       console.log(c.dim(`  ${peek.space}: a manager for this mesh runs on this machine; reading its custody`));
     }
+    // Explicit and in-folder targets are not filtered by the resolver's offline set.
+    if (peek && offline?.includes(peek.space) && on === undefined &&
+        !supervisorMayServe(peek.space, options.installedEntry)) return "none";
     // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
     // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
     // exchange would refuse on the stopped auth service first.

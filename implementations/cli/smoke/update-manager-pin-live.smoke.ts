@@ -1,6 +1,7 @@
 /** Real user-auth exchange with two actual supervisor processes for the same owner. */
 import assert from 'node:assert/strict';
-import {spawn, type ChildProcess} from 'node:child_process';
+import {spawn, spawnSync, type ChildProcess} from 'node:child_process';
+import {createServer} from 'node:net';
 import {once} from 'node:events';
 import {existsSync,mkdirSync,mkdtempSync,readFileSync,readdirSync,realpathSync,renameSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -8,6 +9,7 @@ import {join} from 'node:path';
 import {prepareUpdateParticipant} from '../../auth/smoke/update-participant.fixture.js';
 import {recordedUpdateManagers} from '../src/lib/update-managers.js';
 import {readManagerContinuity,reportRunningManagers} from '../src/commands/update.js';
+import {recordMesh,loadMeshes} from '@cotal-ai/workspace';
 import {countedAssert,emitSentinel} from '@cotal-ai/smoke-kit';
 const counted=countedAssert(assert),check:typeof assert=counted.assert;
 const root=realpathSync(mkdtempSync(join(tmpdir(),'cotal-update-pin-live-')));
@@ -20,6 +22,32 @@ const entry=join(import.meta.dirname,'../../../bin/dist/cotal.js'),report:Record
 const children:ChildProcess[]=[];let close:(()=>Promise<void>)|undefined;
 const pause=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 try{
+ const deadRoot=join(root,'tmp','dead');mkdirSync(join(deadRoot,'.cotal','agents'),{recursive:true});
+ const listener=createServer();await new Promise<void>(resolve=>listener.listen(0,'127.0.0.1',resolve));
+ const port=(listener.address() as {port:number}).port;await new Promise<void>(resolve=>listener.close(()=>resolve()));
+ const deadServer=`nats://127.0.0.1:${port}`;
+ const broker=spawn('nats-server',['-js','-p',String(port),'-sd',join(root,'tmp','broker')],{env,stdio:'ignore'});children.push(broker);
+ await pause(500);
+ const added=spawnSync(process.execPath,[entry,'space','add','gone','--server',deadServer,'--root',deadRoot,'--mode','open','--force'],{env,encoding:'utf8'});
+ check.equal(added.status,0,added.stdout+added.stderr);
+ const stopped=once(broker,'close');broker.kill('SIGTERM');await stopped;children.splice(children.indexOf(broker),1);
+ const retained=()=>reportRunningManagers({},flags=>readManagerContinuity(flags,{readOnly:true,retainGraph:true,installedEntry:entry}),flags=>recordedUpdateManagers(flags,entry));
+ process.chdir('/');
+ for(const server of [deadServer,'nats://unreachable.invalid:4222']){
+  recordMesh({space:'gone',server,root:deadRoot,mode:'open',origin:'manual',ts:new Date().toISOString()});
+  const before=JSON.stringify(loadMeshes());
+  check.equal(await retained(),'none','staged update ignores dead registration');
+  check.equal(await reportRunningManagers({}),'none','default update ignores dead registration');
+  check.equal(JSON.stringify(loadMeshes()),before,'liveness sweep keeps registry unchanged');
+  process.chdir(deadRoot);
+  check.equal(await retained(),'none','staged update from registered root ignores dead registration');
+  check.equal(await reportRunningManagers({}),'none','default update from registered root ignores dead registration');
+  process.chdir('/');
+ }
+ recordMesh({space:'gone-two',server:deadServer,root:deadRoot,mode:'open',origin:'manual',ts:new Date().toISOString()});
+ check.equal(await retained(),'none','two dead registrations do not refuse staged update');
+ check.equal(await reportRunningManagers({}),'none','two dead registrations do not refuse default update');
+ process.chdir(join(root,'project'));
  close=await prepareUpdateParticipant({env,project:join(root,'project'),cotalHome:env.COTAL_HOME!,report});
  const space=report.participant.space;
  const logs:string[]=[];
@@ -42,6 +70,9 @@ try{
  const seen:string[]=[];
  check.equal(await reportRunningManagers({space},async flags=>{seen.push(String(flags.on));return readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true});},()=>recordedUpdateManagers({space},entry)),'none','portable census and real continuity compose without an unpinned exchange');
  check.deepEqual(seen,[ids[0]],'only the recorded local instance was read');
+ const liveReads:string[]=[];
+ check.equal(await reportRunningManagers({},async flags=>{liveReads.push(String(flags.on));return readManagerContinuity(flags,{installedEntry:entry,readOnly:true,retainGraph:true});},flags=>recordedUpdateManagers(flags,entry)),'none','dead registrations do not prevent reading live local custody');
+ check.deepEqual(liveReads,[ids[0]],'install-wide update still reads the actual local Manager beside dead registrations');
  const otherInstall=join(root,'tmp','other-install');mkdirSync(join(otherInstall,'dist'),{recursive:true,mode:0o700});
  writeFileSync(join(otherInstall,'package.json'),JSON.stringify({name:'cotal-ai',bin:{cotal:'dist/cotal.js'}}));writeFileSync(join(otherInstall,'dist','cotal.js'),'');
  const otherEntry=join(otherInstall,'dist','cotal.js');
