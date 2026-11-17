@@ -18,22 +18,22 @@ export function verifyTwoHomeUpgrade(report, { platform, hosted = false } = {}) 
     const calls = report.calls.filter(call => call.route === route);
     for (const [home, label] of [['A', 'install old closure'], ['A', route === 'old-manager' ? 'old Manager candidate install setup' : 'self update shared installation'], ['A', 'updated home version'], ['B', 'stale home version before command'], ['B', 'home status after command'], ['B', 'final owned stack down']])
       assert(calls.some(call => call.home === home && call.label === label && call.code === 0 && call.signal === null), `${route}/${home}: missing successful ${label}`);
-    const stale = calls.find(call => call.label === 'stale home version before command');
+    const stale = calls.find(call => call.home === 'B' && call.label === 'stale home version before command');
     assert(report.checks.some(check => check.name === (route === 'old-manager' ? 'old Manager exclusion leaves no recovery obligation' : `${route} home has no recovery obligation`) && check.passed === true), `${route}: recovery obligation check missing`);
     assert(stale.stdout.startsWith(`cotal-ai ${report.target.version}\n`) && !stale.stdout.includes('update --self'), `${route}: wrong stale-home version or remedy`);
     const inventory = (output, version) => ['claude', 'opencode', 'codex', 'hermes', 'jcode', 'pi', 'web, web-service'].every(name => output.split('\n').some(line => line.trimStart().startsWith(name) && line.trimEnd().endsWith(version)));
     assert(inventory(stale.stdout, report.old.version), `${route}: stale home must carry every old built-in`);
-    const updatedHome = calls.find(call => call.label === 'updated home version');
+    const updatedHome = calls.find(call => call.home === 'A' && call.label === 'updated home version');
     assert(inventory(updatedHome.stdout, report.target.version) && !updatedHome.stdout.includes('Reconciliation pending'), `${route}: updated A home is not reconciled`);
     if (route !== 'old-manager') {
-      const launch = calls.find(call => call.label === (route === 'up' ? 'ordinary next up' : 'ordinary next agent launch'));
+      const launch = calls.find(call => call.home === 'B' && call.label === (route === 'up' ? 'ordinary next up' : 'ordinary next agent launch'));
       assert(launch?.home === 'B' && launch.code === 0 && launch.signal === null, `${route}: ordinary B command did not complete`);
-      const current = calls.find(call => call.label === 'home version after ordinary command');
+      const current = calls.find(call => call.home === 'B' && call.label === 'home version after ordinary command');
       assert(current?.code === 0 && inventory(current.stdout, report.target.version) && !current.stdout.includes('Reconciliation pending'), `${route}: home remains pending or skewed`);
     } else {
-      const refusal = calls.find(call => call.label === 'old Manager exclusion');
+      const refusal = calls.find(call => call.home === 'B' && call.label === 'old Manager exclusion');
       assert(refusal && refusal.code !== 0 && `${refusal.stdout}${refusal.stderr}`.includes('LIFECYCLE_BLOCKED'), 'old Manager must block automatic migration');
-      assert(calls.some(call => call.label === 'old Manager remains answering' && call.code === 0), 'old Manager must remain answering');
+      assert(calls.some(call => call.home === 'B' && call.label === 'old Manager remains answering' && call.code === 0), 'old Manager must remain answering');
       for (const name of ['older Manager home inventory remains unchanged', 'older Manager exclusion starts no fixture process'])
         assert(report.checks.some(check => check.name === name && check.passed === true), `missing ${name}`);
     }
